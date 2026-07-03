@@ -12,7 +12,7 @@ struct MainWindowModelTests {
         try expectEqual(AppAccessibilityID.mainContent, "skills-copilot.main-content", "Main content accessibility identifier should stay stable.")
         try expectEqual(MainWindowModel.windowIdentifierRawValue, AppAccessibilityID.mainWindow, "Window identifier should match the AX identifier.")
         try expectEqual(MainWindowModel.autosaveName, "SkillsCopilot.MainWindow", "Main window autosave name should remain stable.")
-        try expectEqual(MainWindowModel.minimumWidth, 920, "Main window minimum width should match the launch smoke expectation.")
+        try expectEqual(MainWindowModel.minimumWidth, 1349, "Main window minimum width should match the protected layout width.")
         try expectEqual(MainWindowModel.minimumHeight, 600, "Main window minimum height should match the launch smoke expectation.")
     }
 

@@ -15,7 +15,7 @@ enum AppAccessibilityID {
 enum MainWindowModel {
     static let windowIdentifierRawValue = AppAccessibilityID.mainWindow
     static let autosaveName = "SkillsCopilot.MainWindow"
-    static let minimumWidth = 920
+    static let minimumWidth = 1349
     static let minimumHeight = 600
 
     static func mainWindowScore(identifierRawValue: String?, title: String, canBecomeMain: Bool) -> Int {

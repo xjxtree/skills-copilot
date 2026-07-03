@@ -9,6 +9,7 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const files = {
   app: await read("apps/macos/Sources/SkillsCopilot/App/SkillsCopilotApp.swift"),
   mainWindowCoordinator: await read("apps/macos/Sources/SkillsCopilot/App/MainWindowCoordinator.swift"),
+  mainWindowModel: await read("apps/macos/Sources/SkillsCopilot/Models/MainWindowModel.swift"),
   content: await read("apps/macos/Sources/SkillsCopilot/Views/ContentView.swift"),
   detail: await read("apps/macos/Sources/SkillsCopilot/Views/DetailView.swift"),
   agentCopilotOverview: await read("apps/macos/Sources/SkillsCopilot/Views/AgentCopilotOverviewPanel.swift"),
@@ -118,8 +119,10 @@ const forbiddenProtocolMethods = supportedMethods.filter((method) => /^(ipc|side
 const checks = [
   {
     label: "app window defines stable minimum size and fixed light appearance",
-    text: files.app + "\n" + files.mainWindowCoordinator,
-    passed: /\.frame\(minWidth:\s*920,\s*minHeight:\s*600\)/.test(files.app)
+    text: files.app + "\n" + files.mainWindowCoordinator + "\n" + files.mainWindowModel,
+    passed: /static let minimumWidth = 1349/.test(files.mainWindowModel)
+      && /static let minimumHeight = 600/.test(files.mainWindowModel)
+      && /\.frame\(minWidth:\s*CGFloat\(MainWindowModel\.minimumWidth\),\s*minHeight:\s*CGFloat\(MainWindowModel\.minimumHeight\)\)/.test(files.app)
       && /applicationDidFinishLaunching[\s\S]*?MainWindowCoordinator\.configureApplicationAppearance\(\)/.test(files.app)
       && /ContentView\(\)[\s\S]*?\.preferredColorScheme\(\.light\)/.test(files.app)
       && /SettingsView\(\)[\s\S]*?\.preferredColorScheme\(\.light\)/.test(files.app)

@@ -35,7 +35,7 @@ struct SkillsCopilotApp: App {
                 .environmentObject(store)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
                 .id(appLanguage.rawValue)
-                .frame(minWidth: 920, minHeight: 600)
+                .frame(minWidth: CGFloat(MainWindowModel.minimumWidth), minHeight: CGFloat(MainWindowModel.minimumHeight))
                 .background(MainWindowConfigurator())
         }
         .commands {
