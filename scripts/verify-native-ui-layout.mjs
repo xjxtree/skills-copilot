@@ -58,7 +58,7 @@ const files = {
   taskCockpit: await read("apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift"),
   taskInput: await read("apps/macos/Sources/SkillsCopilot/Views/TaskInputTextEditor.swift"),
   taskInputModel: await read("apps/macos/Sources/SkillsCopilot/Models/TaskInputModel.swift"),
-  material: await read("apps/macos/Sources/SkillsCopilot/Views/AdaptiveMaterialSurface.swift"),
+  nativePanelSurface: await read("apps/macos/Sources/SkillsCopilot/Views/NativePanelSurface.swift"),
   localizable: await read("apps/macos/Sources/SkillsCopilot/Resources/en.lproj/Localizable.strings"),
   localizableZh: await read("apps/macos/Sources/SkillsCopilot/Resources/zh-Hans.lproj/Localizable.strings"),
   serviceProtocol: await read("docs/service-protocol.md"),
@@ -117,32 +117,91 @@ const forbiddenProtocolMethods = supportedMethods.filter((method) => /^(ipc|side
 
 const checks = [
   {
-    label: "app window defines stable minimum size",
-    text: files.app,
-    pattern: /\.frame\(minWidth:\s*920,\s*minHeight:\s*600\)/,
+    label: "app window defines stable minimum size and fixed light appearance",
+    text: files.app + "\n" + files.mainWindowCoordinator,
+    passed: /\.frame\(minWidth:\s*920,\s*minHeight:\s*600\)/.test(files.app)
+      && /applicationDidFinishLaunching[\s\S]*?MainWindowCoordinator\.configureApplicationAppearance\(\)/.test(files.app)
+      && /ContentView\(\)[\s\S]*?\.preferredColorScheme\(\.light\)/.test(files.app)
+      && /SettingsView\(\)[\s\S]*?\.preferredColorScheme\(\.light\)/.test(files.app)
+      && /static let appAppearance = NSAppearance\(named:\s*\.aqua\)/.test(files.mainWindowCoordinator)
+      && /static func configureApplicationAppearance[\s\S]*?app\.appearance = appAppearance/.test(files.mainWindowCoordinator)
+      && /static func configureWindow[\s\S]*?window\.appearance = appAppearance[\s\S]*?window\.isMovableByWindowBackground = false/.test(files.mainWindowCoordinator),
   },
   {
     label: "main shell uses NavigationSplitView",
     text: files.content,
-    pattern: /NavigationSplitView\s*{/,
+    pattern: /NavigationSplitView(?:\([\s\S]*?\))?\s*{/,
   },
   {
-    label: "list pages use a unified window toolbar with global search and creation actions",
+    label: "list pages use a unified window toolbar with global search and sidebar-local selectors",
     text: files.content + "\n" + files.uiOptimization,
     passed: /static let unifiedToolbar = UnifiedToolbarPresentation\(\)[\s\S]*?static let listPage = ListPagePresentation\(\)[\s\S]*?static let sidebarShell = SidebarShellPresentation\(\)/.test(files.uiOptimization)
       && /struct UnifiedToolbarPresentation:[\s\S]*?spansEntireWindow = true[\s\S]*?searchPlacement = UnifiedToolbarSearchPlacement\.globalTrailing[\s\S]*?collapsesAtScrollEdge = true[\s\S]*?settingsActionUsesSystemSettingsLink = true/.test(files.uiOptimization)
-      && /struct ListPagePresentation:[\s\S]*?filterStyle = ListPageFilterStyle\.capsule[\s\S]*?searchScope = ListPageSearchScope\.localList[\s\S]*?rowStyle = ListPageRowStyle\.materialCard[\s\S]*?minimumCardRowHeight = 58[\s\S]*?cardRowSpacing = 8/.test(files.uiOptimization)
-      && /\.toolbar\s*\{[\s\S]*?AppBrandToolbarItem\(\)[\s\S]*?ToolbarContextSummary\([\s\S]*?GlobalToolbarSearchField\([\s\S]*?isSkillManagerSheetPresented = true[\s\S]*?questionmark\.circle[\s\S]*?ToolbarSettingsControl\(\)[\s\S]*?ToolbarAvatarView/.test(files.content)
-      && /private struct ToolbarSettingsControl:[\s\S]*?if #available\(macOS 14\.0,\s*\*\)[\s\S]*?SettingsLink[\s\S]*?settingsLabel[\s\S]*?openSettingsFallback\(\)[\s\S]*?showPreferencesWindow/.test(files.content)
-      && /private var contextSubtitle:[\s\S]*?DisplayText\.privacyPath\(projectPath,\s*privacyModeEnabled:\s*true\)/.test(files.content)
-      && /private func applyGlobalSearch\(\)[\s\S]*?case \.skills:[\s\S]*?store\.searchText = query[\s\S]*?case \.sessions:[\s\S]*?store\.localSessionSearchText = query[\s\S]*?case \.config:[\s\S]*?store\.configSidebarSearchText = query/.test(files.content),
+      && /struct ListPagePresentation:[\s\S]*?filterStyle = ListPageFilterStyle\.capsule[\s\S]*?searchScope = ListPageSearchScope\.localList[\s\S]*?rowStyle = ListPageRowStyle\.whiteCard[\s\S]*?minimumCardRowHeight = 58[\s\S]*?cardRowSpacing = 8/.test(files.uiOptimization)
+      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)
+      && /private var appShell:\s*some View\s*\{[\s\S]*?navigationShell[\s\S]*?\n\s*\}/.test(files.content)
+      && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?results:\s*globalSearchResults,[\s\S]*?onSelect:\s*selectGlobalSearchResult,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.accessibilityHidden\(true\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
+      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
+      && !/WindowChromeAgentControl/.test(files.content)
+      && !/WindowChromeProjectControl/.test(files.content)
+      && /@State private var columnVisibility:\s*NavigationSplitViewVisibility = \.all[\s\S]*?NavigationSplitView\(columnVisibility:\s*\$columnVisibility\)/.test(files.content)
+      && !/WindowChromeTitlebarInstaller|WindowChromeChildWindow|WindowChromeTitlebarLayout/.test(files.content)
+      && !/secondarySidebarHeaderWidth/.test(files.content)
+      && !/ToolbarItem\(placement:\s*\.primaryAction\)\s*\{\s*WindowChromeToolbarControls/.test(files.content)
+      && !/ToolbarItem\(placement:\s*\.navigation\)\s*\{\s*WindowChromeToolbarControls/.test(files.content)
+      && !/private struct WindowChromeTopBarBackdrop/.test(files.content)
+      && /private struct WindowChromeTitlebarAccessory<Content:\s*View>:\s*NSViewRepresentable[\s\S]*?NSTitlebarAccessoryViewController\(\)[\s\S]*?accessory\.layoutAttribute = \.right[\s\S]*?window\.addTitlebarAccessoryViewController\(accessory\)[\s\S]*?removeTitlebarAccessoryViewController\(at:\s*index\)/.test(files.content)
+      && /private final class FirstMouseTitlebarAccessoryContainer:\s*NSView[\s\S]*?intrinsicContentSize[\s\S]*?acceptsFirstMouse/.test(files.content)
+      && !/WindowChromeTopGlass|windowChromeTopGlass|PassthroughWindowChromeHostingView|topGlassHeight/.test(files.content)
+      && /private enum WindowChromeToolbarMetrics[\s\S]*?controlHeight:\s*CGFloat = 32[\s\S]*?agentWidth:\s*CGFloat = 146[\s\S]*?projectWidth:\s*CGFloat = 210[\s\S]*?titlebarTrailingPadding:\s*CGFloat = 28[\s\S]*?searchWidth = CGFloat\(UIOptimizationPresentation\.unifiedToolbar\.idealGlobalSearchWidth\)[\s\S]*?static var trailingWidth:[\s\S]*?static var totalWidth:[\s\S]*?static var accessoryWidth:/.test(files.content)
+      && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text[\s\S]*?private var controlHeight:\s*CGFloat \{ WindowChromeToolbarMetrics\.controlHeight \}[\s\S]*?private var agentWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.agentWidth \}[\s\S]*?private var projectWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.projectWidth \}/.test(files.content)
+      && !extractStructBody(files.content, "WindowChromeToolbarControls").includes("Divider()")
+      && !/private struct WindowChromeToolbarControls:[\s\S]*?columnVisibility|isPrimarySidebarCollapsed/.test(files.content)
+      && !/GlassEffectContainer|glassEffect\(/.test(files.content)
+      && !/\.toolbar\s*\{[\s\S]*?ToolbarItem\(placement:\s*\.navigation\)[\s\S]*?TitlebarAgentSelectorControl\(\)/.test(files.content)
+      && /private struct TitlebarAgentSelectorControl:\s*View[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?TitlebarAgentSelectorLabel\([\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter/.test(files.content)
+      && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?Button\s*\{[\s\S]*?chooseProject\(\)[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?await store\.setProject\([\s\S]*?revealActiveProject\(\)[\s\S]*?await store\.clearProject\(\)/.test(files.content)
+      && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(""\)/.test(files.sidebar)
+      && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
+      && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
+      && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeAboutButton\(\)[\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
+      && /private struct GlobalWindowSearchControl:[\s\S]*?GlobalSearchResultsPopover\(/.test(files.content)
+      && /private struct GlobalWindowSearchControl:[\s\S]*?@State private var isSearchFocused = false[\s\S]*?WindowChromeSearchTextField\([\s\S]*?placeholder:\s*UIStrings\.text\("toolbar\.globalSearch"[\s\S]*?\) \{ focused in[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)[\s\S]*?\.windowChromeGlassCapsule\(\)/.test(files.content)
+      && /private struct WindowChromeSearchTextField:\s*NSViewRepresentable[\s\S]*?FirstMouseNSTextField[\s\S]*?isBordered = false[\s\S]*?drawsBackground = false[\s\S]*?focusRingType = \.none[\s\S]*?controlTextDidChange[\s\S]*?control\([\s\S]*?insertNewline/.test(files.content)
+      && /private final class FirstMouseNSTextField:\s*NSTextField[\s\S]*?acceptsFirstMouse/.test(files.content)
+      && /private struct GlobalSearchResultsPopover:[\s\S]*?ForEach\(GlobalSearchResourceKind\.allCases[\s\S]*?let kindResults = results\.filter \{ \$0\.kind == kind \}[\s\S]*?Text\("\\\(kind\.title\) \\\(kindResults\.count\)"\)[\s\S]*?ForEach\(kindResults\)/.test(files.content)
+      && !/NativeToolbarSearchField/.test(files.content)
+      && !/NSSearchField/.test(files.content)
+      && !/ToolbarAvatarView/.test(files.content)
+      && !/AppBrandToolbarItem/.test(files.content)
+      && !/GlobalToolbarSearchField/.test(files.content)
+      && !/toolbar\.new/.test(files.content)
+      && !/isSkillManagerSheetPresented/.test(files.content)
+      && /private struct WindowChromeAboutButton:[\s\S]*?NSApp\.orderFrontStandardAboutPanel\(nil\)[\s\S]*?questionmark\.circle[\s\S]*?frame\(width:\s*30,\s*height:\s*30\)[\s\S]*?\.windowChromeGlassCircle\(\)/.test(files.content)
+      && /private struct WindowChromeSettingsControl:[\s\S]*?if #available\(macOS 14\.0,\s*\*\)[\s\S]*?SettingsLink[\s\S]*?settingsLabel[\s\S]*?Button\(action:\s*openSettingsFallback\)/.test(files.content)
+      && /private struct WindowChromeSettingsControl:[\s\S]*?\.windowChromeGlassCircle\(\)[\s\S]*?gearshape[\s\S]*?frame\(width:\s*30,\s*height:\s*30\)[\s\S]*?openSettingsFallback\(\)[\s\S]*?showPreferencesWindow/.test(files.content)
+      && /private extension View[\s\S]*?func windowChromeGlassCapsule\(\)[\s\S]*?Color\(nsColor:\s*\.controlBackgroundColor\)\.opacity\(0\.72\)[\s\S]*?func windowChromeGlassCircle\(\)[\s\S]*?Color\(nsColor:\s*\.controlBackgroundColor\)\.opacity\(0\.72\)/.test(files.content)
+      && /struct SecondarySidebarHeaderWidthPreferenceKey:\s*PreferenceKey[\s\S]*?struct SecondarySidebarHeaderChrome:\s*View[\s\S]*?let availableWidth:\s*CGFloat[\s\S]*?let agentLeading = agentLeadingInset\(for:\s*availableWidth\)[\s\S]*?let projectLeading = projectLeadingInset\(for:\s*availableWidth,\s*agentLeading:\s*agentLeading\)[\s\S]*?let agentFrame = CGRect\([\s\S]*?let projectFrame = CGRect\([\s\S]*?ZStack\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarAgentHeaderControl\(\)[\s\S]*?\.offset\(x:\s*agentLeading,[\s\S]*?SecondarySidebarProjectHeaderControl\(isCompact:\s*isPrimarySidebarCollapsed\)[\s\S]*?\.offset\(x:\s*projectLeading,[\s\S]*?\.contentShape\([\s\S]*?SecondarySidebarHeaderHitShape\([\s\S]*?agentFrame:\s*agentFrame,[\s\S]*?projectFrame:\s*projectFrame[\s\S]*?private func agentLeadingInset\(for availableWidth:[\s\S]*?private func projectLeadingInset\(for availableWidth:[\s\S]*?private struct SecondarySidebarHeaderHitShape:\s*Shape[\s\S]*?path\.addRoundedRect\(in:\s*agentFrame[\s\S]*?path\.addRoundedRect\(in:\s*projectFrame/.test(files.sidebar)
+      && /struct SecondarySidebarAgentHeaderControl:\s*View[\s\S]*?SecondarySidebarAgentSelectorMenu\(\)[\s\S]*?frame\(minWidth:\s*126,\s*idealWidth:\s*148,\s*maxWidth:\s*158/.test(files.sidebar)
+      && /struct SecondarySidebarProjectHeaderControl:\s*View[\s\S]*?let isCompact:\s*Bool[\s\S]*?SecondarySidebarProjectPickerMenu\(isCompact:\s*isCompact\)[\s\S]*?minWidth:\s*isCompact \? 36 : 42[\s\S]*?idealWidth:\s*isCompact \? 36 : 140[\s\S]*?maxWidth:\s*isCompact \? 36 : 152/.test(files.sidebar)
+      && !/SecondarySidebarProjectPickerMenu\(isCompact:\s*true\)[\s\S]*?frame\(maxWidth:\s*\.infinity,\s*alignment:\s*\.trailing\)/.test(files.sidebar)
+      && /private struct SecondarySidebarAgentSelectorMenu:[\s\S]*?Menu\s*\{[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter[\s\S]*?SecondarySidebarAgentSelectorLabel\([\s\S]*?shortTitle\(for:\s*store\.agentFilter\)[\s\S]*?\.accessibilityValue\(store\.agentFilter\.title\)/.test(files.sidebar)
+      && /private struct SecondarySidebarAgentSelectorLabel:[\s\S]*?AgentIconBadge\(filter:\s*filter,\s*size:\s*24\)[\s\S]*?Image\(systemName:\s*"chevron\.up\.chevron\.down"\)[\s\S]*?\.frame\(minWidth:\s*126[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)/.test(files.sidebar)
+      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?title:\s*projectTitle[\s\S]*?return UIStrings\.toolbarNoProjectSelected[\s\S]*?private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/.test(files.sidebar)
+      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?let isCompact:\s*Bool[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?isCompact:\s*isCompact/.test(files.sidebar)
+      && /private struct SecondarySidebarProjectPickerLabel:[\s\S]*?let isCompact:\s*Bool[\s\S]*?if isCompact[\s\S]*?collapsedLabel[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)[\s\S]*?expandedLabel[\s\S]*?collapsedLabel[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)[\s\S]*?\.secondarySidebarHeaderControlCircle\(\)/.test(files.sidebar)
+      && !/ToolbarContextSummary/.test(files.content)
+      && /private var globalSearchResults:[\s\S]*?store\.skills\.lazy[\s\S]*?\.filter \{ matchesSelectedAgent\(\$0\.agent\) \}[\s\S]*?store\.localSessionPreviewResult\.sessionRows\.lazy[\s\S]*?\.filter \{ matchesSelectedAgent\(\$0\.agent\) \}[\s\S]*?store\.agentConfigSnapshots\.lazy[\s\S]*?\.filter \{ matchesSelectedAgent\(\$0\.agent\) \}/.test(files.content)
+      && /private func matchesSelectedAgent\(_ agent: String\?\)[\s\S]*?case \.all:[\s\S]*?return true[\s\S]*?return agent == store\.agentFilter\.rawValue/.test(files.content)
+      && /private func selectGlobalSearchResult\(_ result:[\s\S]*?case \.skill\(let id\):[\s\S]*?store\.selectedSidebarSelection = \.skill\(skill\.id\)[\s\S]*?case \.session\(let id\):[\s\S]*?store\.selectLocalSession\(session\)[\s\S]*?case \.configSnapshot\(let id\):[\s\S]*?store\.selectConfigSnapshot\(snapshot\)/.test(files.content)
+      && !/private func applyGlobalSearch/.test(files.content),
   },
   {
     label: "startup prewarm shows only loading progress before revealing the app shell",
     text: files.content + "\n" + files.store + "\n" + files.localizable,
-    passed: /ZStack\s*{[\s\S]*?appShell[\s\S]*?\.opacity\(store\.startupLoadingState == nil \? 1 : 0\)[\s\S]*?\.allowsHitTesting\(store\.startupLoadingState == nil\)[\s\S]*?if let state = store\.startupLoadingState[\s\S]*?AppStartupLoadingView\(state:\s*state\)/.test(files.content)
+    passed: /ZStack\(alignment:\s*\.topTrailing\)\s*{[\s\S]*?appShell[\s\S]*?\.opacity\(store\.startupLoadingState == nil \? 1 : 0\)[\s\S]*?\.allowsHitTesting\(store\.startupLoadingState == nil\)[\s\S]*?if let state = store\.startupLoadingState[\s\S]*?AppStartupLoadingView\(state:\s*state\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)
       && /\.task\s*{[\s\S]*?await store\.loadAppStartupDataIfNeeded\(\)[\s\S]*?}/.test(files.content)
-      && /private struct AppStartupLoadingView:[\s\S]*?Text\(state\.message\)[\s\S]*?ProgressView\(value:\s*state\.progress\)[\s\S]*?\.background\(Color\(nsColor:\s*\.windowBackgroundColor\)\)/.test(files.content)
+      && /private struct AppStartupLoadingView:[\s\S]*?Text\(state\.message\)[\s\S]*?ProgressView\(value:\s*state\.progress\)[\s\S]*?\.background\(Color\.white\)/.test(files.content)
       && !/if store\.status == nil && store\.skills\.isEmpty[\s\S]*?await store\.reload\(\)/.test(files.content)
       && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
@@ -155,7 +214,7 @@ const checks = [
     text: files.content + "\n" + files.uiOptimization,
     passed: /struct SidebarShellPresentation:[\s\S]*?let width = 260/.test(files.uiOptimization)
       && /minimumSecondaryColumnWidth = 360[\s\S]*?idealSecondaryColumnWidth = 400[\s\S]*?maximumSecondaryColumnWidth = 520/.test(files.uiOptimization)
-      && /SidebarView\(\)[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?SecondarySidebarView\(\)[\s\S]*?UIOptimizationPresentation\.skillList\.minimumSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.idealSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.maximumSecondaryColumnWidth/.test(files.content),
+      && /SidebarView\(\)[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?SecondarySidebarView\(columnVisibility:\s*columnVisibility\)[\s\S]*?UIOptimizationPresentation\.skillList\.minimumSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.idealSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.maximumSecondaryColumnWidth/.test(files.content),
   },
   {
     label: "selected agent session metrics refresh from the root view uses need-based prewarm",
@@ -167,7 +226,8 @@ const checks = [
     text: files.sidebar + "\n" + files.detail + "\n" + files.app + "\n" + files.mainWindowCoordinator + "\n" + files.workflowSheet,
     passed: /@State private var isSkillManagerSheetPresented = false/.test(files.sidebar)
       && /@State private var isPreflightSheetPresented = false/.test(files.sidebar)
-      && /AgentWorkspaceHeader\(\)[\s\S]*?ProjectContextControls\(\)/.test(files.sidebar)
+      && /List\s*\{[\s\S]*?Section\(UIStrings\.text\("sidebar\.primaryNavigation"/.test(files.sidebar)
+      && !/ProjectContextControls\(\)/.test(files.sidebar)
       && /SidebarNavigationCardButton\([\s\S]*?title:\s*SidebarContentMode\.sessions\.title[\s\S]*?sessionCardMetrics[\s\S]*?selectSessions\(\)/.test(files.sidebar)
       && /SidebarNavigationCardButton\([\s\S]*?title:\s*SidebarContentMode\.skills\.title[\s\S]*?skillCardMetrics[\s\S]*?selectSkills\(\)/.test(files.sidebar)
       && /SidebarNavigationCardButton\([\s\S]*?title:\s*SidebarContentMode\.config\.title[\s\S]*?configCardMetrics[\s\S]*?selectConfig\(\)/.test(files.sidebar)
@@ -280,7 +340,7 @@ const checks = [
     text: files.agentConfigWorkspace + "\n" + files.uiOptimization,
     passed: /static let configEditor = ConfigEditorPresentation\(\)/.test(files.uiOptimization)
       && /struct ConfigEditorPresentation:[\s\S]*?usesSingleCodeCard = true[\s\S]*?showsLineNumbers = true[\s\S]*?usesCompactToolbarActions = true[\s\S]*?primarySaveButtonVisible = false[\s\S]*?autosaveEnabled = true/.test(files.uiOptimization)
-      && /private struct ConfigCodeCard<[\s\S]*?PrivacyPathText\(path:\s*path[\s\S]*?toolbar\(\)[\s\S]*?content\(\)[\s\S]*?\.adaptiveMaterialSurface\(\)/.test(files.agentConfigWorkspace)
+      && /private struct ConfigCodeCard<[\s\S]*?PrivacyPathText\(path:\s*path[\s\S]*?toolbar\(\)[\s\S]*?content\(\)[\s\S]*?\.nativePanelSurface\(\)/.test(files.agentConfigWorkspace)
       && /private struct ConfigCodeToolbar:[\s\S]*?UIStrings\.reload[\s\S]*?UIStrings\.formatJSON[\s\S]*?isSensitiveVisible \? "eye\.slash" : "eye"[\s\S]*?onReveal/.test(files.agentConfigWorkspace)
       && /private struct AgentCurrentConfigDocumentsSection:[\s\S]*?ConfigCodeCard\([\s\S]*?title:\s*UIStrings\.currentConfigFile[\s\S]*?path:\s*primaryDocument\?\.target[\s\S]*?statusText:\s*primaryDocument\?\.exists == true \? UIStrings\.existingFile : UIStrings\.willCreateFile[\s\S]*?ConfigCodeToolbar\([\s\S]*?onReload:\s*reload[\s\S]*?JSONSyntaxHighlightedText\(content:\s*displayedContent\)/.test(files.agentConfigWorkspace)
       && !/Label\(UIStrings\.save,\s*systemImage:\s*"square\.and\.arrow\.down"\)/.test(files.agentConfigWorkspace)
@@ -347,13 +407,13 @@ const checks = [
   },
   {
     label: "high-priority accessibility and localized summary fixes are present",
-    text: files.detailPrimitives + "\n" + files.agentConfigWorkspace + "\n" + files.skillManager + "\n" + files.sidebar + "\n" + files.agentCopilotOverview + "\n" + files.uiStrings,
+    text: files.detailPrimitives + "\n" + files.agentConfigWorkspace + "\n" + files.skillManager + "\n" + files.sidebar + "\n" + files.content + "\n" + files.agentCopilotOverview + "\n" + files.uiStrings,
     passed: /struct SummaryChip:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(title\)[\s\S]*?\.accessibilityValue\(value\)/.test(files.detailPrimitives)
       && /private struct AgentConfigAgentIcon:[\s\S]*?\.accessibilityLabel\(filter\.title\)/.test(files.agentConfigWorkspace)
       && /private struct SearchResultRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(result\.name\)/.test(files.skillManager)
       && /private struct InstalledSkillRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(record\.name\)/.test(files.skillManager)
       && /private struct LocalSkillLibraryRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(skill\.name\)/.test(files.skillManager)
-      && /private var projectMenu:[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("project\.chooseMenu"/.test(files.sidebar)
+      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("project\.chooseMenu"/.test(files.sidebar)
       && /static func mcpServerArgEnvSummary\(args:\s*Int,\s*envKeys:\s*Int\)[\s\S]*?mcpServerPreview\.counts/.test(files.uiStrings)
       && /UIStrings\.mcpServerArgEnvSummary\(args:\s*row\.argsCount,\s*envKeys:\s*row\.envKeyCount\)/.test(files.agentCopilotOverview),
   },
@@ -481,21 +541,42 @@ const checks = [
     pattern: /struct TaskCockpitEvidenceList:[\s\S]*?DenseDisclosureList\(evidence,\s*visibleLimit:\s*6,\s*spacing:\s*6\)[\s\S]*?PrivacyEvidenceText\(value:\s*source,\s*font:\s*\.caption2,\s*lineLimit:\s*1\)[\s\S]*?PrivacyEvidenceText\(value:\s*item\.detail,\s*font:\s*\.caption,\s*lineLimit:\s*nil\)/,
   },
   {
-    label: "primary sidebar header keeps the agent selector inline and compact",
-    passed: /Section\s*{[\s\S]*?AgentWorkspaceHeader\(\)[\s\S]*?Section\s*{[\s\S]*?ProjectContextControls\(\)/.test(files.sidebar)
-      && /private struct AgentWorkspaceHeader:[\s\S]*?AgentSelectorMenu\(\)[\s\S]*?\.layoutPriority\(1\)[\s\S]*?\.padding\(\.vertical,\s*10\)[\s\S]*?\.frame\(maxWidth:\s*\.infinity,\s*alignment:\s*\.leading\)/.test(files.sidebar)
-      && !/private struct AgentWorkspaceHeader:[\s\S]*?AgentIconBadge\(filter:\s*store\.agentFilter/.test(files.sidebar)
-      && /private struct AgentSelectorMenu:[\s\S]*?Menu\s*\{[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter[\s\S]*?SidebarMenuButtonLabel\([\s\S]*?value:\s*shortTitle\(for:\s*store\.agentFilter\),[\s\S]*?agentFilter:\s*store\.agentFilter,[\s\S]*?width:\s*118,[\s\S]*?height:\s*34,[\s\S]*?expands:\s*false[\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?\.accessibilityValue\(store\.agentFilter\.title\)/.test(files.sidebar)
-      && /private struct SidebarMenuButtonLabel:[\s\S]*?var agentFilter:\s*SkillAgentFilter\?[\s\S]*?if let agentFilter[\s\S]*?AgentIconBadge\(filter:\s*agentFilter,\s*size:\s*26\)[\s\S]*?else if let systemImage/.test(files.sidebar)
-      && /private struct AgentIconBadge:[\s\S]*?var size:\s*CGFloat = 28[\s\S]*?frame\(width:\s*imageSize,\s*height:\s*imageSize\)[\s\S]*?frame\(width:\s*size,\s*height:\s*size\)/.test(files.sidebar)
-      && !/private struct AgentWorkspaceHeader:[\s\S]*?Text\(store\.agentFilter\.title\)[\s\S]*?AgentSelectorMenu/.test(files.sidebar)
+    label: "window titlebar accessory owns agent and project selection",
+    passed: /List\s*\{[\s\S]*?Section\(UIStrings\.text\("sidebar\.primaryNavigation"/.test(files.sidebar)
+      && !/ProjectContextControls\(\)/.test(files.sidebar)
+      && !/AgentWorkspaceHeader\(\)/.test(files.sidebar)
+      && !/private struct AgentWorkspaceHeader/.test(files.sidebar)
+      && !/private struct AgentSelectorMenu/.test(files.sidebar)
+      && !/WindowChromeAgentControl/.test(files.content)
+      && !/WindowChromeProjectControl/.test(files.content)
+      && !/WindowChromeTitlebarInstaller|WindowChromeChildWindow|WindowChromeTitlebarLayout/.test(files.content)
+      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
+      && !/secondarySidebarHeaderWidth/.test(files.content)
+      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)
+      && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?results:\s*globalSearchResults,[\s\S]*?onSelect:\s*selectGlobalSearchResult,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
+      && !/ToolbarItem\(placement:\s*\.primaryAction\)\s*\{\s*WindowChromeToolbarControls/.test(files.content)
+      && !/ToolbarItem\(placement:\s*\.navigation\)\s*\{\s*WindowChromeToolbarControls/.test(files.content)
+      && !/private struct WindowChromeTopBarBackdrop/.test(files.content)
+      && /private struct WindowChromeTitlebarAccessory<Content:\s*View>:\s*NSViewRepresentable[\s\S]*?accessory\.layoutAttribute = \.right[\s\S]*?FirstMouseTitlebarAccessoryContainer/.test(files.content)
+      && !/WindowChromeTopGlass|windowChromeTopGlass|PassthroughWindowChromeHostingView|topGlassHeight/.test(files.content)
+      && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text/.test(files.content)
+      && !extractStructBody(files.content, "WindowChromeToolbarControls").includes("Divider()")
+      && !/\.toolbar\s*\{[\s\S]*?ToolbarItem\(placement:\s*\.navigation\)[\s\S]*?TitlebarAgentSelectorControl\(\)/.test(files.content)
+      && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)/.test(files.sidebar)
+      && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
+      && /private struct TitlebarAgentSelectorControl:\s*View[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?TitlebarAgentSelectorLabel\([\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter[\s\S]*?\.accessibilityValue\(store\.agentFilter\.title\)/.test(files.content)
+      && /private struct TitlebarAgentIconBadge:[\s\S]*?var size:\s*CGFloat = 28[\s\S]*?frame\(width:\s*imageSize,\s*height:\s*imageSize\)[\s\S]*?frame\(width:\s*size,\s*height:\s*size\)/.test(files.content)
+      && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?await store\.setProject\([\s\S]*?NSOpenPanel\(\)[\s\S]*?NSWorkspace\.shared\.activateFileViewerSelecting/.test(files.content)
+      && !/return 224/.test(files.content)
+      && !/SecondarySidebarProjectPickerMenu\(isCompact:\s*true\)[\s\S]*?frame\(maxWidth:\s*\.infinity,\s*alignment:\s*\.trailing\)/.test(files.sidebar)
+      && !/ProjectContextToolbarControl/.test(files.sidebar)
       && !/store\.selectedSidebarSelection\s*=\s*\.agentWorkspace/.test(files.sidebar)
       && !/\.tag\(SidebarSelection\.agentWorkspace\)/.test(files.sidebar),
   },
   {
-    label: "project title row owns merged project selection and actions",
+    label: "secondary sidebar project menu owns merged project selection and actions",
     text: files.sidebar,
-    pattern: /private struct ProjectContextControls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*8\)[\s\S]*?Text\(store\.activeProjectContext\?\.name \?\? UIStrings\.text\("project\.globalRoots"[\s\S]*?PrivacyPathText\(path:\s*rootPath,[\s\S]*?showsRevealControl:\s*false\)[\s\S]*?projectMenu[\s\S]*?private var projectMenu: some View[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SidebarMenuButtonLabel\([\s\S]*?systemImage:\s*"folder\.badge\.plus"[\s\S]*?width:\s*66,[\s\S]*?height:\s*34,[\s\S]*?expands:\s*false[\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)/,
+    pattern: /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?private struct SecondarySidebarProjectPickerLabel:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)/,
   },
   {
     label: "skill-list batch action lives in the compact toolbar",
@@ -527,6 +608,12 @@ const checks = [
     label: "detail renders permissions without safety verdicts",
     text: files.detailSurface,
     pattern: /PermissionSummaryCard\(summary:\s*PermissionDisplayModel\.summary\(for:\s*detail\.permissions\)\)/,
+  },
+  {
+    label: "overview hides placeholder permission and script risk noise",
+    text: files.detailOverview,
+    passed: /if showsOverviewRiskPanel\s*\{[\s\S]*?OverviewRiskPanel\(/.test(files.detailOverview)
+      && /private var showsOverviewRiskPanel:[\s\S]*?PermissionDisplayModel\.hasOverviewSignal\(for:\s*permissionPayload\)[\s\S]*?scriptPreview\?\.hasOverviewSignal == true/.test(files.detailOverview),
   },
   {
     label: "snapshot preview sheet has bounded width",
@@ -572,7 +659,9 @@ const checks = [
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.limits"/.test(files.settings)
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.credentialSafety"/.test(files.settings)
       && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.service/.test(files.settings)
-      && /DetailMetricGrid\(maxColumns:\s*3/.test(files.settings),
+      && /DetailMetricGrid\(maxColumns:\s*3/.test(files.settings)
+      && /Picker\(UIStrings\.languageSelection,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings)
+      && /Picker\(UIStrings\.llmProvider,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings),
   },
   {
     label: "settings AI provider autosaves profile edits while confirming provider tests",
@@ -613,14 +702,14 @@ const checks = [
     pattern: /PrivacyPathRow\(label:\s*UIStrings\.source,\s*path:\s*skill\.displayPath\)[\s\S]*?PrivacyPathRow\(label:\s*UIStrings\.source,\s*path:\s*preview\.sourcePath\)/,
   },
   {
-    label: "sidebar uses privacy path display for project paths",
+    label: "secondary sidebar project menu uses privacy path display for project paths",
     text: files.sidebar,
-    pattern: /PrivacyPathText\(path:\s*rootPath/,
+    pattern: /private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/,
   },
   {
-    label: "material surfaces respect reduced transparency",
-    text: files.material,
-    pattern: /accessibilityReduceTransparency/,
+    label: "shared surfaces use white native panels",
+    text: files.nativePanelSurface,
+    pattern: /RoundedRectangle\(cornerRadius:\s*CGFloat\(UIOptimizationPresentation\.surfaceCornerRadius\)\)[\s\S]*?\.fill\(Color\.white\)/,
   },
   {
     label: "LLM assist exposes all explicit actions",
@@ -792,7 +881,7 @@ const customChecks = [
       && !/ForEach\(DetailSection\.primaryWorkCases\)/.test(files.sidebar),
   },
   {
-    label: "secondary sidebar rows use muted selection or material card treatment",
+    label: "secondary sidebar rows use muted selection or white card treatment",
     passed: ["ConfigCurrentDocumentSidebarRow", "ConfigSnapshotSidebarRow"].every((name) => {
       const body = extractStructBody(files.sidebar, name);
       return body.includes(".optimizedSidebarSelection(isSelected: isSelected)")
@@ -813,7 +902,7 @@ const customChecks = [
   {
     label: "session and config sidebars use compact search plus icon refresh toolbars",
     passed: /struct SidebarSecondaryListPresentation:[\s\S]*?minimumSearchWidth = 220[\s\S]*?compactRowMinHeight = 40[\s\S]*?compactRowMaxHeight = 44[\s\S]*?refreshUsesIconOnly = true/.test(files.uiOptimization)
-      && /private struct SidebarSearchField:[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)[\s\S]*?TextField\(placeholder,\s*text:\s*\$text\)[\s\S]*?frame\(minWidth:\s*minimumWidth,\s*maxWidth:\s*\.infinity\)/.test(files.sidebar)
+      && /private struct SidebarSearchField:[\s\S]*?TextField\(placeholder,\s*text:\s*\$text\)[\s\S]*?\.textFieldStyle\(\.roundedBorder\)[\s\S]*?\.controlSize\(\.small\)[\s\S]*?\.frame\(minWidth:\s*minimumWidth,\s*maxWidth:\s*\.infinity\)/.test(files.sidebar)
       && /private var sessionToolbar:[\s\S]*?let layout = UIOptimizationPresentation\.skillList[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*8\)[\s\S]*?ListPageTitleBlock\([\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*CGFloat\(layout\.filterControlSpacing\)\)[\s\S]*?sessionScopePicker[\s\S]*?sessionSortPicker[\s\S]*?sessionSortDirectionButton[\s\S]*?sessionRefreshButton[\s\S]*?sessionSearchField/.test(files.sidebar)
       && /private var sessionScopePicker:[\s\S]*?SkillFilterMenuPicker\([\s\S]*?title:\s*UIStrings\.scope[\s\S]*?selection:\s*\$store\.localSessionScopeFilter[\s\S]*?options:\s*LocalSessionScopeFilter\.allCases[\s\S]*?expands:\s*false/.test(files.sidebar)
       && /private var sessionSortPicker:[\s\S]*?SkillFilterMenuPicker\([\s\S]*?title:\s*UIStrings\.sort[\s\S]*?selection:\s*\$store\.localSessionSortOrder[\s\S]*?options:\s*LocalSessionSortOrder\.allCases/.test(files.sidebar)
@@ -842,13 +931,16 @@ const customChecks = [
       && /Label\(item\.title\.isEmpty \? item\.kind\.title : item\.title,\s*systemImage:\s*item\.kind\.systemImage\)[\s\S]*?\.foregroundStyle\(item\.kind\.semanticTint\)/.test(files.agentCopilotOverview),
   },
   {
-    label: "detail feedback uses an overlay toast instead of full-width content banners",
-    passed: /struct DetailFeedbackPresentation:[\s\S]*?usesOverlayToast = true[\s\S]*?maximumWidth = 420/.test(files.uiOptimization)
-      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?ScrollViewReader[\s\S]*?detailFeedbackOverlay[\s\S]*?allowsHitTesting\(false\)/.test(files.detail)
-      && /private var detailFeedbackOverlay:[\s\S]*?store\.errorMessage[\s\S]*?DetailFeedbackToast\([\s\S]*?store\.lastMutationMessage[\s\S]*?DetailFeedbackToast\(/.test(files.detail)
-      && /struct DetailFeedbackToast:[\s\S]*?UIOptimizationPresentation\.detailFeedback\.maximumWidth[\s\S]*?regularMaterial/.test(files.detailPrimitives)
-      && !/VStack\(alignment:\s*\.leading,\s*spacing:\s*24\)[\s\S]{0,240}?ErrorBanner\(message:\s*error\)/.test(files.detail)
-      && !/VStack\(alignment:\s*\.leading,\s*spacing:\s*24\)[\s\S]{0,260}?SuccessBanner\(message:\s*message\)/.test(files.detail),
+    label: "detail feedback renders inline and success messages auto-dismiss",
+    passed: /struct DetailFeedbackPresentation:[\s\S]*?usesOverlayToast = false[\s\S]*?maximumWidth = 420/.test(files.uiOptimization)
+      && /ScrollViewReader[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*24\)[\s\S]*?detailFeedbackInline[\s\S]*?if store\.selectedSidebarSelection/.test(files.detail)
+      && /private var detailFeedbackInline:[\s\S]*?store\.errorMessage[\s\S]*?DetailFeedbackToast\([\s\S]*?store\.lastMutationMessage[\s\S]*?DetailFeedbackToast\(/.test(files.detail)
+      && /struct DetailFeedbackToast:[\s\S]*?UIOptimizationPresentation\.detailFeedback\.maximumWidth[\s\S]*?Color\.white/.test(files.detailPrimitives)
+      && /@Published private\(set\) var lastMutationMessage:\s*String\?\s*\{[\s\S]*?scheduleLastMutationMessageDismissal\(\)/.test(files.store)
+      && /lastMutationMessageDismissTask:[\s\S]*?Task<Void,\s*Never>\?/.test(files.store)
+      && /private func scheduleLastMutationMessageDismissal\(\)[\s\S]*?Task\.sleep\(nanoseconds:[\s\S]*?clearLastMutationMessageIfCurrent/.test(files.store)
+      && !/ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?detailFeedbackOverlay/.test(files.detail)
+      && !/allowsHitTesting\(false\)[\s\S]*?DetailFeedbackToast/.test(files.detail),
   },
   {
     label: "settings owns Provider Observability with dashboard-first logs",
@@ -994,10 +1086,10 @@ const customChecks = [
       && !/private func adoptingAgentSummary\(for skill: SkillRecord\)[\s\S]*?store\.skills[\s\S]*?\.filter/.test(files.detail),
   },
   {
-    label: "adaptive material surface uses shared presentation corner radius",
-    passed: /static let materialCornerRadius = sidebarSelection\.rowCornerRadius/.test(files.uiOptimization)
-      && /RoundedRectangle\(cornerRadius:\s*CGFloat\(UIOptimizationPresentation\.materialCornerRadius\)\)/.test(files.material)
-      && !/RoundedRectangle\(cornerRadius:\s*8\)/.test(files.material),
+    label: "native panel surface uses shared white presentation corner radius",
+    passed: /static let surfaceCornerRadius = sidebarSelection\.rowCornerRadius/.test(files.uiOptimization)
+      && /RoundedRectangle\(cornerRadius:\s*CGFloat\(UIOptimizationPresentation\.surfaceCornerRadius\)\)/.test(files.nativePanelSurface)
+      && !/RoundedRectangle\(cornerRadius:\s*8\)/.test(files.nativePanelSurface),
   },
   {
     label: "Skill Manager uses segmented workflows, local feedback, and unavailable-tool gating",

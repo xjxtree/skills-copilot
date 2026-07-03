@@ -9,15 +9,6 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             List {
-                Section {
-                    AgentWorkspaceHeader()
-                        .padding(.vertical, 6)
-                }
-
-                Section {
-                    ProjectContextControls()
-                }
-
                 Section(UIStrings.text("sidebar.primaryNavigation", "Navigate")) {
                     VStack(spacing: 8) {
                         SidebarNavigationCardButton(
@@ -290,29 +281,431 @@ struct SidebarView: View {
 
 struct SecondarySidebarView: View {
     @EnvironmentObject private var store: SkillStore
+    let columnVisibility: NavigationSplitViewVisibility
     @State private var isBatchOperationPresented = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            List(selection: $store.selectedSidebarSelection) {
-                switch store.sidebarContentMode {
-                case .sessions:
-                    SessionSidebarPanel()
-                case .skills:
-                    SkillSidebarPanel(isBatchOperationPresented: $isBatchOperationPresented)
-                case .config:
-                    ConfigSidebarPanel()
-                }
+        List(selection: $store.selectedSidebarSelection) {
+            switch store.sidebarContentMode {
+            case .sessions:
+                SessionSidebarPanel()
+            case .skills:
+                SkillSidebarPanel(isBatchOperationPresented: $isBatchOperationPresented)
+            case .config:
+                ConfigSidebarPanel()
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .padding(.top, 50)
+        .ignoresSafeArea(.container, edges: .top)
         .secondarySidebarPaneBackground()
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(
+                        key: SecondarySidebarHeaderWidthPreferenceKey.self,
+                        value: proxy.size.width
+                    )
+            }
+            .allowsHitTesting(false)
+        }
         .navigationTitle("")
         .sheet(isPresented: $isBatchOperationPresented) {
             BatchSkillOperationSheet()
                 .environmentObject(store)
         }
+    }
+}
+
+struct SecondarySidebarHeaderWidthPreferenceKey: PreferenceKey {
+    static var defaultValue = CGFloat(UIOptimizationPresentation.skillList.minimumSecondaryColumnWidth)
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct SecondarySidebarHeaderChrome: View {
+    let columnVisibility: NavigationSplitViewVisibility
+    let availableWidth: CGFloat
+
+    var body: some View {
+        let agentLeading = agentLeadingInset(for: availableWidth)
+        let projectLeading = projectLeadingInset(for: availableWidth, agentLeading: agentLeading)
+        let agentFrame = CGRect(
+            x: agentLeading,
+            y: topInset,
+            width: agentWidth,
+            height: controlHeight
+        )
+        let projectFrame = CGRect(
+            x: projectLeading,
+            y: topInset,
+            width: projectWidth,
+            height: controlHeight
+        )
+
+        ZStack(alignment: .topLeading) {
+            SecondarySidebarAgentHeaderControl()
+                .frame(width: agentWidth, height: controlHeight, alignment: .leading)
+                .offset(x: agentLeading, y: topInset)
+
+            SecondarySidebarProjectHeaderControl(isCompact: isPrimarySidebarCollapsed)
+                .frame(width: projectWidth, height: controlHeight, alignment: .trailing)
+                .offset(x: projectLeading, y: topInset)
+        }
+        .frame(width: availableWidth, height: topInset + controlHeight, alignment: .topLeading)
+        .contentShape(
+            SecondarySidebarHeaderHitShape(
+                agentFrame: agentFrame,
+                projectFrame: projectFrame
+            )
+        )
+        .animation(.snappy(duration: 0.22), value: isPrimarySidebarCollapsed)
+        .frame(height: topInset + controlHeight)
+        .ignoresSafeArea(.container, edges: .top)
+    }
+
+    private var isPrimarySidebarCollapsed: Bool {
+        columnVisibility != .all
+    }
+
+    private var topInset: CGFloat { 8 }
+    private var controlHeight: CGFloat { 36 }
+    private var agentWidth: CGFloat { isPrimarySidebarCollapsed ? 126 : 158 }
+    private var projectWidth: CGFloat { isPrimarySidebarCollapsed ? 36 : 152 }
+    private var trailingInset: CGFloat { 24 }
+    private var expandedLeadingInset: CGFloat {
+        CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset)
+    }
+    private var collapsedAgentLeadingInset: CGFloat { 152 }
+
+    private func agentLeadingInset(for availableWidth: CGFloat) -> CGFloat {
+        if isPrimarySidebarCollapsed {
+            let maxLeading = max(expandedLeadingInset, availableWidth - trailingInset - projectWidth - 8 - agentWidth)
+            return min(collapsedAgentLeadingInset, maxLeading)
+        }
+        return expandedLeadingInset
+    }
+
+    private func projectLeadingInset(for availableWidth: CGFloat, agentLeading: CGFloat) -> CGFloat {
+        let preferred = availableWidth - trailingInset - projectWidth
+        let minimum = agentLeading + agentWidth + 8
+        return max(minimum, preferred)
+    }
+}
+
+private struct SecondarySidebarHeaderHitShape: Shape {
+    let agentFrame: CGRect
+    let projectFrame: CGRect
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRoundedRect(in: agentFrame, cornerSize: CGSize(width: 18, height: 18))
+        path.addRoundedRect(in: projectFrame, cornerSize: CGSize(width: 18, height: 18))
+        return path
+    }
+}
+
+struct SecondarySidebarAgentHeaderControl: View {
+    var body: some View {
+        SecondarySidebarAgentSelectorMenu()
+            .frame(minWidth: 126, idealWidth: 148, maxWidth: 158, alignment: .leading)
+    }
+}
+
+struct SecondarySidebarProjectHeaderControl: View {
+    let isCompact: Bool
+
+    var body: some View {
+        SecondarySidebarProjectPickerMenu(isCompact: isCompact)
+            .frame(
+                minWidth: isCompact ? 36 : 42,
+                idealWidth: isCompact ? 36 : 140,
+                maxWidth: isCompact ? 36 : 152,
+                alignment: .trailing
+            )
+    }
+}
+
+private struct SecondarySidebarAgentSelectorMenu: View {
+    @EnvironmentObject private var store: SkillStore
+
+    var body: some View {
+        Menu {
+            ForEach(SkillAgentFilter.managementCases) { filter in
+                Button {
+                    store.agentFilter = filter
+                } label: {
+                    agentMenuItemLabel(for: filter)
+                }
+            }
+        } label: {
+            SecondarySidebarAgentSelectorLabel(
+                filter: store.agentFilter,
+                title: shortTitle(for: store.agentFilter)
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .help("\(UIStrings.text("help.agentSelector", "Select the agent workspace.")) \(store.agentFilter.title)")
+        .accessibilityLabel(UIStrings.agent)
+        .accessibilityValue(store.agentFilter.title)
+    }
+
+    @ViewBuilder
+    private func agentMenuItemLabel(for filter: SkillAgentFilter) -> some View {
+        if filter == store.agentFilter {
+            Label(shortTitle(for: filter), systemImage: "checkmark")
+        } else {
+            Label(shortTitle(for: filter), systemImage: systemImage(for: filter))
+        }
+    }
+
+    private func shortTitle(for filter: SkillAgentFilter) -> String {
+        switch filter {
+        case .claudeCode:
+            return UIStrings.text("agent.short.claudeCode", "Claude")
+        case .codex:
+            return UIStrings.codex
+        case .opencode:
+            return UIStrings.opencode
+        case .pi:
+            return UIStrings.pi
+        case .hermes:
+            return UIStrings.hermes
+        case .openclaw:
+            return UIStrings.openclaw
+        case .all:
+            return UIStrings.text("filter.all", "All")
+        }
+    }
+
+    private func systemImage(for filter: SkillAgentFilter) -> String {
+        switch filter {
+        case .claudeCode:
+            return "sparkle"
+        case .codex:
+            return "terminal"
+        case .opencode:
+            return "curlybraces"
+        case .pi:
+            return "pi"
+        case .hermes:
+            return "bolt"
+        case .openclaw:
+            return "shippingbox"
+        case .all:
+            return "square.grid.2x2"
+        }
+    }
+}
+
+private struct SecondarySidebarAgentSelectorLabel: View {
+    let filter: SkillAgentFilter
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            AgentIconBadge(filter: filter, size: 24)
+
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 10)
+        .frame(minWidth: 126, maxWidth: 158, minHeight: 36, maxHeight: 36, alignment: .leading)
+        .secondarySidebarHeaderControlCapsule()
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct SecondarySidebarProjectPickerMenu: View {
+    @EnvironmentObject private var store: SkillStore
+    let isCompact: Bool
+
+    var body: some View {
+        Menu {
+            Button {
+                chooseProject()
+            } label: {
+                Label(UIStrings.chooseProject, systemImage: "folder.badge.plus")
+            }
+
+            if !store.recentProjectContexts.isEmpty {
+                Divider()
+
+                Section(UIStrings.recentProjects) {
+                    ForEach(store.recentProjectContexts) { context in
+                        Button {
+                            Task {
+                                await store.setProject(
+                                    rootPath: context.rootPath,
+                                    currentCWD: context.currentCWD,
+                                    name: context.name
+                                )
+                            }
+                        } label: {
+                            Text(context.name)
+                        }
+                    }
+                }
+            }
+
+            if store.activeProjectContext != nil {
+                Divider()
+
+                Button {
+                    revealActiveProject()
+                } label: {
+                    Label(UIStrings.revealInFinder, systemImage: "arrow.up.forward.app")
+                }
+
+                Button(role: .destructive) {
+                    Task { await store.clearProject() }
+                } label: {
+                    Label(UIStrings.clearProject, systemImage: "xmark.circle")
+                }
+            }
+        } label: {
+            SecondarySidebarProjectPickerLabel(
+                title: projectTitle,
+                systemImage: statusImage ?? "folder.badge.plus",
+                isWarning: statusImage == "exclamationmark.triangle.fill",
+                isCompact: isCompact
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .disabled(store.isRefreshBusy)
+        .help(projectHelp)
+        .accessibilityLabel(UIStrings.text("project.chooseMenu", "Project"))
+        .accessibilityValue(projectTitle)
+    }
+
+    private var projectTitle: String {
+        guard let project = store.activeProjectContext else {
+            return UIStrings.toolbarNoProjectSelected
+        }
+        let trimmedName = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            return trimmedName
+        }
+        let lastPathComponent = URL(fileURLWithPath: project.rootPath).lastPathComponent
+        return lastPathComponent.isEmpty ? UIStrings.text("project.selected", "Selected project") : lastPathComponent
+    }
+
+    private var projectHelp: String {
+        if let validationMessage = store.projectValidationMessage {
+            return "\(projectTitle): \(validationMessage)"
+        }
+        if let rootPath = store.activeProjectContext?.rootPath, !rootPath.isEmpty {
+            return "\(projectTitle), \(DisplayText.privacyPath(rootPath, privacyModeEnabled: true))"
+        }
+        return "\(projectTitle), \(UIStrings.projectGlobalRootsOnly)"
+    }
+
+    private var statusImage: String? {
+        if store.projectValidationMessage != nil {
+            return "exclamationmark.triangle.fill"
+        }
+        if store.agentFilter == .openclaw {
+            return "folder.badge.questionmark"
+        }
+        return nil
+    }
+
+    private func chooseProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = UIStrings.chooseProject
+
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                await store.setProject(
+                    rootPath: url.path,
+                    currentCWD: url.path,
+                    name: url.lastPathComponent
+                )
+            }
+        }
+    }
+
+    private func revealActiveProject() {
+        guard let rootPath = store.activeProjectContext?.rootPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: rootPath)])
+    }
+}
+
+private struct SecondarySidebarProjectPickerLabel: View {
+    let title: String
+    let systemImage: String
+    let isWarning: Bool
+    let isCompact: Bool
+
+    var body: some View {
+        if isCompact {
+            collapsedLabel
+        } else {
+            ViewThatFits(in: .horizontal) {
+                expandedLabel
+                collapsedLabel
+            }
+        }
+    }
+
+    private var expandedLabel: some View {
+        HStack(spacing: 8) {
+            icon
+
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+        .padding(.leading, 11)
+        .padding(.trailing, 10)
+        .frame(minWidth: 120, maxWidth: 152, minHeight: 36, maxHeight: 36, alignment: .leading)
+        .secondarySidebarHeaderControlCapsule()
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+    }
+
+    private var collapsedLabel: some View {
+        icon
+            .frame(width: 36, height: 36)
+            .secondarySidebarHeaderControlCircle()
+            .contentShape(Circle())
+            .accessibilityLabel(title)
+    }
+
+    private var icon: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(isWarning ? Color.orange : Color.accentColor)
+            .frame(width: 18, height: 18)
+            .accessibilityHidden(true)
     }
 }
 
@@ -341,17 +734,11 @@ struct SkillPackageManagerSheet: View {
 }
 
 private struct SecondarySidebarPaneBackground: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     func body(content: Content) -> some View {
         content
             .background {
                 Rectangle()
-                    .fill(
-                        reduceTransparency
-                            ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-                            : AnyShapeStyle(.regularMaterial)
-                    )
+                    .fill(Color.white)
                     .ignoresSafeArea()
             }
     }
@@ -360,6 +747,32 @@ private struct SecondarySidebarPaneBackground: ViewModifier {
 private extension View {
     func secondarySidebarPaneBackground() -> some View {
         modifier(SecondarySidebarPaneBackground())
+    }
+
+    @ViewBuilder
+    func secondarySidebarHeaderControlCapsule() -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            background(Color.white, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                )
+        }
+    }
+
+    @ViewBuilder
+    func secondarySidebarHeaderControlCircle() -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            background(Color.white, in: Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                )
+        }
     }
 
     func listPageChromeRow() -> some View {
@@ -446,7 +859,7 @@ private struct ListPageTitleBlock: View {
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(.thinMaterial, in: Capsule())
+                    .background(Color.white, in: Capsule())
             }
         }
         .accessibilityElement(children: .combine)
@@ -607,11 +1020,11 @@ private struct SidebarFooterToolButton: View {
     }
 
     private var badgeBackground: Color {
-        isSelected ? Color.primary.opacity(0.10) : Color.secondary.opacity(0.08)
+        Color.white
     }
 
     private var buttonBackground: Color {
-        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color(nsColor: .controlBackgroundColor).opacity(0.62)
+        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color.white
     }
 
     private var borderColor: Color {
@@ -697,7 +1110,7 @@ private struct SidebarNavigationCardButton: View {
     }
 
     private var background: Color {
-        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color(nsColor: .controlBackgroundColor).opacity(0.72)
+        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color.white
     }
 
     private var borderColor: Color {
@@ -742,7 +1155,7 @@ private struct SidebarNavigationMetricPill: View {
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
         .background(
-            isSelected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.08),
+            isSelected ? Color.accentColor.opacity(0.10) : Color.white,
             in: Capsule()
         )
     }
@@ -888,10 +1301,7 @@ private struct SessionSidebarPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: width, height: height)
-                .background(
-                    .thinMaterial,
-                    in: Capsule()
-                )
+                .background(Color.white, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -917,7 +1327,7 @@ private struct SessionSidebarPanel: View {
                 }
             }
             .frame(width: CGFloat(UIOptimizationPresentation.skillList.sortDirectionButtonWidth), height: CGFloat(UIOptimizationPresentation.skillList.filterControlHeight))
-            .background(.thinMaterial, in: Capsule())
+            .background(Color.white, in: Capsule())
             .overlay(
                 Capsule()
                     .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -937,20 +1347,10 @@ private struct SidebarSearchField: View {
     let minimumWidth: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(minWidth: minimumWidth, maxWidth: .infinity)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.listPage.localSearchCornerRadius)))
-        .overlay(
-            RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.listPage.localSearchCornerRadius))
-                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-        )
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            .frame(minWidth: minimumWidth, maxWidth: .infinity)
     }
 }
 
@@ -1009,7 +1409,7 @@ private struct ListPageCardBackgroundModifier: ViewModifier {
     private var cardFill: AnyShapeStyle {
         isSelected
             ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.16))
-            : AnyShapeStyle(.thinMaterial)
+            : AnyShapeStyle(Color.white)
     }
 
     private var borderColor: Color {
@@ -1229,10 +1629,7 @@ private struct SkillSidebarPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: width, height: height)
-                .background(
-                    .thinMaterial,
-                    in: Capsule()
-                )
+                .background(Color.white, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1245,20 +1642,10 @@ private struct SkillSidebarPanel: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField(UIStrings.searchPrompt, text: $store.searchText)
-                .textFieldStyle(.plain)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.listPage.localSearchCornerRadius)))
-        .overlay(
-            RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.listPage.localSearchCornerRadius))
-                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-        )
+        TextField(UIStrings.searchPrompt, text: $store.searchText)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
     }
 
     private func batchToolbarButton(visibleSkills: [SkillRecord]) -> some View {
@@ -1269,7 +1656,7 @@ private struct SkillSidebarPanel: View {
             Image(systemName: "checklist.checked")
                 .foregroundStyle(.primary)
                 .frame(width: CGFloat(UIOptimizationPresentation.skillList.sortDirectionButtonWidth), height: CGFloat(UIOptimizationPresentation.skillList.filterControlHeight))
-                .background(.thinMaterial, in: Capsule())
+                .background(Color.white, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1455,10 +1842,7 @@ private struct SidebarMenuButtonLabel: View {
         .padding(.horizontal, horizontalPadding)
         .frame(minWidth: width, maxWidth: expands ? .infinity : nil, minHeight: height, maxHeight: height)
         .fixedSize(horizontal: !expands, vertical: false)
-        .background(
-            .thinMaterial,
-            in: Capsule()
-        )
+        .background(Color.white, in: Capsule())
         .overlay(
             Capsule()
                 .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1525,6 +1909,7 @@ private struct ConfigSidebarPanel: View {
             Section {
                 configToolbar
             }
+            .listPageChromeRow()
 
             Section(UIStrings.currentConfigFile) {
                 if selectedConfigDocuments.isEmpty, store.isLoadingAgentConfigDocuments {
@@ -1585,6 +1970,14 @@ private struct ConfigSidebarPanel: View {
         let layout = UIOptimizationPresentation.skillList
 
         return VStack(alignment: .leading, spacing: 8) {
+            ListPageTitleBlock(
+                title: SidebarContentMode.config.title,
+                subtitle: "\(store.agentFilter.title) · \(store.configScopeFilter.title)",
+                countText: "\(selectedConfigDocuments.count)"
+            )
+            .padding(.horizontal, CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset))
+            .padding(.top, 12)
+
             HStack(alignment: .center, spacing: CGFloat(layout.filterControlSpacing)) {
                 configScopePicker
                 configRefreshButton(
@@ -1592,7 +1985,10 @@ private struct ConfigSidebarPanel: View {
                     height: CGFloat(layout.filterControlHeight)
                 )
             }
+            .padding(.horizontal, CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset))
+
             configSearchField
+                .padding(.horizontal, CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset))
         }
     }
 
@@ -1631,10 +2027,7 @@ private struct ConfigSidebarPanel: View {
             }
             .foregroundStyle(.primary)
             .frame(width: width, height: height)
-            .background(
-                .thinMaterial,
-                in: Capsule()
-            )
+            .background(Color.white, in: Capsule())
             .overlay(
                 Capsule()
                     .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1786,95 +2179,6 @@ private struct ConfigSnapshotSidebarRow: View {
     }
 }
 
-private struct AgentWorkspaceHeader: View {
-    @EnvironmentObject private var store: SkillStore
-
-    var body: some View {
-        AgentSelectorMenu()
-            .layoutPriority(1)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct AgentSelectorMenu: View {
-    @EnvironmentObject private var store: SkillStore
-
-    var body: some View {
-        Menu {
-            ForEach(SkillAgentFilter.managementCases) { filter in
-                Button {
-                    store.agentFilter = filter
-                } label: {
-                    agentMenuItemLabel(for: filter)
-                }
-            }
-        } label: {
-            SidebarMenuButtonLabel(
-                value: shortTitle(for: store.agentFilter),
-                agentFilter: store.agentFilter,
-                width: 118,
-                height: 34,
-                expands: false,
-                horizontalPadding: 8
-            )
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .help("\(UIStrings.text("help.agentSelector", "Select the agent workspace.")) \(store.agentFilter.title)")
-        .accessibilityLabel(UIStrings.agent)
-        .accessibilityValue(store.agentFilter.title)
-    }
-
-    @ViewBuilder
-    private func agentMenuItemLabel(for filter: SkillAgentFilter) -> some View {
-        if filter == store.agentFilter {
-            Label(shortTitle(for: filter), systemImage: "checkmark")
-        } else {
-            Label(shortTitle(for: filter), systemImage: systemImage(for: filter))
-        }
-    }
-
-    private func shortTitle(for filter: SkillAgentFilter) -> String {
-        switch filter {
-        case .claudeCode:
-            return UIStrings.text("agent.short.claudeCode", "Claude")
-        case .codex:
-            return UIStrings.codex
-        case .opencode:
-            return UIStrings.opencode
-        case .pi:
-            return UIStrings.pi
-        case .hermes:
-            return UIStrings.hermes
-        case .openclaw:
-            return UIStrings.openclaw
-        case .all:
-            return UIStrings.text("filter.all", "All")
-        }
-    }
-
-    private func systemImage(for filter: SkillAgentFilter) -> String {
-        switch filter {
-        case .claudeCode:
-            return "sparkle"
-        case .codex:
-            return "terminal"
-        case .opencode:
-            return "curlybraces"
-        case .pi:
-            return "pi"
-        case .hermes:
-            return "bolt"
-        case .openclaw:
-            return "shippingbox"
-        case .all:
-            return "square.grid.2x2"
-        }
-    }
-}
-
 private struct AgentConfigTimelinePanel: View {
     let model: AgentConfigTimelineModel
     let isLoading: Bool
@@ -2013,7 +2317,7 @@ private struct AgentConfigTimelineRow: View {
                         .fill(Color.accentColor)
                         .frame(width: 8, height: 8)
                     Rectangle()
-                        .fill(.quaternary)
+                        .fill(.separator)
                         .frame(width: 1, height: 32)
                 }
                 .padding(.top, 4)
@@ -2068,7 +2372,7 @@ private struct AgentConfigTimelineRow: View {
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -2083,7 +2387,7 @@ private struct TimelinePill: View {
             .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(.quaternary.opacity(0.32), in: Capsule())
+            .background(Color.white, in: Capsule())
     }
 }
 
@@ -2108,7 +2412,7 @@ private struct AgentIconBadge: View {
             }
         }
         .frame(width: size, height: size)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: badgeCornerRadius))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: badgeCornerRadius))
     }
 
     private var imageSize: CGFloat {
@@ -2144,138 +2448,6 @@ private struct AgentIconBadge: View {
         case .all:
             return "square.grid.2x2"
         }
-    }
-}
-
-private struct ProjectContextControls: View {
-    @EnvironmentObject private var store: SkillStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: store.activeProjectContext == nil ? "folder.badge.questionmark" : "folder")
-                    .foregroundStyle(store.activeProjectContext == nil ? Color.secondary : Color.accentColor)
-                    .frame(width: 20)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(store.activeProjectContext?.name ?? UIStrings.text("project.globalRoots", "Global roots"))
-                        .font(.callout.bold())
-                        .lineLimit(1)
-                        .help(store.activeProjectContext?.name ?? UIStrings.text("project.globalRoots", "Global roots"))
-                    if let rootPath = store.activeProjectContext?.rootPath {
-                        PrivacyPathText(path: rootPath, font: .caption, lineLimit: 1, showsRevealControl: false)
-                    } else {
-                        Text(UIStrings.projectGlobalRootsOnly)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
-
-                projectMenu
-            }
-
-            if let validationMessage = store.projectValidationMessage {
-                Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(3)
-            }
-
-            if store.agentFilter == .openclaw {
-                Label(UIStrings.openClawWorkspaceBoundary, systemImage: "folder.badge.questionmark")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-        }
-        .disabled(store.isRefreshBusy)
-        .padding(.vertical, 4)
-    }
-
-    private var projectMenu: some View {
-        Menu {
-            Button {
-                chooseProject()
-            } label: {
-                Label(UIStrings.chooseProject, systemImage: "folder.badge.plus")
-            }
-
-            if !store.recentProjectContexts.isEmpty {
-                Divider()
-
-                Section(UIStrings.recentProjects) {
-                    ForEach(store.recentProjectContexts) { context in
-                        Button {
-                            Task {
-                                await store.setProject(
-                                    rootPath: context.rootPath,
-                                    currentCWD: context.currentCWD,
-                                    name: context.name
-                                )
-                            }
-                        } label: {
-                            Text(context.name)
-                        }
-                    }
-                }
-            }
-
-            if store.activeProjectContext != nil {
-                Divider()
-
-                Button {
-                    revealActiveProject()
-                } label: {
-                    Label(UIStrings.revealInFinder, systemImage: "arrow.up.forward.app")
-                }
-
-                Button(role: .destructive) {
-                    Task { await store.clearProject() }
-                } label: {
-                    Label(UIStrings.clearProject, systemImage: "xmark.circle")
-                }
-            }
-        } label: {
-            SidebarMenuButtonLabel(
-                systemImage: "folder.badge.plus",
-                width: 66,
-                height: 34,
-                expands: false,
-                horizontalPadding: 10
-            )
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .help(UIStrings.projectChoosePrompt)
-        .accessibilityLabel(UIStrings.text("project.chooseMenu", "Project"))
-    }
-
-    private func chooseProject() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = false
-        panel.prompt = UIStrings.chooseProject
-
-        if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                await store.setProject(
-                    rootPath: url.path,
-                    currentCWD: url.path,
-                    name: url.lastPathComponent
-                )
-            }
-        }
-    }
-
-    private func revealActiveProject() {
-        guard let rootPath = store.activeProjectContext?.rootPath else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: rootPath)])
     }
 }
 
@@ -2315,7 +2487,7 @@ private struct AgentStatTile: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
