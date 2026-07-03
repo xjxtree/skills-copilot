@@ -168,30 +168,39 @@ impl Catalog {
                 name, description, state, enabled, frontmatter_raw, body, permissions, fingerprint
          FROM skill_instance WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            let permissions_raw: String = row.get(12)?;
-            Ok(SkillDetailRecord {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                scope: row.get(2)?,
-                path: PathBuf::from(row.get::<_, String>(3)?),
-                display_path: PathBuf::from(row.get::<_, String>(4)?),
-                definition_id: row.get(5)?,
-                name: row.get(6)?,
-                description: row.get(7)?,
-                state: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? != 0,
-                frontmatter_raw: row.get(10)?,
-                body: row.get(11)?,
-                permissions: serde_json::from_str(&permissions_raw)
-                    .unwrap_or_else(|_| serde_json::json!({})),
-                fingerprint: row.get(13)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![id], skill_detail_record_from_row)?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
+    }
+
+    pub fn list_skill_details_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<SkillDetailRecord>, CatalogError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, agent, scope, path, COALESCE(display_path, path), definition_id,
+                name, description, state, enabled, frontmatter_raw, body, permissions, fingerprint
+             FROM skill_instance WHERE id IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(ids.iter()),
+            skill_detail_record_from_row,
+        )?;
+        let mut details = Vec::new();
+        for row in rows {
+            details.push(row?);
+        }
+        Ok(details)
     }
 
     pub fn list_skill_events(
@@ -231,6 +240,16 @@ impl Catalog {
     }
 
     pub fn list_rule_findings(&self) -> Result<Vec<RuleFindingRecord>, CatalogError> {
+        let has_findings =
+            self.conn
+                .query_row("SELECT EXISTS(SELECT 1 FROM rule_finding)", [], |row| {
+                    row.get::<_, i64>(0)
+                })?
+                != 0;
+        if !has_findings {
+            return Ok(Vec::new());
+        }
+
         let mut stmt = self.conn.prepare(
             "WITH finding_targets AS (
             SELECT
@@ -646,4 +665,25 @@ impl Catalog {
             None => Ok(None),
         }
     }
+}
+
+fn skill_detail_record_from_row(row: &Row<'_>) -> rusqlite::Result<SkillDetailRecord> {
+    let permissions_raw: String = row.get(12)?;
+    Ok(SkillDetailRecord {
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        scope: row.get(2)?,
+        path: PathBuf::from(row.get::<_, String>(3)?),
+        display_path: PathBuf::from(row.get::<_, String>(4)?),
+        definition_id: row.get(5)?,
+        name: row.get(6)?,
+        description: row.get(7)?,
+        state: row.get(8)?,
+        enabled: row.get::<_, i64>(9)? != 0,
+        frontmatter_raw: row.get(10)?,
+        body: row.get(11)?,
+        permissions: serde_json::from_str(&permissions_raw)
+            .unwrap_or_else(|_| serde_json::json!({})),
+        fingerprint: row.get(13)?,
+    })
 }

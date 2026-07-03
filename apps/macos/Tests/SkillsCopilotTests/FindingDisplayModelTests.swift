@@ -13,6 +13,7 @@ struct FindingDisplayModelTests {
         try triageFilterDistinguishesLocalStates()
         try triageFilterOptionsOnlyExposeMeaningfulStates()
         try permissionSummaryLabelsUnknownAndUndeclaredValues()
+        try overviewSignalsSkipPlaceholderPermissionNoise()
     }
 
     private func groupsSortBySeverityThenRule() throws {
@@ -309,6 +310,64 @@ struct FindingDisplayModelTests {
             "{\"exec\": true, \"files\": [], \"network\": \"ambient\", \"requires_human\": false, \"tools\": [\"Read\"]}",
             "Permission raw text should use stable sorted keys for review."
         )
+    }
+
+    private func overviewSignalsSkipPlaceholderPermissionNoise() throws {
+        try expectFalse(
+            PermissionDisplayModel.hasOverviewSignal(for: .null),
+            "Null permission payloads should not create overview risk noise."
+        )
+        try expectFalse(
+            PermissionDisplayModel.hasOverviewSignal(for: .object([:])),
+            "Empty permission payloads should stay out of the overview risk panel."
+        )
+        try expectFalse(
+            PermissionDisplayModel.hasOverviewSignal(
+                for: .object([
+                    "exec": .bool(false),
+                    "files": .array([]),
+                    "network": .string("none"),
+                    "requires_human": .bool(false),
+                    "tools": .array([]),
+                ])
+            ),
+            "Explicitly empty permissions should not read as overview risk."
+        )
+        try expectEqual(
+            PermissionDisplayModel.hasOverviewSignal(for: .object(["network": .string("full")])),
+            true,
+            "Declared network access should remain visible in the overview risk panel."
+        )
+
+        let unavailablePreview = ScriptExecutionPreview(
+            skillID: "alpha",
+            scriptName: nil,
+            commandPreview: [],
+            scope: ScriptExecutionScope(cwd: nil, env: [:], network: nil, files: []),
+            risks: [],
+            confirmationRequired: true,
+            executionAllowed: false,
+            auditStatus: .unavailable,
+            auditID: nil,
+            summary: "Preview",
+            disabledReason: "Unavailable"
+        )
+        try expectFalse(unavailablePreview.hasOverviewSignal, "Unavailable script previews should not create overview risk noise.")
+
+        let commandPreview = ScriptExecutionPreview(
+            skillID: "alpha",
+            scriptName: "setup",
+            commandPreview: ["./setup.sh"],
+            scope: ScriptExecutionScope(cwd: nil, env: [:], network: nil, files: []),
+            risks: [],
+            confirmationRequired: true,
+            executionAllowed: false,
+            auditStatus: .requiresConfirmation,
+            auditID: nil,
+            summary: "Preview",
+            disabledReason: nil
+        )
+        try expectEqual(commandPreview.hasOverviewSignal, true, "Concrete script previews should remain visible in the overview risk panel.")
     }
 
     private static let findings: [RuleFindingRecord] = [

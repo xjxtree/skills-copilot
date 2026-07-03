@@ -151,7 +151,7 @@ struct FindingIssueCard: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(.quaternary.opacity(0.35), in: Capsule())
+                    .background(Color.white, in: Capsule())
             }
 
             Text(issue.message)
@@ -170,7 +170,7 @@ struct FindingIssueCard: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 5) {
                 Label(UIStrings.findingRemediation, systemImage: "wrench.and.screwdriver")
@@ -181,11 +181,11 @@ struct FindingIssueCard: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -215,7 +215,7 @@ struct FindingExplanationField: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 7))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
     }
 }
 
@@ -288,12 +288,12 @@ struct PermissionSummaryCard: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -318,7 +318,7 @@ struct SameAgentConflictIssuesView: View {
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
 
             ForEach(conflicts) { conflict in
                 let currentAgentInstanceIDs = conflict.instanceIds.filter { currentAgentSkillIDs.contains($0) }
@@ -332,7 +332,7 @@ struct SameAgentConflictIssuesView: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(.quaternary.opacity(0.35), in: Capsule())
+                            .background(Color.white, in: Capsule())
                     }
                     DetailMetricGrid {
                         SummaryChip(title: UIStrings.definition, value: conflict.definitionId, systemImage: "number")
@@ -360,12 +360,12 @@ struct SameAgentConflictIssuesView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .adaptiveMaterialSurface()
+                .nativePanelSurface()
             }
         }
     }
@@ -439,7 +439,7 @@ struct AgentConfigHistorySection: View {
                     }
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .adaptiveMaterialSurface()
+                    .nativePanelSurface()
                 }
             }
         }
@@ -546,7 +546,7 @@ struct SnapshotTextPane: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -564,6 +564,6 @@ struct TextBlock: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }

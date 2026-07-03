@@ -9,6 +9,7 @@ struct SkillListModelTests {
         try stateFiltersUseEffectiveStatusFindingsAndConflicts()
         try issueIndicatorCountsUseVisibleProblemSemantics()
         try widespreadBaselineFindingsDoNotDrivePerSkillIssuePresentation()
+        try triagedAndSuppressedFindingsDoNotDriveVisibleIssuePresentation()
         try problemItemsUseCurrentAgentRuntimeSemantics()
         try scopeFiltersSeparateProjectAndGlobalSkills()
         try sortOrdersAreStableForCoreListColumns()
@@ -99,6 +100,11 @@ struct SkillListModelTests {
     }
 
     private func stateFiltersUseEffectiveStatusFindingsAndConflicts() throws {
+        try expectEqual(
+            SkillStateFilter.sidebarCases,
+            [.all, .enabled, .disabled, .withFindings],
+            "The sidebar filter should expose Issues as the user-facing risk bucket and avoid a duplicate Risky filter."
+        )
         try expectEqual(filtered(stateFilter: .enabled).map(\.id), ["alpha", "gamma", "omega"], "Enabled filter")
         try expectEqual(filtered(stateFilter: .disabled).map(\.id), ["beta"], "Disabled filter")
         try expectEqual(filtered(stateFilter: .broken).map(\.id), ["delta"], "Broken filter")
@@ -110,15 +116,15 @@ struct SkillListModelTests {
     }
 
     private func issueIndicatorCountsUseVisibleProblemSemantics() throws {
+        let issueIndex = SkillListModel.issueIndex(
+            skills: Self.skills,
+            findings: Self.findings,
+            conflicts: Self.conflicts
+        )
         let counts = Dictionary(uniqueKeysWithValues: Self.skills.map { skill in
             (
                 skill.id,
-                SkillListModel.issueIndicatorCount(
-                    for: skill,
-                    skills: Self.skills,
-                    findings: Self.findings,
-                    conflicts: Self.conflicts
-                )
+                issueIndex.issueCount(for: skill.id)
             )
         })
 
@@ -128,6 +134,11 @@ struct SkillListModelTests {
         try expectEqual(counts["theta"], 1, "Rows should count unknown/root-error state as a visible issue.")
         try expectEqual(counts["beta"], 0, "Rows should ignore cross-agent-only conflicts.")
         try expectEqual(counts["alpha"], 0, "Rows should ignore definition-only findings until they are attached to an instance.")
+        try expectEqual(
+            Self.skills.map { SkillListModel.issueIndicatorCount(for: $0, skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts) },
+            Self.skills.map { issueIndex.issueCount(for: $0.id) },
+            "Precomputed issue index should preserve per-row issue semantics while avoiding repeated full-list work."
+        )
     }
 
     private func widespreadBaselineFindingsDoNotDrivePerSkillIssuePresentation() throws {
@@ -184,6 +195,52 @@ struct SkillListModelTests {
             ).map(\.id),
             ["codex-alpha", "gamma"],
             "The Issues filter should navigate to skills with specific or sparse findings, not skills that only share common baseline gaps."
+        )
+    }
+
+    private func triagedAndSuppressedFindingsDoNotDriveVisibleIssuePresentation() throws {
+        let skills = [
+            skill(id: "alpha", scope: "agent-global", path: "/skills/alpha/SKILL.md", definitionId: "def.alpha", name: "Alpha"),
+            skill(id: "beta", scope: "agent-global", path: "/skills/beta/SKILL.md", definitionId: "def.beta", name: "Beta"),
+            skill(id: "gamma", scope: "agent-global", path: "/skills/gamma/SKILL.md", definitionId: "def.gamma", name: "Gamma"),
+            skill(id: "delta", scope: "agent-global", path: "/skills/delta/SKILL.md", definitionId: "def.delta", name: "Delta"),
+            skill(id: "epsilon", scope: "agent-global", path: "/skills/epsilon/SKILL.md", definitionId: "def.epsilon", name: "Epsilon"),
+        ]
+        let findings = [
+            Self.finding(id: "active-alpha", instanceId: "alpha", ruleId: "body.too-long", triageStatus: "open"),
+            Self.finding(id: "followup-delta", instanceId: "delta", ruleId: "script.no-shebang", triageStatus: "needs-follow-up"),
+            Self.finding(id: "ignored-beta", instanceId: "beta", ruleId: "body.too-long", triageStatus: "ignored"),
+            Self.finding(id: "reviewed-gamma", instanceId: "gamma", ruleId: "body.too-long", triageStatus: "reviewed"),
+            Self.finding(id: "suppressed-epsilon", instanceId: "epsilon", ruleId: "body.too-long", suppressed: true),
+        ]
+
+        try expectEqual(
+            SkillListModel.displayFindings(skills: skills, findings: findings).map(\.id),
+            ["active-alpha", "followup-delta"],
+            "Only active, unsuppressed findings should drive visible issue presentation."
+        )
+        try expectEqual(
+            SkillListModel.filteredAndSorted(
+                skills: skills,
+                findings: findings,
+                conflicts: [],
+                searchText: "",
+                agentFilter: .all,
+                stateFilter: .withFindings,
+                sortOrder: .name
+            ).map(\.id),
+            ["alpha", "delta"],
+            "The Issues filter should exclude ignored, reviewed, and suppressed findings."
+        )
+        try expectEqual(
+            SkillListModel.displayFindingCount(skills: skills, findings: findings, agentFilter: .all),
+            2,
+            "Sidebar issue metrics should count only active, unsuppressed findings."
+        )
+        try expectEqual(
+            SkillListModel.issueIndicatorCount(for: skills[4], skills: skills, findings: findings, conflicts: []),
+            0,
+            "Suppressed findings should not show a row issue badge."
         )
     }
 
@@ -552,7 +609,9 @@ struct SkillListModelTests {
         id: String,
         instanceId: String,
         ruleId: String,
-        severity: String = "warning"
+        severity: String = "warning",
+        suppressed: Bool = false,
+        triageStatus: String = "open"
     ) -> RuleFindingRecord {
         RuleFindingRecord(
             id: id,
@@ -562,7 +621,9 @@ struct SkillListModelTests {
             severity: severity,
             message: "\(ruleId) message",
             suggestion: nil,
-            createdAt: 0
+            createdAt: 0,
+            suppressed: suppressed,
+            triageStatus: triageStatus
         )
     }
 

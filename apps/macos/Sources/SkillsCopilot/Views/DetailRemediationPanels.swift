@@ -51,7 +51,7 @@ struct RemediationPlanPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -117,7 +117,7 @@ struct RemediationPlanResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var itemCount: Int {
@@ -220,7 +220,7 @@ struct RemediationPriorityList: View {
                             RoutingInlineList(title: UIStrings.crossAgentReadinessEvidence, empty: UIStrings.crossAgentReadinessNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
                         }
                         .padding(8)
-                        .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
             }
@@ -311,7 +311,7 @@ struct RemediationPlanItemCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var iconName: String {
@@ -381,7 +381,7 @@ struct RemediationPreviewDraftsPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -438,7 +438,7 @@ struct RemediationPreviewDraftsResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var draftCount: Int {
@@ -612,7 +612,7 @@ struct RemediationPreviewDraftCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var confidenceLabel: String? {
@@ -674,7 +674,7 @@ struct DraftSnippetBlock: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         }
     }
 }
@@ -729,7 +729,7 @@ struct RemediationImpactPreviewPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -797,7 +797,7 @@ struct RemediationImpactPreviewResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var allRows: [RemediationImpactRow] {
@@ -933,7 +933,7 @@ struct RemediationImpactRowCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var iconName: String {
@@ -1000,7 +1000,7 @@ struct RemediationBatchReviewPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -1026,7 +1026,7 @@ struct RemediationBatchReviewControls: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -1102,7 +1102,7 @@ struct RemediationBatchReviewResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var allItems: [RemediationBatchReviewItem] {
@@ -1228,7 +1228,7 @@ struct RemediationBatchReviewGroupCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var iconName: String {
@@ -1326,7 +1326,7 @@ struct RemediationBatchReviewItemCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1405,7 +1405,7 @@ struct RemediationHistoryPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -1449,7 +1449,7 @@ struct RemediationHistoryRecordResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -1526,7 +1526,7 @@ struct RemediationHistoryResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var recordCount: Int {
@@ -1687,7 +1687,7 @@ struct RemediationHistoryRecordCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func historyIcon(for category: String) -> String {

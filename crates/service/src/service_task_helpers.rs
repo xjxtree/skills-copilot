@@ -2116,6 +2116,10 @@ pub(crate) fn task_readiness_candidate_scan_limit(limit: usize, requested_count:
         )
 }
 
+pub(crate) fn task_readiness_detail_scan_limit(limit: usize, prefiltered_count: usize) -> usize {
+    limit.saturating_mul(4).clamp(limit, prefiltered_count)
+}
+
 pub(crate) fn task_readiness_record_affinity(skill: &SkillRecord, task_terms: &[String]) -> u16 {
     let searchable = format!(
         "{} {} {} {} {}",

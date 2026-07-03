@@ -222,6 +222,7 @@ struct SettingsView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
+                            .labelsHidden()
                             .frame(width: 280)
                         }
 
@@ -327,6 +328,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
             }
 
             GridRow {
@@ -499,7 +501,7 @@ struct SettingsView: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .adaptiveMaterialSurface()
+                .nativePanelSurface()
                 Spacer(minLength: 0)
             }
             .padding(20)
@@ -609,7 +611,7 @@ private struct SettingsSidebarItem: View {
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.settings.sectionCornerRadius))
-                        .fill(.thinMaterial)
+                        .fill(Color.white)
                 }
             }
         }
@@ -645,7 +647,7 @@ private struct SettingsPageHeader: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -694,7 +696,7 @@ private struct SettingsSectionCard<Content: View>: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -709,7 +711,7 @@ private struct SettingsBanner: View {
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
             .overlay(alignment: .leading) {
                 Rectangle()
                     .fill(color)

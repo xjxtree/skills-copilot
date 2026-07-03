@@ -95,7 +95,7 @@ private struct AgentSessionContentPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var emptySessionMessage: String {
@@ -200,7 +200,7 @@ private struct LocalSessionContentFilterBar: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(
-            isSelected ? tint.opacity(0.16) : Color.secondary.opacity(0.08),
+            isSelected ? tint.opacity(0.16) : Color.white,
             in: RoundedRectangle(cornerRadius: 6)
         )
         .overlay(
@@ -283,7 +283,7 @@ private struct LocalSessionContentItemRow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         .onHover { isHovering in
             isHoveringActions = isHovering
         }
@@ -448,14 +448,14 @@ private struct McpServerPreviewPanel: View {
                         }
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private func pathLabel(_ path: McpServerPreviewPath) -> String {
@@ -496,6 +496,6 @@ private struct AgentScanSummaryCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }

@@ -4,6 +4,11 @@ enum MainWindowCoordinator {
     static let windowIdentifier = NSUserInterfaceItemIdentifier(MainWindowModel.windowIdentifierRawValue)
     static let autosaveName = MainWindowModel.autosaveName
     static let minimumSize = NSSize(width: MainWindowModel.minimumWidth, height: MainWindowModel.minimumHeight)
+    static let appAppearance = NSAppearance(named: .aqua)
+
+    static func configureApplicationAppearance(_ app: NSApplication = .shared) {
+        app.appearance = appAppearance
+    }
 
     static func activateApplication(_ app: NSApplication = .shared) {
         app.setActivationPolicy(.regular)
@@ -34,12 +39,14 @@ enum MainWindowCoordinator {
         window.identifier = windowIdentifier
         _ = window.setFrameAutosaveName(autosaveName)
         window.minSize = minimumSize
+        window.appearance = appAppearance
         if window.title.isEmpty {
             window.title = UIStrings.appWindowTitle
         }
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
+        window.isMovableByWindowBackground = false
     }
 
     static func mainWindowScore(identifier: NSUserInterfaceItemIdentifier?, title: String, canBecomeMain: Bool) -> Int {

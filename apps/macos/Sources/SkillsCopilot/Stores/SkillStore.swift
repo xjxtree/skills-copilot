@@ -12,7 +12,29 @@ struct FilteredSkillListCacheKey: Equatable {
 
 struct FilteredSkillListCache {
     let key: FilteredSkillListCacheKey
+    let result: FilteredSkillListResult
+}
+
+struct FilteredSkillListResult {
     let skills: [SkillRecord]
+    let issueCountsBySkillID: [SkillRecord.ID: Int]
+
+    func issueCount(for skillID: SkillRecord.ID) -> Int {
+        issueCountsBySkillID[skillID] ?? 0
+    }
+}
+
+struct ScopedLocalSessionSummary {
+    let rows: [LocalSessionPreviewRow]
+    let userMessageCount: Int
+    let totalMessageCount: Int
+    let toolCallCount: Int
+    let skillCallCount: Int
+}
+
+struct ScopedLocalSessionSummaryCache {
+    let revision: Int
+    let summary: ScopedLocalSessionSummary
 }
 
 struct AppStartupLoadingState: Equatable {
@@ -27,10 +49,12 @@ struct AppStartupLoadingState: Equatable {
 
 @MainActor
 final class SkillStore: ObservableObject {
+    private static let lastMutationMessageDismissDelayNanoseconds: UInt64 = 3_500_000_000
+
     @Published private(set) var skills: [SkillRecord] = [] {
         didSet {
             invalidateFilteredSkillListCache()
-            rebuildAdoptingAgentSummaryCache()
+            invalidateAdoptingAgentSummaryCache()
         }
     }
     @Published private(set) var findings: [RuleFindingRecord] = [] {
@@ -53,7 +77,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingAgentConfigSnapshots = false
     @Published private(set) var detailsByID: [SkillRecord.ID: SkillDetailRecord] = [:]
     @Published private(set) var skillEventsByID: [SkillRecord.ID: [SkillEventRecord]] = [:]
-    @Published private(set) var adoptingAgentSummaryBySkillID: [SkillRecord.ID: String] = [:]
+    private(set) var adoptingAgentSummaryBySkillID: [SkillRecord.ID: String] = [:]
     @Published private(set) var loadingSkillEventIDs: Set<SkillRecord.ID> = []
     @Published private(set) var status: ServiceStatus?
     @Published private(set) var llmStatus = LLMStatus.disabledFallback()
@@ -98,7 +122,9 @@ final class SkillStore: ObservableObject {
     @Published private(set) var agentSessionSkillReviewList = AgentSessionSkillReviewListResult(reviews: [])
     @Published private(set) var agentSessionSkillReviewResult: AgentSessionSkillReviewResult?
     @Published private(set) var agentSessionSkillReviewDeleteResult: AgentSessionSkillReviewDeleteResult?
-    @Published private(set) var localSessionPreviewResult = LocalSessionPreviewResult()
+    @Published private(set) var localSessionPreviewResult = LocalSessionPreviewResult() {
+        didSet { invalidateScopedLocalSessionSummaryCache() }
+    }
     @Published private(set) var mcpServerPreviewResult = McpServerPreviewResult()
     @Published private(set) var isLoadingTaskBenchmarks = false
     @Published private(set) var isSavingTaskBenchmark = false
@@ -195,7 +221,9 @@ final class SkillStore: ObservableObject {
     @Published var skillManagerSelectedAgentIDs: Set<String> = Set(SkillManagerAgent.defaultTargets.map(\.rawValue)) {
         didSet { clearSkillManagerWritePreviews() }
     }
-    @Published private(set) var projectContextState: ProjectContextState?
+    @Published private(set) var projectContextState: ProjectContextState? {
+        didSet { invalidateScopedLocalSessionSummaryCache() }
+    }
     @Published private(set) var startupLoadingState: AppStartupLoadingState? = AppStartupLoadingState(
         message: UIStrings.startupPreparingLoading,
         progress: 0.02
@@ -212,7 +240,9 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingAIProvider = false
     @Published private(set) var isSavingAIProvider = false
     @Published private(set) var isTestingAIProvider = false
-    @Published private(set) var lastMutationMessage: String?
+    @Published private(set) var lastMutationMessage: String? {
+        didSet { scheduleLastMutationMessageDismissal() }
+    }
     @Published private(set) var refreshStatusMessage = UIStrings.refreshIdle
     @Published private(set) var watcherStatusMessage = UIStrings.refreshWatcherManual
     @Published private(set) var refreshLogEntries: [RefreshLogEntry] = []
@@ -299,9 +329,7 @@ final class SkillStore: ObservableObject {
             if sidebarContentMode == .config {
                 selectedSidebarSelection = .configOverview
             }
-            Task { await loadAgentConfigSnapshotsIfNeeded() }
-            Task { await loadCleanupQueue() }
-            Task { await loadCrossAgentComparisons() }
+            scheduleAgentFilterDependentLoads()
         }
     }
     @Published var stateFilter: SkillStateFilter = .all {
@@ -410,6 +438,7 @@ final class SkillStore: ObservableObject {
     @Published var localSessionScopeFilter: LocalSessionScopeFilter = .project {
         didSet {
             guard oldValue != localSessionScopeFilter else { return }
+            invalidateScopedLocalSessionSummaryCache()
             normalizeSelectedLocalSession()
         }
     }
@@ -433,7 +462,9 @@ final class SkillStore: ObservableObject {
     }
     @Published var selectedLocalSessionID: LocalSessionPreviewRow.ID?
     @Published var mcpServerPreviewPaths = ""
-    @Published var errorMessage: String?
+    @Published var errorMessage: String? {
+        didSet { scheduleErrorMessageDismissal() }
+    }
 
     private let service: ServiceClient
     private var lastRefreshAction: RefreshAction = .reload
@@ -443,23 +474,39 @@ final class SkillStore: ObservableObject {
     private var agentConfigSnapshotLoadGeneration = 0
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
+    private var cleanupQueueLoadGeneration = 0
+    private var crossAgentComparisonsLoadGeneration = 0
+    private var selectedDetailLoadGeneration = 0
     private var loadedAgentConfigSnapshotRequestKey: String?
     private var activeAgentConfigSnapshotRequestKey: String?
     private var loadedAgentConfigDocumentRequestKey: String?
     private var activeAgentConfigDocumentRequestKey: String?
     private var loadedClaudeSettingsRequestKey: String?
     private var activeClaudeSettingsRequestKey: String?
+    private var loadedCleanupQueueRequestKey: String?
+    private var activeCleanupQueueRequestKey: String?
+    private var loadedCrossAgentComparisonsRequestKey: String?
+    private var activeCrossAgentComparisonsRequestKey: String?
+    private var cleanupQueueCacheByRequestKey: [String: CleanupQueueResult] = [:]
+    private var crossAgentComparisonsCacheByRequestKey: [String: CrossAgentComparisonResult] = [:]
     private var localSessionPreviewGeneration = 0
     private var loadedLocalSessionPreviewRequestKey: String?
     private var activeLocalSessionPreviewRequestKey: String?
     private var hasLoadedAIProviderStatus = false
     private var hasLoadedProviderObservability = false
     private var taskCockpitOperationID: UUID?
+    private var lastMutationMessageDismissTask: Task<Void, Never>?
+    private var errorMessageDismissTask: Task<Void, Never>?
+    private var agentFilterLoadTask: Task<Void, Never>?
+    private var listCriteriaDetailTask: Task<Void, Never>?
     private var taskCockpitTimeoutTask: Task<Void, Never>?
     private var taskCockpitServiceTask: Task<TaskCockpitResult, Error>?
     private var isSynchronizingSidebarSelection = false
     var filteredSkillListDataRevision = 0
     var filteredSkillListCache: FilteredSkillListCache?
+    var isAdoptingAgentSummaryCacheValid = false
+    var scopedLocalSessionSummaryRevision = 0
+    var scopedLocalSessionSummaryCache: ScopedLocalSessionSummaryCache?
     private let taskCockpitTimeoutSeconds: TimeInterval
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
 
@@ -474,13 +521,103 @@ final class SkillStore: ObservableObject {
         taskCockpitHistory = taskCockpitHistoryStore.load()
     }
 
+    private func scheduleLastMutationMessageDismissal() {
+        lastMutationMessageDismissTask?.cancel()
+        guard let message = lastMutationMessage, !message.isEmpty else {
+            lastMutationMessageDismissTask = nil
+            return
+        }
+
+        let delayNanoseconds = Self.lastMutationMessageDismissDelayNanoseconds
+        lastMutationMessageDismissTask = Task { [weak self, message, delayNanoseconds] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.clearLastMutationMessageIfCurrent(message)
+        }
+    }
+
+    private func clearLastMutationMessageIfCurrent(_ message: String) {
+        guard lastMutationMessage == message else { return }
+        lastMutationMessage = nil
+    }
+
+    private func scheduleErrorMessageDismissal() {
+        errorMessageDismissTask?.cancel()
+        guard let message = errorMessage, !message.isEmpty else {
+            errorMessageDismissTask = nil
+            return
+        }
+
+        let delayNanoseconds = Self.lastMutationMessageDismissDelayNanoseconds
+        errorMessageDismissTask = Task { [weak self, message, delayNanoseconds] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.clearErrorMessageIfCurrent(message)
+        }
+    }
+
+    private func clearErrorMessageIfCurrent(_ message: String) {
+        guard errorMessage == message else { return }
+        errorMessage = nil
+    }
+
+    private func scheduleAgentFilterDependentLoads() {
+        agentFilterLoadTask?.cancel()
+        let requestedAgentFilter = agentFilter
+        agentFilterLoadTask = Task { @MainActor [weak self, requestedAgentFilter] in
+            guard let self else { return }
+            await self.loadAgentConfigSnapshotsIfNeeded()
+            guard !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
+            await self.loadCleanupQueueIfNeeded()
+            guard !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
+            await self.loadCrossAgentComparisonsIfNeeded()
+        }
+    }
+
+    private func invalidateRuntimeAnalysisCaches() {
+        cleanupQueueLoadGeneration &+= 1
+        crossAgentComparisonsLoadGeneration &+= 1
+        loadedCleanupQueueRequestKey = nil
+        activeCleanupQueueRequestKey = nil
+        loadedCrossAgentComparisonsRequestKey = nil
+        activeCrossAgentComparisonsRequestKey = nil
+        cleanupQueueCacheByRequestKey.removeAll()
+        crossAgentComparisonsCacheByRequestKey.removeAll()
+        isLoadingCleanupQueue = false
+        isLoadingCrossAgentComparisons = false
+    }
+
     func invalidateFilteredSkillListCache() {
         filteredSkillListDataRevision &+= 1
         filteredSkillListCache = nil
     }
 
-    private func rebuildAdoptingAgentSummaryCache() {
+    func invalidateAdoptingAgentSummaryCache() {
+        isAdoptingAgentSummaryCacheValid = false
+        adoptingAgentSummaryBySkillID = [:]
+    }
+
+    func ensureAdoptingAgentSummaryCache() {
+        guard !isAdoptingAgentSummaryCacheValid else { return }
         adoptingAgentSummaryBySkillID = SkillListModel.adoptingAgentSummaryBySkillID(for: skills)
+        isAdoptingAgentSummaryCacheValid = true
+    }
+
+    func invalidateDetailCaches(for instanceIDs: some Sequence<SkillRecord.ID>) {
+        for instanceID in instanceIDs {
+            detailsByID.removeValue(forKey: instanceID)
+            skillEventsByID.removeValue(forKey: instanceID)
+        }
+    }
+
+    func pruneDetailCaches(to currentSkillIDs: Set<SkillRecord.ID>) {
+        detailsByID = detailsByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
+    }
+
+    func invalidateScopedLocalSessionSummaryCache() {
+        scopedLocalSessionSummaryRevision &+= 1
+        scopedLocalSessionSummaryCache = nil
     }
 
     var selectedLocalSession: LocalSessionPreviewRow? {
@@ -493,7 +630,7 @@ final class SkillStore: ObservableObject {
 
     var filteredLocalSessionRows: [LocalSessionPreviewRow] {
         let query = localSessionSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let scopedRows = scopedLocalSessionRows
+        let scopedRows = scopedLocalSessionSummary.rows
         guard !query.isEmpty else {
             return sortedLocalSessionRows(scopedRows)
         }
@@ -551,23 +688,57 @@ final class SkillStore: ObservableObject {
     }
 
     var scopedLocalSessionRows: [LocalSessionPreviewRow] {
-        localSessionPreviewResult.sessionRows.filter { localSessionMatchesCurrentScope($0) }
+        scopedLocalSessionSummary.rows
     }
 
     var scopedLocalSessionUserMessageCount: Int {
-        scopedLocalSessionRows.reduce(0) { $0 + $1.userMessageCount }
+        scopedLocalSessionSummary.userMessageCount
     }
 
     var scopedLocalSessionTotalMessageCount: Int {
-        scopedLocalSessionRows.reduce(0) { $0 + $1.totalMessageCount }
+        scopedLocalSessionSummary.totalMessageCount
     }
 
     var scopedLocalSessionToolCallCount: Int {
-        scopedLocalSessionRows.reduce(0) { $0 + $1.toolCallCount }
+        scopedLocalSessionSummary.toolCallCount
     }
 
     var scopedLocalSessionSkillCallCount: Int {
-        scopedLocalSessionRows.reduce(0) { $0 + $1.skillCallCount }
+        scopedLocalSessionSummary.skillCallCount
+    }
+
+    var scopedLocalSessionSummary: ScopedLocalSessionSummary {
+        if let scopedLocalSessionSummaryCache,
+           scopedLocalSessionSummaryCache.revision == scopedLocalSessionSummaryRevision {
+            return scopedLocalSessionSummaryCache.summary
+        }
+
+        var rows: [LocalSessionPreviewRow] = []
+        rows.reserveCapacity(localSessionPreviewResult.sessionRows.count)
+        var userMessageCount = 0
+        var totalMessageCount = 0
+        var toolCallCount = 0
+        var skillCallCount = 0
+        for row in localSessionPreviewResult.sessionRows where localSessionMatchesCurrentScope(row) {
+            rows.append(row)
+            userMessageCount += row.userMessageCount
+            totalMessageCount += row.totalMessageCount
+            toolCallCount += row.toolCallCount
+            skillCallCount += row.skillCallCount
+        }
+
+        let summary = ScopedLocalSessionSummary(
+            rows: rows,
+            userMessageCount: userMessageCount,
+            totalMessageCount: totalMessageCount,
+            toolCallCount: toolCallCount,
+            skillCallCount: skillCallCount
+        )
+        scopedLocalSessionSummaryCache = ScopedLocalSessionSummaryCache(
+            revision: scopedLocalSessionSummaryRevision,
+            summary: summary
+        )
+        return summary
     }
 
     private func localSessionMatchesCurrentScope(_ row: LocalSessionPreviewRow) -> Bool {
@@ -950,17 +1121,22 @@ final class SkillStore: ObservableObject {
             try await refreshCollections()
 
             setStartupLoading(UIStrings.startupAnalysisLoading, progress: 0.40)
-            await loadCleanupQueue()
-            await loadCrossAgentComparisons()
-
-            setStartupLoading(UIStrings.startupSessionsLoading, progress: 0.58)
-            await refreshSelectedAgentLocalSessions()
-
-            setStartupLoading(UIStrings.startupConfigLoading, progress: 0.74)
-            await loadCurrentAgentConfigDocuments(agent: agentFilter.rawValue)
-            if agentFilter == .claudeCode, status?.supportedMethods.contains("config.readClaudeSettings") == true {
-                await loadClaudeSettings()
+            let startupAgentFilter = agentFilter
+            let shouldLoadClaudeSettings = startupAgentFilter == .claudeCode
+                && status?.supportedMethods.contains("config.readClaudeSettings") == true
+            async let cleanupQueueLoad: Void = loadCleanupQueueIfNeeded()
+            async let crossAgentComparisonsLoad: Void = loadCrossAgentComparisonsIfNeeded()
+            async let localSessionsLoad: Void = refreshSelectedAgentLocalSessionsIfNeeded()
+            async let currentConfigDocumentsLoad: Void = loadCurrentAgentConfigDocumentsIfNeeded(agent: startupAgentFilter.rawValue)
+            if shouldLoadClaudeSettings {
+                await loadClaudeSettingsIfNeeded()
             }
+            _ = await (
+                cleanupQueueLoad,
+                crossAgentComparisonsLoad,
+                localSessionsLoad,
+                currentConfigDocumentsLoad
+            )
 
             setStartupLoading(UIStrings.startupDetailLoading, progress: 0.90)
             await loadSelectedDetail()
@@ -1012,7 +1188,10 @@ final class SkillStore: ObservableObject {
 
         do {
             let result = try await service.scanAll()
-            detailsByID.removeAll()
+            pruneDetailCaches(to: Set(result.skills.map(\.id)))
+            if let selectedSkillID {
+                invalidateDetailCaches(for: [selectedSkillID])
+            }
             try await refreshCollections()
             await loadCleanupQueue()
             await loadCrossAgentComparisons()
@@ -1551,7 +1730,7 @@ final class SkillStore: ObservableObject {
 
         do {
             let result = try await service.confirmToolInstall(skill: skill, target: target)
-            detailsByID.removeAll()
+            invalidateDetailCaches(for: [skill.id])
             try await refreshCollections()
             lastMutationMessage = UIStrings.toolGlobalInstalled(skill.name, target.title)
             recordLocalRefresh(message: UIStrings.refreshAfterWrite)
@@ -1617,10 +1796,11 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            _ = try await operation()
+            let result = try await operation()
             clearSkillManagerWritePreviews()
-            detailsByID.removeAll()
+            invalidateDetailCaches(for: result.updatedSkills.map(\.id))
             try await refreshCollections()
+            pruneDetailCaches(to: Set(skills.map(\.id)))
             await listSkillManagerInstalled()
             skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
             recordLocalRefresh(message: UIStrings.refreshAfterWrite)
@@ -3347,51 +3527,143 @@ final class SkillStore: ObservableObject {
             return
         }
 
+        selectedDetailLoadGeneration += 1
+        let generation = selectedDetailLoadGeneration
         isLoadingDetail = true
         errorMessage = nil
-        defer { isLoadingDetail = false }
+        defer {
+            if generation == selectedDetailLoadGeneration {
+                isLoadingDetail = false
+            }
+        }
 
         do {
-            detailsByID[id] = try await service.getSkill(instanceID: id)
+            let detail = try await service.getSkill(instanceID: id)
+            guard generation == selectedDetailLoadGeneration, selectedSkill?.id == id else { return }
+            detailsByID[id] = detail
             await loadSkillEventsIfNeeded(instanceID: id)
         } catch {
+            guard generation == selectedDetailLoadGeneration, selectedSkill?.id == id else { return }
             errorMessage = error.localizedDescription
         }
     }
 
+    func loadCleanupQueueIfNeeded() async {
+        await loadCleanupQueue(force: false)
+    }
+
     func loadCleanupQueue() async {
-        guard !isLoadingCleanupQueue else { return }
+        await loadCleanupQueue(force: true)
+    }
+
+    private func loadCleanupQueue(force: Bool) async {
+        let requestedAgentFilter = agentFilter
+        let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
+        let requestKey = cleanupQueueRequestKey(agent: agent)
+        if !force {
+            if let cachedResult = cleanupQueueCacheByRequestKey[requestKey] {
+                cleanupQueue = cachedResult
+                loadedCleanupQueueRequestKey = requestKey
+                return
+            }
+            if loadedCleanupQueueRequestKey == requestKey || activeCleanupQueueRequestKey == requestKey {
+                return
+            }
+        }
+        guard activeCleanupQueueRequestKey != requestKey else { return }
+
+        cleanupQueueLoadGeneration += 1
+        let generation = cleanupQueueLoadGeneration
+        activeCleanupQueueRequestKey = requestKey
         isLoadingCleanupQueue = true
-        defer { isLoadingCleanupQueue = false }
+        defer {
+            if generation == cleanupQueueLoadGeneration {
+                isLoadingCleanupQueue = false
+            }
+            if activeCleanupQueueRequestKey == requestKey {
+                activeCleanupQueueRequestKey = nil
+            }
+        }
 
         do {
-            let agent = agentFilter == .all ? nil : agentFilter.rawValue
-            cleanupQueue = try await service.listCleanupQueue(agent: agent, limit: 100)
+            let result = try await service.listCleanupQueue(agent: agent, limit: 100)
+            guard generation == cleanupQueueLoadGeneration, agentFilter == requestedAgentFilter else { return }
+            cleanupQueue = result
+            cleanupQueueCacheByRequestKey[requestKey] = result
+            loadedCleanupQueueRequestKey = requestKey
         } catch {
-            cleanupQueue = .emptyFallback(reason: UIStrings.cleanupUnavailableFallback)
+            guard generation == cleanupQueueLoadGeneration, agentFilter == requestedAgentFilter else { return }
+            let fallback = CleanupQueueResult.emptyFallback(reason: UIStrings.cleanupUnavailableFallback)
+            cleanupQueue = fallback
+            cleanupQueueCacheByRequestKey[requestKey] = fallback
+            loadedCleanupQueueRequestKey = requestKey
         }
     }
 
-    func loadCrossAgentComparisons() async {
-        guard !isLoadingCrossAgentComparisons else { return }
-        isLoadingCrossAgentComparisons = true
-        defer { isLoadingCrossAgentComparisons = false }
+    func loadCrossAgentComparisonsIfNeeded() async {
+        await loadCrossAgentComparisons(force: false)
+    }
 
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
+    func loadCrossAgentComparisons() async {
+        await loadCrossAgentComparisons(force: true)
+    }
+
+    private func loadCrossAgentComparisons(force: Bool) async {
+        let requestedAgentFilter = agentFilter
+        let requestedSelectedSkillID = selectedSkill?.id
+        let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
+        let requestKey = crossAgentComparisonsRequestKey(agent: agent, selectedSkillID: requestedSelectedSkillID)
+        if !force {
+            if let cachedResult = crossAgentComparisonsCacheByRequestKey[requestKey] {
+                crossAgentComparisons = cachedResult
+                loadedCrossAgentComparisonsRequestKey = requestKey
+                return
+            }
+            if loadedCrossAgentComparisonsRequestKey == requestKey || activeCrossAgentComparisonsRequestKey == requestKey {
+                return
+            }
+        }
+        guard activeCrossAgentComparisonsRequestKey != requestKey else { return }
+
+        crossAgentComparisonsLoadGeneration += 1
+        let generation = crossAgentComparisonsLoadGeneration
+        activeCrossAgentComparisonsRequestKey = requestKey
+        isLoadingCrossAgentComparisons = true
+        defer {
+            if generation == crossAgentComparisonsLoadGeneration {
+                isLoadingCrossAgentComparisons = false
+            }
+            if activeCrossAgentComparisonsRequestKey == requestKey {
+                activeCrossAgentComparisonsRequestKey = nil
+            }
+        }
+
         do {
-            crossAgentComparisons = try await service.listCrossAgentComparisons(
+            let result = try await service.listCrossAgentComparisons(
                 agent: agent,
-                instanceID: selectedSkill?.id,
+                instanceID: requestedSelectedSkillID,
                 limit: 100
             )
+            guard generation == crossAgentComparisonsLoadGeneration,
+                  agentFilter == requestedAgentFilter,
+                  selectedSkill?.id == requestedSelectedSkillID else { return }
+            crossAgentComparisons = result
+            crossAgentComparisonsCacheByRequestKey[requestKey] = result
+            loadedCrossAgentComparisonsRequestKey = requestKey
         } catch {
-            crossAgentComparisons = CrossAgentComparisonResult.local(
+            guard generation == crossAgentComparisonsLoadGeneration,
+                  agentFilter == requestedAgentFilter,
+                  selectedSkill?.id == requestedSelectedSkillID else { return }
+            let fallback = CrossAgentComparisonResult.local(
                 skills: skills,
                 findings: findings,
                 capabilities: adapterCapabilities,
-                agentFilter: agentFilter,
+                agentFilter: requestedAgentFilter,
                 reason: UIStrings.crossAgentComparisonLocalFallback
             )
+            crossAgentComparisons = fallback
+            crossAgentComparisonsCacheByRequestKey[requestKey] = fallback
+            loadedCrossAgentComparisonsRequestKey = requestKey
         }
     }
 
@@ -3447,12 +3719,27 @@ final class SkillStore: ObservableObject {
 
     private func refreshCollections() async throws {
         let snapshot = try await service.appStateSnapshot()
-        let fetchedLLMStatus = try await service.llmStatus()
-        let fetchedAIProviderStatus = await fetchAIProviderStatus()
-        let fetchedLLMPromptRuns = await fetchLLMPromptRuns()
-        let fetchedProjectContextState = try await service.getProjectContext()
-        let fetchedAgentConfigSnapshots = try await fetchAgentConfigSnapshots()
-        let fetchedRuleTuning = try await service.listRuleTuning()
+        async let llmStatusTask = service.llmStatus()
+        async let aiProviderStatusTask = fetchAIProviderStatus()
+        async let llmPromptRunsTask = fetchLLMPromptRuns()
+        async let projectContextTask = service.getProjectContext()
+        async let agentConfigSnapshotsTask = fetchAgentConfigSnapshots()
+        async let ruleTuningTask = service.listRuleTuning()
+        let (
+            fetchedLLMStatus,
+            fetchedAIProviderStatus,
+            fetchedLLMPromptRuns,
+            fetchedProjectContextState,
+            fetchedAgentConfigSnapshots,
+            fetchedRuleTuning
+        ) = try await (
+            llmStatusTask,
+            aiProviderStatusTask,
+            llmPromptRunsTask,
+            projectContextTask,
+            agentConfigSnapshotsTask,
+            ruleTuningTask
+        )
 
         self.status = snapshot.status
         self.llmStatus = fetchedLLMStatus
@@ -3466,6 +3753,7 @@ final class SkillStore: ObservableObject {
         self.ruleTuning = fetchedRuleTuning
         self.conflicts = snapshot.conflicts
         self.healthSummary = snapshot.health
+        invalidateRuntimeAnalysisCaches()
         self.agentConfigSnapshots = fetchedAgentConfigSnapshots
         if let agent = selectedAgentConfigTimelineAgent {
             loadedAgentConfigSnapshotRequestKey = agentConfigRequestKey(agent: agent)
@@ -3560,6 +3848,23 @@ final class SkillStore: ObservableObject {
     private func agentConfigRequestKey(agent: String) -> String {
         [
             agent,
+            activeProjectContext?.rootPath ?? "",
+            activeProjectContext?.currentCWD ?? ""
+        ].joined(separator: "\u{1e}")
+    }
+
+    private func cleanupQueueRequestKey(agent: String?) -> String {
+        [
+            agent ?? SkillAgentFilter.all.rawValue,
+            activeProjectContext?.rootPath ?? "",
+            activeProjectContext?.currentCWD ?? ""
+        ].joined(separator: "\u{1e}")
+    }
+
+    private func crossAgentComparisonsRequestKey(agent: String?, selectedSkillID: SkillRecord.ID?) -> String {
+        [
+            agent ?? SkillAgentFilter.all.rawValue,
+            selectedSkillID ?? "",
             activeProjectContext?.rootPath ?? "",
             activeProjectContext?.currentCWD ?? ""
         ].joined(separator: "\u{1e}")
@@ -4072,9 +4377,10 @@ final class SkillStore: ObservableObject {
             selectedDetailSection = .overview
         }
         mcpServerPreviewResult = McpServerPreviewResult()
-        Task { @MainActor [weak self] in
+        listCriteriaDetailTask?.cancel()
+        listCriteriaDetailTask = Task { @MainActor [weak self] in
+            guard !Task.isCancelled else { return }
             await self?.loadSelectedDetail()
-            await self?.loadCrossAgentComparisons()
         }
     }
 

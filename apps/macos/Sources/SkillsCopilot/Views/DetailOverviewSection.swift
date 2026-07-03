@@ -9,32 +9,24 @@ struct SkillSummaryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                Label(UIStrings.text("detail.diagnosticOverview", "Diagnostic Overview"), systemImage: "stethoscope")
-                    .font(.headline)
-                Spacer()
-                if isLoading {
-                    Label(UIStrings.loadingSkillDetail, systemImage: "hourglass")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            OverviewDescriptionPanel(
+            OverviewPurposeContent(
                 summaryText: summaryText,
-                isEmpty: summaryText == UIStrings.noDescription
+                isEmpty: summaryText == UIStrings.noDescription,
+                isLoading: isLoading
             )
 
             CompactMetadataGrid(rows: diagnosticRows)
 
-            OverviewRiskPanel(
-                permissionSummary: PermissionDisplayModel.summary(for: detail?.permissions ?? .null),
-                scriptPreview: scriptPreview
-            )
+            if showsOverviewRiskPanel {
+                OverviewRiskPanel(
+                    permissionSummary: PermissionDisplayModel.summary(for: permissionPayload),
+                    scriptPreview: scriptPreview
+                )
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var summaryText: String {
@@ -42,6 +34,15 @@ struct SkillSummaryCard: View {
             return UIStrings.noDescription
         }
         return description
+    }
+
+    private var permissionPayload: JSONValue {
+        detail?.permissions ?? .null
+    }
+
+    private var showsOverviewRiskPanel: Bool {
+        PermissionDisplayModel.hasOverviewSignal(for: permissionPayload)
+            || scriptPreview?.hasOverviewSignal == true
     }
 
     private var diagnosticRows: [CompactMetadataRow] {
@@ -59,9 +60,10 @@ struct SkillSummaryCard: View {
     }
 }
 
-private struct OverviewDescriptionPanel: View {
+private struct OverviewPurposeContent: View {
     let summaryText: String
     let isEmpty: Bool
+    let isLoading: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -69,12 +71,15 @@ private struct OverviewDescriptionPanel: View {
                 Label(UIStrings.text("detail.skillPurpose", "Purpose"), systemImage: "text.quote")
                     .font(.subheadline.bold())
                 Spacer()
-                Text(isEmpty ? UIStrings.noDescription : UIStrings.text("detail.skillPurposeSource", "Description"))
-                    .font(.caption2.bold())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.quaternary.opacity(0.38), in: Capsule())
+                if isLoading {
+                    Label(UIStrings.loadingSkillDetail, systemImage: "hourglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(isEmpty ? UIStrings.noDescription : UIStrings.text("detail.skillPurposeSource", "Description"))
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -88,9 +93,7 @@ private struct OverviewDescriptionPanel: View {
                 }
             }
         }
-        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var summaryItems: [String] {
@@ -223,7 +226,7 @@ struct CleanupQueueSection: View {
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
 
             if let fallbackReason = result.fallbackReason ?? result.summary.unavailableReason {
                 CleanupNoticeCard(message: fallbackReason)
@@ -304,7 +307,7 @@ private struct CleanupQueueItemCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var affectedLabel: String {
@@ -343,7 +346,7 @@ private struct CleanupNoticeCard: View {
             .foregroundStyle(.secondary)
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
     }
 }
 
@@ -361,7 +364,7 @@ private struct CleanupEmptyCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -393,7 +396,7 @@ private struct OverviewRiskPanel: View {
                     }
                     .padding(9)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
 
@@ -459,7 +462,7 @@ struct DetailSectionSwitcher: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -496,6 +499,6 @@ private struct DetailSectionTagButton: View {
     }
 
     private var background: some ShapeStyle {
-        isSelected ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.12)) : AnyShapeStyle(.quaternary.opacity(0.30))
+        isSelected ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.12)) : AnyShapeStyle(Color.white)
     }
 }

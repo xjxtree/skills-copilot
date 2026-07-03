@@ -53,6 +53,7 @@
 "toolbar.help" = "Help";
 "toolbar.settings" = "Settings";
 "toolbar.profile" = "Profile";
+"toolbar.project.noneSelected" = "No project selected";
 "project.globalRoots" = "Global roots";
 "project.chooseShortPrompt" = "Choose a project to include project-scoped skills.";
 "project.chooseMenu" = "Choose...";

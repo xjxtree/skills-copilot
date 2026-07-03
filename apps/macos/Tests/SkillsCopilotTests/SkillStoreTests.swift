@@ -72,6 +72,9 @@ struct SkillStoreTests {
         try await runCase("agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally") {
             try await agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally()
         }
+        try await runCase("runtimeAnalysisRefreshIfNeededSkipsLoadedRequestsAndForceRefreshes") {
+            try await runtimeAnalysisRefreshIfNeededSkipsLoadedRequestsAndForceRefreshes()
+        }
         try await runCase("settingsFeedbackClearsAfterFailedConfigSave") {
             try await settingsFeedbackClearsAfterFailedConfigSave()
         }
@@ -1078,6 +1081,50 @@ struct SkillStoreTests {
             countMethodCalls("snapshot.listAgentConfig", in: fake.calls()),
             snapshotReadsAfterFirstLoad + 1,
             "Manual config history refresh should still force a new read."
+        )
+    }
+
+    private func runtimeAnalysisRefreshIfNeededSkipsLoadedRequestsAndForceRefreshes() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "normal")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadCleanupQueueIfNeeded()
+        await store.loadCrossAgentComparisonsIfNeeded()
+
+        let cleanupReadsAfterFirstLoad = countMethodCalls("cleanup.listQueue", in: fake.calls())
+        let comparisonReadsAfterFirstLoad = countMethodCalls("comparison.listCrossAgent", in: fake.calls())
+
+        try expectEqual(cleanupReadsAfterFirstLoad, 1, "Need-based cleanup load should read once for the current request key.")
+        try expectEqual(comparisonReadsAfterFirstLoad, 1, "Need-based cross-agent load should read once for the current request key.")
+
+        await store.loadCleanupQueueIfNeeded()
+        await store.loadCrossAgentComparisonsIfNeeded()
+
+        try expectEqual(
+            countMethodCalls("cleanup.listQueue", in: fake.calls()),
+            cleanupReadsAfterFirstLoad,
+            "Need-based cleanup load should reuse the loaded request key instead of rereading."
+        )
+        try expectEqual(
+            countMethodCalls("comparison.listCrossAgent", in: fake.calls()),
+            comparisonReadsAfterFirstLoad,
+            "Need-based cross-agent load should reuse the loaded request key instead of rereading."
+        )
+
+        await store.loadCleanupQueue()
+        await store.loadCrossAgentComparisons()
+
+        try expectEqual(
+            countMethodCalls("cleanup.listQueue", in: fake.calls()),
+            cleanupReadsAfterFirstLoad + 1,
+            "Manual cleanup refresh should still force a new service read."
+        )
+        try expectEqual(
+            countMethodCalls("comparison.listCrossAgent", in: fake.calls()),
+            comparisonReadsAfterFirstLoad + 1,
+            "Manual cross-agent refresh should still force a new service read."
         )
     }
 

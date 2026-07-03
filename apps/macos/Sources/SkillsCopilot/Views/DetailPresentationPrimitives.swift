@@ -10,7 +10,7 @@ struct SafetyPill: View {
             .font(.caption2.bold())
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(.quaternary.opacity(0.35), in: Capsule())
+            .background(Color.white, in: Capsule())
             .foregroundStyle(.secondary)
     }
 }
@@ -58,7 +58,7 @@ struct SummaryChip: View {
         }
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-        .background(.quaternary.opacity(0.26), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityValue(value)
@@ -180,7 +180,7 @@ struct DenseCountBadge: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(.quaternary.opacity(0.45), in: Capsule())
+            .background(Color.white, in: Capsule())
     }
 }
 
@@ -308,7 +308,7 @@ struct EmptyState: View {
         }
         .padding(28)
         .frame(maxWidth: 900, minHeight: 220)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -321,7 +321,7 @@ struct ErrorBanner: View {
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
             .overlay(alignment: .leading) {
                 Rectangle()
                     .fill(Color.red)
@@ -344,12 +344,11 @@ struct DetailFeedbackToast: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(maxWidth: CGFloat(UIOptimizationPresentation.detailFeedback.maximumWidth), alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.detailFeedback.cornerRadius)))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.detailFeedback.cornerRadius)))
             .overlay(
                 RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.detailFeedback.cornerRadius))
                     .stroke(color.opacity(0.18), lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.10), radius: 10, x: 0, y: 4)
     }
 }
 
@@ -362,7 +361,7 @@ struct SuccessBanner: View {
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
             .overlay(alignment: .leading) {
                 Rectangle()
                     .fill(Color.green)

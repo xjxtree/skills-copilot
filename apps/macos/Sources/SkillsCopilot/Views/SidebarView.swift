@@ -1524,42 +1524,59 @@ private struct SidebarMetricRow: View {
 private struct SkillSidebarPanel: View {
     @EnvironmentObject private var store: SkillStore
     @Binding var isBatchOperationPresented: Bool
+    @State private var searchDraftText = ""
+    @State private var searchCommitTask: Task<Void, Never>?
+
+    private static let searchDebounceDelayNanoseconds: UInt64 = 250_000_000
 
     var body: some View {
         let visibleSkills = store.filteredSkills
 
-        Section {
-            skillToolbar(visibleSkills: visibleSkills)
-        }
-        .listPageChromeRow()
-
-        if store.skills.isEmpty {
-            Section(UIStrings.skills) {
-                SidebarEmptyMessage(message: store.isLoading ? UIStrings.loading : emptyCatalogMessage)
-            }
-        } else if visibleSkills.isEmpty {
-            Section(UIStrings.skills) {
-                SidebarEmptyMessage(message: emptyFilteredMessage)
-            }
-        } else {
+        Group {
             Section {
-                ForEach(visibleSkills) { skill in
-                    SkillRow(
-                        skill: skill,
-                        issueCount: issueIndicatorCount(for: skill),
-                        isSelected: store.selectedSidebarSelection == .skill(skill.id)
-                    ) {
-                        store.selectedSidebarSelection = .skill(skill.id)
-                    }
-                    .listPageCardRow()
-                }
-            } header: {
-                SkillListSectionHeader(
-                    title: skillListSectionTitle(visibleCount: visibleSkills.count),
-                    visibleCount: visibleSkills.count
-                )
+                skillToolbar(visibleSkills: visibleSkills)
             }
-            .id(skillListRefreshID(visibleCount: visibleSkills.count))
+            .listPageChromeRow()
+
+            if store.skills.isEmpty {
+                Section(UIStrings.skills) {
+                    SidebarEmptyMessage(message: store.isLoading ? UIStrings.loading : emptyCatalogMessage)
+                }
+            } else if visibleSkills.isEmpty {
+                Section(UIStrings.skills) {
+                    SidebarEmptyMessage(message: emptyFilteredMessage)
+                }
+            } else {
+                Section {
+                    ForEach(visibleSkills) { skill in
+                        SkillRow(
+                            skill: skill,
+                            issueCount: store.issueIndicatorCount(for: skill),
+                            isSelected: store.selectedSidebarSelection == .skill(skill.id)
+                        ) {
+                            store.selectedSidebarSelection = .skill(skill.id)
+                        }
+                        .equatable()
+                        .listPageCardRow()
+                    }
+                } header: {
+                    SkillListSectionHeader(
+                        title: skillListSectionTitle(visibleCount: visibleSkills.count),
+                        visibleCount: visibleSkills.count
+                    )
+                }
+                .id(skillListRefreshID(visibleCount: visibleSkills.count))
+            }
+        }
+        .onAppear {
+            synchronizeSearchDraft(with: store.searchText)
+        }
+        .onChange(of: store.searchText) { committedText in
+            synchronizeSearchDraft(with: committedText)
+        }
+        .onDisappear {
+            searchCommitTask?.cancel()
+            searchCommitTask = nil
         }
     }
 
@@ -1642,10 +1659,13 @@ private struct SkillSidebarPanel: View {
     }
 
     private var searchField: some View {
-        TextField(UIStrings.searchPrompt, text: $store.searchText)
+        TextField(UIStrings.searchPrompt, text: $searchDraftText)
             .textFieldStyle(.roundedBorder)
             .controlSize(.small)
             .frame(maxWidth: .infinity)
+            .onChange(of: searchDraftText) { newValue in
+                scheduleSearchCommit(newValue)
+            }
     }
 
     private func batchToolbarButton(visibleSkills: [SkillRecord]) -> some View {
@@ -1713,14 +1733,26 @@ private struct SkillSidebarPanel: View {
             || !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func issueIndicatorCount(for skill: SkillRecord) -> Int {
-        SkillListModel.issueIndicatorCount(
-            for: skill,
-            skills: store.skills,
-            findings: store.findings,
-            conflicts: store.conflicts
-        )
+    private func synchronizeSearchDraft(with committedText: String) {
+        guard searchDraftText != committedText else { return }
+        searchCommitTask?.cancel()
+        searchCommitTask = nil
+        searchDraftText = committedText
     }
+
+    private func scheduleSearchCommit(_ text: String) {
+        searchCommitTask?.cancel()
+        let delay = Self.searchDebounceDelayNanoseconds
+        searchCommitTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            if store.searchText != text {
+                store.searchText = text
+            }
+            searchCommitTask = nil
+        }
+    }
+
 }
 
 private struct SkillFilterMenuPicker<Option: Identifiable>: View where Option.ID: Hashable {
@@ -2491,11 +2523,17 @@ private struct AgentStatTile: View {
     }
 }
 
-private struct SkillRow: View {
+private struct SkillRow: View, Equatable {
     let skill: SkillRecord
     let issueCount: Int
     let isSelected: Bool
     let onSelect: () -> Void
+
+    static func == (lhs: SkillRow, rhs: SkillRow) -> Bool {
+        lhs.skill == rhs.skill
+            && lhs.issueCount == rhs.issueCount
+            && lhs.isSelected == rhs.isSelected
+    }
 
     var body: some View {
         Button(action: onSelect) {

@@ -169,7 +169,7 @@ private struct TaskPreflightHistoryPanel: View {
         }
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .topLeading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -218,7 +218,7 @@ private struct TaskPreflightHistoryRow: View {
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color.secondary.opacity(0.08),
+                isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color.white,
                 in: RoundedRectangle(cornerRadius: 8)
             )
             .overlay(alignment: .leading) {
@@ -325,7 +325,7 @@ struct TaskCockpitPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AppAccessibilityID.taskCockpitPanel)
         .accessibilityLabel(UIStrings.taskCockpitTitle)
@@ -399,7 +399,7 @@ private struct TaskCockpitAgentSelector: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var isAllSelected: Bool {
@@ -432,7 +432,7 @@ private struct TaskCockpitAgentChip: View {
             .frame(minHeight: 44, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color.secondary.opacity(0.08),
+                isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color.white,
                 in: RoundedRectangle(cornerRadius: 8)
             )
             .overlay(
@@ -491,7 +491,7 @@ private struct TaskCockpitOperationStatusView: View {
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.26), in: RoundedRectangle(cornerRadius: 6))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(AppAccessibilityID.taskCockpitStatus)
                 .accessibilityLabel(statusMessage(now: context.date))
@@ -610,7 +610,7 @@ private struct TaskCockpitStageProgressView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AppAccessibilityID.taskCockpitStageProgress)
         .accessibilityLabel(UIStrings.taskCockpitProgressTitle)
@@ -725,7 +725,7 @@ private struct TaskCockpitStageTile: View {
         .padding(.vertical, 8)
         .frame(minHeight: 58, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(row.title)
         .accessibilityValue(accessibilityValue)
@@ -850,7 +850,7 @@ private struct TaskCockpitResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AppAccessibilityID.taskCockpitResult)
         .accessibilityLabel(UIStrings.taskCockpitTitle)
@@ -1498,7 +1498,7 @@ private struct TaskCockpitMatchingProcessView: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -1583,7 +1583,7 @@ private struct TaskCockpitCandidateList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -1649,7 +1649,7 @@ private struct TaskCockpitContextList: View {
                         RoutingInlineList(title: UIStrings.knowledgeSafetyFlags, empty: UIStrings.taskBenchmarkNoSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
                     }
                     .padding(8)
-                    .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }

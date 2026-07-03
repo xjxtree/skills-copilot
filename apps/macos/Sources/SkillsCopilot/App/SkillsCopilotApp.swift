@@ -3,6 +3,7 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainWindowCoordinator.configureApplicationAppearance()
         MainWindowCoordinator.activateApplication()
         DispatchQueue.main.async {
             MainWindowCoordinator.restoreMainWindow()
@@ -10,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        MainWindowCoordinator.configureApplicationAppearance()
         MainWindowCoordinator.configureWindows(NSApp.windows)
     }
 
@@ -34,6 +36,7 @@ struct SkillsCopilotApp: App {
             ContentView()
                 .environmentObject(store)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
+                .preferredColorScheme(.light)
                 .id(appLanguage.rawValue)
                 .frame(minWidth: CGFloat(MainWindowModel.minimumWidth), minHeight: CGFloat(MainWindowModel.minimumHeight))
                 .background(MainWindowConfigurator())
@@ -89,6 +92,7 @@ struct SkillsCopilotApp: App {
             SettingsView()
                 .environmentObject(store)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
+                .preferredColorScheme(.light)
                 .id(appLanguage.rawValue)
         }
     }

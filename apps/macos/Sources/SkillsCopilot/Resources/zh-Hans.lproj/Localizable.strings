@@ -53,6 +53,7 @@
 "toolbar.help" = "帮助";
 "toolbar.settings" = "设置";
 "toolbar.profile" = "用户";
+"toolbar.project.noneSelected" = "未选择项目";
 "project.globalRoots" = "全局 root";
 "project.chooseShortPrompt" = "选择项目以包含项目范围技能。";
 "project.chooseMenu" = "选择…";

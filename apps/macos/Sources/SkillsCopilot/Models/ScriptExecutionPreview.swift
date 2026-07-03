@@ -74,6 +74,14 @@ struct ScriptExecutionPreview: Codable, Identifiable, Hashable {
 
     var id: String { "\(skillID):\(scriptName ?? "default")" }
 
+    var hasOverviewSignal: Bool {
+        !risks.isEmpty
+            || executionAllowed
+            || (!commandPreview.isEmpty && confirmationRequired)
+            || auditStatus == .requiresConfirmation
+            || auditStatus == .audited
+    }
+
     enum CodingKeys: String, CodingKey {
         case skillID = "skill_id"
         case instanceID = "instance_id"

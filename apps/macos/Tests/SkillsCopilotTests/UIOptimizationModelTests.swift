@@ -4,7 +4,7 @@ import Foundation
 struct UIOptimizationModelTests {
     func run() throws {
         try sidebarSelectionUsesNativeMutedTreatment()
-        try listPagesUseUnifiedGlassToolbarAndCardRows()
+        try listPagesUseUnifiedToolbarAndWhiteCardRows()
         try secondarySidebarListsUseGlobalTreatment()
         try skillListDensityMatchesOptimizationPlan()
         try emptyAgentSkillListsExplainAgentContext()
@@ -35,7 +35,7 @@ struct UIOptimizationModelTests {
         )
     }
 
-    private func listPagesUseUnifiedGlassToolbarAndCardRows() throws {
+    private func listPagesUseUnifiedToolbarAndWhiteCardRows() throws {
         try expectEqual(
             UIOptimizationPresentation.unifiedToolbar.spansEntireWindow,
             true,
@@ -68,8 +68,8 @@ struct UIOptimizationModelTests {
         )
         try expectEqual(
             UIOptimizationPresentation.listPage.rowStyle,
-            .materialCard,
-            "Skill and session rows should use spacious material card rows rather than compressed source-list strips."
+            .whiteCard,
+            "Skill and session rows should use spacious white card rows instead of custom translucent chrome."
         )
         try expectEqual(
             UIOptimizationPresentation.listPage.minimumCardRowHeight,
@@ -203,8 +203,8 @@ struct UIOptimizationModelTests {
     private func detailFeedbackUsesInlineToast() throws {
         try expectEqual(
             UIOptimizationPresentation.detailFeedback.usesOverlayToast,
-            true,
-            "Detail feedback should render as a lightweight toast instead of a full-width content banner."
+            false,
+            "Detail feedback should render inline so it does not cover detail content."
         )
         try expectEqual(
             UIOptimizationPresentation.detailFeedback.maximumWidth,

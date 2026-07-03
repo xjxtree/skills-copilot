@@ -209,7 +209,7 @@ const checks = [
       && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
       && /@Published private\(set\) var hasCompletedStartupLoad = false/.test(files.store)
-      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?await loadCleanupQueue\(\)[\s\S]*?await loadCrossAgentComparisons\(\)[\s\S]*?await refreshSelectedAgentLocalSessions\(\)[\s\S]*?await loadCurrentAgentConfigDocuments\(agent:\s*agentFilter\.rawValue\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
+      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?async let cleanupQueueLoad:\s*Void = loadCleanupQueueIfNeeded\(\)[\s\S]*?async let crossAgentComparisonsLoad:\s*Void = loadCrossAgentComparisonsIfNeeded\(\)[\s\S]*?async let localSessionsLoad:\s*Void = refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?async let currentConfigDocumentsLoad:\s*Void = loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*startupAgentFilter\.rawValue\)[\s\S]*?_ = await \([\s\S]*?cleanupQueueLoad[\s\S]*?crossAgentComparisonsLoad[\s\S]*?localSessionsLoad[\s\S]*?currentConfigDocumentsLoad[\s\S]*?\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
       && /"startup\.catalog" = "Loading catalog data\.\.\."/.test(files.localizable),
   },
   {
@@ -306,10 +306,10 @@ const checks = [
   {
     label: "skill rows expose issue badges and navigation affordance",
     text: files.sidebar + "\n" + files.storeList,
-    passed: /SkillRow\([\s\S]*?skill:\s*skill,[\s\S]*?issueCount:\s*issueIndicatorCount\(for:\s*skill\),[\s\S]*?isSelected:\s*store\.selectedSidebarSelection == \.skill\(skill\.id\)/.test(files.sidebar)
-      && /private func issueIndicatorCount\(for skill:\s*SkillRecord\)[\s\S]*?SkillListModel\.issueIndicatorCount\([\s\S]*?skills:\s*store\.skills,[\s\S]*?findings:\s*store\.findings,[\s\S]*?conflicts:\s*store\.conflicts/.test(files.sidebar)
-      && /static func issueIndicatorCount\([\s\S]*?displayFindings\(skills:\s*skills,\s*findings:\s*findings\)[\s\S]*?\.filter \{ \$0\.instanceId == skill\.id \}[\s\S]*?sameAgentConflictGroups[\s\S]*?statusIssueCount/.test(files.storeList)
-      && /private struct SkillRow:[\s\S]*?let issueCount:\s*Int[\s\S]*?let isSelected:\s*Bool[\s\S]*?if issueCount > 0[\s\S]*?exclamationmark\.triangle\.fill[\s\S]*?chevron\.right[\s\S]*?\.listPageCardBackground\(isSelected:\s*isSelected\)[\s\S]*?accessibilityAddTraits\(isSelected \? \.isSelected : \[\]\)/.test(files.sidebar)
+    passed: /SkillRow\([\s\S]*?skill:\s*skill,[\s\S]*?issueCount:\s*store\.issueIndicatorCount\(for:\s*skill\),[\s\S]*?isSelected:\s*store\.selectedSidebarSelection == \.skill\(skill\.id\)[\s\S]*?\.equatable\(\)/.test(files.sidebar)
+      && /var filteredSkillListResult:[\s\S]*?let issueIndex = SkillListModel\.issueIndex\([\s\S]*?issueCountsBySkillID:\s*issueIndex\.issueCountsBySkillID[\s\S]*?func issueIndicatorCount\(for skill:\s*SkillRecord\) -> Int[\s\S]*?filteredSkillListResult\.issueCount\(for:\s*skill\.id\)/.test(files.storeDerivedState)
+      && /struct SkillIssueIndex[\s\S]*?let issueCountsBySkillID:\s*\[SkillRecord\.ID:\s*Int\][\s\S]*?static func issueIndex\([\s\S]*?displayFindings\(skills:\s*skills,\s*findings:\s*findings\)[\s\S]*?sameAgentConflictGroups\(skills:\s*skills,\s*conflicts:\s*conflicts\)[\s\S]*?statusIssueCount/.test(files.storeList)
+      && /private struct SkillRow:\s*View,\s*Equatable[\s\S]*?let issueCount:\s*Int[\s\S]*?let isSelected:\s*Bool[\s\S]*?if issueCount > 0[\s\S]*?exclamationmark\.triangle\.fill[\s\S]*?chevron\.right[\s\S]*?\.listPageCardBackground\(isSelected:\s*isSelected\)[\s\S]*?accessibilityAddTraits\(isSelected \? \.isSelected : \[\]\)/.test(files.sidebar)
       && !/private struct SkillRow:[\s\S]*?foregroundStyle\(isSelected \? (?:Color\.)?\.?white/.test(files.sidebar),
   },
   {
@@ -936,12 +936,14 @@ const customChecks = [
   {
     label: "detail feedback renders inline and success messages auto-dismiss",
     passed: /struct DetailFeedbackPresentation:[\s\S]*?usesOverlayToast = false[\s\S]*?maximumWidth = 420/.test(files.uiOptimization)
-      && /ScrollViewReader[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*24\)[\s\S]*?detailFeedbackInline[\s\S]*?if store\.selectedSidebarSelection/.test(files.detail)
-      && /private var detailFeedbackInline:[\s\S]*?store\.errorMessage[\s\S]*?DetailFeedbackToast\([\s\S]*?store\.lastMutationMessage[\s\S]*?DetailFeedbackToast\(/.test(files.detail)
+      && /ScrollViewReader[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*24\)[\s\S]*?DetailFeedbackInlineView\([\s\S]*?errorMessage:\s*store\.errorMessage,[\s\S]*?lastMutationMessage:\s*store\.lastMutationMessage[\s\S]*?if store\.selectedSidebarSelection/.test(files.detail)
+      && /private struct DetailFeedbackInlineView:\s*View,\s*Equatable[\s\S]*?let errorMessage:\s*String\?[\s\S]*?let lastMutationMessage:\s*String\?[\s\S]*?DetailFeedbackToast\([\s\S]*?DetailFeedbackToast\(/.test(files.detail)
       && /struct DetailFeedbackToast:[\s\S]*?UIOptimizationPresentation\.detailFeedback\.maximumWidth[\s\S]*?Color\.white/.test(files.detailPrimitives)
       && /@Published private\(set\) var lastMutationMessage:\s*String\?\s*\{[\s\S]*?scheduleLastMutationMessageDismissal\(\)/.test(files.store)
       && /lastMutationMessageDismissTask:[\s\S]*?Task<Void,\s*Never>\?/.test(files.store)
       && /private func scheduleLastMutationMessageDismissal\(\)[\s\S]*?Task\.sleep\(nanoseconds:[\s\S]*?clearLastMutationMessageIfCurrent/.test(files.store)
+      && /@Published var errorMessage:\s*String\?\s*\{[\s\S]*?scheduleErrorMessageDismissal\(\)/.test(files.store)
+      && /private func scheduleErrorMessageDismissal\(\)[\s\S]*?Task\.sleep\(nanoseconds:[\s\S]*?clearErrorMessageIfCurrent/.test(files.store)
       && !/ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?detailFeedbackOverlay/.test(files.detail)
       && !/allowsHitTesting\(false\)[\s\S]*?DetailFeedbackToast/.test(files.detail),
   },
@@ -1081,9 +1083,9 @@ const customChecks = [
   },
   {
     label: "detail adopting-agent summary uses store-derived cache instead of scanning skills in body",
-    passed: /@Published private\(set\) var adoptingAgentSummaryBySkillID: \[SkillRecord\.ID: String\] = \[:\]/.test(files.store)
-      && /didSet\s*{[\s\S]*?invalidateFilteredSkillListCache\(\)[\s\S]*?rebuildAdoptingAgentSummaryCache\(\)[\s\S]*?}/.test(files.store)
-      && /private func rebuildAdoptingAgentSummaryCache\(\)[\s\S]*?SkillListModel\.adoptingAgentSummaryBySkillID\(for:\s*skills\)/.test(files.store)
+    passed: /private\(set\) var adoptingAgentSummaryBySkillID: \[SkillRecord\.ID: String\] = \[:\]/.test(files.store)
+      && /didSet\s*{[\s\S]*?invalidateFilteredSkillListCache\(\)[\s\S]*?invalidateAdoptingAgentSummaryCache\(\)[\s\S]*?}/.test(files.store)
+      && /func ensureAdoptingAgentSummaryCache\(\)[\s\S]*?SkillListModel\.adoptingAgentSummaryBySkillID\(for:\s*skills\)[\s\S]*?isAdoptingAgentSummaryCacheValid = true/.test(files.store)
       && /adoptingAgentSummary:\s*store\.adoptingAgentSummary\(for:\s*skill\)/.test(files.detail)
       && /func adoptingAgentSummary\(for skill: SkillRecord\) -> String/.test(files.storeDerivedState)
       && !/private func adoptingAgentSummary\(for skill: SkillRecord\)[\s\S]*?store\.skills[\s\S]*?\.filter/.test(files.detail),

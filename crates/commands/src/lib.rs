@@ -933,9 +933,31 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
 }
 
 pub fn list_adapter_diagnostics(ctx: &AdapterContext) -> Vec<AdapterDiagnosticsRecord> {
+    list_adapter_diagnostics_for_agents(ctx, &[])
+}
+
+pub fn list_adapter_diagnostics_for_agents(
+    ctx: &AdapterContext,
+    agents: &[&str],
+) -> Vec<AdapterDiagnosticsRecord> {
+    let agent_filter = if agents.is_empty() {
+        None
+    } else {
+        Some(
+            agents
+                .iter()
+                .map(|agent| agent.to_ascii_lowercase())
+                .collect::<BTreeSet<_>>(),
+        )
+    };
     let capabilities = list_adapter_capabilities(ctx);
     supported_scan_adapters()
         .into_iter()
+        .filter(|adapter| {
+            agent_filter
+                .as_ref()
+                .is_none_or(|agents| agents.contains(adapter.id().as_str()))
+        })
         .filter_map(|adapter| {
             let capability = capabilities
                 .iter()

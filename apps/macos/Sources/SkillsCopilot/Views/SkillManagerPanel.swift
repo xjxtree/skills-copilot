@@ -119,7 +119,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var isRefreshing: Bool {
@@ -201,7 +201,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var workflowPicker: some View {
@@ -317,7 +317,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var searchResultsSection: some View {
@@ -361,7 +361,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var skillManagerSearchSuggestions: [String] {
@@ -418,7 +418,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var installedActionControls: some View {
@@ -469,7 +469,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var installedResultsSection: some View {
@@ -498,7 +498,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var localLibraryControls: some View {
@@ -519,7 +519,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var localLibraryResultsSection: some View {
@@ -540,7 +540,7 @@ struct SkillManagerPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private func mutationPreview(_ preview: SkillManagerMutationRecord) -> some View {
@@ -632,7 +632,7 @@ struct SkillManagerPanel: View {
                 .textSelection(.enabled)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
             CompactMetadataGrid(rows: preview.compactMetadataRows)
             if !preview.risks.isEmpty {
                 DenseDisclosureList(preview.risks, visibleLimit: 3) { risk in
@@ -755,7 +755,7 @@ struct SkillManagerPanel: View {
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(Color.orange)
@@ -923,7 +923,7 @@ private struct SkillManagerTargetSummary: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.28), in: Capsule())
+        .background(Color.white, in: Capsule())
         .help(agents.map(\.title).joined(separator: ", "))
     }
 
@@ -1003,7 +1003,7 @@ private struct SearchResultRow: View {
             .controlSize(.small)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(result.name)
         .accessibilityValue(result.description ?? result.source ?? "")
@@ -1043,7 +1043,7 @@ private struct InstalledSkillRow: View {
             .disabled(externalMutationDisabled)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(record.name)
         .accessibilityValue(installedSummary)
@@ -1093,7 +1093,7 @@ private struct LocalSkillLibraryRow: View {
             .controlSize(.small)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(skill.name)
         .accessibilityValue(skill.displayPath)

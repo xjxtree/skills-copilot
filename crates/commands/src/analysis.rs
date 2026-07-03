@@ -1,15 +1,17 @@
 use super::*;
 
 pub fn list_conflicts(catalog: &Catalog) -> Result<Vec<ConflictGroupRecord>, CommandError> {
+    let groups = catalog.list_conflict_groups()?;
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let records = catalog.list_skill_records()?;
     let agent_by_instance_id = records
         .iter()
         .map(|record| (record.id.as_str(), record.agent.as_str()))
         .collect::<BTreeMap<_, _>>();
-    Ok(runtime_conflict_groups(
-        catalog.list_conflict_groups()?,
-        &agent_by_instance_id,
-    ))
+    Ok(runtime_conflict_groups(groups, &agent_by_instance_id))
 }
 
 pub fn analyze_catalog(

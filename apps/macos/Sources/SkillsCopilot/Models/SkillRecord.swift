@@ -911,9 +911,15 @@ struct RuleFindingRecord: Codable, Identifiable, Hashable {
     let definitionId: String?
     let ruleId: String
     let severity: String
+    let effectiveSeverity: String?
+    let severityOverride: String?
     let message: String
     let suggestion: String?
     let createdAt: Int64
+    let suppressed: Bool
+    let suppressionReason: String?
+    let suppressionNote: String?
+    let ruleTuningUpdatedAt: Int64?
     let triageKey: String
     let triageContext: String
     let triageStatus: String
@@ -926,9 +932,15 @@ struct RuleFindingRecord: Codable, Identifiable, Hashable {
         case definitionId = "definition_id"
         case ruleId = "rule_id"
         case severity
+        case effectiveSeverity = "effective_severity"
+        case severityOverride = "severity_override"
         case message
         case suggestion
         case createdAt = "created_at"
+        case suppressed
+        case suppressionReason = "suppression_reason"
+        case suppressionNote = "suppression_note"
+        case ruleTuningUpdatedAt = "rule_tuning_updated_at"
         case triageKey = "triage_key"
         case triageContext = "triage_context"
         case triageStatus = "triage_status"
@@ -942,9 +954,15 @@ struct RuleFindingRecord: Codable, Identifiable, Hashable {
         definitionId: String?,
         ruleId: String,
         severity: String,
+        effectiveSeverity: String? = nil,
+        severityOverride: String? = nil,
         message: String,
         suggestion: String?,
         createdAt: Int64,
+        suppressed: Bool = false,
+        suppressionReason: String? = nil,
+        suppressionNote: String? = nil,
+        ruleTuningUpdatedAt: Int64? = nil,
         triageKey: String? = nil,
         triageContext: String = "",
         triageStatus: String = "open",
@@ -956,9 +974,15 @@ struct RuleFindingRecord: Codable, Identifiable, Hashable {
         self.definitionId = definitionId
         self.ruleId = ruleId
         self.severity = severity
+        self.effectiveSeverity = effectiveSeverity
+        self.severityOverride = severityOverride
         self.message = message
         self.suggestion = suggestion
         self.createdAt = createdAt
+        self.suppressed = suppressed
+        self.suppressionReason = suppressionReason
+        self.suppressionNote = suppressionNote
+        self.ruleTuningUpdatedAt = ruleTuningUpdatedAt
         self.triageKey = triageKey ?? id
         self.triageContext = triageContext
         self.triageStatus = triageStatus
@@ -973,9 +997,15 @@ struct RuleFindingRecord: Codable, Identifiable, Hashable {
         definitionId = try container.decodeIfPresent(String.self, forKey: .definitionId)
         ruleId = try container.decode(String.self, forKey: .ruleId)
         severity = try container.decode(String.self, forKey: .severity)
+        effectiveSeverity = try container.decodeIfPresent(String.self, forKey: .effectiveSeverity)
+        severityOverride = try container.decodeIfPresent(String.self, forKey: .severityOverride)
         message = try container.decode(String.self, forKey: .message)
         suggestion = try container.decodeIfPresent(String.self, forKey: .suggestion)
         createdAt = try container.decode(Int64.self, forKey: .createdAt)
+        suppressed = try container.decodeIfPresent(Bool.self, forKey: .suppressed) ?? false
+        suppressionReason = try container.decodeIfPresent(String.self, forKey: .suppressionReason)
+        suppressionNote = try container.decodeIfPresent(String.self, forKey: .suppressionNote)
+        ruleTuningUpdatedAt = try container.decodeIfPresent(Int64.self, forKey: .ruleTuningUpdatedAt)
         triageKey = try container.decodeIfPresent(String.self, forKey: .triageKey) ?? id
         triageContext = try container.decodeIfPresent(String.self, forKey: .triageContext) ?? ""
         triageStatus = try container.decodeIfPresent(String.self, forKey: .triageStatus) ?? "open"

@@ -40,6 +40,60 @@ enum PermissionDisplayModel {
         )
     }
 
+    static func hasOverviewSignal(for permissions: JSONValue) -> Bool {
+        guard case .object(let object) = permissions, !object.isEmpty else {
+            return false
+        }
+
+        if hasNonEmptyStringArray(object["tools"]) || hasNonEmptyStringArray(object["files"]) {
+            return true
+        }
+
+        if let network = object["network"] {
+            guard case .string(let text) = network else {
+                return true
+            }
+            if text != "none" {
+                return true
+            }
+        }
+
+        if let exec = object["exec"] {
+            guard case .bool(let requested) = exec else {
+                return true
+            }
+            if requested {
+                return true
+            }
+        }
+
+        if let requiresHuman = object["requires_human"] {
+            guard case .bool(let required) = requiresHuman else {
+                return true
+            }
+            if required {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func hasNonEmptyStringArray(_ value: JSONValue?) -> Bool {
+        guard let value else {
+            return false
+        }
+        guard case .array(let items) = value else {
+            return true
+        }
+        return items.contains { item in
+            guard case .string(let text) = item else {
+                return true
+            }
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     private static func stringArrayValue(_ value: JSONValue?) -> String {
         guard let value else {
             return UIStrings.permissionUndeclared

@@ -90,7 +90,7 @@ struct SkillAnalysisPreparePanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -154,7 +154,7 @@ struct SkillAnalysisPrepareResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var includedSkillsText: String {
@@ -227,7 +227,7 @@ struct LongTextReviewBlock: View {
             )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         }
         .sheet(isPresented: $isShowingDetails) {
             LongTextDetailSheet(title: title, text: displayText, renderMode: renderMode)
@@ -274,7 +274,7 @@ struct LongTextDetailSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
             }
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         }
         .padding()
         .frame(minWidth: 680, minHeight: 460)
@@ -393,7 +393,7 @@ struct MarkdownCodeBlockView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 4))
         } else {
             ScrollView(.horizontal) {
                 Text(value)
@@ -403,7 +403,7 @@ struct MarkdownCodeBlockView: View {
             }
             .scrollIndicators(.automatic)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 4))
         }
     }
 }
@@ -477,7 +477,7 @@ struct MarkdownTableView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 4))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -497,7 +497,7 @@ struct MarkdownTableSummaryView: View {
         .foregroundStyle(.secondary)
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 4))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -534,7 +534,7 @@ struct MarkdownTableCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var titleText: String {
@@ -664,7 +664,7 @@ struct LLMAssistPanel: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -739,7 +739,7 @@ struct LLMPrepareResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -849,7 +849,7 @@ struct LLMPromptPreviewCard: View {
             }
         }
         .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -966,7 +966,7 @@ struct LLMPromptSendResultView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var resultTint: Color {
@@ -1035,7 +1035,7 @@ struct LLMReviewPreviewView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var redactionSummary: String {
@@ -1124,7 +1124,7 @@ struct ScriptExecutionSafetyCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -1160,7 +1160,7 @@ struct ScriptExecutionPreviewView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -1191,7 +1191,7 @@ struct ScriptExecutionPreviewView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var statusTitle: String {

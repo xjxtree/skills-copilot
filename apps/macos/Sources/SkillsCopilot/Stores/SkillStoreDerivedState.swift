@@ -114,7 +114,8 @@ extension SkillStore {
     }
 
     func adoptingAgentSummary(for skill: SkillRecord) -> String {
-        adoptingAgentSummaryBySkillID[skill.id] ?? DisplayText.agent(skill.agent)
+        ensureAdoptingAgentSummaryCache()
+        return adoptingAgentSummaryBySkillID[skill.id] ?? DisplayText.agent(skill.agent)
     }
 
     var enabledCount: Int {
@@ -177,7 +178,7 @@ extension SkillStore {
         return message
     }
 
-    var filteredSkills: [SkillRecord] {
+    var filteredSkillListResult: FilteredSkillListResult {
         let normalizedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let cacheKey = FilteredSkillListCacheKey(
             dataRevision: filteredSkillListDataRevision,
@@ -190,9 +191,14 @@ extension SkillStore {
         )
 
         if let filteredSkillListCache, filteredSkillListCache.key == cacheKey {
-            return filteredSkillListCache.skills
+            return filteredSkillListCache.result
         }
 
+        let issueIndex = SkillListModel.issueIndex(
+            skills: skills,
+            findings: findings,
+            conflicts: conflicts
+        )
         let visibleSkills = SkillListModel.filteredAndSorted(
             skills: skills,
             findings: findings,
@@ -202,10 +208,23 @@ extension SkillStore {
             stateFilter: stateFilter,
             scopeFilter: skillScopeFilter,
             sortOrder: sortOrder,
-            sortDirection: sortDirection
+            sortDirection: sortDirection,
+            issueIndex: issueIndex
         )
-        filteredSkillListCache = FilteredSkillListCache(key: cacheKey, skills: visibleSkills)
-        return visibleSkills
+        let result = FilteredSkillListResult(
+            skills: visibleSkills,
+            issueCountsBySkillID: issueIndex.issueCountsBySkillID
+        )
+        filteredSkillListCache = FilteredSkillListCache(key: cacheKey, result: result)
+        return result
+    }
+
+    var filteredSkills: [SkillRecord] {
+        filteredSkillListResult.skills
+    }
+
+    func issueIndicatorCount(for skill: SkillRecord) -> Int {
+        filteredSkillListResult.issueCount(for: skill.id)
     }
 
     var filteredSkillGroups: [SkillAgentGroup] {

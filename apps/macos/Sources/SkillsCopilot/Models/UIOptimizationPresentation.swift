@@ -5,7 +5,7 @@ enum UIOptimizationPresentation {
     static let listPage = ListPagePresentation()
     static let sidebarShell = SidebarShellPresentation()
     static let sidebarSelection = SidebarSelectionPresentation()
-    static let materialCornerRadius = sidebarSelection.rowCornerRadius
+    static let surfaceCornerRadius = sidebarSelection.rowCornerRadius
     static let sessionList = SidebarSecondaryListPresentation()
     static let configList = SidebarSecondaryListPresentation()
     static let skillList = SkillListPresentation()
@@ -31,7 +31,7 @@ enum ListPageSearchScope: Equatable {
 }
 
 enum ListPageRowStyle: Equatable {
-    case materialCard
+    case whiteCard
 }
 
 enum SettingsNavigationStyle: Equatable {
@@ -78,7 +78,7 @@ struct UnifiedToolbarPresentation: Equatable {
 struct ListPagePresentation: Equatable {
     let filterStyle = ListPageFilterStyle.capsule
     let searchScope = ListPageSearchScope.localList
-    let rowStyle = ListPageRowStyle.materialCard
+    let rowStyle = ListPageRowStyle.whiteCard
     let minimumCardRowHeight = 58
     let cardRowSpacing = 8
     let cardCornerRadius = 8
@@ -160,7 +160,7 @@ struct DetailHeaderPresentation: Equatable {
 }
 
 struct DetailFeedbackPresentation: Equatable {
-    let usesOverlayToast = true
+    let usesOverlayToast = false
     let maximumWidth = 420
     let cornerRadius = 8
 }

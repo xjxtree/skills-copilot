@@ -109,7 +109,7 @@ struct BatchSkillOperationSheet: View {
             }
         }
         .frame(minHeight: 190, maxHeight: 240)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             if store.filteredSkills.isEmpty {
                 Text(UIStrings.noSkillsMatchSearch)
@@ -169,7 +169,7 @@ struct BatchSkillOperationSheet: View {
                 .foregroundStyle(.secondary)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         } else {
             Text(UIStrings.batchToggleBoundary)
                 .font(.caption)
@@ -177,7 +177,7 @@ struct BatchSkillOperationSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 }
@@ -265,7 +265,7 @@ private struct BatchTogglePreviewSummary: View {
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
 
             DisclosureGroup(isExpanded: $showAffected) {
                 BatchToggleItemList(items: preview.affectedSkills, emptyMessage: UIStrings.batchToggleNoAffectedSkills)
@@ -306,7 +306,7 @@ private struct BatchToggleCountPill: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

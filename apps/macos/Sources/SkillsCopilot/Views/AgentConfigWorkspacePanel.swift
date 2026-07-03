@@ -410,7 +410,7 @@ private struct AgentConfigSnapshotDetailPanel: View {
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
 
             if let previewError {
                 ErrorBanner(message: previewError)
@@ -519,7 +519,7 @@ private struct AgentConfigAgentIcon: View {
             }
         }
         .frame(width: 36, height: 36)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 9))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityLabel(filter.title)
     }
 }
@@ -585,7 +585,7 @@ private struct ConfigCodeCard<Toolbar: View, Content: View>: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 

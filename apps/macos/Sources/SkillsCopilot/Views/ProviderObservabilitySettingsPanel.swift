@@ -43,7 +43,7 @@ struct ProviderObservabilitySettingsPanel: View {
                     .foregroundStyle(.secondary)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .adaptiveMaterialSurface()
+                    .nativePanelSurface()
             }
 
             Spacer(minLength: 0)
@@ -163,7 +163,7 @@ private struct ProviderObservabilityDashboardSettingsView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var callCount: Int {
@@ -206,7 +206,7 @@ private struct ProviderObservabilityEmptyDashboard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -254,7 +254,7 @@ private struct ProviderObservabilityLogSettingsView: View {
                     .foregroundStyle(.secondary)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
             } else {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(visibleRows) { row in
@@ -269,14 +269,14 @@ private struct ProviderObservabilityLogSettingsView: View {
                         .foregroundStyle(.secondary)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var filterBar: some View {
@@ -289,7 +289,7 @@ private struct ProviderObservabilityLogSettingsView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
                 filterPicker(title: UIStrings.providerObservabilityStatusRows, selection: $statusFilter, options: optionValues(result.callRows.map(\.status)))
@@ -324,7 +324,7 @@ private struct ProviderObservabilityLogSettingsView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func optionValues(_ values: [String]) -> [String] {
@@ -399,7 +399,7 @@ private struct ProviderObservabilitySettingsCallRow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.32), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var callTitle: String {
@@ -432,6 +432,6 @@ private struct MetadataPill: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
     }
 }

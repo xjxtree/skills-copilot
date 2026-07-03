@@ -64,7 +64,7 @@ struct HeaderView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 
     private var headerMetrics: some View {
@@ -212,7 +212,7 @@ struct RecentActivityCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
     }
 }
 
@@ -231,7 +231,7 @@ struct HistorySection: View {
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .adaptiveMaterialSurface()
+            .nativePanelSurface()
 
             RecentActivityCard(events: events, isLoading: isLoading)
         }
@@ -264,7 +264,7 @@ struct SkillActivityRow: View {
             Spacer()
         }
         .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var activityTitle: String {
@@ -309,7 +309,7 @@ struct CountBadge: View {
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-            .background(.quaternary.opacity(0.26), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
         .help(UIStrings.text("detail.countBadge.help", "Show \(label)"))
@@ -383,7 +383,7 @@ struct SkillDetailCard: View {
                 .foregroundStyle(.secondary)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .adaptiveMaterialSurface()
+                .nativePanelSurface()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -463,7 +463,7 @@ struct ToolGlobalPreviewCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveMaterialSurface()
+        .nativePanelSurface()
         .sheet(item: $preview) { preview in
             ToolGlobalInstallPreviewSheet(
                 preview: preview,

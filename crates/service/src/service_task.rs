@@ -33,9 +33,11 @@ impl ServiceHost {
         let skills = self.list_visible_skill_records(&catalog)?;
         let findings = list_findings(&catalog)?;
         let conflicts = list_conflicts(&catalog)?;
-        let analysis = analyze_catalog(&catalog, &adapter_ctx)?;
-        let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
         let agent_filter = params.agent.as_deref().filter(|agent| !agent.is_empty());
+        let adapter_diagnostics = match agent_filter {
+            Some(agent) => list_adapter_diagnostics_for_agents(&adapter_ctx, &[agent]),
+            None => list_adapter_diagnostics(&adapter_ctx),
+        };
         let requested_ids = candidate_instance_ids
             .iter()
             .map(String::as_str)
@@ -68,37 +70,88 @@ impl ServiceHost {
         let mut skipped_stages = Vec::new();
         let mut blocker_codes = Vec::new();
         let mut aggregation_notes = Vec::new();
+        let mut used_metadata_prefilter = false;
         if candidate_records.len() > scan_limit {
+            let affinity_by_instance_id = candidate_records
+                .iter()
+                .map(|skill| {
+                    (
+                        skill.id.clone(),
+                        task_readiness_record_affinity(skill, &task_terms),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
             candidate_records.sort_by(|left, right| {
-                task_readiness_record_affinity(right, &task_terms)
-                    .cmp(&task_readiness_record_affinity(left, &task_terms))
+                let right_affinity = affinity_by_instance_id
+                    .get(right.id.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                let left_affinity = affinity_by_instance_id
+                    .get(left.id.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                right_affinity
+                    .cmp(&left_affinity)
                     .then_with(|| right.enabled.cmp(&left.enabled))
                     .then_with(|| left.agent.cmp(&right.agent))
                     .then_with(|| left.name.cmp(&right.name))
                     .then_with(|| left.id.cmp(&right.id))
             });
             candidate_records.truncate(scan_limit);
+            used_metadata_prefilter = true;
             skipped_stages.push("candidate-scan-overflow");
             blocker_codes.push("bounded-candidate-scan");
             let note = format!(
-                "Task readiness evaluated the top {} of {} visible candidate(s) using deterministic prefiltering.",
+                "Task readiness prefiltered the top {} of {} visible candidate(s) using deterministic metadata.",
                 candidate_records.len(),
                 total_candidate_count
             );
             missing_gap_notes.push(note.clone());
             aggregation_notes.push(note);
         }
+        if used_metadata_prefilter && requested_ids.is_empty() {
+            let detail_scan_limit =
+                task_readiness_detail_scan_limit(limit, candidate_records.len());
+            if candidate_records.len() > detail_scan_limit {
+                let prefiltered_count = candidate_records.len();
+                candidate_records.truncate(detail_scan_limit);
+                skipped_stages.push("detail-scan-prefilter");
+                blocker_codes.push("bounded-detail-scan");
+                let note = format!(
+                    "Task readiness deep-evaluated the top {} of {} prefiltered candidate(s).",
+                    candidate_records.len(),
+                    prefiltered_count
+                );
+                missing_gap_notes.push(note.clone());
+                aggregation_notes.push(note);
+            }
+        }
 
         let findings_by_instance = task_readiness_findings_by_instance(&findings);
         let findings_by_definition = task_readiness_findings_by_definition(&findings);
         let conflicts_by_instance = task_readiness_conflicts_by_instance(&conflicts);
         let conflicts_by_definition = task_readiness_conflicts_by_definition(&conflicts);
-        let analysis_by_instance = task_readiness_analysis_by_instance(&analysis.groups);
+        let analysis_by_instance = if agent_filter.is_some() {
+            BTreeMap::new()
+        } else {
+            let analysis = analyze_catalog(&catalog, &adapter_ctx)?;
+            task_readiness_analysis_by_instance(&analysis.groups)
+        };
+
+        let candidate_ids = candidate_records
+            .iter()
+            .map(|skill| skill.id.clone())
+            .collect::<Vec<_>>();
+        let candidate_details = catalog.list_skill_details_by_ids(&candidate_ids)?;
+        let details_by_id = candidate_details
+            .iter()
+            .map(|detail| (detail.id.as_str(), detail))
+            .collect::<BTreeMap<_, _>>();
 
         let mut evidence = Vec::new();
         let mut candidates = Vec::new();
         for skill in &candidate_records {
-            let Some(detail) = catalog.get_skill_detail(&skill.id)? else {
+            let Some(detail) = details_by_id.get(skill.id.as_str()).copied() else {
                 missing_gap_notes.push(format!(
                     "Catalog row `{}` did not have detail evidence available.",
                     redact_for_llm_preview(&skill.id)
@@ -106,21 +159,21 @@ impl ServiceHost {
                 continue;
             };
             let related_findings = task_readiness_related_findings(
-                &detail,
+                detail,
                 &findings_by_instance,
                 &findings_by_definition,
             );
             let related_conflicts = task_readiness_related_conflicts(
-                &detail,
+                detail,
                 &conflicts_by_instance,
                 &conflicts_by_definition,
             );
-            let related_analysis = task_readiness_related_analysis(&detail, &analysis_by_instance);
+            let related_analysis = task_readiness_related_analysis(detail, &analysis_by_instance);
             let diagnostic = adapter_diagnostics
                 .iter()
                 .find(|diagnostic| diagnostic.agent == detail.agent);
             let quality = task_readiness_quality_signal(
-                &detail,
+                detail,
                 &related_findings,
                 &related_conflicts,
                 &related_analysis,
@@ -128,7 +181,7 @@ impl ServiceHost {
             );
             let candidate = task_readiness_candidate(
                 &task_terms,
-                &detail,
+                detail,
                 TaskReadinessCandidateSignals {
                     findings: &related_findings,
                     conflicts: &related_conflicts,

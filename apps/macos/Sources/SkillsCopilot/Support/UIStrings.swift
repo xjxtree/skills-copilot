@@ -174,6 +174,7 @@ enum UIStrings {
     static var noSkillsInCatalog: String { text("empty.noSkillsInCatalog", "No skills in catalog") }
     static var noSkillsMatchSearch: String { text("empty.noSkillsMatchSearch", "No skills match this search") }
     static var noProjectSelected: String { text("project.none", "No Project") }
+    static var toolbarNoProjectSelected: String { text("toolbar.project.noneSelected", "No project selected") }
     static var projectChoosePrompt: String { text("project.choosePrompt", "Choose a project or OpenClaw workspace directory to scan project-scoped Claude, Codex, opencode, and workspace-scoped OpenClaw skills.") }
     static var projectSelectedSource: String { text("project.source.selected", "Selected project") }
     static var projectGlobalRootsOnly: String { text("project.source.globalOnly", "No project: global roots only") }

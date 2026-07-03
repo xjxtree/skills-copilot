@@ -19,7 +19,7 @@ struct LocalSkillMapSelectedContext: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -81,7 +81,7 @@ struct LocalSkillMapResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var nodeCount: Int {
@@ -174,7 +174,7 @@ struct LocalSkillMapNodeList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -232,7 +232,7 @@ struct LocalSkillMapEdgeList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -286,7 +286,7 @@ struct LocalSkillMapClusterList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
