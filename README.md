@@ -28,23 +28,23 @@ surface.
 - No credential storage in project directories, SQLite, logs, prompts,
   screenshots, reports, or response artifacts.
 - No Developer ID signing, notarization, DMG, updater, or release automation by
-  default. The v0.1.0 macOS ZIPs are manually scoped release artifacts with
+  default. The v0.1.1 macOS ZIPs are manually scoped release artifacts with
   ad-hoc signed app bundles.
 
 ## Download
 
 Download the latest macOS app from the GitHub release page:
 
-- [Agent Copilot v0.1.0](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.0)
+- [Agent Copilot v0.1.1](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.1)
 - Apple Silicon ZIP:
-  [AgentCopilot-0.1.0-macos-arm64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.0/AgentCopilot-0.1.0-macos-arm64.zip)
+  [AgentCopilot-0.1.1-macos-arm64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.1/AgentCopilot-0.1.1-macos-arm64.zip)
 - Intel ZIP:
-  [AgentCopilot-0.1.0-macos-x86_64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.0/AgentCopilot-0.1.0-macos-x86_64.zip)
+  [AgentCopilot-0.1.1-macos-x86_64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.1/AgentCopilot-0.1.1-macos-x86_64.zip)
 
 Architecture note: choose `arm64` for Apple Silicon Macs and `x86_64` for Intel
 Macs.
 
-The v0.1.0 app is distributed as an ad-hoc signed and unnotarized macOS app
+The v0.1.1 app is distributed as an ad-hoc signed and unnotarized macOS app
 bundle inside a ZIP file. On first launch, macOS Gatekeeper may require explicit
 user approval. Use Finder's **Open** action from the context menu, or approve the
 app from **System Settings > Privacy & Security** if macOS blocks the first

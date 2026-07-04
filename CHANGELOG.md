@@ -7,6 +7,17 @@ available from git history when needed.
 
 - No unreleased public-release notes yet.
 
+## 0.1.1 - 2026-07-04
+
+- Reworked Provider Observability settings into a startup-loaded lightweight
+  dashboard with concise summary metrics and bounded chart rows.
+- Removed the settings-local observability build button, raw log list, search
+  filters, evidence rows, and long explanatory text from that surface.
+- Fixed Provider Observability settings hangs seen while scrolling generated
+  data by avoiding heavy detail rows and AppKit text-selection churn.
+- Keeps v0.1.1 distribution as architecture-specific, ad-hoc signed,
+  unnotarized macOS ZIP assets for `arm64` and `x86_64`.
+
 ## 0.1.0 - 2026-07-04
 
 - First manually scoped public macOS ZIP release for Agent Copilot, with
