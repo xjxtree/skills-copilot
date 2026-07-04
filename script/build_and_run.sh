@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE="${1:-run}"
+MODE="run"
+TARGET_ARCH="${AGENT_COPILOT_ARCH:-}"
 APP_NAME="AgentCopilot"
 BUNDLE_ID="dev.agent-copilot.native"
 LEGACY_APP_NAME="SkillsCopilot"
@@ -24,11 +25,96 @@ ICON_SOURCE="$MACOS_DIR/Sources/SkillsCopilot/Resources/AppIcon.icns"
 ICON_TARGET="$APP_RESOURCES/AppIcon.icns"
 SWIFT_RESOURCES="$MACOS_DIR/Sources/SkillsCopilot/Resources"
 LAUNCHED_PID=""
+CARGO_TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+CARGO_BIN="${CARGO:-cargo}"
+CARGO_ENV=()
+if command -v rustup >/dev/null 2>&1; then
+  if [[ -z "${CARGO:-}" ]]; then
+    CARGO_BIN="$(rustup which cargo)"
+  fi
+  if [[ -z "${RUSTC:-}" ]]; then
+    CARGO_ENV+=(RUSTC="$(rustup which rustc)")
+  fi
+fi
+
+usage() {
+  cat >&2 <<USAGE
+usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only] [--arch arm64|x86_64]
+
+Builds dist/$APP_NAME.app before running the selected mode.
+Set AGENT_COPILOT_ARCH or pass --arch to cross-build architecture-specific bundles.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --arch)
+      if [[ $# -lt 2 ]]; then
+        echo "--arch requires arm64 or x86_64" >&2
+        usage
+        exit 2
+      fi
+      TARGET_ARCH="$2"
+      shift 2
+      ;;
+    --arch=*)
+      TARGET_ARCH="${1#--arch=}"
+      shift
+      ;;
+    run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify|--build-only|build-only)
+      MODE="$1"
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+RUST_TARGET=""
+SWIFT_TRIPLE=""
+case "$TARGET_ARCH" in
+  "")
+    ;;
+  arm64|aarch64)
+    TARGET_ARCH="arm64"
+    RUST_TARGET="aarch64-apple-darwin"
+    SWIFT_TRIPLE="arm64-apple-macosx$MIN_SYSTEM_VERSION"
+    ;;
+  x86_64|x64|amd64|intel)
+    TARGET_ARCH="x86_64"
+    RUST_TARGET="x86_64-apple-darwin"
+    SWIFT_TRIPLE="x86_64-apple-macosx$MIN_SYSTEM_VERSION"
+    ;;
+  *)
+    echo "unsupported architecture: $TARGET_ARCH" >&2
+    usage
+    exit 2
+    ;;
+esac
+
 SWIFT_BUILD_ARGS=(--package-path "$MACOS_DIR")
 if [[ -n "${SWIFTPM_SCRATCH_PATH:-}" ]]; then
   SWIFT_BUILD_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
 fi
-CARGO_TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+if [[ -n "$SWIFT_TRIPLE" ]]; then
+  SWIFT_BUILD_ARGS+=(--triple "$SWIFT_TRIPLE")
+fi
+
+CARGO_BUILD_ARGS=(-p skills-copilot-service)
+if [[ -n "$RUST_TARGET" ]]; then
+  if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -qx "$RUST_TARGET"; then
+    echo "missing Rust target $RUST_TARGET; run: rustup target add $RUST_TARGET" >&2
+    exit 1
+  fi
+  CARGO_BUILD_ARGS+=(--target "$RUST_TARGET")
+fi
 
 canonical_app_bundle() {
   if [[ -d "$APP_BUNDLE" ]]; then
@@ -238,11 +324,15 @@ print(matches[0])
 
 terminate_existing_app_instances
 
-cargo build -p skills-copilot-service
+env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
 swift build "${SWIFT_BUILD_ARGS[@]}"
 
 SWIFT_BIN_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
-RUST_SERVICE="$CARGO_TARGET_ROOT/debug/skills-copilot-service"
+if [[ -n "$RUST_TARGET" ]]; then
+  RUST_SERVICE="$CARGO_TARGET_ROOT/$RUST_TARGET/debug/skills-copilot-service"
+else
+  RUST_SERVICE="$CARGO_TARGET_ROOT/debug/skills-copilot-service"
+fi
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
@@ -320,6 +410,8 @@ open_app() {
 }
 
 case "$MODE" in
+  --build-only|build-only)
+    ;;
   run)
     open_app
     ;;
@@ -339,7 +431,7 @@ case "$MODE" in
     wait_for_visible_window "$LAUNCHED_PID" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    usage
     exit 2
     ;;
 esac

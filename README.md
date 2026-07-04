@@ -1,5 +1,7 @@
 # Agent Copilot
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Agent Copilot is a native macOS control surface for inspecting local coding-agent
 sessions, skills, configuration snapshots, and validation evidence without
 expanding the repository's write, script, credential, cloud, or telemetry
@@ -26,15 +28,20 @@ surface.
 - No credential storage in project directories, SQLite, logs, prompts,
   screenshots, reports, or response artifacts.
 - No signing, notarization, DMG, updater, or release automation by default.
-  The v0.1.0 macOS ZIP is a manually scoped release artifact.
+  The v0.1.0 macOS ZIPs are manually scoped release artifacts.
 
 ## Download
 
 Download the latest macOS app from the GitHub release page:
 
 - [Agent Copilot v0.1.0](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.0)
-- Direct ZIP asset:
-  [AgentCopilot-0.1.0-macos.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.0/AgentCopilot-0.1.0-macos.zip)
+- Apple Silicon ZIP:
+  [AgentCopilot-0.1.0-macos-arm64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.0/AgentCopilot-0.1.0-macos-arm64.zip)
+- Intel ZIP:
+  [AgentCopilot-0.1.0-macos-x86_64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.0/AgentCopilot-0.1.0-macos-x86_64.zip)
+
+Architecture note: choose `arm64` for Apple Silicon Macs and `x86_64` for Intel
+Macs.
 
 The v0.1.0 app is distributed as an unsigned and unnotarized macOS app bundle
 inside a ZIP file. On first launch, macOS Gatekeeper may require explicit user
@@ -43,7 +50,7 @@ from **System Settings > Privacy & Security** if macOS blocks the first launch.
 
 ## Use The App
 
-1. Download `AgentCopilot-0.1.0-macos.zip` from the release page.
+1. Download the ZIP that matches your Mac architecture from the release page.
 2. Unzip it and move `AgentCopilot.app` to `/Applications` or another local
    folder you control.
 3. Open `AgentCopilot.app`.
@@ -72,6 +79,14 @@ corepack enable
 pnpm install
 pnpm build:macos
 open dist/AgentCopilot.app
+```
+
+Build an architecture-specific app bundle without launching it:
+
+```sh
+pnpm build:macos:arm64
+rustup target add x86_64-apple-darwin
+pnpm build:macos:x86_64
 ```
 
 Run the main local validation gates:

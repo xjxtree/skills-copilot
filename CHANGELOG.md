@@ -9,7 +9,8 @@ available from git history when needed.
 
 ## 0.1.0 - 2026-07-04
 
-- First manually scoped public macOS ZIP release for Agent Copilot.
+- First manually scoped public macOS ZIP release for Agent Copilot, with
+  architecture-specific `arm64` and `x86_64` release assets.
 - Ships `AgentCopilot.app` version `0.1.0` with the Rust stdio service bundled
   behind the native macOS shell.
 - Includes local-first agent session, skill catalog, config snapshot, validation
@@ -17,7 +18,7 @@ available from git history when needed.
 - Keeps safety boundaries in force: no telemetry, cloud sync, default provider
   calls, hidden apply/write paths, credential persistence in project files, or
   skill-script execution from scans/previews.
-- Distribution note: the v0.1.0 ZIP is unsigned and unnotarized; Developer ID
+- Distribution note: the v0.1.0 ZIPs are unsigned and unnotarized; Developer ID
   signing, notarization, DMG packaging, updater feeds, and release automation
   remain future scoped work.
 

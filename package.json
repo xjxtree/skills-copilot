@@ -8,6 +8,8 @@
     "build": "./script/build_and_run.sh --verify",
     "dev:macos": "./script/build_and_run.sh",
     "build:macos": "./script/build_and_run.sh --verify",
+    "build:macos:arm64": "./script/build_and_run.sh --build-only --arch arm64",
+    "build:macos:x86_64": "./script/build_and_run.sh --build-only --arch x86_64",
     "generate:app-icon": "./script/generate_app_icon.sh",
     "audit": "pnpm audit:rust && pnpm audit:node",
     "audit:rust": "cargo audit",
