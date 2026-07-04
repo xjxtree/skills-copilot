@@ -5,6 +5,24 @@ available from git history when needed.
 
 ## Unreleased
 
+- No unreleased public-release notes yet.
+
+## 0.1.0 - 2026-07-04
+
+- First manually scoped public macOS ZIP release for Agent Copilot.
+- Ships `AgentCopilot.app` version `0.1.0` with the Rust stdio service bundled
+  behind the native macOS shell.
+- Includes local-first agent session, skill catalog, config snapshot, validation
+  evidence, and guarded optional provider preview surfaces.
+- Keeps safety boundaries in force: no telemetry, cloud sync, default provider
+  calls, hidden apply/write paths, credential persistence in project files, or
+  skill-script execution from scans/previews.
+- Distribution note: the v0.1.0 ZIP is unsigned and unnotarized; Developer ID
+  signing, notarization, DMG packaging, updater feeds, and release automation
+  remain future scoped work.
+
+## Internal V2.98 Line
+
 - Added the `skillManager.*` service protocol surface for manager-backed skill
   search, list, install, remove, update, local template creation, and guarded
   local deletion across Claude Code, Pi, opencode, Codex, Hermes, and OpenClaw.

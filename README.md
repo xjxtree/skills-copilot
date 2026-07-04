@@ -25,8 +25,61 @@ surface.
   LLM output.
 - No credential storage in project directories, SQLite, logs, prompts,
   screenshots, reports, or response artifacts.
-- No public distribution, signing, notarization, DMG, ZIP, updater, or release
-  automation by default.
+- No signing, notarization, DMG, updater, or release automation by default.
+  The v0.1.0 macOS ZIP is a manually scoped release artifact.
+
+## Download
+
+Download the latest macOS app from the GitHub release page:
+
+- [Agent Copilot v0.1.0](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.0)
+- Direct ZIP asset:
+  [AgentCopilot-0.1.0-macos.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.0/AgentCopilot-0.1.0-macos.zip)
+
+The v0.1.0 app is distributed as an unsigned and unnotarized macOS app bundle
+inside a ZIP file. On first launch, macOS Gatekeeper may require explicit user
+approval. Use Finder's **Open** action from the context menu, or approve the app
+from **System Settings > Privacy & Security** if macOS blocks the first launch.
+
+## Use The App
+
+1. Download `AgentCopilot-0.1.0-macos.zip` from the release page.
+2. Unzip it and move `AgentCopilot.app` to `/Applications` or another local
+   folder you control.
+3. Open `AgentCopilot.app`.
+4. Use **Scan** or project context controls inside the app to inspect supported
+   local agent sessions, skill roots, and config snapshots.
+
+Agent Copilot is local-first. It does not send provider requests unless optional
+provider features are configured and a prompt is previewed and explicitly
+confirmed.
+
+## Build From Source
+
+Prerequisites:
+
+- macOS 13 or newer.
+- Xcode Command Line Tools.
+- Rust toolchain with Cargo.
+- Node.js with Corepack/pnpm.
+
+Build and run the macOS app:
+
+```sh
+git clone https://github.com/xjxtree/agent-copilot.git
+cd agent-copilot
+corepack enable
+pnpm install
+pnpm build:macos
+open dist/AgentCopilot.app
+```
+
+Run the main local validation gates:
+
+```sh
+pnpm check:macos
+pnpm check:privacy
+```
 
 ## Documentation
 
