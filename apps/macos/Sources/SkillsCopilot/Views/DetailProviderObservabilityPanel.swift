@@ -120,7 +120,7 @@ struct ProviderObservabilityResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var callCount: Int {
@@ -207,7 +207,7 @@ struct ProviderObservabilityChartsPanel: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var statusChartRows: [ProviderObservabilityChartRow] {
@@ -461,7 +461,7 @@ private struct ProviderObservabilityChartCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var maxValue: Double {
@@ -594,7 +594,7 @@ struct ProviderObservabilityDimensionList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -650,7 +650,7 @@ struct ProviderObservabilityModelTaskHistoryList: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -710,7 +710,7 @@ struct ProviderObservabilityCallList: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -774,7 +774,7 @@ struct ProviderObservabilityIssueList: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -827,7 +827,7 @@ struct ProviderObservabilityHintList: View {
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
         }

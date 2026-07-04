@@ -10,7 +10,7 @@ struct SafetyPill: View {
             .font(.caption2.bold())
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(Color.white, in: Capsule())
+            .background(Color.agentCopilotPanelBackground, in: Capsule())
             .foregroundStyle(.secondary)
     }
 }
@@ -58,7 +58,7 @@ struct SummaryChip: View {
         }
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityValue(value)
@@ -180,7 +180,7 @@ struct DenseCountBadge: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color.white, in: Capsule())
+            .background(Color.agentCopilotPanelBackground, in: Capsule())
     }
 }
 
@@ -344,7 +344,7 @@ struct DetailFeedbackToast: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(maxWidth: CGFloat(UIOptimizationPresentation.detailFeedback.maximumWidth), alignment: .leading)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.detailFeedback.cornerRadius)))
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.detailFeedback.cornerRadius)))
             .overlay(
                 RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.detailFeedback.cornerRadius))
                     .stroke(color.opacity(0.18), lineWidth: 1)

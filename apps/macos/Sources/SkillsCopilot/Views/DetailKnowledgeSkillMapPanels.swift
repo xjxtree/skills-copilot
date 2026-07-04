@@ -108,7 +108,7 @@ struct KnowledgeSearchResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var resultCount: Int {
@@ -188,7 +188,7 @@ struct KnowledgeRowsList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -212,7 +212,7 @@ struct KnowledgeTokenFlow: View {
                             .font(.caption2)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(Color.white, in: Capsule())
+                            .background(Color.agentCopilotPanelBackground, in: Capsule())
                     }
                 }
             }
@@ -249,7 +249,7 @@ struct KnowledgeFacetList: View {
                                 .foregroundStyle(.secondary)
                         }
                         .padding(8)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
             }
@@ -452,7 +452,7 @@ struct SkillLifecycleTimelineResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var eventCount: Int {
@@ -586,7 +586,7 @@ struct SkillLifecycleTimelineRowItem: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var iconName: String {

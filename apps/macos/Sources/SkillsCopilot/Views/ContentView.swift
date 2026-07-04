@@ -738,7 +738,7 @@ private struct TitlebarAgentIconBadge: View {
             }
         }
         .frame(width: size, height: size)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: badgeCornerRadius))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: badgeCornerRadius))
     }
 
     private var imageSize: CGFloat {
@@ -1159,7 +1159,7 @@ private struct AppStartupLoadingView: View {
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white)
+        .background(Color.agentCopilotWindowBackground)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(state.message)
         .accessibilityValue("\(Int((state.progress * 100).rounded()))%")

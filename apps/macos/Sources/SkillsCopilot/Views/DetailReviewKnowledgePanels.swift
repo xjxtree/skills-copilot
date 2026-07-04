@@ -138,7 +138,7 @@ struct RoutingAccuracyDashboardView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var windowLabel: String {
@@ -230,7 +230,7 @@ struct RoutingAccuracyHistoryList: View {
                         }
                         .padding(9)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
             }
@@ -469,7 +469,7 @@ struct StaleDriftResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var candidateCount: Int {
@@ -550,7 +550,7 @@ struct StaleDriftCandidateList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -760,7 +760,7 @@ struct SimilarSkillGroupingResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var groupCount: Int {
@@ -860,7 +860,7 @@ struct SimilarSkillGroupCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var iconName: String {
@@ -932,7 +932,7 @@ struct SimilarSkillMemberList: View {
                         RoutingInlineList(title: UIStrings.knowledgeSafetyFlags, empty: UIStrings.taskBenchmarkNoSafetyFlags, values: member.safetyFlags, systemImage: "checkmark.shield")
                     }
                     .padding(8)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
@@ -967,7 +967,7 @@ struct SimilarSkillPill: View {
             .font(.caption2.bold())
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(Color.white, in: Capsule())
+            .background(Color.agentCopilotPanelBackground, in: Capsule())
             .lineLimit(1)
     }
 }
@@ -1076,7 +1076,7 @@ struct CapabilityTaxonomyResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var domainCount: Int {
@@ -1141,7 +1141,7 @@ struct CapabilityCoverageList: View {
                             RoutingInlineList(title: UIStrings.knowledgeGapNotes, empty: UIStrings.routingAccuracyNoGaps, values: row.notes, systemImage: "puzzlepiece.extension")
                         }
                         .padding(8)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
             }
@@ -1203,7 +1203,7 @@ struct CapabilityDomainCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1240,7 +1240,7 @@ struct CapabilityList: View {
                         RoutingInlineList(title: UIStrings.knowledgeSafetyFlags, empty: UIStrings.taskBenchmarkNoSafetyFlags, values: capability.safetyFlags, systemImage: "checkmark.shield")
                     }
                     .padding(8)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
@@ -1286,7 +1286,7 @@ struct CapabilitySkillList: View {
                         RoutingInlineList(title: UIStrings.knowledgeSafetyFlags, empty: UIStrings.taskBenchmarkNoSafetyFlags, values: skill.safetyFlags, systemImage: "checkmark.shield")
                     }
                     .padding(6)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
@@ -1408,7 +1408,7 @@ struct WorkspaceReadinessResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var scoreLabel: String {
@@ -1502,7 +1502,7 @@ struct WorkspaceReadinessChecklistList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -1545,7 +1545,7 @@ struct WorkspaceReadinessAgentList: View {
                             RoutingInlineList(title: UIStrings.crossAgentReadinessEvidence, empty: UIStrings.crossAgentReadinessNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
                         }
                         .padding(8)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
             }
@@ -1596,7 +1596,7 @@ struct WorkspaceReadinessCapabilityList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }

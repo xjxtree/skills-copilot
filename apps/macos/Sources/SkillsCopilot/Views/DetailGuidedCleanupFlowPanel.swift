@@ -135,7 +135,7 @@ struct GuidedCleanupFlowResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var stepCount: Int {
@@ -224,7 +224,7 @@ struct GuidedCleanupRecordResultView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -316,7 +316,7 @@ struct GuidedCleanupStepCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -359,7 +359,7 @@ struct GuidedCleanupIssueGroupList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -419,7 +419,7 @@ struct GuidedCleanupSafeActionList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -492,7 +492,7 @@ struct GuidedCleanupSafeLinkButton: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -561,7 +561,7 @@ struct GuidedCleanupRecordedStepCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

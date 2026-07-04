@@ -264,7 +264,7 @@ struct SkillActivityRow: View {
             Spacer()
         }
         .padding(10)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var activityTitle: String {
@@ -309,7 +309,7 @@ struct CountBadge: View {
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
         .help(UIStrings.text("detail.countBadge.help", "Show \(label)"))

@@ -61,6 +61,7 @@
 "refresh.details" = "Refresh Details";
 "settings.window.title" = "Settings";
 "settings.sidebar.subtitle" = "Immediate app preferences";
+"settings.nav.appearance.subtitle" = "Theme and privacy";
 "settings.nav.language.subtitle" = "Interface and privacy";
 "settings.nav.provider.subtitle" = "Connection and Keychain";
 "settings.nav.observability.subtitle" = "Usage and logs";
@@ -827,6 +828,14 @@
 "permissions.undeclaredNote" = "Permissions are undeclared or unavailable in the catalog payload; this is not a safe or unsafe verdict.";
 "permissions.declarationNote" = "These values are permission declarations from the catalog payload, not a safety verdict.";
 "settings.service" = "Service";
+"settings.appearance.title" = "Appearance";
+"settings.appearance.boundary" = "Appearance preferences are stored locally in the app. They do not write agent config, skill files, provider settings, credentials, reports, or prompts.";
+"settings.appearance.appliesImmediately" = "The main window and Settings update immediately after selection.";
+"settings.theme.title" = "Theme";
+"settings.theme.selection" = "Theme";
+"settings.theme.followSystem" = "Follow System";
+"settings.theme.light" = "Light";
+"settings.theme.dark" = "Dark";
 "settings.language.title" = "Language";
 "settings.language.selection" = "App language";
 "settings.language.english" = "English";

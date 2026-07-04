@@ -519,7 +519,7 @@ private struct AgentConfigAgentIcon: View {
             }
         }
         .frame(width: 36, height: 36)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 9))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityLabel(filter.title)
     }
 }

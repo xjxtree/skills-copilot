@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 private enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
-    case language
+    case appearance
     case provider
     case providerObservability
     case service
@@ -12,8 +12,8 @@ private enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .language:
-            return UIStrings.languageSettings
+        case .appearance:
+            return UIStrings.appearanceSettings
         case .provider:
             return UIStrings.aiProviderSettings
         case .providerObservability:
@@ -25,8 +25,8 @@ private enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
 
     var subtitle: String {
         switch self {
-        case .language:
-            return UIStrings.settingsNavLanguageSubtitle
+        case .appearance:
+            return UIStrings.settingsNavAppearanceSubtitle
         case .provider:
             return UIStrings.settingsNavProviderSubtitle
         case .providerObservability:
@@ -38,8 +38,8 @@ private enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
 
     var systemImage: String {
         switch self {
-        case .language:
-            return "globe"
+        case .appearance:
+            return "paintpalette"
         case .provider:
             return "key"
         case .providerObservability:
@@ -54,12 +54,13 @@ struct SettingsView: View {
     @EnvironmentObject private var store: SkillStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppLanguage.storageKey) private var appLanguageRawValue = AppLanguage.defaultLanguage.rawValue
+    @AppStorage(AppTheme.storageKey) private var appThemeRawValue = AppTheme.defaultTheme.rawValue
     @AppStorage(DisplayText.screenshotPrivacyModeStorageKey) private var screenshotPrivacyModeEnabled = true
     @State private var providerDraft = AIProviderSettingsDraft(status: .unavailable())
     @State private var hasEditedProviderDraft = false
     @State private var isConfirmingProviderTest = false
     @State private var showsServiceDiagnostics = false
-    @State private var selectedSettingsTab: SettingsTab = .language
+    @State private var selectedSettingsTab: SettingsTab = .appearance
     @State private var providerAutosaveTask: Task<Void, Never>?
 
     private var providerValidationMessage: String? {
@@ -86,6 +87,15 @@ struct SettingsView: View {
         }
     }
 
+    private var selectedTheme: Binding<AppTheme> {
+        Binding {
+            AppTheme.fromStorage(appThemeRawValue)
+        } set: { theme in
+            appThemeRawValue = theme.rawValue
+            MainWindowCoordinator.applyAppearance(theme)
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             settingsSidebar
@@ -101,10 +111,10 @@ struct SettingsView: View {
             minHeight: CGFloat(UIOptimizationPresentation.settings.minimumHeight),
             idealHeight: CGFloat(UIOptimizationPresentation.settings.idealHeight)
         )
-        .background(SettingsWindowConfigurator())
+        .background(SettingsWindowConfigurator(theme: AppTheme.fromStorage(appThemeRawValue)))
         .task(id: selectedSettingsTab) {
             switch selectedSettingsTab {
-            case .language, .service:
+            case .appearance, .service:
                 break
             case .provider:
                 await store.loadAIProviderStatusIfNeeded()
@@ -184,8 +194,8 @@ struct SettingsView: View {
     @ViewBuilder
     private var selectedSettingsPane: some View {
         switch selectedSettingsTab {
-        case .language:
-            languageSection
+        case .appearance:
+            appearanceSection
         case .provider:
             providerSection
         case .providerObservability:
@@ -195,15 +205,35 @@ struct SettingsView: View {
         }
     }
 
-    private var languageSection: some View {
+    private var appearanceSection: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 SettingsPageHeader(
-                    title: UIStrings.languageSettings,
-                    systemImage: "globe",
-                    boundary: UIStrings.languageBoundary,
+                    title: UIStrings.appearanceSettings,
+                    systemImage: "paintpalette",
+                    boundary: UIStrings.appearanceBoundary,
                     badge: UIStrings.text("settings.localOnly", "App-local")
                 )
+
+                SettingsSectionCard(
+                    title: UIStrings.themeSettings,
+                    systemImage: "circle.lefthalf.filled"
+                ) {
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
+                        GridRow {
+                            Text(UIStrings.themeSelection)
+                                .foregroundStyle(.secondary)
+                            Picker(UIStrings.themeSelection, selection: selectedTheme) {
+                                ForEach(AppTheme.allCases) { theme in
+                                    Text(theme.title).tag(theme)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(width: 360)
+                        }
+                    }
+                }
 
                 SettingsSectionCard(
                     title: UIStrings.text("settings.preferences", "Preferences"),
@@ -238,7 +268,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                SettingsBanner(message: UIStrings.languageAppliesImmediately, systemImage: "checkmark.circle.fill", color: .green)
+                SettingsBanner(message: UIStrings.appearanceAppliesImmediately, systemImage: "checkmark.circle.fill", color: .green)
 
                 Spacer(minLength: 0)
             }
@@ -608,7 +638,7 @@ private struct SettingsSidebarItem: View {
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.settings.sectionCornerRadius))
-                        .fill(Color.white)
+                        .fill(Color.agentCopilotPanelBackground)
                 }
             }
         }
@@ -649,6 +679,8 @@ private struct SettingsPageHeader: View {
 }
 
 private struct SettingsWindowConfigurator: NSViewRepresentable {
+    let theme: AppTheme
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         view.isHidden = true
@@ -663,6 +695,7 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
     private func configure(windowFor view: NSView) {
         DispatchQueue.main.async {
             guard let window = view.window else { return }
+            window.appearance = theme.nsAppearance
             window.title = UIStrings.settingsWindowTitle
             window.minSize = NSSize(
                 width: CGFloat(UIOptimizationPresentation.settings.minimumWidth),

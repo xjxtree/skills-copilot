@@ -8,6 +8,8 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const files = {
   app: await read("apps/macos/Sources/SkillsCopilot/App/SkillsCopilotApp.swift"),
+  appTheme: await read("apps/macos/Sources/SkillsCopilot/Models/AppTheme.swift"),
+  appThemePlatform: await read("apps/macos/Sources/SkillsCopilot/App/AppThemePlatform.swift"),
   mainWindowCoordinator: await read("apps/macos/Sources/SkillsCopilot/App/MainWindowCoordinator.swift"),
   mainWindowModel: await read("apps/macos/Sources/SkillsCopilot/Models/MainWindowModel.swift"),
   content: await read("apps/macos/Sources/SkillsCopilot/Views/ContentView.swift"),
@@ -118,17 +120,21 @@ const forbiddenProtocolMethods = supportedMethods.filter((method) => /^(ipc|side
 
 const checks = [
   {
-    label: "app window defines stable minimum size and fixed light appearance",
-    text: files.app + "\n" + files.mainWindowCoordinator + "\n" + files.mainWindowModel,
+    label: "app window defines stable minimum size and user-selectable appearance",
+    text: files.app + "\n" + files.appTheme + "\n" + files.appThemePlatform + "\n" + files.mainWindowCoordinator + "\n" + files.mainWindowModel,
     passed: /static let minimumWidth = 1349/.test(files.mainWindowModel)
       && /static let minimumHeight = 600/.test(files.mainWindowModel)
       && /\.frame\(minWidth:\s*CGFloat\(MainWindowModel\.minimumWidth\),\s*minHeight:\s*CGFloat\(MainWindowModel\.minimumHeight\)\)/.test(files.app)
       && /applicationDidFinishLaunching[\s\S]*?MainWindowCoordinator\.configureApplicationAppearance\(\)/.test(files.app)
-      && /ContentView\(\)[\s\S]*?\.preferredColorScheme\(\.light\)/.test(files.app)
-      && /SettingsView\(\)[\s\S]*?\.preferredColorScheme\(\.light\)/.test(files.app)
-      && /static let appAppearance = NSAppearance\(named:\s*\.aqua\)/.test(files.mainWindowCoordinator)
-      && /static func configureApplicationAppearance[\s\S]*?app\.appearance = appAppearance/.test(files.mainWindowCoordinator)
-      && /static func configureWindow[\s\S]*?window\.appearance = appAppearance[\s\S]*?window\.isMovableByWindowBackground = false/.test(files.mainWindowCoordinator),
+      && /@AppStorage\(AppTheme\.storageKey\)[\s\S]*?appThemeRawValue/.test(files.app)
+      && /let appTheme = AppTheme\.fromStorage\(appThemeRawValue\)/.test(files.app)
+      && /ContentView\(\)[\s\S]*?\.preferredColorScheme\(appTheme\.colorScheme\)[\s\S]*?MainWindowConfigurator\(theme:\s*appTheme\)/.test(files.app)
+      && /SettingsView\(\)[\s\S]*?\.preferredColorScheme\(appTheme\.colorScheme\)/.test(files.app)
+      && /enum AppTheme:[\s\S]*?case system[\s\S]*?case light[\s\S]*?case dark[\s\S]*?static let defaultTheme = AppTheme\.system/.test(files.appTheme)
+      && /extension AppTheme[\s\S]*?var colorScheme:[\s\S]*?case \.system:[\s\S]*?return nil[\s\S]*?case \.light:[\s\S]*?return \.light[\s\S]*?case \.dark:[\s\S]*?return \.dark/.test(files.appThemePlatform)
+      && /extension AppTheme[\s\S]*?var nsAppearance:[\s\S]*?case \.system:[\s\S]*?return nil[\s\S]*?case \.light:[\s\S]*?NSAppearance\(named:\s*\.aqua\)[\s\S]*?case \.dark:[\s\S]*?NSAppearance\(named:\s*\.darkAqua\)/.test(files.appThemePlatform)
+      && /static func configureApplicationAppearance\(_ theme: AppTheme = \.current,[\s\S]*?app\.appearance = theme\.nsAppearance/.test(files.mainWindowCoordinator)
+      && /static func configureWindow\(_ window: NSWindow,\s*theme: AppTheme = \.current\)[\s\S]*?window\.appearance = theme\.nsAppearance[\s\S]*?window\.isMovableByWindowBackground = false/.test(files.mainWindowCoordinator),
   },
   {
     label: "main shell uses NavigationSplitView",
@@ -204,7 +210,7 @@ const checks = [
     text: files.content + "\n" + files.store + "\n" + files.localizable,
     passed: /ZStack\(alignment:\s*\.topTrailing\)\s*{[\s\S]*?appShell[\s\S]*?\.opacity\(store\.startupLoadingState == nil \? 1 : 0\)[\s\S]*?\.allowsHitTesting\(store\.startupLoadingState == nil\)[\s\S]*?if let state = store\.startupLoadingState[\s\S]*?AppStartupLoadingView\(state:\s*state\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)
       && /\.task\s*{[\s\S]*?await store\.loadAppStartupDataIfNeeded\(\)[\s\S]*?}/.test(files.content)
-      && /private struct AppStartupLoadingView:[\s\S]*?Text\(state\.message\)[\s\S]*?ProgressView\(value:\s*state\.progress\)[\s\S]*?\.background\(Color\.white\)/.test(files.content)
+      && /private struct AppStartupLoadingView:[\s\S]*?Text\(state\.message\)[\s\S]*?ProgressView\(value:\s*state\.progress\)[\s\S]*?\.background\(Color\.agentCopilotWindowBackground\)/.test(files.content)
       && !/if store\.status == nil && store\.skills\.isEmpty[\s\S]*?await store\.reload\(\)/.test(files.content)
       && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
@@ -641,13 +647,14 @@ const checks = [
   {
     label: "settings window uses sidebar navigation and close-only window controls",
     text: files.settings + "\n" + files.uiOptimization + "\n" + files.localizable + "\n" + files.localizableZh,
-    passed: /private enum SettingsTab:[\s\S]*?CaseIterable[\s\S]*?case language[\s\S]*?case provider[\s\S]*?case providerObservability[\s\S]*?case service/.test(files.settings)
+    passed: /private enum SettingsTab:[\s\S]*?CaseIterable[\s\S]*?case appearance[\s\S]*?case provider[\s\S]*?case providerObservability[\s\S]*?case service/.test(files.settings)
       && /HStack\(spacing:\s*0\)[\s\S]*?settingsSidebar[\s\S]*?Divider\(\)[\s\S]*?selectedSettingsPane/.test(files.settings)
       && /private var settingsSidebar:[\s\S]*?ForEach\(SettingsTab\.allCases\)[\s\S]*?SettingsSidebarItem/.test(files.settings)
       && /private var selectedSettingsPane:[\s\S]*?switch selectedSettingsTab[\s\S]*?case \.providerObservability:[\s\S]*?ProviderObservabilitySettingsPanel\(\)/.test(files.settings)
       && /private struct SettingsWindowConfigurator:[\s\S]*?window\.title = UIStrings\.settingsWindowTitle[\s\S]*?window\.styleMask\.remove\(\.miniaturizable\)[\s\S]*?standardWindowButton\(\.miniaturizeButton\)\?\.isHidden = true[\s\S]*?standardWindowButton\(\.zoomButton\)\?\.isHidden = true/.test(files.settings)
       && /navigationStyle = SettingsNavigationStyle\.sidebar[\s\S]*?usesDedicatedSettingsScene = true[\s\S]*?windowControlPolicy = SettingsWindowControlPolicy\.closeOnly[\s\S]*?primarySaveButtonsVisible = false[\s\S]*?sidebarWidth = 190/.test(files.uiOptimization)
       && /"settings\.window\.title"/.test(files.localizable)
+      && /"settings\.nav\.appearance\.subtitle"/.test(files.localizable)
       && /"settings\.nav\.provider\.subtitle"/.test(files.localizableZh)
       && !/TabView\(selection:\s*\$selectedSettingsTab\)/.test(files.settings),
   },
@@ -656,13 +663,15 @@ const checks = [
     text: files.settings,
     passed: /private struct SettingsPageHeader/.test(files.settings)
       && /private struct SettingsSectionCard/.test(files.settings)
-      && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.languageSettings/.test(files.settings)
+      && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.appearanceSettings/.test(files.settings)
+      && /SettingsSectionCard\([\s\S]*?title:\s*UIStrings\.themeSettings/.test(files.settings)
       && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.aiProviderSettings/.test(files.settings)
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.connection"/.test(files.settings)
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.limits"/.test(files.settings)
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.credentialSafety"/.test(files.settings)
       && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.service/.test(files.settings)
       && /DetailMetricGrid\(maxColumns:\s*3/.test(files.settings)
+      && /Picker\(UIStrings\.themeSelection,[\s\S]*?ForEach\(AppTheme\.allCases\)[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings)
       && /Picker\(UIStrings\.languageSelection,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings)
       && /Picker\(UIStrings\.llmProvider,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings),
   },
@@ -710,9 +719,11 @@ const checks = [
     pattern: /private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/,
   },
   {
-    label: "shared surfaces use white native panels",
+    label: "shared surfaces use adaptive native panels",
     text: files.nativePanelSurface,
-    pattern: /RoundedRectangle\(cornerRadius:\s*CGFloat\(UIOptimizationPresentation\.surfaceCornerRadius\)\)[\s\S]*?\.fill\(Color\.white\)/,
+    passed: /RoundedRectangle\(cornerRadius:\s*CGFloat\(UIOptimizationPresentation\.surfaceCornerRadius\)\)[\s\S]*?\.fill\(Color\.agentCopilotPanelBackground\)/.test(files.nativePanelSurface)
+      && /static var agentCopilotPanelBackground:[\s\S]*?Color\(nsColor:\s*\.controlBackgroundColor\)/.test(files.nativePanelSurface)
+      && /static var agentCopilotWindowBackground:[\s\S]*?Color\(nsColor:\s*\.windowBackgroundColor\)/.test(files.nativePanelSurface),
   },
   {
     label: "LLM assist exposes all explicit actions",
@@ -938,7 +949,7 @@ const customChecks = [
     passed: /struct DetailFeedbackPresentation:[\s\S]*?usesOverlayToast = false[\s\S]*?maximumWidth = 420/.test(files.uiOptimization)
       && /ScrollViewReader[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*24\)[\s\S]*?DetailFeedbackInlineView\([\s\S]*?errorMessage:\s*store\.errorMessage,[\s\S]*?lastMutationMessage:\s*store\.lastMutationMessage[\s\S]*?if store\.selectedSidebarSelection/.test(files.detail)
       && /private struct DetailFeedbackInlineView:\s*View,\s*Equatable[\s\S]*?let errorMessage:\s*String\?[\s\S]*?let lastMutationMessage:\s*String\?[\s\S]*?DetailFeedbackToast\([\s\S]*?DetailFeedbackToast\(/.test(files.detail)
-      && /struct DetailFeedbackToast:[\s\S]*?UIOptimizationPresentation\.detailFeedback\.maximumWidth[\s\S]*?Color\.white/.test(files.detailPrimitives)
+      && /struct DetailFeedbackToast:[\s\S]*?UIOptimizationPresentation\.detailFeedback\.maximumWidth[\s\S]*?Color\.agentCopilotPanelBackground/.test(files.detailPrimitives)
       && /@Published private\(set\) var lastMutationMessage:\s*String\?\s*\{[\s\S]*?scheduleLastMutationMessageDismissal\(\)/.test(files.store)
       && /lastMutationMessageDismissTask:[\s\S]*?Task<Void,\s*Never>\?/.test(files.store)
       && /private func scheduleLastMutationMessageDismissal\(\)[\s\S]*?Task\.sleep\(nanoseconds:[\s\S]*?clearLastMutationMessageIfCurrent/.test(files.store)

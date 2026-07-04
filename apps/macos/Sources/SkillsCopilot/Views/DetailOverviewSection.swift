@@ -396,7 +396,7 @@ private struct OverviewRiskPanel: View {
                     }
                     .padding(9)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
 
@@ -499,6 +499,6 @@ private struct DetailSectionTagButton: View {
     }
 
     private var background: some ShapeStyle {
-        isSelected ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.12)) : AnyShapeStyle(Color.white)
+        isSelected ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.12)) : AnyShapeStyle(Color.agentCopilotPanelBackground)
     }
 }

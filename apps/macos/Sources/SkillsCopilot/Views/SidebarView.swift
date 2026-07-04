@@ -738,7 +738,7 @@ private struct SecondarySidebarPaneBackground: ViewModifier {
         content
             .background {
                 Rectangle()
-                    .fill(Color.white)
+                    .fill(Color.agentCopilotPanelBackground)
                     .ignoresSafeArea()
             }
     }
@@ -754,7 +754,7 @@ private extension View {
         if #available(macOS 26.0, *) {
             glassEffect(.regular.interactive(), in: Capsule())
         } else {
-            background(Color.white, in: Capsule())
+            background(Color.agentCopilotPanelBackground, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -767,7 +767,7 @@ private extension View {
         if #available(macOS 26.0, *) {
             glassEffect(.regular.interactive(), in: Circle())
         } else {
-            background(Color.white, in: Circle())
+            background(Color.agentCopilotPanelBackground, in: Circle())
                 .overlay(
                     Circle()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -859,7 +859,7 @@ private struct ListPageTitleBlock: View {
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white, in: Capsule())
+                    .background(Color.agentCopilotPanelBackground, in: Capsule())
             }
         }
         .accessibilityElement(children: .combine)
@@ -1020,11 +1020,11 @@ private struct SidebarFooterToolButton: View {
     }
 
     private var badgeBackground: Color {
-        Color.white
+        Color.agentCopilotPanelBackground
     }
 
     private var buttonBackground: Color {
-        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color.white
+        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color.agentCopilotPanelBackground
     }
 
     private var borderColor: Color {
@@ -1110,7 +1110,7 @@ private struct SidebarNavigationCardButton: View {
     }
 
     private var background: Color {
-        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color.white
+        isSelected ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.14) : Color.agentCopilotPanelBackground
     }
 
     private var borderColor: Color {
@@ -1155,7 +1155,7 @@ private struct SidebarNavigationMetricPill: View {
         .padding(.horizontal, 5)
         .padding(.vertical, 3)
         .background(
-            isSelected ? Color.accentColor.opacity(0.10) : Color.white,
+            isSelected ? Color.accentColor.opacity(0.10) : Color.agentCopilotPanelBackground,
             in: Capsule()
         )
     }
@@ -1301,7 +1301,7 @@ private struct SessionSidebarPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: width, height: height)
-                .background(Color.white, in: Capsule())
+                .background(Color.agentCopilotPanelBackground, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1327,7 +1327,7 @@ private struct SessionSidebarPanel: View {
                 }
             }
             .frame(width: CGFloat(UIOptimizationPresentation.skillList.sortDirectionButtonWidth), height: CGFloat(UIOptimizationPresentation.skillList.filterControlHeight))
-            .background(Color.white, in: Capsule())
+            .background(Color.agentCopilotPanelBackground, in: Capsule())
             .overlay(
                 Capsule()
                     .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1409,7 +1409,7 @@ private struct ListPageCardBackgroundModifier: ViewModifier {
     private var cardFill: AnyShapeStyle {
         isSelected
             ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.16))
-            : AnyShapeStyle(Color.white)
+            : AnyShapeStyle(Color.agentCopilotPanelBackground)
     }
 
     private var borderColor: Color {
@@ -1646,7 +1646,7 @@ private struct SkillSidebarPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: width, height: height)
-                .background(Color.white, in: Capsule())
+                .background(Color.agentCopilotPanelBackground, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1676,7 +1676,7 @@ private struct SkillSidebarPanel: View {
             Image(systemName: "checklist.checked")
                 .foregroundStyle(.primary)
                 .frame(width: CGFloat(UIOptimizationPresentation.skillList.sortDirectionButtonWidth), height: CGFloat(UIOptimizationPresentation.skillList.filterControlHeight))
-                .background(Color.white, in: Capsule())
+                .background(Color.agentCopilotPanelBackground, in: Capsule())
                 .overlay(
                     Capsule()
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -1874,7 +1874,7 @@ private struct SidebarMenuButtonLabel: View {
         .padding(.horizontal, horizontalPadding)
         .frame(minWidth: width, maxWidth: expands ? .infinity : nil, minHeight: height, maxHeight: height)
         .fixedSize(horizontal: !expands, vertical: false)
-        .background(Color.white, in: Capsule())
+        .background(Color.agentCopilotPanelBackground, in: Capsule())
         .overlay(
             Capsule()
                 .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -2059,7 +2059,7 @@ private struct ConfigSidebarPanel: View {
             }
             .foregroundStyle(.primary)
             .frame(width: width, height: height)
-            .background(Color.white, in: Capsule())
+            .background(Color.agentCopilotPanelBackground, in: Capsule())
             .overlay(
                 Capsule()
                     .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
@@ -2404,7 +2404,7 @@ private struct AgentConfigTimelineRow: View {
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -2419,7 +2419,7 @@ private struct TimelinePill: View {
             .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(Color.white, in: Capsule())
+            .background(Color.agentCopilotPanelBackground, in: Capsule())
     }
 }
 
@@ -2444,7 +2444,7 @@ private struct AgentIconBadge: View {
             }
         }
         .frame(width: size, height: size)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: badgeCornerRadius))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: badgeCornerRadius))
     }
 
     private var imageSize: CGFloat {
@@ -2519,7 +2519,7 @@ private struct AgentStatTile: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

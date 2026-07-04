@@ -370,10 +370,19 @@ enum UIStrings {
     static var service: String { text("settings.service", "Service") }
     static var settingsWindowTitle: String { text("settings.window.title", "Settings") }
     static var settingsSidebarSubtitle: String { text("settings.sidebar.subtitle", "Immediate app preferences") }
+    static var settingsNavAppearanceSubtitle: String { text("settings.nav.appearance.subtitle", "Theme and privacy") }
     static var settingsNavLanguageSubtitle: String { text("settings.nav.language.subtitle", "Interface and privacy") }
     static var settingsNavProviderSubtitle: String { text("settings.nav.provider.subtitle", "Connection and Keychain") }
     static var settingsNavObservabilitySubtitle: String { text("settings.nav.observability.subtitle", "Usage and logs") }
     static var settingsNavServiceSubtitle: String { text("settings.nav.service.subtitle", "Local sidecar") }
+    static var appearanceSettings: String { text("settings.appearance.title", "Appearance") }
+    static var appearanceBoundary: String { text("settings.appearance.boundary", "Appearance preferences are stored locally in the app. They do not write agent config, skill files, provider settings, credentials, reports, or prompts.") }
+    static var appearanceAppliesImmediately: String { text("settings.appearance.appliesImmediately", "The main window and Settings update immediately after selection.") }
+    static var themeSettings: String { text("settings.theme.title", "Theme") }
+    static var themeSelection: String { text("settings.theme.selection", "Theme") }
+    static var themeFollowSystem: String { text("settings.theme.followSystem", "Follow System") }
+    static var themeLight: String { text("settings.theme.light", "Light") }
+    static var themeDark: String { text("settings.theme.dark", "Dark") }
     static var languageSettings: String { text("settings.language.title", "Language") }
     static var languageSelection: String { text("settings.language.selection", "App language") }
     static var languageEnglish: String { text("settings.language.english", "English") }

@@ -11,10 +11,16 @@ struct LocalizationModelTests {
         try expectEqual(AppLanguage.fromStorage("en"), .english, "English language storage should parse")
         try expectEqual(AppLanguage.fromStorage("zh-Hans"), .simplifiedChinese, "Simplified Chinese language storage should parse")
         try expectEqual(AppLanguage.fromStorage("fr"), .english, "Unsupported language storage should default to English")
+        try expectEqual(AppTheme.fromStorage(nil), .system, "Missing theme storage should follow the system")
+        try expectEqual(AppTheme.fromStorage("light"), .light, "Light theme storage should parse")
+        try expectEqual(AppTheme.fromStorage("dark"), .dark, "Dark theme storage should parse")
+        try expectEqual(AppTheme.fromStorage("blue"), .system, "Unsupported theme storage should follow the system")
 
         UIStrings.use(.english)
         try expectEqual(UIStrings.scan, "Scan", "English scan label should load from en resources")
-        try expectEqual(UIStrings.languageSettings, "Language", "English language settings label should load")
+        try expectEqual(UIStrings.appearanceSettings, "Appearance", "English appearance settings label should load")
+        try expectEqual(UIStrings.themeFollowSystem, "Follow System", "English system theme label should load")
+        try expectEqual(UIStrings.themeDark, "Dark", "English dark theme label should load")
         try expectEqual(UIStrings.scannedSkills(2), "Scanned 2 skills across supported adapters.", "English formatted scan summary should preserve arguments")
 
         UIStrings.use(.simplifiedChinese)
@@ -23,7 +29,9 @@ struct LocalizationModelTests {
             throw NativeModelTestFailure(description: "Chinese localization resources should be visible at runtime: paths=\(diagnostics.paths)")
         }
         try expectEqual(UIStrings.scan, "扫描", "Chinese scan label should load from zh-Hans resources")
-        try expectEqual(UIStrings.languageSettings, "语言", "Chinese language settings label should load")
+        try expectEqual(UIStrings.appearanceSettings, "外观", "Chinese appearance settings label should load")
+        try expectEqual(UIStrings.themeFollowSystem, "跟随系统", "Chinese system theme label should load")
+        try expectEqual(UIStrings.themeDark, "黑色主题", "Chinese dark theme label should load")
         try expectEqual(UIStrings.aiProviderSettings, "AI 提供方", "Chinese provider settings label should load")
         try expectEqual(UIStrings.service, "服务", "Chinese service label should load")
         try expectEqual(UIStrings.scannedSkills(2), "已扫描受支持 adapter 中的 2 个技能。", "Chinese formatted scan summary should preserve arguments")

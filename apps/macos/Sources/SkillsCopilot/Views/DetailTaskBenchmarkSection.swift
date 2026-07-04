@@ -171,7 +171,7 @@ struct RoutingRegressionPanel: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -350,7 +350,7 @@ struct RoutingRegressionItemList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -426,7 +426,7 @@ struct TaskBenchmarkListView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -484,7 +484,7 @@ struct TaskBenchmarkEvaluationView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func readOnlyValue(_ isBlocked: Bool) -> String {
@@ -548,7 +548,7 @@ struct TaskBenchmarkEvaluationList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }

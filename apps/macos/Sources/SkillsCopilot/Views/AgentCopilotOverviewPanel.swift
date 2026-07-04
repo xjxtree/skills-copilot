@@ -200,7 +200,7 @@ private struct LocalSessionContentFilterBar: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(
-            isSelected ? tint.opacity(0.16) : Color.white,
+            isSelected ? tint.opacity(0.16) : Color.agentCopilotPanelBackground,
             in: RoundedRectangle(cornerRadius: 6)
         )
         .overlay(
@@ -283,7 +283,7 @@ private struct LocalSessionContentItemRow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         .onHover { isHovering in
             isHoveringActions = isHovering
         }
@@ -448,7 +448,7 @@ private struct McpServerPreviewPanel: View {
                         }
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }

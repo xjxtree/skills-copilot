@@ -266,7 +266,7 @@ struct UIOptimizationModelTests {
         try expectEqual(
             UIOptimizationPresentation.settings.sidebarWidth,
             190,
-            "Settings sidebar should reserve stable width for language, provider, monitoring, and service categories."
+            "Settings sidebar should reserve stable width for appearance, provider, monitoring, and service categories."
         )
     }
 

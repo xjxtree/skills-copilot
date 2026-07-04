@@ -632,7 +632,7 @@ struct SkillManagerPanel: View {
                 .textSelection(.enabled)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
             CompactMetadataGrid(rows: preview.compactMetadataRows)
             if !preview.risks.isEmpty {
                 DenseDisclosureList(preview.risks, visibleLimit: 3) { risk in
@@ -923,7 +923,7 @@ private struct SkillManagerTargetSummary: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color.white, in: Capsule())
+        .background(Color.agentCopilotPanelBackground, in: Capsule())
         .help(agents.map(\.title).joined(separator: ", "))
     }
 
@@ -1003,7 +1003,7 @@ private struct SearchResultRow: View {
             .controlSize(.small)
         }
         .padding(10)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(result.name)
         .accessibilityValue(result.description ?? result.source ?? "")
@@ -1043,7 +1043,7 @@ private struct InstalledSkillRow: View {
             .disabled(externalMutationDisabled)
         }
         .padding(10)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(record.name)
         .accessibilityValue(installedSummary)
@@ -1093,7 +1093,7 @@ private struct LocalSkillLibraryRow: View {
             .controlSize(.small)
         }
         .padding(10)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(skill.name)
         .accessibilityValue(skill.displayPath)

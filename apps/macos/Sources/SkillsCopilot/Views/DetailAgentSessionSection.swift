@@ -57,7 +57,7 @@ struct AgentTraceImportPanel: View {
                         .font(.system(.callout, design: .monospaced))
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 82, maxHeight: 120)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
 
@@ -181,7 +181,7 @@ struct AgentSessionSkillReviewPanel: View {
                         .font(.system(.callout, design: .monospaced))
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 84, maxHeight: 126)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
 
@@ -322,7 +322,7 @@ struct LocalSessionPreviewPanel: View {
                                 }
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                                .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                     }
@@ -348,14 +348,14 @@ struct LocalSessionPreviewPanel: View {
                         }
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func rootLabel(_ root: LocalSessionPreviewRoot) -> String {
@@ -418,7 +418,7 @@ struct AgentSessionSkillReviewListView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -511,7 +511,7 @@ struct AgentSessionSkillReviewRecordView: View {
         }
         .padding(compact ? 0 : 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(compact ? Color.clear : Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(compact ? Color.clear : Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var outcomeTint: Color {
@@ -603,7 +603,7 @@ struct AgentSessionInterferenceList: View {
                     }
                     .padding(compact ? 0 : 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(compact ? Color.clear : Color.white, in: RoundedRectangle(cornerRadius: 6))
+                    .background(compact ? Color.clear : Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
@@ -669,7 +669,7 @@ struct AgentTraceImportListView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -740,7 +740,7 @@ struct AgentTraceImportRecordView: View {
         }
         .padding(compact ? 0 : 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(compact ? Color.clear : Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(compact ? Color.clear : Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var outcomeTint: Color {

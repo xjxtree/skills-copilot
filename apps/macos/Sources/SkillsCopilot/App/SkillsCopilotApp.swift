@@ -28,18 +28,26 @@ struct SkillsCopilotApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = SkillStore(service: ServiceClient())
     @AppStorage(AppLanguage.storageKey) private var appLanguageRawValue = AppLanguage.defaultLanguage.rawValue
+    @AppStorage(AppTheme.storageKey) private var appThemeRawValue = AppTheme.defaultTheme.rawValue
 
     var body: some Scene {
         let appLanguage = UIStrings.use(AppLanguage.fromStorage(appLanguageRawValue))
+        let appTheme = AppTheme.fromStorage(appThemeRawValue)
 
         WindowGroup(UIStrings.appWindowTitle) {
             ContentView()
                 .environmentObject(store)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
-                .preferredColorScheme(.light)
+                .preferredColorScheme(appTheme.colorScheme)
                 .id(appLanguage.rawValue)
                 .frame(minWidth: CGFloat(MainWindowModel.minimumWidth), minHeight: CGFloat(MainWindowModel.minimumHeight))
-                .background(MainWindowConfigurator())
+                .background(MainWindowConfigurator(theme: appTheme))
+                .onAppear {
+                    MainWindowCoordinator.applyAppearance(appTheme)
+                }
+                .onChange(of: appThemeRawValue) { newValue in
+                    MainWindowCoordinator.applyAppearance(AppTheme.fromStorage(newValue))
+                }
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -92,8 +100,14 @@ struct SkillsCopilotApp: App {
             SettingsView()
                 .environmentObject(store)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
-                .preferredColorScheme(.light)
+                .preferredColorScheme(appTheme.colorScheme)
                 .id(appLanguage.rawValue)
+                .onAppear {
+                    MainWindowCoordinator.applyAppearance(appTheme)
+                }
+                .onChange(of: appThemeRawValue) { newValue in
+                    MainWindowCoordinator.applyAppearance(AppTheme.fromStorage(newValue))
+                }
         }
     }
 }

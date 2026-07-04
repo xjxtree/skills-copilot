@@ -353,7 +353,7 @@ struct SkillQualityScoreResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var scoreTint: Color {
@@ -411,7 +411,7 @@ struct SkillQualityComponentList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -754,7 +754,7 @@ struct TaskReadinessResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var scoreTint: Color {
@@ -817,7 +817,7 @@ struct TaskReadinessCandidateList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -992,7 +992,7 @@ struct RoutingConfidenceResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var scoreTint: Color {
@@ -1046,7 +1046,7 @@ struct RoutingRouteList: View {
                                     .font(.caption2.bold())
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(Color.white, in: Capsule())
+                                    .background(Color.agentCopilotPanelBackground, in: Capsule())
                             }
                             if !route.summary.isEmpty {
                                 Text(route.summary)
@@ -1061,7 +1061,7 @@ struct RoutingRouteList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -1239,7 +1239,7 @@ struct CrossAgentReadinessResultView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func promptRequestLabel(_ promptRequest: RoutingAccuracyPromptRequest) -> String {
@@ -1281,7 +1281,7 @@ struct CrossAgentReadinessRecommendationView: View {
                             .font(.caption.bold())
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.white, in: Capsule())
+                            .background(Color.agentCopilotPanelBackground, in: Capsule())
                     }
                     if let skill = recommendation.skill {
                         Text(skill.name)
@@ -1394,7 +1394,7 @@ struct CrossAgentReadinessAgentList: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }

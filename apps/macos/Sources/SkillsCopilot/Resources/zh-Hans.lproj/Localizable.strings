@@ -61,6 +61,7 @@
 "refresh.details" = "刷新详情";
 "settings.window.title" = "设置";
 "settings.sidebar.subtitle" = "即时生效的应用偏好";
+"settings.nav.appearance.subtitle" = "主题与隐私";
 "settings.nav.language.subtitle" = "界面与隐私";
 "settings.nav.provider.subtitle" = "连接与钥匙串";
 "settings.nav.observability.subtitle" = "用量与日志";
@@ -827,6 +828,14 @@
 "permissions.undeclaredNote" = "权限在 catalog payload 中未声明或不可用；这不是安全或不安全的判定。";
 "permissions.declarationNote" = "这些值是 catalog payload 中的权限声明，不是安全性判定。";
 "settings.service" = "服务";
+"settings.appearance.title" = "外观";
+"settings.appearance.boundary" = "外观偏好仅保存在应用本地，不会写入 agent 配置、技能文件、提供方设置、凭据、报告或提示词。";
+"settings.appearance.appliesImmediately" = "选择后主窗口和设置会立即更新。";
+"settings.theme.title" = "主题";
+"settings.theme.selection" = "主题";
+"settings.theme.followSystem" = "跟随系统";
+"settings.theme.light" = "白色主题";
+"settings.theme.dark" = "黑色主题";
 "settings.language.title" = "语言";
 "settings.language.selection" = "应用语言";
 "settings.language.english" = "英语";

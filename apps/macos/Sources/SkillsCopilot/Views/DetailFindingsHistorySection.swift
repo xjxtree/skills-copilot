@@ -151,7 +151,7 @@ struct FindingIssueCard: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white, in: Capsule())
+                    .background(Color.agentCopilotPanelBackground, in: Capsule())
             }
 
             Text(issue.message)
@@ -170,7 +170,7 @@ struct FindingIssueCard: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 5) {
                 Label(UIStrings.findingRemediation, systemImage: "wrench.and.screwdriver")
@@ -181,7 +181,7 @@ struct FindingIssueCard: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -215,7 +215,7 @@ struct FindingExplanationField: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 7))
     }
 }
 
@@ -288,7 +288,7 @@ struct PermissionSummaryCard: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
             }
         }
         .padding()
@@ -332,7 +332,7 @@ struct SameAgentConflictIssuesView: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(Color.white, in: Capsule())
+                            .background(Color.agentCopilotPanelBackground, in: Capsule())
                     }
                     DetailMetricGrid {
                         SummaryChip(title: UIStrings.definition, value: conflict.definitionId, systemImage: "number")
@@ -360,7 +360,7 @@ struct SameAgentConflictIssuesView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
                 .padding()

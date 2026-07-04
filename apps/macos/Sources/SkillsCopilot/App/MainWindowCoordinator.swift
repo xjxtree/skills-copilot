@@ -4,10 +4,15 @@ enum MainWindowCoordinator {
     static let windowIdentifier = NSUserInterfaceItemIdentifier(MainWindowModel.windowIdentifierRawValue)
     static let autosaveName = MainWindowModel.autosaveName
     static let minimumSize = NSSize(width: MainWindowModel.minimumWidth, height: MainWindowModel.minimumHeight)
-    static let appAppearance = NSAppearance(named: .aqua)
 
-    static func configureApplicationAppearance(_ app: NSApplication = .shared) {
-        app.appearance = appAppearance
+    static func configureApplicationAppearance(_ theme: AppTheme = .current, app: NSApplication = .shared) {
+        app.appearance = theme.nsAppearance
+    }
+
+    static func applyAppearance(_ theme: AppTheme = .current, app: NSApplication = .shared) {
+        configureApplicationAppearance(theme, app: app)
+        app.windows.forEach { $0.appearance = theme.nsAppearance }
+        configureWindows(app.windows, theme: theme)
     }
 
     static func activateApplication(_ app: NSApplication = .shared) {
@@ -31,15 +36,15 @@ enum MainWindowCoordinator {
         return true
     }
 
-    static func configureWindows(_ windows: [NSWindow]) {
-        windows.filter(isMainWindowCandidate).forEach(configureWindow)
+    static func configureWindows(_ windows: [NSWindow], theme: AppTheme = .current) {
+        windows.filter(isMainWindowCandidate).forEach { configureWindow($0, theme: theme) }
     }
 
-    static func configureWindow(_ window: NSWindow) {
+    static func configureWindow(_ window: NSWindow, theme: AppTheme = .current) {
         window.identifier = windowIdentifier
         _ = window.setFrameAutosaveName(autosaveName)
         window.minSize = minimumSize
-        window.appearance = appAppearance
+        window.appearance = theme.nsAppearance
         if window.title.isEmpty {
             window.title = UIStrings.appWindowTitle
         }
