@@ -27,8 +27,9 @@ surface.
   LLM output.
 - No credential storage in project directories, SQLite, logs, prompts,
   screenshots, reports, or response artifacts.
-- No signing, notarization, DMG, updater, or release automation by default.
-  The v0.1.0 macOS ZIPs are manually scoped release artifacts.
+- No Developer ID signing, notarization, DMG, updater, or release automation by
+  default. The v0.1.0 macOS ZIPs are manually scoped release artifacts with
+  ad-hoc signed app bundles.
 
 ## Download
 
@@ -43,10 +44,11 @@ Download the latest macOS app from the GitHub release page:
 Architecture note: choose `arm64` for Apple Silicon Macs and `x86_64` for Intel
 Macs.
 
-The v0.1.0 app is distributed as an unsigned and unnotarized macOS app bundle
-inside a ZIP file. On first launch, macOS Gatekeeper may require explicit user
-approval. Use Finder's **Open** action from the context menu, or approve the app
-from **System Settings > Privacy & Security** if macOS blocks the first launch.
+The v0.1.0 app is distributed as an ad-hoc signed and unnotarized macOS app
+bundle inside a ZIP file. On first launch, macOS Gatekeeper may require explicit
+user approval. Use Finder's **Open** action from the context menu, or approve the
+app from **System Settings > Privacy & Security** if macOS blocks the first
+launch.
 
 ## Use The App
 

@@ -18,6 +18,10 @@ Public distribution requires an explicit scoped implementation for:
 
 Do not describe local app bundles as public release artifacts.
 
+The manually scoped v0.1.0 ZIP release is an exception: generated app bundles
+are ad-hoc signed for local bundle-integrity validation only. Ad-hoc signing is
+not Developer ID signing and does not replace notarization.
+
 ## Version Strategy
 
 - Keep source version, bundle version, release notes, and tag names aligned.
@@ -27,7 +31,11 @@ Do not describe local app bundles as public release artifacts.
 
 ## Signing
 
-Before signing is enabled:
+The current build script applies ad-hoc signing to the Rust service sidecar, the
+native app executable, and the app bundle. This prevents invalid bundle
+signatures in ZIP releases, but it is not identity-bearing distribution signing.
+
+Before Developer ID signing is enabled:
 
 - Confirm Apple Developer Team ID and certificate holder.
 - Confirm signing identity name.

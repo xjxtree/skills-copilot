@@ -322,6 +322,18 @@ print(matches[0])
   return 1
 }
 
+ad_hoc_sign_app_bundle() {
+  if ! command -v codesign >/dev/null 2>&1; then
+    echo "codesign is required to build $APP_NAME.app" >&2
+    exit 1
+  fi
+
+  codesign --force --sign - "$SERVICE_BINARY"
+  codesign --force --sign - "$APP_BINARY"
+  codesign --force --sign - "$APP_BUNDLE"
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+}
+
 terminate_existing_app_instances
 
 env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
@@ -376,6 +388,8 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+
+ad_hoc_sign_app_bundle
 
 LAUNCH_ENV_VARS=(
   SKILLS_COPILOT_HOME

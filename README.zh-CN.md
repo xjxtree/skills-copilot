@@ -21,7 +21,8 @@ Agent Copilot 是一个原生 macOS 控制台，用于检查本地 coding agent
 - 不提供隐藏的 apply/write 路径。
 - 不会从扫描、导入、预览、建议或 LLM 输出中执行技能脚本。
 - 不会把凭据写入项目目录、SQLite、日志、prompt、截图、报告或响应产物。
-- 默认不做签名、公证、DMG、自动更新或发布自动化。v0.1.0 macOS ZIP 是手动限定范围的发布产物。
+- 默认不做 Developer ID 签名、公证、DMG、自动更新或发布自动化。v0.1.0
+  macOS ZIP 是手动限定范围的发布产物，app bundle 会做 ad-hoc 签名。
 
 ## 下载
 
@@ -35,7 +36,7 @@ Agent Copilot 是一个原生 macOS 控制台，用于检查本地 coding agent
 
 架构说明：Apple Silicon Mac 请选择 `arm64`，Intel Mac 请选择 `x86_64`。
 
-v0.1.0 app 以未签名、未公证的 macOS app bundle 形式放在 ZIP 文件中。首次启动时，macOS Gatekeeper 可能需要用户显式批准。可以在 Finder 中右键选择 **打开**，或在 macOS 阻止首次启动时到 **系统设置 > 隐私与安全性** 中批准该 app。
+v0.1.0 app 以 ad-hoc 签名、未公证的 macOS app bundle 形式放在 ZIP 文件中。首次启动时，macOS Gatekeeper 可能需要用户显式批准。可以在 Finder 中右键选择 **打开**，或在 macOS 阻止首次启动时到 **系统设置 > 隐私与安全性** 中批准该 app。
 
 ## 使用
 

@@ -18,9 +18,9 @@ available from git history when needed.
 - Keeps safety boundaries in force: no telemetry, cloud sync, default provider
   calls, hidden apply/write paths, credential persistence in project files, or
   skill-script execution from scans/previews.
-- Distribution note: the v0.1.0 ZIPs are unsigned and unnotarized; Developer ID
-  signing, notarization, DMG packaging, updater feeds, and release automation
-  remain future scoped work.
+- Distribution note: the v0.1.0 ZIPs contain ad-hoc signed and unnotarized app
+  bundles; Developer ID signing, notarization, DMG packaging, updater feeds,
+  and release automation remain future scoped work.
 
 ## Internal V2.98 Line
 
