@@ -18,6 +18,8 @@ available from git history when needed.
 - Keeps safety boundaries in force: no telemetry, cloud sync, default provider
   calls, hidden apply/write paths, credential persistence in project files, or
   skill-script execution from scans/previews.
+- Resolves `npx` from common macOS GUI launch paths for Skill Manager workflows
+  so Finder-launched builds can use existing local Node/npm installs.
 - Distribution note: the v0.1.0 ZIPs contain ad-hoc signed and unnotarized app
   bundles; Developer ID signing, notarization, DMG packaging, updater feeds,
   and release automation remain future scoped work.

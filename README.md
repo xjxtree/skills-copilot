@@ -63,6 +63,11 @@ Agent Copilot is local-first. It does not send provider requests unless optional
 provider features are configured and a prompt is previewed and explicitly
 confirmed.
 
+Skill Package Manager workflows use the local `npx skills` manager and require a
+local Node/npm install. The macOS app detects common Homebrew, Volta, asdf, and
+nvm paths when launched from Finder; custom installs can set
+`SKILLS_COPILOT_NPX_PATH`.
+
 ## Build From Source
 
 Prerequisites:

@@ -47,6 +47,10 @@ v0.1.0 app 以 ad-hoc 签名、未公证的 macOS app bundle 形式放在 ZIP �
 
 Agent Copilot 是 local-first 的。除非你配置了可选 provider 功能，并且预览 prompt 后显式确认，否则它不会发送 provider 请求。
 
+技能包管理流程会使用本机的 `npx skills` 外部管理器，因此需要本机安装 Node/npm。
+macOS app 从 Finder 启动时会自动探测 Homebrew、Volta、asdf、nvm 等常见路径；
+自定义安装位置可以设置 `SKILLS_COPILOT_NPX_PATH`。
+
 ## 从源码构建
 
 前置要求：

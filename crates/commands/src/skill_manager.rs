@@ -923,16 +923,73 @@ fn npx_executable() -> Result<PathBuf, CommandError> {
 }
 
 fn resolve_binary(override_path: Option<std::ffi::OsString>, binary_name: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH");
+    let fallback_dirs = fallback_binary_search_dirs();
+    resolve_binary_from_sources(
+        override_path,
+        binary_name,
+        path_var.as_deref(),
+        &fallback_dirs,
+    )
+}
+
+fn resolve_binary_from_sources(
+    override_path: Option<std::ffi::OsString>,
+    binary_name: &str,
+    path_var: Option<&std::ffi::OsStr>,
+    fallback_dirs: &[PathBuf],
+) -> Option<PathBuf> {
     if let Some(path) = override_path
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
     {
         return Some(path);
     }
-    let path_var = env::var_os("PATH")?;
-    env::split_paths(&path_var)
+
+    path_var
+        .into_iter()
+        .flat_map(env::split_paths)
+        .chain(fallback_dirs.iter().cloned())
         .map(|dir| dir.join(binary_name))
         .find(|candidate| candidate.is_file())
+}
+
+fn fallback_binary_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ];
+
+    if let Some(home) = env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        dirs.extend([
+            home.join(".volta/bin"),
+            home.join(".asdf/shims"),
+            home.join(".local/bin"),
+            home.join(".npm-global/bin"),
+            home.join(".bun/bin"),
+        ]);
+        dirs.extend(nvm_node_bin_dirs(&home));
+    }
+
+    dirs
+}
+
+fn nvm_node_bin_dirs(home: &Path) -> Vec<PathBuf> {
+    let versions_dir = home.join(".nvm/versions/node");
+    let mut dirs = fs::read_dir(versions_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path().join("bin"))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    dirs.sort();
+    dirs
 }
 
 fn default_agent_targets() -> Vec<String> {
@@ -1287,6 +1344,41 @@ fn unix_timestamp_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_binary_prefers_explicit_override_without_validation() {
+        let override_path = PathBuf::from("/custom/node/bin/npx");
+        let resolved = resolve_binary_from_sources(
+            Some(override_path.as_os_str().to_os_string()),
+            NPX_BINARY,
+            None,
+            &[],
+        );
+
+        assert_eq!(resolved, Some(override_path));
+    }
+
+    #[test]
+    fn resolve_binary_falls_back_to_common_gui_launch_paths() {
+        let temp =
+            std::env::temp_dir().join(format!("skill-manager-npx-path-{}", std::process::id()));
+        let empty_path_dir = temp.join("empty-path");
+        let fallback_dir = temp.join("homebrew-bin");
+        fs::create_dir_all(&empty_path_dir).expect("empty path dir");
+        fs::create_dir_all(&fallback_dir).expect("fallback dir");
+        let npx = fallback_dir.join(NPX_BINARY);
+        fs::write(&npx, "#!/bin/sh\n").expect("fake npx");
+
+        let resolved = resolve_binary_from_sources(
+            None,
+            NPX_BINARY,
+            Some(empty_path_dir.as_os_str()),
+            &[fallback_dir],
+        );
+
+        assert_eq!(resolved, Some(npx));
+        fs::remove_dir_all(temp).ok();
+    }
 
     #[test]
     fn default_agents_cover_supported_app_agents() {
