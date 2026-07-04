@@ -1128,6 +1128,7 @@ final class SkillStore: ObservableObject {
             async let crossAgentComparisonsLoad: Void = loadCrossAgentComparisonsIfNeeded()
             async let localSessionsLoad: Void = refreshSelectedAgentLocalSessionsIfNeeded()
             async let currentConfigDocumentsLoad: Void = loadCurrentAgentConfigDocumentsIfNeeded(agent: startupAgentFilter.rawValue)
+            async let providerObservabilityLoad: Void = loadProviderObservabilityDuringRefresh(force: false)
             if shouldLoadClaudeSettings {
                 await loadClaudeSettingsIfNeeded()
             }
@@ -1135,7 +1136,8 @@ final class SkillStore: ObservableObject {
                 cleanupQueueLoad,
                 crossAgentComparisonsLoad,
                 localSessionsLoad,
-                currentConfigDocumentsLoad
+                currentConfigDocumentsLoad,
+                providerObservabilityLoad
             )
 
             setStartupLoading(UIStrings.startupDetailLoading, progress: 0.90)
@@ -1163,8 +1165,10 @@ final class SkillStore: ObservableObject {
 
         do {
             try await refreshCollections()
-            await loadCleanupQueue()
-            await loadCrossAgentComparisons()
+            async let cleanupQueueLoad: Void = loadCleanupQueue()
+            async let crossAgentComparisonsLoad: Void = loadCrossAgentComparisons()
+            async let providerObservabilityLoad: Void = loadProviderObservabilityDuringRefresh(force: true)
+            _ = await (cleanupQueueLoad, crossAgentComparisonsLoad, providerObservabilityLoad)
             refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
@@ -3392,17 +3396,21 @@ final class SkillStore: ObservableObject {
 
     func loadProviderObservabilityIfNeeded() async {
         guard !hasLoadedProviderObservability else { return }
-        await loadProviderObservability(force: false)
+        await loadProviderObservability(force: false, allowDuringRefresh: false)
     }
 
     func loadProviderObservability() async {
-        await loadProviderObservability(force: true)
+        await loadProviderObservability(force: true, allowDuringRefresh: false)
     }
 
-    private func loadProviderObservability(force: Bool) async {
+    private func loadProviderObservabilityDuringRefresh(force: Bool) async {
+        await loadProviderObservability(force: force, allowDuringRefresh: true)
+    }
+
+    private func loadProviderObservability(force: Bool, allowDuringRefresh: Bool) async {
         guard !isLoadingProviderObservability else { return }
         guard force || !hasLoadedProviderObservability else { return }
-        guard !isRefreshBusy else {
+        guard allowDuringRefresh || !isRefreshBusy else {
             providerObservabilityResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
             return
         }
@@ -3413,11 +3421,11 @@ final class SkillStore: ObservableObject {
         do {
             providerObservabilityResult = try await service.providerObservability(
                 windowDays: 30,
-                limit: 30,
+                limit: 24,
                 includeHistory: true,
-                includeBudgetHints: true,
-                includeRetentionRecommendations: true,
-                includeEvidence: true
+                includeBudgetHints: false,
+                includeRetentionRecommendations: false,
+                includeEvidence: false
             )
             hasLoadedProviderObservability = true
         } catch {

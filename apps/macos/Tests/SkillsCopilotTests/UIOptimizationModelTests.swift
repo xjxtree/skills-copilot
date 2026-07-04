@@ -272,14 +272,34 @@ struct UIOptimizationModelTests {
 
     private func settingsProviderObservabilityUsesBoundedScopedRendering() throws {
         try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityAutoLoadsAtStartup,
+            true,
+            "Provider observability should preload during app startup so Settings can display it without a local build action."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityHasLocalBuildAction,
+            false,
+            "Provider observability settings should not expose a Generate/Build action."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityHidesRawLogList,
+            true,
+            "Provider observability settings should hide raw log rows and present a lightweight dashboard instead."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilitySummaryMetricCount,
+            5,
+            "Provider observability settings should keep the first row to five concise summary metrics."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityChartRowLimit,
+            5,
+            "Provider observability charts should cap row counts so scrolling remains responsive."
+        )
+        try expectEqual(
             UIOptimizationPresentation.settings.providerObservabilityUsesScopedScroll,
             true,
             "Provider observability settings should own a scoped scroll surface instead of relying on the whole settings pane to relayout heavy content."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.settings.providerObservabilityUsesCompactHistoryRows,
-            true,
-            "Provider observability settings should use compact history rows instead of reusing detail-pane heavy rows."
         )
         try expectEqual(
             UIOptimizationPresentation.settings.providerObservabilityDisablesSelectionOverlay,
@@ -290,16 +310,6 @@ struct UIOptimizationModelTests {
             UIOptimizationPresentation.settings.providerObservabilityAvoidsAdaptiveGrids,
             true,
             "Provider observability settings should avoid adaptive Grid/LazyVGrid layouts that can loop with AppKit-backed text while scrolling."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.settings.providerObservabilityDashboardHistoryLimit,
-            6,
-            "Provider observability settings should bound dashboard history rows so scrolling remains responsive."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.settings.providerObservabilityLogRowLimit,
-            24,
-            "Provider observability settings should bound log rows rendered in the settings window."
         )
     }
 

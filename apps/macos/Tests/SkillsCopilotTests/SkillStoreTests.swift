@@ -213,8 +213,8 @@ struct SkillStoreTests {
         try await runCase("providerObservabilityUsesReadOnlyServiceContract") {
             try await providerObservabilityUsesReadOnlyServiceContract()
         }
-        try await runCase("providerObservabilityNeedBasedLoadUsesCacheUntilManualRefresh") {
-            try await providerObservabilityNeedBasedLoadUsesCacheUntilManualRefresh()
+        try await runCase("providerObservabilityPreloadsAtStartupAndRefreshesWithReload") {
+            try await providerObservabilityPreloadsAtStartupAndRefreshesWithReload()
         }
         try await runCase("providerObservabilityFallsBackWhenMethodUnavailable") {
             try await providerObservabilityFallsBackWhenMethodUnavailable()
@@ -2436,11 +2436,11 @@ struct SkillStoreTests {
         let calls = fake.calls()
         try expectContains(calls, "llm.providerObservability", "Provider observability should call the V2.64 observability method.")
         try expectContains(calls, "\"window_days\":30", "Provider observability should pass the dashboard window.")
-        try expectContains(calls, "\"limit\":30", "Provider observability should pass the dashboard limit.")
+        try expectContains(calls, "\"limit\":24", "Provider observability should pass the lightweight dashboard limit.")
         try expectContains(calls, "\"include_history\":true", "Provider observability should request history rows.")
-        try expectContains(calls, "\"include_budget_hints\":true", "Provider observability should request budget hints.")
-        try expectContains(calls, "\"include_retention_recommendations\":true", "Provider observability should request retention recommendations.")
-        try expectContains(calls, "\"include_evidence\":true", "Provider observability should request evidence rows.")
+        try expectContains(calls, "\"include_budget_hints\":false", "Provider observability settings should avoid unused budget hint payload.")
+        try expectContains(calls, "\"include_retention_recommendations\":false", "Provider observability settings should avoid unused retention payload.")
+        try expectContains(calls, "\"include_evidence\":false", "Provider observability settings should avoid unused evidence payload.")
         try expectFalse(calls.contains("llm.previewPrompt"), "Provider observability must not prepare provider prompts.")
         try expectFalse(calls.contains("llm.confirmPromptAndSend"), "Provider observability must not send to provider.")
         try expectFalse(calls.contains("llm.recordModelTaskMatch"), "Provider observability UI must not write model-task history.")
@@ -2451,28 +2451,32 @@ struct SkillStoreTests {
         try expectFalse(calls.contains("credential"), "Provider observability must not call credential paths.")
     }
 
-    private func providerObservabilityNeedBasedLoadUsesCacheUntilManualRefresh() async throws {
+    private func providerObservabilityPreloadsAtStartupAndRefreshesWithReload() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "prompt-ready")
 
         let store = SkillStore(service: fake.serviceClient())
+        await store.loadAppStartupDataIfNeeded()
+
+        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 1, "Startup should preload provider observability once.")
+        try expectEqual(store.providerObservabilityResult?.summary.callCount, 3, "Startup observability preload should keep the decoded dashboard.")
+
+        await store.loadProviderObservabilityIfNeeded()
+
+        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 1, "Need-based observability loading should reuse the startup cache.")
+
         await store.reload()
 
-        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 0, "Startup/reload should not build provider observability automatically.")
+        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 2, "Global reload should refresh provider observability because Settings has no local build button.")
 
         await store.loadProviderObservabilityIfNeeded()
 
-        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 1, "Initial need-based observability load should call the local service.")
-        try expectEqual(store.providerObservabilityResult?.summary.callCount, 3, "Need-based observability load should keep the decoded dashboard.")
-
-        await store.loadProviderObservabilityIfNeeded()
-
-        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 1, "Need-based observability loading should reuse the cached dashboard.")
+        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 2, "Need-based loading should reuse the reloaded dashboard.")
 
         await store.loadProviderObservability()
 
-        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 2, "Manual observability refresh should force a fresh local service request.")
+        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 3, "Manual observability refresh should still force a fresh local service request.")
     }
 
     private func providerObservabilityFallsBackWhenMethodUnavailable() async throws {

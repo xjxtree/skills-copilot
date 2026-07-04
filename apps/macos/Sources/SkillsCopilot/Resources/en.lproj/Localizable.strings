@@ -443,10 +443,10 @@
 "guidedCleanup.safeLink.help" = "Open an existing safe preview or read-only review entry.";
 "guidedCleanup.safeLink.target" = "Safe link target";
 "guidedCleanup.safeLink.trigger" = "Safe link trigger";
-"providerObservability.boundary" = "User-triggered, deterministic, read-only dashboard from redacted app-local prompt-run and provider-call metadata. It does not send provider requests, read credentials, expose raw prompts or responses, write files, mutate agent config, create snapshots, execute scripts, sync cloud data, or emit telemetry.";
+"providerObservability.boundary" = "Loaded at startup from redacted app-local provider metadata; read-only and never sends provider requests.";
 "providerObservability.action.build" = "Build Observability";
 "providerObservability.unavailable" = "Provider observability is unavailable in this service build.";
-"providerObservability.empty.result" = "No provider observability dashboard loaded.";
+"providerObservability.empty.result" = "Provider observability will appear after startup loading completes.";
 "providerObservability.settings.mode" = "Observability view";
 "providerObservability.settings.dashboard" = "Dashboard";
 "providerObservability.settings.logs" = "Logs";
@@ -455,6 +455,7 @@
 "providerObservability.logs.count" = "%d of %d calls";
 "providerObservability.logs.moreRows" = "%d more rows available. Narrow filters or search to inspect them.";
 "providerObservability.calls" = "Calls";
+"providerObservability.successRate" = "Success rate";
 "providerObservability.successes" = "Succeeded";
 "providerObservability.failures" = "Failed";
 "providerObservability.blocked" = "Blocked";
@@ -486,7 +487,7 @@
 "providerObservability.threshold" = "Threshold";
 "providerObservability.charts.title" = "Charts";
 "providerObservability.charts.mode" = "Redacted metadata";
-"providerObservability.charts.summary" = "Charts summarize redacted local metadata only; detailed rows below remain the evidence trail.";
+"providerObservability.charts.summary" = "Charts summarize redacted local metadata only.";
 "providerObservability.empty.dashboardTitle" = "No provider metadata yet";
 "providerObservability.empty.dashboardSummary" = "No app-local provider prompt-run or call metadata has been recorded for this dashboard yet.";
 "providerObservability.chart.status" = "Call status";

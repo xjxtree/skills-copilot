@@ -766,16 +766,17 @@ enum UIStrings {
     static var guidedCleanupSafeLinkTarget: String { text("guidedCleanup.safeLink.target", "Safe link target") }
     static var guidedCleanupSafeLinkTrigger: String { text("guidedCleanup.safeLink.trigger", "Safe link trigger") }
     static var providerObservabilityTitle: String { text("providerObservability.title", "Provider Observability") }
-    static var providerObservabilityBoundary: String { text("providerObservability.boundary", "User-triggered, deterministic, read-only dashboard from redacted app-local prompt-run and provider-call metadata. It does not send provider requests, read credentials, expose raw prompts or responses, write files, mutate agent config, create snapshots, execute scripts, sync cloud data, or emit telemetry.") }
+    static var providerObservabilityBoundary: String { text("providerObservability.boundary", "Loaded at startup from redacted app-local provider metadata; read-only and never sends provider requests.") }
     static var providerObservabilityAction: String { text("providerObservability.action.build", "Build Observability") }
     static var providerObservabilityUnavailable: String { text("providerObservability.unavailable", "Provider observability is unavailable in this service build.") }
-    static var providerObservabilityNoResult: String { text("providerObservability.empty.result", "No provider observability dashboard loaded.") }
+    static var providerObservabilityNoResult: String { text("providerObservability.empty.result", "Provider observability will appear after startup loading completes.") }
     static var providerObservabilitySettingsMode: String { text("providerObservability.settings.mode", "Observability view") }
     static var providerObservabilityDashboard: String { text("providerObservability.settings.dashboard", "Dashboard") }
     static var providerObservabilityLogs: String { text("providerObservability.settings.logs", "Logs") }
     static var providerObservabilityIssuesOnly: String { text("providerObservability.settings.issuesOnly", "Issues only") }
     static var providerObservabilityNoFilteredCalls: String { text("providerObservability.empty.filteredCalls", "No provider logs match the current filters.") }
     static var providerObservabilityCalls: String { text("providerObservability.calls", "Calls") }
+    static var providerObservabilitySuccessRate: String { text("providerObservability.successRate", "Success rate") }
     static var providerObservabilitySuccesses: String { text("providerObservability.successes", "Succeeded") }
     static var providerObservabilityFailures: String { text("providerObservability.failures", "Failed") }
     static var providerObservabilityBlocked: String { text("providerObservability.blocked", "Blocked") }

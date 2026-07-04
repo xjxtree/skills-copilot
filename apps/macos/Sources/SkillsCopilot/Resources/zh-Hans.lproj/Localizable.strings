@@ -443,10 +443,10 @@
 "guidedCleanup.safeLink.help" = "打开已有的安全预览或只读复查入口。";
 "guidedCleanup.safeLink.target" = "安全链接目标";
 "guidedCleanup.safeLink.trigger" = "安全链接触发方式";
-"providerObservability.boundary" = "用户触发、确定性、只读的看板，基于已脱敏的应用本地提示词运行和提供方调用元数据。它不会发送提供方请求、读取凭据、暴露原始提示词或响应、写文件、修改智能体配置、创建快照、执行脚本、同步云数据或发送遥测。";
+"providerObservability.boundary" = "启动时基于已脱敏的应用本地提供方元数据加载；只读展示，不会发送提供方请求。";
 "providerObservability.action.build" = "生成观测看板";
 "providerObservability.unavailable" = "此服务构建不支持提供方观测。";
-"providerObservability.empty.result" = "尚未加载提供方观测看板。";
+"providerObservability.empty.result" = "启动加载完成后会显示提供方观测。";
 "providerObservability.settings.mode" = "观测视图";
 "providerObservability.settings.dashboard" = "数据看板";
 "providerObservability.settings.logs" = "日志";
@@ -455,6 +455,7 @@
 "providerObservability.logs.count" = "%d / %d 条调用";
 "providerObservability.logs.moreRows" = "还有 %d 条记录未展示。缩小筛选或搜索后查看。";
 "providerObservability.calls" = "调用";
+"providerObservability.successRate" = "成功率";
 "providerObservability.successes" = "成功";
 "providerObservability.failures" = "失败";
 "providerObservability.blocked" = "已阻止";
@@ -486,7 +487,7 @@
 "providerObservability.threshold" = "阈值";
 "providerObservability.charts.title" = "图表";
 "providerObservability.charts.mode" = "脱敏元数据";
-"providerObservability.charts.summary" = "图表只汇总本地脱敏元数据；下方明细列表仍作为证据链保留。";
+"providerObservability.charts.summary" = "图表只汇总本地脱敏元数据。";
 "providerObservability.empty.dashboardTitle" = "暂无提供方元数据";
 "providerObservability.empty.dashboardSummary" = "当前还没有可用于看板的应用本地提示词运行或提供方调用元数据。";
 "providerObservability.chart.status" = "调用状态";

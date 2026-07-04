@@ -188,10 +188,12 @@ struct SettingsPresentation: Equatable {
     let idealHeight = 680
     let usesUnifiedSectionHeaders = true
     let sectionCornerRadius = 8
-    let providerObservabilityLogRowLimit = 24
-    let providerObservabilityDashboardHistoryLimit = 6
+    let providerObservabilityAutoLoadsAtStartup = true
+    let providerObservabilityHasLocalBuildAction = false
+    let providerObservabilityHidesRawLogList = true
+    let providerObservabilitySummaryMetricCount = 5
+    let providerObservabilityChartRowLimit = 5
     let providerObservabilityUsesScopedScroll = true
-    let providerObservabilityUsesCompactHistoryRows = true
     let providerObservabilityDisablesSelectionOverlay = true
     let providerObservabilityAvoidsAdaptiveGrids = true
 }
