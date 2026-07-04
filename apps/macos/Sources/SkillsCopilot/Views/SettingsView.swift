@@ -189,10 +189,7 @@ struct SettingsView: View {
         case .provider:
             providerSection
         case .providerObservability:
-            ScrollView {
-                ProviderObservabilitySettingsPanel()
-                    .padding(20)
-            }
+            ProviderObservabilitySettingsPanel()
         case .service:
             serviceSection
         }

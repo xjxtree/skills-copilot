@@ -12,6 +12,7 @@ struct UIOptimizationModelTests {
         try detailFeedbackUsesInlineToast()
         try configEditorUsesAutosaveCodeCardPresentation()
         try settingsWindowUsesSidebarAndCloseOnlyControls()
+        try settingsProviderObservabilityUsesBoundedScopedRendering()
         try modalWorkflowsUseSharedSheetChromeAndColumns()
         try settingsPreflightAndManagerSurfacesHaveStablePresentation()
         try skillManagerPreviewMetadataIsCompactAndActionSafe()
@@ -266,6 +267,39 @@ struct UIOptimizationModelTests {
             UIOptimizationPresentation.settings.sidebarWidth,
             190,
             "Settings sidebar should reserve stable width for language, provider, monitoring, and service categories."
+        )
+    }
+
+    private func settingsProviderObservabilityUsesBoundedScopedRendering() throws {
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityUsesScopedScroll,
+            true,
+            "Provider observability settings should own a scoped scroll surface instead of relying on the whole settings pane to relayout heavy content."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityUsesCompactHistoryRows,
+            true,
+            "Provider observability settings should use compact history rows instead of reusing detail-pane heavy rows."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityDisablesSelectionOverlay,
+            true,
+            "Provider observability settings should disable selectable text overlays that can invalidate AppKit text layout while scrolling."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityAvoidsAdaptiveGrids,
+            true,
+            "Provider observability settings should avoid adaptive Grid/LazyVGrid layouts that can loop with AppKit-backed text while scrolling."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityDashboardHistoryLimit,
+            6,
+            "Provider observability settings should bound dashboard history rows so scrolling remains responsive."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.settings.providerObservabilityLogRowLimit,
+            24,
+            "Provider observability settings should bound log rows rendered in the settings window."
         )
     }
 

@@ -948,7 +948,7 @@ const customChecks = [
       && !/allowsHitTesting\(false\)[\s\S]*?DetailFeedbackToast/.test(files.detail),
   },
   {
-    label: "settings owns Provider Observability with dashboard-first logs",
+    label: "settings owns bounded Provider Observability dashboard and logs",
     passed: /ProviderObservabilitySettingsPanel\(\)/.test(files.settings)
       && /loadAIProviderStatusIfNeeded\(\)/.test(files.settings)
       && !/store\.reload\(\)/.test(files.settings)
@@ -958,6 +958,8 @@ const customChecks = [
       && !/\.task\s*\{[\s\S]{0,240}?loadProviderObservability\(/.test(files.providerObservabilitySettings)
       && /case \.providerObservability:[\s\S]*?return UIStrings\.providerObservabilityTitle/.test(files.settings)
       && /case \.providerObservability:[\s\S]*?return "waveform\.path\.ecg\.rectangle"/.test(files.settings)
+      && /case \.providerObservability:\s*ProviderObservabilitySettingsPanel\(\)/.test(files.settings)
+      && /ScrollView\s*\{\s*VStack\(alignment:\s*\.leading,\s*spacing:\s*14\)/.test(files.providerObservabilitySettings)
       && /selectedMode:\s*ProviderObservabilitySettingsMode\s*=\s*\.dashboard/.test(files.providerObservabilitySettings)
       && /case \.dashboard:[\s\S]*ProviderObservabilityDashboardSettingsView\(result:\s*result\)/.test(files.providerObservabilitySettings)
       && /case \.logs:[\s\S]*ProviderObservabilityLogSettingsView\(/.test(files.providerObservabilitySettings)
@@ -969,8 +971,21 @@ const customChecks = [
       && /searchText/.test(files.providerObservabilitySettings)
       && /result\.isDashboardEmpty/.test(files.providerObservabilitySettings)
       && /ProviderObservabilityEmptyDashboard/.test(files.providerObservabilitySettings)
-      && /renderedRowLimit\s*=\s*40/.test(files.providerObservabilitySettings)
+      && /ProviderObservabilitySettingsChartsPanel\(result:\s*result\)/.test(files.providerObservabilitySettings)
+      && /ProviderObservabilitySettingsDimensionGroup\(result:\s*result\)/.test(files.providerObservabilitySettings)
+      && /ProviderObservabilitySettingsHintGroup\(result:\s*result\)/.test(files.providerObservabilitySettings)
+      && /ProviderObservabilitySettingsModelTaskHistoryList\(rows:\s*result\.modelTaskHistoryRows\)/.test(files.providerObservabilitySettings)
+      && /rows\.prefix\(UIOptimizationPresentation\.settings\.providerObservabilityDashboardHistoryLimit\)/.test(files.providerObservabilitySettings)
+      && /providerObservabilityDashboardHistoryLimit\s*=\s*6/.test(files.uiOptimization)
+      && /providerObservabilityUsesScopedScroll\s*=\s*true/.test(files.uiOptimization)
+      && /providerObservabilityUsesCompactHistoryRows\s*=\s*true/.test(files.uiOptimization)
+      && /providerObservabilityDisablesSelectionOverlay\s*=\s*true/.test(files.uiOptimization)
+      && /providerObservabilityAvoidsAdaptiveGrids\s*=\s*true/.test(files.uiOptimization)
+      && /renderedRowLimit\s*=\s*UIOptimizationPresentation\.settings\.providerObservabilityLogRowLimit/.test(files.providerObservabilitySettings)
+      && /providerObservabilityLogRowLimit\s*=\s*24/.test(files.uiOptimization)
       && /let visibleRows = Array\(rows\.prefix\(Self\.renderedRowLimit\)\)/.test(files.providerObservabilitySettings)
+      && !/\.textSelection\(\.enabled\)/.test(files.providerObservabilitySettings)
+      && !/LazyVGrid|\bGrid\(|GeometryReader|PrivacyEvidenceText|ProviderObservabilityChartsPanel|DetailMetricGrid|CompactMetadataGrid/.test(files.providerObservabilitySettings)
       && /providerObservability\.logs\.moreRows/.test(files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh)
       && /providerObservability\.empty\.dashboardTitle/.test(files.providerObservabilitySettings + "\n" + files.localizable),
   },
@@ -1173,12 +1188,12 @@ const customChecks = [
       && /await store\.applyVisibleBatchTogglePreview\(confirmingPreviewID:\s*previewID\)/.test(files.batchSkillOperation),
   },
   {
-    label: "Provider Observability settings presents chart summaries before detailed evidence rows",
-    passed: /ProviderObservabilityChartsPanel\(result:\s*result\)/.test(files.providerObservabilitySettings)
-      && /struct ProviderObservabilityChartCard/.test(files.detailProviderObservability)
-      && /providerObservabilityChartModelTokens/.test(files.detailProviderObservability)
-      && /providerObservabilityChartDestinationCost/.test(files.detailProviderObservability)
-      && /ProviderObservabilityDimensionList/.test(files.detailProviderObservability),
+    label: "Provider Observability settings presents lightweight chart summaries before detailed evidence rows",
+    passed: /ProviderObservabilitySettingsChartsPanel\(result:\s*result\)/.test(files.providerObservabilitySettings)
+      && /struct ProviderObservabilitySettingsChartCard/.test(files.providerObservabilitySettings)
+      && /providerObservabilityChartModelTokens/.test(files.providerObservabilitySettings)
+      && /providerObservabilityChartDestinationCost/.test(files.providerObservabilitySettings)
+      && /ProviderObservabilitySettingsDimensionGroup\(result:\s*result\)/.test(files.providerObservabilitySettings),
   },
   {
     label: "sidebar and retired agent profile omit adapter capability content",

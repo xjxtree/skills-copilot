@@ -188,6 +188,12 @@ struct SettingsPresentation: Equatable {
     let idealHeight = 680
     let usesUnifiedSectionHeaders = true
     let sectionCornerRadius = 8
+    let providerObservabilityLogRowLimit = 24
+    let providerObservabilityDashboardHistoryLimit = 6
+    let providerObservabilityUsesScopedScroll = true
+    let providerObservabilityUsesCompactHistoryRows = true
+    let providerObservabilityDisablesSelectionOverlay = true
+    let providerObservabilityAvoidsAdaptiveGrids = true
 }
 
 struct WorkflowSheetPresentation: Equatable {
