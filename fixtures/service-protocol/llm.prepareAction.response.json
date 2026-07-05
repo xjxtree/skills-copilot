@@ -39,54 +39,6 @@
         "estimated_cost_usd",
         "prompt_scope"
       ]
-    },
-    "review_preview": {
-      "status": "prepared-unavailable",
-      "generated_by": "deterministic-service",
-      "provider_request_sent": false,
-      "write_actions_available": false,
-      "execution_actions_available": false,
-      "purpose": "Prepared an offline recommendation preflight for the supplied intent: Find an existing local skill for reviewing frontmatter quality.",
-      "risk": {
-        "level": "unknown",
-        "summary": "No selected skill was reviewed, so risk is not assessed.",
-        "signals": [
-          "Recommendation prepare does not read arbitrary skill files or return catalog paths."
-        ]
-      },
-      "finding_explanations": [],
-      "cross_agent_fit": {
-        "agent": "catalog",
-        "scope": "read-only-preflight",
-        "comparable_instance_count": 0,
-        "summary": "Cross-agent fit requires a selected catalog skill or current analysis groups.",
-        "notes": [
-          "No provider request was sent and no recommendation output was generated."
-        ]
-      },
-      "redaction": {
-        "skill_body_returned": false,
-        "paths_returned": false,
-        "credentials_returned": false,
-        "included_fields": [
-          "skill name",
-          "skill description",
-          "agent",
-          "scope",
-          "definition id match counts",
-          "rule finding ids",
-          "rule finding severities",
-          "redacted rule messages"
-        ],
-        "excluded_fields": [
-          "skill body",
-          "raw frontmatter",
-          "source paths",
-          "credential values",
-          "provider prompts",
-          "provider responses"
-        ]
-      }
     }
   }
 }

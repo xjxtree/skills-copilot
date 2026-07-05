@@ -47,9 +47,28 @@ struct AppStartupLoadingState: Equatable {
     }
 }
 
+struct SkillListScrollRequest: Equatable {
+    let skillID: SkillRecord.ID
+    let token = UUID()
+}
+
+struct TaskCockpitPromptConfirmation: Identifiable, Hashable {
+    let preview: LLMPromptPreview
+    let taskText: String
+    let agentIDs: [String]
+    let instanceIDs: [String]
+
+    var id: String {
+        preview.previewID.isEmpty ? taskText : preview.previewID
+    }
+}
+
 @MainActor
 final class SkillStore: ObservableObject {
     private static let lastMutationMessageDismissDelayNanoseconds: UInt64 = 3_500_000_000
+    private static let localSessionPageLimit = 50
+    private static let globalSearchLimitPerKind = 6
+    private static let providerObservabilityRowLimit = 100
 
     @Published private(set) var skills: [SkillRecord] = [] {
         didSet {
@@ -64,14 +83,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var conflicts: [ConflictGroupRecord] = [] {
         didSet { invalidateFilteredSkillListCache() }
     }
-    @Published private(set) var cleanupQueue = CleanupQueueResult.emptyFallback()
-    @Published private(set) var isLoadingCleanupQueue = false
-    @Published private(set) var crossAgentComparisons = CrossAgentComparisonResult.emptyFallback()
-    @Published private(set) var isLoadingCrossAgentComparisons = false
-    @Published private(set) var localReportExportResult: LocalReportExportResult?
-    @Published private(set) var localReportExportHistory: [LocalReportExportHistoryRecord] = []
-    @Published private(set) var selectedLocalReportHistoryID: LocalReportExportHistoryRecord.ID?
-    @Published private(set) var isExportingLocalReport = false
     @Published private(set) var healthSummary = SkillHealthSummary.empty
     @Published private(set) var agentConfigSnapshots: [ConfigSnapshotRecord] = []
     @Published private(set) var isLoadingAgentConfigSnapshots = false
@@ -85,77 +96,14 @@ final class SkillStore: ObservableObject {
     @Published private(set) var aiProviderTestResult: AIProviderTestResult?
     @Published private(set) var llmPrepareResults: [LLMAction: LLMPrepareResult] = [:]
     @Published private(set) var preparingLLMActions: Set<LLMAction> = []
-    @Published private(set) var skillAnalysisPrepareResults: [String: LLMSkillAnalysisPrepareResult] = [:]
-    @Published private(set) var preparingSkillAnalysisKeys: Set<String> = []
-    @Published private(set) var skillQualityScores: [SkillRecord.ID: SkillQualityScoreResult] = [:]
-    @Published private(set) var scoringSkillQualityIDs: Set<SkillRecord.ID> = []
-    @Published private(set) var taskReadinessResult: TaskReadinessResult?
-    @Published private(set) var checkingTaskReadinessSkillIDs: Set<SkillRecord.ID> = []
-    @Published private(set) var routingConfidenceResult: SkillRoutingConfidenceResult?
-    @Published private(set) var rankingRoutingSkillIDs: Set<SkillRecord.ID> = []
-    @Published private(set) var crossAgentReadinessResult: CrossAgentReadinessResult?
-    @Published private(set) var isComparingCrossAgentReadiness = false
-    @Published private(set) var taskBenchmarkList = TaskBenchmarkListResult(benchmarks: [])
-    @Published private(set) var taskBenchmarkEvaluation: TaskBenchmarkEvaluationResult?
-    @Published private(set) var taskBenchmarkDeleteResult: TaskBenchmarkDeleteResult?
-    @Published private(set) var routingRegressionBaseline: RoutingRegressionBaselineResult?
-    @Published private(set) var routingRegressionDetection: RoutingRegressionDetectionResult?
-    @Published private(set) var routingAccuracyDashboard: RoutingAccuracyDashboard?
-    @Published private(set) var staleDriftDetection: StaleDriftDetectionResult?
-    @Published private(set) var knowledgeSearchResult: KnowledgeSearchResult?
-    @Published private(set) var localSkillMapResult: LocalSkillMapResult?
-    @Published private(set) var skillLifecycleTimelineResult: SkillLifecycleTimelineResult?
-    @Published private(set) var similarSkillGroupingResult: SimilarSkillGroupingResult?
-    @Published private(set) var capabilityTaxonomyResult: CapabilityTaxonomyResult?
-    @Published private(set) var workspaceReadinessResult: WorkspaceReadinessResult?
-    @Published private(set) var remediationPlanResult: RemediationPlanResult?
-    @Published private(set) var remediationPreviewDraftsResult: RemediationPreviewDraftsResult?
-    @Published private(set) var remediationImpactPreviewResult: RemediationImpactPreviewResult?
-    @Published private(set) var remediationBatchReviewResult: RemediationBatchReviewResult?
-    @Published private(set) var remediationHistoryResult: RemediationHistoryResult?
-    @Published private(set) var remediationHistoryRecordResult: RemediationHistoryRecordResult?
-    @Published private(set) var guidedCleanupFlowResult: GuidedCleanupFlowResult?
-    @Published private(set) var guidedCleanupRecordResult: GuidedCleanupRecordStepResult?
-    @Published private(set) var traceImportList = AgentTraceImportListResult(imports: [])
-    @Published private(set) var traceImportResult: AgentTraceImportResult?
-    @Published private(set) var traceImportDeleteResult: AgentTraceImportDeleteResult?
-    @Published private(set) var agentSessionSkillReviewList = AgentSessionSkillReviewListResult(reviews: [])
-    @Published private(set) var agentSessionSkillReviewResult: AgentSessionSkillReviewResult?
-    @Published private(set) var agentSessionSkillReviewDeleteResult: AgentSessionSkillReviewDeleteResult?
     @Published private(set) var localSessionPreviewResult = LocalSessionPreviewResult() {
         didSet { invalidateScopedLocalSessionSummaryCache() }
     }
-    @Published private(set) var mcpServerPreviewResult = McpServerPreviewResult()
-    @Published private(set) var isLoadingTaskBenchmarks = false
-    @Published private(set) var isSavingTaskBenchmark = false
-    @Published private(set) var isEvaluatingTaskBenchmarks = false
-    @Published private(set) var isSavingRoutingBaseline = false
-    @Published private(set) var isDetectingRoutingRegression = false
-    @Published private(set) var isLoadingRoutingAccuracyDashboard = false
-    @Published private(set) var isDetectingStaleDrift = false
-    @Published private(set) var isSearchingKnowledge = false
-    @Published private(set) var isBuildingLocalSkillMap = false
-    @Published private(set) var isLoadingSkillLifecycleTimeline = false
-    @Published private(set) var isGroupingSimilarSkills = false
-    @Published private(set) var isBuildingCapabilityTaxonomy = false
-    @Published private(set) var isCheckingWorkspaceReadiness = false
-    @Published private(set) var isPlanningRemediation = false
-    @Published private(set) var isPreviewingRemediationDrafts = false
-    @Published private(set) var isPreviewingRemediationImpact = false
-    @Published private(set) var isReviewingRemediationBatch = false
-    @Published private(set) var isLoadingRemediationHistory = false
-    @Published private(set) var isRecordingRemediationHistory = false
-    @Published private(set) var isPlanningGuidedCleanupFlow = false
-    @Published private(set) var isRecordingGuidedCleanupStep = false
-    @Published private(set) var isLoadingTraceImports = false
-    @Published private(set) var isImportingTrace = false
-    @Published private(set) var isLoadingAgentSessionSkillReviews = false
-    @Published private(set) var isReviewingAgentSessionSkillUse = false
+    @Published private(set) var appSearchResult = AppSearchResult.empty()
+    @Published private(set) var skillListScrollRequest: SkillListScrollRequest?
     @Published private(set) var isPreviewingLocalSessions = false
-    @Published private(set) var isPreviewingMcpServers = false
-    @Published private(set) var deletingTaskBenchmarkIDs: Set<String> = []
-    @Published private(set) var deletingTraceImportIDs: Set<String> = []
-    @Published private(set) var deletingAgentSessionSkillReviewIDs: Set<String> = []
+    @Published private(set) var isLoadingMoreLocalSessions = false
+    @Published private(set) var isSearchingApp = false
     @Published private(set) var llmPromptPreviews: [String: LLMPromptPreview] = [:]
     @Published private(set) var previewingLLMPromptKeys: Set<String> = []
     @Published private(set) var sendingLLMPromptKeys: Set<String> = []
@@ -164,10 +112,32 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingLLMPromptRuns = false
     @Published private(set) var providerObservabilityResult: ProviderObservabilityResult?
     @Published private(set) var isLoadingProviderObservability = false
+    @Published var providerObservabilityDateRange: ProviderObservabilityDateRangePreset = .last30Days {
+        didSet {
+            guard oldValue != providerObservabilityDateRange else { return }
+            scheduleProviderObservabilityCriteriaRefresh()
+        }
+    }
+    @Published var providerObservabilityCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date() {
+        didSet {
+            guard oldValue != providerObservabilityCustomStartDate else { return }
+            guard providerObservabilityDateRange == .custom else { return }
+            scheduleProviderObservabilityCriteriaRefresh()
+        }
+    }
+    @Published var providerObservabilityCustomEndDate: Date = Date() {
+        didSet {
+            guard oldValue != providerObservabilityCustomEndDate else { return }
+            guard providerObservabilityDateRange == .custom else { return }
+            scheduleProviderObservabilityCriteriaRefresh()
+        }
+    }
     @Published private(set) var taskCockpitResult: TaskCockpitResult?
     @Published private(set) var taskCockpitHistory: [TaskCockpitHistoryRecord] = []
     @Published private(set) var selectedTaskCockpitHistoryID: TaskCockpitHistoryRecord.ID?
     @Published private(set) var taskCockpitSelectedAgentIDs: Set<String> = [SkillAgentFilter.claudeCode.rawValue]
+    @Published private(set) var taskCockpitPromptConfirmation: TaskCockpitPromptConfirmation?
+    @Published private(set) var isPreviewingTaskCockpitPrompt = false
     @Published private(set) var isBuildingTaskCockpit = false
     @Published private(set) var taskCockpitOperationState = TaskCockpitOperationState.idle
     @Published private(set) var scriptExecutionPreviews: [SkillRecord.ID: ScriptExecutionPreview] = [:]
@@ -264,7 +234,6 @@ final class SkillStore: ObservableObject {
     @Published var selectedSkillID: SkillRecord.ID? {
         didSet {
             guard oldValue != selectedSkillID else { return }
-            clearLocalReportExportState()
             synchronizeSidebarSelectionWithSelectedSkill()
         }
     }
@@ -291,41 +260,22 @@ final class SkillStore: ObservableObject {
     @Published var searchText = "" {
         didSet {
             guard oldValue != searchText else { return }
-            clearLocalReportExportState()
             handleListCriteriaChanged()
         }
     }
     @Published var agentFilter: SkillAgentFilter = .claudeCode {
         didSet {
             guard oldValue != agentFilter else { return }
-            clearLocalReportExportState()
             handleListCriteriaChanged()
-            routingAccuracyDashboard = nil
-            staleDriftDetection = nil
-            knowledgeSearchResult = nil
-            localSkillMapResult = nil
-            skillLifecycleTimelineResult = nil
             clearTaskCockpitTransientState()
             resetTaskCockpitAgentSelectionToSidebarDefault(clearResult: false)
-            similarSkillGroupingResult = nil
-            capabilityTaxonomyResult = nil
-            workspaceReadinessResult = nil
-            remediationPlanResult = nil
-            remediationPreviewDraftsResult = nil
-            remediationImpactPreviewResult = nil
-            remediationBatchReviewResult = nil
-            remediationHistoryResult = nil
-            remediationHistoryRecordResult = nil
-            guidedCleanupFlowResult = nil
-            guidedCleanupRecordResult = nil
-            agentSessionSkillReviewResult = nil
-            agentSessionSkillReviewDeleteResult = nil
-            agentSessionSkillReviewList = AgentSessionSkillReviewListResult(reviews: [])
             localSessionPreviewResult = LocalSessionPreviewResult()
             loadedLocalSessionPreviewRequestKey = nil
             activeLocalSessionPreviewRequestKey = nil
+            localSessionCriteriaTask?.cancel()
+            localSessionCriteriaTask = nil
+            isLoadingMoreLocalSessions = false
             selectedLocalSessionID = nil
-            mcpServerPreviewResult = McpServerPreviewResult()
             if sidebarContentMode == .config {
                 selectedSidebarSelection = .configOverview
             }
@@ -335,19 +285,15 @@ final class SkillStore: ObservableObject {
     @Published var stateFilter: SkillStateFilter = .all {
         didSet {
             guard oldValue != stateFilter else { return }
-            clearLocalReportExportState()
             handleListCriteriaChanged()
         }
     }
     @Published var skillScopeFilter: SkillScopeFilter = .all {
         didSet {
             guard oldValue != skillScopeFilter else { return }
-            clearLocalReportExportState()
             handleListCriteriaChanged()
         }
     }
-    @Published var cleanupKindFilter: CleanupQueueKindFilter = .all
-    @Published var cleanupPriorityFilter: CleanupQueuePriorityFilter = .all
     @Published var batchToggleAction: BatchToggleAction = .disable {
         didSet { batchTogglePreview = nil }
     }
@@ -359,57 +305,16 @@ final class SkillStore: ObservableObject {
             }
         }
     }
-    @Published var localReportFormat: LocalReportFormat = .markdown {
-        didSet { clearLocalReportExportState() }
-    }
     @Published var sortOrder: SkillSortOrder = .name {
         didSet {
             guard oldValue != sortOrder else { return }
-            clearLocalReportExportState()
             handleListCriteriaChanged()
         }
     }
     @Published var sortDirection: SkillSortDirection = .ascending {
         didSet {
             guard oldValue != sortDirection else { return }
-            clearLocalReportExportState()
             handleListCriteriaChanged()
-        }
-    }
-    @Published var taskReadinessText = "" {
-        didSet {
-            if oldValue != taskReadinessText {
-                taskReadinessResult = nil
-                if normalizedCrossAgentReadinessText.isEmpty {
-                    crossAgentReadinessResult = nil
-                }
-                if normalizedTaskCockpitText.isEmpty {
-                    clearTaskCockpitTransientState()
-                }
-            }
-        }
-    }
-    @Published var routingConfidenceText = "" {
-        didSet {
-            if oldValue != routingConfidenceText {
-                routingConfidenceResult = nil
-                if normalizedCrossAgentReadinessText.isEmpty {
-                    crossAgentReadinessResult = nil
-                }
-                if normalizedTaskCockpitText.isEmpty {
-                    clearTaskCockpitTransientState()
-                }
-            }
-        }
-    }
-    @Published var crossAgentReadinessText = "" {
-        didSet {
-            if oldValue != crossAgentReadinessText {
-                crossAgentReadinessResult = nil
-                if normalizedTaskCockpitText.isEmpty {
-                    clearTaskCockpitTransientState()
-                }
-            }
         }
     }
     @Published var taskCockpitText = "" {
@@ -419,49 +324,38 @@ final class SkillStore: ObservableObject {
             }
         }
     }
-    @Published var knowledgeSearchText = "" {
-        didSet {
-            if oldValue != knowledgeSearchText {
-                knowledgeSearchResult = nil
-            }
-        }
-    }
-    @Published var taskBenchmarkText = ""
-    @Published var traceImportText = ""
-    @Published var traceImportTitle = ""
-    @Published var traceImportTask = ""
-    @Published var traceImportExpectedSkills = ""
-    @Published var agentSessionSkillReviewTranscript = ""
-    @Published var agentSessionSkillReviewTask = ""
-    @Published var agentSessionSkillReviewExpectedSkills = ""
     @Published var localSessionPreviewRoots = ""
     @Published var localSessionScopeFilter: LocalSessionScopeFilter = .project {
         didSet {
             guard oldValue != localSessionScopeFilter else { return }
             invalidateScopedLocalSessionSummaryCache()
+            scheduleLocalSessionCriteriaRefresh()
             normalizeSelectedLocalSession()
         }
     }
     @Published var localSessionSortOrder: LocalSessionSortOrder = .recent {
         didSet {
             guard oldValue != localSessionSortOrder else { return }
+            scheduleLocalSessionCriteriaRefresh()
             normalizeSelectedLocalSession()
         }
     }
     @Published var localSessionSortDirection: SkillSortDirection = .descending {
         didSet {
             guard oldValue != localSessionSortDirection else { return }
+            scheduleLocalSessionCriteriaRefresh()
             normalizeSelectedLocalSession()
         }
     }
     @Published var localSessionSearchText = "" {
         didSet {
+            guard oldValue != localSessionSearchText else { return }
             guard sidebarContentMode == .sessions else { return }
+            scheduleLocalSessionCriteriaRefresh()
             normalizeSelectedLocalSession()
         }
     }
     @Published var selectedLocalSessionID: LocalSessionPreviewRow.ID?
-    @Published var mcpServerPreviewPaths = ""
     @Published var errorMessage: String? {
         didSet { scheduleErrorMessageDismissal() }
     }
@@ -469,13 +363,9 @@ final class SkillStore: ObservableObject {
     private let service: ServiceClient
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
-    private var taskReadinessCheckedSkillID: SkillRecord.ID?
-    private var routingConfidenceRankedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
-    private var cleanupQueueLoadGeneration = 0
-    private var crossAgentComparisonsLoadGeneration = 0
     private var selectedDetailLoadGeneration = 0
     private var loadedAgentConfigSnapshotRequestKey: String?
     private var activeAgentConfigSnapshotRequestKey: String?
@@ -483,12 +373,6 @@ final class SkillStore: ObservableObject {
     private var activeAgentConfigDocumentRequestKey: String?
     private var loadedClaudeSettingsRequestKey: String?
     private var activeClaudeSettingsRequestKey: String?
-    private var loadedCleanupQueueRequestKey: String?
-    private var activeCleanupQueueRequestKey: String?
-    private var loadedCrossAgentComparisonsRequestKey: String?
-    private var activeCrossAgentComparisonsRequestKey: String?
-    private var cleanupQueueCacheByRequestKey: [String: CleanupQueueResult] = [:]
-    private var crossAgentComparisonsCacheByRequestKey: [String: CrossAgentComparisonResult] = [:]
     private var localSessionPreviewGeneration = 0
     private var loadedLocalSessionPreviewRequestKey: String?
     private var activeLocalSessionPreviewRequestKey: String?
@@ -499,6 +383,10 @@ final class SkillStore: ObservableObject {
     private var errorMessageDismissTask: Task<Void, Never>?
     private var agentFilterLoadTask: Task<Void, Never>?
     private var listCriteriaDetailTask: Task<Void, Never>?
+    private var localSessionCriteriaTask: Task<Void, Never>?
+    private var appSearchTask: Task<Void, Never>?
+    private var providerObservabilityCriteriaTask: Task<Void, Never>?
+    private var appSearchQuery = ""
     private var taskCockpitTimeoutTask: Task<Void, Never>?
     private var taskCockpitServiceTask: Task<TaskCockpitResult, Error>?
     private var isSynchronizingSidebarSelection = false
@@ -568,23 +456,27 @@ final class SkillStore: ObservableObject {
             guard let self else { return }
             await self.loadAgentConfigSnapshotsIfNeeded()
             guard !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
-            await self.loadCleanupQueueIfNeeded()
-            guard !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
-            await self.loadCrossAgentComparisonsIfNeeded()
         }
     }
 
-    private func invalidateRuntimeAnalysisCaches() {
-        cleanupQueueLoadGeneration &+= 1
-        crossAgentComparisonsLoadGeneration &+= 1
-        loadedCleanupQueueRequestKey = nil
-        activeCleanupQueueRequestKey = nil
-        loadedCrossAgentComparisonsRequestKey = nil
-        activeCrossAgentComparisonsRequestKey = nil
-        cleanupQueueCacheByRequestKey.removeAll()
-        crossAgentComparisonsCacheByRequestKey.removeAll()
-        isLoadingCleanupQueue = false
-        isLoadingCrossAgentComparisons = false
+    private func scheduleLocalSessionCriteriaRefresh() {
+        guard hasCompletedStartupLoad, sidebarContentMode == .sessions else { return }
+        localSessionCriteriaTask?.cancel()
+        localSessionCriteriaTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.previewLocalSessions(allowDuringCatalogRefresh: true, force: true)
+        }
+    }
+
+    private func scheduleProviderObservabilityCriteriaRefresh() {
+        guard hasCompletedStartupLoad else { return }
+        providerObservabilityCriteriaTask?.cancel()
+        providerObservabilityCriteriaTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.loadProviderObservability(force: true, allowDuringRefresh: true)
+        }
     }
 
     func invalidateFilteredSkillListCache() {
@@ -629,16 +521,7 @@ final class SkillStore: ObservableObject {
     }
 
     var filteredLocalSessionRows: [LocalSessionPreviewRow] {
-        let query = localSessionSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let scopedRows = scopedLocalSessionSummary.rows
-        guard !query.isEmpty else {
-            return sortedLocalSessionRows(scopedRows)
-        }
-        return sortedLocalSessionRows(scopedRows.filter { row in
-            row.title.lowercased().contains(query)
-                || row.redactedPath.lowercased().contains(query)
-                || (row.projectRoot?.lowercased().contains(query) ?? false)
-        })
+        sortedLocalSessionRows(scopedLocalSessionSummary.rows)
     }
 
     private func sortedLocalSessionRows(_ rows: [LocalSessionPreviewRow]) -> [LocalSessionPreviewRow] {
@@ -819,11 +702,6 @@ final class SkillStore: ObservableObject {
         selectedSidebarSelection = .configSnapshot(snapshot.id)
     }
 
-    func selectLocalReportHistoryRecord(_ record: LocalReportExportHistoryRecord) {
-        selectedLocalReportHistoryID = record.id
-        localReportExportResult = record.result
-    }
-
     func selectTaskCockpitHistoryRecord(_ record: TaskCockpitHistoryRecord) {
         taskCockpitText = record.taskText
         setTaskCockpitAgentSelection(record.agentIDs, clearResult: false)
@@ -872,24 +750,6 @@ final class SkillStore: ObservableObject {
         setTaskCockpitAgentSelection(SkillAgentFilter.managementCases.map(\.rawValue), clearResult: true)
     }
 
-    func localReportScopeSummary(includeSelectedSkill: Bool) -> String {
-        var parts = [agentFilter.title]
-        if stateFilter != .all {
-            parts.append(stateFilter.title)
-        }
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedSearch.isEmpty {
-            parts.append(UIStrings.text("localReport.scope.search", "Search filter active"))
-        }
-        if includeSelectedSkill, let selectedSkill {
-            parts.append(selectedSkill.name)
-        }
-        return String(
-            format: UIStrings.text("localReport.scope.agent", "Exports the current local audit scope: %@."),
-            parts.joined(separator: " · ")
-        )
-    }
-
     func setFindingTriageStatus(_ status: FindingTriageStatus, for triageKeys: [String]) {
         let keys = Array(Set(triageKeys.filter { !$0.isEmpty })).sorted()
         guard !keys.isEmpty else { return }
@@ -931,14 +791,6 @@ final class SkillStore: ObservableObject {
         preparingLLMActions.contains(action)
     }
 
-    func skillAnalysisPrepareResult(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> LLMSkillAnalysisPrepareResult? {
-        skillAnalysisPrepareResults[skillAnalysisKey(kind: kind, scope: scope)]
-    }
-
-    func isPreparingSkillAnalysis(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> Bool {
-        preparingSkillAnalysisKeys.contains(skillAnalysisKey(kind: kind, scope: scope))
-    }
-
     func llmPromptPreview(for action: LLMAction) -> LLMPromptPreview? {
         guard let skill = selectedSkill else { return nil }
         return llmPromptPreviews[llmPromptActionKey(action: action, skillID: skill.id)]
@@ -964,144 +816,6 @@ final class SkillStore: ObservableObject {
         return canSendLLMPrompt(preview)
     }
 
-    func skillAnalysisPromptPreview(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> LLMPromptPreview? {
-        let instanceIDs = skillAnalysisInstanceIDs(scope: scope)
-        guard !instanceIDs.isEmpty else { return nil }
-        return llmPromptPreviews[skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs)]
-    }
-
-    func isPreviewingSkillAnalysisPrompt(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> Bool {
-        let instanceIDs = skillAnalysisInstanceIDs(scope: scope)
-        guard !instanceIDs.isEmpty else { return false }
-        return previewingLLMPromptKeys.contains(skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs))
-    }
-
-    func isSendingSkillAnalysisPrompt(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> Bool {
-        let instanceIDs = skillAnalysisInstanceIDs(scope: scope)
-        guard !instanceIDs.isEmpty else { return false }
-        return sendingLLMPromptKeys.contains(skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs))
-    }
-
-    func skillAnalysisPromptSendResult(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> LLMPromptSendResult? {
-        let instanceIDs = skillAnalysisInstanceIDs(scope: scope)
-        guard !instanceIDs.isEmpty else { return nil }
-        return llmPromptSendResults[skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs)]
-    }
-
-    func canSendSkillAnalysisPrompt(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> Bool {
-        guard let preview = skillAnalysisPromptPreview(kind: kind, scope: scope) else { return false }
-        return canSendLLMPrompt(preview)
-    }
-
-    func skillQualityScore(for skill: SkillRecord) -> SkillQualityScoreResult? {
-        skillQualityScores[skill.id]
-    }
-
-    func isScoringSkillQuality(for skill: SkillRecord) -> Bool {
-        scoringSkillQualityIDs.contains(skill.id)
-    }
-
-    func skillQualityPromptPreview(for skill: SkillRecord) -> LLMPromptPreview? {
-        llmPromptPreviews[skillQualityPromptKey(skillID: skill.id)]
-    }
-
-    func isPreviewingSkillQualityPrompt(for skill: SkillRecord) -> Bool {
-        previewingLLMPromptKeys.contains(skillQualityPromptKey(skillID: skill.id))
-    }
-
-    func isSendingSkillQualityPrompt(for skill: SkillRecord) -> Bool {
-        sendingLLMPromptKeys.contains(skillQualityPromptKey(skillID: skill.id))
-    }
-
-    func skillQualityPromptSendResult(for skill: SkillRecord) -> LLMPromptSendResult? {
-        llmPromptSendResults[skillQualityPromptKey(skillID: skill.id)]
-    }
-
-    func canSendSkillQualityPrompt(for skill: SkillRecord) -> Bool {
-        guard let preview = skillQualityPromptPreview(for: skill) else { return false }
-        return canSendLLMPrompt(preview)
-    }
-
-    func taskReadiness(for skill: SkillRecord) -> TaskReadinessResult? {
-        guard taskReadinessCheckedSkillID == skill.id else { return nil }
-        return taskReadinessResult
-    }
-
-    func isCheckingTaskReadiness(for skill: SkillRecord) -> Bool {
-        checkingTaskReadinessSkillIDs.contains(skill.id)
-    }
-
-    func taskReadinessPromptPreview(for skill: SkillRecord) -> LLMPromptPreview? {
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else { return nil }
-        return llmPromptPreviews[taskReadinessPromptKey(skillID: skill.id, taskText: taskText)]
-    }
-
-    func isPreviewingTaskReadinessPrompt(for skill: SkillRecord) -> Bool {
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else { return false }
-        return previewingLLMPromptKeys.contains(taskReadinessPromptKey(skillID: skill.id, taskText: taskText))
-    }
-
-    func isSendingTaskReadinessPrompt(for skill: SkillRecord) -> Bool {
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else { return false }
-        return sendingLLMPromptKeys.contains(taskReadinessPromptKey(skillID: skill.id, taskText: taskText))
-    }
-
-    func taskReadinessPromptSendResult(for skill: SkillRecord) -> LLMPromptSendResult? {
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else {
-            return latestPromptRun(for: skill, requestKind: "task_readiness")?.sendResult
-        }
-        return llmPromptSendResults[taskReadinessPromptKey(skillID: skill.id, taskText: taskText)]
-    }
-
-    func canSendTaskReadinessPrompt(for skill: SkillRecord) -> Bool {
-        guard let preview = taskReadinessPromptPreview(for: skill) else { return false }
-        return canSendLLMPrompt(preview)
-    }
-
-    func routingConfidence(for skill: SkillRecord) -> SkillRoutingConfidenceResult? {
-        guard routingConfidenceRankedSkillID == skill.id else { return nil }
-        return routingConfidenceResult
-    }
-
-    func isRankingRoutingConfidence(for skill: SkillRecord) -> Bool {
-        rankingRoutingSkillIDs.contains(skill.id)
-    }
-
-    func routingConfidencePromptPreview(for skill: SkillRecord) -> LLMPromptPreview? {
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else { return nil }
-        return llmPromptPreviews[routingConfidencePromptKey(skillID: skill.id, taskText: taskText)]
-    }
-
-    func isPreviewingRoutingConfidencePrompt(for skill: SkillRecord) -> Bool {
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else { return false }
-        return previewingLLMPromptKeys.contains(routingConfidencePromptKey(skillID: skill.id, taskText: taskText))
-    }
-
-    func isSendingRoutingConfidencePrompt(for skill: SkillRecord) -> Bool {
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else { return false }
-        return sendingLLMPromptKeys.contains(routingConfidencePromptKey(skillID: skill.id, taskText: taskText))
-    }
-
-    func routingConfidencePromptSendResult(for skill: SkillRecord) -> LLMPromptSendResult? {
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else {
-            return latestPromptRun(for: skill, requestKind: "routing_confidence")?.sendResult
-        }
-        return llmPromptSendResults[routingConfidencePromptKey(skillID: skill.id, taskText: taskText)]
-    }
-
-    func canSendRoutingConfidencePrompt(for skill: SkillRecord) -> Bool {
-        guard let preview = routingConfidencePromptPreview(for: skill) else { return false }
-        return canSendLLMPrompt(preview)
-    }
-
     func loadAppStartupDataIfNeeded() async {
         guard !hasCompletedStartupLoad, !isRunningStartupLoad else { return }
         isRunningStartupLoad = true
@@ -1124,8 +838,6 @@ final class SkillStore: ObservableObject {
             let startupAgentFilter = agentFilter
             let shouldLoadClaudeSettings = startupAgentFilter == .claudeCode
                 && status?.supportedMethods.contains("config.readClaudeSettings") == true
-            async let cleanupQueueLoad: Void = loadCleanupQueueIfNeeded()
-            async let crossAgentComparisonsLoad: Void = loadCrossAgentComparisonsIfNeeded()
             async let localSessionsLoad: Void = refreshSelectedAgentLocalSessionsIfNeeded()
             async let currentConfigDocumentsLoad: Void = loadCurrentAgentConfigDocumentsIfNeeded(agent: startupAgentFilter.rawValue)
             async let providerObservabilityLoad: Void = loadProviderObservabilityDuringRefresh(force: false)
@@ -1133,8 +845,6 @@ final class SkillStore: ObservableObject {
                 await loadClaudeSettingsIfNeeded()
             }
             _ = await (
-                cleanupQueueLoad,
-                crossAgentComparisonsLoad,
                 localSessionsLoad,
                 currentConfigDocumentsLoad,
                 providerObservabilityLoad
@@ -1165,10 +875,8 @@ final class SkillStore: ObservableObject {
 
         do {
             try await refreshCollections()
-            async let cleanupQueueLoad: Void = loadCleanupQueue()
-            async let crossAgentComparisonsLoad: Void = loadCrossAgentComparisons()
             async let providerObservabilityLoad: Void = loadProviderObservabilityDuringRefresh(force: true)
-            _ = await (cleanupQueueLoad, crossAgentComparisonsLoad, providerObservabilityLoad)
+            _ = await providerObservabilityLoad
             refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
@@ -1197,8 +905,6 @@ final class SkillStore: ObservableObject {
                 invalidateDetailCaches(for: [selectedSkillID])
             }
             try await refreshCollections()
-            await loadCleanupQueue()
-            await loadCrossAgentComparisons()
             lastMutationMessage = UIStrings.scannedSkills(result.scannedCount)
             applyRefreshActivity(result.activity)
             await loadSelectedDetail()
@@ -1392,8 +1098,6 @@ final class SkillStore: ObservableObject {
                 skillEventsByID.removeValue(forKey: item.instanceID)
             }
             try await refreshCollections()
-            await loadCleanupQueue()
-            await loadCrossAgentComparisons()
             lastMutationMessage = UIStrings.batchToggleApplied(
                 action: preview.action.title,
                 count: result.updatedCount == 0 ? preview.writableCount : result.updatedCount
@@ -1667,44 +1371,6 @@ final class SkillStore: ObservableObject {
             recordLocalRefresh(message: UIStrings.refreshAfterWrite)
         } catch {
             setSkillManagerError(error.localizedDescription)
-        }
-    }
-
-    func exportLocalReport(includeSelectedSkill: Bool = true) async {
-        guard !isRefreshBusy else {
-            errorMessage = UIStrings.operationUnavailableBusy
-            lastMutationMessage = nil
-            return
-        }
-
-        isExportingLocalReport = true
-        errorMessage = nil
-        lastMutationMessage = nil
-        defer { isExportingLocalReport = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let state = stateFilter == .all ? nil : stateFilter.rawValue
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scopeSummary = localReportScopeSummary(includeSelectedSkill: includeSelectedSkill)
-        do {
-            let result = try await service.exportLocalReport(
-                format: localReportFormat,
-                agent: agent,
-                instanceID: includeSelectedSkill ? selectedSkill?.id : nil,
-                stateFilter: state,
-                search: trimmedSearch.isEmpty ? nil : trimmedSearch
-            )
-            localReportExportResult = result
-            if result.isUnavailable {
-                lastMutationMessage = nil
-            } else {
-                recordLocalReportExportHistory(result: result, scopeSummary: scopeSummary)
-                lastMutationMessage = UIStrings.localReportExported(result.displayName)
-            }
-        } catch {
-            localReportExportResult = .unavailable(reason: UIStrings.localReportUnavailableFallback, format: localReportFormat)
-            errorMessage = error.localizedDescription
-            lastMutationMessage = nil
         }
     }
 
@@ -1989,17 +1655,6 @@ final class SkillStore: ObservableObject {
         await prepareLLMAction(.draftFrontmatter)
     }
 
-    func prepareSelectedSkillAnalysis(kind: LLMSkillAnalysisKind) async {
-        guard let skill = selectedSkill else { return }
-        await prepareSkillAnalysis(kind: kind, scope: .selected, instanceIDs: [skill.id])
-    }
-
-    func prepareVisibleSkillAnalysis(kind: LLMSkillAnalysisKind) async {
-        let instanceIDs = filteredSkills.map(\.id)
-        guard !instanceIDs.isEmpty else { return }
-        await prepareSkillAnalysis(kind: kind, scope: .visible, instanceIDs: instanceIDs)
-    }
-
     func previewPromptForSelectedLLMAction(_ action: LLMAction) async {
         guard let skill = selectedSkill else { return }
         let key = llmPromptActionKey(action: action, skillID: skill.id)
@@ -2031,436 +1686,11 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func previewPromptForSkillAnalysis(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) async {
-        let instanceIDs = skillAnalysisInstanceIDs(scope: scope)
-        guard !instanceIDs.isEmpty else { return }
-        let key = skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs)
-        guard !isRefreshBusy else {
-            llmPromptPreviews[key] = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        previewingLLMPromptKeys.insert(key)
-        llmPromptSendResults.removeValue(forKey: key)
-        defer { previewingLLMPromptKeys.remove(key) }
-
-        do {
-            llmPromptPreviews[key] = try await service.previewPromptForSkillAnalysis(
-                instanceIDs: instanceIDs,
-                kind: kind,
-                scope: scope
-            )
-        } catch {
-            llmPromptPreviews[key] = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func confirmPromptForSkillAnalysis(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) async {
-        let instanceIDs = skillAnalysisInstanceIDs(scope: scope)
-        guard !instanceIDs.isEmpty else { return }
-        let key = skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs)
-        await confirmLLMPrompt(key: key) { previewID in
-            try await service.confirmPromptAndSendForSkillAnalysis(
-                previewID: previewID,
-                instanceIDs: instanceIDs,
-                kind: kind,
-                scope: scope
-            )
-        }
-    }
-
-    func scoreSelectedSkillQuality() async {
-        guard let skill = selectedSkill else { return }
-        await scoreSkillQuality(for: skill)
-    }
-
-    func previewPromptForSelectedSkillQuality() async {
-        guard let skill = selectedSkill else { return }
-        let key = skillQualityPromptKey(skillID: skill.id)
-        guard !isRefreshBusy else {
-            llmPromptPreviews[key] = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        previewingLLMPromptKeys.insert(key)
-        llmPromptSendResults.removeValue(forKey: key)
-        defer { previewingLLMPromptKeys.remove(key) }
-
-        do {
-            llmPromptPreviews[key] = try await service.previewPromptForSkillQuality(skill: skill)
-        } catch {
-            llmPromptPreviews[key] = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func confirmPromptForSelectedSkillQuality() async {
-        guard let skill = selectedSkill else { return }
-        let key = skillQualityPromptKey(skillID: skill.id)
-        await confirmLLMPrompt(key: key) { previewID in
-            try await service.confirmPromptAndSendForSkillQuality(previewID: previewID, skill: skill)
-        }
-    }
-
-    func checkSelectedTaskReadiness() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else {
-            taskReadinessResult = .unavailable(taskText: "", reason: UIStrings.taskReadinessTaskRequired)
-            taskReadinessCheckedSkillID = skill.id
-            return
-        }
-        guard !isRefreshBusy else {
-            taskReadinessResult = .unavailable(taskText: taskText, reason: UIStrings.operationUnavailableBusy)
-            taskReadinessCheckedSkillID = skill.id
-            return
-        }
-
-        checkingTaskReadinessSkillIDs.insert(skill.id)
-        defer { checkingTaskReadinessSkillIDs.remove(skill.id) }
-
-        do {
-            taskReadinessResult = try await service.checkTaskReadiness(taskText: taskText, skill: skill)
-            taskReadinessCheckedSkillID = skill.id
-        } catch {
-            taskReadinessResult = .unavailable(taskText: taskText, reason: error.localizedDescription)
-            taskReadinessCheckedSkillID = skill.id
-        }
-    }
-
-    func previewPromptForSelectedTaskReadiness() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else {
-            taskReadinessResult = .unavailable(taskText: "", reason: UIStrings.taskReadinessTaskRequired)
-            taskReadinessCheckedSkillID = skill.id
-            return
-        }
-        let key = taskReadinessPromptKey(skillID: skill.id, taskText: taskText)
-        guard !isRefreshBusy else {
-            llmPromptPreviews[key] = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        previewingLLMPromptKeys.insert(key)
-        llmPromptSendResults.removeValue(forKey: key)
-        defer { previewingLLMPromptKeys.remove(key) }
-
-        do {
-            llmPromptPreviews[key] = try await service.previewPromptForTaskReadiness(taskText: taskText, skill: skill)
-        } catch {
-            llmPromptPreviews[key] = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func confirmPromptForSelectedTaskReadiness() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = normalizedTaskReadinessText
-        guard !taskText.isEmpty else { return }
-        let key = taskReadinessPromptKey(skillID: skill.id, taskText: taskText)
-        await confirmLLMPrompt(key: key) { previewID in
-            try await service.confirmPromptAndSendForTaskReadiness(
-                previewID: previewID,
-                taskText: taskText,
-                skill: skill
-            )
-        }
-    }
-
-    func rankSelectedSkillRoutes() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else {
-            routingConfidenceResult = .unavailable(taskText: "", reason: UIStrings.routingConfidenceTaskRequired)
-            routingConfidenceRankedSkillID = skill.id
-            return
-        }
-        guard !isRefreshBusy else {
-            routingConfidenceResult = .unavailable(taskText: taskText, reason: UIStrings.operationUnavailableBusy)
-            routingConfidenceRankedSkillID = skill.id
-            return
-        }
-
-        rankingRoutingSkillIDs.insert(skill.id)
-        defer { rankingRoutingSkillIDs.remove(skill.id) }
-
-        do {
-            routingConfidenceResult = try await service.rankSkillRoutes(taskText: taskText, skill: skill)
-            routingConfidenceRankedSkillID = skill.id
-        } catch {
-            routingConfidenceResult = .unavailable(taskText: taskText, reason: error.localizedDescription)
-            routingConfidenceRankedSkillID = skill.id
-        }
-    }
-
-    func previewPromptForSelectedRoutingConfidence() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else {
-            routingConfidenceResult = .unavailable(taskText: "", reason: UIStrings.routingConfidenceTaskRequired)
-            routingConfidenceRankedSkillID = skill.id
-            return
-        }
-        let key = routingConfidencePromptKey(skillID: skill.id, taskText: taskText)
-        guard !isRefreshBusy else {
-            llmPromptPreviews[key] = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        previewingLLMPromptKeys.insert(key)
-        llmPromptSendResults.removeValue(forKey: key)
-        defer { previewingLLMPromptKeys.remove(key) }
-
-        do {
-            llmPromptPreviews[key] = try await service.previewPromptForRoutingConfidence(taskText: taskText, skill: skill)
-        } catch {
-            llmPromptPreviews[key] = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func confirmPromptForSelectedRoutingConfidence() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = normalizedRoutingConfidenceText
-        guard !taskText.isEmpty else { return }
-        let key = routingConfidencePromptKey(skillID: skill.id, taskText: taskText)
-        await confirmLLMPrompt(key: key) { previewID in
-            try await service.confirmPromptAndSendForRoutingConfidence(
-                previewID: previewID,
-                taskText: taskText,
-                skill: skill
-            )
-        }
-    }
-
-    func loadTaskBenchmarks() async {
-        guard !isLoadingTaskBenchmarks else { return }
-        isLoadingTaskBenchmarks = true
-        defer { isLoadingTaskBenchmarks = false }
-
-        do {
-            taskBenchmarkList = try await service.listTaskBenchmarks(skill: selectedSkill)
-        } catch {
-            taskBenchmarkList = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func saveSelectedTaskBenchmark() async {
-        guard let skill = selectedSkill else { return }
-        let taskText = selectedTaskBenchmarkInput
-        guard !taskText.isEmpty else {
-            taskBenchmarkEvaluation = .unavailable(reason: UIStrings.taskBenchmarkTaskRequired)
-            return
-        }
-        guard !isRefreshBusy else {
-            taskBenchmarkEvaluation = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isSavingTaskBenchmark = true
-        defer { isSavingTaskBenchmark = false }
-
-        do {
-            let result = try await service.saveTaskBenchmark(taskText: taskText, skill: skill)
-            if let benchmark = result.benchmark {
-                upsertTaskBenchmark(benchmark)
-                taskBenchmarkDeleteResult = nil
-                routingRegressionBaseline = nil
-                routingRegressionDetection = nil
-            } else if let reason = result.fallbackReason {
-                taskBenchmarkList = .unavailable(reason: reason)
-            }
-        } catch {
-            taskBenchmarkList = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func evaluateTaskBenchmarks() async {
-        guard !isRefreshBusy else {
-            taskBenchmarkEvaluation = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isEvaluatingTaskBenchmarks = true
-        defer { isEvaluatingTaskBenchmarks = false }
-
-        do {
-            taskBenchmarkEvaluation = try await service.evaluateTaskBenchmarks(
-                skill: selectedSkill,
-                benchmarkIDs: taskBenchmarkList.benchmarks.isEmpty ? nil : taskBenchmarkList.benchmarks.map(\.id)
-            )
-        } catch {
-            taskBenchmarkEvaluation = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func saveRoutingBaseline() async {
-        guard !isRefreshBusy else {
-            routingRegressionBaseline = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isSavingRoutingBaseline = true
-        defer { isSavingRoutingBaseline = false }
-
-        do {
-            routingRegressionBaseline = try await service.saveRoutingBaseline(
-                skill: selectedSkill,
-                benchmarkIDs: taskBenchmarkList.benchmarks.isEmpty ? nil : taskBenchmarkList.benchmarks.map(\.id)
-            )
-            routingRegressionDetection = nil
-        } catch {
-            routingRegressionBaseline = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func detectRoutingRegression() async {
-        guard !isRefreshBusy else {
-            routingRegressionDetection = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isDetectingRoutingRegression = true
-        defer { isDetectingRoutingRegression = false }
-
-        do {
-            routingRegressionDetection = try await service.detectRoutingRegression(
-                skill: selectedSkill,
-                benchmarkIDs: taskBenchmarkList.benchmarks.isEmpty ? nil : taskBenchmarkList.benchmarks.map(\.id)
-            )
-        } catch {
-            routingRegressionDetection = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func loadRoutingAccuracyDashboard() async {
-        guard !isLoadingRoutingAccuracyDashboard else { return }
-        guard !isRefreshBusy else {
-            routingAccuracyDashboard = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isLoadingRoutingAccuracyDashboard = true
-        defer { isLoadingRoutingAccuracyDashboard = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            routingAccuracyDashboard = try await service.routingAccuracyDashboard(
-                agent: agent,
-                windowDays: 30,
-                limit: 20,
-                includeHistory: true,
-                includeRecentEvidence: true
-            )
-        } catch {
-            routingAccuracyDashboard = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func detectStaleDrift() async {
-        guard !isDetectingStaleDrift else { return }
-        guard !isRefreshBusy else {
-            staleDriftDetection = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isDetectingStaleDrift = true
-        defer { isDetectingStaleDrift = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            staleDriftDetection = try await service.detectStaleDrift(
-                agent: agent,
-                limit: 40,
-                includeReadinessImpact: true
-            )
-        } catch {
-            staleDriftDetection = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func searchKnowledge() async {
-        let query = normalizedKnowledgeSearchText
-        guard !query.isEmpty else {
-            knowledgeSearchResult = .unavailable(reason: UIStrings.knowledgeQueryRequired)
-            return
-        }
-        guard !isSearchingKnowledge else { return }
-        guard !isRefreshBusy else {
-            knowledgeSearchResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isSearchingKnowledge = true
-        defer { isSearchingKnowledge = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            knowledgeSearchResult = try await service.searchKnowledge(
-                query: query,
-                agent: agent,
-                limit: 20
-            )
-        } catch {
-            knowledgeSearchResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func buildLocalSkillMap() async {
-        guard !isBuildingLocalSkillMap else { return }
-        guard !isRefreshBusy else {
-            localSkillMapResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isBuildingLocalSkillMap = true
-        defer { isBuildingLocalSkillMap = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            localSkillMapResult = try await service.buildLocalSkillMap(
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                limit: 30,
-                includeEdges: true,
-                includeClusters: true,
-                includeEvidence: true
-            )
-        } catch {
-            localSkillMapResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func loadSkillLifecycleTimeline() async {
-        guard !isLoadingSkillLifecycleTimeline else { return }
-        guard !isRefreshBusy else {
-            skillLifecycleTimelineResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isLoadingSkillLifecycleTimeline = true
-        defer { isLoadingSkillLifecycleTimeline = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            skillLifecycleTimelineResult = try await service.loadSkillLifecycleTimeline(
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                limit: 20,
-                includeSkillRows: true,
-                includeAgentRows: true,
-                includeEvidence: true,
-                includeSafetyFlags: true
-            )
-        } catch {
-            skillLifecycleTimelineResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
     func buildTaskCockpit() async {
         let taskText = selectedTaskCockpitInput
         guard !taskText.isEmpty else {
             taskCockpitResult = .unavailable(taskText: "", reason: UIStrings.taskCockpitTaskRequired)
+            taskCockpitPromptConfirmation = nil
             taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
                 phase: .failed,
                 message: UIStrings.taskCockpitTaskRequired
@@ -2471,15 +1701,17 @@ final class SkillStore: ObservableObject {
         guard !selectedAgents.isEmpty else {
             let message = UIStrings.text("taskCockpit.agentScope.required", "Select at least one agent.")
             taskCockpitResult = .unavailable(taskText: taskText, reason: message)
+            taskCockpitPromptConfirmation = nil
             taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
                 phase: .failed,
                 message: message
             )
             return
         }
-        guard !isBuildingTaskCockpit else { return }
+        guard !isPreviewingTaskCockpitPrompt, !isBuildingTaskCockpit else { return }
         guard !isRefreshBusy else {
             taskCockpitResult = .unavailable(taskText: taskText, reason: UIStrings.operationUnavailableBusy)
+            taskCockpitPromptConfirmation = nil
             taskCockpitOperationState = TaskCockpitOperationState.preparing(
                 taskText: taskText,
                 timeoutSeconds: roundedTaskCockpitTimeoutSeconds
@@ -2490,28 +1722,96 @@ final class SkillStore: ObservableObject {
             return
         }
 
+        taskCockpitResult = nil
+        taskCockpitPromptConfirmation = nil
+        isPreviewingTaskCockpitPrompt = true
+        taskCockpitOperationState = .preparing(
+            taskText: taskText,
+            timeoutSeconds: roundedTaskCockpitTimeoutSeconds
+        )
+        defer { isPreviewingTaskCockpitPrompt = false }
+
+        let candidateSkillIDs = taskCockpitCandidateSkillIDs(for: selectedAgents)
+        do {
+            let preview = try await service.previewPromptForTaskCockpit(
+                taskText: taskText,
+                agents: selectedAgents,
+                instanceIDs: candidateSkillIDs
+            )
+            guard canSendLLMPrompt(preview) else {
+                let reason = UIStrings.localizedServiceMessage(preview.disabledReason ?? UIStrings.llmPromptUnavailable)
+                taskCockpitResult = .unavailable(taskText: taskText, reason: reason)
+                taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
+                    phase: .failed,
+                    message: reason
+                )
+                return
+            }
+            taskCockpitPromptConfirmation = TaskCockpitPromptConfirmation(
+                preview: preview,
+                taskText: taskText,
+                agentIDs: selectedAgents,
+                instanceIDs: candidateSkillIDs
+            )
+            taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
+                phase: .completed,
+                message: UIStrings.taskCockpitPromptReady
+            )
+        } catch {
+            let message = UIStrings.localizedServiceMessage(error.localizedDescription)
+            taskCockpitResult = .unavailable(taskText: taskText, reason: message)
+            taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
+                phase: .failed,
+                message: UIStrings.taskCockpitFailed(message)
+            )
+        }
+    }
+
+    func confirmTaskCockpitPromptAndBuild() async {
+        guard let pending = taskCockpitPromptConfirmation else {
+            await buildTaskCockpit()
+            return
+        }
+        guard canSendLLMPrompt(pending.preview) else {
+            let reason = aiProviderStatus.configured ? UIStrings.llmPromptPreviewRequired : UIStrings.llmPromptProviderRequired
+            taskCockpitResult = .unavailable(taskText: pending.taskText, reason: reason)
+            taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
+                phase: .failed,
+                message: reason
+            )
+            return
+        }
+        guard !isBuildingTaskCockpit else { return }
+        guard !isRefreshBusy else {
+            taskCockpitResult = .unavailable(taskText: pending.taskText, reason: UIStrings.operationUnavailableBusy)
+            taskCockpitOperationState = TaskCockpitOperationState.preparing(
+                taskText: pending.taskText,
+                timeoutSeconds: roundedTaskCockpitTimeoutSeconds
+            ).finished(
+                phase: .failed,
+                message: UIStrings.operationUnavailableBusy
+            )
+            return
+        }
+
+        let taskText = pending.taskText
+        let selectedAgents = pending.agentIDs
+        let candidateSkillIDs = pending.instanceIDs
+        let previewID = pending.preview.previewID
         let operationID = UUID()
         taskCockpitOperationID = operationID
         isBuildingTaskCockpit = true
+        taskCockpitPromptConfirmation = nil
+        taskCockpitResult = nil
         taskCockpitOperationState = .preparing(
             taskText: taskText,
             timeoutSeconds: roundedTaskCockpitTimeoutSeconds
         )
         scheduleTaskCockpitTimeout(operationID: operationID, taskText: taskText)
 
-        let candidateSkillIDs = taskCockpitCandidateSkillIDs(for: selectedAgents)
         let serviceTask = Task {
-            let preview = try await service.previewPromptForTaskCockpit(
-                taskText: taskText,
-                agents: selectedAgents,
-                instanceIDs: candidateSkillIDs
-            )
-            guard self.canSendLLMPrompt(preview) else {
-                let reason = UIStrings.localizedServiceMessage(preview.disabledReason ?? UIStrings.llmSkillAnalysisUnavailable)
-                return TaskCockpitResult.unavailable(taskText: taskText, reason: reason)
-            }
             let sendResult = try await service.confirmPromptAndSendForTaskCockpit(
-                previewID: preview.previewID,
+                previewID: previewID,
                 taskText: taskText,
                 agents: selectedAgents,
                 instanceIDs: candidateSkillIDs
@@ -2561,6 +1861,14 @@ final class SkillStore: ObservableObject {
         cancelTaskCockpitBuild(publishFallbackResult: true)
     }
 
+    func clearTaskCockpitPromptConfirmation() {
+        guard !isBuildingTaskCockpit else { return }
+        taskCockpitPromptConfirmation = nil
+        if taskCockpitResult == nil {
+            taskCockpitOperationState = .idle
+        }
+    }
+
     private func cancelTaskCockpitBuild(publishFallbackResult: Bool) {
         guard taskCockpitOperationID != nil, isBuildingTaskCockpit else { return }
         let taskText = taskCockpitOperationState.taskText
@@ -2571,6 +1879,7 @@ final class SkillStore: ObservableObject {
         taskCockpitServiceTask = nil
         taskCockpitOperationID = nil
         isBuildingTaskCockpit = false
+        taskCockpitPromptConfirmation = nil
         if publishFallbackResult {
             taskCockpitResult = .unavailable(taskText: taskText, reason: message)
         }
@@ -2578,417 +1887,6 @@ final class SkillStore: ObservableObject {
             phase: .cancelled,
             message: message
         )
-    }
-
-    func groupSimilarSkills() async {
-        guard !isGroupingSimilarSkills else { return }
-        guard !isRefreshBusy else {
-            similarSkillGroupingResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isGroupingSimilarSkills = true
-        defer { isGroupingSimilarSkills = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            similarSkillGroupingResult = try await service.groupSimilarSkills(
-                agent: agent,
-                limit: 20,
-                minScore: 0.62,
-                includeSingletons: false
-            )
-        } catch {
-            similarSkillGroupingResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func buildCapabilityTaxonomy() async {
-        guard !isBuildingCapabilityTaxonomy else { return }
-        guard !isRefreshBusy else {
-            capabilityTaxonomyResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isBuildingCapabilityTaxonomy = true
-        defer { isBuildingCapabilityTaxonomy = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            capabilityTaxonomyResult = try await service.buildCapabilityTaxonomy(
-                agent: agent,
-                limit: 20,
-                includeSingleSkillDomains: true
-            )
-        } catch {
-            capabilityTaxonomyResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func checkWorkspaceReadiness() async {
-        guard !isCheckingWorkspaceReadiness else { return }
-        guard !isRefreshBusy else {
-            workspaceReadinessResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isCheckingWorkspaceReadiness = true
-        defer { isCheckingWorkspaceReadiness = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            workspaceReadinessResult = try await service.checkWorkspaceReadiness(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                limit: 40,
-                includeChecklist: true,
-                includeCapabilities: true
-            )
-        } catch {
-            workspaceReadinessResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func planRemediation() async {
-        guard !isPlanningRemediation else { return }
-        guard !isRefreshBusy else {
-            remediationPlanResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isPlanningRemediation = true
-        defer { isPlanningRemediation = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            remediationPlanResult = try await service.planRemediation(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                limit: 20,
-                includeGuidanceOnly: true
-            )
-        } catch {
-            remediationPlanResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func previewRemediationDrafts() async {
-        guard !isPreviewingRemediationDrafts else { return }
-        guard !isRefreshBusy else {
-            remediationPreviewDraftsResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isPreviewingRemediationDrafts = true
-        defer { isPreviewingRemediationDrafts = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            remediationPreviewDraftsResult = try await service.previewRemediationDrafts(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                limit: 20
-            )
-        } catch {
-            remediationPreviewDraftsResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func previewRemediationImpact() async {
-        guard !isPreviewingRemediationImpact else { return }
-        guard !isRefreshBusy else {
-            remediationImpactPreviewResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isPreviewingRemediationImpact = true
-        defer { isPreviewingRemediationImpact = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            remediationImpactPreviewResult = try await service.previewRemediationImpact(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                action: "review",
-                limit: 20,
-                includeTaskImpacts: true,
-                includeAgentImpacts: true,
-                includeSkillImpacts: true,
-                includeRiskDeltas: true,
-                includeSnapshotRollback: true,
-                includeBlocked: true
-            )
-        } catch {
-            remediationImpactPreviewResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func reviewRemediationBatch(options: RemediationBatchReviewOptions = RemediationBatchReviewOptions()) async {
-        guard !isReviewingRemediationBatch else { return }
-        guard !isRefreshBusy else {
-            remediationBatchReviewResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isReviewingRemediationBatch = true
-        defer { isReviewingRemediationBatch = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            remediationBatchReviewResult = try await service.batchReviewRemediation(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                limit: 30,
-                options: options
-            )
-        } catch {
-            remediationBatchReviewResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func loadRemediationHistory() async {
-        guard !isLoadingRemediationHistory else { return }
-        guard !isRefreshBusy else {
-            remediationHistoryResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isLoadingRemediationHistory = true
-        defer { isLoadingRemediationHistory = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            remediationHistoryResult = try await service.listRemediationHistory(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                limit: 30
-            )
-        } catch {
-            remediationHistoryResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func recordRemediationHistory() async {
-        guard !isRecordingRemediationHistory else { return }
-        guard !isRefreshBusy else {
-            remediationHistoryRecordResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isRecordingRemediationHistory = true
-        defer { isRecordingRemediationHistory = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            remediationHistoryRecordResult = try await service.recordRemediationHistory(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                evidenceRefs: remediationHistoryEvidenceRefs()
-            )
-        } catch {
-            remediationHistoryRecordResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func planGuidedCleanupFlow() async {
-        guard !isPlanningGuidedCleanupFlow else { return }
-        guard !isRefreshBusy else {
-            guidedCleanupFlowResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isPlanningGuidedCleanupFlow = true
-        defer { isPlanningGuidedCleanupFlow = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            guidedCleanupFlowResult = try await service.planGuidedCleanupFlow(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                limit: 12,
-                includeIssueGroups: true,
-                includeSafeNextActions: true,
-                includeRecordedSteps: true,
-                includeEvidence: true,
-                includeSafetyFlags: true
-            )
-        } catch {
-            guidedCleanupFlowResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func recordGuidedCleanupStep(_ step: GuidedCleanupFlowStep? = nil) async {
-        guard !isRecordingGuidedCleanupStep else { return }
-        guard !isRefreshBusy else {
-            guidedCleanupRecordResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-        guard let step = step ?? guidedCleanupFlowResult?.recommendedStep else {
-            guidedCleanupRecordResult = .unavailable(reason: UIStrings.guidedCleanupFlowNoSteps)
-            return
-        }
-
-        isRecordingGuidedCleanupStep = true
-        defer { isRecordingGuidedCleanupStep = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        let taskText = selectedCrossAgentReadinessInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            guidedCleanupRecordResult = try await service.recordGuidedCleanupStep(
-                taskText: taskText.isEmpty ? nil : taskText,
-                agent: agent,
-                project: activeProjectContext,
-                selectedSkill: selectedSkill,
-                step: step,
-                evidenceRefs: guidedCleanupEvidenceRefs(for: step)
-            )
-        } catch {
-            guidedCleanupRecordResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func compareCrossAgentReadiness() async {
-        let taskText = selectedCrossAgentReadinessInput
-        guard !taskText.isEmpty else {
-            crossAgentReadinessResult = .unavailable(taskText: "", reason: UIStrings.crossAgentReadinessTaskRequired)
-            return
-        }
-        guard !isRefreshBusy else {
-            crossAgentReadinessResult = .unavailable(taskText: taskText, reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isComparingCrossAgentReadiness = true
-        defer { isComparingCrossAgentReadiness = false }
-
-        do {
-            crossAgentReadinessResult = try await service.compareAgentReadiness(
-                taskText: taskText,
-                agents: nil,
-                limitPerAgent: 3,
-                includeRoutingAccuracy: true,
-                includeBenchmarks: true
-            )
-        } catch {
-            crossAgentReadinessResult = .unavailable(taskText: taskText, reason: error.localizedDescription)
-        }
-    }
-
-    func loadTraceImports() async {
-        guard !isLoadingTraceImports else { return }
-        isLoadingTraceImports = true
-        defer { isLoadingTraceImports = false }
-
-        do {
-            traceImportList = try await service.listTraceImports()
-        } catch {
-            traceImportList = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func importLocalTrace() async {
-        let traceText = normalizedTraceImportText
-        guard !traceText.isEmpty else {
-            traceImportResult = .unavailable(reason: UIStrings.traceImportInputRequired)
-            return
-        }
-        guard !isRefreshBusy else {
-            traceImportResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isImportingTrace = true
-        defer { isImportingTrace = false }
-
-        do {
-            let result = try await service.importLocalTrace(
-                traceText: traceText,
-                title: normalizedOptional(traceImportTitle),
-                taskText: normalizedOptional(traceImportTask),
-                expectedSkillNames: normalizedTraceExpectedSkillNames,
-                skill: selectedSkill
-            )
-            traceImportResult = result
-            if let record = result.record {
-                upsertTraceImport(record)
-                traceImportDeleteResult = nil
-                traceImportText = ""
-            } else if let reason = result.fallbackReason {
-                traceImportList = .unavailable(reason: reason)
-            }
-        } catch {
-            traceImportResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func deleteTraceImport(_ record: AgentTraceImportRecord) async {
-        guard !isRefreshBusy else {
-            traceImportDeleteResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        deletingTraceImportIDs.insert(record.id)
-        defer { deletingTraceImportIDs.remove(record.id) }
-
-        do {
-            let result = try await service.deleteTraceImport(importID: record.id)
-            traceImportDeleteResult = result
-            guard result.deleted else { return }
-            traceImportList = AgentTraceImportListResult(
-                imports: traceImportList.imports.filter { $0.id != record.id },
-                fallbackReason: traceImportList.fallbackReason
-            )
-            if traceImportResult?.record?.id == record.id {
-                traceImportResult = nil
-            }
-        } catch {
-            traceImportDeleteResult = .unavailable(reason: error.localizedDescription)
-        }
-    }
-
-    func loadAgentSessionSkillReviews() async {
-        guard !isLoadingAgentSessionSkillReviews else { return }
-        guard !isRefreshBusy else {
-            agentSessionSkillReviewList = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isLoadingAgentSessionSkillReviews = true
-        defer { isLoadingAgentSessionSkillReviews = false }
-
-        let agent = agentFilter == .all ? nil : agentFilter.rawValue
-        do {
-            agentSessionSkillReviewList = try await service.listAgentSessionSkillReviews(
-                taskText: normalizedOptional(agentSessionSkillReviewTask),
-                agent: agent,
-                skill: selectedSkill,
-                project: activeProjectContext,
-                limit: 20
-            )
-        } catch {
-            agentSessionSkillReviewList = .unavailable(reason: error.localizedDescription)
-        }
     }
 
     func refreshSelectedAgentLocalSessions() async {
@@ -3003,7 +1901,26 @@ final class SkillStore: ObservableObject {
         await previewLocalSessions(allowDuringCatalogRefresh: false, force: true)
     }
 
-    private func previewLocalSessions(allowDuringCatalogRefresh: Bool, force: Bool) async {
+    var canLoadMoreLocalSessions: Bool {
+        localSessionPreviewResult.hasMore && !isPreviewingLocalSessions && !isLoadingMoreLocalSessions
+    }
+
+    func loadMoreLocalSessions() async {
+        guard canLoadMoreLocalSessions, let offset = localSessionPreviewResult.nextOffset else { return }
+        await previewLocalSessions(
+            allowDuringCatalogRefresh: true,
+            force: true,
+            append: true,
+            offset: offset
+        )
+    }
+
+    private func previewLocalSessions(
+        allowDuringCatalogRefresh: Bool,
+        force: Bool,
+        append: Bool = false,
+        offset: Int = 0
+    ) async {
         let roots = normalizedLocalSessionPreviewRoots
         guard allowDuringCatalogRefresh || !isRefreshBusy else {
             localSessionPreviewResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
@@ -3017,16 +1934,29 @@ final class SkillStore: ObservableObject {
             }
         }
 
+        let normalizedOffset = max(0, offset)
         localSessionPreviewGeneration += 1
         let generation = localSessionPreviewGeneration
         let requestedAgentFilter = agentFilter
+        let requestedScopeFilter = localSessionScopeFilter
+        let requestedSortOrder = localSessionSortOrder
+        let requestedSortDirection = localSessionSortDirection
+        let requestedSearch = normalizedLocalSessionSearchText
         let previousResult = localSessionPreviewResult
         let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
         activeLocalSessionPreviewRequestKey = requestKey
-        isPreviewingLocalSessions = true
+        if append {
+            isLoadingMoreLocalSessions = true
+        } else {
+            isPreviewingLocalSessions = true
+        }
         defer {
             if generation == localSessionPreviewGeneration {
-                isPreviewingLocalSessions = false
+                if append {
+                    isLoadingMoreLocalSessions = false
+                } else {
+                    isPreviewingLocalSessions = false
+                }
                 activeLocalSessionPreviewRequestKey = nil
             }
         }
@@ -3035,13 +1965,21 @@ final class SkillStore: ObservableObject {
             let result = try await service.previewLocalSessions(
                 authorizedRoots: roots,
                 agent: agent,
-                scope: .all,
-                search: nil,
+                scope: requestedScopeFilter,
+                search: requestedSearch.isEmpty ? nil : requestedSearch,
                 project: activeProjectContext,
-                limit: 20
+                limit: Self.localSessionPageLimit,
+                offset: normalizedOffset,
+                sort: requestedSortOrder,
+                direction: requestedSortDirection
             )
-            guard generation == localSessionPreviewGeneration, agentFilter == requestedAgentFilter else { return }
-            localSessionPreviewResult = result
+            guard generation == localSessionPreviewGeneration,
+                  agentFilter == requestedAgentFilter,
+                  localSessionScopeFilter == requestedScopeFilter,
+                  localSessionSortOrder == requestedSortOrder,
+                  localSessionSortDirection == requestedSortDirection,
+                  normalizedLocalSessionSearchText == requestedSearch else { return }
+            localSessionPreviewResult = append ? localSessionPreviewResult.mergingPage(result) : result
             loadedLocalSessionPreviewRequestKey = requestKey
             normalizeSelectedLocalSession()
         } catch {
@@ -3067,125 +2005,115 @@ final class SkillStore: ObservableObject {
             agent,
             projectRoot,
             projectCWD,
-            rootKey
+            rootKey,
+            localSessionScopeFilter.rawValue,
+            localSessionSortOrder.rawValue,
+            localSessionSortDirection.rawValue,
+            normalizedLocalSessionSearchText
         ].joined(separator: "\u{1e}")
     }
 
-    func previewMcpServers() async {
-        let paths = normalizedMcpServerPreviewPaths
-        guard !isRefreshBusy else {
-            mcpServerPreviewResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
+    func updateAppSearch(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        appSearchQuery = trimmed
+        appSearchTask?.cancel()
+        guard !trimmed.isEmpty else {
+            appSearchResult = .empty()
+            isSearchingApp = false
             return
         }
 
-        isPreviewingMcpServers = true
-        defer { isPreviewingMcpServers = false }
-
-        do {
-            mcpServerPreviewResult = try await service.previewMcpServers(
-                authorizedConfigPaths: paths,
-                limit: 20
-            )
-        } catch {
-            mcpServerPreviewResult = .unavailable(reason: error.localizedDescription)
+        appSearchResult = .empty(query: trimmed)
+        isSearchingApp = true
+        appSearchTask = Task { @MainActor [weak self, trimmed] in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.performAppSearch(query: trimmed)
         }
     }
 
-    func reviewAgentSessionSkillUse() async {
-        let transcriptText = normalizedAgentSessionSkillReviewTranscript
-        guard !transcriptText.isEmpty else {
-            agentSessionSkillReviewResult = .unavailable(reason: UIStrings.agentSessionReviewInputRequired)
-            return
-        }
-        guard !isRefreshBusy else {
-            agentSessionSkillReviewResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        isReviewingAgentSessionSkillUse = true
-        defer { isReviewingAgentSessionSkillUse = false }
-
+    private func performAppSearch(query: String) async {
+        let requestedAgentFilter = agentFilter
+        let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
         do {
-            let result = try await service.reviewAgentSessionSkillUse(
-                transcriptText: transcriptText,
-                taskText: normalizedOptional(agentSessionSkillReviewTask),
-                expectedSkillNames: normalizedAgentSessionExpectedSkillNames,
-                skill: selectedSkill,
+            let result = try await service.searchApp(
+                query: query,
+                agent: agent,
+                limitPerKind: Self.globalSearchLimitPerKind,
+                authorizedRoots: normalizedLocalSessionPreviewRoots,
+                autoDiscover: normalizedLocalSessionPreviewRoots.isEmpty,
                 project: activeProjectContext
             )
-            agentSessionSkillReviewResult = result
-            var returnedReviews = result.reviews
-            if let review = result.review, !returnedReviews.contains(where: { $0.id == review.id }) {
-                returnedReviews.insert(review, at: 0)
-            }
-            for review in returnedReviews.reversed() {
-                upsertAgentSessionSkillReview(review)
-            }
-            if result.review != nil || !result.reviews.isEmpty {
-                agentSessionSkillReviewDeleteResult = nil
-                agentSessionSkillReviewTranscript = ""
-            } else if let reason = result.fallbackReason {
-                agentSessionSkillReviewList = .unavailable(reason: reason)
-            }
+            guard appSearchQuery == query, agentFilter == requestedAgentFilter else { return }
+            appSearchResult = result
         } catch {
-            agentSessionSkillReviewResult = .unavailable(reason: error.localizedDescription)
+            guard appSearchQuery == query, agentFilter == requestedAgentFilter else { return }
+            appSearchResult = .unavailable(query: query, reason: error.localizedDescription)
+        }
+
+        if appSearchQuery == query {
+            isSearchingApp = false
         }
     }
 
-    func deleteAgentSessionSkillReview(_ record: AgentSessionSkillReviewRecord) async {
-        guard !isRefreshBusy else {
-            agentSessionSkillReviewDeleteResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        deletingAgentSessionSkillReviewIDs.insert(record.id)
-        defer { deletingAgentSessionSkillReviewIDs.remove(record.id) }
-
-        do {
-            let result = try await service.deleteAgentSessionSkillReview(reviewID: record.id)
-            agentSessionSkillReviewDeleteResult = result
-            guard result.deleted else { return }
-            agentSessionSkillReviewList = AgentSessionSkillReviewListResult(
-                generatedBy: agentSessionSkillReviewList.generatedBy,
-                catalogAvailable: agentSessionSkillReviewList.catalogAvailable,
-                filters: agentSessionSkillReviewList.filters,
-                summary: agentSessionSkillReviewList.summary,
-                reviews: agentSessionSkillReviewList.reviews.filter { $0.id != record.id },
-                evidenceReferences: agentSessionSkillReviewList.evidenceReferences,
-                safetyFlags: agentSessionSkillReviewList.safetyFlags,
-                fallbackReason: agentSessionSkillReviewList.fallbackReason
-            )
-            if agentSessionSkillReviewResult?.review?.id == record.id {
-                agentSessionSkillReviewResult = nil
+    func selectAppSearchItem(_ item: AppSearchItem) async {
+        switch item.kind {
+        case .skill:
+            guard let skill = item.skill ?? skills.first(where: { $0.id == item.targetID }) else { return }
+            if let filter = agentFilter(for: skill.agent) {
+                agentFilter = filter
             }
-        } catch {
-            agentSessionSkillReviewDeleteResult = .unavailable(reason: error.localizedDescription)
+            sidebarContentMode = .skills
+            searchText = ""
+            stateFilter = .all
+            skillScopeFilter = .all
+            selectedDetailSection = .overview
+            setSelectedSkillID(skill.id, syncSidebar: false)
+            setSidebarSelection(.skill(skill.id))
+            skillListScrollRequest = SkillListScrollRequest(skillID: skill.id)
+
+        case .session:
+            guard let session = item.session
+                ?? localSessionPreviewResult.sessionRows.first(where: { $0.id == item.targetID })
+            else { return }
+            if let filter = agentFilter(for: session.agent) {
+                agentFilter = filter
+            }
+            localSessionScopeFilter = .all
+            localSessionSearchText = ""
+            sidebarContentMode = .sessions
+            localSessionPreviewResult = localSessionPreviewResult.ensuringSession(session)
+            selectLocalSession(session)
+
+        case .configHistory:
+            guard let snapshot = item.configSnapshot
+                ?? agentConfigSnapshots.first(where: { $0.id == item.targetID })
+            else { return }
+            if let filter = agentFilter(for: snapshot.agent) {
+                agentFilter = filter
+            }
+            sidebarContentMode = .config
+            configScopeFilter = .all
+            configSidebarSearchText = ""
+            ensureConfigSnapshot(snapshot)
+            selectConfigSnapshot(snapshot)
         }
     }
 
-    func deleteTaskBenchmark(_ benchmark: TaskBenchmarkRecord) async {
-        guard !isRefreshBusy else {
-            taskBenchmarkDeleteResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
-            return
+    private func ensureConfigSnapshot(_ snapshot: ConfigSnapshotRecord) {
+        guard !agentConfigSnapshots.contains(where: { $0.id == snapshot.id }) else { return }
+        agentConfigSnapshots.append(snapshot)
+        agentConfigSnapshots.sort { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt > rhs.createdAt
+            }
+            return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
         }
+    }
 
-        deletingTaskBenchmarkIDs.insert(benchmark.id)
-        defer { deletingTaskBenchmarkIDs.remove(benchmark.id) }
-
-        do {
-            let result = try await service.deleteTaskBenchmark(benchmarkID: benchmark.id)
-            taskBenchmarkDeleteResult = result
-            guard result.deleted else { return }
-            taskBenchmarkList = TaskBenchmarkListResult(
-                benchmarks: taskBenchmarkList.benchmarks.filter { $0.id != benchmark.id },
-                fallbackReason: taskBenchmarkList.fallbackReason
-            )
-            taskBenchmarkEvaluation = nil
-            routingRegressionBaseline = nil
-            routingRegressionDetection = nil
-        } catch {
-            taskBenchmarkDeleteResult = .unavailable(reason: error.localizedDescription)
-        }
+    private func agentFilter(for agent: String?) -> SkillAgentFilter? {
+        guard let agent else { return nil }
+        return SkillAgentFilter.managementCases.first { $0.rawValue == agent }
     }
 
     func previewScriptExecutionSafety(for skill: SkillRecord) async {
@@ -3419,9 +2347,15 @@ final class SkillStore: ObservableObject {
         defer { isLoadingProviderObservability = false }
 
         do {
+            let range = providerObservabilityDateRange.resolved(
+                customStartDate: providerObservabilityCustomStartDate,
+                customEndDate: providerObservabilityCustomEndDate
+            )
             providerObservabilityResult = try await service.providerObservability(
-                windowDays: 30,
-                limit: 24,
+                windowDays: range.windowDays,
+                startAt: range.startAt,
+                endAt: range.endAt,
+                limit: Self.providerObservabilityRowLimit,
                 includeHistory: true,
                 includeBudgetHints: false,
                 includeRetentionRecommendations: false,
@@ -3556,125 +2490,6 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func loadCleanupQueueIfNeeded() async {
-        await loadCleanupQueue(force: false)
-    }
-
-    func loadCleanupQueue() async {
-        await loadCleanupQueue(force: true)
-    }
-
-    private func loadCleanupQueue(force: Bool) async {
-        let requestedAgentFilter = agentFilter
-        let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
-        let requestKey = cleanupQueueRequestKey(agent: agent)
-        if !force {
-            if let cachedResult = cleanupQueueCacheByRequestKey[requestKey] {
-                cleanupQueue = cachedResult
-                loadedCleanupQueueRequestKey = requestKey
-                return
-            }
-            if loadedCleanupQueueRequestKey == requestKey || activeCleanupQueueRequestKey == requestKey {
-                return
-            }
-        }
-        guard activeCleanupQueueRequestKey != requestKey else { return }
-
-        cleanupQueueLoadGeneration += 1
-        let generation = cleanupQueueLoadGeneration
-        activeCleanupQueueRequestKey = requestKey
-        isLoadingCleanupQueue = true
-        defer {
-            if generation == cleanupQueueLoadGeneration {
-                isLoadingCleanupQueue = false
-            }
-            if activeCleanupQueueRequestKey == requestKey {
-                activeCleanupQueueRequestKey = nil
-            }
-        }
-
-        do {
-            let result = try await service.listCleanupQueue(agent: agent, limit: 100)
-            guard generation == cleanupQueueLoadGeneration, agentFilter == requestedAgentFilter else { return }
-            cleanupQueue = result
-            cleanupQueueCacheByRequestKey[requestKey] = result
-            loadedCleanupQueueRequestKey = requestKey
-        } catch {
-            guard generation == cleanupQueueLoadGeneration, agentFilter == requestedAgentFilter else { return }
-            let fallback = CleanupQueueResult.emptyFallback(reason: UIStrings.cleanupUnavailableFallback)
-            cleanupQueue = fallback
-            cleanupQueueCacheByRequestKey[requestKey] = fallback
-            loadedCleanupQueueRequestKey = requestKey
-        }
-    }
-
-    func loadCrossAgentComparisonsIfNeeded() async {
-        await loadCrossAgentComparisons(force: false)
-    }
-
-    func loadCrossAgentComparisons() async {
-        await loadCrossAgentComparisons(force: true)
-    }
-
-    private func loadCrossAgentComparisons(force: Bool) async {
-        let requestedAgentFilter = agentFilter
-        let requestedSelectedSkillID = selectedSkill?.id
-        let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
-        let requestKey = crossAgentComparisonsRequestKey(agent: agent, selectedSkillID: requestedSelectedSkillID)
-        if !force {
-            if let cachedResult = crossAgentComparisonsCacheByRequestKey[requestKey] {
-                crossAgentComparisons = cachedResult
-                loadedCrossAgentComparisonsRequestKey = requestKey
-                return
-            }
-            if loadedCrossAgentComparisonsRequestKey == requestKey || activeCrossAgentComparisonsRequestKey == requestKey {
-                return
-            }
-        }
-        guard activeCrossAgentComparisonsRequestKey != requestKey else { return }
-
-        crossAgentComparisonsLoadGeneration += 1
-        let generation = crossAgentComparisonsLoadGeneration
-        activeCrossAgentComparisonsRequestKey = requestKey
-        isLoadingCrossAgentComparisons = true
-        defer {
-            if generation == crossAgentComparisonsLoadGeneration {
-                isLoadingCrossAgentComparisons = false
-            }
-            if activeCrossAgentComparisonsRequestKey == requestKey {
-                activeCrossAgentComparisonsRequestKey = nil
-            }
-        }
-
-        do {
-            let result = try await service.listCrossAgentComparisons(
-                agent: agent,
-                instanceID: requestedSelectedSkillID,
-                limit: 100
-            )
-            guard generation == crossAgentComparisonsLoadGeneration,
-                  agentFilter == requestedAgentFilter,
-                  selectedSkill?.id == requestedSelectedSkillID else { return }
-            crossAgentComparisons = result
-            crossAgentComparisonsCacheByRequestKey[requestKey] = result
-            loadedCrossAgentComparisonsRequestKey = requestKey
-        } catch {
-            guard generation == crossAgentComparisonsLoadGeneration,
-                  agentFilter == requestedAgentFilter,
-                  selectedSkill?.id == requestedSelectedSkillID else { return }
-            let fallback = CrossAgentComparisonResult.local(
-                skills: skills,
-                findings: findings,
-                capabilities: adapterCapabilities,
-                agentFilter: requestedAgentFilter,
-                reason: UIStrings.crossAgentComparisonLocalFallback
-            )
-            crossAgentComparisons = fallback
-            crossAgentComparisonsCacheByRequestKey[requestKey] = fallback
-            loadedCrossAgentComparisonsRequestKey = requestKey
-        }
-    }
-
     func loadAgentConfigSnapshotsIfNeeded(agent: String? = nil) async {
         await loadAgentConfigSnapshots(agent: agent, force: false)
     }
@@ -3761,7 +2576,6 @@ final class SkillStore: ObservableObject {
         self.ruleTuning = fetchedRuleTuning
         self.conflicts = snapshot.conflicts
         self.healthSummary = snapshot.health
-        invalidateRuntimeAnalysisCaches()
         self.agentConfigSnapshots = fetchedAgentConfigSnapshots
         if let agent = selectedAgentConfigTimelineAgent {
             loadedAgentConfigSnapshotRequestKey = agentConfigRequestKey(agent: agent)
@@ -3771,64 +2585,10 @@ final class SkillStore: ObservableObject {
         let currentSkillIDs = Set(snapshot.skills.map(\.id))
         scriptExecutionPreviews = scriptExecutionPreviews.filter { currentSkillIDs.contains($0.key) }
         hydratePromptSendResultsFromRuns(currentSkillIDs: currentSkillIDs)
-        skillQualityScores = skillQualityScores.filter { currentSkillIDs.contains($0.key) }
-        scoringSkillQualityIDs = scoringSkillQualityIDs.filter { currentSkillIDs.contains($0) }
-        if let checkedSkillID = taskReadinessCheckedSkillID, !currentSkillIDs.contains(checkedSkillID) {
-            taskReadinessResult = nil
-            taskReadinessCheckedSkillID = nil
-        }
-        checkingTaskReadinessSkillIDs = checkingTaskReadinessSkillIDs.filter { currentSkillIDs.contains($0) }
-        if let rankedSkillID = routingConfidenceRankedSkillID, !currentSkillIDs.contains(rankedSkillID) {
-            routingConfidenceResult = nil
-            routingConfidenceRankedSkillID = nil
-        }
-        rankingRoutingSkillIDs = rankingRoutingSkillIDs.filter { currentSkillIDs.contains($0) }
-        if crossAgentReadinessResult?.isUnavailable == true {
-            crossAgentReadinessResult = nil
-        }
-        if staleDriftDetection?.isUnavailable == true {
-            staleDriftDetection = nil
-        }
-        if knowledgeSearchResult?.isUnavailable == true {
-            knowledgeSearchResult = nil
-        }
-        if localSkillMapResult?.isUnavailable == true {
-            localSkillMapResult = nil
-        }
-        if skillLifecycleTimelineResult?.isUnavailable == true {
-            skillLifecycleTimelineResult = nil
-        }
-        if capabilityTaxonomyResult?.isUnavailable == true {
-            capabilityTaxonomyResult = nil
-        }
-        if workspaceReadinessResult?.isUnavailable == true {
-            workspaceReadinessResult = nil
-        }
-        if guidedCleanupFlowResult?.isUnavailable == true {
-            guidedCleanupFlowResult = nil
-        }
-        if guidedCleanupRecordResult?.isUnavailable == true {
-            guidedCleanupRecordResult = nil
-        }
-        deletingTaskBenchmarkIDs.removeAll()
-        if taskBenchmarkList.isUnavailable {
-            taskBenchmarkEvaluation = nil
-            routingRegressionBaseline = nil
-            routingRegressionDetection = nil
-        }
         skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
-        skillAnalysisPrepareResults.removeAll()
-        preparingSkillAnalysisKeys.removeAll()
         batchTogglePreview = nil
         refreshWatcherMessage(from: self.status)
         normalizeSelectionToVisibleSkills()
-        crossAgentComparisons = CrossAgentComparisonResult.local(
-            skills: skills,
-            findings: findings,
-            capabilities: adapterCapabilities,
-            agentFilter: agentFilter,
-            reason: UIStrings.crossAgentComparisonLocalFallback
-        )
     }
 
     private func fetchAIProviderStatus() async -> AIProviderStatus {
@@ -3861,23 +2621,6 @@ final class SkillStore: ObservableObject {
         ].joined(separator: "\u{1e}")
     }
 
-    private func cleanupQueueRequestKey(agent: String?) -> String {
-        [
-            agent ?? SkillAgentFilter.all.rawValue,
-            activeProjectContext?.rootPath ?? "",
-            activeProjectContext?.currentCWD ?? ""
-        ].joined(separator: "\u{1e}")
-    }
-
-    private func crossAgentComparisonsRequestKey(agent: String?, selectedSkillID: SkillRecord.ID?) -> String {
-        [
-            agent ?? SkillAgentFilter.all.rawValue,
-            selectedSkillID ?? "",
-            activeProjectContext?.rootPath ?? "",
-            activeProjectContext?.currentCWD ?? ""
-        ].joined(separator: "\u{1e}")
-    }
-
     private func claudeSettingsRequestKey() -> String {
         [
             SkillAgentFilter.claudeCode.rawValue,
@@ -3905,7 +2648,7 @@ final class SkillStore: ObservableObject {
         defer { loadingSkillEventIDs.remove(instanceID) }
 
         do {
-            skillEventsByID[instanceID] = try await service.listSkillEvents(instanceID: instanceID, limit: 12)
+            skillEventsByID[instanceID] = try await service.listSkillEvents(instanceID: instanceID)
         } catch {
             skillEventsByID[instanceID] = []
             if errorMessage == nil {
@@ -3914,119 +2657,23 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func prepareSkillAnalysis(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope, instanceIDs: [String]) async {
-        let key = skillAnalysisKey(kind: kind, scope: scope)
-        guard !isRefreshBusy else {
-            skillAnalysisPrepareResults[key] = .unavailable(kind: kind, reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        preparingSkillAnalysisKeys.insert(key)
-        defer { preparingSkillAnalysisKeys.remove(key) }
-
-        do {
-            skillAnalysisPrepareResults[key] = try await service.prepareSkillAnalysis(instanceIDs: instanceIDs, kind: kind)
-        } catch {
-            skillAnalysisPrepareResults[key] = .unavailable(kind: kind, reason: error.localizedDescription)
-        }
-    }
-
-    private func scoreSkillQuality(for skill: SkillRecord) async {
-        guard !isRefreshBusy else {
-            skillQualityScores[skill.id] = .unavailable(skillID: skill.id, reason: UIStrings.operationUnavailableBusy)
-            return
-        }
-
-        scoringSkillQualityIDs.insert(skill.id)
-        defer { scoringSkillQualityIDs.remove(skill.id) }
-
-        do {
-            skillQualityScores[skill.id] = try await service.scoreSkillQuality(skill: skill)
-        } catch {
-            skillQualityScores[skill.id] = .unavailable(skillID: skill.id, reason: error.localizedDescription)
-        }
-    }
-
-    private func skillAnalysisKey(kind: LLMSkillAnalysisKind, scope: LLMSkillAnalysisRequestScope) -> String {
-        "\(scope.key):\(kind.rawValue)"
-    }
-
-    private func skillAnalysisInstanceIDs(scope: LLMSkillAnalysisRequestScope) -> [String] {
-        switch scope.key {
-        case LLMSkillAnalysisRequestScope.visible.key:
-            return filteredSkills.map(\.id)
-        default:
-            return selectedSkill.map { [$0.id] } ?? []
-        }
-    }
-
     private func llmPromptActionKey(action: LLMAction, skillID: SkillRecord.ID) -> String {
         "action:\(skillID):\(action.rawValue)"
-    }
-
-    private func skillAnalysisPromptKey(
-        kind: LLMSkillAnalysisKind,
-        scope: LLMSkillAnalysisRequestScope,
-        instanceIDs: [String]
-    ) -> String {
-        "skill-analysis:\(scope.key):\(kind.rawValue):\(instanceIDs.joined(separator: ","))"
-    }
-
-    private func skillQualityPromptKey(skillID: SkillRecord.ID) -> String {
-        "quality-score:\(skillID)"
-    }
-
-    private var normalizedTaskReadinessText: String {
-        taskReadinessText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func taskReadinessPromptKey(skillID: SkillRecord.ID, taskText: String) -> String {
-        "task-readiness:\(skillID):\(taskText)"
-    }
-
-    private var normalizedRoutingConfidenceText: String {
-        routingConfidenceText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func routingConfidencePromptKey(skillID: SkillRecord.ID, taskText: String) -> String {
-        "routing-confidence:\(skillID):\(taskText)"
-    }
-
-    private var normalizedCrossAgentReadinessText: String {
-        crossAgentReadinessText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var normalizedTaskCockpitText: String {
         taskCockpitText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func clearLocalReportExportState() {
-        let hadLocalReportExportResult = localReportExportResult != nil
-        localReportExportResult = nil
-        selectedLocalReportHistoryID = nil
-        if hadLocalReportExportResult {
-            lastMutationMessage = nil
-        }
-    }
-
     private func clearTaskCockpitTransientState() {
         taskCockpitResult = nil
+        taskCockpitPromptConfirmation = nil
+        isPreviewingTaskCockpitPrompt = false
         selectedTaskCockpitHistoryID = nil
         if isBuildingTaskCockpit {
             cancelTaskCockpitBuild(publishFallbackResult: false)
         } else {
             taskCockpitOperationState = .idle
-        }
-    }
-
-    private func recordLocalReportExportHistory(result: LocalReportExportResult, scopeSummary: String) {
-        guard !result.isUnavailable else { return }
-        let record = LocalReportExportHistoryRecord(result: result, scopeSummary: scopeSummary)
-        localReportExportHistory.removeAll { $0.id == record.id }
-        localReportExportHistory.insert(record, at: 0)
-        selectedLocalReportHistoryID = record.id
-        if localReportExportHistory.count > 12 {
-            localReportExportHistory.removeLast(localReportExportHistory.count - 12)
         }
     }
 
@@ -4132,22 +2779,6 @@ final class SkillStore: ObservableObject {
         taskCockpitOperationID == operationID && isBuildingTaskCockpit
     }
 
-    private var normalizedKnowledgeSearchText: String {
-        knowledgeSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var normalizedTaskBenchmarkText: String {
-        taskBenchmarkText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var normalizedTraceImportText: String {
-        traceImportText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var normalizedAgentSessionSkillReviewTranscript: String {
-        agentSessionSkillReviewTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var normalizedLocalSessionPreviewRoots: [String] {
         localSessionPreviewRoots
             .split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == ";" })
@@ -4155,48 +2786,13 @@ final class SkillStore: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
-    private var normalizedMcpServerPreviewPaths: [String] {
-        mcpServerPreviewPaths
-            .split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == ";" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private var normalizedTraceExpectedSkillNames: [String] {
-        traceImportExpectedSkills
-            .split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == ";" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private var normalizedAgentSessionExpectedSkillNames: [String] {
-        agentSessionSkillReviewExpectedSkills
-            .split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == ";" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+    private var normalizedLocalSessionSearchText: String {
+        localSessionSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func normalizedOptional(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func upsertTaskBenchmark(_ benchmark: TaskBenchmarkRecord) {
-        var benchmarks = taskBenchmarkList.benchmarks.filter { $0.id != benchmark.id }
-        benchmarks.insert(benchmark, at: 0)
-        taskBenchmarkList = TaskBenchmarkListResult(benchmarks: benchmarks, fallbackReason: nil)
-    }
-
-    private func upsertTraceImport(_ record: AgentTraceImportRecord) {
-        var imports = traceImportList.imports.filter { $0.id != record.id }
-        imports.insert(record, at: 0)
-        traceImportList = AgentTraceImportListResult(imports: imports, fallbackReason: nil)
-    }
-
-    private func upsertAgentSessionSkillReview(_ record: AgentSessionSkillReviewRecord) {
-        var reviews = agentSessionSkillReviewList.reviews.filter { $0.id != record.id }
-        reviews.insert(record, at: 0)
-        agentSessionSkillReviewList = AgentSessionSkillReviewListResult(reviews: reviews, fallbackReason: nil)
     }
 
     private func canSendLLMPrompt(_ preview: LLMPromptPreview) -> Bool {
@@ -4223,7 +2819,6 @@ final class SkillStore: ObservableObject {
             if hydrated[key] == nil {
                 hydrated[key] = run.sendResult
             }
-            hydrateTaskInputIfNeeded(from: run)
         }
         llmPromptSendResults = hydrated
     }
@@ -4236,70 +2831,19 @@ final class SkillStore: ObservableObject {
         return run.instanceIDs.contains { currentSkillIDs.contains($0) }
     }
 
-    private func hydrateTaskInputIfNeeded(from run: LLMPromptRunRecord) {
-        guard let selectedSkill, runBelongsTo(run, skillID: selectedSkill.id) else { return }
-        switch run.requestKind {
-        case "task_readiness":
-            if normalizedTaskReadinessText.isEmpty, let task = run.task, !task.isEmpty {
-                taskReadinessText = task
-            }
-        case "routing_confidence":
-            if normalizedRoutingConfidenceText.isEmpty, let task = run.task, !task.isEmpty {
-                routingConfidenceText = task
-            }
-        default:
-            break
-        }
-    }
-
     private func runBelongsTo(_ run: LLMPromptRunRecord, skillID: SkillRecord.ID) -> Bool {
         run.instanceID == skillID || run.instanceIDs.contains(skillID)
-    }
-
-    private func latestPromptRun(for skill: SkillRecord, requestKind: String) -> LLMPromptRunRecord? {
-        llmPromptRunList.runs.first { run in
-            run.requestKind == requestKind && runBelongsTo(run, skillID: skill.id)
-        }
     }
 
     private func llmPromptKey(for run: LLMPromptRunRecord) -> String? {
         let skillID = run.instanceID ?? run.instanceIDs.first
         switch run.requestKind {
-        case "quality_score":
-            return skillID.map { skillQualityPromptKey(skillID: $0) }
-        case "task_readiness":
-            guard let skillID, let task = run.task, !task.isEmpty else { return nil }
-            return taskReadinessPromptKey(skillID: skillID, taskText: task)
-        case "routing_confidence":
-            guard let skillID, let task = run.task, !task.isEmpty else { return nil }
-            return routingConfidencePromptKey(skillID: skillID, taskText: task)
-        case "skill_analysis":
-            guard
-                let kindValue = run.analysisKind,
-                let kind = LLMSkillAnalysisKind(rawValue: kindValue),
-                let scopeValue = run.scope,
-                let scope = llmSkillAnalysisScope(for: scopeValue)
-            else { return nil }
-            let instanceIDs = run.instanceIDs.isEmpty ? skillID.map { [$0] } ?? [] : run.instanceIDs
-            guard !instanceIDs.isEmpty else { return nil }
-            return skillAnalysisPromptKey(kind: kind, scope: scope, instanceIDs: instanceIDs)
         case "action":
             guard let skillID, let action = LLMAction(rawValue: run.action) else { return nil }
             return llmPromptActionKey(action: action, skillID: skillID)
         default:
             guard let skillID, let action = LLMAction(rawValue: run.action) else { return nil }
             return llmPromptActionKey(action: action, skillID: skillID)
-        }
-    }
-
-    private func llmSkillAnalysisScope(for value: String) -> LLMSkillAnalysisRequestScope? {
-        switch value {
-        case LLMSkillAnalysisRequestScope.selected.key:
-            return .selected
-        case LLMSkillAnalysisRequestScope.visible.key:
-            return .visible
-        default:
-            return nil
         }
     }
 
@@ -4359,32 +2903,17 @@ final class SkillStore: ObservableObject {
         pruneBatchToggleSelectionToVisibleSkills()
         normalizeSelectionToVisibleSkills()
         guard previousID != selectedSkillID else { return }
-        taskReadinessResult = nil
-        taskReadinessCheckedSkillID = nil
-        routingConfidenceResult = nil
-        routingConfidenceRankedSkillID = nil
-        taskBenchmarkEvaluation = nil
-        taskBenchmarkDeleteResult = nil
-        routingRegressionBaseline = nil
-        routingRegressionDetection = nil
-        localSkillMapResult = nil
-        skillLifecycleTimelineResult = nil
-        remediationHistoryResult = nil
-        remediationHistoryRecordResult = nil
-        guidedCleanupFlowResult = nil
-        guidedCleanupRecordResult = nil
-        agentSessionSkillReviewResult = nil
-        agentSessionSkillReviewDeleteResult = nil
-        agentSessionSkillReviewList = AgentSessionSkillReviewListResult(reviews: [])
         localSessionPreviewResult = LocalSessionPreviewResult()
         loadedLocalSessionPreviewRequestKey = nil
         activeLocalSessionPreviewRequestKey = nil
+        localSessionCriteriaTask?.cancel()
+        localSessionCriteriaTask = nil
+        isLoadingMoreLocalSessions = false
         selectedLocalSessionID = nil
         if selectedSidebarSelection?.isSession == true {
             setSidebarSelection(nil)
             selectedDetailSection = .overview
         }
-        mcpServerPreviewResult = McpServerPreviewResult()
         listCriteriaDetailTask?.cancel()
         listCriteriaDetailTask = Task { @MainActor [weak self] in
             guard !Task.isCancelled else { return }
@@ -4422,43 +2951,6 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func remediationHistoryEvidenceRefs() -> [String] {
-        var refs: [String] = []
-        refs.append(contentsOf: remediationBatchReviewResult?.evidenceReferences.map(\.detail) ?? [])
-        refs.append(contentsOf: remediationImpactPreviewResult?.evidenceReferences.map(\.detail) ?? [])
-        refs.append(contentsOf: remediationPreviewDraftsResult?.evidenceReferences.map(\.detail) ?? [])
-        refs.append(contentsOf: remediationPlanResult?.evidenceReferences.map(\.detail) ?? [])
-        refs.append(contentsOf: remediationBatchReviewResult?.safeNextStepLabels.map { "safe_next_step:\($0)" } ?? [])
-        if let selectedSkill {
-            refs.append("selected_skill:\(selectedSkill.id)")
-        }
-        var seen = Set<String>()
-        return refs.compactMap { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !seen.contains(trimmed) else { return nil }
-            seen.insert(trimmed)
-            return trimmed
-        }
-    }
-
-    private func guidedCleanupEvidenceRefs(for step: GuidedCleanupFlowStep) -> [String] {
-        var refs: [String] = []
-        refs.append("guided_step:\(step.id)")
-        refs.append(contentsOf: step.evidenceRefs)
-        refs.append(contentsOf: guidedCleanupFlowResult?.evidenceReferences.map(\.detail) ?? [])
-        refs.append(contentsOf: guidedCleanupFlowResult?.safeNextActions.map { "safe_action:\($0.id)" } ?? [])
-        if let selectedSkill {
-            refs.append("selected_skill:\(selectedSkill.id)")
-        }
-        var seen = Set<String>()
-        return refs.compactMap { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !seen.contains(trimmed) else { return nil }
-            seen.insert(trimmed)
-            return trimmed
-        }
-    }
-
     private func normalizeSelectionToVisibleSkills() {
         let visibleSkills = filteredSkills
         if let selectedSkillID, visibleSkills.contains(where: { $0.id == selectedSkillID }) {
@@ -4486,11 +2978,6 @@ final class SkillStore: ObservableObject {
         }
 
         switch selectedSidebarSelection {
-        case .work(let section):
-            if section.requiresSelectedSkill, selectedSkillID == nil {
-                setSelectedSkillID(filteredSkills.first?.id ?? skills.first?.id, syncSidebar: false)
-            }
-            selectedDetailSection = section
         case .session(let id):
             if selectedLocalSessionID != id {
                 selectedLocalSessionID = id

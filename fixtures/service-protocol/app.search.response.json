@@ -1,0 +1,38 @@
+{
+  "id": "fixture-app-search",
+  "ok": true,
+  "result": {
+    "generated_by": "local-v2.99",
+    "query": "fixture",
+    "count": 1,
+    "total_matched_count": 1,
+    "limit_per_kind": 3,
+    "items": [
+      {
+        "id": "skill:fixture-skill-id",
+        "kind": "skill",
+        "target_id": "fixture-skill-id",
+        "title": "fixture-skill",
+        "subtitle": "codex · agent-global",
+        "agent": "codex",
+        "skill": {
+          "id": "fixture-skill-id",
+          "agent": "codex",
+          "scope": "agent-global",
+          "path": "$HOME/.codex/skills/fixture-skill/SKILL.md",
+          "display_path": "$HOME/.codex/skills/fixture-skill/SKILL.md",
+          "definition_id": "fixture-definition-id",
+          "name": "fixture-skill",
+          "state": "loaded",
+          "enabled": true
+        }
+      }
+    ],
+    "read_only": true,
+    "provider_request_sent": false,
+    "skill_files_mutated": false,
+    "agent_config_mutated": false,
+    "raw_prompt_persisted": false,
+    "raw_response_persisted": false
+  }
+}

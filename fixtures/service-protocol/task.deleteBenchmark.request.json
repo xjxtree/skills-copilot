@@ -1,7 +1,0 @@
-{
-  "id": "fixture-task-delete-benchmark",
-  "method": "task.deleteBenchmark",
-  "params": {
-    "id": "fixture-benchmark"
-  }
-}

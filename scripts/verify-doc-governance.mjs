@@ -46,7 +46,6 @@ requireText(agents, "AGENTS.md", "## Safety Boundaries");
 requireText(roadmap, "docs/plans/roadmap.md", "## Near-Term Work");
 requireText(tasks, "docs/plans/development-tasks.md", "## Active Task Rules");
 requireText(changelog, "CHANGELOG.md", "## V2.98");
-requireText(packageJson, "package.json", "\"verify:pi-writable-evidence-fixtures\"");
 requireText(packageJson, "package.json", "\"verify:doc-governance\"");
 requireText(
   workflow,

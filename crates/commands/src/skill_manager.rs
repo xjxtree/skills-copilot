@@ -840,7 +840,7 @@ fn run_previewed_command(
     fs::create_dir_all(&cwd)?;
     let mut command = Command::new(executable);
     command.args(args).current_dir(&cwd);
-    for env_var in manager_env(ctx) {
+    for env_var in manager_command_env(ctx, executable) {
         command.env(env_var.key, env_var.value);
     }
     let output = command.output().map_err(|error| {
@@ -906,6 +906,59 @@ fn manager_env(ctx: &AdapterContext) -> Vec<SkillManagerEnvPreview> {
     ]
 }
 
+fn manager_command_env(ctx: &AdapterContext, executable: &str) -> Vec<SkillManagerEnvPreview> {
+    let mut env_vars = manager_env(ctx);
+    env_vars.push(env_preview(
+        "PATH",
+        &manager_command_path(ctx, Path::new(executable)),
+    ));
+    env_vars
+}
+
+fn manager_command_path(ctx: &AdapterContext, executable: &Path) -> String {
+    let path_var = env::var_os("PATH");
+    let fallback_dirs = fallback_binary_search_dirs_for_home(Some(&ctx.user_home));
+    manager_command_path_from_sources(Some(executable), path_var.as_deref(), &fallback_dirs)
+}
+
+fn manager_command_path_from_sources(
+    executable: Option<&Path>,
+    path_var: Option<&std::ffi::OsStr>,
+    fallback_dirs: &[PathBuf],
+) -> String {
+    let mut dirs = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    if let Some(parent) = executable
+        .and_then(Path::parent)
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        push_path_dir(&mut dirs, &mut seen, parent.to_path_buf());
+    }
+    for dir in path_var.into_iter().flat_map(env::split_paths) {
+        push_path_dir(&mut dirs, &mut seen, dir);
+    }
+    for dir in fallback_dirs {
+        push_path_dir(&mut dirs, &mut seen, dir.clone());
+    }
+
+    env::join_paths(&dirs)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin"))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn push_path_dir(dirs: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, dir: PathBuf) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    if seen.insert(dir.clone()) {
+        dirs.push(dir);
+    }
+}
+
 fn env_preview(key: &str, value: &str) -> SkillManagerEnvPreview {
     SkillManagerEnvPreview {
         key: key.to_string(),
@@ -955,17 +1008,23 @@ fn resolve_binary_from_sources(
 }
 
 fn fallback_binary_search_dirs() -> Vec<PathBuf> {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    fallback_binary_search_dirs_for_home(home.as_deref())
+}
+
+fn fallback_binary_search_dirs_for_home(home: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = vec![
         PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
         PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/local/sbin"),
         PathBuf::from("/usr/bin"),
         PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
     ];
 
-    if let Some(home) = env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-    {
+    if let Some(home) = home.filter(|path| !path.as_os_str().is_empty()) {
         dirs.extend([
             home.join(".volta/bin"),
             home.join(".asdf/shims"),
@@ -973,7 +1032,7 @@ fn fallback_binary_search_dirs() -> Vec<PathBuf> {
             home.join(".npm-global/bin"),
             home.join(".bun/bin"),
         ]);
-        dirs.extend(nvm_node_bin_dirs(&home));
+        dirs.extend(nvm_node_bin_dirs(home));
     }
 
     dirs
@@ -1378,6 +1437,59 @@ mod tests {
 
         assert_eq!(resolved, Some(npx));
         fs::remove_dir_all(temp).ok();
+    }
+
+    #[test]
+    fn manager_command_path_keeps_node_visible_for_env_shebangs() {
+        let executable = PathBuf::from("/custom/node/bin/npx");
+        let fallback_dir = PathBuf::from("/opt/homebrew/bin");
+        let path = manager_command_path_from_sources(
+            Some(&executable),
+            Some(std::ffi::OsStr::new("/usr/bin:/custom/node/bin")),
+            &[fallback_dir.clone(), PathBuf::from("/usr/bin")],
+        );
+        let dirs = env::split_paths(std::ffi::OsStr::new(&path)).collect::<Vec<_>>();
+
+        assert_eq!(dirs.first(), Some(&PathBuf::from("/custom/node/bin")));
+        assert!(dirs.contains(&fallback_dir));
+        assert_eq!(
+            dirs.iter()
+                .filter(|dir| dir.as_path() == Path::new("/custom/node/bin"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            dirs.iter()
+                .filter(|dir| dir.as_path() == Path::new("/usr/bin"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn preview_env_stays_minimal_while_runtime_env_adds_path() {
+        let temp =
+            std::env::temp_dir().join(format!("skill-manager-command-env-{}", std::process::id()));
+        let ctx = AdapterContext {
+            user_home: temp.join("home"),
+            project_cwd: Some(temp.join("project")),
+            project_root: Some(temp.join("project")),
+            extra_roots: Vec::new(),
+        };
+        let runtime_env = manager_command_env(&ctx, "/custom/node/bin/npx");
+
+        assert!(
+            manager_env(&ctx)
+                .iter()
+                .all(|env_var| env_var.key != "PATH"),
+            "Preview metadata should not display the full local PATH."
+        );
+        assert!(
+            runtime_env
+                .iter()
+                .any(|env_var| env_var.key == "PATH" && env_var.value.contains("/custom/node/bin")),
+            "Runtime command env should make node visible to /usr/bin/env shebangs."
+        );
     }
 
     #[test]

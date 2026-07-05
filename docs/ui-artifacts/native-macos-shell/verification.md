@@ -14,7 +14,7 @@ Date: 2026-06-17
   - `pnpm check:macos` passed end to end in an unlocked interactive session.
   - `./script/build_and_run.sh --verify` launched the current workspace `dist/SkillsCopilot.app`.
   - Fixture-data smoke captured the full Agent Copilot app window at `docs/ui-artifacts/native-macos-shell/completed.png`.
-  - Computer Use resolved the current app window and V2.88 per-surface evidence was captured under `docs/ui-artifacts/v2.88-handoff-evidence/`.
+  - Computer Use resolved the current app window. Legacy V2.88 per-surface screenshots were later pruned because those pages no longer match the current UI.
 - Latest deprecated Web/Tauri removal pass deleted `ui/` and `src-tauri/`, removed Tauri workspace membership/dependencies/scripts, moved the icon source to `apps/macos/Sources/SkillsCopilot/Resources/AppIcon.icns`, and verified the Cargo workspace now contains only the Rust crates used by the native service boundary.
 - After the removal pass, `pnpm install --frozen-lockfile` passed and `pnpm check:macos` passed again: Rust reported 30 passed + 1 ignored, clippy was clean, native list model/layout checks passed, SwiftPM built the app, Local App Launch Verify passed, and Smoke App Run passed against the rebuilt `dist/SkillsCopilot.app`.
 - Latest Smoke App Run verified bundle freshness, `service.status.protocol_version = 1`, bundle id `dev.skills-copilot.native`, bundled `AppIcon.icns`, visible `SkillsCopilot` window, scan, Enable/Disable, Claude Settings save, Snapshot Preview, and Snapshot Rollback.
@@ -134,7 +134,9 @@ Date: 2026-06-17
 - Completed UI screenshot: `docs/ui-artifacts/native-macos-shell/completed.png`
 - Screenshot capture rule: window-only capture. Full-desktop screenshots are forbidden.
 - Latest shared smoke screenshot was regenerated on 2026-06-17 after V2.87 Agent Copilot validation. The capture script used the `SkillsCopilot` window id and `screencapture -l`, so the evidence contains the complete app window only.
-- Latest per-surface Computer Use evidence was captured on 2026-06-17 under `docs/ui-artifacts/v2.88-handoff-evidence/` for Lineup, Agent Profile, Local Session Preview, and MCP Preview.
+- Legacy V2.88 per-surface screenshot artifacts were pruned during current
+  app-surface cleanup; maintained evidence now centers on the current full app
+  window.
 - V2.68 screenshot was regenerated on 2026-06-13 by `pnpm check:macos` fixture smoke after cockpit-first IA changes. Manual inspection confirmed Task Cockpit is selected by default, Work surfaces appear before Adapter/Health diagnostics, and the detail picker no longer duplicates the "Detail Section" label.
 - V2.68 real-local launch found the current `SkillsCopilot` window via CG metadata, but the macOS session was locked (`CGSSessionScreenIsLocked=Yes`), Computer Use timed out, and the direct real-local capture was black. The black screenshot was rejected and not committed.
 - V2.69 screenshot evidence is generated with screenshot privacy mode available by default and checked by `pnpm verify:screenshot-artifacts`. The capture helper rejects locked-session, black-capture, mostly transparent, and near-flat screenshots before accepting evidence.

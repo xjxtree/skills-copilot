@@ -395,6 +395,11 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
     let skillUsageRows: [LocalSessionSkillUsageRow]
     let count: Int
     let totalCandidateCount: Int
+    let totalMatchedCount: Int
+    let offset: Int
+    let limit: Int
+    let hasMore: Bool
+    let nextOffset: Int?
     let userMessageCount: Int
     let totalMessageCount: Int
     let toolCallCount: Int
@@ -402,7 +407,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
     let gapNotes: [String]
     let blockerNotes: [String]
     let redactionSummary: LocalSessionPreviewRedactionSummary
-    let safetyFlags: CrossAgentReadinessSafety
+    let safetyFlags: ReadOnlySafetyFlags
     let fallbackReason: String?
 
     var isUnavailable: Bool {
@@ -424,6 +429,14 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         case count
         case totalCandidateCount = "total_candidate_count"
         case totalCandidateCountAlt = "totalCandidateCount"
+        case totalMatchedCount = "total_matched_count"
+        case totalMatchedCountAlt = "totalMatchedCount"
+        case offset
+        case limit
+        case hasMore = "has_more"
+        case hasMoreAlt = "hasMore"
+        case nextOffset = "next_offset"
+        case nextOffsetAlt = "nextOffset"
         case userMessageCount = "user_message_count"
         case userMessageCountAlt = "userMessageCount"
         case totalMessageCount = "total_message_count"
@@ -453,6 +466,11 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         skillUsageRows: [LocalSessionSkillUsageRow] = [],
         count: Int? = nil,
         totalCandidateCount: Int = 0,
+        totalMatchedCount: Int? = nil,
+        offset: Int = 0,
+        limit: Int? = nil,
+        hasMore: Bool = false,
+        nextOffset: Int? = nil,
         userMessageCount: Int? = nil,
         totalMessageCount: Int? = nil,
         toolCallCount: Int? = nil,
@@ -460,7 +478,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         gapNotes: [String] = [],
         blockerNotes: [String] = [],
         redactionSummary: LocalSessionPreviewRedactionSummary = LocalSessionPreviewRedactionSummary(),
-        safetyFlags: CrossAgentReadinessSafety = CrossAgentReadinessSafety(),
+        safetyFlags: ReadOnlySafetyFlags = ReadOnlySafetyFlags(),
         fallbackReason: String? = nil
     ) {
         self.generatedBy = generatedBy
@@ -471,6 +489,11 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         self.skillUsageRows = skillUsageRows
         self.count = count ?? sessionRows.count
         self.totalCandidateCount = totalCandidateCount
+        self.totalMatchedCount = totalMatchedCount ?? sessionRows.count
+        self.offset = max(0, offset)
+        self.limit = limit ?? sessionRows.count
+        self.hasMore = hasMore
+        self.nextOffset = nextOffset
         self.userMessageCount = userMessageCount ?? sessionRows.reduce(0) { $0 + $1.userMessageCount }
         self.totalMessageCount = totalMessageCount ?? sessionRows.reduce(0) { $0 + $1.totalMessageCount }
         self.toolCallCount = toolCallCount ?? sessionRows.reduce(0) { $0 + $1.toolCallCount }
@@ -506,6 +529,15 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             totalCandidateCount: try container.decodeIfPresent(Int.self, forKey: .totalCandidateCount)
                 ?? container.decodeIfPresent(Int.self, forKey: .totalCandidateCountAlt)
                 ?? rows.count,
+            totalMatchedCount: try container.decodeIfPresent(Int.self, forKey: .totalMatchedCount)
+                ?? container.decodeIfPresent(Int.self, forKey: .totalMatchedCountAlt),
+            offset: try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0,
+            limit: try container.decodeIfPresent(Int.self, forKey: .limit),
+            hasMore: try container.decodeIfPresent(Bool.self, forKey: .hasMore)
+                ?? container.decodeIfPresent(Bool.self, forKey: .hasMoreAlt)
+                ?? false,
+            nextOffset: try container.decodeIfPresent(Int.self, forKey: .nextOffset)
+                ?? container.decodeIfPresent(Int.self, forKey: .nextOffsetAlt),
             userMessageCount: try container.decodeIfPresent(Int.self, forKey: .userMessageCount)
                 ?? container.decodeIfPresent(Int.self, forKey: .userMessageCountAlt),
             totalMessageCount: try container.decodeIfPresent(Int.self, forKey: .totalMessageCount)
@@ -519,9 +551,9 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             redactionSummary: try container.decodeIfPresent(LocalSessionPreviewRedactionSummary.self, forKey: .redactionSummary)
                 ?? container.decodeIfPresent(LocalSessionPreviewRedactionSummary.self, forKey: .redactionSummaryAlt)
                 ?? LocalSessionPreviewRedactionSummary(),
-            safetyFlags: try container.decodeIfPresent(CrossAgentReadinessSafety.self, forKey: .safetyFlags)
-                ?? container.decodeIfPresent(CrossAgentReadinessSafety.self, forKey: .safety)
-                ?? CrossAgentReadinessSafety(),
+            safetyFlags: try container.decodeIfPresent(ReadOnlySafetyFlags.self, forKey: .safetyFlags)
+                ?? container.decodeIfPresent(ReadOnlySafetyFlags.self, forKey: .safety)
+                ?? ReadOnlySafetyFlags(),
             fallbackReason: try container.decodeIfPresent(String.self, forKey: .fallbackReason)
                 ?? container.decodeIfPresent(String.self, forKey: .reason)
         )
@@ -529,6 +561,61 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
 
     static func unavailable(reason: String = UIStrings.text("localSessionPreview.unavailable", "Local session preview is unavailable.")) -> LocalSessionPreviewResult {
         LocalSessionPreviewResult(generatedBy: "unavailable", fallbackReason: reason)
+    }
+
+    func mergingPage(_ page: LocalSessionPreviewResult) -> LocalSessionPreviewResult {
+        var rowsByID = Dictionary(uniqueKeysWithValues: sessionRows.map { ($0.id, $0) })
+        var mergedRows = sessionRows
+        for row in page.sessionRows where rowsByID[row.id] == nil {
+            rowsByID[row.id] = row
+            mergedRows.append(row)
+        }
+        return LocalSessionPreviewResult(
+            generatedBy: page.generatedBy,
+            authorized: page.authorized || authorized,
+            authorizationRequired: page.authorizationRequired,
+            roots: page.roots.isEmpty ? roots : page.roots,
+            sessionRows: mergedRows,
+            skillUsageRows: page.skillUsageRows.isEmpty ? skillUsageRows : page.skillUsageRows,
+            count: mergedRows.count,
+            totalCandidateCount: page.totalCandidateCount,
+            totalMatchedCount: page.totalMatchedCount,
+            offset: 0,
+            limit: page.limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+            gapNotes: page.gapNotes,
+            blockerNotes: page.blockerNotes,
+            redactionSummary: page.redactionSummary,
+            safetyFlags: page.safetyFlags,
+            fallbackReason: page.fallbackReason
+        )
+    }
+
+    func ensuringSession(_ session: LocalSessionPreviewRow) -> LocalSessionPreviewResult {
+        guard !sessionRows.contains(where: { $0.id == session.id }) else { return self }
+        var rows = sessionRows
+        rows.insert(session, at: 0)
+        return LocalSessionPreviewResult(
+            generatedBy: generatedBy,
+            authorized: true,
+            authorizationRequired: authorizationRequired,
+            roots: roots,
+            sessionRows: rows,
+            skillUsageRows: skillUsageRows,
+            count: rows.count,
+            totalCandidateCount: max(totalCandidateCount, rows.count),
+            totalMatchedCount: max(totalMatchedCount, rows.count),
+            offset: offset,
+            limit: limit,
+            hasMore: hasMore,
+            nextOffset: nextOffset,
+            gapNotes: gapNotes,
+            blockerNotes: blockerNotes,
+            redactionSummary: redactionSummary,
+            safetyFlags: safetyFlags,
+            fallbackReason: fallbackReason
+        )
     }
 }
 

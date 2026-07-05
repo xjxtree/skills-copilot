@@ -98,7 +98,7 @@ struct LLMPromptRedactionSummary: Decodable, Hashable {
 struct LLMPromptPreview: Decodable, Identifiable, Hashable {
     let previewID: String
     let action: LLMAction?
-    let analysisKind: LLMSkillAnalysisKind?
+    let analysisKind: String?
     let requestKind: String?
     let scope: String?
     let promptScope: String
@@ -173,7 +173,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
     init(
         previewID: String,
         action: LLMAction?,
-        analysisKind: LLMSkillAnalysisKind?,
+        analysisKind: String?,
         requestKind: String?,
         scope: String?,
         promptScope: String,
@@ -223,7 +223,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
             ?? container.decodeIfPresent(String.self, forKey: .confirmationID)
             ?? ""
         action = try Self.decodeAction(from: container, keys: [.action, .kind])
-        analysisKind = try Self.decodeAnalysisKind(from: container, keys: [.analysisKind, .kind])
+        analysisKind = try Self.decodeFlexibleString(from: container, keys: [.analysisKind])
         requestKind = try container.decodeIfPresent(String.self, forKey: .requestKind)
         scope = try container.decodeIfPresent(String.self, forKey: .scope)
         promptScope = try Self.decodeFlexibleString(from: container, keys: [.promptScope, .scopeLabel])
@@ -338,18 +338,6 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         return nil
     }
 
-    private static func decodeAnalysisKind(
-        from container: KeyedDecodingContainer<CodingKeys>,
-        keys: [CodingKeys]
-    ) throws -> LLMSkillAnalysisKind? {
-        for key in keys {
-            if let value = try container.decodeIfPresent(String.self, forKey: key),
-               let kind = LLMSkillAnalysisKind(rawValue: value) {
-                return kind
-            }
-        }
-        return nil
-    }
 }
 
 struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
@@ -518,6 +506,10 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
 struct LLMPromptRunListResult: Decodable, Hashable {
     let generatedBy: String
     let count: Int
+    let totalCount: Int
+    let returnedCount: Int
+    let limit: Int?
+    let truncated: Bool
     let runs: [LLMPromptRunRecord]
     let appLocalOnly: Bool
     let providerRequestSent: Bool
@@ -528,6 +520,12 @@ struct LLMPromptRunListResult: Decodable, Hashable {
     enum CodingKeys: String, CodingKey {
         case generatedBy = "generated_by"
         case count
+        case totalCount = "total_count"
+        case totalCountAlt = "totalCount"
+        case returnedCount = "returned_count"
+        case returnedCountAlt = "returnedCount"
+        case limit
+        case truncated
         case runs
         case appLocalOnly = "app_local_only"
         case providerRequestSent = "provider_request_sent"
@@ -539,6 +537,10 @@ struct LLMPromptRunListResult: Decodable, Hashable {
     init(
         generatedBy: String,
         count: Int,
+        totalCount: Int? = nil,
+        returnedCount: Int? = nil,
+        limit: Int? = nil,
+        truncated: Bool? = nil,
         runs: [LLMPromptRunRecord],
         appLocalOnly: Bool,
         providerRequestSent: Bool,
@@ -548,6 +550,10 @@ struct LLMPromptRunListResult: Decodable, Hashable {
     ) {
         self.generatedBy = generatedBy
         self.count = count
+        self.totalCount = totalCount ?? max(count, runs.count)
+        self.returnedCount = returnedCount ?? runs.count
+        self.limit = limit
+        self.truncated = truncated ?? ((returnedCount ?? runs.count) < (totalCount ?? max(count, runs.count)))
         self.runs = runs
         self.appLocalOnly = appLocalOnly
         self.providerRequestSent = providerRequestSent
@@ -561,6 +567,15 @@ struct LLMPromptRunListResult: Decodable, Hashable {
         runs = try container.decodeIfPresent([LLMPromptRunRecord].self, forKey: .runs) ?? []
         generatedBy = try container.decodeIfPresent(String.self, forKey: .generatedBy) ?? "local-v2.61"
         count = try container.decodeIfPresent(Int.self, forKey: .count) ?? runs.count
+        totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount)
+            ?? container.decodeIfPresent(Int.self, forKey: .totalCountAlt)
+            ?? max(count, runs.count)
+        returnedCount = try container.decodeIfPresent(Int.self, forKey: .returnedCount)
+            ?? container.decodeIfPresent(Int.self, forKey: .returnedCountAlt)
+            ?? runs.count
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit)
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated)
+            ?? (returnedCount < totalCount)
         appLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .appLocalOnly) ?? true
         providerRequestSent = try container.decodeIfPresent(Bool.self, forKey: .providerRequestSent) ?? false
         rawPromptPersisted = try container.decodeIfPresent(Bool.self, forKey: .rawPromptPersisted) ?? false
@@ -572,6 +587,10 @@ struct LLMPromptRunListResult: Decodable, Hashable {
         LLMPromptRunListResult(
             generatedBy: "unavailable",
             count: 0,
+            totalCount: 0,
+            returnedCount: 0,
+            limit: nil,
+            truncated: false,
             runs: [],
             appLocalOnly: true,
             providerRequestSent: false,

@@ -1,7 +1,0 @@
-{
-  "id": "fixture-remediation-delete-history-v260",
-  "method": "remediation.deleteHistory",
-  "params": {
-    "id": "fixture-history-review-network"
-  }
-}

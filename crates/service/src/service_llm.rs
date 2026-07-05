@@ -68,32 +68,6 @@ impl ServiceHost {
         }
     }
 
-    pub fn trace_import_status(&self) -> TraceImportStatus {
-        TraceImportStatus {
-            count: self
-                .load_trace_imports()
-                .map(|imports| imports.len())
-                .unwrap_or_default(),
-            imports_path: display_path(&self.trace_imports_path()),
-            app_local_only: true,
-            raw_trace_persistence_allowed: false,
-            provider_request_allowed: false,
-        }
-    }
-
-    pub fn agent_session_review_status(&self) -> AgentSessionSkillReviewStatus {
-        AgentSessionSkillReviewStatus {
-            count: self
-                .load_agent_session_reviews()
-                .map(|reviews| reviews.len())
-                .unwrap_or_default(),
-            reviews_path: display_path(&self.agent_session_reviews_path()),
-            app_local_only: true,
-            raw_trace_persistence_allowed: false,
-            provider_request_allowed: false,
-        }
-    }
-
     pub(crate) fn list_llm_provider_profiles(
         &self,
     ) -> Result<ListProviderProfilesResult, ServiceError> {
@@ -275,7 +249,7 @@ impl ServiceHost {
         &self,
         params: LlmPromptRunListParams,
     ) -> Result<LlmPromptRunListResult, ServiceError> {
-        let limit = params.limit.unwrap_or(50).clamp(1, 500);
+        let limit = params.limit.map(|limit| limit.clamp(1, 500));
         let action = params
             .action
             .as_deref()
@@ -311,10 +285,18 @@ impl ServiceHost {
                 action_matches && request_matches && instance_matches
             })
             .collect::<Vec<_>>();
-        runs.truncate(limit);
+        let total_count = runs.len();
+        if let Some(limit) = limit {
+            runs.truncate(limit);
+        }
+        let returned_count = runs.len();
         Ok(LlmPromptRunListResult {
             generated_by: "local-v2.61",
-            count: runs.len(),
+            count: returned_count,
+            total_count,
+            returned_count,
+            limit,
+            truncated: returned_count < total_count,
             runs,
             app_local_only: true,
             runs_file: "prompt-runs.json",
@@ -353,23 +335,45 @@ impl ServiceHost {
             .filter(|metadata| filters.matches_provider_call(metadata))
             .collect::<Vec<_>>();
 
-        let mut history_rows = matched_prompt_runs
+        let mut all_history_rows = matched_prompt_runs
             .iter()
             .enumerate()
             .map(|(index, run)| provider_observability_history_row(run, index, &redaction_roots))
             .collect::<Vec<_>>();
-        history_rows.truncate(limit);
+        all_history_rows.sort_by(|left, right| {
+            right
+                .completed_at
+                .cmp(&left.completed_at)
+                .then_with(|| left.prompt_run_id.cmp(&right.prompt_run_id))
+        });
 
-        let mut call_rows = matched_call_metadata
+        let mut all_call_rows = matched_call_metadata
             .iter()
             .enumerate()
             .map(|(index, metadata)| {
                 provider_observability_call_row(metadata, index, &redaction_roots)
             })
             .collect::<Vec<_>>();
-        call_rows.truncate(limit);
+        all_call_rows.sort_by(|left, right| {
+            right
+                .timestamp
+                .cmp(&left.timestamp)
+                .then_with(|| left.id.cmp(&right.id))
+        });
 
-        let grouping_rows = provider_observability_grouping_rows(&history_rows, &call_rows, limit);
+        let include_history = params.include_history.unwrap_or(true);
+        let history_rows = if include_history {
+            all_history_rows.iter().take(limit).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        let call_rows = if include_history {
+            all_call_rows.iter().take(limit).cloned().collect()
+        } else {
+            Vec::new()
+        };
+
+        let grouping_rows = provider_observability_grouping_rows(&all_history_rows, &all_call_rows);
         let budget_usage_hints = provider_observability_budget_usage_hints(
             &profiles,
             &matched_prompt_runs,
@@ -406,22 +410,24 @@ impl ServiceHost {
             })?
             .recent_evidence_rows;
         let evidence_references = provider_observability_evidence_references(
-            &history_rows,
-            &call_rows,
+            &all_history_rows,
+            &all_call_rows,
             &grouping_rows,
             &budget_usage_hints,
         );
         status_rows.truncate(limit.saturating_mul(2));
 
-        let summary = provider_observability_summary(
-            prompt_runs.len(),
-            call_metadata.len(),
-            &history_rows,
-            &call_rows,
-            profiles.len(),
-            profiles.iter().filter(|profile| profile.enabled).count(),
-            grouping_rows.len(),
-        );
+        let summary = provider_observability_summary(ProviderObservabilitySummaryInput {
+            total_prompt_run_count: prompt_runs.len(),
+            total_call_metadata_count: call_metadata.len(),
+            history_rows: &all_history_rows,
+            call_rows: &all_call_rows,
+            returned_prompt_run_count: history_rows.len(),
+            returned_call_row_count: call_rows.len(),
+            provider_profile_count: profiles.len(),
+            enabled_profile_count: profiles.iter().filter(|profile| profile.enabled).count(),
+            grouping_count: grouping_rows.len(),
+        });
         let status = if blocker_notes.is_empty() {
             "ready".to_string()
         } else {
@@ -431,6 +437,7 @@ impl ServiceHost {
         Ok(LlmProviderObservabilityResult {
             generated_by: "local-v2.64",
             status,
+            filters: filters.applied_filters(&params, limit),
             summary,
             call_rows,
             history_rows,
@@ -458,7 +465,8 @@ impl ServiceHost {
         &self,
         params: ModelTaskMatchListParams,
     ) -> Result<ModelTaskMatchListResult, ServiceError> {
-        let limit = params.limit.unwrap_or(50).clamp(1, 500);
+        let limit = params.limit.map(|limit| limit.clamp(1, 500));
+        let row_limit = limit.unwrap_or(usize::MAX);
         let adapter_ctx = self.effective_adapter_ctx()?;
         let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
         let filters = ModelTaskMatchFilters::from_params(&params);
@@ -470,12 +478,17 @@ impl ServiceHost {
             .filter(|record| filters.matches_record(record))
             .map(|record| redacted_model_task_record(record, &redaction_roots))
             .collect::<Vec<_>>();
-        records.truncate(limit);
+        let total_record_count = records.len();
+        if let Some(limit) = limit {
+            records.truncate(limit);
+        }
+        let returned_record_count = records.len();
 
         let matched_prompt_runs = prompt_runs
             .iter()
             .filter(|run| filters.matches_prompt_run(run))
             .collect::<Vec<_>>();
+        let total_evidence_count = total_record_count + matched_prompt_runs.len();
 
         let mut recent_evidence_rows = records
             .iter()
@@ -487,10 +500,13 @@ impl ServiceHost {
             )
             .collect::<Vec<_>>();
         recent_evidence_rows.sort_by(model_task_evidence_row_sort);
-        recent_evidence_rows.truncate(limit);
+        if let Some(limit) = limit {
+            recent_evidence_rows.truncate(limit);
+        }
+        let returned_evidence_count = recent_evidence_rows.len();
 
-        let model_rows = model_task_model_rows(&recent_evidence_rows, limit);
-        let task_rows = model_task_task_rows(&recent_evidence_rows, limit);
+        let model_rows = model_task_model_rows(&recent_evidence_rows, row_limit);
+        let task_rows = model_task_task_rows(&recent_evidence_rows, row_limit);
         let gap_notes = model_task_match_gap_notes(
             stored_records.len(),
             prompt_runs.len(),
@@ -507,7 +523,7 @@ impl ServiceHost {
             stored_records.len(),
             prompt_runs.len(),
             records.len(),
-            matched_prompt_runs.len().min(limit),
+            matched_prompt_runs.len().min(row_limit),
             &model_rows,
             &task_rows,
             &recent_evidence_rows,
@@ -521,6 +537,13 @@ impl ServiceHost {
         Ok(ModelTaskMatchListResult {
             generated_by: "local-v2.91",
             status,
+            total_record_count,
+            returned_record_count,
+            total_evidence_count,
+            returned_evidence_count,
+            limit,
+            truncated: returned_record_count < total_record_count
+                || returned_evidence_count < total_evidence_count,
             summary,
             records,
             model_rows,
@@ -607,10 +630,6 @@ impl ServiceHost {
         let confidence_score = params.confidence_score.map(|score| score.min(100));
         let prompt_run_ids =
             redact_model_task_string_list(&params.prompt_run_ids, &mut redactor, 160);
-        let session_review_ids =
-            redact_model_task_string_list(&params.session_review_ids, &mut redactor, 160);
-        let trace_import_ids =
-            redact_model_task_string_list(&params.trace_import_ids, &mut redactor, 160);
         let benchmark_ids =
             redact_model_task_string_list(&params.benchmark_ids, &mut redactor, 160);
         let mut evidence_refs =
@@ -654,8 +673,6 @@ impl ServiceHost {
             estimated_cost_usd: params.estimated_cost_usd,
             source_kind,
             prompt_run_ids,
-            session_review_ids,
-            trace_import_ids,
             benchmark_ids,
             evidence_refs,
             gap_notes,
@@ -854,619 +871,6 @@ impl ServiceHost {
                     redactor.redact(&summary)
                 ));
             }
-            LlmPromptActionKind::SkillAnalysis => {
-                let analysis_kind = params
-                    .analysis_kind
-                    .unwrap_or(LlmSkillAnalysisKind::Overview);
-                prompt_scope.extend([
-                    "selected skill metadata".to_string(),
-                    "selected skill redacted frontmatter".to_string(),
-                    "selected skill redacted body".to_string(),
-                    "related finding summaries".to_string(),
-                    "missing selection count".to_string(),
-                ]);
-                included_fields.extend([
-                    "analysis kind".to_string(),
-                    "selected skill ids".to_string(),
-                    "skill names".to_string(),
-                    "agents".to_string(),
-                    "scopes".to_string(),
-                    "enabled states".to_string(),
-                    "redacted descriptions".to_string(),
-                    "redacted frontmatter".to_string(),
-                    "redacted skill bodies".to_string(),
-                    "rule finding ids and messages".to_string(),
-                ]);
-                sections.push(format!("Analysis kind: {}", analysis_kind.as_str()));
-                sections.push(self.render_skill_analysis_prompt_sections(params, &mut redactor)?);
-            }
-            LlmPromptActionKind::QualityScore => {
-                let instance_id = params.skill_instance_id.as_deref().ok_or_else(|| {
-                    ServiceError::InvalidRequest(
-                        "llm.previewPrompt quality_score requires skill_instance_id".to_string(),
-                    )
-                })?;
-                let score = self.score_skill_quality(ScoreSkillQualityParams {
-                    instance_id: instance_id.to_string(),
-                    agent: None,
-                    definition_id: None,
-                })?;
-                prompt_scope.extend([
-                    "deterministic quality score".to_string(),
-                    "score components".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "suggested improvements".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "skill id".to_string(),
-                    "skill name".to_string(),
-                    "agent".to_string(),
-                    "scope".to_string(),
-                    "quality score".to_string(),
-                    "quality grade and band".to_string(),
-                    "component scores and summaries".to_string(),
-                    "finding/conflict/analysis evidence ids and labels".to_string(),
-                    "suggested improvement titles and details".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                ]);
-                sections.push(render_quality_score_prompt_section(&score, &mut redactor));
-            }
-            LlmPromptActionKind::StaleDriftDetection => {
-                let detection = self.detect_stale_drift(DetectStaleDriftParams {
-                    agent: None,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    limit: Some(8),
-                    stale_days: None,
-                    thresholds: StaleDriftThresholds::default(),
-                })?;
-                prompt_scope.extend([
-                    "deterministic stale and drift signals".to_string(),
-                    "skill identity summaries".to_string(),
-                    "readiness impact notes".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "candidate skill ids".to_string(),
-                    "skill names".to_string(),
-                    "agents".to_string(),
-                    "scopes".to_string(),
-                    "enabled states".to_string(),
-                    "stale/drift scores and bands".to_string(),
-                    "fingerprint, finding, source, and mtime-derived signals".to_string(),
-                    "readiness impact summaries".to_string(),
-                    "finding/conflict/analysis evidence ids and labels".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                ]);
-                sections.push(render_stale_drift_prompt_section(&detection, &mut redactor));
-            }
-            LlmPromptActionKind::KnowledgeSearch => {
-                let result = self.search_knowledge(KnowledgeSearchParams {
-                    query: params.user_intent.clone(),
-                    agent: None,
-                    limit: Some(8),
-                    risk: None,
-                    scope: None,
-                    enabled: None,
-                    tool: None,
-                    keyword: None,
-                })?;
-                prompt_scope.extend([
-                    "deterministic local knowledge rows".to_string(),
-                    "search filters and facets".to_string(),
-                    "quality/readiness/stale-drift context".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted search query".to_string(),
-                    "candidate skill ids".to_string(),
-                    "skill names".to_string(),
-                    "agents".to_string(),
-                    "scopes".to_string(),
-                    "enabled states".to_string(),
-                    "matched fields and match reasons".to_string(),
-                    "keywords, tools, rules, capability tags, and risk tags".to_string(),
-                    "quality/readiness/stale-drift summaries".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response artifacts".to_string(),
-                ]);
-                sections.push(render_knowledge_search_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::SimilarSkillGrouping => {
-                let result = self.group_similar_skills(SimilarSkillGroupingParams {
-                    agent: None,
-                    limit: Some(8),
-                    min_score: None,
-                    include_singletons: false,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                })?;
-                prompt_scope.extend([
-                    "deterministic similar skill groups".to_string(),
-                    "group similarity and ambiguity signals".to_string(),
-                    "member quality and stale-drift context".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "candidate skill ids".to_string(),
-                    "group ids and group types".to_string(),
-                    "canonical names and keys".to_string(),
-                    "similarity, ambiguity, redundancy, and routing ambiguity bands".to_string(),
-                    "shared terms, tools, rules, capability, risk, and source signals".to_string(),
-                    "member skill names, agents, scopes, enabled states, and local contexts"
-                        .to_string(),
-                    "finding/conflict/analysis evidence ids and labels".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                ]);
-                sections.push(render_similar_skill_grouping_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::CapabilityTaxonomy => {
-                let result = self.build_capability_taxonomy(CapabilityTaxonomyParams {
-                    agent: None,
-                    limit: Some(8),
-                    include_single_skill_domains: true,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                })?;
-                prompt_scope.extend([
-                    "deterministic capability taxonomy domains".to_string(),
-                    "agent and workspace coverage summaries".to_string(),
-                    "duplicate/redundancy and routing ambiguity signals".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "candidate skill ids".to_string(),
-                    "domain ids, keys, names, and coverage levels".to_string(),
-                    "agent and workspace coverage counts".to_string(),
-                    "representative skill names, agents, scopes, enabled states, and local contexts"
-                        .to_string(),
-                    "tools, rules, keywords, capability tags, and risk tags".to_string(),
-                    "similar-group duplicate/redundancy and routing ambiguity metadata".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                ]);
-                sections.push(render_capability_taxonomy_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::LocalSkillMap => {
-                let result = self.build_local_skill_map(LocalSkillMapParams {
-                    agent: None,
-                    task: params.user_intent.clone(),
-                    limit: Some(12),
-                    node_limit: Some(48),
-                    edge_limit: Some(96),
-                    cluster_limit: Some(12),
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    include_task_context: params.user_intent.is_some(),
-                })?;
-                prompt_scope.extend([
-                    "deterministic local skill map graph".to_string(),
-                    "skill, capability, similar-group, conflict, agent, source, risk, and task coverage nodes".to_string(),
-                    "relationship edges and clusters".to_string(),
-                    "local risk, gap, and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "candidate skill ids".to_string(),
-                    "node ids, types, labels, weights, and summaries".to_string(),
-                    "edge ids, types, labels, weights, and reasons".to_string(),
-                    "cluster ids, types, scores, risk levels, and member node ids".to_string(),
-                    "capability domain coverage summaries".to_string(),
-                    "risk, gap, blocker, and evidence reference summaries".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                ]);
-                sections.push(render_local_skill_map_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::WorkspaceReadiness => {
-                let result = self.check_workspace_readiness(WorkspaceReadinessParams {
-                    agent: None,
-                    task: params.user_intent.clone(),
-                    project_root: None,
-                    expected_capabilities: Vec::new(),
-                    limit: Some(8),
-                    candidate_instance_ids: params.instance_ids.clone(),
-                })?;
-                prompt_scope.extend([
-                    "deterministic workspace readiness checklist".to_string(),
-                    "agent readiness summaries".to_string(),
-                    "capability readiness rows".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or workspace intent".to_string(),
-                    "readiness checklist categories, statuses, and scores".to_string(),
-                    "agent names, enabled counts, adapter status, and best local candidates"
-                        .to_string(),
-                    "capability names, coverage levels, and gap/blocker notes".to_string(),
-                    "finding/conflict/analysis/stale/routing evidence ids and labels".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                ]);
-                sections.push(render_workspace_readiness_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::RemediationPlan => {
-                let result = self.plan_remediation(RemediationPlanParams {
-                    agent: None,
-                    task: params.user_intent.clone(),
-                    project_root: None,
-                    focus: None,
-                    focus_areas: Vec::new(),
-                    limit: Some(8),
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    include_deferred: false,
-                })?;
-                prompt_scope.extend([
-                    "deterministic remediation plan items".to_string(),
-                    "prioritized local finding/gap/ambiguity/drift/readiness evidence".to_string(),
-                    "safe next-action guidance".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or remediation intent".to_string(),
-                    "plan item ids, ranks, priorities, severities, and categories".to_string(),
-                    "affected skill ids, names, agents, scopes, enabled states, and states"
-                        .to_string(),
-                    "affected capabilities and task refs".to_string(),
-                    "read-only suggested safe next actions".to_string(),
-                    "prerequisites, blockers, and evidence ids".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                    "write/apply instructions".to_string(),
-                ]);
-                sections.push(render_remediation_plan_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::RemediationPreviewDrafts => {
-                let result = self.preview_remediation_drafts(RemediationPreviewDraftsParams {
-                    agent: None,
-                    task: params.user_intent.clone(),
-                    skill_ids: params.instance_ids.clone(),
-                    finding_ids: Vec::new(),
-                    draft_types: Vec::new(),
-                    limit: Some(8),
-                    include_policy_drafts: true,
-                })?;
-                prompt_scope.extend([
-                    "deterministic fix preview drafts".to_string(),
-                    "copy-only proposed text and patch-like snippets".to_string(),
-                    "finding/rule and remediation evidence".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or draft intent".to_string(),
-                    "draft item ids, ranks, types, titles, and confidence bands".to_string(),
-                    "affected skill ids, names, agents, scopes, enabled states, and states"
-                        .to_string(),
-                    "finding ids and rule ids".to_string(),
-                    "copy-only current/proposed snippets".to_string(),
-                    "rationale, copy labels, edit guidance, blockers, and evidence ids".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "write/apply instructions".to_string(),
-                ]);
-                sections.push(render_remediation_preview_drafts_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::RemediationPreviewImpact => {
-                let result = self.preview_remediation_impact(RemediationPreviewImpactParams {
-                    action: Some("review".to_string()),
-                    task: params.user_intent.clone(),
-                    agent: None,
-                    project_root: None,
-                    skill_ids: params.instance_ids.clone(),
-                    candidate_instance_ids: Vec::new(),
-                    draft_ids: Vec::new(),
-                    plan_item_ids: Vec::new(),
-                    limit: Some(8),
-                    include_snapshot_plan: true,
-                    include_rollback_plan: true,
-                    include_risk_impact: true,
-                    include_task_impact: true,
-                })?;
-                prompt_scope.extend([
-                    "deterministic impact preview rows".to_string(),
-                    "task, agent, skill, risk, snapshot, and rollback impact summaries".to_string(),
-                    "plan-only snapshot and rollback rows".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or impact intent".to_string(),
-                    "impact row ids, areas, confidence, direction, and blockers".to_string(),
-                    "affected skill ids, names, agents, scopes, enabled states, and estimates"
-                        .to_string(),
-                    "task readiness and routing score estimates".to_string(),
-                    "plan-only snapshot and rollback statuses".to_string(),
-                    "risk delta rows and local evidence ids".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "write/apply instructions".to_string(),
-                    "snapshot creation or rollback commands".to_string(),
-                ]);
-                sections.push(render_remediation_preview_impact_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::RemediationBatchReview => {
-                let result = self.batch_review_remediation(RemediationBatchReviewParams {
-                    task: params.user_intent.clone(),
-                    agent: None,
-                    project_root: None,
-                    workspace_label: None,
-                    rule_id: None,
-                    severity: None,
-                    status: None,
-                    triage_status: None,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    group_by: Vec::new(),
-                    limit: Some(12),
-                })?;
-                prompt_scope.extend([
-                    "deterministic batch review queue items".to_string(),
-                    "grouped local task, risk, rule, agent, and workspace evidence".to_string(),
-                    "recommended safe next-step labels".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or batch review intent".to_string(),
-                    "review group ids, labels, risk counts, and top item ids".to_string(),
-                    "review item ids, sources, severities, statuses, and rule ids".to_string(),
-                    "affected skill ids, names, agents, scopes, enabled states, and states"
-                        .to_string(),
-                    "read-only recommended next-step labels".to_string(),
-                    "blockers, gaps, and evidence ids".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw prompt or response persistence".to_string(),
-                    "raw skill body".to_string(),
-                    "raw frontmatter".to_string(),
-                    "write/apply instructions".to_string(),
-                    "snapshot creation or rollback commands".to_string(),
-                ]);
-                sections.push(render_remediation_batch_review_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::GuidedCleanupFlow => {
-                let result = self.plan_guided_cleanup_flow(GuidedCleanupPlanParams {
-                    task: params.user_intent.clone(),
-                    agent: None,
-                    selected_skill_id: params
-                        .skill_instance_id
-                        .clone()
-                        .or_else(|| params.instance_ids.first().cloned()),
-                    selected_skill_name: None,
-                    selected_skill_agent: None,
-                    project_root: None,
-                    current_cwd: None,
-                    workspace: None,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    limit: Some(12),
-                    include_recorded_steps: true,
-                })?;
-                prompt_scope.extend([
-                    "deterministic guided cleanup flow steps".to_string(),
-                    "issue groups and safe next action labels".to_string(),
-                    "app-local recorded guided step metadata when available".to_string(),
-                    "gap, blocker, evidence, and safety summaries".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or cleanup intent".to_string(),
-                    "flow step ids, phases, risk bands, statuses, and source methods".to_string(),
-                    "candidate skill ids, names, agents, and definition ids".to_string(),
-                    "safe next action entry methods and confirmation requirements".to_string(),
-                    "recorded guided step metadata without raw prompt, response, trace, secrets, or unredacted paths"
-                        .to_string(),
-                    "evidence ids and read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider prompt".to_string(),
-                    "raw provider response".to_string(),
-                    "provider API keys or credentials".to_string(),
-                    "raw trace content".to_string(),
-                    "agent config contents".to_string(),
-                    "raw skill body".to_string(),
-                    "write/apply instructions".to_string(),
-                    "snapshot creation or rollback commands".to_string(),
-                ]);
-                sections.push(render_guided_cleanup_flow_prompt_section(
-                    &result,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::TaskReadiness => {
-                let task = params.user_intent.as_deref().ok_or_else(|| {
-                    ServiceError::InvalidRequest(
-                        "llm.previewPrompt task_readiness requires user_intent/task".to_string(),
-                    )
-                })?;
-                let readiness = self.check_task_readiness(TaskReadinessParams {
-                    task: task.to_string(),
-                    agent: None,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    limit: Some(8),
-                })?;
-                prompt_scope.extend([
-                    "deterministic task readiness score".to_string(),
-                    "candidate skill summaries".to_string(),
-                    "local gap and blocker notes".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task intent".to_string(),
-                    "candidate skill ids".to_string(),
-                    "skill names".to_string(),
-                    "agents".to_string(),
-                    "scopes".to_string(),
-                    "enabled states".to_string(),
-                    "readiness scores and bands".to_string(),
-                    "quality score summaries".to_string(),
-                    "finding/conflict/analysis evidence ids and labels".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                ]);
-                sections.push(render_task_readiness_prompt_section(
-                    &readiness,
-                    &mut redactor,
-                ));
-            }
-            LlmPromptActionKind::RoutingConfidence => {
-                let task = params.user_intent.as_deref().ok_or_else(|| {
-                    ServiceError::InvalidRequest(
-                        "llm.previewPrompt routing_confidence requires user_intent/task"
-                            .to_string(),
-                    )
-                })?;
-                let ranking = self.rank_skill_routes(RankSkillRoutesParams {
-                    task: task.to_string(),
-                    agent: None,
-                    candidate_instance_ids: params.instance_ids.clone(),
-                    limit: Some(8),
-                })?;
-                prompt_scope.extend([
-                    "deterministic routing confidence score".to_string(),
-                    "ordered route candidates".to_string(),
-                    "confidence rationale".to_string(),
-                    "ambiguity and wrong-pick risks".to_string(),
-                    "miss risks".to_string(),
-                    "evidence reference summaries".to_string(),
-                    "safety flags".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task intent".to_string(),
-                    "ranked candidate skill ids".to_string(),
-                    "skill names".to_string(),
-                    "agents".to_string(),
-                    "scopes".to_string(),
-                    "enabled states".to_string(),
-                    "routing confidence scores and bands".to_string(),
-                    "readiness and quality score summaries".to_string(),
-                    "ambiguity, wrong-pick, and miss risks".to_string(),
-                    "finding/conflict/analysis evidence ids and labels".to_string(),
-                    "read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider response".to_string(),
-                    "agent config contents".to_string(),
-                    "raw skill body".to_string(),
-                ]);
-                sections.push(render_routing_confidence_prompt_section(
-                    &ranking,
-                    &mut redactor,
-                ));
-            }
             LlmPromptActionKind::TaskCockpit => {
                 let task = params.user_intent.as_deref().ok_or_else(|| {
                     ServiceError::InvalidRequest(
@@ -1508,59 +912,6 @@ impl ServiceHost {
                     &mut redactor,
                 )?);
             }
-            LlmPromptActionKind::SkillLifecycleTimeline => {
-                let timeline =
-                    self.build_skill_lifecycle_timeline(SkillLifecycleTimelineParams {
-                        task: params.user_intent.clone(),
-                        agent: None,
-                        selected_skill_id: params
-                            .skill_instance_id
-                            .clone()
-                            .or_else(|| params.instance_ids.first().cloned()),
-                        selected_skill_name: None,
-                        selected_skill_agent: None,
-                        definition_id: None,
-                        project_root: None,
-                        current_cwd: None,
-                        workspace: None,
-                        limit: Some(12),
-                        include_prompt_runs: true,
-                        include_session_reviews: true,
-                        include_remediation_history: true,
-                        include_stale_drift: true,
-                    })?;
-                prompt_scope.extend([
-                    "deterministic skill lifecycle timeline rows".to_string(),
-                    "skill and agent lifecycle aggregates".to_string(),
-                    "local finding, drift, remediation, prompt, and session-review event counts"
-                        .to_string(),
-                    "gap, blocker, evidence, and safety summaries".to_string(),
-                ]);
-                included_fields.extend([
-                    "redacted task or lifecycle intent".to_string(),
-                    "timeline event ids, types, stages, statuses, and severities".to_string(),
-                    "candidate skill ids, names, agents, scopes, enabled states, and states"
-                        .to_string(),
-                    "app-local remediation/prompt/session metadata without raw prompt, response, or trace content"
-                        .to_string(),
-                    "evidence ids and read-only safety flags".to_string(),
-                ]);
-                excluded_fields.extend([
-                    "raw source paths".to_string(),
-                    "raw provider prompt".to_string(),
-                    "raw provider response".to_string(),
-                    "provider API keys or credentials".to_string(),
-                    "raw trace content".to_string(),
-                    "agent config contents".to_string(),
-                    "raw skill body".to_string(),
-                    "write/apply instructions".to_string(),
-                    "snapshot creation or rollback commands".to_string(),
-                ]);
-                sections.push(render_skill_lifecycle_timeline_prompt_section(
-                    &timeline,
-                    &mut redactor,
-                ));
-            }
         }
 
         if params.action == LlmPromptActionKind::TaskCockpit {
@@ -1573,26 +924,7 @@ impl ServiceHost {
             LlmPromptActionKind::Recommend => 500,
             LlmPromptActionKind::ExplainConflict => 650,
             LlmPromptActionKind::DraftFrontmatter => 450,
-            LlmPromptActionKind::SkillAnalysis => params
-                .analysis_kind
-                .unwrap_or(LlmSkillAnalysisKind::Overview)
-                .output_token_estimate(),
-            LlmPromptActionKind::QualityScore => 650,
-            LlmPromptActionKind::StaleDriftDetection => 750,
-            LlmPromptActionKind::KnowledgeSearch => 750,
-            LlmPromptActionKind::SimilarSkillGrouping => 850,
-            LlmPromptActionKind::CapabilityTaxonomy => 850,
-            LlmPromptActionKind::LocalSkillMap => 900,
-            LlmPromptActionKind::WorkspaceReadiness => 900,
-            LlmPromptActionKind::RemediationPlan => 900,
-            LlmPromptActionKind::RemediationPreviewDrafts => 850,
-            LlmPromptActionKind::RemediationPreviewImpact => 850,
-            LlmPromptActionKind::RemediationBatchReview => 900,
-            LlmPromptActionKind::GuidedCleanupFlow => 900,
-            LlmPromptActionKind::TaskReadiness => 750,
-            LlmPromptActionKind::RoutingConfidence => 850,
             LlmPromptActionKind::TaskCockpit => 1400,
-            LlmPromptActionKind::SkillLifecycleTimeline => 850,
         };
         let prompt_preview = sections.join("\n\n");
         let redaction = redactor.summary();
@@ -1854,40 +1186,6 @@ impl ServiceHost {
         ))
     }
 
-    pub(crate) fn render_skill_analysis_prompt_sections(
-        &self,
-        params: &LlmPreviewPromptParams,
-        redactor: &mut PromptRedactor<'_>,
-    ) -> Result<String, ServiceError> {
-        let Some(catalog) = self.open_existing_catalog_read_only()? else {
-            return Ok(format!(
-                "Selected skill count: {}\nIncluded skills: 0\nMissing or excluded selections: {}",
-                params.instance_ids.len(),
-                params.instance_ids.len()
-            ));
-        };
-        let mut sections = Vec::new();
-        let mut included_count = 0usize;
-        for instance_id in &params.instance_ids {
-            let Some(skill) = catalog.get_skill_detail(instance_id)? else {
-                continue;
-            };
-            included_count += 1;
-            sections.push(self.render_skill_prompt_section(&skill, redactor)?);
-        }
-        let missing_count = params.instance_ids.len().saturating_sub(included_count);
-        let mut header = format!(
-            "Selected skill count: {}\nIncluded skills: {included_count}\nMissing or excluded selections: {missing_count}",
-            params.instance_ids.len()
-        );
-        if sections.is_empty() {
-            header.push_str("\nNo selected skill details were available.");
-            Ok(header)
-        } else {
-            Ok(format!("{header}\n\n{}", sections.join("\n\n---\n\n")))
-        }
-    }
-
     pub(crate) fn llm_findings_for_skill(
         &self,
         skill: &SkillDetailRecord,
@@ -1912,7 +1210,7 @@ impl ServiceHost {
         let status = self.llm_status();
         let action = params.kind;
         let mut prompt_scope = vec!["operation metadata".to_string()];
-        let (estimated_input_tokens, review_preview) = match action {
+        let estimated_input_tokens = match action {
             LlmActionKind::Analyze | LlmActionKind::DraftFrontmatter => {
                 let instance_id = params.skill_instance_id.as_deref().ok_or_else(|| {
                     ServiceError::InvalidRequest(format!(
@@ -1927,31 +1225,24 @@ impl ServiceHost {
                     "selected skill frontmatter".to_string(),
                     "selected skill body".to_string(),
                 ]);
-                let review_preview = self.llm_skill_review_preview(&skill)?;
-                (
-                    estimate_tokens(&[
-                        action.as_str(),
-                        &skill.name,
-                        &skill.description,
-                        &skill.frontmatter_raw,
-                        &skill.body,
-                        params.user_intent.as_deref().unwrap_or_default(),
-                    ]),
-                    review_preview,
-                )
+                estimate_tokens(&[
+                    action.as_str(),
+                    &skill.name,
+                    &skill.description,
+                    &skill.frontmatter_raw,
+                    &skill.body,
+                    params.user_intent.as_deref().unwrap_or_default(),
+                ])
             }
             LlmActionKind::Recommend => {
                 prompt_scope.extend([
                     "user intent".to_string(),
                     "catalog recommendation constraints".to_string(),
                 ]);
-                (
-                    estimate_tokens(&[
-                        action.as_str(),
-                        params.user_intent.as_deref().unwrap_or_default(),
-                    ]),
-                    self.llm_recommendation_review_preview(params.user_intent.as_deref()),
-                )
+                estimate_tokens(&[
+                    action.as_str(),
+                    params.user_intent.as_deref().unwrap_or_default(),
+                ])
             }
             LlmActionKind::ExplainConflict => {
                 prompt_scope.extend([
@@ -1959,14 +1250,11 @@ impl ServiceHost {
                     "current rule finding summaries".to_string(),
                 ]);
                 let summary = self.llm_conflict_summary()?;
-                (
-                    estimate_tokens(&[
-                        action.as_str(),
-                        &summary,
-                        params.user_intent.as_deref().unwrap_or_default(),
-                    ]),
-                    self.llm_conflict_review_preview(&summary),
-                )
+                estimate_tokens(&[
+                    action.as_str(),
+                    &summary,
+                    params.user_intent.as_deref().unwrap_or_default(),
+                ])
             }
         };
         let estimated_output_tokens = match action {
@@ -2016,281 +1304,7 @@ impl ServiceHost {
                     "prompt_scope",
                 ],
             },
-            review_preview,
         })
-    }
-
-    pub fn prepare_llm_skill_analysis(
-        &self,
-        params: LlmPrepareSkillAnalysisParams,
-    ) -> Result<LlmPrepareSkillAnalysisResult, ServiceError> {
-        let status = self.llm_status();
-        let selected_skill_count = params.instance_ids.len();
-        let mut included_skills = Vec::new();
-        let mut estimate_parts = vec![params.analysis_kind.as_str().to_string()];
-        let Some(catalog) = self.open_existing_catalog_read_only()? else {
-            let disabled_reason = status.reason.clone();
-            let prompt_draft = skill_analysis_prompt_draft(
-                params.analysis_kind,
-                selected_skill_count,
-                &included_skills,
-                selected_skill_count,
-            );
-            let summary_draft = skill_analysis_summary_draft(
-                params.analysis_kind,
-                selected_skill_count,
-                &included_skills,
-                selected_skill_count,
-            );
-            let estimated_input_tokens = estimate_tokens(&[&prompt_draft, &summary_draft]);
-            let estimated_output_tokens = params.analysis_kind.output_token_estimate();
-            let estimated_total_tokens = estimated_input_tokens
-                .saturating_add(estimated_output_tokens)
-                .min(status.single_request_token_limit);
-            return Ok(LlmPrepareSkillAnalysisResult {
-                enabled: false,
-                disabled_reason,
-                analysis_kind: params.analysis_kind.as_str(),
-                selected_skill_count,
-                included_skill_count: 0,
-                excluded_missing_count: selected_skill_count,
-                included_skills,
-                prompt_draft,
-                summary_draft,
-                safety_flags: llm_skill_analysis_safety_flags(),
-                estimated_input_tokens,
-                estimated_output_tokens,
-                estimated_total_tokens,
-                provider_request_sent: false,
-                generated_by: "deterministic-service",
-            });
-        };
-
-        for instance_id in &params.instance_ids {
-            let Some(detail) = catalog.get_skill_detail(instance_id)? else {
-                continue;
-            };
-            estimate_parts.extend([
-                detail.name.clone(),
-                detail.agent.clone(),
-                detail.scope.clone(),
-                detail.description.clone(),
-                detail.frontmatter_raw.clone(),
-                detail.body.clone(),
-            ]);
-            included_skills.push(LlmSkillAnalysisIncludedSkill {
-                instance_id: detail.id,
-                name: detail.name,
-                agent: detail.agent,
-                scope: detail.scope,
-                enabled: detail.enabled,
-                disabled_reason: if detail.enabled {
-                    None
-                } else {
-                    Some("Skill is disabled in the current catalog state.".to_string())
-                },
-            });
-        }
-
-        let excluded_missing_count = selected_skill_count.saturating_sub(included_skills.len());
-        let prompt_draft = skill_analysis_prompt_draft(
-            params.analysis_kind,
-            selected_skill_count,
-            &included_skills,
-            excluded_missing_count,
-        );
-        let summary_draft = skill_analysis_summary_draft(
-            params.analysis_kind,
-            selected_skill_count,
-            &included_skills,
-            excluded_missing_count,
-        );
-        estimate_parts.extend([prompt_draft.clone(), summary_draft.clone()]);
-        let estimate_refs = estimate_parts
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let estimated_input_tokens = estimate_tokens(&estimate_refs);
-        let estimated_output_tokens = params.analysis_kind.output_token_estimate();
-        let estimated_total_tokens = estimated_input_tokens
-            .saturating_add(estimated_output_tokens)
-            .min(status.single_request_token_limit);
-
-        Ok(LlmPrepareSkillAnalysisResult {
-            enabled: false,
-            disabled_reason: status.reason,
-            analysis_kind: params.analysis_kind.as_str(),
-            selected_skill_count,
-            included_skill_count: included_skills.len(),
-            excluded_missing_count,
-            included_skills,
-            prompt_draft,
-            summary_draft,
-            safety_flags: llm_skill_analysis_safety_flags(),
-            estimated_input_tokens,
-            estimated_output_tokens,
-            estimated_total_tokens,
-            provider_request_sent: false,
-            generated_by: "deterministic-service",
-        })
-    }
-
-    pub(crate) fn llm_skill_review_preview(
-        &self,
-        skill: &SkillDetailRecord,
-    ) -> Result<LlmReviewPreview, ServiceError> {
-        let Some(catalog) = self.open_existing_catalog_read_only()? else {
-            return Ok(LlmReviewPreview::unavailable());
-        };
-        let findings = catalog.list_rule_findings()?;
-        let related_findings: Vec<RuleFindingRecord> = findings
-            .into_iter()
-            .filter(|finding| {
-                finding.instance_id.as_deref() == Some(skill.id.as_str())
-                    || finding.definition_id.as_deref() == Some(skill.definition_id.as_str())
-            })
-            .collect();
-        let records = catalog.list_skill_records()?;
-        let comparable_instance_count = records
-            .iter()
-            .filter(|record| record.definition_id == skill.definition_id && record.id != skill.id)
-            .count();
-        let finding_explanations = related_findings
-            .iter()
-            .take(8)
-            .map(|finding| LlmReviewFindingExplanation {
-                rule_id: finding.rule_id.clone(),
-                severity: finding.severity.clone(),
-                explanation: redact_for_llm_preview(&finding.message),
-                suggested_next_step: finding.suggestion.as_deref().map(redact_for_llm_preview),
-            })
-            .collect::<Vec<_>>();
-        let risk = llm_review_risk(&related_findings, &skill.frontmatter_raw, &skill.body);
-        let description = redact_for_llm_preview(&skill.description);
-        let purpose = if description.is_empty() {
-            format!(
-                "Offline review preview for `{}`. No body text is returned; purpose is inferred from catalog name and metadata only.",
-                redact_for_llm_preview(&skill.name)
-            )
-        } else {
-            format!(
-                "{} Offline review only; no provider request was sent and skill body content is not returned.",
-                description
-            )
-        };
-        let cross_summary = if comparable_instance_count == 0 {
-            "No other cataloged agent instance shares this definition id in the current catalog."
-                .to_string()
-        } else {
-            format!(
-                "{comparable_instance_count} other cataloged instance(s) share this definition id; review adapter-specific permissions and enablement before copying behavior across agents."
-            )
-        };
-        Ok(LlmReviewPreview {
-            status: "offline-preview",
-            generated_by: "deterministic-service",
-            provider_request_sent: false,
-            write_actions_available: false,
-            execution_actions_available: false,
-            purpose,
-            risk,
-            finding_explanations,
-            cross_agent_fit: LlmReviewCrossAgentFit {
-                agent: skill.agent.clone(),
-                scope: skill.scope.clone(),
-                comparable_instance_count,
-                summary: cross_summary,
-                notes: vec![
-                    "Cross-agent fit is advisory and read-only; this response cannot install, import, toggle, or edit skills.".to_string(),
-                    "Adapter compatibility is based only on current catalog metadata, not provider-generated recommendations.".to_string(),
-                ],
-            },
-            redaction: llm_review_redaction(),
-        })
-    }
-
-    pub(crate) fn llm_recommendation_review_preview(
-        &self,
-        user_intent: Option<&str>,
-    ) -> LlmReviewPreview {
-        let intent = redact_for_llm_preview(user_intent.unwrap_or_default());
-        let purpose = if intent.is_empty() {
-            "Prepared an offline recommendation preflight without reading skill bodies or calling a provider.".to_string()
-        } else {
-            format!(
-                "Prepared an offline recommendation preflight for the supplied intent: {intent}"
-            )
-        };
-        LlmReviewPreview {
-            status: "prepared-unavailable",
-            generated_by: "deterministic-service",
-            provider_request_sent: false,
-            write_actions_available: false,
-            execution_actions_available: false,
-            purpose,
-            risk: LlmReviewRisk {
-                level: "unknown",
-                summary: "No selected skill was reviewed, so risk is not assessed.".to_string(),
-                signals: vec![
-                    "Recommendation prepare does not read arbitrary skill files or return catalog paths."
-                        .to_string(),
-                ],
-            },
-            finding_explanations: Vec::new(),
-            cross_agent_fit: LlmReviewCrossAgentFit {
-                agent: "catalog".to_string(),
-                scope: "read-only-preflight".to_string(),
-                comparable_instance_count: 0,
-                summary:
-                    "Cross-agent fit requires a selected catalog skill or current analysis groups."
-                        .to_string(),
-                notes: vec![
-                    "No provider request was sent and no recommendation output was generated."
-                        .to_string(),
-                ],
-            },
-            redaction: llm_review_redaction(),
-        }
-    }
-
-    pub(crate) fn llm_conflict_review_preview(&self, summary: &str) -> LlmReviewPreview {
-        LlmReviewPreview {
-            status: "offline-preview",
-            generated_by: "deterministic-service",
-            provider_request_sent: false,
-            write_actions_available: false,
-            execution_actions_available: false,
-            purpose: "Prepared an offline conflict/finding explanation from catalog summaries only."
-                .to_string(),
-            risk: LlmReviewRisk {
-                level: if summary.contains("severity=error") || summary.contains("severity=critical")
-                {
-                    "high"
-                } else if summary.contains("finding rule=") {
-                    "medium"
-                } else {
-                    "low"
-                },
-                summary: redact_for_llm_preview(summary),
-                signals: vec![
-                    "Conflict explain prepare uses rule ids, severity labels, definition ids, and counts; it does not return skill body text."
-                        .to_string(),
-                ],
-            },
-            finding_explanations: Vec::new(),
-            cross_agent_fit: LlmReviewCrossAgentFit {
-                agent: "catalog".to_string(),
-                scope: "conflict-summary".to_string(),
-                comparable_instance_count: 0,
-                summary: "Cross-agent fit is represented by current conflict groups and definition ids only."
-                    .to_string(),
-                notes: vec![
-                    "Resolve conflicts through existing explicit user actions; no Apply/Write path exists in this preview."
-                        .to_string(),
-                ],
-            },
-            redaction: llm_review_redaction(),
-        }
     }
 
     pub(crate) fn get_llm_skill_detail(
@@ -2517,14 +1531,6 @@ fn redacted_model_task_record(
         estimated_cost_usd: record.estimated_cost_usd,
         source_kind: normalize_model_task_source_kind(Some(&record.source_kind)),
         prompt_run_ids: redact_existing_model_task_list(&record.prompt_run_ids, redaction_roots),
-        session_review_ids: redact_existing_model_task_list(
-            &record.session_review_ids,
-            redaction_roots,
-        ),
-        trace_import_ids: redact_existing_model_task_list(
-            &record.trace_import_ids,
-            redaction_roots,
-        ),
         benchmark_ids: redact_existing_model_task_list(&record.benchmark_ids, redaction_roots),
         evidence_refs: redact_existing_model_task_list(&record.evidence_refs, redaction_roots),
         gap_notes: redact_existing_model_task_list(&record.gap_notes, redaction_roots),

@@ -5,6 +5,6 @@
     "limit": 10,
     "provider": "openai-compatible",
     "model": "gpt-5",
-    "task_kind": "task_readiness"
+    "task_kind": "task_cockpit"
   }
 }

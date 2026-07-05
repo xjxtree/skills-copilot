@@ -11,7 +11,7 @@ These fixtures define the opencode parser/scan contract from `docs/opencode-adap
 
 The opencode adapter scans first-class native roots plus official compatibility roots: global `~/.config/opencode/skills`, project `.opencode/skills` from `project_cwd` upward to `project_root`, global/project `.claude/skills`, and global/project `.agents/skills`. Compatibility roots are scan-only sources; tool-global installs still target native opencode roots. Runtime names may include colon namespaces, such as `ce:compound`, when the directory uses the colon-normalized form `ce-compound`.
 
-`config/opencode-deny-skill.json` remains writable-evidence only. It shows the official permission shape that can hide a skill from agents, but V2.4 must not write opencode config.
+`config/opencode-deny-skill.json` remains a configuration-contract fixture. It shows the official permission shape that can hide a skill from agents, but V2.4 must not write opencode config.
 
 V2.12 writable evidence note:
 

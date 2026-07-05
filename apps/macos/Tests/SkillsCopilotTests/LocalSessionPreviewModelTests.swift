@@ -4,6 +4,7 @@ import Foundation
 struct LocalSessionPreviewModelTests {
     func run() throws {
         try previewDecodesRedactedRowsAndSafety()
+        try previewMergesPaginatedRows()
         try unavailableKeepsAuthorizationRequired()
         try filteredEmptyCopyExplainsHiddenLocalSessionCount()
     }
@@ -139,6 +140,87 @@ struct LocalSessionPreviewModelTests {
         let result = LocalSessionPreviewResult.unavailable(reason: "missing method")
         try expectEqual(result.authorizationRequired, false, "Unavailable preview should not request manual roots.")
         try expectEqual(result.sessionRows.count, 0, "Unavailable preview should not synthesize rows.")
+    }
+
+    private func previewMergesPaginatedRows() throws {
+        let first = try decodePreview("""
+        {
+          "generated_by": "local-v2.98",
+          "authorized": true,
+          "count": 1,
+          "total_candidate_count": 3,
+          "total_matched_count": 3,
+          "offset": 0,
+          "limit": 1,
+          "has_more": true,
+          "next_offset": 1,
+          "session_rows": [
+            {
+              "id": "session-a",
+              "title": "A",
+              "source_kind": "authorized-local-session",
+              "scope": "project",
+              "redacted_path": "$HOME/a.jsonl",
+              "excerpt": "A",
+              "user_message_count": 1,
+              "total_message_count": 2,
+              "tool_call_count": 0,
+              "skill_call_count": 0,
+              "content_hash": "a"
+            }
+          ]
+        }
+        """)
+        let second = try decodePreview("""
+        {
+          "generated_by": "local-v2.98",
+          "authorized": true,
+          "count": 2,
+          "total_candidate_count": 3,
+          "total_matched_count": 3,
+          "offset": 1,
+          "limit": 2,
+          "has_more": false,
+          "session_rows": [
+            {
+              "id": "session-b",
+              "title": "B",
+              "source_kind": "authorized-local-session",
+              "scope": "project",
+              "redacted_path": "$HOME/b.jsonl",
+              "excerpt": "B",
+              "user_message_count": 1,
+              "total_message_count": 2,
+              "tool_call_count": 0,
+              "skill_call_count": 0,
+              "content_hash": "b"
+            },
+            {
+              "id": "session-a",
+              "title": "A",
+              "source_kind": "authorized-local-session",
+              "scope": "project",
+              "redacted_path": "$HOME/a.jsonl",
+              "excerpt": "A duplicate",
+              "user_message_count": 1,
+              "total_message_count": 2,
+              "tool_call_count": 0,
+              "skill_call_count": 0,
+              "content_hash": "a"
+            }
+          ]
+        }
+        """)
+
+        let merged = first.mergingPage(second)
+        try expectEqual(merged.sessionRows.map(\.id), ["session-a", "session-b"], "Paginated merge should append unique rows in page order.")
+        try expectEqual(merged.totalMatchedCount, 3, "Paginated merge should keep server total matched count.")
+        try expectEqual(merged.hasMore, false, "Paginated merge should expose the latest page continuation state.")
+        try expectNil(merged.nextOffset, "Final page should clear next offset.")
+    }
+
+    private func decodePreview(_ payload: String) throws -> LocalSessionPreviewResult {
+        try JSONDecoder().decode(LocalSessionPreviewResult.self, from: Data(payload.utf8))
     }
 
     private func filteredEmptyCopyExplainsHiddenLocalSessionCount() throws {

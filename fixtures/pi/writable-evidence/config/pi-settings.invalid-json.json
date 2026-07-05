@@ -1,3 +1,0 @@
-{
-  "notice": "Evidence-only invalid JSON fixture. Harness must reject this file instead of repairing it.",
-  "disabledSkills": ["global-evidence-toggle",]

@@ -6,7 +6,7 @@ Date: 2026-06-13
 
 - `cargo test -p skills-copilot-service --no-default-features task_cockpit -- --nocapture`
 - `cargo test -p skills-copilot-service --no-default-features service_protocol_fixtures_decode -- --nocapture`
-- `cargo test -p skills-copilot-service --no-default-features guided_cleanup -- --nocapture`
+- Retired cleanup workflows are no longer part of the current app surface; current verification uses the service protocol and macOS checks.
 - `swift test --package-path apps/macos`
 - `pnpm verify:macos-ui-layout`
 - `pnpm check:macos`

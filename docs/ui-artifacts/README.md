@@ -32,7 +32,6 @@ Current artifacts:
 | `v2.79-privacy-localization/` | V2.79 privacy/localization app-window evidence |
 | `v2.80-detail-density/` | V2.80 detail density app-window evidence |
 | `v2.86-real-local-2026-06-16/` | V2.86 real-local window capture evidence |
-| `v2.88-handoff-evidence/` | V2.88 per-surface handoff evidence |
 | `v2.89-brand-assets/` | V2.89 brand asset evidence |
 | `v2.90-identifier-migration/` | V2.90 identifier migration evidence |
 | `v2.91-model-task-history/` | V2.91 model-task history evidence |

@@ -4,6 +4,12 @@
   "result": {
     "generated_by": "local-v2.91",
     "status": "ready",
+    "total_record_count": 1,
+    "returned_record_count": 1,
+    "total_evidence_count": 1,
+    "returned_evidence_count": 1,
+    "limit": 10,
+    "truncated": false,
     "summary": {
       "stored_record_count": 1,
       "prompt_run_count": 1,
@@ -25,7 +31,7 @@
         "id": "model-task-fixture",
         "title": "Release audit model fit",
         "task": "Review local release audit evidence.",
-        "task_kind": "task_readiness",
+        "task_kind": "task_cockpit",
         "agent": "codex",
         "profile_id": "fixture-openai",
         "provider": "openai-compatible",
@@ -40,8 +46,6 @@
         "prompt_run_ids": [
           "prompt-run-fixture"
         ],
-        "session_review_ids": [],
-        "trace_import_ids": [],
         "benchmark_ids": [],
         "evidence_refs": [
           "prompt-run:prompt-run-fixture"
@@ -118,7 +122,7 @@
     "task_rows": [
       {
         "id": "model-task-task-fixture",
-        "task_kind": "task_readiness",
+        "task_kind": "task_cockpit",
         "status": "fit",
         "stored_record_count": 1,
         "prompt_run_count": 1,
@@ -141,7 +145,7 @@
         "source_kind": "manual",
         "title": "Release audit model fit",
         "task": "Review local release audit evidence.",
-        "task_kind": "task_readiness",
+        "task_kind": "task_cockpit",
         "agent": "codex",
         "provider": "openai-compatible",
         "model": "gpt-5",

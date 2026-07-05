@@ -1,5 +1,4 @@
 enum SidebarSelection: Hashable {
-    case work(DetailSection)
     case session(String)
     case skill(String)
     case configOverview

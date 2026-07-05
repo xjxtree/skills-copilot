@@ -129,9 +129,7 @@ private struct StoredTaskCockpitResult: Codable {
     let agentCandidates: [StoredTaskCockpitCandidateRow]
     let skillCandidates: [StoredTaskCockpitCandidateRow]
     let readinessSignals: [StoredTaskCockpitContextRow]
-    let sessionReviewContext: [StoredTaskCockpitContextRow]
     let providerObservabilityContext: [StoredTaskCockpitContextRow]
-    let remediationContext: [StoredTaskCockpitContextRow]
     let gapRows: [StoredTaskCockpitContextRow]
     let blockerRows: [StoredTaskCockpitContextRow]
     let fallbackReason: String?
@@ -147,9 +145,7 @@ private struct StoredTaskCockpitResult: Codable {
         agentCandidates = result.agentCandidates.prefix(5).map(StoredTaskCockpitCandidateRow.init)
         skillCandidates = result.skillCandidates.prefix(5).map(StoredTaskCockpitCandidateRow.init)
         readinessSignals = result.readinessSignals.prefix(8).map(StoredTaskCockpitContextRow.init)
-        sessionReviewContext = result.sessionReviewContext.prefix(4).map(StoredTaskCockpitContextRow.init)
         providerObservabilityContext = result.providerObservabilityContext.prefix(4).map(StoredTaskCockpitContextRow.init)
-        remediationContext = result.remediationContext.prefix(4).map(StoredTaskCockpitContextRow.init)
         gapRows = result.gapRows.prefix(8).map(StoredTaskCockpitContextRow.init)
         blockerRows = result.blockerRows.prefix(8).map(StoredTaskCockpitContextRow.init)
         fallbackReason = result.fallbackReason
@@ -167,9 +163,7 @@ private struct StoredTaskCockpitResult: Codable {
             agentCandidates: agentCandidates.map { $0.row() },
             skillCandidates: skillCandidates.map { $0.row() },
             readinessSignals: readinessSignals.map { $0.row() },
-            sessionReviewContext: sessionReviewContext.map { $0.row() },
             providerObservabilityContext: providerObservabilityContext.map { $0.row() },
-            remediationContext: remediationContext.map { $0.row() },
             gapRows: gapRows.map { $0.row() },
             blockerRows: blockerRows.map { $0.row() },
             safetyFlags: ProviderObservabilitySafety(),
@@ -189,9 +183,7 @@ private struct StoredTaskCockpitFilters: Codable {
     let currentCWD: String?
     let workspace: String?
     let limit: Int?
-    let includeSessionReview: Bool
     let includeProviderObservability: Bool
-    let includeRemediationContext: Bool
 
     init(_ filters: TaskCockpitFilters) {
         taskText = filters.taskText
@@ -204,9 +196,7 @@ private struct StoredTaskCockpitFilters: Codable {
         currentCWD = filters.currentCWD
         workspace = filters.workspace
         limit = filters.limit
-        includeSessionReview = filters.includeSessionReview
         includeProviderObservability = filters.includeProviderObservability
-        includeRemediationContext = filters.includeRemediationContext
     }
 
     func filters() -> TaskCockpitFilters {
@@ -221,9 +211,7 @@ private struct StoredTaskCockpitFilters: Codable {
             currentCWD: currentCWD,
             workspace: workspace,
             limit: limit,
-            includeSessionReview: includeSessionReview,
-            includeProviderObservability: includeProviderObservability,
-            includeRemediationContext: includeRemediationContext
+            includeProviderObservability: includeProviderObservability
         )
     }
 }
@@ -235,9 +223,7 @@ private struct StoredTaskCockpitSummary: Codable {
     let agentCandidateCount: Int
     let skillCandidateCount: Int
     let readinessSignalCount: Int
-    let sessionReviewCount: Int
     let providerCallCount: Int
-    let remediationItemCount: Int
     let gapCount: Int
     let blockerCount: Int
     let evidenceCount: Int
@@ -254,9 +240,7 @@ private struct StoredTaskCockpitSummary: Codable {
         agentCandidateCount = summary.agentCandidateCount
         skillCandidateCount = summary.skillCandidateCount
         readinessSignalCount = summary.readinessSignalCount
-        sessionReviewCount = summary.sessionReviewCount
         providerCallCount = summary.providerCallCount
-        remediationItemCount = summary.remediationItemCount
         gapCount = summary.gapCount
         blockerCount = summary.blockerCount
         evidenceCount = summary.evidenceCount
@@ -275,9 +259,7 @@ private struct StoredTaskCockpitSummary: Codable {
             agentCandidateCount: agentCandidateCount,
             skillCandidateCount: skillCandidateCount,
             readinessSignalCount: readinessSignalCount,
-            sessionReviewCount: sessionReviewCount,
             providerCallCount: providerCallCount,
-            remediationItemCount: remediationItemCount,
             gapCount: gapCount,
             blockerCount: blockerCount,
             evidenceCount: evidenceCount,
@@ -295,7 +277,7 @@ private struct StoredTaskCockpitCandidateRow: Codable {
     let rank: Int?
     let title: String
     let agent: String?
-    let skill: TaskBenchmarkSkillRef?
+    let skill: TaskSkillRef?
     let readinessScore: Int?
     let routingScore: Int?
     let score: Int?

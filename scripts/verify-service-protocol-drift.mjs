@@ -240,11 +240,10 @@ const documentedMethods = parseDocumentedMethods(readRequired(docsPath));
 const rustSource = [
   "lib.rs",
   "service_host.rs",
-  "service_cleanup.rs",
-  "service_knowledge.rs",
   "service_llm.rs",
-  "service_remediation.rs",
-  "service_task.rs",
+  "service_app_search.rs",
+  "service_observability_helpers.rs",
+  "service_support_helpers.rs",
 ].map((file) => readRequired(join(serviceSrcDir, file))).join("\n");
 const protocolSource = readRequired(protocolPath);
 const supportedMethods = parseSupportedMethods(protocolSource, "crates/service/src/protocol.rs");

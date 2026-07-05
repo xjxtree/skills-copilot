@@ -14,27 +14,15 @@ const files = {
   mainWindowModel: await read("apps/macos/Sources/SkillsCopilot/Models/MainWindowModel.swift"),
   content: await read("apps/macos/Sources/SkillsCopilot/Views/ContentView.swift"),
   detail: await read("apps/macos/Sources/SkillsCopilot/Views/DetailView.swift"),
-  agentCopilotOverview: await read("apps/macos/Sources/SkillsCopilot/Views/AgentCopilotOverviewPanel.swift"),
-  agentCopilotDecision: await read("apps/macos/Sources/SkillsCopilot/Models/AgentCopilotDecision.swift"),
-  mcpServerPreview: await read("apps/macos/Sources/SkillsCopilot/Models/McpServerPreview.swift"),
+  agentSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Views/AgentSessionDetailPanel.swift"),
   detailSection: await read("apps/macos/Sources/SkillsCopilot/Models/DetailSection.swift"),
   detailOverview: await read("apps/macos/Sources/SkillsCopilot/Views/DetailOverviewSection.swift"),
   detailPrimitives: await read("apps/macos/Sources/SkillsCopilot/Views/DetailPresentationPrimitives.swift"),
-  detailReviewCore: await read("apps/macos/Sources/SkillsCopilot/Views/DetailReviewCoreSection.swift"),
-  detailReviewKnowledge: await read("apps/macos/Sources/SkillsCopilot/Views/DetailReviewKnowledgePanels.swift"),
-  detailRemediation: await read("apps/macos/Sources/SkillsCopilot/Views/DetailRemediationPanels.swift"),
-  detailKnowledgeSkillMap: await read("apps/macos/Sources/SkillsCopilot/Views/DetailKnowledgeSkillMapPanels.swift"),
-  detailGuidedCleanup: await read("apps/macos/Sources/SkillsCopilot/Views/DetailGuidedCleanupFlowPanel.swift"),
-  detailProviderObservability: await read("apps/macos/Sources/SkillsCopilot/Views/DetailProviderObservabilityPanel.swift"),
   providerObservabilitySettings: await read("apps/macos/Sources/SkillsCopilot/Views/ProviderObservabilitySettingsPanel.swift"),
   skillManager: await read("apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift"),
   workflowSheet: await read("apps/macos/Sources/SkillsCopilot/Views/WorkflowSheetChrome.swift"),
   skillManagerModel: await read("apps/macos/Sources/SkillsCopilot/Models/SkillManager.swift"),
   batchSkillOperation: await read("apps/macos/Sources/SkillsCopilot/Views/BatchSkillOperationSheet.swift"),
-  detailLocalSkillMap: await read("apps/macos/Sources/SkillsCopilot/Views/DetailLocalSkillMapViews.swift"),
-  detailTaskBenchmark: await read("apps/macos/Sources/SkillsCopilot/Views/DetailTaskBenchmarkSection.swift"),
-  detailAgentSession: await read("apps/macos/Sources/SkillsCopilot/Views/DetailAgentSessionSection.swift"),
-  detailLLM: await read("apps/macos/Sources/SkillsCopilot/Views/DetailLLMSection.swift"),
   markdownRender: await read("apps/macos/Sources/SkillsCopilot/Models/MarkdownRenderDocument.swift"),
   markdownTableDisplay: await read("apps/macos/Sources/SkillsCopilot/Models/MarkdownTableDisplayModel.swift"),
   agentConfigWorkspace: await read("apps/macos/Sources/SkillsCopilot/Views/AgentConfigWorkspacePanel.swift"),
@@ -43,10 +31,8 @@ const files = {
   agentIconProvider: await read("apps/macos/Sources/SkillsCopilot/Support/AgentIconProvider.swift"),
   formatter: await read("apps/macos/Sources/SkillsCopilot/Support/Formatters.swift"),
   uiStrings: await read("apps/macos/Sources/SkillsCopilot/Support/UIStrings.swift"),
-  guidedCleanupModel: await read("apps/macos/Sources/SkillsCopilot/Models/GuidedCleanupFlow.swift"),
   privacyPath: await read("apps/macos/Sources/SkillsCopilot/Views/PrivacyPathView.swift"),
   serviceClient: await read("apps/macos/Sources/SkillsCopilot/Services/ServiceClient.swift"),
-  serviceClientEvidence: await read("apps/macos/Sources/SkillsCopilot/Services/ServiceClientEvidenceRPC.swift"),
   serviceClientTransport: await read("apps/macos/Sources/SkillsCopilot/Services/ServiceClientTransport.swift"),
   serviceProcessRunner: await read("apps/macos/Sources/SkillsCopilot/Services/ServiceProcessRunner.swift"),
   settings: await read("apps/macos/Sources/SkillsCopilot/Views/SettingsView.swift"),
@@ -56,7 +42,6 @@ const files = {
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
-  storeNavigation: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreNavigationActions.swift"),
   storeWorkflow: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreWorkflowSelectors.swift"),
   taskCockpit: await read("apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift"),
   taskInput: await read("apps/macos/Sources/SkillsCopilot/Views/TaskInputTextEditor.swift"),
@@ -67,27 +52,17 @@ const files = {
   serviceProtocol: await read("docs/service-protocol.md"),
   serviceStatusFixture: await read("fixtures/service-protocol/service.status.response.json"),
   serviceRust: await read("crates/service/src/lib.rs"),
-  serviceKnowledge: await read("crates/service/src/service_knowledge.rs"),
+  serviceLLM: await read("crates/service/src/service_llm.rs"),
   serviceLLMPromptHelpers: await read("crates/service/src/service_llm_prompt_helpers.rs"),
   serviceRustProtocol: await read("crates/service/src/protocol.rs"),
 };
 files.detailSurface = [
   files.detail,
-  files.agentCopilotOverview,
+  files.agentSessionDetail,
   files.detailSection,
   files.detailOverview,
   files.detailPrimitives,
-  files.detailReviewCore,
-  files.detailReviewKnowledge,
-  files.detailRemediation,
-  files.detailKnowledgeSkillMap,
-  files.detailGuidedCleanup,
-  files.detailProviderObservability,
   files.providerObservabilitySettings,
-  files.detailLocalSkillMap,
-  files.detailTaskBenchmark,
-  files.detailAgentSession,
-  files.detailLLM,
   files.agentConfigWorkspace,
   files.detailHeaderOverview,
   files.detailFindingsHistory,
@@ -95,19 +70,17 @@ files.detailSurface = [
 ].join("\n");
 files.serviceIPC = [
   files.serviceClient,
-  files.serviceClientEvidence,
   files.serviceClientTransport,
   files.serviceProcessRunner,
 ].join("\n");
 files.storeSurface = [
   files.store,
   files.storeDerivedState,
-  files.storeNavigation,
   files.storeWorkflow,
 ].join("\n");
 files.serviceRustSurface = [
   files.serviceRust,
-  files.serviceKnowledge,
+  files.serviceLLM,
   files.serviceLLMPromptHelpers,
   files.serviceRustProtocol,
 ].join("\n");
@@ -147,9 +120,11 @@ const checks = [
     passed: /static let unifiedToolbar = UnifiedToolbarPresentation\(\)[\s\S]*?static let listPage = ListPagePresentation\(\)[\s\S]*?static let sidebarShell = SidebarShellPresentation\(\)/.test(files.uiOptimization)
       && /struct UnifiedToolbarPresentation:[\s\S]*?spansEntireWindow = true[\s\S]*?searchPlacement = UnifiedToolbarSearchPlacement\.globalTrailing[\s\S]*?collapsesAtScrollEdge = true[\s\S]*?settingsActionUsesSystemSettingsLink = true/.test(files.uiOptimization)
       && /struct ListPagePresentation:[\s\S]*?filterStyle = ListPageFilterStyle\.capsule[\s\S]*?searchScope = ListPageSearchScope\.localList[\s\S]*?rowStyle = ListPageRowStyle\.whiteCard[\s\S]*?minimumCardRowHeight = 58[\s\S]*?cardRowSpacing = 8/.test(files.uiOptimization)
-      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)
+      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?if shouldShowGlobalSearchResultsOverlay[\s\S]*?globalSearchResultsOverlay[\s\S]*?pinnedWindowChromeControls/.test(files.content)
       && /private var appShell:\s*some View\s*\{[\s\S]*?navigationShell[\s\S]*?\n\s*\}/.test(files.content)
-      && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?results:\s*globalSearchResults,[\s\S]*?onSelect:\s*selectGlobalSearchResult,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.accessibilityHidden\(true\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
+      && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?isSearchFocused:\s*\$isGlobalSearchFocused,[\s\S]*?showsSearchResults:\s*\$showsGlobalSearchResults,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.accessibilityHidden\(true\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
+      && /@State private var isGlobalSearchFocused = false[\s\S]*?@State private var showsGlobalSearchResults = false/.test(files.content)
+      && /private var globalSearchResultsOverlay:[\s\S]*?GlobalSearchResultsOverlay\([\s\S]*?query:\s*trimmedGlobalSearchText,[\s\S]*?results:\s*globalSearchResults[\s\S]*?selectGlobalSearchResult\(result\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsTrailingPadding/.test(files.content)
       && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
       && !/WindowChromeAgentControl/.test(files.content)
       && !/WindowChromeProjectControl/.test(files.content)
@@ -162,7 +137,7 @@ const checks = [
       && /private struct WindowChromeTitlebarAccessory<Content:\s*View>:\s*NSViewRepresentable[\s\S]*?NSTitlebarAccessoryViewController\(\)[\s\S]*?accessory\.layoutAttribute = \.right[\s\S]*?window\.addTitlebarAccessoryViewController\(accessory\)[\s\S]*?removeTitlebarAccessoryViewController\(at:\s*index\)/.test(files.content)
       && /private final class FirstMouseTitlebarAccessoryContainer:\s*NSView[\s\S]*?intrinsicContentSize[\s\S]*?acceptsFirstMouse/.test(files.content)
       && !/WindowChromeTopGlass|windowChromeTopGlass|PassthroughWindowChromeHostingView|topGlassHeight/.test(files.content)
-      && /private enum WindowChromeToolbarMetrics[\s\S]*?controlHeight:\s*CGFloat = 32[\s\S]*?agentWidth:\s*CGFloat = 146[\s\S]*?projectWidth:\s*CGFloat = 210[\s\S]*?titlebarTrailingPadding:\s*CGFloat = 28[\s\S]*?searchWidth = CGFloat\(UIOptimizationPresentation\.unifiedToolbar\.idealGlobalSearchWidth\)[\s\S]*?static var trailingWidth:[\s\S]*?static var totalWidth:[\s\S]*?static var accessoryWidth:/.test(files.content)
+      && /private enum WindowChromeToolbarMetrics[\s\S]*?controlHeight:\s*CGFloat = 32[\s\S]*?agentWidth:\s*CGFloat = 146[\s\S]*?projectWidth:\s*CGFloat = 210[\s\S]*?titlebarTrailingPadding:\s*CGFloat = 28[\s\S]*?searchWidth = CGFloat\(UIOptimizationPresentation\.unifiedToolbar\.idealGlobalSearchWidth\)[\s\S]*?searchResultsWidth:\s*CGFloat = 460[\s\S]*?searchResultsMinHeight:\s*CGFloat = 180[\s\S]*?static var trailingWidth:[\s\S]*?static var totalWidth:[\s\S]*?static var accessoryWidth:[\s\S]*?static var searchResultsTrailingPadding:/.test(files.content)
       && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text[\s\S]*?private var controlHeight:\s*CGFloat \{ WindowChromeToolbarMetrics\.controlHeight \}[\s\S]*?private var agentWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.agentWidth \}[\s\S]*?private var projectWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.projectWidth \}/.test(files.content)
       && !extractStructBody(files.content, "WindowChromeToolbarControls").includes("Divider()")
       && !/private struct WindowChromeToolbarControls:[\s\S]*?columnVisibility|isPrimarySidebarCollapsed/.test(files.content)
@@ -174,11 +149,11 @@ const checks = [
       && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
       && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
       && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeAboutButton\(\)[\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
-      && /private struct GlobalWindowSearchControl:[\s\S]*?GlobalSearchResultsPopover\(/.test(files.content)
-      && /private struct GlobalWindowSearchControl:[\s\S]*?@State private var isSearchFocused = false[\s\S]*?WindowChromeSearchTextField\([\s\S]*?placeholder:\s*UIStrings\.text\("toolbar\.globalSearch"[\s\S]*?\) \{ focused in[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)[\s\S]*?\.windowChromeGlassCapsule\(\)/.test(files.content)
+      && /private struct GlobalWindowSearchControl:[\s\S]*?@Binding var isSearchFocused:[\s\S]*?@Binding var showsResults:[\s\S]*?WindowChromeSearchTextField\([\s\S]*?placeholder:\s*UIStrings\.text\("toolbar\.globalSearch"[\s\S]*?\) \{ focused in[\s\S]*?showsResults = !trimmedText\.isEmpty[\s\S]*?onChange\(of:\s*text\)[\s\S]*?showsResults = !trimmedText\.isEmpty[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)[\s\S]*?\.windowChromeGlassCapsule\(\)/.test(files.content)
+      && !/private struct GlobalWindowSearchControl:[\s\S]*?\.popover\(isPresented:\s*resultsPopoverBinding/.test(files.content)
       && /private struct WindowChromeSearchTextField:\s*NSViewRepresentable[\s\S]*?FirstMouseNSTextField[\s\S]*?isBordered = false[\s\S]*?drawsBackground = false[\s\S]*?focusRingType = \.none[\s\S]*?controlTextDidChange[\s\S]*?control\([\s\S]*?insertNewline/.test(files.content)
       && /private final class FirstMouseNSTextField:\s*NSTextField[\s\S]*?acceptsFirstMouse/.test(files.content)
-      && /private struct GlobalSearchResultsPopover:[\s\S]*?ForEach\(GlobalSearchResourceKind\.allCases[\s\S]*?let kindResults = results\.filter \{ \$0\.kind == kind \}[\s\S]*?Text\("\\\(kind\.title\) \\\(kindResults\.count\)"\)[\s\S]*?ForEach\(kindResults\)/.test(files.content)
+      && /private struct GlobalSearchResultsOverlay:[\s\S]*?let results:\s*\[AppSearchItem\][\s\S]*?let isLoading:\s*Bool[\s\S]*?ForEach\(AppSearchItemKind\.allCases[\s\S]*?let kindResults = results\.filter \{ \$0\.kind == kind \}[\s\S]*?Text\("\\\(kind\.title\) \\\(kindResults\.count\)"\)[\s\S]*?ForEach\(kindResults\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsMinHeight[\s\S]*?WindowChromeToolbarMetrics\.searchResultsWidth[\s\S]*?\.fill\(\.regularMaterial\)/.test(files.content)
       && !/NativeToolbarSearchField/.test(files.content)
       && !/NSSearchField/.test(files.content)
       && !/ToolbarAvatarView/.test(files.content)
@@ -200,9 +175,10 @@ const checks = [
       && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?let isCompact:\s*Bool[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?isCompact:\s*isCompact/.test(files.sidebar)
       && /private struct SecondarySidebarProjectPickerLabel:[\s\S]*?let isCompact:\s*Bool[\s\S]*?if isCompact[\s\S]*?collapsedLabel[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)[\s\S]*?expandedLabel[\s\S]*?collapsedLabel[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)[\s\S]*?\.secondarySidebarHeaderControlCircle\(\)/.test(files.sidebar)
       && !/ToolbarContextSummary/.test(files.content)
-      && /private var globalSearchResults:[\s\S]*?store\.skills\.lazy[\s\S]*?\.filter \{ matchesSelectedAgent\(\$0\.agent\) \}[\s\S]*?store\.localSessionPreviewResult\.sessionRows\.lazy[\s\S]*?\.filter \{ matchesSelectedAgent\(\$0\.agent\) \}[\s\S]*?store\.agentConfigSnapshots\.lazy[\s\S]*?\.filter \{ matchesSelectedAgent\(\$0\.agent\) \}/.test(files.content)
-      && /private func matchesSelectedAgent\(_ agent: String\?\)[\s\S]*?case \.all:[\s\S]*?return true[\s\S]*?return agent == store\.agentFilter\.rawValue/.test(files.content)
-      && /private func selectGlobalSearchResult\(_ result:[\s\S]*?case \.skill\(let id\):[\s\S]*?store\.selectedSidebarSelection = \.skill\(skill\.id\)[\s\S]*?case \.session\(let id\):[\s\S]*?store\.selectLocalSession\(session\)[\s\S]*?case \.configSnapshot\(let id\):[\s\S]*?store\.selectConfigSnapshot\(snapshot\)/.test(files.content)
+      && /private var globalSearchResults:\s*\[AppSearchItem\][\s\S]*?store\.appSearchResult\.query == trimmedGlobalSearchText[\s\S]*?return store\.appSearchResult\.items/.test(files.content)
+      && /\.onChange\(of:\s*trimmedGlobalSearchText\)[\s\S]*?store\.updateAppSearch\(query:\s*query\)/.test(files.content)
+      && /func updateAppSearch\(query:[\s\S]*?service\.searchApp\([\s\S]*?limitPerKind:\s*Self\.globalSearchLimitPerKind[\s\S]*?func selectAppSearchItem\(_ item:\s*AppSearchItem\) async[\s\S]*?case \.skill:[\s\S]*?setSidebarSelection\(\.skill\(skill\.id\)\)[\s\S]*?case \.session:[\s\S]*?localSessionPreviewResult = localSessionPreviewResult\.ensuringSession\(session\)[\s\S]*?selectLocalSession\(session\)[\s\S]*?case \.configHistory:[\s\S]*?ensureConfigSnapshot\(snapshot\)[\s\S]*?selectConfigSnapshot\(snapshot\)/.test(files.store)
+      && /private func selectGlobalSearchResult\(_ result:\s*AppSearchItem\)[\s\S]*?await store\.selectAppSearchItem\(result\)[\s\S]*?globalSearchText = ""/.test(files.content)
       && !/private func applyGlobalSearch/.test(files.content),
   },
   {
@@ -215,7 +191,7 @@ const checks = [
       && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
       && /@Published private\(set\) var hasCompletedStartupLoad = false/.test(files.store)
-      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?async let cleanupQueueLoad:\s*Void = loadCleanupQueueIfNeeded\(\)[\s\S]*?async let crossAgentComparisonsLoad:\s*Void = loadCrossAgentComparisonsIfNeeded\(\)[\s\S]*?async let localSessionsLoad:\s*Void = refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?async let currentConfigDocumentsLoad:\s*Void = loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*startupAgentFilter\.rawValue\)[\s\S]*?_ = await \([\s\S]*?cleanupQueueLoad[\s\S]*?crossAgentComparisonsLoad[\s\S]*?localSessionsLoad[\s\S]*?currentConfigDocumentsLoad[\s\S]*?\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
+      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?async let localSessionsLoad:\s*Void = refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?async let currentConfigDocumentsLoad:\s*Void = loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*startupAgentFilter\.rawValue\)[\s\S]*?_ = await \([\s\S]*?localSessionsLoad[\s\S]*?currentConfigDocumentsLoad[\s\S]*?\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
       && /"startup\.catalog" = "Loading catalog data\.\.\."/.test(files.localizable),
   },
   {
@@ -250,14 +226,12 @@ const checks = [
       && /window\.titlebarAppearsTransparent = true/.test(files.mainWindowCoordinator)
       && /window\.styleMask\.insert\(\.fullSizeContentView\)/.test(files.mainWindowCoordinator)
       && /\.padding\(\.top,\s*8\)[\s\S]*?\.padding\(\.horizontal,\s*28\)[\s\S]*?\.padding\(\.bottom,\s*28\)/.test(files.detail)
-      && !/isReportSheetPresented|LocalReportPreviewSheet|sidebar\.report\.title/.test(files.sidebar)
       && !/Section\(UIStrings\.text\("skillManager\.title"[\s\S]*?SidebarSelection\.work\(\.skillManager\)/.test(files.sidebar)
       && !/selectedSidebarSelection\s*=\s*\.work\(\.skillManager\)/.test(files.sidebar)
       && !/selectedDetailSection == \.skillManager[\s\S]*?SkillManagerPanel\(\)/.test(files.detail)
       && !/navigationTitle\(UIStrings\.appWindowTitle\)/.test(files.detail)
-      && !/SidebarNavigationCardButton\(\s*title:\s*UIStrings\.text\("sidebar\.report\.title"/.test(files.sidebar)
       && !/SidebarNavigationCardButton\([\s\S]*?UIStrings\.taskCockpitTitle[\s\S]*?selectedSidebarSelection = \.preflight/.test(files.sidebar)
-      && !/selectedSidebarSelection\s*=\s*\.report/.test(files.sidebar),
+      && !/selectedSidebarSelection\s*=\s*\.preflight/.test(files.sidebar),
   },
   {
     label: "secondary sidebar omits the agent profile row and switches session, skill, or config lists",
@@ -279,8 +253,10 @@ const checks = [
       && /private var sessionStatusMessage:[\s\S]*?fallbackReason[\s\S]*?authorizationRequired[\s\S]*?return nil/.test(files.sidebar)
       && !/private var sessionStatusMessage:[\s\S]*?UIStrings\.loading[\s\S]*?return nil/.test(files.sidebar)
       && /@Published var localSessionScopeFilter:[\s\S]*?guard oldValue != localSessionScopeFilter else \{ return \}[\s\S]*?normalizeSelectedLocalSession\(\)/.test(files.store)
-      && /func previewLocalSessions\([\s\S]*?service\.previewLocalSessions\([\s\S]*?scope:\s*\.all/.test(files.store)
-      && !/private func localSessionPreviewRequestKey[\s\S]*?localSessionScopeFilter\.rawValue/.test(files.store)
+      && /func previewLocalSessions\([\s\S]*?service\.previewLocalSessions\([\s\S]*?scope:\s*requestedScopeFilter[\s\S]*?search:\s*requestedSearch\.isEmpty \? nil : requestedSearch[\s\S]*?offset:\s*normalizedOffset[\s\S]*?sort:\s*requestedSortOrder[\s\S]*?direction:\s*requestedSortDirection/.test(files.store)
+      && /private func localSessionPreviewRequestKey[\s\S]*?localSessionScopeFilter\.rawValue[\s\S]*?localSessionSortOrder\.rawValue[\s\S]*?localSessionSortDirection\.rawValue[\s\S]*?normalizedLocalSessionSearchText/.test(files.store)
+      && /var canLoadMoreLocalSessions:[\s\S]*?localSessionPreviewResult\.hasMore[\s\S]*?func loadMoreLocalSessions\(\) async[\s\S]*?nextOffset[\s\S]*?append:\s*true/.test(files.store)
+      && /private var loadMoreSessionsButton:[\s\S]*?await store\.loadMoreLocalSessions\(\)[\s\S]*?store\.canLoadMoreLocalSessions/.test(files.sidebar)
       && /func refreshSelectedAgentLocalSessionsIfNeeded\(\) async[\s\S]*?force:\s*false/.test(files.store)
       && /\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?refreshSelectedAgentLocalSessionsIfNeeded\(\)/.test(files.content)
       && /func selectLocalSession\(_ session:[\s\S]*?guard selectedLocalSessionID != session\.id \|\| selectedSidebarSelection != \.session\(session\.id\)[\s\S]*?setSidebarSelection\(\.session\(session\.id\)\)/.test(files.store)
@@ -289,7 +265,7 @@ const checks = [
   {
     label: "session empty states explain filtered counts without secondary-sidebar wording",
     text: files.sidebar + "\n" + files.uiStrings + "\n" + files.localizable,
-    passed: /else if filteredRows\.isEmpty[\s\S]*?SidebarEmptyMessage\(message:\s*UIStrings\.localSessionNoMatchesMessage\(totalCount:\s*preview\.sessionRows\.count\)\)/.test(files.sidebar)
+    passed: /else if filteredRows\.isEmpty[\s\S]*?SidebarEmptyMessage\(message:\s*UIStrings\.localSessionNoMatchesMessage\(totalCount:\s*preview\.totalMatchedCount\)\)/.test(files.sidebar)
       && /static func localSessionNoMatchesMessage\(totalCount:\s*Int\)[\s\S]*?sidebar\.sessions\.noMatchesWithCount/.test(files.uiStrings)
       && /"sidebar\.sessions\.noMatchesWithCount"\s*=/.test(files.localizable)
       && !/empty\.noSessionSelected\.message" = ".*secondary sidebar/.test(files.localizable),
@@ -394,17 +370,18 @@ const checks = [
     pattern: /\.onChange\(of:\s*store\.selectedDetailSection\)[\s\S]*?proxy\.scrollTo\(Self\.topAnchorID,\s*anchor:\s*\.top\)/,
   },
   {
-    label: "detail sections expose issues and conflicts while omitting retired work surfaces",
+    label: "detail sections expose only visible skill detail surfaces while omitting retired work surfaces",
     text: files.detailSurface,
-    pattern: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.conflicts,\s*\.history,\s*\.analysis,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\][\s\S]*?case \.conflicts:[\s\S]*?UIStrings\.conflicts[\s\S]*?UIStrings\.providerObservabilityTitle/,
+    passed: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.history,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\]/.test(files.detailSection)
+      && !/static var visibleCases:[\s\S]*?\.conflicts/.test(files.detailSection)
+      && !/static var visibleCases:[\s\S]*?\.analysis/.test(files.detailSection),
+    pattern: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.history,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\]/,
   },
   {
-    label: "detail router separates session, config, and skill details while report/preflight are modal tools",
+    label: "detail router separates session, config, and skill details while modal tools stay outside detail routing",
     text: files.detailSurface,
-    passed: /if store\.selectedSidebarSelection\?\.isSession == true[\s\S]*?AgentSessionDetailPanel\(\)[\s\S]*?else if store\.selectedSidebarSelection\?\.isConfig == true[\s\S]*?AgentConfigDetailPanel\(\)[\s\S]*?else if store\.selectedDetailSection == \.guidedCleanup[\s\S]*?else if store\.selectedSidebarSelection\?\.isSkill == true,\s*let skill[\s\S]*?EmptyDetailView\([\s\S]*?title:\s*emptyDetailTitle[\s\S]*?message:\s*emptyDetailMessage/.test(files.detailSurface)
-      && !/isReport/.test(files.detailSurface)
-      && !/isPreflight/.test(files.detailSurface)
-      && !/LocalReportExportPanel\(includeSelectedSkill:\s*false\)/.test(files.detailSurface),
+    passed: /if store\.selectedSidebarSelection\?\.isSession == true[\s\S]*?AgentSessionDetailPanel\(\)[\s\S]*?else if store\.selectedSidebarSelection\?\.isConfig == true[\s\S]*?AgentConfigDetailPanel\(\)[\s\S]*?else if store\.selectedSidebarSelection\?\.isSkill == true,\s*let skill[\s\S]*?SkillDetailContentView\([\s\S]*?else \{[\s\S]*?EmptyDetailView\([\s\S]*?title:\s*emptyDetailTitle[\s\S]*?message:\s*emptyDetailMessage/.test(files.detailSurface)
+      && !/isPreflight/.test(files.detailSurface),
   },
   {
     label: "definition hashes stay in metadata instead of overview/header grids",
@@ -416,30 +393,18 @@ const checks = [
   },
   {
     label: "high-priority accessibility and localized summary fixes are present",
-    text: files.detailPrimitives + "\n" + files.agentConfigWorkspace + "\n" + files.skillManager + "\n" + files.sidebar + "\n" + files.content + "\n" + files.agentCopilotOverview + "\n" + files.uiStrings,
+    text: files.detailPrimitives + "\n" + files.agentConfigWorkspace + "\n" + files.skillManager + "\n" + files.sidebar + "\n" + files.content + "\n" + files.agentSessionDetail + "\n" + files.uiStrings,
     passed: /struct SummaryChip:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(title\)[\s\S]*?\.accessibilityValue\(value\)/.test(files.detailPrimitives)
       && /private struct AgentConfigAgentIcon:[\s\S]*?\.accessibilityLabel\(filter\.title\)/.test(files.agentConfigWorkspace)
       && /private struct SearchResultRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(result\.name\)/.test(files.skillManager)
       && /private struct InstalledSkillRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(record\.name\)/.test(files.skillManager)
       && /private struct LocalSkillLibraryRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(skill\.name\)/.test(files.skillManager)
-      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("project\.chooseMenu"/.test(files.sidebar)
-      && /static func mcpServerArgEnvSummary\(args:\s*Int,\s*envKeys:\s*Int\)[\s\S]*?mcpServerPreview\.counts/.test(files.uiStrings)
-      && /UIStrings\.mcpServerArgEnvSummary\(args:\s*row\.argsCount,\s*envKeys:\s*row\.envKeyCount\)/.test(files.agentCopilotOverview),
+      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("project\.chooseMenu"/.test(files.sidebar),
   },
   {
     label: "UIStrings falls back through native localization before defaults",
     text: files.uiStrings,
     pattern: /static func text\(_ key:\s*String,\s*_ defaultValue:\s*String\) -> String[\s\S]*?if let value = localizedStrings\(\)\[key\][\s\S]*?Bundle\.main\.localizedString\(forKey:\s*key,\s*value:\s*nil,\s*table:\s*nil\)[\s\S]*?nativeValue != key[\s\S]*?return defaultValue/,
-  },
-  {
-    label: "local session preview is auto-discovered and privacy-rendered",
-    text: files.detailAgentSession + "\n" + files.storeSurface + "\n" + files.serviceProtocol,
-    pattern: /LocalSessionPreviewPanel\([\s\S]*?Auto discovery[\s\S]*?result\.skillUsageRows[\s\S]*?PrivacyEvidenceText\(value:\s*row\.redactedPath[\s\S]*?PrivacyEvidenceText\(value:\s*row\.excerpt[\s\S]*?func previewLocalSessions\(\)\s*async[\s\S]*?service\.previewLocalSessions[\s\S]*?session\.previewLocalSessions/,
-  },
-  {
-    label: "MCP server preview component remains default-off, explicitly authorized, and privacy-rendered",
-    text: files.agentCopilotOverview + "\n" + files.storeSurface + "\n" + files.serviceClientEvidence + "\n" + files.mcpServerPreview + "\n" + files.serviceProtocol,
-    pattern: /McpServerPreviewPanel[\s\S]*?Preview is default-off[\s\S]*?TextField\(UIStrings\.text\("mcpServerPreview\.placeholder"[\s\S]*?PrivacyEvidenceText\(value:\s*row\.sourcePath[\s\S]*?PrivacyEvidenceText\(value:\s*command[\s\S]*?func previewMcpServers\(\)\s*async[\s\S]*?service\.previewMcpServers[\s\S]*?evidence\.previewMcpServers/,
   },
   {
     label: "agent summary metrics are folded into primary sidebar cards",
@@ -450,44 +415,9 @@ const checks = [
       && !/configCapability\?\.scan|configCapability\?\.configToggle|configCapability\?\.configSnapshot|configCapability\?\.writable/.test(files.sidebar),
   },
   {
-    label: "guided cleanup renders safe-link buttons",
-    text: files.detailSurface,
-    pattern: /GuidedCleanupSafeLinkButton\(link:\s*step\.safeActionDeepLink\)[\s\S]*?GuidedCleanupSafeLinkButton\(link:\s*action\.deepLink\)/,
-  },
-  {
-    label: "guided cleanup safe links route through the store",
-    text: files.storeSurface,
-    pattern: /func openGuidedCleanupSafeLink\([\s\S]*?guard !link\.canApply[\s\S]*?case "selectDetailSection",\s*"openSafeBatchPreviewPanel":[\s\S]*?return[\s\S]*?case "previewRemediationDrafts":[\s\S]*?await previewRemediationDrafts\(\)/,
-  },
-  {
-    label: "guided cleanup safe batch links do not apply changes directly",
-    text: files.storeSurface,
-    pattern: /case "selectDetailSection",\s*"openSafeBatchPreviewPanel":\s*return/,
-  },
-  {
-    label: "guided cleanup model decodes safe-action deep links",
-    text: files.guidedCleanupModel,
-    pattern: /struct GuidedCleanupSafeActionDeepLink:[\s\S]*?case canApply = "can_apply"[\s\S]*?defaultTrigger\(for method:[\s\S]*?case "batch\.previewSkillToggles":[\s\S]*?return "openSafeBatchPreviewPanel"/,
-  },
-  {
-    label: "analysis section mounts focused smart-analysis panels",
-    text: files.detailSurface,
-    pattern: /SkillQualityScorePanel\([\s\S]*?TaskRoutingAssessmentPanel\([\s\S]*?struct SkillQualityScorePanel/,
-  },
-  {
-    label: "LLM Markdown output renders wide tables as readable cards",
-    text: `${files.markdownTableDisplay}\n${files.detailLLM}`,
-    pattern: /struct MarkdownTableDisplayModel[\s\S]*?var usesCardLayout:[\s\S]*?columnCount > 3 \|\| \(columnCount > 2 && containsLongBodyCell\)[\s\S]*?struct MarkdownTableView:[\s\S]*?if model\.usesCardLayout[\s\S]*?MarkdownTableCardList\(model:\s*model\)[\s\S]*?struct MarkdownTableCard:/,
-  },
-  {
     label: "LLM Markdown output normalizes collapsed provider markdown tables",
     text: files.markdownRender,
     pattern: /normalizeMarkdownBlocks\(in text:[\s\S]*?normalizeInlineMarkdownBreaks\(in: line\)[\s\S]*?normalizeInlineTableRows\(in text:[\s\S]*?\| \|[\s\S]*?isStandaloneTableLine/,
-  },
-  {
-    label: "LLM Markdown compact previews collapse tables into summary rows",
-    text: `${files.detailLLM}\n${files.localizable}`,
-    pattern: /case let \.table\(rows\):[\s\S]*?if maxBlocks == nil[\s\S]*?MarkdownTableView\(rows:\s*rows[\s\S]*?else[\s\S]*?MarkdownTableSummaryView\(rows:\s*rows\)[\s\S]*?llm\.markdown\.table\.previewSummary/,
   },
   {
     label: "LLM Markdown output unwraps whole-response markdown fences",
@@ -495,14 +425,9 @@ const checks = [
     pattern: /static func renderableText\(from text: String\)[\s\S]*?hasPrefix\("```"\)[\s\S]*?\["markdown", "md", "gfm"\]\.contains\(language\)[\s\S]*?return body/,
   },
   {
-    label: "LLM Markdown compact previews wrap code blocks instead of horizontal overflow",
-    text: files.detailLLM,
-    pattern: /MarkdownCodeBlockView\([\s\S]*?wrapsLines:\s*maxBlocks != nil[\s\S]*?struct MarkdownCodeBlockView:[\s\S]*?if wrapsLines[\s\S]*?\.fixedSize\(horizontal:\s*false,\s*vertical:\s*true\)/,
-  },
-  {
     label: "LLM prompt instructions forbid model tables and whole-answer code fences",
-    text: `${files.serviceRust}\n${files.serviceLLMPromptHelpers}`,
-    pattern: /Do not use Markdown tables[\s\S]*?Do not wrap the answer in fenced code blocks[\s\S]*?Required quality-score response shape/,
+    text: `${files.serviceLLM}\n${files.serviceLLMPromptHelpers}`,
+    pattern: /Required output: return only valid JSON[\s\S]*?Do not wrap it in Markdown fences[\s\S]*?Required output: concise Markdown draft guidance[\s\S]*?Do not use Markdown tables[\s\S]*?Do not wrap the answer in fenced code blocks/,
   },
   {
     label: "task cockpit panel lives in a dedicated module file",
@@ -527,7 +452,7 @@ const checks = [
   {
     label: "task cockpit build button remains explicit and input-gated",
     text: files.taskCockpit,
-    pattern: /Button\s*{[\s\S]*?onBuild\(\)[\s\S]*?\.disabled\(isBuilding \|\| !inputModel\.canSubmit \|\| selectedAgentIDs\.isEmpty \|\| providerGateMessage != nil\)/,
+    pattern: /Button\s*{[\s\S]*?onBuild\(\)[\s\S]*?\.disabled\(isPreviewingPrompt \|\| isBuilding \|\| !inputModel\.canSubmit \|\| selectedAgentIDs\.isEmpty \|\| providerGateMessage != nil\)/,
   },
   {
     label: "detail presentation primitives live in a dedicated module file",
@@ -561,8 +486,8 @@ const checks = [
       && !/WindowChromeTitlebarInstaller|WindowChromeChildWindow|WindowChromeTitlebarLayout/.test(files.content)
       && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
       && !/secondarySidebarHeaderWidth/.test(files.content)
-      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)
-      && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?results:\s*globalSearchResults,[\s\S]*?onSelect:\s*selectGlobalSearchResult,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
+      && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?globalSearchResultsOverlay[\s\S]*?pinnedWindowChromeControls/.test(files.content)
+      && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?isSearchFocused:\s*\$isGlobalSearchFocused,[\s\S]*?showsSearchResults:\s*\$showsGlobalSearchResults,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
       && !/ToolbarItem\(placement:\s*\.primaryAction\)\s*\{\s*WindowChromeToolbarControls/.test(files.content)
       && !/ToolbarItem\(placement:\s*\.navigation\)\s*\{\s*WindowChromeToolbarControls/.test(files.content)
       && !/private struct WindowChromeTopBarBackdrop/.test(files.content)
@@ -726,31 +651,6 @@ const checks = [
       && /static var agentCopilotWindowBackground:[\s\S]*?Color\(nsColor:\s*\.windowBackgroundColor\)/.test(files.nativePanelSurface),
   },
   {
-    label: "LLM assist exposes all explicit actions",
-    text: files.detailSurface,
-    pattern: /ForEach\(LLMAction\.allCases\)/,
-  },
-  {
-    label: "LLM assist buttons are gated by prepare state only",
-    text: files.detailSurface,
-    pattern: /\.disabled\(isPreparing\(action\)\)/,
-  },
-  {
-    label: "LLM assist renders read-only review previews",
-    text: files.detailSurface,
-    pattern: /LLMReviewPreviewView\(preview:\s*reviewPreview\)/,
-  },
-  {
-    label: "LLM review preview exposes no-action boundary",
-    text: files.detailSurface,
-    pattern: /Label\(UIStrings\.llmReviewNoActions,\s*systemImage:\s*"nosign"\)/,
-  },
-  {
-    label: "LLM draft frontmatter warns about confirmation and copy",
-    text: files.detailSurface,
-    pattern: /UIStrings\.llmDraftCopyRequired/,
-  },
-  {
     label: "tool-global preview uses read-only install affordance",
     text: files.detailSurface,
     pattern: /ToolGlobalPreviewCard\(skill:\s*skill\)/,
@@ -769,11 +669,6 @@ const checks = [
     label: "localized LLM action labels are present",
     text: files.localizable,
     pattern: /"llm\.action\.analyze".*"llm\.action\.recommend".*"llm\.action\.explainConflict".*"llm\.action\.draftFrontmatter"/s,
-  },
-  {
-    label: "localized LLM review preview labels are present",
-    text: files.localizable,
-    pattern: /"llm\.reviewPreview".*"llm\.reviewPurpose".*"llm\.reviewRisk".*"llm\.reviewCrossAgentFit".*"llm\.reviewNoActions"/s,
   },
   {
     label: "localized tool-global preview labels are present",
@@ -819,12 +714,7 @@ const checks = [
 ];
 
 const detailEvidenceLists = [
-  "SkillQualityEvidenceList",
-  "TaskReadinessEvidenceList",
-  "RoutingEvidenceList",
-  "CrossAgentReadinessEvidenceList",
-  "RoutingAccuracyEvidenceList",
-  "ProviderObservabilityEvidenceList",
+  "TaskCockpitEvidenceList",
 ];
 
 const nativeIPCCleanupChecks = [
@@ -878,8 +768,8 @@ const nativeIPCCleanupChecks = [
   },
   {
     label: "Agent Copilot protocol method surface matches the supported method contract",
-    passed: supportedMethods.length === 106
-      && statusFixtureMethods.length === 106,
+    passed: supportedMethods.length > 0
+      && JSON.stringify(supportedMethods) === JSON.stringify(statusFixtureMethods),
   },
   {
     label: "protocol surface has no IPC control, daemon, process, or socket methods",
@@ -932,17 +822,17 @@ const customChecks = [
   },
   {
     label: "session detail copy and expand actions appear only on row hover",
-    passed: /private struct LocalSessionContentItemRow:[\s\S]*?@State private var isHoveringActions = false/.test(files.agentCopilotOverview)
-      && /private var actionOpacity:\s*Double[\s\S]*?isHoveringActions \? 1 : 0/.test(files.agentCopilotOverview)
-      && /HStack\(spacing:\s*4\)[\s\S]*?detailButton[\s\S]*?copyButton[\s\S]*?\.opacity\(actionOpacity\)[\s\S]*?\.allowsHitTesting\(isHoveringActions\)/.test(files.agentCopilotOverview)
-      && /\.onHover\s*\{\s*isHovering in[\s\S]*?isHoveringActions = isHovering/.test(files.agentCopilotOverview)
-      && /contextMenu[\s\S]*?copyToPasteboard\(item\.text\)[\s\S]*?isShowingFullText = true/.test(files.agentCopilotOverview),
+    passed: /private struct LocalSessionContentItemRow:[\s\S]*?@State private var isHoveringActions = false/.test(files.agentSessionDetail)
+      && /private var actionOpacity:\s*Double[\s\S]*?isHoveringActions \? 1 : 0/.test(files.agentSessionDetail)
+      && /HStack\(spacing:\s*4\)[\s\S]*?detailButton[\s\S]*?copyButton[\s\S]*?\.opacity\(actionOpacity\)[\s\S]*?\.allowsHitTesting\(isHoveringActions\)/.test(files.agentSessionDetail)
+      && /\.onHover\s*\{\s*isHovering in[\s\S]*?isHoveringActions = isHovering/.test(files.agentSessionDetail)
+      && /contextMenu[\s\S]*?copyToPasteboard\(item\.text\)[\s\S]*?isShowingFullText = true/.test(files.agentSessionDetail),
   },
   {
     label: "session detail chips use semantic colors for user agent tool and skill content",
-    passed: /private func filterLabel\([\s\S]*?tint:\s*Color[\s\S]*?Text\("\\\(count\)"\)[\s\S]*?\.foregroundStyle\(isSelected \? tint : \.secondary\)[\s\S]*?\.background\(\s*isSelected \? tint\.opacity\(0\.16\)/.test(files.agentCopilotOverview)
-      && /private extension LocalSessionContentKind[\s\S]*?var semanticTint:\s*Color[\s\S]*?case \.userMessage:[\s\S]*?return \.blue[\s\S]*?case \.agentReply:[\s\S]*?return \.purple[\s\S]*?case \.toolCall:[\s\S]*?return \.orange[\s\S]*?case \.skillCall:[\s\S]*?return \.green/.test(files.agentCopilotOverview)
-      && /Label\(item\.title\.isEmpty \? item\.kind\.title : item\.title,\s*systemImage:\s*item\.kind\.systemImage\)[\s\S]*?\.foregroundStyle\(item\.kind\.semanticTint\)/.test(files.agentCopilotOverview),
+    passed: /private func filterLabel\([\s\S]*?tint:\s*Color[\s\S]*?Text\("\\\(count\)"\)[\s\S]*?\.foregroundStyle\(isSelected \? tint : \.secondary\)[\s\S]*?\.background\(\s*isSelected \? tint\.opacity\(0\.16\)/.test(files.agentSessionDetail)
+      && /private extension LocalSessionContentKind[\s\S]*?var semanticTint:\s*Color[\s\S]*?case \.userMessage:[\s\S]*?return \.blue[\s\S]*?case \.agentReply:[\s\S]*?return \.purple[\s\S]*?case \.toolCall:[\s\S]*?return \.orange[\s\S]*?case \.skillCall:[\s\S]*?return \.green/.test(files.agentSessionDetail)
+      && /Label\(item\.title\.isEmpty \? item\.kind\.title : item\.title,\s*systemImage:\s*item\.kind\.systemImage\)[\s\S]*?\.foregroundStyle\(item\.kind\.semanticTint\)/.test(files.agentSessionDetail),
   },
   {
     label: "detail feedback renders inline and success messages auto-dismiss",
@@ -969,7 +859,9 @@ const customChecks = [
       && /loadProviderObservabilityDuringRefresh\(force:\s*false\)/.test(files.store)
       && /loadProviderObservabilityDuringRefresh\(force:\s*true\)/.test(files.store)
       && /allowDuringRefresh:\s*Bool/.test(files.store)
-      && /limit:\s*24/.test(files.store)
+      && /providerObservabilityRowLimit\s*=\s*100/.test(files.store)
+      && /ProviderObservabilityDateRangeControls/.test(files.providerObservabilitySettings)
+      && /providerObservabilityDateRange/.test(files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh)
       && /includeBudgetHints:\s*false/.test(files.store)
       && /includeRetentionRecommendations:\s*false/.test(files.store)
       && /includeEvidence:\s*false/.test(files.store)
@@ -1006,13 +898,7 @@ const customChecks = [
   },
   {
     label: "Agent Workspace does not expose the retired evidence surface navigation grid",
-    passed: !/AgentProfileNavigationGrid|agentCopilot\.evidenceSurfaces|selectedSidebarSelection\s*=\s*\.work\(section\)/.test(files.agentCopilotOverview),
-  },
-  {
-    label: "local report preview UI is removed from sidebar surfaces",
-    passed: !/LocalReportPreviewSheet|LocalReportExportPanel|isReportSheetPresented|sidebar\.report\.title|localReport\.preview|localReport\.download|localReport\.history/.test(
-      files.sidebar + "\n" + files.agentCopilotOverview + "\n" + files.detailSurface + "\n" + files.localizable,
-    ),
+    passed: !/AgentProfileNavigationGrid|agentCopilot\.evidenceSurfaces|selectedSidebarSelection\s*=\s*\.work\(section\)/.test(files.agentSessionDetail),
   },
   {
     label: "modal workflows share liquid-glass sheet chrome, columns, and inline feedback",
@@ -1067,16 +953,6 @@ const customChecks = [
       && /"settings\.aiProvider\.audit\.notStored" = "未存储";/.test(files.localizableZh)
       && !/SettingsMetadataRow\(label:\s*UIStrings\.aiProviderUnconfigured,\s*value:\s*UIStrings\.localizedServiceMessage\(disabledReason\)\)/.test(files.settings)
       && !/aiProviderAuditPromptStored,\s*value:\s*audit\.promptStored \? UIStrings\.llmEnabled : UIStrings\.llmDisabled/.test(files.settings),
-  },
-  {
-    label: "guided cleanup safe links require in-view confirmation before confirmed entries open",
-    passed: /@State private var isConfirmingOpen = false/.test(files.detailGuidedCleanup)
-      && /private var needsConfirmation:[\s\S]*?link\.requiresConfirmation/.test(files.detailGuidedCleanup)
-      && /if needsConfirmation && !isConfirmingOpen[\s\S]*?isConfirmingOpen = true[\s\S]*?else[\s\S]*?onOpen\(\)/.test(files.detailGuidedCleanup)
-      && /UIStrings\.guidedCleanupSafeLinkConfirmOpen/.test(files.detailGuidedCleanup)
-      && /UIStrings\.guidedCleanupSafeLinkCancelOpen/.test(files.detailGuidedCleanup)
-      && /"guidedCleanup\.safeLink\.confirmOpen"/.test(files.localizable)
-      && /"guidedCleanup\.safeLink\.confirmOpen"/.test(files.localizableZh),
   },
   {
     label: "task cockpit presentation uses structured tokens instead of English substring classification",
@@ -1159,28 +1035,10 @@ const customChecks = [
       && /private struct SkillManagerSuggestionPill:[\s\S]*?Text\(title\)[\s\S]*?\.background\(Color\.accentColor\.opacity\(0\.12\),\s*in:\s*Capsule\(\)\)/.test(files.skillManager),
   },
   {
-    label: "local report export clears stale result when report scope changes",
-    passed: /private func clearLocalReportExportState\(\)/.test(files.store)
-      && /@Published var selectedSkillID:[\s\S]*?clearLocalReportExportState\(\)[\s\S]*?synchronizeSidebarSelectionWithSelectedSkill\(\)/.test(files.store)
-      && /@Published var searchText[\s\S]*?clearLocalReportExportState\(\)[\s\S]*?handleListCriteriaChanged\(\)/.test(files.store)
-      && /@Published var agentFilter[\s\S]*?clearLocalReportExportState\(\)[\s\S]*?handleListCriteriaChanged\(\)/.test(files.store)
-      && /@Published var stateFilter[\s\S]*?clearLocalReportExportState\(\)[\s\S]*?handleListCriteriaChanged\(\)/.test(files.store)
-      && /@Published var localReportFormat:[\s\S]*?didSet\s*{\s*clearLocalReportExportState\(\)\s*}/.test(files.store)
-      && /@Published var sortOrder[\s\S]*?clearLocalReportExportState\(\)[\s\S]*?handleListCriteriaChanged\(\)/.test(files.store),
-  },
-  {
-    label: "smart analysis quality score no longer exposes cross-agent comparison as a detail component",
-    passed: /id:\s*"same_agent_conflicts"/.test(files.serviceKnowledge)
-      && /label:\s*"Same-agent conflicts"/.test(files.serviceKnowledge)
-      && !/id:\s*"conflict_and_overlap"/.test(files.serviceKnowledge)
-      && !/Compare cross-agent overlap/.test(files.serviceLLMPromptHelpers)
-      && !/cross-agent overlap currently involves this skill/.test(files.serviceLLMPromptHelpers),
-  },
-  {
-    label: "smart analysis copy focuses on quality, task fit, and routing",
-    passed: /Use focused smart analysis panels for quality scoring, task fit, and routing\./.test(files.detailSection)
-      && /"detail\.section\.analysis\.summary"\s*=\s*"Use focused smart analysis panels for quality scoring, task fit, and routing\."/.test(files.localizable)
-      && !/"detail\.section\.analysis\.summary"\s*=\s*".*cross-agent comparison/.test(files.localizable),
+    label: "retired smart analysis detail copy is removed from current UI resources",
+    passed: !/Use focused smart analysis panels for quality scoring, task fit, and routing\./.test(files.detailSection)
+      && !/"detail\.section\.analysis\.summary"/.test(files.localizable)
+      && !/"detail\.analysisReview"/.test(files.localizable),
   },
   {
     label: "safe batch lives behind the skill-list batch operation sheet",
@@ -1206,9 +1064,9 @@ const customChecks = [
   {
     label: "sidebar and retired agent profile omit adapter capability content",
     passed: !/SidebarAgentStatusPanel|AdapterCapabilityCard|RefreshStatusView/.test(files.sidebar)
-      && !/AgentCapabilitySummaryCard/.test(files.agentCopilotOverview)
-      && !/capabilityReminders\(from:\s*store\.selectedAdapterCapability\)/.test(files.agentCopilotOverview)
-      && !/AgentProfileInfoRow/.test(files.agentCopilotOverview),
+      && !/AgentCapabilitySummaryCard/.test(files.agentSessionDetail)
+      && !/capabilityReminders\(from:\s*store\.selectedAdapterCapability\)/.test(files.agentSessionDetail)
+      && !/AgentProfileInfoRow/.test(files.agentSessionDetail),
   },
   {
     label: "V2.80 detail evidence lists are row-capped and use privacy rendering",

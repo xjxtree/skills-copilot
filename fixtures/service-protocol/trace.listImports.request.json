@@ -1,7 +1,0 @@
-{
-  "id": "fixture-trace-import-local-list",
-  "method": "trace.listImports",
-  "params": {
-    "limit": 20
-  }
-}

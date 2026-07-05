@@ -2,15 +2,22 @@ import Foundation
 
 struct ProviderObservabilityFilters: Decodable, Hashable {
     let windowDays: Int?
+    let startAt: Int?
+    let endAt: Int?
     let limit: Int?
     let includeHistory: Bool
     let includeBudgetHints: Bool
     let includeRetentionRecommendations: Bool
     let includeEvidence: Bool
+    let aggregationUsesFullRange: Bool
 
     enum CodingKeys: String, CodingKey {
         case windowDays = "window_days"
         case windowDaysAlt = "windowDays"
+        case startAt = "start_at"
+        case startAtAlt = "startAt"
+        case endAt = "end_at"
+        case endAtAlt = "endAt"
         case limit
         case includeHistory = "include_history"
         case includeHistoryAlt = "includeHistory"
@@ -20,33 +27,110 @@ struct ProviderObservabilityFilters: Decodable, Hashable {
         case includeRetentionRecommendationsAlt = "includeRetentionRecommendations"
         case includeEvidence = "include_evidence"
         case includeEvidenceAlt = "includeEvidence"
+        case aggregationUsesFullRange = "aggregation_uses_full_range"
+        case aggregationUsesFullRangeAlt = "aggregationUsesFullRange"
     }
 
     init(
         windowDays: Int? = nil,
+        startAt: Int? = nil,
+        endAt: Int? = nil,
         limit: Int? = nil,
         includeHistory: Bool = true,
         includeBudgetHints: Bool = true,
         includeRetentionRecommendations: Bool = true,
-        includeEvidence: Bool = true
+        includeEvidence: Bool = true,
+        aggregationUsesFullRange: Bool = true
     ) {
         self.windowDays = windowDays
+        self.startAt = startAt
+        self.endAt = endAt
         self.limit = limit
         self.includeHistory = includeHistory
         self.includeBudgetHints = includeBudgetHints
         self.includeRetentionRecommendations = includeRetentionRecommendations
         self.includeEvidence = includeEvidence
+        self.aggregationUsesFullRange = aggregationUsesFullRange
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         windowDays = try container.decodeFlexibleProviderObservabilityInt(keys: [.windowDays, .windowDaysAlt])
+        startAt = try container.decodeFlexibleProviderObservabilityInt(keys: [.startAt, .startAtAlt])
+        endAt = try container.decodeFlexibleProviderObservabilityInt(keys: [.endAt, .endAtAlt])
         limit = try container.decodeFlexibleProviderObservabilityInt(keys: [.limit])
         includeHistory = try container.decodeFlexibleProviderObservabilityBool(keys: [.includeHistory, .includeHistoryAlt]) ?? true
         includeBudgetHints = try container.decodeFlexibleProviderObservabilityBool(keys: [.includeBudgetHints, .includeBudgetHintsAlt]) ?? true
         includeRetentionRecommendations = try container.decodeFlexibleProviderObservabilityBool(keys: [.includeRetentionRecommendations, .includeRetentionRecommendationsAlt]) ?? true
         includeEvidence = try container.decodeFlexibleProviderObservabilityBool(keys: [.includeEvidence, .includeEvidenceAlt]) ?? true
+        aggregationUsesFullRange = try container.decodeFlexibleProviderObservabilityBool(keys: [.aggregationUsesFullRange, .aggregationUsesFullRangeAlt]) ?? true
     }
+}
+
+enum ProviderObservabilityDateRangePreset: String, CaseIterable, Hashable {
+    case last7Days
+    case last30Days
+    case last90Days
+    case all
+    case custom
+
+    var title: String {
+        switch self {
+        case .last7Days:
+            return UIStrings.providerObservabilityLast7Days
+        case .last30Days:
+            return UIStrings.providerObservabilityLast30Days
+        case .last90Days:
+            return UIStrings.providerObservabilityLast90Days
+        case .all:
+            return UIStrings.providerObservabilityAllTime
+        case .custom:
+            return UIStrings.providerObservabilityCustomRange
+        }
+    }
+
+    func resolved(
+        customStartDate: Date,
+        customEndDate: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> ProviderObservabilityResolvedDateRange {
+        switch self {
+        case .last7Days:
+            return rolling(days: 7, now: now)
+        case .last30Days:
+            return rolling(days: 30, now: now)
+        case .last90Days:
+            return rolling(days: 90, now: now)
+        case .all:
+            return ProviderObservabilityResolvedDateRange(windowDays: nil, startAt: nil, endAt: nil)
+        case .custom:
+            let start = calendar.startOfDay(for: customStartDate)
+            let endStart = calendar.startOfDay(for: customEndDate)
+            let end = calendar
+                .date(byAdding: .day, value: 1, to: endStart)?
+                .addingTimeInterval(-0.001) ?? customEndDate
+            let startMillis = Int(start.timeIntervalSince1970 * 1000)
+            let endMillis = Int(end.timeIntervalSince1970 * 1000)
+            return ProviderObservabilityResolvedDateRange(
+                windowDays: nil,
+                startAt: min(startMillis, endMillis),
+                endAt: max(startMillis, endMillis)
+            )
+        }
+    }
+
+    private func rolling(days: Int, now: Date) -> ProviderObservabilityResolvedDateRange {
+        let endAt = Int(now.timeIntervalSince1970 * 1000)
+        let startAt = Int(now.addingTimeInterval(TimeInterval(-days * 86_400)).timeIntervalSince1970 * 1000)
+        return ProviderObservabilityResolvedDateRange(windowDays: days, startAt: startAt, endAt: endAt)
+    }
+}
+
+struct ProviderObservabilityResolvedDateRange: Hashable {
+    let windowDays: Int?
+    let startAt: Int?
+    let endAt: Int?
 }
 
 struct ProviderObservabilitySummary: Decodable, Hashable {
@@ -175,11 +259,26 @@ struct ProviderObservabilitySummary: Decodable, Hashable {
         let input = try container.decodeFlexibleProviderObservabilityInt(keys: [.estimatedInputTokens, .inputTokens]) ?? 0
         let output = try container.decodeFlexibleProviderObservabilityInt(keys: [.estimatedOutputTokens, .outputTokens]) ?? 0
         let total = try container.decodeFlexibleProviderObservabilityInt(keys: [.estimatedTotalTokens, .totalTokens]) ?? input + output
+        let successCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.successCount, .successes, .succeeded, .succeededCount]) ?? 0
+        let failureCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.failureCount, .failures, .failed, .failedCount]) ?? 0
+        let blockedCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.blockedCount, .blocked, .blockCount]) ?? 0
+        let explicitCallCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.callCount, .totalCalls, .totalCallsAlt, .calls])
+        let returnedPromptRunCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.returnedPromptRunCount])
+        let returnedCallRowCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.returnedCallRowCount])
+        let totalPromptRunCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.totalPromptRunCount])
+        let totalCallMetadataCount = try container.decodeFlexibleProviderObservabilityInt(keys: [.totalCallMetadataCount])
+        let returnedCount = [returnedPromptRunCount, returnedCallRowCount].compactMap { $0 }.reduce(0, +)
+        let totalObservedCount = [totalPromptRunCount, totalCallMetadataCount].compactMap { $0 }.reduce(0, +)
+        let statusCount = successCount + failureCount + blockedCount
+        let decodedCallCount = explicitCallCount
+            ?? (returnedPromptRunCount != nil || returnedCallRowCount != nil ? returnedCount : nil)
+            ?? (totalPromptRunCount != nil || totalCallMetadataCount != nil ? totalObservedCount : nil)
+            ?? 0
         self.init(
-            callCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.callCount, .totalCalls, .totalCallsAlt, .calls, .returnedCallRowCount, .totalCallMetadataCount, .returnedPromptRunCount, .totalPromptRunCount]) ?? 0,
-            successCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.successCount, .successes, .succeeded, .succeededCount]) ?? 0,
-            failureCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.failureCount, .failures, .failed, .failedCount]) ?? 0,
-            blockedCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.blockedCount, .blocked, .blockCount]) ?? 0,
+            callCount: max(decodedCallCount, statusCount),
+            successCount: successCount,
+            failureCount: failureCount,
+            blockedCount: blockedCount,
             providerCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.providerCount, .providerProfileCount, .providers]) ?? 0,
             modelCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.modelCount, .models]) ?? 0,
             destinationCount: try container.decodeFlexibleProviderObservabilityInt(keys: [.destinationCount, .destinations]) ?? 0,

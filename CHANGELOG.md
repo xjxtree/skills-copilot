@@ -7,6 +7,19 @@ available from git history when needed.
 
 - No unreleased public-release notes yet.
 
+## 0.1.2 - 2026-07-05
+
+- Slimmed the app, service protocol, fixtures, tests, and documentation around
+  the current macOS UI by removing retired cross-agent comparison, trace import,
+  agent session review, remediation history, cleanup queue, knowledge map,
+  routing benchmark, and legacy analysis surfaces.
+- Kept global search and local session previews aligned with the current app
+  lists through service-backed lookup and pagination metadata.
+- Fixed Finder-launched Skill Package Manager flows by resolving common local
+  Node/npm paths before invoking the external `npx skills` manager.
+- Keeps v0.1.2 distribution as architecture-specific, ad-hoc signed,
+  unnotarized macOS ZIP assets for `arm64` and `x86_64`.
+
 ## 0.1.1 - 2026-07-04
 
 - Reworked Provider Observability settings into a startup-loaded lightweight
@@ -127,8 +140,8 @@ available from git history when needed.
 
 ## V2.88
 
-- Added per-surface handoff evidence for Agent Copilot surfaces under
-  `docs/ui-artifacts/v2.88-handoff-evidence/`.
+- Completed Agent Copilot handoff evidence; legacy per-surface screenshots were
+  later pruned after those surfaces left the current app UI.
 
 ## V2.87
 

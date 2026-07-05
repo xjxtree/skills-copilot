@@ -52,11 +52,10 @@ verification.
 | --- | --- |
 | `app.version` | No |
 | `app.stateSnapshot` | No |
+| `app.search` | No |
 | `service.status` | No |
 | `adapter.listCapabilities` | No |
 | `adapter.listDiagnostics` | No |
-| `evidence.previewMcpServers` | No |
-| `evidence.piWritableHarness` | No |
 | `llm.status` | No |
 | `llm.listProviderProfiles` | No |
 | `llm.saveProviderProfile` | Yes, writes provider metadata and Keychain secret when supplied |
@@ -66,7 +65,6 @@ verification.
 | `llm.confirmPromptAndSend` | Yes, records redacted prompt-run metadata |
 | `llm.listPromptRuns` | No |
 | `llm.prepareAction` | No |
-| `llm.prepareSkillAnalysis` | No |
 | `llm.providerObservability` | No |
 | `llm.listModelTaskMatches` | No |
 | `llm.recordModelTaskMatch` | Yes, writes app-local redacted metadata only |
@@ -103,7 +101,6 @@ verification.
 | `skill.exportBundle` | Yes, writes app-controlled export files |
 | `skill.install` | Yes, after confirmation |
 | `skill.listEvents` | No |
-| `skill.lifecycleTimeline` | No |
 | `config.toggleSkill` | Yes, writes agent config |
 | `config.readAgentConfig` | No |
 | `config.readClaudeSettings` | No |
@@ -112,38 +109,7 @@ verification.
 | `snapshot.listAgentConfig` | No |
 | `snapshot.previewRollback` | No |
 | `snapshot.rollback` | Yes, writes agent config snapshot content and rescans |
-| `trace.importLocal` | Yes, writes app-data metadata |
-| `trace.listImports` | No |
-| `trace.deleteImport` | Yes, updates app-data metadata |
 | `session.previewLocalSessions` | No |
-| `session.reviewAgentSkillUse` | Yes, writes app-data metadata |
-| `session.listSkillReviews` | No |
-| `session.deleteSkillReview` | Yes, updates app-data metadata |
-| `routing.accuracyDashboard` | No |
-| `task.checkReadiness` | No |
-| `task.rankSkillRoutes` | No |
-| `task.compareAgentReadiness` | No |
-| `task.buildCockpit` | No |
-| `task.listBenchmarks` | No |
-| `task.saveBenchmark` | Yes, writes app-local benchmark metadata |
-| `task.deleteBenchmark` | Yes, updates app-local benchmark metadata |
-| `task.evaluateBenchmarks` | No |
-| `task.saveRoutingBaseline` | Yes, writes app-local routing baseline metadata |
-| `task.detectRoutingRegression` | No |
-| `analysis.scoreSkillQuality` | No |
-| `analysis.detectStaleDrift` | No |
-| `knowledge.search` | No |
-| `knowledge.groupSimilarSkills` | No |
-| `knowledge.buildCapabilityTaxonomy` | No |
-| `knowledge.buildLocalSkillMap` | No |
-| `workspace.checkReadiness` | No |
-| `remediation.plan` | No |
-| `remediation.previewDrafts` | No |
-| `remediation.previewImpact` | No |
-| `remediation.batchReview` | No |
-| `remediation.listHistory` | No |
-| `remediation.recordHistory` | Yes, writes app-local remediation history metadata |
-| `remediation.deleteHistory` | Yes, updates app-local remediation history metadata |
 | `rules.listTuning` | No |
 | `rules.setSeverityOverride` | Yes, writes app-local rule tuning metadata only |
 | `rules.clearSeverityOverride` | Yes, clears app-local rule tuning metadata only |
@@ -151,11 +117,28 @@ verification.
 | `rules.clearSuppression` | Yes, clears app-local rule tuning metadata only |
 | `batch.previewSkillToggles` | No |
 | `batch.applySkillToggles` | Yes, writes through verified per-agent toggle paths after confirmation |
-| `cleanup.listQueue` | No |
-| `cleanup.planGuidedFlow` | No |
-| `cleanup.recordGuidedStep` | Yes, writes app-data metadata only |
-| `comparison.listCrossAgent` | No |
-| `report.exportLocal` | Yes, writes app-controlled redacted report files |
+
+## Provider Observability
+
+`llm.providerObservability` is a read-only, app-local dashboard over redacted
+prompt-run and provider-call metadata. Requests may pass `window_days` for a
+rolling range or explicit `start_at` / `end_at` Unix-millisecond bounds. When
+both are present, explicit bounds define the applied range. The response
+`filters` echoes the applied range and includes `aggregation_uses_full_range`.
+`limit` bounds returned evidence rows such as `history_rows` and `call_rows`;
+summary metrics, grouping rows, status rows, and budget hints are computed from
+all metadata matching the applied date/filter range before evidence rows are
+limited.
+
+## Full-Access Local Lists
+
+- `llm.listPromptRuns` and `llm.listModelTaskMatches` do not apply a default
+  row limit. Omit `limit` when the UI needs the full local list. Passing
+  `limit` explicitly requests a bounded page/preview.
+- Bounded responses expose returned-vs-total metadata where the protocol
+  supports it (`total_count` / `returned_count` or
+  `total_*_count` / `returned_*_count`, plus `truncated`) so clients do not
+  mistake a limited page for full history.
 
 ## Skill Manager
 
@@ -183,8 +166,25 @@ verification.
   `ended_at` in Unix epoch milliseconds, with `ended_at` representing the last
   parsed session message/content event. Each `content_items[]` item includes
   `timestamp` when its source event has a timestamp.
+- `session.previewLocalSessions` supports server-side `scope`, `search`,
+  `sort`, `direction`, `limit`, and `offset`. Responses include
+  `total_matched_count`, `has_more`, and `next_offset`; UI shells should request
+  additional pages instead of treating the first page as the full local session
+  list.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
+
+## App Search
+
+- `app.search` is a read-only, local-only search across catalog skills,
+  app-loaded config snapshots, and local sessions. It accepts `query`, optional
+  `agent`, optional `limit_per_kind`, local-session roots/discovery settings,
+  and project context.
+- Results are grouped by `kind` (`skill`, `session`, or `config_history`) and
+  include `target_id` plus an embedded record when available. UI shells should
+  use the embedded record to insert the result into the corresponding list page,
+  select it, and show its detail even when that item was not present in the
+  currently loaded frontend page.
 
 ## LLM Prompt Actions
 
@@ -195,9 +195,6 @@ verification.
   bodies, frontmatter, config contents, paths, credentials, raw prompts, raw
   responses, traces, writes, scripts, snapshots, and rollback commands are
   excluded.
-- `task.buildCockpit` remains a local read-only deterministic RPC for backward
-  compatibility. The native task preflight UI uses the provider-gated
-  `task_cockpit` prompt action for new model-backed recommendations.
 
 ## Environment Overrides
 

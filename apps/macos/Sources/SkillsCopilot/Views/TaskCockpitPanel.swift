@@ -49,6 +49,8 @@ private struct TaskPreflightEditorPane: View {
             currentTaskText: effectiveTaskText,
             agentOptions: store.taskCockpitAgentOptions,
             selectedAgentIDs: store.taskCockpitSelectedAgentIDs,
+            promptConfirmation: displayedPromptConfirmation,
+            isPreviewingPrompt: displayedIsPreviewingPrompt,
             result: displayedResult,
             isBuilding: displayedIsBuilding,
             operationState: displayedOperationState,
@@ -64,6 +66,14 @@ private struct TaskPreflightEditorPane: View {
                     syncDraftToStore()
                     await store.buildTaskCockpit()
                 }
+            },
+            onConfirmPrompt: {
+                Task {
+                    await store.confirmTaskCockpitPromptAndBuild()
+                }
+            },
+            onDismissPrompt: {
+                store.clearTaskCockpitPromptConfirmation()
             },
             onCancel: {
                 store.cancelTaskCockpitBuild()
@@ -88,7 +98,7 @@ private struct TaskPreflightEditorPane: View {
         if !trimmedDraft.isEmpty {
             return draftTaskText
         }
-        return store.selectedCrossAgentReadinessInput
+        return store.selectedTaskCockpitInput
     }
 
     private var isDraftSyncedWithStore: Bool {
@@ -97,6 +107,14 @@ private struct TaskPreflightEditorPane: View {
 
     private var displayedResult: TaskCockpitResult? {
         isDraftSyncedWithStore ? store.taskCockpitResult : nil
+    }
+
+    private var displayedPromptConfirmation: TaskCockpitPromptConfirmation? {
+        isDraftSyncedWithStore ? store.taskCockpitPromptConfirmation : nil
+    }
+
+    private var displayedIsPreviewingPrompt: Bool {
+        isDraftSyncedWithStore && store.isPreviewingTaskCockpitPrompt
     }
 
     private var displayedIsBuilding: Bool {
@@ -248,6 +266,8 @@ struct TaskCockpitPanel: View {
     let currentTaskText: String
     let agentOptions: [TaskCockpitAgentOption]
     let selectedAgentIDs: Set<String>
+    let promptConfirmation: TaskCockpitPromptConfirmation?
+    let isPreviewingPrompt: Bool
     let result: TaskCockpitResult?
     let isBuilding: Bool
     let operationState: TaskCockpitOperationState
@@ -255,6 +275,8 @@ struct TaskCockpitPanel: View {
     let onToggleAgent: (String) -> Void
     let onSelectAllAgents: () -> Void
     let onBuild: () -> Void
+    let onConfirmPrompt: () -> Void
+    let onDismissPrompt: () -> Void
     let onCancel: () -> Void
 
     private var inputModel: TaskInputModel {
@@ -298,7 +320,16 @@ struct TaskCockpitPanel: View {
                 buildButton
             }
 
-            if isBuilding || result == nil {
+            if let promptConfirmation {
+                TaskCockpitPromptPreviewCard(
+                    confirmation: promptConfirmation,
+                    isSending: isBuilding,
+                    onConfirm: onConfirmPrompt,
+                    onDismiss: onDismissPrompt
+                )
+            }
+
+            if isPreviewingPrompt || isBuilding || (result == nil && promptConfirmation == nil) {
                 TaskCockpitOperationStatusView(
                     state: operationState,
                     isBuilding: isBuilding,
@@ -348,10 +379,123 @@ struct TaskCockpitPanel: View {
         }
         .controlSize(.regular)
         .buttonStyle(.borderedProminent)
-        .disabled(isBuilding || !inputModel.canSubmit || selectedAgentIDs.isEmpty || providerGateMessage != nil)
+        .disabled(isPreviewingPrompt || isBuilding || !inputModel.canSubmit || selectedAgentIDs.isEmpty || providerGateMessage != nil)
         .help(providerGateMessage ?? UIStrings.taskCockpitBoundary)
         .accessibilityIdentifier(AppAccessibilityID.taskCockpitBuildButton)
         .accessibilityLabel(actionTitle)
+    }
+}
+
+private struct TaskCockpitPromptPreviewCard: View {
+    let confirmation: TaskCockpitPromptConfirmation
+    let isSending: Bool
+    let onConfirm: () -> Void
+    let onDismiss: () -> Void
+
+    private var preview: LLMPromptPreview {
+        confirmation.preview
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(UIStrings.taskCockpitPromptPreviewTitle, systemImage: "lock.shield")
+                    .font(.callout.bold())
+                Spacer()
+                Text(UIStrings.text("taskCockpit.promptPreview.confirmationRequired", "Confirmation required"))
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+            }
+
+            Text(UIStrings.taskCockpitPromptPreviewSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
+                promptFact(
+                    title: UIStrings.text("llm.prompt.provider", "Provider"),
+                    value: preview.provider ?? UIStrings.unknown,
+                    systemImage: "network"
+                )
+                promptFact(
+                    title: UIStrings.text("llm.prompt.model", "Model"),
+                    value: preview.model ?? UIStrings.unknown,
+                    systemImage: "cpu"
+                )
+                promptFact(
+                    title: UIStrings.text("llm.prompt.destination", "Destination"),
+                    value: preview.destinationHost ?? UIStrings.unknown,
+                    systemImage: "paperplane"
+                )
+                promptFact(
+                    title: UIStrings.text("llm.prompt.tokens", "Tokens"),
+                    value: preview.estimate.map { "\($0.totalTokens)" } ?? UIStrings.unknown,
+                    systemImage: "sum"
+                )
+            }
+
+            if !preview.redaction.summary.isEmpty {
+                Label(preview.redaction.summary, systemImage: "eye.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let prompt = preview.promptPreview, !prompt.isEmpty {
+                Text(prompt)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(5)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.agentCopilotWindowBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            HStack {
+                Button(UIStrings.cancel) {
+                    onDismiss()
+                }
+                .disabled(isSending)
+
+                Spacer()
+
+                Button {
+                    onConfirm()
+                } label: {
+                    Label(UIStrings.taskCockpitPromptConfirmSend, systemImage: "paperplane")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSending)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(UIStrings.taskCockpitPromptPreviewTitle)
+    }
+
+    private func promptFact(title: String, value: String, systemImage: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
     }
 }
 
@@ -775,14 +919,12 @@ private struct TaskCockpitStageTile: View {
             return "point.3.connected.trianglepath.dotted"
         case .crossAgent:
             return "person.3"
-        case .remediation:
+        case .actionReview:
             return "wrench.and.screwdriver"
-        case .batchReview:
+        case .batchChecks:
             return "checklist"
         case .provider:
             return "network"
-        case .session:
-            return "text.bubble"
         }
     }
 
@@ -1271,8 +1413,6 @@ private struct TaskCockpitDecisionModel {
         "no-likely-wrong-pick-risk",
         "skipped-by-filters",
         "provider-observability-skipped",
-        "remediation-skipped",
-        "session-review-skipped",
         "write-action",
         "script-execution",
         "snapshot",
@@ -1567,19 +1707,19 @@ private struct TaskCockpitCandidateList: View {
                             .foregroundStyle(.secondary)
 
                             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
-                                MetadataRow(label: UIStrings.crossAgentReadinessReadinessScore, value: row.readinessScore.map(String.init) ?? UIStrings.unknown)
-                                MetadataRow(label: UIStrings.crossAgentReadinessRoutingScore, value: row.routingScore.map(String.init) ?? UIStrings.unknown)
+                                MetadataRow(label: UIStrings.taskCockpitAgentReadinessScore, value: row.readinessScore.map(String.init) ?? UIStrings.unknown)
+                                MetadataRow(label: UIStrings.taskCockpitAgentRoutingScore, value: row.routingScore.map(String.init) ?? UIStrings.unknown)
                                 if let skill = row.skill {
-                                    MetadataRow(label: UIStrings.crossAgentReadinessBestSkill, value: skill.name)
+                                    MetadataRow(label: UIStrings.taskCockpitAgentBestSkill, value: skill.name)
                                 }
                             }
 
                             if !row.summary.isEmpty {
                                 PrivacyEvidenceText(value: row.summary, font: .caption, lineLimit: 3)
                             }
-                            RoutingInlineList(title: UIStrings.crossAgentReadinessReasons, empty: UIStrings.crossAgentReadinessNoReasons, values: row.reasons, systemImage: "text.bubble")
-                            RoutingInlineList(title: UIStrings.crossAgentReadinessEvidence, empty: UIStrings.crossAgentReadinessNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
-                            RoutingInlineList(title: UIStrings.knowledgeSafetyFlags, empty: UIStrings.taskBenchmarkNoSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
+                            RoutingInlineList(title: UIStrings.taskCockpitAgentReasons, empty: UIStrings.taskCockpitAgentNoReasons, values: row.reasons, systemImage: "text.bubble")
+                            RoutingInlineList(title: UIStrings.taskCockpitEvidence, empty: UIStrings.taskCockpitNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
+                            RoutingInlineList(title: UIStrings.safetyFlags, empty: UIStrings.noSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1645,8 +1785,8 @@ private struct TaskCockpitContextList: View {
                         if !row.detail.isEmpty {
                             PrivacyEvidenceText(value: row.detail, font: .caption, lineLimit: nil)
                         }
-                        RoutingInlineList(title: UIStrings.crossAgentReadinessEvidence, empty: UIStrings.crossAgentReadinessNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
-                        RoutingInlineList(title: UIStrings.knowledgeSafetyFlags, empty: UIStrings.taskBenchmarkNoSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
+                        RoutingInlineList(title: UIStrings.taskCockpitEvidence, empty: UIStrings.taskCockpitNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
+                        RoutingInlineList(title: UIStrings.safetyFlags, empty: UIStrings.noSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
                     }
                     .padding(8)
                     .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
@@ -1662,7 +1802,7 @@ private struct TaskCockpitEvidenceList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text(UIStrings.crossAgentReadinessEvidence)
+                Text(UIStrings.taskCockpitEvidence)
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 if !evidence.isEmpty {
@@ -1670,7 +1810,7 @@ private struct TaskCockpitEvidenceList: View {
                 }
             }
             if evidence.isEmpty {
-                Text(UIStrings.crossAgentReadinessNoEvidence)
+                Text(UIStrings.taskCockpitNoEvidence)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -1701,11 +1841,11 @@ private struct TaskCockpitSafetyList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(UIStrings.crossAgentReadinessSafetyFlags)
+            Text(UIStrings.taskCockpitSafetyFlags)
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
             Label(
-                safety.allReadOnlyFlagsClear ? UIStrings.routingAccuracySafetyClear : UIStrings.llmSkillAnalysisEnabledUnsafe,
+                safety.allReadOnlyFlagsClear ? UIStrings.safetyReadOnlyClear : UIStrings.safetyReadOnlyWarning,
                 systemImage: safety.allReadOnlyFlagsClear ? "checkmark.shield" : "exclamationmark.triangle"
             )
             .font(.callout)
@@ -1727,16 +1867,16 @@ private struct TaskCockpitSafetyList: View {
 
     private var rows: [(label: String, isUnsafe: Bool)] {
         [
-            (UIStrings.skillQualityProviderNotSent, safety.providerRequestSent),
-            (UIStrings.skillQualityWritesBlocked, safety.writeBackAllowed || safety.writeActionsAvailable),
-            (UIStrings.skillQualityScriptsBlocked, safety.scriptExecutionAllowed || safety.executionActionsAvailable),
-            (UIStrings.skillQualityMutationsBlocked, safety.configMutationAllowed || safety.snapshotCreated || safety.triageMutationAllowed),
-            (UIStrings.skillQualityCredentialsBlocked, safety.credentialAccessed || safety.rawSecretReturned),
+            (UIStrings.safetyProviderNotSent, safety.providerRequestSent),
+            (UIStrings.safetyWritesBlocked, safety.writeBackAllowed || safety.writeActionsAvailable),
+            (UIStrings.safetyScriptsBlocked, safety.scriptExecutionAllowed || safety.executionActionsAvailable),
+            (UIStrings.safetyMutationsBlocked, safety.configMutationAllowed || safety.snapshotCreated || safety.triageMutationAllowed),
+            (UIStrings.safetyCredentialsBlocked, safety.credentialAccessed || safety.rawSecretReturned),
             (UIStrings.llmPromptRawPromptStored, safety.rawPromptPersisted),
             (UIStrings.llmPromptRawResponseStored, safety.rawResponsePersisted),
-            (UIStrings.routingAccuracyRawTraceStored, safety.rawTracePersisted),
-            (UIStrings.routingAccuracyCloudSync, safety.cloudSyncEnabled),
-            (UIStrings.routingAccuracyTelemetry, safety.telemetryEnabled)
+            (UIStrings.safetyRawTraceStored, safety.rawTracePersisted),
+            (UIStrings.safetyCloudSync, safety.cloudSyncEnabled),
+            (UIStrings.safetyTelemetry, safety.telemetryEnabled)
         ]
     }
 }

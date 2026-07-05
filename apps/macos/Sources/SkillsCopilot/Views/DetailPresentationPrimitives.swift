@@ -370,3 +370,363 @@ struct SuccessBanner: View {
             }
     }
 }
+
+struct LongTextDetailSheet: View {
+    let title: String
+    let text: String
+    let renderMode: LongTextRenderMode
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                } label: {
+                    Label(UIStrings.llmPromptCopyFullText, systemImage: "doc.on.doc")
+                }
+                Button(UIStrings.llmPromptCloseDetails) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            ScrollView {
+                RenderedLongText(
+                    text: text,
+                    renderMode: renderMode,
+                    isEmpty: false,
+                    lineLimit: nil
+                )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .padding()
+        .frame(minWidth: 680, minHeight: 460)
+    }
+}
+
+struct RenderedLongText: View {
+    let text: String
+    let renderMode: LongTextRenderMode
+    let isEmpty: Bool
+    let lineLimit: Int?
+
+    var body: some View {
+        Group {
+            if renderMode == .markdown {
+                RenderedMarkdownDocument(
+                    text: text,
+                    isEmpty: isEmpty,
+                    maxBlocks: lineLimit
+                )
+            } else {
+                Text(text)
+                    .font(.system(.callout, design: .monospaced))
+                    .lineLimit(lineLimit)
+            }
+        }
+        .foregroundStyle(isEmpty ? .secondary : .primary)
+        .textSelection(.enabled)
+    }
+}
+
+struct RenderedMarkdownDocument: View {
+    let text: String
+    let isEmpty: Bool
+    let maxBlocks: Int?
+
+    private var document: MarkdownRenderDocument {
+        MarkdownRenderDocument(text: text, maxBlocks: maxBlocks)
+    }
+
+    private var compactTableRowLimit: Int? {
+        maxBlocks == nil ? nil : 4
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(document.blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+            if document.isTruncated {
+                Text("...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .foregroundStyle(isEmpty ? .secondary : .primary)
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: MarkdownRenderBlock) -> some View {
+        switch block {
+        case let .heading(level, value):
+            MarkdownInlineText(value, font: level <= 2 ? .headline : .subheadline.bold())
+        case let .paragraph(value):
+            MarkdownInlineText(value, font: .callout)
+        case let .bullet(value):
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("*")
+                    .font(.callout.bold())
+                MarkdownInlineText(value, font: .callout)
+            }
+        case let .numbered(marker, value):
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(marker)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                MarkdownInlineText(value, font: .callout)
+            }
+        case let .quote(value):
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(.secondary.opacity(0.5))
+                    .frame(width: 3)
+                MarkdownInlineText(value, font: .callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+        case let .table(rows):
+            if maxBlocks == nil {
+                MarkdownTableView(rows: rows, maxRows: compactTableRowLimit)
+            } else {
+                MarkdownTableSummaryView(rows: rows)
+            }
+        case .rule:
+            Divider()
+        case let .code(value):
+            MarkdownCodeBlockView(
+                value: value,
+                wrapsLines: maxBlocks != nil,
+                lineLimit: maxBlocks == nil ? nil : 8
+            )
+        }
+    }
+}
+
+struct MarkdownCodeBlockView: View {
+    let value: String
+    var wrapsLines = false
+    var lineLimit: Int? = nil
+
+    var body: some View {
+        if wrapsLines {
+            Text(value)
+                .font(.system(.callout, design: .monospaced))
+                .lineLimit(lineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 4))
+        } else {
+            ScrollView(.horizontal) {
+                Text(value)
+                    .font(.system(.callout, design: .monospaced))
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(8)
+            }
+            .scrollIndicators(.automatic)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 4))
+        }
+    }
+}
+
+struct MarkdownInlineText: View {
+    let value: String
+    let font: Font
+
+    init(_ value: String, font: Font) {
+        self.value = value
+        self.font = font
+    }
+
+    var body: some View {
+        if let attributed = try? AttributedString(markdown: value) {
+            Text(attributed)
+                .font(font)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(value)
+                .font(font)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct MarkdownTableView: View {
+    let model: MarkdownTableDisplayModel
+
+    init(rows: [[String]], maxRows: Int? = nil) {
+        self.model = MarkdownTableDisplayModel(rows: rows, maxVisibleRows: maxRows)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if model.usesCardLayout {
+                MarkdownTableCardList(model: model)
+                    .padding(8)
+            } else {
+                ScrollView(.horizontal) {
+                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                        ForEach(Array(model.displayRows.enumerated()), id: \.offset) { rowIndex, row in
+                            GridRow {
+                                ForEach(Array(model.normalizedRow(row).enumerated()), id: \.offset) { columnIndex, value in
+                                    MarkdownInlineText(
+                                        value.isEmpty ? " " : value,
+                                        font: rowIndex == 0 ? .caption.bold() : .caption
+                                    )
+                                    .frame(width: model.columnWidth(at: columnIndex), alignment: .leading)
+                                    .padding(.vertical, 3)
+                                }
+                            }
+                            if rowIndex == 0 && model.displayRows.count > 1 {
+                                Divider()
+                                    .gridCellColumns(model.columnCount)
+                            }
+                        }
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(8)
+                }
+                .scrollIndicators(.automatic)
+            }
+
+            if model.hiddenRowCount > 0 {
+                Text(UIStrings.markdownTableHiddenRows(model.hiddenRowCount))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+struct MarkdownTableSummaryView: View {
+    let model: MarkdownTableDisplayModel
+
+    init(rows: [[String]]) {
+        self.model = MarkdownTableDisplayModel(rows: rows, maxVisibleRows: nil)
+    }
+
+    var body: some View {
+        Label(
+            UIStrings.markdownTablePreviewSummary,
+            systemImage: "tablecells"
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+struct MarkdownTableCardList: View {
+    let model: MarkdownTableDisplayModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(model.displayCardRows.enumerated()), id: \.offset) { _, row in
+                MarkdownTableCard(row: model.normalizedRow(row), headers: model.headerRow)
+            }
+        }
+    }
+}
+
+struct MarkdownTableCard: View {
+    let row: [String]
+    let headers: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if !titleText.isEmpty {
+                MarkdownInlineText(titleText, font: .caption.bold())
+            }
+
+            ForEach(fieldRows, id: \.index) { field in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(field.label)
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+                    MarkdownInlineText(field.value, font: .caption)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var titleText: String {
+        row.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private var fieldRows: [MarkdownTableCardField] {
+        row.enumerated().compactMap { index, value in
+            guard index > 0 else { return nil }
+            let cleanValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanValue.isEmpty else { return nil }
+            return MarkdownTableCardField(
+                index: index,
+                label: headerLabel(at: index),
+                value: cleanValue
+            )
+        }
+    }
+
+    private func headerLabel(at index: Int) -> String {
+        guard index < headers.count else {
+            return "#\(index + 1)"
+        }
+        let cleanHeader = headers[index].trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleanHeader.isEmpty ? "#\(index + 1)" : cleanHeader
+    }
+}
+
+struct MarkdownTableCardField {
+    let index: Int
+    let label: String
+    let value: String
+}
+
+extension JSONValue {
+    func boolValue(forAnyKey keys: [String]) -> Bool? {
+        guard case .object(let object) = self else { return nil }
+        for key in keys {
+            if let payloadValue = object[key], case .bool(let value) = payloadValue {
+                return value
+            }
+        }
+        return nil
+    }
+
+    var compactDisplayString: String {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            return String(value)
+        case .bool(let value):
+            return value ? "true" : "false"
+        case .object(let object):
+            return object.keys.sorted().map { key in
+                "\(key)=\(object[key]?.compactDisplayString ?? "")"
+            }.joined(separator: ", ")
+        case .array(let values):
+            return values.map(\.compactDisplayString).joined(separator: ", ")
+        case .null:
+            return ""
+        }
+    }
+}

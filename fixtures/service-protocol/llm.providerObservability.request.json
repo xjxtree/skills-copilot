@@ -2,6 +2,9 @@
   "id": "fixture-llm-provider-observability",
   "method": "llm.providerObservability",
   "params": {
+    "window_days": 30,
+    "start_at": 1780272000000,
+    "end_at": 1782863999999,
     "limit": 20
   }
 }

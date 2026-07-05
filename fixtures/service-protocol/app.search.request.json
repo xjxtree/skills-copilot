@@ -1,0 +1,13 @@
+{
+  "id": "fixture-app-search",
+  "method": "app.search",
+  "params": {
+    "query": "fixture",
+    "agent": "codex",
+    "limit_per_kind": 3,
+    "authorized_roots": [
+      "$HOME/.codex/sessions"
+    ],
+    "auto_discover": false
+  }
+}

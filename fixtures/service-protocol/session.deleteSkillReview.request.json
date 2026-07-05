@@ -1,7 +1,0 @@
-{
-  "id": "fixture-session-delete-skill-review",
-  "method": "session.deleteSkillReview",
-  "params": {
-    "id": "fixture-session-review"
-  }
-}

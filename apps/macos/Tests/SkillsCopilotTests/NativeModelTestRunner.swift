@@ -115,26 +115,9 @@ public func runNativeModelTests() {
         try runNamed("FindingDisplayModelTests") { try FindingDisplayModelTests().run() }
         try runNamed("FindingExplainabilityModelTests") { try FindingExplainabilityModelTests().run() }
         try runNamed("RuleTuningModelTests") { try RuleTuningModelTests().run() }
-        try runNamed("CleanupQueueModelTests") { try CleanupQueueModelTests().run() }
-        try runNamed("CrossAgentComparisonModelTests") { try CrossAgentComparisonModelTests().run() }
-        try runNamed("CrossAgentReadinessModelTests") { try CrossAgentReadinessModelTests().run() }
-        try runNamed("StaleDriftDetectionModelTests") { try StaleDriftDetectionModelTests().run() }
-        try runNamed("LocalKnowledgeIndexModelTests") { try LocalKnowledgeIndexModelTests().run() }
-        try runNamed("LocalSkillMapModelTests") { try LocalSkillMapModelTests().run() }
-        try runNamed("SimilarSkillGroupingModelTests") { try SimilarSkillGroupingModelTests().run() }
-        try runNamed("CapabilityTaxonomyModelTests") { try CapabilityTaxonomyModelTests().run() }
-        try runNamed("WorkspaceReadinessModelTests") { try WorkspaceReadinessModelTests().run() }
-        try runNamed("RemediationPlanModelTests") { try RemediationPlanModelTests().run() }
-        try runNamed("RemediationPreviewDraftsModelTests") { try RemediationPreviewDraftsModelTests().run() }
-        try runNamed("RemediationImpactPreviewModelTests") { try RemediationImpactPreviewModelTests().run() }
-        try runNamed("RemediationBatchReviewModelTests") { try RemediationBatchReviewModelTests().run() }
-        try runNamed("RemediationHistoryModelTests") { try RemediationHistoryModelTests().run() }
-        try runNamed("AgentSessionSkillReviewModelTests") { try AgentSessionSkillReviewModelTests().run() }
         try runNamed("ProviderObservabilityModelTests") { try ProviderObservabilityModelTests().run() }
         try runNamed("TaskCockpitModelTests") { try TaskCockpitModelTests().run() }
         try runNamed("TaskInputModelTests") { try TaskInputModelTests().run() }
-        try runNamed("SkillLifecycleTimelineModelTests") { try SkillLifecycleTimelineModelTests().run() }
-        try runNamed("GuidedCleanupFlowModelTests") { try GuidedCleanupFlowModelTests().run() }
         try runNamed("AIProviderModelTests") { try AIProviderModelTests().run() }
         try runNamed("LLMModelTests") { try LLMModelTests().run() }
         try runNamed("ScriptExecutionModelTests") { try ScriptExecutionModelTests().run() }
@@ -145,9 +128,7 @@ public func runNativeModelTests() {
         try runNamed("LocalizationModelTests") { try LocalizationModelTests().run() }
         try runNamed("UIOptimizationModelTests") { try UIOptimizationModelTests().run() }
         try runNamed("MainWindowModelTests") { try MainWindowModelTests().run() }
-        try runNamed("AgentCopilotDecisionModelTests") { try AgentCopilotDecisionModelTests().run() }
         try runNamed("LocalSessionPreviewModelTests") { try LocalSessionPreviewModelTests().run() }
-        try runNamed("McpServerPreviewModelTests") { try McpServerPreviewModelTests().run() }
         try runNamed("SkillListModelTests") { try SkillListModelTests().run() }
         fputs("SkillsCopilotTests: native non-store model checks passed\n", stderr)
         fflush(stderr)

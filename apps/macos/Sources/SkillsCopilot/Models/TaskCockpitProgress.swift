@@ -102,48 +102,43 @@ enum TaskCockpitProgressStage: String, CaseIterable, Hashable, Identifiable {
     case readiness
     case routing
     case crossAgent
-    case remediation
-    case batchReview
+    case actionReview
+    case batchChecks
     case provider
-    case session
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .readiness:
-            return UIStrings.taskReadinessTitle
+            return UIStrings.taskCockpitStageReadiness
         case .routing:
-            return UIStrings.routingConfidenceTitle
+            return UIStrings.taskCockpitStageRouting
         case .crossAgent:
-            return UIStrings.crossAgentReadinessTitle
-        case .remediation:
-            return UIStrings.remediationPlanTitle
-        case .batchReview:
-            return UIStrings.remediationBatchReviewTitle
+            return UIStrings.taskCockpitStageAgentComparison
+        case .actionReview:
+            return UIStrings.taskCockpitProgressActionReview
+        case .batchChecks:
+            return UIStrings.taskCockpitProgressBatchChecks
         case .provider:
             return UIStrings.providerObservabilityTitle
-        case .session:
-            return UIStrings.agentSessionReviewTitle
         }
     }
 
     fileprivate var serviceStageKeys: Set<String> {
         switch self {
         case .readiness:
-            return ["readiness", "task-readiness", "task.checkreadiness"]
+            return ["readiness", "task-readiness"]
         case .routing:
-            return ["routing", "routing-confidence", "skill-routing", "task.rankskillroutes"]
+            return ["routing", "routing-confidence", "skill-routing"]
         case .crossAgent:
-            return ["agent-comparison", "cross-agent", "cross-agent-readiness", "task.compareagentreadiness"]
-        case .remediation:
-            return ["remediation", "remediation-plan", "remediation.plan"]
-        case .batchReview:
-            return ["batch-review", "remediation-batch-review", "remediation.batchreview"]
+            return ["agent-comparison", "agent-candidates"]
+        case .actionReview:
+            return ["action-review", "task-preflight-action-review"]
+        case .batchChecks:
+            return ["batch-checks", "batch-review"]
         case .provider:
             return ["provider", "provider-observability", "llm.providerobservability"]
-        case .session:
-            return ["session", "session-review", "agent-session-review", "session.reviewagentskilluse"]
         }
     }
 
@@ -421,16 +416,16 @@ private struct StageFacts {
             score = result.agentCandidates.compactMap { $0.score ?? $0.readinessScore ?? $0.routingScore }.first
             evidenceCount = result.agentCandidates.flatMap(\.evidenceRefs).count
             detail = StageFacts.firstDetail(result.agentCandidates)
-        case .remediation:
-            let rows = result.remediationContext.filter { !StageFacts.isBatchReviewContext($0) }
-            let fallbackRows = rows.isEmpty ? result.remediationContext : rows
-            count = max(result.summary.remediationItemCount, fallbackRows.count)
+        case .actionReview:
+            let rows = result.cockpitSections.filter(StageFacts.isActionReviewContext)
+            let completedByAggregation = result.aggregation?.completed(.actionReview) == true
+            count = rows.isEmpty && completedByAggregation ? 0 : rows.count
             score = nil
-            evidenceCount = fallbackRows.flatMap(\.evidenceRefs).count
-            detail = StageFacts.firstDetail(fallbackRows)
-        case .batchReview:
-            let rows = result.remediationContext.filter(StageFacts.isBatchReviewContext)
-            let completedByAggregation = result.aggregation?.completed(.batchReview) == true
+            evidenceCount = rows.flatMap(\.evidenceRefs).count
+            detail = StageFacts.firstDetail(rows)
+        case .batchChecks:
+            let rows = result.cockpitSections.filter(StageFacts.isBatchReviewContext)
+            let completedByAggregation = result.aggregation?.completed(.batchChecks) == true
             count = rows.isEmpty && completedByAggregation ? 0 : rows.count
             score = nil
             evidenceCount = rows.flatMap(\.evidenceRefs).count
@@ -438,12 +433,6 @@ private struct StageFacts {
         case .provider:
             let rows = result.providerObservabilityContext
             count = max(result.summary.providerCallCount, rows.count)
-            score = nil
-            evidenceCount = rows.flatMap(\.evidenceRefs).count
-            detail = StageFacts.firstDetail(rows)
-        case .session:
-            let rows = result.sessionReviewContext
-            count = max(result.summary.sessionReviewCount, rows.count)
             score = nil
             evidenceCount = rows.flatMap(\.evidenceRefs).count
             detail = StageFacts.firstDetail(rows)
@@ -468,6 +457,13 @@ private struct StageFacts {
         [row.id, row.title, row.detail, row.source].compactMap { $0 }.contains { value in
             let normalized = TaskCockpitProgressStage.normalizedStageKey(value)
             return normalized.contains("batch-review") || normalized.contains("batchreview")
+        }
+    }
+
+    private static func isActionReviewContext(_ row: TaskCockpitContextRow) -> Bool {
+        [row.id, row.title, row.detail, row.source].compactMap { $0 }.contains { value in
+            let normalized = TaskCockpitProgressStage.normalizedStageKey(value)
+            return normalized.contains("action-review") || normalized.contains("actionreview")
         }
     }
 }

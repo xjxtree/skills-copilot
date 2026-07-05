@@ -14,6 +14,14 @@ struct ProviderObservabilitySettingsPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    ProviderObservabilityDateRangeControls(
+                        selectedRange: $store.providerObservabilityDateRange,
+                        customStartDate: $store.providerObservabilityCustomStartDate,
+                        customEndDate: $store.providerObservabilityCustomEndDate,
+                        isLoading: store.isLoadingProviderObservability
+                    ) {
+                        Task { await store.loadProviderObservability() }
+                    }
                     content
                 }
                 .padding(20)
@@ -97,7 +105,7 @@ private struct ProviderObservabilityDashboardSettingsView: View {
 
     private var successRateLabel: String {
         guard callCount > 0 else { return UIStrings.unknown }
-        let rate = Double(successCount) / Double(callCount) * 100.0
+        let rate = min(Double(successCount) / Double(callCount), 1.0) * 100.0
         return "\(rate.formatted(.number.precision(.fractionLength(0))))%"
     }
 
@@ -133,6 +141,72 @@ private struct ProviderObservabilityLoadingCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .nativePanelSurface()
+    }
+}
+
+private struct ProviderObservabilityDateRangeControls: View {
+    @Binding var selectedRange: ProviderObservabilityDateRangePreset
+    @Binding var customStartDate: Date
+    @Binding var customEndDate: Date
+    let isLoading: Bool
+    let refresh: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Label(UIStrings.providerObservabilityDateRange, systemImage: "calendar")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+                .frame(width: 86, alignment: .leading)
+
+            Picker(UIStrings.providerObservabilityDateRange, selection: $selectedRange) {
+                ForEach(ProviderObservabilityDateRangePreset.allCases, id: \.self) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 420)
+
+            if selectedRange == .custom {
+                DatePicker(
+                    UIStrings.providerObservabilityStartDate,
+                    selection: $customStartDate,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.compact)
+                .labelsHidden()
+                .accessibilityLabel(UIStrings.providerObservabilityStartDate)
+
+                DatePicker(
+                    UIStrings.providerObservabilityEndDate,
+                    selection: $customEndDate,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.compact)
+                .labelsHidden()
+                .accessibilityLabel(UIStrings.providerObservabilityEndDate)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: refresh) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.borderless)
+            .help(UIStrings.providerObservabilityRefresh)
+            .disabled(isLoading)
+            .accessibilityLabel(UIStrings.providerObservabilityRefresh)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .nativePanelSurface()
     }
 }
@@ -541,6 +615,20 @@ private func compactIntLabel(_ value: Int) -> String {
         return "\((Double(value) / 1_000.0).providerObservabilitySettingsCompact)k"
     }
     return "\(value)"
+}
+
+private func durationLabel(_ durationMS: Int?) -> String {
+    guard let durationMS, durationMS > 0 else { return UIStrings.unknown }
+    if durationMS >= 1_000 {
+        let seconds = Double(durationMS) / 1_000.0
+        return "\(seconds.formatted(.number.precision(.fractionLength(1))))s"
+    }
+    return "\(durationMS) ms"
+}
+
+private func costLabel(_ cost: Double?) -> String {
+    guard let cost else { return UIStrings.unknown }
+    return UIStrings.llmEstimatedCost(cost)
 }
 
 private extension Double {

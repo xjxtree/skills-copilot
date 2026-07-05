@@ -5,6 +5,7 @@ struct ProviderObservabilityModelTests {
     func run() throws {
         try decodesRealisticProviderObservabilityPayload()
         try decodesAliasAndStringForms()
+        try normalizesSummaryCallCountAcrossPromptRunsAndCallRows()
         try decodesGroupingRowsIntoDimensionLists()
         try decodesServiceProtocolFixture()
         try emptyServiceFixtureUsesDashboardEmptyState()
@@ -28,11 +29,14 @@ struct ProviderObservabilityModelTests {
                 "metadata_redacted": true,
                 "filters": {
                   "window_days": "30",
+                  "start_at": 1780272000000,
+                  "end_at": 1782863999999,
                   "limit": 30,
                   "include_history": true,
                   "include_budget_hints": true,
                   "include_retention_recommendations": true,
-                  "include_evidence": true
+                  "include_evidence": true,
+                  "aggregation_uses_full_range": true
                 },
                 "summary": {
                   "call_count": "3",
@@ -58,8 +62,8 @@ struct ProviderObservabilityModelTests {
                     "id": "call-1",
                     "preview_id": "preview-1",
                     "confirmation_id": "confirm-1",
-                    "request_kind": "task_readiness",
-                    "action": "task_readiness",
+                    "request_kind": "task_cockpit",
+                    "action": "task_cockpit",
                     "provider": "openai-compatible",
                     "model": "gpt-5",
                     "destination_host": "llm.example.com",
@@ -82,7 +86,7 @@ struct ProviderObservabilityModelTests {
                   },
                   {
                     "id": "call-2",
-                    "request_kind": "quality_score",
+                    "request_kind": "analyze",
                     "provider": "openai-compatible",
                     "model": "gpt-5-mini",
                     "destination_host": "llm.example.com",
@@ -135,7 +139,7 @@ struct ProviderObservabilityModelTests {
                     "source_kind": "manual",
                     "title": "Release audit model fit",
                     "task": "Review local release audit evidence.",
-                    "task_kind": "task_readiness",
+                    "task_kind": "task_cockpit",
                     "agent": "codex",
                     "provider": "openai-compatible",
                     "model": "gpt-5",
@@ -234,6 +238,9 @@ struct ProviderObservabilityModelTests {
         try expectEqual(result.appLocalOnly, true, "Provider observability should decode app-local boundary.")
         try expectEqual(result.metadataRedacted, true, "Provider observability should decode redaction boundary.")
         try expectEqual(result.filters.windowDays, 30, "Provider observability should decode string window days.")
+        try expectEqual(result.filters.startAt, 1780272000000, "Provider observability should decode start date filters.")
+        try expectEqual(result.filters.endAt, 1782863999999, "Provider observability should decode end date filters.")
+        try expectEqual(result.filters.aggregationUsesFullRange, true, "Provider observability should decode full-range aggregation metadata.")
         try expectEqual(result.summary.callCount, 3, "Provider observability should decode call count.")
         try expectEqual(result.summary.estimatedTotalTokens, 1300, "Provider observability should decode token total.")
         try expectEqual(result.summary.estimatedCostUSD, 0.041, "Provider observability should decode string cost.")
@@ -320,6 +327,35 @@ struct ProviderObservabilityModelTests {
         try expectEqual(result.promptRequest?.requestKind, "provider_observability", "Prompt request kind alias should decode.")
         try expectFalse(result.safetyFlags.providerRequestSent, "Array safety shorthand should keep provider request false.")
         try expectFalse(result.isDashboardEmpty, "Decoded call and hint rows should make the dashboard non-empty.")
+    }
+
+    private func normalizesSummaryCallCountAcrossPromptRunsAndCallRows() throws {
+        let serviceSummaryJSON = """
+        {
+          "returned_prompt_run_count": 9,
+          "returned_call_row_count": 15,
+          "total_prompt_run_count": 19,
+          "total_call_metadata_count": 15,
+          "succeeded_count": 19,
+          "failed_count": 5
+        }
+        """
+        let serviceSummary = try JSONDecoder().decode(ProviderObservabilitySummary.self, from: Data(serviceSummaryJSON.utf8))
+
+        try expectEqual(serviceSummary.callCount, 24, "Provider observability should count returned prompt runs and call rows together.")
+        try expectEqual(serviceSummary.successCount, 19, "Provider observability should keep succeeded status counts.")
+        try expectEqual(serviceSummary.failureCount, 5, "Provider observability should keep failed status counts.")
+
+        let legacySummaryJSON = """
+        {
+          "total_call_metadata_count": 15,
+          "succeeded_count": 19,
+          "failed_count": 5
+        }
+        """
+        let legacySummary = try JSONDecoder().decode(ProviderObservabilitySummary.self, from: Data(legacySummaryJSON.utf8))
+
+        try expectEqual(legacySummary.callCount, 24, "Provider observability call count should never be below success and failure totals.")
     }
 
     private func decodesGroupingRowsIntoDimensionLists() throws {

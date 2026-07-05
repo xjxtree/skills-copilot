@@ -4,6 +4,17 @@
   "result": {
     "generated_by": "local-v2.64",
     "status": "ready",
+    "filters": {
+      "window_days": 30,
+      "start_at": 1780272000000,
+      "end_at": 1782863999999,
+      "limit": 20,
+      "include_history": true,
+      "include_budget_hints": true,
+      "include_retention_recommendations": true,
+      "include_evidence": true,
+      "aggregation_uses_full_range": true
+    },
     "summary": {
       "total_prompt_run_count": 0,
       "total_call_metadata_count": 0,

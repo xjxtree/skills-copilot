@@ -5,6 +5,8 @@ struct ContentView: View {
     @EnvironmentObject private var store: SkillStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var globalSearchText = ""
+    @State private var isGlobalSearchFocused = false
+    @State private var showsGlobalSearchResults = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
@@ -19,10 +21,27 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
+            if shouldShowGlobalSearchResultsOverlay {
+                globalSearchResultsOverlay
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .zIndex(8)
+            }
+
             pinnedWindowChromeControls
         }
         .task {
             await store.loadAppStartupDataIfNeeded()
+        }
+        .onChange(of: trimmedGlobalSearchText) { query in
+            store.updateAppSearch(query: query)
+        }
+        .onChange(of: isGlobalSearchFocused) { focused in
+            guard focused, !trimmedGlobalSearchText.isEmpty else { return }
+            store.updateAppSearch(query: trimmedGlobalSearchText)
+        }
+        .onChange(of: store.selectedAgentLocalSessionRefreshKey) { _ in
+            guard !trimmedGlobalSearchText.isEmpty else { return }
+            store.updateAppSearch(query: trimmedGlobalSearchText)
         }
         .transaction { transaction in
             if reduceMotion {
@@ -41,8 +60,8 @@ struct ContentView: View {
         WindowChromeTitlebarAccessory {
             WindowChromeToolbarControls(
                 text: $globalSearchText,
-                results: globalSearchResults,
-                onSelect: selectGlobalSearchResult,
+                isSearchFocused: $isGlobalSearchFocused,
+                showsSearchResults: $showsGlobalSearchResults,
                 onSubmit: selectFirstGlobalSearchResult
             )
             .environmentObject(store)
@@ -81,54 +100,35 @@ struct ContentView: View {
         }
     }
 
-    private var globalSearchResults: [GlobalSearchResourceResult] {
-        let query = globalSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return [] }
+    private var trimmedGlobalSearchText: String {
+        globalSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-        let skillResults = store.skills.lazy
-            .filter { matchesSelectedAgent($0.agent) }
-            .filter { globalSearchMatches(query: query, values: skillSearchValues($0)) }
-            .prefix(6)
-            .map { skill in
-                GlobalSearchResourceResult(
-                    kind: .skill,
-                    target: .skill(skill.id),
-                    title: skill.name,
-                    subtitle: DisplayText.scope(for: skill),
-                    agent: skill.agent
-                )
-            }
+    private var shouldShowGlobalSearchResultsOverlay: Bool {
+        store.startupLoadingState == nil && showsGlobalSearchResults && !trimmedGlobalSearchText.isEmpty
+    }
 
-        let sessionResults = store.localSessionPreviewResult.sessionRows.lazy
-            .filter { matchesSelectedAgent($0.agent) }
-            .filter { globalSearchMatches(query: query, values: sessionSearchValues($0)) }
-            .prefix(4)
-            .map { session in
-                GlobalSearchResourceResult(
-                    kind: .session,
-                    target: .session(session.id),
-                    title: session.title,
-                    subtitle: sessionSubtitle(session),
-                    agent: session.agent
-                )
-            }
+    private var globalSearchResultsOverlay: some View {
+        GlobalSearchResultsOverlay(
+            query: trimmedGlobalSearchText,
+            results: globalSearchResults,
+            isLoading: store.isSearchingApp,
+            fallbackReason: store.appSearchResult.fallbackReason
+        ) { result in
+            showsGlobalSearchResults = false
+            isGlobalSearchFocused = false
+            selectGlobalSearchResult(result)
+        }
+        .padding(.top, WindowChromeToolbarMetrics.searchResultsTopPadding)
+        .padding(.trailing, WindowChromeToolbarMetrics.searchResultsTrailingPadding)
+        .accessibilitySortPriority(2)
+    }
 
-        let configResults = store.agentConfigSnapshots.lazy
-            .filter { matchesSelectedAgent($0.agent) }
-            .filter { globalSearchMatches(query: query, values: configSnapshotSearchValues($0)) }
-            .prefix(4)
-            .map { snapshot in
-                let item = AgentConfigTimelineItem(snapshot: snapshot)
-                return GlobalSearchResourceResult(
-                    kind: .configHistory,
-                    target: .configSnapshot(snapshot.id),
-                    title: item.actionText,
-                    subtitle: "\(item.scopeText) · \(item.targetSummary)",
-                    agent: snapshot.agent
-                )
-            }
-
-        return Array((Array(skillResults) + Array(sessionResults) + Array(configResults)).prefix(12))
+    private var globalSearchResults: [AppSearchItem] {
+        guard !trimmedGlobalSearchText.isEmpty,
+              store.appSearchResult.query == trimmedGlobalSearchText
+        else { return [] }
+        return store.appSearchResult.items
     }
 
     private func selectFirstGlobalSearchResult() {
@@ -136,97 +136,12 @@ struct ContentView: View {
         selectGlobalSearchResult(result)
     }
 
-    private func selectGlobalSearchResult(_ result: GlobalSearchResourceResult) {
-        switch result.target {
-        case .skill(let id):
-            guard let skill = store.skills.first(where: { $0.id == id }) else { return }
-            if let filter = agentFilter(for: skill.agent) {
-                store.agentFilter = filter
-            }
-            store.sidebarContentMode = .skills
-            store.searchText = ""
-            store.stateFilter = .all
-            store.skillScopeFilter = .all
-            store.selectedDetailSection = .overview
-            store.selectedSidebarSelection = .skill(skill.id)
-        case .session(let id):
-            guard let session = store.localSessionPreviewResult.sessionRows.first(where: { $0.id == id }) else { return }
-            store.sidebarContentMode = .sessions
-            store.localSessionScopeFilter = .all
-            store.localSessionSearchText = ""
-            store.selectLocalSession(session)
-        case .configSnapshot(let id):
-            guard let snapshot = store.agentConfigSnapshots.first(where: { $0.id == id }) else { return }
-            if let filter = agentFilter(for: snapshot.agent) {
-                store.agentFilter = filter
-            }
-            store.sidebarContentMode = .config
-            store.configScopeFilter = .all
-            store.configSidebarSearchText = ""
-            store.selectConfigSnapshot(snapshot)
+    private func selectGlobalSearchResult(_ result: AppSearchItem) {
+        Task { @MainActor in
+            await store.selectAppSearchItem(result)
+            globalSearchText = ""
+            showsGlobalSearchResults = false
         }
-        globalSearchText = ""
-    }
-
-    private func globalSearchMatches(query: String, values: [String]) -> Bool {
-        values.contains { value in
-            value.lowercased().contains(query)
-        }
-    }
-
-    private func matchesSelectedAgent(_ agent: String?) -> Bool {
-        switch store.agentFilter {
-        case .all:
-            return true
-        case .claudeCode, .codex, .opencode, .pi, .hermes, .openclaw:
-            return agent == store.agentFilter.rawValue
-        }
-    }
-
-    private func skillSearchValues(_ skill: SkillRecord) -> [String] {
-        [
-            skill.name,
-            skill.definitionId,
-            skill.path,
-            skill.displayPath,
-            DisplayText.agent(skill.agent),
-            DisplayText.scope(for: skill)
-        ]
-    }
-
-    private func sessionSearchValues(_ session: LocalSessionPreviewRow) -> [String] {
-        [
-            session.title,
-            session.redactedPath,
-            session.projectRoot ?? "",
-            session.excerpt,
-            DisplayText.agent(session.agent ?? ""),
-            DisplayText.scope(session.scope)
-        ]
-    }
-
-    private func configSnapshotSearchValues(_ snapshot: ConfigSnapshotRecord) -> [String] {
-        [
-            snapshot.reason,
-            snapshot.target,
-            DisplayText.agent(snapshot.agent),
-            DisplayText.scope(snapshot.scope),
-            DisplayText.timestamp(snapshot.createdAt)
-        ]
-    }
-
-    private func sessionSubtitle(_ session: LocalSessionPreviewRow) -> String {
-        var parts: [String] = []
-        parts.append(DisplayText.scope(session.scope))
-        if let endedAt = session.endedAt ?? session.startedAt {
-            parts.append(DisplayText.timestamp(endedAt))
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func agentFilter(for agent: String?) -> SkillAgentFilter? {
-        guard let agent else { return nil }
-        return SkillAgentFilter.managementCases.first { $0.rawValue == agent }
     }
 }
 
@@ -286,14 +201,14 @@ private struct WindowChromeTitlebarAccessory<Content: View>: NSViewRepresentable
                     x: 0,
                     y: 0,
                     width: WindowChromeToolbarMetrics.accessoryWidth,
-                    height: WindowChromeToolbarMetrics.controlHeight
+                    height: WindowChromeToolbarMetrics.accessoryHeight
                 )
             )
             container.addSubview(hostingView)
 
             NSLayoutConstraint.activate([
                 container.widthAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.accessoryWidth),
-                container.heightAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.controlHeight),
+                container.heightAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.accessoryHeight),
                 hostingView.widthAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.totalWidth),
                 hostingView.heightAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.controlHeight),
                 hostingView.trailingAnchor.constraint(
@@ -334,7 +249,7 @@ private final class FirstMouseTitlebarAccessoryContainer: NSView {
     override var intrinsicContentSize: NSSize {
         NSSize(
             width: WindowChromeToolbarMetrics.accessoryWidth,
-            height: WindowChromeToolbarMetrics.controlHeight
+            height: WindowChromeToolbarMetrics.accessoryHeight
         )
     }
 
@@ -351,6 +266,7 @@ private final class FirstMouseNSHostingView<Content: View>: NSHostingView<Conten
 
 private enum WindowChromeToolbarMetrics {
     static let controlHeight: CGFloat = 32
+    static let accessoryHeight: CGFloat = 52
     static let agentWidth: CGFloat = 146
     static let projectWidth: CGFloat = 210
     static let toolbarSpacing: CGFloat = 8
@@ -358,6 +274,10 @@ private enum WindowChromeToolbarMetrics {
     static let iconButtonWidth: CGFloat = 30
     static let titlebarTrailingPadding: CGFloat = 28
     static let searchWidth = CGFloat(UIOptimizationPresentation.unifiedToolbar.idealGlobalSearchWidth)
+    static let searchResultsWidth: CGFloat = 460
+    static let searchResultsMinHeight: CGFloat = 180
+    static let searchResultsMaxHeight: CGFloat = 340
+    static let searchResultsTopPadding: CGFloat = 10
 
     static var trailingWidth: CGFloat {
         searchWidth + iconButtonWidth * 2 + trailingSpacing * 2
@@ -370,12 +290,16 @@ private enum WindowChromeToolbarMetrics {
     static var accessoryWidth: CGFloat {
         totalWidth + titlebarTrailingPadding
     }
+
+    static var searchResultsTrailingPadding: CGFloat {
+        titlebarTrailingPadding + iconButtonWidth * 2 + trailingSpacing * 2
+    }
 }
 
 private struct WindowChromeToolbarControls: View {
     @Binding var text: String
-    let results: [GlobalSearchResourceResult]
-    let onSelect: (GlobalSearchResourceResult) -> Void
+    @Binding var isSearchFocused: Bool
+    @Binding var showsSearchResults: Bool
     let onSubmit: () -> Void
 
     var body: some View {
@@ -388,8 +312,8 @@ private struct WindowChromeToolbarControls: View {
 
             WindowChromeTrailingControls(
                 text: $text,
-                results: results,
-                onSelect: onSelect,
+                isSearchFocused: $isSearchFocused,
+                showsSearchResults: $showsSearchResults,
                 onSubmit: onSubmit
             )
         }
@@ -777,61 +701,8 @@ private struct TitlebarAgentIconBadge: View {
     }
 }
 
-private enum GlobalSearchResourceKind: String, CaseIterable {
-    case skill
-    case session
-    case configHistory
-
-    var title: String {
-        switch self {
-        case .skill:
-            return UIStrings.skills
-        case .session:
-            return UIStrings.text("sidebar.mode.sessions", "Sessions")
-        case .configHistory:
-            return UIStrings.agentConfigHistory
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .skill:
-            return "square.stack.3d.up"
-        case .session:
-            return "bubble.left.and.text.bubble.right"
-        case .configHistory:
-            return "clock.arrow.circlepath"
-        }
-    }
-}
-
-private enum GlobalSearchResourceTarget: Hashable {
-    case skill(String)
-    case session(String)
-    case configSnapshot(String)
-}
-
-private struct GlobalSearchResourceResult: Identifiable, Hashable {
-    let kind: GlobalSearchResourceKind
-    let target: GlobalSearchResourceTarget
-    let title: String
-    let subtitle: String
-    let agent: String?
-
-    var id: String {
-        switch target {
-        case .skill(let id):
-            return "\(kind.rawValue):\(id)"
-        case .session(let id):
-            return "\(kind.rawValue):\(id)"
-        case .configSnapshot(let id):
-            return "\(kind.rawValue):\(id)"
-        }
-    }
-}
-
 private struct GlobalSearchSuggestionRow: View {
-    let result: GlobalSearchResourceResult
+    let result: AppSearchItem
 
     var body: some View {
         HStack(spacing: 10) {
@@ -858,8 +729,8 @@ private struct GlobalSearchSuggestionRow: View {
 
 private struct WindowChromeTrailingControls: View {
     @Binding var text: String
-    let results: [GlobalSearchResourceResult]
-    let onSelect: (GlobalSearchResourceResult) -> Void
+    @Binding var isSearchFocused: Bool
+    @Binding var showsSearchResults: Bool
     let onSubmit: () -> Void
 
     private let searchWidth = WindowChromeToolbarMetrics.searchWidth
@@ -872,9 +743,9 @@ private struct WindowChromeTrailingControls: View {
         HStack(alignment: .center, spacing: 6) {
             GlobalWindowSearchControl(
                 text: $text,
-                results: results,
+                isSearchFocused: $isSearchFocused,
+                showsResults: $showsSearchResults,
                 width: searchWidth,
-                onSelect: onSelect,
                 onSubmit: onSubmit
             )
 
@@ -888,12 +759,10 @@ private struct WindowChromeTrailingControls: View {
 
 private struct GlobalWindowSearchControl: View {
     @Binding var text: String
-    let results: [GlobalSearchResourceResult]
+    @Binding var isSearchFocused: Bool
+    @Binding var showsResults: Bool
     let width: CGFloat
-    let onSelect: (GlobalSearchResourceResult) -> Void
     let onSubmit: () -> Void
-    @State private var showsResults = false
-    @State private var isSearchFocused = false
 
     private var trimmedText: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -901,16 +770,6 @@ private struct GlobalWindowSearchControl: View {
 
     var body: some View {
         searchField
-        .popover(isPresented: resultsPopoverBinding, arrowEdge: .top) {
-            GlobalSearchResultsPopover(
-                query: trimmedText,
-                results: results
-            ) { result in
-                showsResults = false
-                isSearchFocused = false
-                onSelect(result)
-            }
-        }
         .accessibilityLabel(UIStrings.text("toolbar.globalSearch", "Search all"))
     }
 
@@ -926,7 +785,7 @@ private struct GlobalWindowSearchControl: View {
                 if focused {
                     showsResults = !trimmedText.isEmpty
                 } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         if !isSearchFocused {
                             showsResults = false
                         }
@@ -935,7 +794,7 @@ private struct GlobalWindowSearchControl: View {
             }
                 .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
                 .onChange(of: text) { _ in
-                    showsResults = isSearchFocused && !trimmedText.isEmpty
+                    showsResults = !trimmedText.isEmpty
                 }
 
             Image(systemName: "magnifyingglass")
@@ -948,16 +807,6 @@ private struct GlobalWindowSearchControl: View {
         .frame(width: width, height: 30, alignment: .center)
         .windowChromeGlassCapsule()
         .contentShape(Capsule())
-    }
-
-    private var resultsPopoverBinding: Binding<Bool> {
-        Binding {
-            showsResults && !trimmedText.isEmpty
-        } set: { isPresented in
-            if !isPresented {
-                showsResults = false
-            }
-        }
     }
 }
 
@@ -1082,10 +931,12 @@ private struct WindowChromeAboutButton: View {
     }
 }
 
-private struct GlobalSearchResultsPopover: View {
+private struct GlobalSearchResultsOverlay: View {
     let query: String
-    let results: [GlobalSearchResourceResult]
-    let onSelect: (GlobalSearchResourceResult) -> Void
+    let results: [AppSearchItem]
+    let isLoading: Bool
+    let fallbackReason: String?
+    let onSelect: (AppSearchItem) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1094,7 +945,17 @@ private struct GlobalSearchResultsPopover: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
 
-            if results.isEmpty {
+            if isLoading && results.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(UIStrings.text("toolbar.globalSearch.searching", "Searching..."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 8)
+            } else if results.isEmpty {
                 Text(UIStrings.text("toolbar.globalSearch.empty", "No matching resources."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1103,7 +964,7 @@ private struct GlobalSearchResultsPopover: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(GlobalSearchResourceKind.allCases, id: \.self) { kind in
+                        ForEach(AppSearchItemKind.allCases, id: \.self) { kind in
                             let kindResults = results.filter { $0.kind == kind }
                             if !kindResults.isEmpty {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -1135,11 +996,31 @@ private struct GlobalSearchResultsPopover: View {
                         }
                     }
                 }
-                .frame(maxHeight: 320)
+                .frame(
+                    minHeight: WindowChromeToolbarMetrics.searchResultsMinHeight,
+                    maxHeight: WindowChromeToolbarMetrics.searchResultsMaxHeight
+                )
+            }
+
+            if let fallbackReason, !fallbackReason.isEmpty {
+                Text(fallbackReason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(.horizontal, 4)
             }
         }
         .padding(10)
-        .frame(width: 360, alignment: .leading)
+        .frame(width: WindowChromeToolbarMetrics.searchResultsWidth, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.surfaceCornerRadius))
+                .fill(.regularMaterial)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: CGFloat(UIOptimizationPresentation.surfaceCornerRadius))
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
     }
 }
 

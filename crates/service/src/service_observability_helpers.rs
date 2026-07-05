@@ -1,332 +1,5 @@
 use super::*;
 
-pub(crate) fn routing_accuracy_safety_flags() -> RoutingAccuracySafetyFlags {
-    RoutingAccuracySafetyFlags {
-        read_only: true,
-        app_local_only: true,
-        provider_request_sent: false,
-        write_back_allowed: false,
-        write_actions_available: false,
-        skill_files_mutated: false,
-        agent_config_mutated: false,
-        script_execution_allowed: false,
-        execution_actions_available: false,
-        config_mutation_allowed: false,
-        snapshot_created: false,
-        triage_mutation_allowed: false,
-        credential_accessed: false,
-        raw_secret_returned: false,
-        raw_prompt_persisted: false,
-        raw_response_persisted: false,
-        raw_trace_persisted: false,
-        cloud_sync_performed: false,
-        telemetry_emitted: false,
-    }
-}
-
-pub(crate) fn routing_accuracy_normalize_outcome(outcome: &str) -> &'static str {
-    match outcome {
-        "hit" => "hit",
-        "miss" => "miss",
-        "wrong_pick" => "wrong_pick",
-        "ambiguous" => "ambiguous",
-        _ => "unknown",
-    }
-}
-
-pub(crate) fn routing_accuracy_increment_summary(
-    summary: &mut RoutingAccuracyDashboardSummary,
-    outcome: &'static str,
-) {
-    match outcome {
-        "hit" => summary.hit_count += 1,
-        "miss" => summary.miss_count += 1,
-        "wrong_pick" => summary.wrong_pick_count += 1,
-        "ambiguous" => summary.ambiguous_count += 1,
-        _ => summary.unknown_count += 1,
-    }
-}
-
-pub(crate) fn routing_accuracy_increment_counts(
-    counts: &mut RoutingAccuracyOutcomeCounts,
-    outcome: &'static str,
-) {
-    match outcome {
-        "hit" => counts.hit += 1,
-        "miss" => counts.miss += 1,
-        "wrong_pick" => counts.wrong_pick += 1,
-        "ambiguous" => counts.ambiguous += 1,
-        _ => counts.unknown += 1,
-    }
-}
-
-pub(crate) fn routing_accuracy_rate(numerator: usize, denominator: usize) -> f64 {
-    if denominator == 0 {
-        return 0.0;
-    }
-    ((numerator as f64 / denominator as f64) * 10_000.0).round() / 10_000.0
-}
-
-pub(crate) fn routing_accuracy_agent_matches(
-    candidate: &str,
-    agent_filter: &Option<String>,
-) -> bool {
-    match agent_filter.as_deref() {
-        Some(filter) => candidate.eq_ignore_ascii_case(filter),
-        None => true,
-    }
-}
-
-pub(crate) fn routing_accuracy_agent_matches_import(
-    agent_filter: &Option<String>,
-    import: &TraceImportRecord,
-) -> bool {
-    import
-        .agent
-        .as_deref()
-        .is_some_and(|agent| routing_accuracy_agent_matches(agent, agent_filter))
-        || import
-            .analysis
-            .detected_skills
-            .iter()
-            .any(|skill| routing_accuracy_agent_matches(&skill.agent, agent_filter))
-        || agent_filter.is_none()
-}
-
-pub(crate) fn routing_accuracy_agent_matches_benchmark(
-    agent_filter: &Option<String>,
-    item: &TaskBenchmarkEvaluationItem,
-) -> bool {
-    item.top_route
-        .as_ref()
-        .is_some_and(|route| routing_accuracy_agent_matches(&route.agent, agent_filter))
-        || agent_filter.is_none()
-}
-
-pub(crate) fn routing_accuracy_agent_matches_regression(
-    agent_filter: &Option<String>,
-    item: &RoutingRegressionItem,
-) -> bool {
-    routing_accuracy_regression_agent(item)
-        .as_deref()
-        .is_some_and(|agent| routing_accuracy_agent_matches(agent, agent_filter))
-        || agent_filter.is_none()
-}
-
-pub(crate) fn routing_accuracy_trace_agent(import: &TraceImportRecord) -> String {
-    import
-        .agent
-        .clone()
-        .or_else(|| {
-            import
-                .analysis
-                .detected_skills
-                .first()
-                .map(|skill| skill.agent.clone())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-pub(crate) fn routing_accuracy_benchmark_agent(item: &TaskBenchmarkEvaluationItem) -> String {
-    item.top_route
-        .as_ref()
-        .map(|route| route.agent.clone())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-pub(crate) fn routing_accuracy_regression_agent(item: &RoutingRegressionItem) -> Option<String> {
-    item.current
-        .as_ref()
-        .and_then(|current| current.top_route.as_ref())
-        .map(|route| route.agent.clone())
-        .or_else(|| {
-            item.baseline
-                .as_ref()
-                .and_then(|baseline| baseline.top_route.as_ref())
-                .map(|route| route.agent.clone())
-        })
-}
-
-pub(crate) fn routing_accuracy_trace_detail(import: &TraceImportRecord) -> String {
-    let detected = import.analysis.detected_skills.len();
-    if let Some(task) = &import.task {
-        format!(
-            "Trace outcome {} for `{}` with {} detected skill(s).",
-            import.analysis.outcome, task, detected
-        )
-    } else {
-        format!(
-            "Trace outcome {} with {} detected skill(s).",
-            import.analysis.outcome, detected
-        )
-    }
-}
-
-pub(crate) fn routing_accuracy_benchmark_severity(
-    item: &TaskBenchmarkEvaluationItem,
-) -> &'static str {
-    match item.expected_match_status {
-        "blocked_no_route" | "mismatch" => "high",
-        "acceptable_match" | "no_expectation" => "medium",
-        _ if !item.blocker_notes.is_empty() => "high",
-        _ if !item.gap_notes.is_empty() => "medium",
-        _ => "low",
-    }
-}
-
-pub(crate) fn routing_accuracy_benchmark_issue_detail(
-    item: &TaskBenchmarkEvaluationItem,
-) -> String {
-    let mut parts = vec![format!(
-        "Benchmark status {} with score {}/100.",
-        item.expected_match_status, item.score
-    )];
-    parts.extend(item.blocker_notes.clone());
-    parts.extend(item.gap_notes.clone());
-    parts.join(" ")
-}
-
-pub(crate) fn routing_accuracy_regression_detail(item: &RoutingRegressionItem) -> String {
-    let mut parts = Vec::new();
-    if let Some(delta) = item.score_delta {
-        parts.push(format!("score delta {delta}"));
-    }
-    if let Some(delta) = item.confidence_delta {
-        parts.push(format!("confidence delta {delta}"));
-    }
-    if parts.is_empty() {
-        item.reasons.join(" ")
-    } else {
-        parts.join(", ")
-    }
-}
-
-pub(crate) fn routing_accuracy_summary_text(
-    summary: &RoutingAccuracyDashboardSummary,
-    catalog_available: bool,
-) -> String {
-    if summary.trace_count == 0 && summary.benchmark_count == 0 {
-        if catalog_available {
-            return "No routing accuracy evidence matched the selected filters.".to_string();
-        }
-        return "No routing accuracy evidence matched the selected filters, and no local catalog is available.".to_string();
-    }
-    format!(
-        "Reviewed {} trace import(s), {} benchmark(s), and {} regression(s); hit rate {:.0}% across known trace outcomes.",
-        summary.trace_count,
-        summary.benchmark_count,
-        summary.regression_count,
-        summary.accuracy_rate * 100.0
-    )
-}
-
-pub(crate) fn routing_accuracy_severity_rank(severity: &str) -> u8 {
-    match severity {
-        "critical" => 0,
-        "high" => 1,
-        "medium" => 2,
-        "low" => 3,
-        _ => 4,
-    }
-}
-
-pub(crate) fn routing_accuracy_prompt_request(
-    imports: &[TraceImportRecord],
-    benchmark_results: &[TaskBenchmarkEvaluationItem],
-) -> RoutingAccuracyPromptRequest {
-    let benchmark_route = benchmark_results.iter().find_map(|item| {
-        item.top_route
-            .as_ref()
-            .map(|route| (item.task.clone(), route))
-    });
-    let (available, instance_ids, task, note) = if let Some((task, route)) = benchmark_route {
-        (
-            true,
-            vec![route.instance_id.clone()],
-            Some(task),
-            "Optional provider-backed dashboard explanation must be requested through prompt preview and explicit confirmation; routing.accuracyDashboard never sends provider traffic.".to_string(),
-        )
-    } else if let Some(import) = imports
-        .iter()
-        .find(|import| import.task.is_some() && !import.analysis.detected_skills.is_empty())
-    {
-        (
-            true,
-            import
-                .analysis
-                .detected_skills
-                .iter()
-                .map(|skill| skill.instance_id.clone())
-                .collect(),
-            import.task.clone(),
-            "Optional provider-backed dashboard explanation must be requested through prompt preview and explicit confirmation; routing.accuracyDashboard never sends provider traffic.".to_string(),
-        )
-    } else {
-        (
-            false,
-            Vec::new(),
-            None,
-            "Prompt preview is unavailable until local routing evidence includes a task and route candidate.".to_string(),
-        )
-    };
-    RoutingAccuracyPromptRequest {
-        available,
-        preview_method: "llm.previewPrompt",
-        confirm_method: "llm.confirmPromptAndSend",
-        action: "routing_confidence",
-        request: LlmPreviewPromptParams {
-            action: LlmPromptActionKind::RoutingConfidence,
-            profile_id: None,
-            app_language: None,
-            skill_instance_id: None,
-            instance_ids,
-            agents: Vec::new(),
-            analysis_kind: None,
-            user_intent: task,
-        },
-        note,
-    }
-}
-
-pub(crate) fn trace_import_redaction_summary_from(
-    summary: LlmPromptRedactionSummary,
-) -> TraceImportRedactionSummary {
-    TraceImportRedactionSummary {
-        status: "redacted-local-only".to_string(),
-        redacted_value_count: summary.redacted_value_count,
-        redacted_fields: summary.redacted_fields,
-        placeholders: summary
-            .placeholders
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        raw_trace_persisted: false,
-        raw_prompt_persisted: false,
-        raw_response_persisted: false,
-        raw_secret_returned: false,
-    }
-}
-
-pub(crate) fn trace_import_redaction_summary_default() -> TraceImportRedactionSummary {
-    TraceImportRedactionSummary {
-        status: "redacted-local-only".to_string(),
-        redacted_value_count: 0,
-        redacted_fields: Vec::new(),
-        placeholders: vec![
-            "$HOME".to_string(),
-            "<project-root>".to_string(),
-            "<project-cwd>".to_string(),
-            "<app-data-dir>".to_string(),
-            "<redacted>".to_string(),
-            "<redacted-url>".to_string(),
-        ],
-        raw_trace_persisted: false,
-        raw_prompt_persisted: false,
-        raw_response_persisted: false,
-        raw_secret_returned: false,
-    }
-}
-
 pub(crate) fn llm_prompt_run_redaction_summary_from(
     preview_summary: LlmPromptRedactionSummary,
     request_summary: LlmPromptRedactionSummary,
@@ -475,7 +148,7 @@ pub(crate) fn normalize_model_task_source_kind(value: Option<&str>) -> String {
         .to_ascii_lowercase()
         .replace('-', "_");
     match normalized.as_str() {
-        "prompt_run" | "provider_call" | "session_review" | "manual" | "benchmark" => normalized,
+        "prompt_run" | "provider_call" | "manual" | "benchmark" => normalized,
         _ => "manual".to_string(),
     }
 }
@@ -535,16 +208,43 @@ pub(crate) struct ProviderObservabilityFilters {
     model: Option<String>,
     status: Option<String>,
     action: Option<String>,
+    window_days: Option<i64>,
+    start_at: Option<i64>,
+    end_at: Option<i64>,
 }
 
 impl ProviderObservabilityFilters {
     pub(crate) fn from_params(params: &LlmProviderObservabilityParams) -> Self {
+        let window_days = params.window_days.map(|days| days.clamp(1, 3_650));
+        let explicit_start_at = params.start_at.filter(|value| *value >= 0);
+        let explicit_end_at = params.end_at.filter(|value| *value >= 0);
+        let (mut start_at, mut end_at) = match (explicit_start_at, explicit_end_at) {
+            (None, None) => {
+                if let Some(days) = window_days {
+                    let end = unix_timestamp_millis();
+                    let duration = days.saturating_mul(86_400_000);
+                    (Some(end.saturating_sub(duration)), Some(end))
+                } else {
+                    (None, None)
+                }
+            }
+            values => values,
+        };
+        if let (Some(start), Some(end)) = (start_at, end_at) {
+            if start > end {
+                start_at = Some(end);
+                end_at = Some(start);
+            }
+        }
         Self {
             profile_id: normalized_observability_filter(params.profile_id.as_deref()),
             provider: normalized_observability_filter(params.provider.as_deref()),
             model: normalized_observability_filter(params.model.as_deref()),
             status: normalized_observability_filter(params.status.as_deref()),
             action: normalized_observability_filter(params.action.as_deref()),
+            window_days,
+            start_at,
+            end_at,
         }
     }
 
@@ -572,6 +272,7 @@ impl ProviderObservabilityFilters {
                         .as_deref()
                         .is_some_and(|kind| kind.eq_ignore_ascii_case(filter))
             })
+            && self.matches_timestamp(run.completed_at)
     }
 
     pub(crate) fn matches_provider_call(&self, metadata: &ProviderCallMetadata) -> bool {
@@ -594,6 +295,7 @@ impl ProviderObservabilityFilters {
                 .action
                 .as_deref()
                 .is_none_or(|filter| metadata.action_type.eq_ignore_ascii_case(filter))
+            && self.matches_timestamp(metadata.timestamp)
     }
 
     pub(crate) fn matches_profile(&self, profile: &ProviderProfileRecord) -> bool {
@@ -608,6 +310,36 @@ impl ProviderObservabilityFilters {
                 .model
                 .as_deref()
                 .is_none_or(|filter| profile.model.eq_ignore_ascii_case(filter))
+    }
+
+    pub(crate) fn applied_filters(
+        &self,
+        params: &LlmProviderObservabilityParams,
+        limit: usize,
+    ) -> LlmProviderObservabilityAppliedFilters {
+        LlmProviderObservabilityAppliedFilters {
+            profile_id: self.profile_id.clone(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            status: self.status.clone(),
+            action: self.action.clone(),
+            window_days: self.window_days,
+            start_at: self.start_at,
+            end_at: self.end_at,
+            limit,
+            include_history: params.include_history.unwrap_or(true),
+            include_budget_hints: params.include_budget_hints.unwrap_or(true),
+            include_retention_recommendations: params
+                .include_retention_recommendations
+                .unwrap_or(true),
+            include_evidence: params.include_evidence.unwrap_or(true),
+            aggregation_uses_full_range: true,
+        }
+    }
+
+    fn matches_timestamp(&self, timestamp: i64) -> bool {
+        self.start_at.is_none_or(|start| timestamp >= start)
+            && self.end_at.is_none_or(|end| timestamp <= end)
     }
 }
 
@@ -765,7 +497,6 @@ pub(crate) fn provider_observability_history_row(
 pub(crate) fn provider_observability_grouping_rows(
     history_rows: &[LlmProviderObservabilityHistoryRow],
     call_rows: &[LlmProviderObservabilityCallRow],
-    limit: usize,
 ) -> Vec<LlmProviderObservabilityGroupingRow> {
     let mut groups: BTreeMap<(String, String, String), ProviderObservabilityGroupAccumulator> =
         BTreeMap::new();
@@ -880,7 +611,6 @@ pub(crate) fn provider_observability_grouping_rows(
             .then_with(|| left.provider.cmp(&right.provider))
             .then_with(|| left.model.cmp(&right.model))
     });
-    rows.truncate(limit);
     rows
 }
 
@@ -1037,102 +767,127 @@ pub(crate) fn provider_observability_status_rows(
     status_rows
 }
 
+pub(crate) struct ProviderObservabilitySummaryInput<'a> {
+    pub(crate) total_prompt_run_count: usize,
+    pub(crate) total_call_metadata_count: usize,
+    pub(crate) history_rows: &'a [LlmProviderObservabilityHistoryRow],
+    pub(crate) call_rows: &'a [LlmProviderObservabilityCallRow],
+    pub(crate) returned_prompt_run_count: usize,
+    pub(crate) returned_call_row_count: usize,
+    pub(crate) provider_profile_count: usize,
+    pub(crate) enabled_profile_count: usize,
+    pub(crate) grouping_count: usize,
+}
+
 pub(crate) fn provider_observability_summary(
-    total_prompt_run_count: usize,
-    total_call_metadata_count: usize,
-    history_rows: &[LlmProviderObservabilityHistoryRow],
-    call_rows: &[LlmProviderObservabilityCallRow],
-    provider_profile_count: usize,
-    enabled_profile_count: usize,
-    grouping_count: usize,
+    input: ProviderObservabilitySummaryInput<'_>,
 ) -> LlmProviderObservabilitySummary {
-    let observed_provider_request_row_count = history_rows
+    let observed_provider_request_row_count = input
+        .history_rows
         .iter()
         .filter(|row| row.recorded_provider_request_sent)
         .count()
-        + call_rows
+        + input
+            .call_rows
             .iter()
             .filter(|row| row.recorded_provider_request_sent)
             .count();
-    let observed_credential_access_row_count = history_rows
+    let observed_credential_access_row_count = input
+        .history_rows
         .iter()
         .filter(|row| row.recorded_credential_accessed)
         .count()
-        + call_rows
+        + input
+            .call_rows
             .iter()
             .filter(|row| row.recorded_credential_accessed)
             .count();
-    let succeeded_count = history_rows
+    let succeeded_count = input
+        .history_rows
         .iter()
         .filter(|row| observability_status_succeeded(&row.status))
         .count()
-        + call_rows
+        + input
+            .call_rows
             .iter()
             .filter(|row| observability_status_succeeded(&row.status))
             .count();
-    let failed_count = history_rows
+    let failed_count = input
+        .history_rows
         .iter()
         .filter(|row| observability_status_failed(&row.status))
         .count()
-        + call_rows
+        + input
+            .call_rows
             .iter()
             .filter(|row| observability_status_failed(&row.status))
             .count();
-    let estimated_input_tokens = history_rows
+    let estimated_input_tokens = input
+        .history_rows
         .iter()
         .map(|row| u64::from(row.estimated_input_tokens))
         .chain(
-            call_rows
+            input
+                .call_rows
                 .iter()
                 .map(|row| u64::from(row.estimated_input_tokens)),
         )
         .sum::<u64>();
-    let estimated_output_tokens = history_rows
+    let estimated_output_tokens = input
+        .history_rows
         .iter()
         .map(|row| u64::from(row.estimated_output_tokens))
         .chain(
-            call_rows
+            input
+                .call_rows
                 .iter()
                 .map(|row| u64::from(row.estimated_output_tokens)),
         )
         .sum::<u64>();
-    let estimated_total_tokens = history_rows
+    let estimated_total_tokens = input
+        .history_rows
         .iter()
         .map(|row| u64::from(row.estimated_total_tokens))
         .chain(
-            call_rows
+            input
+                .call_rows
                 .iter()
                 .map(|row| u64::from(row.estimated_total_tokens)),
         )
         .sum::<u64>();
-    let estimated_cost_usd = history_rows
+    let estimated_cost_usd = input
+        .history_rows
         .iter()
         .map(|row| row.estimated_cost_usd)
-        .chain(call_rows.iter().map(|row| row.estimated_cost_usd))
+        .chain(input.call_rows.iter().map(|row| row.estimated_cost_usd))
         .sum::<f64>();
-    let latest_activity_at = history_rows
+    let latest_activity_at = input
+        .history_rows
         .iter()
         .map(|row| row.completed_at)
-        .chain(call_rows.iter().map(|row| row.timestamp))
+        .chain(input.call_rows.iter().map(|row| row.timestamp))
         .max();
-    let returned_prompt_run_count = history_rows.len();
-    let returned_call_row_count = call_rows.len();
-    let summary = if returned_prompt_run_count == 0 && returned_call_row_count == 0 {
+    let matched_prompt_run_count = input.history_rows.len();
+    let matched_call_row_count = input.call_rows.len();
+    let summary = if matched_prompt_run_count == 0 && matched_call_row_count == 0 {
         "No app-local provider prompt-run or call metadata matched the selected filters."
             .to_string()
     } else {
+        let grouping_count = input.grouping_count;
+        let returned_prompt_run_count = input.returned_prompt_run_count;
+        let returned_call_row_count = input.returned_call_row_count;
         format!(
-            "Reviewed {returned_prompt_run_count} prompt run row(s) and {returned_call_row_count} provider call metadata row(s) across {grouping_count} provider/model/destination group(s)."
+            "Reviewed {matched_prompt_run_count} prompt run row(s) and {matched_call_row_count} provider call metadata row(s) across {grouping_count} provider/model/destination group(s); returned {returned_prompt_run_count} prompt run row(s) and {returned_call_row_count} provider call row(s) as bounded evidence."
         )
     };
     LlmProviderObservabilitySummary {
-        total_prompt_run_count,
-        total_call_metadata_count,
-        returned_prompt_run_count,
-        returned_call_row_count,
-        provider_profile_count,
-        enabled_profile_count,
-        grouping_count,
+        total_prompt_run_count: input.total_prompt_run_count,
+        total_call_metadata_count: input.total_call_metadata_count,
+        returned_prompt_run_count: input.returned_prompt_run_count,
+        returned_call_row_count: input.returned_call_row_count,
+        provider_profile_count: input.provider_profile_count,
+        enabled_profile_count: input.enabled_profile_count,
+        grouping_count: input.grouping_count,
         observed_provider_request_row_count,
         observed_credential_access_row_count,
         succeeded_count,

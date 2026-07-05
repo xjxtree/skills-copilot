@@ -157,9 +157,7 @@ struct TaskCockpitFilters: Decodable, Hashable {
     let currentCWD: String?
     let workspace: String?
     let limit: Int?
-    let includeSessionReview: Bool
     let includeProviderObservability: Bool
-    let includeRemediationContext: Bool
 
     enum CodingKeys: String, CodingKey {
         case task
@@ -181,12 +179,8 @@ struct TaskCockpitFilters: Decodable, Hashable {
         case workspace
         case workspaceID = "workspace_id"
         case limit
-        case includeSessionReview = "include_session_review"
-        case includeSessionReviewAlt = "includeSessionReview"
         case includeProviderObservability = "include_provider_observability"
         case includeProviderObservabilityAlt = "includeProviderObservability"
-        case includeRemediationContext = "include_remediation_context"
-        case includeRemediationContextAlt = "includeRemediationContext"
     }
 
     init(
@@ -200,9 +194,7 @@ struct TaskCockpitFilters: Decodable, Hashable {
         currentCWD: String? = nil,
         workspace: String? = nil,
         limit: Int? = nil,
-        includeSessionReview: Bool = true,
-        includeProviderObservability: Bool = true,
-        includeRemediationContext: Bool = true
+        includeProviderObservability: Bool = true
     ) {
         self.taskText = taskText
         self.agent = agent
@@ -214,9 +206,7 @@ struct TaskCockpitFilters: Decodable, Hashable {
         self.currentCWD = currentCWD
         self.workspace = workspace
         self.limit = limit
-        self.includeSessionReview = includeSessionReview
         self.includeProviderObservability = includeProviderObservability
-        self.includeRemediationContext = includeRemediationContext
     }
 
     init(from decoder: Decoder) throws {
@@ -231,9 +221,7 @@ struct TaskCockpitFilters: Decodable, Hashable {
         currentCWD = try container.decodeFlexibleTaskCockpitString(keys: [.currentCWD, .currentCWDAlt])
         workspace = try container.decodeFlexibleTaskCockpitString(keys: [.workspace, .workspaceID])
         limit = try container.decodeFlexibleTaskCockpitInt(keys: [.limit])
-        includeSessionReview = try container.decodeFlexibleTaskCockpitBool(keys: [.includeSessionReview, .includeSessionReviewAlt]) ?? true
         includeProviderObservability = try container.decodeFlexibleTaskCockpitBool(keys: [.includeProviderObservability, .includeProviderObservabilityAlt]) ?? true
-        includeRemediationContext = try container.decodeFlexibleTaskCockpitBool(keys: [.includeRemediationContext, .includeRemediationContextAlt]) ?? true
     }
 }
 
@@ -244,9 +232,7 @@ struct TaskCockpitSummary: Decodable, Hashable {
     let agentCandidateCount: Int
     let skillCandidateCount: Int
     let readinessSignalCount: Int
-    let sessionReviewCount: Int
     let providerCallCount: Int
-    let remediationItemCount: Int
     let gapCount: Int
     let blockerCount: Int
     let evidenceCount: Int
@@ -280,17 +266,10 @@ struct TaskCockpitSummary: Decodable, Hashable {
         case readinessSignalCount = "readiness_signal_count"
         case readinessSignalCountAlt = "readinessSignalCount"
         case readinessSignals = "readiness_signals"
-        case sessionReviewCount = "session_review_count"
-        case sessionReviewCountAlt = "sessionReviewCount"
-        case sessionReviews = "session_reviews"
         case providerCallCount = "provider_call_count"
         case providerCallCountAlt = "providerCallCount"
         case providerObservabilityRowCount = "provider_observability_row_count"
         case providerCalls = "provider_calls"
-        case remediationItemCount = "remediation_item_count"
-        case remediationItemCountAlt = "remediationItemCount"
-        case remediationNextStepCount = "remediation_next_step_count"
-        case remediationItems = "remediation_items"
         case gapCount = "gap_count"
         case gaps
         case blockerCount = "blocker_count"
@@ -309,8 +288,6 @@ struct TaskCockpitSummary: Decodable, Hashable {
         case readinessScoreAlt = "readinessScore"
         case routingScore = "routing_score"
         case routingScoreAlt = "routingScore"
-        case routingConfidenceScore = "routing_confidence_score"
-        case routingConfidenceScoreAlt = "routingConfidenceScore"
         case confidenceScore = "confidence_score"
     }
 
@@ -321,9 +298,7 @@ struct TaskCockpitSummary: Decodable, Hashable {
         agentCandidateCount: Int = 0,
         skillCandidateCount: Int = 0,
         readinessSignalCount: Int = 0,
-        sessionReviewCount: Int = 0,
         providerCallCount: Int = 0,
-        remediationItemCount: Int = 0,
         gapCount: Int = 0,
         blockerCount: Int = 0,
         evidenceCount: Int = 0,
@@ -339,9 +314,7 @@ struct TaskCockpitSummary: Decodable, Hashable {
         self.agentCandidateCount = agentCandidateCount
         self.skillCandidateCount = skillCandidateCount
         self.readinessSignalCount = readinessSignalCount
-        self.sessionReviewCount = sessionReviewCount
         self.providerCallCount = providerCallCount
-        self.remediationItemCount = remediationItemCount
         self.gapCount = gapCount
         self.blockerCount = blockerCount
         self.evidenceCount = evidenceCount
@@ -366,9 +339,7 @@ struct TaskCockpitSummary: Decodable, Hashable {
             agentCandidateCount: try container.decodeFlexibleTaskCockpitInt(keys: [.agentCandidateCount, .agentCandidateCountAlt, .agentCount, .agents]) ?? 0,
             skillCandidateCount: try container.decodeFlexibleTaskCockpitInt(keys: [.skillCandidateCount, .skillCandidateCountAlt, .candidateSkillCount, .candidateCount, .skills]) ?? 0,
             readinessSignalCount: try container.decodeFlexibleTaskCockpitInt(keys: [.readinessSignalCount, .readinessSignalCountAlt, .readinessSignals]) ?? 0,
-            sessionReviewCount: try container.decodeFlexibleTaskCockpitInt(keys: [.sessionReviewCount, .sessionReviewCountAlt, .sessionReviews]) ?? 0,
             providerCallCount: try container.decodeFlexibleTaskCockpitInt(keys: [.providerCallCount, .providerCallCountAlt, .providerObservabilityRowCount, .providerCalls]) ?? 0,
-            remediationItemCount: try container.decodeFlexibleTaskCockpitInt(keys: [.remediationItemCount, .remediationItemCountAlt, .remediationNextStepCount, .remediationItems]) ?? 0,
             gapCount: try container.decodeFlexibleTaskCockpitInt(keys: [.gapCount, .gaps]) ?? 0,
             blockerCount: try container.decodeFlexibleTaskCockpitInt(keys: [.blockerCount, .blockers]) ?? 0,
             evidenceCount: try container.decodeFlexibleTaskCockpitInt(keys: [.evidenceCount, .evidence, .evidenceReferences]) ?? 0,
@@ -376,7 +347,7 @@ struct TaskCockpitSummary: Decodable, Hashable {
             recommendedAgent: try container.decodeFlexibleTaskCockpitString(keys: [.recommendedAgent, .recommendedAgentAlt]),
             recommendedSkillName: try container.decodeFlexibleTaskCockpitString(keys: [.recommendedSkillName, .recommendedSkillNameAlt, .topSkillName]),
             readinessScore: try container.decodeFlexibleTaskCockpitInt(keys: [.readinessScore, .readinessScoreAlt]),
-            routingScore: try container.decodeFlexibleTaskCockpitInt(keys: [.routingScore, .routingScoreAlt, .routingConfidenceScore, .routingConfidenceScoreAlt, .confidenceScore])
+            routingScore: try container.decodeFlexibleTaskCockpitInt(keys: [.routingScore, .routingScoreAlt, .confidenceScore])
         )
     }
 }
@@ -386,7 +357,7 @@ struct TaskCockpitCandidateRow: Decodable, Hashable, Identifiable {
     let rank: Int?
     let title: String
     let agent: String?
-    let skill: TaskBenchmarkSkillRef?
+    let skill: TaskSkillRef?
     let readinessScore: Int?
     let routingScore: Int?
     let score: Int?
@@ -425,19 +396,13 @@ struct TaskCockpitCandidateRow: Decodable, Hashable, Identifiable {
         case readinessScoreAlt = "readinessScore"
         case routingScore = "routing_score"
         case routingScoreAlt = "routingScore"
-        case routingConfidenceScore = "routing_confidence_score"
-        case routingConfidenceScoreAlt = "routingConfidenceScore"
         case confidenceScore = "confidence_score"
         case comparisonScore = "comparison_score"
         case comparisonScoreAlt = "comparisonScore"
-        case qualityScore = "quality_score"
-        case qualityScoreAlt = "qualityScore"
         case score
         case value
         case band
         case readinessBand = "readiness_band"
-        case routingConfidenceBand = "routing_confidence_band"
-        case routingConfidenceBandAlt = "routingConfidenceBand"
         case confidenceBand = "confidence_band"
         case status
         case state
@@ -464,7 +429,7 @@ struct TaskCockpitCandidateRow: Decodable, Hashable, Identifiable {
         rank: Int? = nil,
         title: String,
         agent: String? = nil,
-        skill: TaskBenchmarkSkillRef? = nil,
+        skill: TaskSkillRef? = nil,
         readinessScore: Int? = nil,
         routingScore: Int? = nil,
         score: Int? = nil,
@@ -503,16 +468,16 @@ struct TaskCockpitCandidateRow: Decodable, Hashable, Identifiable {
         let decodedAgent = try container.decodeFlexibleTaskCockpitString(keys: [.agent, .agentID])
         let topLevelDefinitionID = try container.decodeFlexibleTaskCockpitString(keys: [.definitionID, .definitionIDAlt])
         let topLevelSkill = topLevelSkillName.map {
-            TaskBenchmarkSkillRef(
+            TaskSkillRef(
                 instanceID: topLevelInstanceID,
                 name: $0,
                 agent: decodedAgent ?? UIStrings.unknown,
                 definitionID: topLevelDefinitionID
             )
         }
-        let decodedSkill = try container.decodeIfPresent(TaskBenchmarkSkillRef.self, forKey: .skill)
-            ?? container.decodeIfPresent(TaskBenchmarkSkillRef.self, forKey: .candidateSkill)
-            ?? container.decodeIfPresent(TaskBenchmarkSkillRef.self, forKey: .route)
+        let decodedSkill = try container.decodeIfPresent(TaskSkillRef.self, forKey: .skill)
+            ?? container.decodeIfPresent(TaskSkillRef.self, forKey: .candidateSkill)
+            ?? container.decodeIfPresent(TaskSkillRef.self, forKey: .route)
             ?? topLevelSkill
         let decodedTitle = try container.decodeFlexibleTaskCockpitString(keys: [.title, .name, .label, .task, .skillName, .skillNameAlt, .bestSkillName, .bestSkillNameAlt, .displayName, .displayNameAlt])
             ?? decodedSkill?.name
@@ -525,9 +490,9 @@ struct TaskCockpitCandidateRow: Decodable, Hashable, Identifiable {
             agent: rowAgent,
             skill: decodedSkill,
             readinessScore: try container.decodeFlexibleTaskCockpitInt(keys: [.readinessScore, .readinessScoreAlt]),
-            routingScore: try container.decodeFlexibleTaskCockpitInt(keys: [.routingScore, .routingScoreAlt, .routingConfidenceScore, .routingConfidenceScoreAlt, .confidenceScore]),
-            score: try container.decodeFlexibleTaskCockpitInt(keys: [.score, .value, .comparisonScore, .comparisonScoreAlt, .qualityScore, .qualityScoreAlt]),
-            band: try container.decodeFlexibleTaskCockpitString(keys: [.band, .readinessBand, .routingConfidenceBand, .routingConfidenceBandAlt, .confidenceBand]),
+            routingScore: try container.decodeFlexibleTaskCockpitInt(keys: [.routingScore, .routingScoreAlt, .confidenceScore]),
+            score: try container.decodeFlexibleTaskCockpitInt(keys: [.score, .value, .comparisonScore, .comparisonScoreAlt]),
+            band: try container.decodeFlexibleTaskCockpitString(keys: [.band, .readinessBand, .confidenceBand]),
             status: try container.decodeFlexibleTaskCockpitString(keys: [.status, .state, .enabled]),
             summary: try container.decodeFlexibleTaskCockpitString(keys: [.summary, .detail, .rationale, .scope]) ?? "",
             reasons: try container.decodeFlexibleTaskCockpitStringArray(keys: [.reasons, .reason, .matchReasons]),
@@ -639,9 +604,7 @@ struct TaskCockpitResult: Decodable, Hashable {
     let agentCandidates: [TaskCockpitCandidateRow]
     let skillCandidates: [TaskCockpitCandidateRow]
     let readinessSignals: [TaskCockpitContextRow]
-    let sessionReviewContext: [TaskCockpitContextRow]
     let providerObservabilityContext: [TaskCockpitContextRow]
-    let remediationContext: [TaskCockpitContextRow]
     let gapRows: [TaskCockpitContextRow]
     let blockerRows: [TaskCockpitContextRow]
     let evidenceReferences: [ProviderObservabilityEvidenceReference]
@@ -676,9 +639,7 @@ struct TaskCockpitResult: Decodable, Hashable {
             && agentCandidates.isEmpty
             && skillCandidates.isEmpty
             && readinessSignals.isEmpty
-            && sessionReviewContext.isEmpty
             && providerObservabilityContext.isEmpty
-            && remediationContext.isEmpty
             && gapRows.isEmpty
             && blockerRows.isEmpty
             && evidenceReferences.isEmpty
@@ -716,19 +677,10 @@ struct TaskCockpitResult: Decodable, Hashable {
         case readinessRows = "readiness_rows"
         case readiness
         case signals
-        case sessionReviewContext = "session_review_context"
-        case sessionReviewContextAlt = "sessionReviewContext"
-        case sessionReviewRows = "session_review_rows"
-        case sessionReviews = "session_reviews"
         case providerObservabilityContext = "provider_observability_context"
         case providerObservabilityContextAlt = "providerObservabilityContext"
         case providerRows = "provider_rows"
         case providerObservabilityRows = "provider_observability_rows"
-        case remediationContext = "remediation_context"
-        case remediationContextAlt = "remediationContext"
-        case remediationRows = "remediation_rows"
-        case remediationNextSteps = "remediation_next_steps"
-        case remediationItems = "remediation_items"
         case gapRows = "gap_rows"
         case gapNotes = "gap_notes"
         case gaps
@@ -759,9 +711,7 @@ struct TaskCockpitResult: Decodable, Hashable {
         agentCandidates: [TaskCockpitCandidateRow] = [],
         skillCandidates: [TaskCockpitCandidateRow] = [],
         readinessSignals: [TaskCockpitContextRow] = [],
-        sessionReviewContext: [TaskCockpitContextRow] = [],
         providerObservabilityContext: [TaskCockpitContextRow] = [],
-        remediationContext: [TaskCockpitContextRow] = [],
         gapRows: [TaskCockpitContextRow] = [],
         blockerRows: [TaskCockpitContextRow] = [],
         evidenceReferences: [ProviderObservabilityEvidenceReference] = [],
@@ -780,9 +730,7 @@ struct TaskCockpitResult: Decodable, Hashable {
         self.agentCandidates = agentCandidates
         self.skillCandidates = skillCandidates
         self.readinessSignals = readinessSignals
-        self.sessionReviewContext = sessionReviewContext
         self.providerObservabilityContext = providerObservabilityContext
-        self.remediationContext = remediationContext
         self.gapRows = gapRows
         self.blockerRows = blockerRows
         self.evidenceReferences = evidenceReferences
@@ -807,9 +755,7 @@ struct TaskCockpitResult: Decodable, Hashable {
             agentCandidates: try container.decodeFlexibleTaskCockpitRows(keys: [.agentCandidates, .agentCandidatesAlt, .agentRows, .agentRouteRows, .agents]),
             skillCandidates: try container.decodeFlexibleTaskCockpitRows(keys: [.skillCandidates, .skillCandidatesAlt, .skillCandidateRows, .candidateSkills, .skills]),
             readinessSignals: try container.decodeFlexibleTaskCockpitContextRows(keys: [.readinessSignals, .readinessSignalsAlt, .readinessRows, .readiness, .signals]),
-            sessionReviewContext: try container.decodeFlexibleTaskCockpitContextRows(keys: [.sessionReviewContext, .sessionReviewContextAlt, .sessionReviewRows, .sessionReviews]),
             providerObservabilityContext: try container.decodeFlexibleTaskCockpitContextRows(keys: [.providerObservabilityContext, .providerObservabilityContextAlt, .providerRows, .providerObservabilityRows]),
-            remediationContext: try container.decodeFlexibleTaskCockpitContextRows(keys: [.remediationContext, .remediationContextAlt, .remediationRows, .remediationNextSteps, .remediationItems]),
             gapRows: try container.decodeFlexibleTaskCockpitContextRows(keys: [.gapRows, .gapNotes, .gaps]),
             blockerRows: try container.decodeFlexibleTaskCockpitContextRows(keys: [.blockerRows, .blockerNotes, .blockers]),
             evidenceReferences: try container.decodeFlexibleTaskCockpitEvidence(keys: [.evidenceReferences, .evidenceReferencesAlt, .evidence]),
@@ -878,9 +824,7 @@ enum TaskCockpitProviderOutputParser {
             currentCWD: result.filters.currentCWD,
             workspace: result.filters.workspace,
             limit: result.filters.limit,
-            includeSessionReview: result.filters.includeSessionReview,
-            includeProviderObservability: result.filters.includeProviderObservability,
-            includeRemediationContext: result.filters.includeRemediationContext
+            includeProviderObservability: result.filters.includeProviderObservability
         )
         let summary = TaskCockpitSummary(
             taskText: result.summary.taskText.isEmpty ? taskText : result.summary.taskText,
@@ -889,9 +833,7 @@ enum TaskCockpitProviderOutputParser {
             agentCandidateCount: max(result.summary.agentCandidateCount, result.agentCandidates.count),
             skillCandidateCount: max(result.summary.skillCandidateCount, result.skillCandidates.count),
             readinessSignalCount: max(result.summary.readinessSignalCount, result.readinessSignals.count),
-            sessionReviewCount: result.summary.sessionReviewCount,
             providerCallCount: result.summary.providerCallCount,
-            remediationItemCount: result.summary.remediationItemCount,
             gapCount: max(result.summary.gapCount, result.gapRows.count),
             blockerCount: max(result.summary.blockerCount, result.blockerRows.count),
             evidenceCount: max(result.summary.evidenceCount, result.evidenceReferences.count),
@@ -914,9 +856,7 @@ enum TaskCockpitProviderOutputParser {
             agentCandidates: result.agentCandidates,
             skillCandidates: result.skillCandidates,
             readinessSignals: result.readinessSignals,
-            sessionReviewContext: result.sessionReviewContext,
             providerObservabilityContext: result.providerObservabilityContext,
-            remediationContext: result.remediationContext,
             gapRows: result.gapRows,
             blockerRows: result.blockerRows,
             evidenceReferences: result.evidenceReferences,
@@ -1012,7 +952,7 @@ enum TaskCockpitProviderOutputParser {
                 ?? topSkill?.skill?.name
                 ?? (topSkill?.agent == nil ? topSkill?.title : nil),
             readinessScore: intValue(summaryObject, keys: ["readiness_score", "readinessScore"]) ?? topSkill?.readinessScore,
-            routingScore: intValue(summaryObject, keys: ["routing_score", "routingScore", "routing_confidence_score", "routingConfidenceScore", "confidence_score", "confidenceScore"]) ?? topSkill?.routingScore ?? topSkill?.score
+            routingScore: intValue(summaryObject, keys: ["routing_score", "routingScore", "confidence_score", "confidenceScore"]) ?? topSkill?.routingScore ?? topSkill?.score
         )
 
         return TaskCockpitResult(
@@ -1071,7 +1011,7 @@ enum TaskCockpitProviderOutputParser {
         let inferredSkillName = nestedSkillName ?? topSkillName ?? (kind == .skill || kind == .route ? stringValue(object, keys: ["title", "name", "label"]) : nil)
         let skillID = nestedSkillID ?? stringValue(object, keys: ["instance_id", "instanceId", "skill_id", "skillId"])
         let skill = inferredSkillName.map {
-            TaskBenchmarkSkillRef(
+            TaskSkillRef(
                 instanceID: skillID,
                 name: $0,
                 agent: agent ?? UIStrings.unknown,
@@ -1092,9 +1032,9 @@ enum TaskCockpitProviderOutputParser {
             agent: agent ?? skill?.agent,
             skill: skill,
             readinessScore: intValue(object, keys: ["readiness_score", "readinessScore"]),
-            routingScore: intValue(object, keys: ["routing_score", "routingScore", "routing_confidence_score", "routingConfidenceScore", "confidence_score", "confidenceScore"]),
-            score: intValue(object, keys: ["score", "value", "comparison_score", "comparisonScore", "quality_score", "qualityScore"]),
-            band: stringValue(object, keys: ["band", "readiness_band", "readinessBand", "routing_confidence_band", "routingConfidenceBand", "confidence_band", "confidenceBand"]),
+            routingScore: intValue(object, keys: ["routing_score", "routingScore", "confidence_score", "confidenceScore"]),
+            score: intValue(object, keys: ["score", "value", "comparison_score", "comparisonScore"]),
+            band: stringValue(object, keys: ["band", "readiness_band", "readinessBand", "confidence_band", "confidenceBand"]),
             status: stringValue(object, keys: ["status", "state", "enabled"]),
             summary: sanitizedProviderSummary(stringValue(object, keys: ["summary", "detail", "rationale", "reason", "scope"]) ?? "") ?? "",
             reasons: stringArrayValue(object, keys: ["reasons", "reason", "match_reasons", "matchReasons", "why"]),

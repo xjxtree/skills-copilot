@@ -1,9 +1,0 @@
-{
-  "id": "fixture-remediation-list-history-v260",
-  "method": "remediation.listHistory",
-  "params": {
-    "agent": "codex",
-    "include_recurrence_rows": true,
-    "limit": 10
-  }
-}

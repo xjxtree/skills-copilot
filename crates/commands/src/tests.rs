@@ -1552,55 +1552,6 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
 }
 
 #[test]
-fn pi_writable_harness_writes_only_disposable_evidence_and_keeps_production_blocked() {
-    let temp_root = temp_test_dir("pi-writable-harness").join("pi-writable-harness");
-
-    let report =
-        run_pi_writable_evidence_harness(&temp_root).expect("Pi harness evidence succeeds");
-
-    assert_eq!(report.harness, "v2.36-pi-writable-evidence");
-    assert!(!report.production_writes_enabled);
-    assert!(report.safety.disposable_only);
-    assert!(!report.safety.production_writes_enabled);
-    assert!(!report.safety.provider_request_sent);
-    assert!(!report.safety.script_execution_allowed);
-    assert!(!report.safety.credential_accessed);
-    assert!(!report.safety.install_performed);
-    assert!(!report.safety.production_config_mutated);
-    assert_eq!(report.scenarios.len(), 3);
-    assert!(report.scenarios.iter().all(|scenario| {
-        scenario.initial_enabled
-            && scenario.disabled_after_toggle
-            && scenario.reenabled_after_toggle
-            && scenario.rollback_restored
-            && scenario.invalid_json_blocked
-            && scenario.writes_confined_to_disposable_root
-    }));
-    assert!(report
-        .scenarios
-        .iter()
-        .any(|scenario| scenario.layer == "project" && scenario.explicit_untrusted_blocked));
-    assert!(temp_root.join("pi-writable-harness-report.json").exists());
-    assert!(!temp_root.join("global-home/.pi/agent/skills").exists());
-    assert!(!temp_root.join("global-home/.pi/settings.json").exists());
-
-    let _ = std::fs::remove_dir_all(temp_root.parent().expect("harness temp root has parent"));
-}
-
-#[test]
-fn pi_writable_harness_rejects_non_disposable_roots() {
-    let temp_root = temp_test_dir("not-pi-root");
-    let result = run_pi_writable_evidence_harness(&temp_root);
-
-    assert!(
-        matches!(result, Err(CommandError::UnsafeConfigPath(_))),
-        "harness must require an explicit disposable marker"
-    );
-
-    let _ = std::fs::remove_dir_all(&temp_root);
-}
-
-#[test]
 fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
     let temp_root = temp_test_dir("pi-toggle-global");
     let home = temp_root.join("home");
@@ -4445,73 +4396,6 @@ mod v219_skill_health_tests {
             opencode.conflict_count, 0,
             "cross-agent enabled-state mismatch remains analysis-only"
         );
-    }
-
-    #[test]
-    fn cross_agent_comparison_is_read_only_and_ui_ready() {
-        let catalog = Catalog::in_memory().expect("catalog opens");
-        catalog.init().expect("catalog initializes");
-        let (instances, _) = runtime_and_analysis_conflict_fixture();
-        for instance in &instances {
-            catalog
-                .upsert_skill_instance(instance)
-                .expect("upsert comparison fixture");
-        }
-        catalog
-            .refresh_rule_findings(&[RuleFindingDraft {
-                id: "comparison-finding".to_string(),
-                instance_id: Some("codex-review".to_string()),
-                definition_id: None,
-                rule_id: "permissions.exec-needs-human".to_string(),
-                severity: "warning".to_string(),
-                message: "exec permission needs human review".to_string(),
-                suggestion: Some("Review command use before enabling.".to_string()),
-                created_at: 1,
-            }])
-            .expect("refresh findings");
-        let ctx = AdapterContext {
-            user_home: PathBuf::from("/tmp/home"),
-            project_root: Some(PathBuf::from("/tmp/project")),
-            project_cwd: None,
-            extra_roots: vec![],
-        };
-
-        let comparisons = list_cross_agent_comparisons(
-            &catalog,
-            &ctx,
-            Some("codex-review"),
-            Some("codex"),
-            Some("review"),
-            Some(10),
-        )
-        .expect("comparison list");
-
-        assert!(comparisons.read_only);
-        assert!(!comparisons.writes_allowed);
-        assert!(!comparisons.provider_request_sent);
-        assert_eq!(
-            comparisons.summary.selected_instance_id.as_deref(),
-            Some("codex-review")
-        );
-        assert_eq!(comparisons.summary.returned_groups, 1);
-        let group = comparisons.groups.first().expect("comparison group");
-        assert_eq!(group.canonical_name, "review-diff");
-        assert!(group.agents_present.contains(&"claude-code".to_string()));
-        assert!(group.agents_present.contains(&"codex".to_string()));
-        assert!(group.agents_present.contains(&"opencode".to_string()));
-        assert!(group.agents_missing.contains(&"pi".to_string()));
-        assert!(group.state_summary.has_difference);
-        assert!(group.source_summary.has_difference);
-        assert!(group.risk_summary.has_risk);
-        assert_eq!(group.risk_summary.finding_count, 1);
-        assert!(!group.writable_summary.has_mixed_capability);
-        assert!(group.writable_summary.writable_agent_count >= 3);
-        assert!(group.analysis_kinds.contains(&"duplicate_name".to_string()));
-        assert!(group.members.iter().any(|member| {
-            member.instance_id == "codex-review"
-                && member.finding_count == 1
-                && member.writable_supported
-        }));
     }
 
     #[test]

@@ -26,7 +26,7 @@ struct SidebarView: View {
                             title: SidebarContentMode.sessions.title,
                             subtitle: sessionButtonSubtitle,
                             systemImage: SidebarContentMode.sessions.systemImage,
-                            count: String(store.localSessionPreviewResult.count),
+                            count: sessionNavigationCountText,
                             metrics: sessionCardMetrics,
                             isSelected: isSessionCardSelected
                         ) {
@@ -119,6 +119,14 @@ struct SidebarView: View {
 
     private var agentDisabledCount: Int {
         agentDisabledSkills.count
+    }
+
+    private var sessionNavigationCountText: String {
+        let preview = store.localSessionPreviewResult
+        if preview.totalMatchedCount > preview.sessionRows.count {
+            return "\(preview.sessionRows.count)/\(preview.totalMatchedCount)"
+        }
+        return String(max(preview.totalMatchedCount, preview.count))
     }
 
     private var sessionCardMetrics: [SidebarNavigationMetric] {
@@ -1191,10 +1199,12 @@ private struct SessionSidebarPanel: View {
             .listPageChromeRow()
 
             Section(UIStrings.text("sidebar.sessions.list", "Sessions")) {
-                if preview.sessionRows.isEmpty {
+                if preview.sessionRows.isEmpty && store.isPreviewingLocalSessions {
+                    SidebarEmptyMessage(message: UIStrings.text("sidebar.sessions.loading", "Loading sessions..."))
+                } else if preview.sessionRows.isEmpty {
                     SidebarEmptyMessage(message: UIStrings.text("sidebar.sessions.empty", "No local sessions found."))
                 } else if filteredRows.isEmpty {
-                    SidebarEmptyMessage(message: UIStrings.localSessionNoMatchesMessage(totalCount: preview.sessionRows.count))
+                    SidebarEmptyMessage(message: UIStrings.localSessionNoMatchesMessage(totalCount: preview.totalMatchedCount))
                 } else {
                     ForEach(filteredRows) { session in
                         SessionSidebarRow(
@@ -1205,6 +1215,11 @@ private struct SessionSidebarPanel: View {
                             store.selectLocalSession(session)
                         }
                         .listPageCardRow()
+                    }
+
+                    if preview.hasMore {
+                        loadMoreSessionsButton
+                            .listPageCardRow()
                     }
                 }
             }
@@ -1240,7 +1255,7 @@ private struct SessionSidebarPanel: View {
             ListPageTitleBlock(
                 title: SidebarContentMode.sessions.title,
                 subtitle: "\(store.agentFilter.title) · \(UIStrings.text("sidebar.sessions.loaded", "Local sessions"))",
-                countText: "\(store.filteredLocalSessionRows.count)"
+                countText: sessionCountText
             )
             .padding(.horizontal, CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset))
             .padding(.top, 12)
@@ -1259,6 +1274,15 @@ private struct SessionSidebarPanel: View {
             sessionSearchField
                 .padding(.horizontal, CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset))
         }
+    }
+
+    private var sessionCountText: String {
+        let preview = store.localSessionPreviewResult
+        let loaded = store.filteredLocalSessionRows.count
+        guard preview.totalMatchedCount > loaded else {
+            return "\(loaded)"
+        }
+        return "\(loaded)/\(preview.totalMatchedCount)"
     }
 
     private var sessionScopePicker: some View {
@@ -1334,9 +1358,37 @@ private struct SessionSidebarPanel: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(store.isRefreshBusy || store.isPreviewingLocalSessions)
+        .disabled(store.isRefreshBusy || store.isPreviewingLocalSessions || store.isLoadingMoreLocalSessions)
         .help(UIStrings.text("sidebar.sessions.preview", "Refresh Sessions"))
         .accessibilityLabel(UIStrings.text("sidebar.sessions.preview", "Refresh Sessions"))
+    }
+
+    private var loadMoreSessionsButton: some View {
+        Button {
+            Task { await store.loadMoreLocalSessions() }
+        } label: {
+            HStack(spacing: 8) {
+                if store.isLoadingMoreLocalSessions {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "chevron.down.circle")
+                        .font(.caption.weight(.semibold))
+                }
+
+                Text(UIStrings.text("sidebar.sessions.loadMore", "Load more"))
+                    .font(.caption.weight(.semibold))
+
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .disabled(!store.canLoadMoreLocalSessions)
+        .accessibilityLabel(UIStrings.text("sidebar.sessions.loadMore", "Load more"))
     }
 
 }
@@ -1532,51 +1584,62 @@ private struct SkillSidebarPanel: View {
     var body: some View {
         let visibleSkills = store.filteredSkills
 
-        Group {
-            Section {
-                skillToolbar(visibleSkills: visibleSkills)
-            }
-            .listPageChromeRow()
-
-            if store.skills.isEmpty {
-                Section(UIStrings.skills) {
-                    SidebarEmptyMessage(message: store.isLoading ? UIStrings.loading : emptyCatalogMessage)
-                }
-            } else if visibleSkills.isEmpty {
-                Section(UIStrings.skills) {
-                    SidebarEmptyMessage(message: emptyFilteredMessage)
-                }
-            } else {
+        ScrollViewReader { proxy in
+            Group {
                 Section {
-                    ForEach(visibleSkills) { skill in
-                        SkillRow(
-                            skill: skill,
-                            issueCount: store.issueIndicatorCount(for: skill),
-                            isSelected: store.selectedSidebarSelection == .skill(skill.id)
-                        ) {
-                            store.selectedSidebarSelection = .skill(skill.id)
-                        }
-                        .equatable()
-                        .listPageCardRow()
-                    }
-                } header: {
-                    SkillListSectionHeader(
-                        title: skillListSectionTitle(visibleCount: visibleSkills.count),
-                        visibleCount: visibleSkills.count
-                    )
+                    skillToolbar(visibleSkills: visibleSkills)
                 }
-                .id(skillListRefreshID(visibleCount: visibleSkills.count))
+                .listPageChromeRow()
+
+                if store.skills.isEmpty {
+                    Section(UIStrings.skills) {
+                        SidebarEmptyMessage(message: store.isLoading ? UIStrings.loading : emptyCatalogMessage)
+                    }
+                } else if visibleSkills.isEmpty {
+                    Section(UIStrings.skills) {
+                        SidebarEmptyMessage(message: emptyFilteredMessage)
+                    }
+                } else {
+                    Section {
+                        ForEach(visibleSkills) { skill in
+                            SkillRow(
+                                skill: skill,
+                                issueCount: store.issueIndicatorCount(for: skill),
+                                isSelected: store.selectedSidebarSelection == .skill(skill.id)
+                            ) {
+                                store.selectedSidebarSelection = .skill(skill.id)
+                            }
+                            .equatable()
+                            .id(skill.id)
+                            .listPageCardRow()
+                        }
+                    } header: {
+                        SkillListSectionHeader(
+                            title: skillListSectionTitle(visibleCount: visibleSkills.count),
+                            visibleCount: visibleSkills.count
+                        )
+                    }
+                    .id(skillListRefreshID(visibleCount: visibleSkills.count))
+                }
             }
-        }
-        .onAppear {
-            synchronizeSearchDraft(with: store.searchText)
-        }
-        .onChange(of: store.searchText) { committedText in
-            synchronizeSearchDraft(with: committedText)
-        }
-        .onDisappear {
-            searchCommitTask?.cancel()
-            searchCommitTask = nil
+            .onAppear {
+                synchronizeSearchDraft(with: store.searchText)
+            }
+            .onChange(of: store.searchText) { committedText in
+                synchronizeSearchDraft(with: committedText)
+            }
+            .onChange(of: store.skillListScrollRequest) { request in
+                guard let request else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo(request.skillID, anchor: .center)
+                    }
+                }
+            }
+            .onDisappear {
+                searchCommitTask?.cancel()
+                searchCommitTask = nil
+            }
         }
     }
 

@@ -2,211 +2,6 @@ use super::dispatch_fixtures::*;
 use super::*;
 
 #[test]
-fn llm_preview_prompt_accepts_task_readiness_action_with_redaction() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-readiness-preview-test-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-    let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
-    seed_catalog_with_llm_skill(&host, &skill_path);
-
-    let response = host.handle(ServiceRequest {
-        id: Some("readiness-preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: json!({
-            "action": "task_readiness",
-            "instance_ids": ["llm-skill-id"],
-            "user_intent": "Analyze local skill posture with token=fixture-redacted-value"
-        }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("task readiness preview result");
-    assert_eq!(
-        result.get("action").and_then(Value::as_str),
-        Some("task_readiness")
-    );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result.get("write_back_allowed").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert!(result
-        .get("requires_confirmation")
-        .and_then(Value::as_bool)
-        .unwrap_or(false));
-    let serialized = serde_json::to_string(&result).expect("serialize readiness preview");
-    assert!(serialized.contains("Task readiness evidence"));
-    assert!(serialized.contains("<redacted>"));
-    assert!(!serialized.contains("fixture-redacted-value"));
-    assert!(!serialized.contains("OPENAI_API_KEY"));
-    assert!(!serialized.contains(&skill_path.to_string_lossy().to_string()));
-    assert!(!provider_call_metadata_path(&app_data_dir).exists());
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
-fn llm_preview_prompt_accepts_routing_confidence_action_with_redaction() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-routing-preview-test-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-    let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
-    seed_catalog_with_llm_skill(&host, &skill_path);
-
-    let response = host.handle(ServiceRequest {
-        id: Some("routing-preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: json!({
-            "action": "routing_confidence",
-            "instance_ids": ["llm-skill-id"],
-            "user_intent": "Analyze local skill posture with token=fixture-redacted-value"
-        }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("routing confidence preview result");
-    assert_eq!(
-        result.get("action").and_then(Value::as_str),
-        Some("routing_confidence")
-    );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result.get("write_back_allowed").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert!(result
-        .get("requires_confirmation")
-        .and_then(Value::as_bool)
-        .unwrap_or(false));
-    let serialized = serde_json::to_string(&result).expect("serialize routing confidence preview");
-    assert!(serialized.contains("Routing confidence evidence"));
-    assert!(serialized.contains("<redacted>"));
-    assert!(!serialized.contains("fixture-redacted-value"));
-    assert!(!serialized.contains("OPENAI_API_KEY"));
-    assert!(!serialized.contains(&skill_path.to_string_lossy().to_string()));
-    assert!(!provider_call_metadata_path(&app_data_dir).exists());
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
-fn llm_preview_prompt_accepts_stale_drift_action_with_redaction() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-stale-drift-preview-test-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-    seed_catalog_with_stale_drift_fixture(&host);
-
-    let response = host.handle(ServiceRequest {
-        id: Some("stale-drift-preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: json!({
-            "action": "stale_drift_detection",
-            "instance_ids": ["stale-drift-alpha"],
-            "user_intent": "explain stale drift without leaking token=fixture-redacted-value"
-        }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("stale drift preview result");
-    assert_eq!(
-        result.get("action").and_then(Value::as_str),
-        Some("stale_drift_detection")
-    );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result.get("write_back_allowed").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert!(result
-        .get("requires_confirmation")
-        .and_then(Value::as_bool)
-        .unwrap_or(false));
-    let serialized = serde_json::to_string(&result).expect("serialize stale drift preview");
-    assert!(serialized.contains("Stale/drift detection evidence"));
-    assert!(serialized.contains("<redacted>"));
-    assert!(!serialized.contains("fixture-redacted-value"));
-    assert!(!serialized.contains("OPENAI_API_KEY"));
-    assert!(!serialized.contains("skills-copilot-stale-drift"));
-    assert!(!provider_call_metadata_path(&app_data_dir).exists());
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
-fn llm_preview_prompt_accepts_quality_score_action_without_sending_provider_request() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-quality-score-preview-test-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-    let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
-    seed_catalog_with_llm_skill(&host, &skill_path);
-
-    let response = host.handle(ServiceRequest {
-        id: Some("quality-score-preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: json!({
-            "action": "quality_score",
-            "app_language": "zh-Hans",
-            "skill_instance_id": "llm-skill-id",
-            "user_intent": "explain quality without leaking token=fixture-redacted-value"
-        }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("quality score preview result");
-    assert_eq!(
-        result.get("action").and_then(Value::as_str),
-        Some("quality_score")
-    );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result.get("write_back_allowed").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert!(result
-        .get("requires_confirmation")
-        .and_then(Value::as_bool)
-        .unwrap_or(false));
-    let serialized = serde_json::to_string(&result).expect("serialize quality preview");
-    assert!(serialized.contains("Quality score evidence"));
-    assert!(serialized.contains("Output language: Simplified Chinese (zh-Hans)"));
-    assert!(serialized.contains("Write all prose"));
-    assert!(serialized.contains("Do not use Markdown tables"));
-    assert!(serialized.contains("Do not wrap the answer in fenced code blocks"));
-    assert!(serialized.contains("Required quality-score response shape"));
-    assert!(serialized.contains("<redacted>"));
-    assert!(!serialized.contains("fixture-redacted-value"));
-    assert!(!serialized.contains("OPENAI_API_KEY"));
-    assert!(!serialized.contains(&skill_path.to_string_lossy().to_string()));
-    assert!(!provider_call_metadata_path(&app_data_dir).exists());
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
 fn llm_preview_prompt_returns_redacted_confirmation_payload() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-llm-preview-test-{}-{}",
@@ -236,9 +31,8 @@ fn llm_preview_prompt_returns_redacted_confirmation_payload() {
             id: Some("preview".to_string()),
             method: "llm.previewPrompt".to_string(),
             params: json!({
-                "action": "skill_analysis",
-                "instance_ids": ["llm-skill-id", "missing-skill-id"],
-                "analysis_kind": "risk",
+                "action": "analyze",
+                "skill_instance_id": "llm-skill-id",
                 "user_intent": "review credential_marker=fixture-redacted-value without leaking local paths"
             }),
         });
@@ -1047,6 +841,309 @@ fn llm_provider_observability_aggregates_seeded_metadata_and_preserves_privacy_b
 }
 
 #[test]
+fn llm_list_prompt_runs_returns_full_history_without_limit_and_reports_limited_page() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-list-runs-full-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+
+    let base_run = LlmPromptRunRecord {
+        id: "prompt-run-base".to_string(),
+        preview_id: "preview-base".to_string(),
+        confirmation_id: "confirm-base".to_string(),
+        action: "analyze".to_string(),
+        request_kind: "analyze".to_string(),
+        analysis_kind: None,
+        scope: Some("selected".to_string()),
+        instance_id: Some("fixture-skill".to_string()),
+        instance_ids: vec!["fixture-skill".to_string()],
+        definition_id: Some("fixture-definition".to_string()),
+        agent: Some("codex".to_string()),
+        task: Some("Review prompt history pagination.".to_string()),
+        profile_id: "fixture-openai".to_string(),
+        provider: "openai-compatible".to_string(),
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 10,
+        estimated_input_tokens: 6,
+        estimated_output_tokens: 4,
+        estimated_total_tokens: 10,
+        estimated_cost_usd: 0.01,
+        draft_output: None,
+        draft_requires_user_copy: true,
+        provider_request_sent: true,
+        credential_accessed: false,
+        raw_secret_returned: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        redaction_summary: LlmPromptRunRedactionSummary {
+            status: "redacted-local-only".to_string(),
+            redacted_value_count: 0,
+            redacted_fields: Vec::new(),
+            placeholders: Vec::new(),
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+            raw_secret_returned: false,
+        },
+        created_at: 900,
+        completed_at: 1_000,
+        safety_flags: llm_prompt_run_safety_flags(true, false),
+    };
+    let runs = (0..60)
+        .map(|index| LlmPromptRunRecord {
+            id: format!("prompt-run-{index:02}"),
+            preview_id: format!("preview-{index:02}"),
+            confirmation_id: format!("confirm-{index:02}"),
+            task: Some(format!("Review prompt history item {index:02}.")),
+            created_at: 1_000 + index,
+            completed_at: 1_100 + index,
+            ..base_run.clone()
+        })
+        .collect::<Vec<_>>();
+    host.save_llm_prompt_runs(&runs).expect("save prompt runs");
+
+    let full_response = host.handle(ServiceRequest {
+        id: Some("prompt-runs-full".to_string()),
+        method: "llm.listPromptRuns".to_string(),
+        params: json!({}),
+    });
+    assert!(full_response.ok, "{:?}", full_response.error);
+    let full = full_response.result.expect("full prompt runs");
+    assert_eq!(full.get("count").and_then(Value::as_u64), Some(60));
+    assert_eq!(full.get("total_count").and_then(Value::as_u64), Some(60));
+    assert_eq!(full.get("returned_count").and_then(Value::as_u64), Some(60));
+    assert_eq!(full.get("limit"), None);
+    assert_eq!(full.get("truncated").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        full.get("runs").and_then(Value::as_array).map(Vec::len),
+        Some(60)
+    );
+
+    let limited_response = host.handle(ServiceRequest {
+        id: Some("prompt-runs-limited".to_string()),
+        method: "llm.listPromptRuns".to_string(),
+        params: json!({ "limit": 5 }),
+    });
+    assert!(limited_response.ok, "{:?}", limited_response.error);
+    let limited = limited_response.result.expect("limited prompt runs");
+    assert_eq!(limited.get("count").and_then(Value::as_u64), Some(5));
+    assert_eq!(limited.get("total_count").and_then(Value::as_u64), Some(60));
+    assert_eq!(
+        limited.get("returned_count").and_then(Value::as_u64),
+        Some(5)
+    );
+    assert_eq!(limited.get("limit").and_then(Value::as_u64), Some(5));
+    assert_eq!(
+        limited.get("truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        limited.get("runs").and_then(Value::as_array).map(Vec::len),
+        Some(5)
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn llm_provider_observability_aggregates_full_date_range_before_row_limit() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-observability-range-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+
+    let base_run = LlmPromptRunRecord {
+        id: "prompt-run-base".to_string(),
+        preview_id: "preview-base".to_string(),
+        confirmation_id: "confirm-base".to_string(),
+        action: "analyze".to_string(),
+        request_kind: "analyze".to_string(),
+        analysis_kind: None,
+        scope: Some("selected".to_string()),
+        instance_id: Some("fixture-skill".to_string()),
+        instance_ids: vec!["fixture-skill".to_string()],
+        definition_id: Some("fixture-definition".to_string()),
+        agent: Some("codex".to_string()),
+        task: Some("Review provider observability aggregation.".to_string()),
+        profile_id: "fixture-openai".to_string(),
+        provider: "openai-compatible".to_string(),
+        model: "visible-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 10,
+        estimated_input_tokens: 6,
+        estimated_output_tokens: 4,
+        estimated_total_tokens: 10,
+        estimated_cost_usd: 0.01,
+        draft_output: None,
+        draft_requires_user_copy: true,
+        provider_request_sent: true,
+        credential_accessed: false,
+        raw_secret_returned: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        redaction_summary: LlmPromptRunRedactionSummary {
+            status: "redacted-local-only".to_string(),
+            redacted_value_count: 0,
+            redacted_fields: Vec::new(),
+            placeholders: Vec::new(),
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+            raw_secret_returned: false,
+        },
+        created_at: 900,
+        completed_at: 1_000,
+        safety_flags: llm_prompt_run_safety_flags(true, false),
+    };
+    let run = |id: &str, model: &str, completed_at: i64| LlmPromptRunRecord {
+        id: id.to_string(),
+        preview_id: format!("preview-{id}"),
+        confirmation_id: format!("confirm-{id}"),
+        model: model.to_string(),
+        created_at: completed_at - 10,
+        completed_at,
+        ..base_run.clone()
+    };
+    host.save_llm_prompt_runs(&[
+        run("newest", "visible-model", 3_000),
+        run("middle", "visible-model", 2_000),
+        run("range-only", "full-range-only-model", 1_000),
+        run("old", "old-model", 100),
+    ])
+    .expect("save ranged prompt runs");
+
+    let base_metadata = ProviderCallMetadata {
+        timestamp: 1_100,
+        action_type: "analyze".to_string(),
+        profile_id: "fixture-openai".to_string(),
+        provider_type: provider::ProviderType::OpenAiCompatible,
+        model: "visible-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 10,
+        estimated_input_tokens: 7,
+        estimated_output_tokens: 3,
+        estimated_cost_usd: 0.01,
+        confirmation_id: "confirm-base".to_string(),
+        redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+        provider_request_sent: true,
+        credential_accessed: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+    };
+    let metadata = |id: &str, model: &str, timestamp: i64| ProviderCallMetadata {
+        timestamp,
+        model: model.to_string(),
+        confirmation_id: format!("confirm-{id}"),
+        ..base_metadata.clone()
+    };
+    let metadata_lines = [
+        metadata("newest", "visible-model", 3_100),
+        metadata("middle", "visible-model", 2_100),
+        metadata("range-only", "full-range-only-model", 1_100),
+        metadata("old", "old-model", 90),
+    ]
+    .into_iter()
+    .map(|row| serde_json::to_string(&row).expect("serialize metadata"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    fs::write(
+        provider_call_metadata_path(&app_data_dir),
+        format!("{metadata_lines}\n"),
+    )
+    .expect("write provider metadata");
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-observability-range".to_string()),
+        method: "llm.providerObservability".to_string(),
+        params: json!({
+            "start_at": 1_000,
+            "end_at": 3_200,
+            "limit": 2
+        }),
+    });
+
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("provider observability result");
+    assert_eq!(
+        result
+            .pointer("/filters/aggregation_uses_full_range")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        result
+            .pointer("/history_rows")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        result
+            .pointer("/call_rows")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        result
+            .pointer("/summary/returned_prompt_run_count")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        result
+            .pointer("/summary/returned_call_row_count")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        result
+            .pointer("/summary/succeeded_count")
+            .and_then(Value::as_u64),
+        Some(6)
+    );
+    assert_eq!(
+        result
+            .pointer("/summary/estimated_total_tokens")
+            .and_then(Value::as_u64),
+        Some(60)
+    );
+    assert!(
+        result
+            .pointer("/grouping_rows")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(
+                |row| row.get("model").and_then(Value::as_str) == Some("full-range-only-model")
+            )),
+        "grouping rows should include rows beyond the returned evidence limit"
+    );
+    assert!(
+        !serde_json::to_string(&result)
+            .expect("serialize result")
+            .contains("old-model"),
+        "date range should exclude old rows"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn model_task_matches_empty_list_is_safe_and_does_not_initialize_app_data() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-model-task-empty-{}-{}",
@@ -1160,7 +1257,7 @@ fn model_task_match_record_redacts_and_writes_only_app_local_history() {
             "id": "model-task-redaction",
             "title": format!("Review api_key {secret}"),
             "task": format!("Audit task at {local_path} api_key {secret}"),
-            "task_kind": "task_readiness",
+            "task_kind": "task_cockpit",
             "provider": "openai-compatible",
             "model": "fixture-model",
             "destination_host": "https://api.fixture.invalid/v1",
@@ -1212,8 +1309,8 @@ fn model_task_match_list_aggregates_records_and_prompt_runs_with_filters() {
         id: "prompt-run-model-task".to_string(),
         preview_id: "preview-model-task".to_string(),
         confirmation_id: "confirm-model-task".to_string(),
-        action: "task_readiness".to_string(),
-        request_kind: "task_readiness".to_string(),
+        action: "task_cockpit".to_string(),
+        request_kind: "task_cockpit".to_string(),
         analysis_kind: None,
         scope: Some("selected".to_string()),
         instance_id: Some("fixture-skill".to_string()),
@@ -1264,7 +1361,7 @@ fn model_task_match_list_aggregates_records_and_prompt_runs_with_filters() {
             "id": "model-task-fit",
             "title": "Fixture model fit",
             "task": "Review release evidence.",
-            "task_kind": "task_readiness",
+            "task_kind": "task_cockpit",
             "agent": "codex",
             "provider": "openai-compatible",
             "model": "fixture-model",
@@ -1284,7 +1381,7 @@ fn model_task_match_list_aggregates_records_and_prompt_runs_with_filters() {
         params: json!({
             "provider": "openai-compatible",
             "model": "fixture-model",
-            "task_kind": "task_readiness",
+            "task_kind": "task_cockpit",
             "match_status": "fit",
             "agent": "codex",
             "limit": 10
@@ -1324,6 +1421,166 @@ fn model_task_match_list_aggregates_records_and_prompt_runs_with_filters() {
             .and_then(Value::as_bool),
         Some(false),
         "listing history must not send fresh provider traffic"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn model_task_match_list_returns_full_history_without_limit_and_reports_limited_page() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-model-task-list-full-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let safety_flags = ModelTaskMatchSafetyFlags {
+        read_only: true,
+        app_local_only: true,
+        provider_request_sent: false,
+        credential_accessed: false,
+        draft_copy_only: true,
+        write_back_allowed: false,
+        write_actions_available: false,
+        skill_files_mutated: false,
+        agent_config_mutated: false,
+        script_execution_allowed: false,
+        execution_actions_available: false,
+        config_mutation_allowed: false,
+        snapshot_created: false,
+        triage_mutation_allowed: false,
+        raw_secret_returned: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        raw_trace_persisted: false,
+        unredacted_paths_returned: false,
+        cloud_sync_performed: false,
+        telemetry_emitted: false,
+    };
+    let redaction_summary = LlmPromptRunRedactionSummary {
+        status: "redacted-local-only".to_string(),
+        redacted_value_count: 0,
+        redacted_fields: Vec::new(),
+        placeholders: Vec::new(),
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        raw_trace_persisted: false,
+        raw_secret_returned: false,
+    };
+    let records = (0..60)
+        .map(|index| ModelTaskMatchRecord {
+            id: format!("model-task-{index:02}"),
+            title: format!("Fixture model task {index:02}"),
+            task: format!("Review model task item {index:02}."),
+            task_kind: "task_cockpit".to_string(),
+            agent: Some("codex".to_string()),
+            profile_id: Some("fixture-openai".to_string()),
+            provider: "openai-compatible".to_string(),
+            model: "fixture-model".to_string(),
+            destination_host: Some("api.fixture.invalid".to_string()),
+            match_status: "fit".to_string(),
+            confidence_score: Some(90),
+            latency_ms: Some(100),
+            estimated_total_tokens: Some(120),
+            estimated_cost_usd: Some(0.01),
+            source_kind: "manual".to_string(),
+            prompt_run_ids: Vec::new(),
+            benchmark_ids: Vec::new(),
+            evidence_refs: vec![format!("model-task:{index:02}")],
+            gap_notes: Vec::new(),
+            blocker_notes: Vec::new(),
+            outcome_notes: Vec::new(),
+            created_at: 1_000 + index,
+            updated_at: 1_100 + index,
+            redaction_summary: redaction_summary.clone(),
+            safety_flags,
+        })
+        .collect::<Vec<_>>();
+    host.save_model_task_matches(&records)
+        .expect("save model-task history");
+
+    let full_response = host.handle(ServiceRequest {
+        id: Some("model-task-list-full".to_string()),
+        method: "llm.listModelTaskMatches".to_string(),
+        params: json!({}),
+    });
+    assert!(full_response.ok, "{:?}", full_response.error);
+    let full = full_response.result.expect("full model-task list result");
+    assert_eq!(
+        full.get("total_record_count").and_then(Value::as_u64),
+        Some(60)
+    );
+    assert_eq!(
+        full.get("returned_record_count").and_then(Value::as_u64),
+        Some(60)
+    );
+    assert_eq!(
+        full.get("total_evidence_count").and_then(Value::as_u64),
+        Some(60)
+    );
+    assert_eq!(
+        full.get("returned_evidence_count").and_then(Value::as_u64),
+        Some(60)
+    );
+    assert_eq!(full.get("limit"), None);
+    assert_eq!(full.get("truncated").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        full.get("records").and_then(Value::as_array).map(Vec::len),
+        Some(60)
+    );
+    assert_eq!(
+        full.get("recent_evidence_rows")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(60)
+    );
+
+    let limited_response = host.handle(ServiceRequest {
+        id: Some("model-task-list-limited".to_string()),
+        method: "llm.listModelTaskMatches".to_string(),
+        params: json!({ "limit": 5 }),
+    });
+    assert!(limited_response.ok, "{:?}", limited_response.error);
+    let limited = limited_response
+        .result
+        .expect("limited model-task list result");
+    assert_eq!(
+        limited.get("total_record_count").and_then(Value::as_u64),
+        Some(60)
+    );
+    assert_eq!(
+        limited.get("returned_record_count").and_then(Value::as_u64),
+        Some(5)
+    );
+    assert_eq!(
+        limited.get("total_evidence_count").and_then(Value::as_u64),
+        Some(60)
+    );
+    assert_eq!(
+        limited
+            .get("returned_evidence_count")
+            .and_then(Value::as_u64),
+        Some(5)
+    );
+    assert_eq!(limited.get("limit").and_then(Value::as_u64), Some(5));
+    assert_eq!(
+        limited.get("truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        limited
+            .get("records")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(5)
+    );
+    assert_eq!(
+        limited
+            .get("recent_evidence_rows")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(5)
     );
 
     let _ = fs::remove_dir_all(app_data_dir);
@@ -1503,21 +1760,6 @@ fn rules_tuning_methods_store_app_local_state_and_affect_findings() {
     assert_eq!(
         finding.get("suppressed").and_then(Value::as_bool),
         Some(true)
-    );
-
-    let queue_response = host.handle(ServiceRequest {
-        id: Some("cleanup".to_string()),
-        method: "cleanup.listQueue".to_string(),
-        params: Value::Null,
-    });
-    assert!(queue_response.ok);
-    assert_eq!(
-        queue_response
-            .result
-            .as_ref()
-            .and_then(|value| value.pointer("/summary/total_count"))
-            .and_then(Value::as_u64),
-        Some(0)
     );
 
     let clear_suppression_response = host.handle(ServiceRequest {
@@ -2550,173 +2792,6 @@ fn skill_export_bundle_exports_staging_skill_through_service() {
         !manifest.contains(&app_data_dir.to_string_lossy().to_string()),
         "manifest reproducible fields should not include absolute app-data paths"
     );
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
-fn report_export_local_writes_redacted_reports_and_keeps_catalog_read_only() {
-    let unique = unique_suffix();
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-report-export-test-{}-{unique}",
-        std::process::id()
-    ));
-    let user_home = env::temp_dir().join(format!(
-        "skills-copilot-report-home-{}-{unique}",
-        std::process::id()
-    ));
-    let project_root = env::temp_dir().join(format!(
-        "skills-copilot-report-project-{}-{unique}",
-        std::process::id()
-    ));
-    let host = ServiceHost {
-        app_data_dir: app_data_dir.clone(),
-        adapter_ctx: AdapterContext {
-            user_home: user_home.clone(),
-            project_root: Some(project_root.clone()),
-            project_cwd: Some(project_root.join("nested")),
-            extra_roots: Vec::new(),
-        },
-    };
-    seed_catalog_with_cleanup_queue_fixture(&host);
-    seed_catalog_with_llm_skill(&host, &user_home.join(".claude/skills/redacted/SKILL.md"));
-    let before_catalog = Catalog::open(&host.catalog_path()).expect("open catalog before");
-    let before_records = before_catalog.list_skill_records().expect("records before");
-    let before_visible_records = host
-        .list_visible_skill_records(&before_catalog)
-        .expect("visible records before");
-    let before_findings = before_catalog
-        .list_rule_findings()
-        .expect("findings before");
-    let before_snapshots = before_catalog
-        .list_all_config_snapshots()
-        .expect("snapshots before");
-
-    let response = host.handle(ServiceRequest {
-        id: Some("report-export".to_string()),
-        method: "report.exportLocal".to_string(),
-        params: json!({ "formats": ["json", "markdown"] }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("report export result");
-    let export: WireReportExportLocalResult =
-        serde_json::from_value(result).expect("decode report export");
-    assert!(export.catalog_available);
-    assert!(export.read_only);
-    assert!(!export.writes_allowed);
-    assert!(!export.provider_request_sent);
-    assert!(!export.script_execution_allowed);
-    assert!(!export.credential_accessed);
-    assert_eq!(export.files.len(), 2);
-    assert!(export
-        .sections
-        .iter()
-        .any(|section| section.name == "installed_skills"));
-    assert_eq!(export.summary.skill_count, before_visible_records.len());
-    assert_eq!(export.summary.finding_count, before_findings.len());
-    assert!(export
-        .output_dir
-        .starts_with("<app-data-dir>/report-exports/"));
-    assert!(export
-        .files
-        .iter()
-        .all(|file| file.path.starts_with("<app-data-dir>/report-exports/")));
-
-    let json_path = app_data_dir
-        .join("report-exports")
-        .join(&export.export_id)
-        .join("report.json");
-    let markdown_path = app_data_dir
-        .join("report-exports")
-        .join(&export.export_id)
-        .join("report.md");
-    let json_content = fs::read_to_string(json_path).expect("read json report");
-    let markdown_content = fs::read_to_string(markdown_path).expect("read markdown report");
-    for raw_path in [
-        app_data_dir.to_string_lossy().to_string(),
-        user_home.to_string_lossy().to_string(),
-        project_root.to_string_lossy().to_string(),
-    ] {
-        assert!(
-            !json_content.contains(&raw_path),
-            "json report leaked raw path {raw_path}"
-        );
-        assert!(
-            !markdown_content.contains(&raw_path),
-            "markdown report leaked raw path {raw_path}"
-        );
-    }
-    assert!(json_content.contains("<app-data-dir>"));
-    assert!(json_content.contains("$HOME"));
-    assert!(json_content.contains("<project-root>"));
-    assert!(json_content.contains("\"schema_version\": 2"));
-    assert!(json_content.contains("\"recommended_usage\""));
-    assert!(json_content.contains("\"task_preflight\""));
-    assert!(markdown_content.contains("Agent Copilot Agent Usage Report"));
-    assert!(markdown_content.contains("## 2. Installed Skills"));
-    assert!(markdown_content.contains("## 5. Task Preflight"));
-
-    let after_catalog = Catalog::open(&host.catalog_path()).expect("open catalog after");
-    assert_eq!(
-        after_catalog.list_skill_records().expect("records after"),
-        before_records
-    );
-    assert_eq!(
-        after_catalog.list_rule_findings().expect("findings after"),
-        before_findings
-    );
-    assert_eq!(
-        after_catalog
-            .list_all_config_snapshots()
-            .expect("snapshots after"),
-        before_snapshots
-    );
-    assert!(!host.script_execution_audit_path().exists());
-    assert!(!user_home.join(".codex/config.toml").exists());
-    assert!(!user_home.join(".claude/settings.json").exists());
-
-    let _ = fs::remove_dir_all(app_data_dir);
-    let _ = fs::remove_dir_all(user_home);
-    let _ = fs::remove_dir_all(project_root);
-}
-
-#[test]
-fn report_export_local_missing_catalog_writes_empty_report_without_catalog_init() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-report-empty-test-{}-{}",
-        std::process::id(),
-        unique_suffix()
-    ));
-    let host = test_host(app_data_dir.clone());
-
-    let response = host.handle(ServiceRequest {
-        id: Some("report-empty".to_string()),
-        method: "report.exportLocal".to_string(),
-        params: json!({ "formats": ["json"] }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let export: WireReportExportLocalResult =
-        serde_json::from_value(response.result.expect("report result"))
-            .expect("decode report result");
-    assert!(!export.catalog_available);
-    assert_eq!(export.summary.skill_count, 0);
-    assert_eq!(export.summary.finding_count, 0);
-    assert_eq!(export.summary.cleanup_item_count, 0);
-    assert_eq!(export.files.len(), 1);
-    assert!(
-        !host.catalog_path().exists(),
-        "missing-catalog export must not initialize catalog.sqlite"
-    );
-    assert!(!host.script_execution_audit_path().exists());
-    let json_path = app_data_dir
-        .join("report-exports")
-        .join(&export.export_id)
-        .join("report.json");
-    let json_content = fs::read_to_string(json_path).expect("read empty report");
-    assert!(json_content.contains("\"catalog_available\": false"));
-    assert!(json_content.contains("\"writes_allowed\": false"));
 
     let _ = fs::remove_dir_all(app_data_dir);
 }

@@ -501,86 +501,6 @@ struct LLMTokenCostEstimate: Codable, Hashable {
     }
 }
 
-struct LLMReviewPreview: Codable, Hashable {
-    let status: String
-    let generatedBy: String
-    let providerRequestSent: Bool
-    let writeActionsAvailable: Bool
-    let executionActionsAvailable: Bool
-    let purpose: String
-    let risk: LLMReviewRisk
-    let findingExplanations: [LLMReviewFindingExplanation]
-    let crossAgentFit: LLMReviewCrossAgentFit
-    let redaction: LLMReviewRedaction
-
-    enum CodingKeys: String, CodingKey {
-        case status
-        case generatedBy = "generated_by"
-        case providerRequestSent = "provider_request_sent"
-        case writeActionsAvailable = "write_actions_available"
-        case executionActionsAvailable = "execution_actions_available"
-        case purpose
-        case risk
-        case findingExplanations = "finding_explanations"
-        case crossAgentFit = "cross_agent_fit"
-        case redaction
-    }
-}
-
-struct LLMReviewRisk: Codable, Hashable {
-    let level: String
-    let summary: String
-    let signals: [String]
-}
-
-struct LLMReviewFindingExplanation: Codable, Hashable, Identifiable {
-    let ruleID: String
-    let severity: String
-    let explanation: String
-    let suggestedNextStep: String?
-
-    var id: String { "\(ruleID)-\(severity)-\(explanation)" }
-
-    enum CodingKeys: String, CodingKey {
-        case ruleID = "rule_id"
-        case severity
-        case explanation
-        case suggestedNextStep = "suggested_next_step"
-    }
-}
-
-struct LLMReviewCrossAgentFit: Codable, Hashable {
-    let agent: String
-    let scope: String
-    let comparableInstanceCount: Int
-    let summary: String
-    let notes: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case agent
-        case scope
-        case comparableInstanceCount = "comparable_instance_count"
-        case summary
-        case notes
-    }
-}
-
-struct LLMReviewRedaction: Codable, Hashable {
-    let skillBodyReturned: Bool
-    let pathsReturned: Bool
-    let credentialsReturned: Bool
-    let includedFields: [String]
-    let excludedFields: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case skillBodyReturned = "skill_body_returned"
-        case pathsReturned = "paths_returned"
-        case credentialsReturned = "credentials_returned"
-        case includedFields = "included_fields"
-        case excludedFields = "excluded_fields"
-    }
-}
-
 struct LLMPrepareResult: Codable, Identifiable, Hashable {
     let action: LLMAction
     let enabled: Bool
@@ -589,7 +509,6 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
     let model: String?
     let estimate: LLMTokenCostEstimate?
     let confirmationRequired: Bool
-    let reviewPreview: LLMReviewPreview?
 
     var id: LLMAction { action }
 
@@ -607,7 +526,6 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
         case estimatedCostUSD = "estimated_cost_usd"
         case confirmationRequired = "confirmation_required"
         case requiresConfirmation = "requires_confirmation"
-        case reviewPreview = "review_preview"
     }
 
     init(
@@ -617,8 +535,7 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
         provider: String?,
         model: String?,
         estimate: LLMTokenCostEstimate?,
-        confirmationRequired: Bool,
-        reviewPreview: LLMReviewPreview? = nil
+        confirmationRequired: Bool
     ) {
         self.action = action
         self.enabled = enabled
@@ -627,7 +544,6 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
         self.model = model
         self.estimate = estimate
         self.confirmationRequired = confirmationRequired
-        self.reviewPreview = reviewPreview
     }
 
     init(from decoder: Decoder) throws {
@@ -660,7 +576,6 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
         confirmationRequired = try container.decodeIfPresent(Bool.self, forKey: .confirmationRequired)
             ?? container.decodeIfPresent(Bool.self, forKey: .requiresConfirmation)
             ?? true
-        reviewPreview = try container.decodeIfPresent(LLMReviewPreview.self, forKey: .reviewPreview)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -672,7 +587,6 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
         try container.encodeIfPresent(model, forKey: .model)
         try container.encodeIfPresent(estimate, forKey: .estimate)
         try container.encode(confirmationRequired, forKey: .confirmationRequired)
-        try container.encodeIfPresent(reviewPreview, forKey: .reviewPreview)
     }
 
     static func disabledFallback(action: LLMAction, reason: String = UIStrings.llmDisabledFallback) -> LLMPrepareResult {
@@ -687,224 +601,6 @@ struct LLMPrepareResult: Codable, Identifiable, Hashable {
         )
     }
 }
-
-
-
-enum LLMSkillAnalysisKind: String, Codable, CaseIterable, Identifiable, Hashable {
-    case overview
-    case risk
-    case cleanup
-
-    var id: String { rawValue }
-}
-
-struct LLMSkillAnalysisIncludedSkill: Decodable, Identifiable, Hashable {
-    let instanceID: String?
-    let name: String
-    let agent: String
-
-    var id: String { instanceID ?? "\(agent)-\(name)" }
-
-    enum CodingKeys: String, CodingKey {
-        case instanceID = "instance_id"
-        case id
-        case name
-        case agent
-    }
-
-    init(instanceID: String?, name: String, agent: String) {
-        self.instanceID = instanceID
-        self.name = name
-        self.agent = agent
-    }
-
-    init(from decoder: Decoder) throws {
-        if let container = try? decoder.container(keyedBy: CodingKeys.self) {
-            instanceID = try container.decodeIfPresent(String.self, forKey: .instanceID)
-                ?? container.decodeIfPresent(String.self, forKey: .id)
-            name = try container.decodeIfPresent(String.self, forKey: .name) ?? UIStrings.unknown
-            agent = try container.decodeIfPresent(String.self, forKey: .agent) ?? UIStrings.unknown
-            return
-        }
-        let value = try decoder.singleValueContainer().decode(String.self)
-        instanceID = nil
-        name = value
-        agent = UIStrings.unknown
-    }
-}
-
-struct LLMSkillAnalysisSafety: Decodable, Hashable {
-    let writeBackEnabled: Bool
-    let scriptExecutionEnabled: Bool
-    let credentialStorageEnabled: Bool
-    let confirmationRequired: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case writeBackEnabled = "write_back_enabled"
-        case scriptExecutionEnabled = "script_execution_enabled"
-        case credentialStorageEnabled = "credential_storage_enabled"
-        case confirmationRequired = "confirmation_required"
-        case requiresConfirmation = "requires_confirmation"
-    }
-
-    init(
-        writeBackEnabled: Bool = false,
-        scriptExecutionEnabled: Bool = false,
-        credentialStorageEnabled: Bool = false,
-        confirmationRequired: Bool = true
-    ) {
-        self.writeBackEnabled = writeBackEnabled
-        self.scriptExecutionEnabled = scriptExecutionEnabled
-        self.credentialStorageEnabled = credentialStorageEnabled
-        self.confirmationRequired = confirmationRequired
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        writeBackEnabled = try container.decodeIfPresent(Bool.self, forKey: .writeBackEnabled) ?? false
-        scriptExecutionEnabled = try container.decodeIfPresent(Bool.self, forKey: .scriptExecutionEnabled) ?? false
-        credentialStorageEnabled = try container.decodeIfPresent(Bool.self, forKey: .credentialStorageEnabled) ?? false
-        confirmationRequired = try container.decodeIfPresent(Bool.self, forKey: .confirmationRequired)
-            ?? container.decodeIfPresent(Bool.self, forKey: .requiresConfirmation)
-            ?? true
-    }
-}
-
-struct LLMSkillAnalysisPrepareResult: Decodable, Identifiable, Hashable {
-    let enabled: Bool
-    let disabledReason: String?
-    let analysisKind: LLMSkillAnalysisKind
-    let selectedSkillCount: Int
-    let includedSkills: [LLMSkillAnalysisIncludedSkill]
-    let excludedCount: Int
-    let missingCount: Int
-    let promptDraft: String
-    let summaryDraft: String
-    let safety: LLMSkillAnalysisSafety
-
-    var id: LLMSkillAnalysisKind { analysisKind }
-
-    enum CodingKeys: String, CodingKey {
-        case enabled
-        case allowed
-        case disabledReason = "disabled_reason"
-        case reason
-        case analysisKind = "analysis_kind"
-        case kind
-        case selectedSkillCount = "selected_skill_count"
-        case selectedCount = "selected_count"
-        case skillCount = "skill_count"
-        case includedSkills = "included_skills"
-        case includedSkillNames = "included_skill_names"
-        case excludedCount = "excluded_count"
-        case missingCount = "missing_count"
-        case promptDraft = "prompt_draft"
-        case promptPreview = "prompt_preview"
-        case prompt
-        case summaryDraft = "summary_draft"
-        case summaryPreview = "summary_preview"
-        case summary
-        case safety
-        case writeBackEnabled = "write_back_enabled"
-        case scriptExecutionEnabled = "script_execution_enabled"
-        case credentialStorageEnabled = "credential_storage_enabled"
-        case confirmationRequired = "confirmation_required"
-        case requiresConfirmation = "requires_confirmation"
-    }
-
-    init(
-        enabled: Bool,
-        disabledReason: String?,
-        analysisKind: LLMSkillAnalysisKind,
-        selectedSkillCount: Int,
-        includedSkills: [LLMSkillAnalysisIncludedSkill],
-        excludedCount: Int,
-        missingCount: Int,
-        promptDraft: String,
-        summaryDraft: String,
-        safety: LLMSkillAnalysisSafety
-    ) {
-        self.enabled = enabled
-        self.disabledReason = disabledReason
-        self.analysisKind = analysisKind
-        self.selectedSkillCount = selectedSkillCount
-        self.includedSkills = includedSkills
-        self.excludedCount = excludedCount
-        self.missingCount = missingCount
-        self.promptDraft = promptDraft
-        self.summaryDraft = summaryDraft
-        self.safety = safety
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
-            ?? container.decodeIfPresent(Bool.self, forKey: .allowed)
-            ?? false
-        disabledReason = try container.decodeIfPresent(String.self, forKey: .disabledReason)
-            ?? container.decodeIfPresent(String.self, forKey: .reason)
-        analysisKind = try container.decodeIfPresent(LLMSkillAnalysisKind.self, forKey: .analysisKind)
-            ?? container.decodeIfPresent(LLMSkillAnalysisKind.self, forKey: .kind)
-            ?? .overview
-        selectedSkillCount = try container.decodeIfPresent(Int.self, forKey: .selectedSkillCount)
-            ?? container.decodeIfPresent(Int.self, forKey: .selectedCount)
-            ?? container.decodeIfPresent(Int.self, forKey: .skillCount)
-            ?? 0
-        if let included = try container.decodeIfPresent([LLMSkillAnalysisIncludedSkill].self, forKey: .includedSkills) {
-            includedSkills = included
-        } else {
-            includedSkills = try container.decodeIfPresent([String].self, forKey: .includedSkillNames)?.map {
-                LLMSkillAnalysisIncludedSkill(instanceID: nil, name: $0, agent: UIStrings.unknown)
-            } ?? []
-        }
-        excludedCount = try container.decodeIfPresent(Int.self, forKey: .excludedCount) ?? 0
-        missingCount = try container.decodeIfPresent(Int.self, forKey: .missingCount) ?? 0
-        promptDraft = try container.decodeIfPresent(String.self, forKey: .promptDraft)
-            ?? container.decodeIfPresent(String.self, forKey: .promptPreview)
-            ?? container.decodeIfPresent(String.self, forKey: .prompt)
-            ?? ""
-        summaryDraft = try container.decodeIfPresent(String.self, forKey: .summaryDraft)
-            ?? container.decodeIfPresent(String.self, forKey: .summaryPreview)
-            ?? container.decodeIfPresent(String.self, forKey: .summary)
-            ?? ""
-        if let nestedSafety = try container.decodeIfPresent(LLMSkillAnalysisSafety.self, forKey: .safety) {
-            safety = nestedSafety
-        } else {
-            safety = LLMSkillAnalysisSafety(
-                writeBackEnabled: try container.decodeIfPresent(Bool.self, forKey: .writeBackEnabled) ?? false,
-                scriptExecutionEnabled: try container.decodeIfPresent(Bool.self, forKey: .scriptExecutionEnabled) ?? false,
-                credentialStorageEnabled: try container.decodeIfPresent(Bool.self, forKey: .credentialStorageEnabled) ?? false,
-                confirmationRequired: try container.decodeIfPresent(Bool.self, forKey: .confirmationRequired)
-                    ?? container.decodeIfPresent(Bool.self, forKey: .requiresConfirmation)
-                    ?? true
-            )
-        }
-    }
-
-    static func unavailable(kind: LLMSkillAnalysisKind, reason: String = UIStrings.llmSkillAnalysisUnavailable) -> LLMSkillAnalysisPrepareResult {
-        LLMSkillAnalysisPrepareResult(
-            enabled: false,
-            disabledReason: reason,
-            analysisKind: kind,
-            selectedSkillCount: 0,
-            includedSkills: [],
-            excludedCount: 0,
-            missingCount: 0,
-            promptDraft: UIStrings.llmSkillAnalysisUnavailablePrompt,
-            summaryDraft: UIStrings.llmSkillAnalysisUnavailableSummary,
-            safety: LLMSkillAnalysisSafety()
-        )
-    }
-}
-
-struct LLMSkillAnalysisRequestScope: Hashable {
-    let key: String
-    let title: String
-
-    static let selected = LLMSkillAnalysisRequestScope(key: "selected", title: UIStrings.llmSkillAnalysisSelectedScope)
-    static let visible = LLMSkillAnalysisRequestScope(key: "visible", title: UIStrings.llmSkillAnalysisVisibleScope)
-}
-
 struct RuleFindingRecord: Codable, Identifiable, Hashable {
     let id: String
     let instanceId: String?

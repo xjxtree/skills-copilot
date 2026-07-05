@@ -21,22 +21,22 @@ Agent Copilot 是一个原生 macOS 控制台，用于检查本地 coding agent
 - 不提供隐藏的 apply/write 路径。
 - 不会从扫描、导入、预览、建议或 LLM 输出中执行技能脚本。
 - 不会把凭据写入项目目录、SQLite、日志、prompt、截图、报告或响应产物。
-- 默认不做 Developer ID 签名、公证、DMG、自动更新或发布自动化。v0.1.1
+- 默认不做 Developer ID 签名、公证、DMG、自动更新或发布自动化。v0.1.2
   macOS ZIP 是手动限定范围的发布产物，app bundle 会做 ad-hoc 签名。
 
 ## 下载
 
 从 GitHub Release 页面下载最新 macOS app：
 
-- [Agent Copilot v0.1.1](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.1)
+- [Agent Copilot v0.1.2](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.2)
 - Apple Silicon ZIP：
-  [AgentCopilot-0.1.1-macos-arm64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.1/AgentCopilot-0.1.1-macos-arm64.zip)
+  [AgentCopilot-0.1.2-macos-arm64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.2/AgentCopilot-0.1.2-macos-arm64.zip)
 - Intel ZIP：
-  [AgentCopilot-0.1.1-macos-x86_64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.1/AgentCopilot-0.1.1-macos-x86_64.zip)
+  [AgentCopilot-0.1.2-macos-x86_64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.2/AgentCopilot-0.1.2-macos-x86_64.zip)
 
 架构说明：Apple Silicon Mac 请选择 `arm64`，Intel Mac 请选择 `x86_64`。
 
-v0.1.1 app 以 ad-hoc 签名、未公证的 macOS app bundle 形式放在 ZIP 文件中。首次启动时，macOS Gatekeeper 可能需要用户显式批准。可以在 Finder 中右键选择 **打开**，或在 macOS 阻止首次启动时到 **系统设置 > 隐私与安全性** 中批准该 app。
+v0.1.2 app 以 ad-hoc 签名、未公证的 macOS app bundle 形式放在 ZIP 文件中。首次启动时，macOS Gatekeeper 可能需要用户显式批准。可以在 Finder 中右键选择 **打开**，或在 macOS 阻止首次启动时到 **系统设置 > 隐私与安全性** 中批准该 app。
 
 ## 使用
 

@@ -11,9 +11,9 @@ extension SkillStore {
             || isSavingAIProvider
             || isTestingAIProvider
             || isApplyingBatchToggle
-            || isExportingLocalReport
             || isSkillManagerBusy
-            || isTaskBenchmarkBusy
+            || isLoadingProviderObservability
+            || isBuildingTaskCockpit
             || isLLMPromptBusy
     }
 
@@ -25,45 +25,9 @@ extension SkillStore {
             || isApplyingSkillManagerMutation
     }
 
-    private var isTaskBenchmarkBusy: Bool {
-        isSavingTaskBenchmark
-            || isEvaluatingTaskBenchmarks
-            || isSavingRoutingBaseline
-            || isDetectingRoutingRegression
-            || isLoadingRoutingAccuracyDashboard
-            || isDetectingStaleDrift
-            || isSearchingKnowledge
-            || isBuildingLocalSkillMap
-            || isLoadingSkillLifecycleTimeline
-            || isLoadingProviderObservability
-            || isBuildingTaskCockpit
-            || isGroupingSimilarSkills
-            || isBuildingCapabilityTaxonomy
-            || isCheckingWorkspaceReadiness
-            || isPlanningRemediation
-            || isPreviewingRemediationDrafts
-            || isPreviewingRemediationImpact
-            || isReviewingRemediationBatch
-            || isLoadingRemediationHistory
-            || isRecordingRemediationHistory
-            || isPlanningGuidedCleanupFlow
-            || isRecordingGuidedCleanupStep
-            || isComparingCrossAgentReadiness
-            || isLoadingTraceImports
-            || isImportingTrace
-            || isLoadingAgentSessionSkillReviews
-            || isReviewingAgentSessionSkillUse
-            || !deletingTaskBenchmarkIDs.isEmpty
-            || !deletingTraceImportIDs.isEmpty
-            || !deletingAgentSessionSkillReviewIDs.isEmpty
-    }
-
     private var isLLMPromptBusy: Bool {
         !previewingLLMPromptKeys.isEmpty
             || !sendingLLMPromptKeys.isEmpty
-            || !scoringSkillQualityIDs.isEmpty
-            || !checkingTaskReadinessSkillIDs.isEmpty
-            || !rankingRoutingSkillIDs.isEmpty
     }
 
     func toggleDisabledReason(for skill: SkillRecord) -> String? {
@@ -250,15 +214,6 @@ extension SkillStore {
         return !isRefreshBusy && preview.applySupported && preview.hasWritableChanges
     }
 
-    var filteredCleanupQueueItems: [CleanupQueueItem] {
-        CleanupQueueModel.filtered(
-            items: cleanupQueue.items,
-            kindFilter: cleanupKindFilter,
-            priorityFilter: cleanupPriorityFilter,
-            agentFilter: agentFilter
-        )
-    }
-
     var selectedFindings: [RuleFindingRecord] {
         guard let skill = selectedSkill else { return [] }
         return findings.filter { finding in
@@ -272,11 +227,6 @@ extension SkillStore {
             .filter { finding in
                 finding.instanceId == skill.id
             }
-    }
-
-    var selectedCrossAgentComparisonGroup: CrossAgentComparisonGroup? {
-        guard let skill = selectedSkill else { return nil }
-        return crossAgentComparisons.group(for: skill)
     }
 
     func ruleTuningRecord(ruleId: String, findingGroupID: String? = nil) -> RuleTuningRecord? {

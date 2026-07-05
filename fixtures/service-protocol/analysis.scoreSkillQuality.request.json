@@ -1,7 +1,0 @@
-{
-  "id": "fixture-analysis-score-skill-quality",
-  "method": "analysis.scoreSkillQuality",
-  "params": {
-    "instance_id": "fixture-skill-id"
-  }
-}

@@ -5,7 +5,7 @@
     "id": "model-task-fixture",
     "title": "Release audit model fit",
     "task": "Review local release audit evidence.",
-    "task_kind": "task_readiness",
+    "task_kind": "task_cockpit",
     "agent": "codex",
     "profile_id": "fixture-openai",
     "provider": "openai-compatible",

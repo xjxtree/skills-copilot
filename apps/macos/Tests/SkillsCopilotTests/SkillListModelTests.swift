@@ -23,20 +23,14 @@ struct SkillListModelTests {
     private func detailWorkbenchSectionsExposeDiagnostics() throws {
         try expectEqual(
             DetailSection.visibleCases,
-            [.overview, .findings, .conflicts, .history, .analysis, .metadata],
-            "Skill detail switcher should expose overview, issues, conflicts, history, smart analysis, and metadata while omitting retired work surfaces."
+            [.overview, .findings, .history, .metadata],
+            "Skill detail switcher should expose overview, issues, history, and metadata while omitting retired work surfaces."
         )
         try expectEqual(DetailSection.primaryWorkCases, [], "Sidebar Work surfaces should remain retired; Provider Observability lives in Settings.")
-        try expectEqual(DetailSection.agentWorkspace.title, "Agent Workspace", "Agent Workspace should be the default aggregate surface.")
-        try expectEqual(DetailSection.guidedCleanup.title, "Guided Cleanup Flow", "Guided Cleanup section title")
-        try expectEqual(DetailSection.observability.title, "Provider Observability", "Provider Observability section title")
         try expectEqual(DetailSection.findings.title, "Issues", "Findings tab should be renamed for user-facing issue review.")
-        try expectEqual(DetailSection.conflicts.title, "Conflicts", "Conflicts should have a distinct user-facing title.")
         try expectEqual(DetailSection.history.title, "History", "History section title")
-        try expectEqual(DetailSection.analysis.title, "Smart Analysis", "Smart Analysis section title")
         try expectEqual(DetailSection.metadata.title, "Metadata", "Metadata section title")
         try expectEqual(DetailSection.overview.systemImage, "chart.pie", "Overview tab should use a unified icon.")
-        try expectEqual(DetailSection.analysis.systemImage, "sparkles", "Smart Analysis tab should use a unified icon.")
         try expectEqual(DetailSection.metadata.systemImage, "info.circle", "Metadata tab should use a unified icon.")
     }
 

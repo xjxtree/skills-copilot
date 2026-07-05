@@ -28,14 +28,6 @@ for (const snippet of [
   "Large catalog scan",
   "`pnpm benchmark:10k`",
   "10,000 synthetic command-catalog records",
-  "Task readiness",
-  "`pnpm benchmark:task-readiness`",
-  "240 synthetic task skills, 12 iterations, 2 warmups",
-  "Routing confidence",
-  "`pnpm benchmark:routing`",
-  "Knowledge search",
-  "`pnpm benchmark:knowledge-search`",
-  "120 synthetic task skills, 12 iterations, 2 warmups",
   "Native list model",
   "`pnpm benchmark:macos-list-model`",
   "Maintenance",
@@ -47,9 +39,6 @@ for (const snippet of [
 
 for (const scriptName of [
   '"benchmark:10k"',
-  '"benchmark:task-readiness"',
-  '"benchmark:routing"',
-  '"benchmark:knowledge-search"',
   '"benchmark:macos-list-model"',
   '"verify:benchmark-trends"',
 ]) {
