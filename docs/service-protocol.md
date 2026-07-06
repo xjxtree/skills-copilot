@@ -58,11 +58,11 @@ verification.
 | `adapter.listDiagnostics` | No |
 | `llm.status` | No |
 | `llm.listProviderProfiles` | No |
-| `llm.saveProviderProfile` | Yes, writes provider metadata and Keychain secret when supplied |
-| `llm.deleteProviderProfile` | Yes, updates app-local provider metadata |
-| `llm.testProviderConnection` | Yes, records minimal redacted call metadata |
+| `llm.saveProviderProfile` | Yes, writes Agent Copilot provider metadata and Keychain secret when supplied |
+| `llm.deleteProviderProfile` | Yes, updates app-local Agent Copilot provider metadata |
+| `llm.testProviderConnection` | Yes, records minimal redacted Agent Copilot provider call metadata |
 | `llm.previewPrompt` | No |
-| `llm.confirmPromptAndSend` | Yes, records redacted prompt-run metadata |
+| `llm.confirmPromptAndSend` | Yes, records redacted Agent Copilot prompt-run metadata |
 | `llm.listPromptRuns` | No |
 | `llm.prepareAction` | No |
 | `llm.providerObservability` | No |
@@ -121,14 +121,18 @@ verification.
 ## Provider Observability
 
 `llm.providerObservability` is a read-only, app-local dashboard over redacted
-prompt-run and provider-call metadata. Requests may pass `window_days` for a
-rolling range or explicit `start_at` / `end_at` Unix-millisecond bounds. When
-both are present, explicit bounds define the applied range. The response
-`filters` echoes the applied range and includes `aggregation_uses_full_range`.
-`limit` bounds returned evidence rows such as `history_rows` and `call_rows`;
-summary metrics, grouping rows, status rows, and budget hints are computed from
-all metadata matching the applied date/filter range before evidence rows are
-limited.
+prompt-run and provider-call metadata created by Agent Copilot's own optional
+AI features. It does not read, infer, or aggregate provider usage from managed
+agent configuration or from provider profiles used directly by Claude Code,
+Codex, opencode, Pi, or other managed agents.
+
+Requests may pass `window_days` for a rolling range or explicit `start_at` /
+`end_at` Unix-millisecond bounds. When both are present, explicit bounds define
+the applied range. The response `filters` echoes the applied range and includes
+`aggregation_uses_full_range`. `limit` bounds returned evidence rows such as
+`history_rows` and `call_rows`; summary metrics, grouping rows, status rows,
+and budget hints are computed from all app AI metadata matching the applied
+date/filter range before evidence rows are limited.
 
 ## Full-Access Local Lists
 

@@ -4,9 +4,9 @@
 
 Agent Copilot is a native macOS app for people who work with multiple coding
 agents. It brings local sessions, skill packages, configuration snapshots, and
-provider usage signals into one focused desktop workspace, so you can inspect
-what is installed, search across local agent data, and manage common workflows
-without jumping between hidden folders and terminal output.
+app AI provider usage signals into one focused desktop workspace, so you can
+inspect what is installed, search across local agent data, and manage common
+workflows without jumping between hidden folders and terminal output.
 
 ## Project Overview
 
@@ -17,8 +17,8 @@ without jumping between hidden folders and terminal output.
 - **Supported agent families:** Claude Code, Codex, opencode, Pi, Hermes, and
   OpenClaw.
 - **Primary use cases:** skill catalog review, local session lookup,
-  configuration inspection, provider usage review, project context management,
-  and skill package workflows.
+  configuration inspection, app AI provider usage review, project context
+  management, and skill package workflows.
 - **Distribution:** architecture-specific macOS ZIP downloads for Apple Silicon
   and Intel Macs.
 
@@ -52,11 +52,13 @@ agent-specific parsing and workflow rules in shared project code.
   app supports them.
 - **Skill Package Manager:** search, preview, install, update, remove, and
   create local skill packages through the local `npx skills` manager.
-- **Provider Observability:** view read-only provider usage summaries, model
-  activity, latency, token estimates, and cost estimates over selectable date
-  ranges.
+- **Provider Observability:** view read-only usage summaries for AI requests
+  made by Agent Copilot's own optional AI features, including model activity,
+  latency, token estimates, and cost estimates over selectable date ranges. It
+  does not report usage from provider profiles configured inside managed
+  agents such as Claude Code, Codex, opencode, or Pi.
 - **Task Preflight:** paste a task and review local readiness, matching skills,
-  provider context, and diagnostic notes before taking action.
+  Agent Copilot AI provider context, and diagnostic notes before taking action.
 - **Project Context:** pin or clear the current project root so app lists,
   searches, and previews stay aligned with the workspace you are reviewing.
 - **Appearance:** follow the system appearance automatically, or choose light or
@@ -75,8 +77,8 @@ Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
 2. Unzip it and move `AgentCopilot.app` to `/Applications` or another local
    folder you control.
 3. Open `AgentCopilot.app`.
-4. Use the sidebar to review skills, sessions, config, provider activity, and
-   settings.
+4. Use the sidebar to review skills, sessions, config, Agent Copilot AI
+   provider activity, and settings.
 
 If macOS blocks the first launch, open the app from Finder's context menu or
 approve it in **System Settings > Privacy & Security**.

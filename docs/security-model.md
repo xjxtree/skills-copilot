@@ -21,8 +21,9 @@ This file describes security and privacy boundaries.
   through a supported external manager CLI after command preview, target
   visibility, network posture, and explicit user confirmation are represented
   in the typed service request.
-- Provider calls are optional and require user enablement, prompt preview,
-  redaction, destination visibility, and explicit confirmation.
+- Provider calls made by Agent Copilot's optional AI features require user
+  enablement, prompt preview, redaction, destination visibility, and explicit
+  confirmation.
 - Raw transcripts, prompts, responses, traces, credentials, screenshots, and
   reports must not persist secrets.
 - Session preview data is redacted and bounded before it crosses the service
@@ -33,8 +34,10 @@ This file describes security and privacy boundaries.
 - Credentials must prefer Keychain.
 - Never write credentials to SQLite, project directories, logs, prompts,
   response artifacts, screenshots, or reports.
-- Provider Observability may show redacted metadata only; it must not expose
-  raw secrets or add write/delete controls without a new scoped safety review.
+- Provider Observability may show redacted metadata only for Agent Copilot's own
+  optional AI requests. It must not expose raw secrets, infer usage from managed
+  agent provider profiles, or add write/delete controls without a new scoped
+  safety review.
 
 ## Writes And Scripts
 

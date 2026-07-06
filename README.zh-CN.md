@@ -3,8 +3,8 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 Agent Copilot 是一款面向多 Agent 工作流的原生 macOS App。它把本地会话、
-技能包、配置快照和 provider 用量信号集中到一个桌面工作台里，方便你查看
-已安装内容、跨本地数据搜索，并处理常见的技能与配置管理流程。
+技能包、配置快照和 App 内 AI provider 用量信号集中到一个桌面工作台里，方便
+你查看已安装内容、跨本地数据搜索，并处理常见的技能与配置管理流程。
 
 ## 项目信息总览
 
@@ -13,8 +13,8 @@ Agent Copilot 是一款面向多 Agent 工作流的原生 macOS App。它把本�
   [GitHub Releases](https://github.com/xjxtree/agent-copilot/releases/latest)
   页面查看当前 App 下载、release notes 和校验文件。
 - **支持的 Agent：** Claude Code、Codex、opencode、Pi、Hermes、OpenClaw。
-- **主要用途：** 技能目录检查、本地会话查看、配置检查、provider 用量查看、
-  项目上下文管理和技能包工作流。
+- **主要用途：** 技能目录检查、本地会话查看、配置检查、App 内 AI provider
+  用量查看、项目上下文管理和技能包工作流。
 - **发布形式：** 面向 Apple Silicon 和 Intel Mac 的架构专用 ZIP 下载包。
 
 ## 技术架构
@@ -40,10 +40,11 @@ Agent Copilot 按 local-first 的桌面产品方式组织：
   支持的范围内执行受保护的配置操作。
 - **技能包管理：** 通过本地 `npx skills` 管理器搜索、预览、安装、更新、移除
   和创建本地技能包。
-- **Provider 观测：** 按日期范围查看只读的 provider 用量、模型活动、延迟、令牌
-  估算和成本估算。
-- **任务 Preflight：** 粘贴任务后，先查看本地就绪度、匹配技能、provider 上下文
-  和诊断提示。
+- **Provider 观测：** 按日期范围查看 Agent Copilot 自身可选 AI 功能产生的
+  provider 用量、模型活动、延迟、令牌估算和成本估算。它不统计 Claude Code、
+  Codex、opencode、Pi 等被管理 Agent 自己配置的 provider 或其调用消费。
+- **任务 Preflight：** 粘贴任务后，先查看本地就绪度、匹配技能、Agent Copilot
+  AI provider 上下文和诊断提示。
 - **项目上下文：** 固定或清除当前项目根目录，让列表、搜索和预览与正在检查的
   workspace 保持一致。
 - **外观：** 在设置中跟随系统外观，也可以手动选择浅色或深色主题。
@@ -58,7 +59,7 @@ Apple Silicon Mac 请选择 `arm64`，Intel Mac 请选择 `x86_64`。
 1. 下载与你的 Mac 架构匹配的 ZIP。
 2. 解压后，将 `AgentCopilot.app` 移到 `/Applications` 或你控制的其他本地目录。
 3. 打开 `AgentCopilot.app`。
-4. 使用侧边栏查看技能、会话、配置、provider 活动和设置。
+4. 使用侧边栏查看技能、会话、配置、Agent Copilot AI provider 活动和设置。
 
 如果 macOS 阻止首次启动，可以在 Finder 中右键选择 **打开**，或到
 **系统设置 > 隐私与安全性** 中批准该 App。

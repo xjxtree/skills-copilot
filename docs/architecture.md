@@ -7,7 +7,8 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 
 - Inspect local agent sessions, skills, config snapshots, and validation
   evidence.
-- Keep deterministic local analysis useful without default provider calls.
+- Keep deterministic local analysis useful without default Agent Copilot
+  provider calls.
 - Keep write, script, credential, cloud, telemetry, and release automation
   surfaces narrow and explicit.
 - Share the same Rust service contract across current and future UI shells.
