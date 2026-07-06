@@ -26,6 +26,9 @@ not Developer ID signing and does not replace notarization.
 
 - Keep source version, bundle version, release notes, and tag names aligned.
 - Use SemVer for user-facing release versions.
+- Treat GitHub tags and GitHub Releases as the release-history source of truth.
+- Default the next release to the next patch version after the latest published
+  SemVer release unless a maintainer specifies another version.
 - Use pre-release identifiers only when all downstream tooling accepts them.
 - Do not tag or publish when source, bundle, and notes disagree.
 

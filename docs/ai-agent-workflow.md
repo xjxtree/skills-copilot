@@ -65,11 +65,10 @@ the same file.
 | --- | --- | --- | --- |
 | `AGENTS.md` | AI coding agents | Shared rules, current hard boundaries, validation expectations, compact gate anchors | Long changelog entries, full roadmap history, release notes |
 | `CLAUDE.md` | Claude Code | Claude-specific behavior, Computer Use defaults | Shared project rules already in `AGENTS.md` |
-| `README.md` | Humans | Product overview, current status, document map, common commands | Version-by-version evidence dumps or task ledgers |
+| `README.md` | Humans | Product overview, app features, download/build guide, document map | Version-by-version evidence dumps or task ledgers |
 | `docs/plans/roadmap.md` | Humans + agents | Future work, deferred scope, and non-goals | Per-command validation logs or implementation scratch notes |
 | `docs/plans/development-tasks.md` | Agents + maintainers | Active task rules and task routing | Marketing copy, full release notes |
-| `CHANGELOG.md` | Humans + agents | Release-readiness notes, externally meaningful behavior/risk changes, manual validation summary | Future planning, detailed task checklists |
-| `docs/verification/v2.*-verification-checklist.md` | Agents + reviewers | Version-specific evidence snapshots and command results | Product overview or future planning |
+| GitHub Releases/tags | Humans + maintainers | Release versions, user-facing release notes, downloadable assets, checksums | Planning, task routing, detailed validation logs |
 | Focused specs (`docs/service-protocol.md`, adapter specs, security/data/AI docs) | Implementers | Durable contracts and domain-specific rules | General project status unless directly relevant |
 
 ## Validation Rules

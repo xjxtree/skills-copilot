@@ -1,7 +1,7 @@
 # UI Artifacts
 
-This directory stores durable UI evidence: completed app-window screenshots and
-verification notes.
+This directory stores durable UI evidence: completed app-window screenshots
+used by screenshot validation. It is not a release-history record.
 
 Rules:
 
@@ -14,29 +14,27 @@ Rules:
 - App screenshots should be taken with screenshot privacy mode enabled unless a
   maintainer explicitly needs full paths for local debugging.
 - If a session is locked or app-window capture is blocked, record the canonical
-  blocker in the relevant verification record.
+  blocker in task or release handoff notes rather than adding version history
+  here.
 
-Current artifacts:
+Screenshot artifacts:
 
 | Artifact | Contents |
 | --- | --- |
-| `native-macos-shell/` | Initial native macOS completed screenshot and verification record |
-| `service-protocol/` | Historical service-boundary artifact directory |
-| `v2.68-task-cockpit-ia/` | V2.68 task cockpit IA screenshot and verification |
-| `v2.69-privacy-screenshot-mode/` | V2.69 privacy screenshot verification record |
-| `v2.73-task-cockpit-timeout-recovery/` | V2.73 timeout recovery app-window evidence |
-| `v2.74-launch-window-targeting/` | V2.74 launch/window targeting app-window evidence |
-| `v2.75-task-input-resilience/` | V2.75 task input resilience app-window evidence |
-| `v2.76-progressive-cockpit-feedback/` | V2.76 progressive feedback app-window evidence |
-| `v2.77-validation-workbench/` | V2.77 validation workbench app-window evidence |
-| `v2.79-privacy-localization/` | V2.79 privacy/localization app-window evidence |
-| `v2.80-detail-density/` | V2.80 detail density app-window evidence |
-| `v2.86-real-local-2026-06-16/` | V2.86 real-local window capture evidence |
-| `v2.89-brand-assets/` | V2.89 brand asset evidence |
-| `v2.90-identifier-migration/` | V2.90 identifier migration evidence |
-| `v2.91-model-task-history/` | V2.91 model-task history evidence |
-| `v2.92-codex-expanded-roots/` | V2.92 Codex expanded roots evidence |
-| `v2.93-opencode-custom-roots/` | V2.93 opencode custom roots verification notes |
-| `v2.94-pi-install-compat-writes/` | V2.94 Pi install/compat write evidence |
-| `v2.95-hermes-native-install/` | V2.95 Hermes native install evidence |
-| `v2.96-openclaw-native-workspace-install/` | V2.96 OpenClaw native/workspace install evidence |
+| `native-macos-shell/` | Shared native macOS app-window screenshots |
+| `task-cockpit-ia/` | Task Cockpit information architecture screenshot |
+| `task-cockpit-timeout-recovery/` | Task Cockpit timeout recovery screenshot |
+| `launch-window-targeting/` | Launch/window targeting screenshot |
+| `task-input-resilience/` | Task input resilience screenshot |
+| `progressive-cockpit-feedback/` | Progressive cockpit feedback screenshot |
+| `validation-workbench/` | Validation workbench screenshot |
+| `privacy-localization/` | Privacy/localization screenshot |
+| `detail-density/` | Detail density screenshot |
+| `real-local-2026-06-16/` | Real-local app-window capture |
+| `brand-assets/` | Brand asset screenshot |
+| `identifier-migration/` | Identifier migration screenshot |
+| `model-task-history/` | Model-task history screenshot |
+| `codex-expanded-roots/` | Codex expanded roots screenshot |
+| `pi-install-compat-writes/` | Pi install/compat write screenshot |
+| `hermes-native-install/` | Hermes native install screenshot |
+| `openclaw-native-workspace-install/` | OpenClaw native/workspace install screenshot |

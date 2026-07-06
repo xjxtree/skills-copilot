@@ -21,13 +21,23 @@ function requireText(text, label, snippet) {
   if (!text.includes(snippet)) fail(`${label} missing required text: ${snippet}`);
 }
 
+function rejectPath(relativePath, reason) {
+  if (existsSync(join(repoRoot, relativePath))) fail(`${relativePath} should not exist: ${reason}`);
+}
+
 const roadmap = read("docs/plans/roadmap.md");
 const tasks = read("docs/plans/development-tasks.md");
 const agents = read("AGENTS.md");
 const readme = read("README.md");
-const changelog = read("CHANGELOG.md");
 const packageJson = read("package.json");
 const workflow = read("docs/ai-agent-workflow.md");
+const releaseChecklist = read("docs/runbooks/release-checklist.md");
+const distributionRunbook = read("docs/runbooks/distribution-runbook.md");
+const uiArtifactsReadme = read("docs/ui-artifacts/README.md");
+const legacyReleaseHistoryPattern = new RegExp(
+  ["CHANGE" + "LOG\\.md", "docs/" + "verification", "verification " + "checklists"].join("|"),
+  "i"
+);
 
 function rejectPattern(text, label, pattern, reason) {
   if (pattern.test(text)) fail(`${label} contains ${reason}`);
@@ -36,16 +46,27 @@ function rejectPattern(text, label, pattern, reason) {
 for (const [text, label] of [
   [readme, "README.md"],
   [agents, "AGENTS.md"],
+  [roadmap, "docs/plans/roadmap.md"],
+  [tasks, "docs/plans/development-tasks.md"],
+  [workflow, "docs/ai-agent-workflow.md"],
+  [releaseChecklist, "docs/runbooks/release-checklist.md"],
+  [distributionRunbook, "docs/runbooks/distribution-runbook.md"],
+  [uiArtifactsReadme, "docs/ui-artifacts/README.md"],
 ]) {
-  rejectPattern(text, label, /\bV\d+\.\d+\b/, "version history; use CHANGELOG.md or verification checklists");
+  rejectPattern(text, label, /\bV\d+\.\d+\b/, "legacy internal version history; use GitHub Releases and tags for releases");
+  rejectPattern(text, label, legacyReleaseHistoryPattern, "legacy docs-based release history references");
   rejectPattern(text, label, /Current (Status|State|Baseline)|Completed baseline|Current phase/i, "status snapshot wording");
 }
 
-requireText(readme, "README.md", "## What It Does");
+rejectPath("CHANGE" + "LOG.md", "release history belongs in GitHub Releases and tags");
+rejectPath(["docs", "verification"].join("/"), "release verification plans are retired");
+
+requireText(readme, "README.md", "## App Features");
+requireText(readme, "README.md", "GitHub Releases");
 requireText(agents, "AGENTS.md", "## Safety Boundaries");
 requireText(roadmap, "docs/plans/roadmap.md", "## Near-Term Work");
 requireText(tasks, "docs/plans/development-tasks.md", "## Active Task Rules");
-requireText(changelog, "CHANGELOG.md", "## V2.98");
+requireText(distributionRunbook, "docs/runbooks/distribution-runbook.md", "GitHub tags and GitHub Releases");
 requireText(packageJson, "package.json", "\"verify:doc-governance\"");
 requireText(
   workflow,

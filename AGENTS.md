@@ -9,7 +9,8 @@ coding agents working in this repository.
 - Put human-facing overview in `README.md`.
 - Put future planning in `docs/plans/roadmap.md`.
 - Put active task routing in `docs/plans/development-tasks.md`.
-- Put versioned release-impact notes in `CHANGELOG.md`.
+- Put version numbers, release notes, and main changelogs in GitHub tags and
+  GitHub Releases.
 - Put detailed procedures in `docs/`.
 
 ## Architecture Rules

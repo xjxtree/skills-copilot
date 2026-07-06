@@ -2,70 +2,88 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Agent Copilot is a native macOS control surface for inspecting local coding-agent
-sessions, skills, configuration snapshots, and validation evidence without
-expanding the repository's write, script, credential, cloud, or telemetry
-surface.
+Agent Copilot is a native macOS app for people who work with multiple coding
+agents. It brings local sessions, skill packages, configuration snapshots, and
+provider usage signals into one focused desktop workspace, so you can inspect
+what is installed, search across local agent data, and manage common workflows
+without jumping between hidden folders and terminal output.
 
-## What It Does
+## Project Overview
 
-- Shows local agent sessions, skill catalogs, and supported config snapshots.
-- Uses a typed Rust JSON stdio service behind the native macOS app.
-- Keeps local analysis deterministic by default.
-- Gates optional provider calls behind preview, redaction, destination
-  visibility, and explicit confirmation.
-- Treats skill scripts, transcripts, LLM output, and config files as untrusted
-  input.
+- **Platform:** native macOS desktop app.
+- **Latest release:** use the
+  [GitHub Releases](https://github.com/xjxtree/agent-copilot/releases/latest)
+  page for the current app download, release notes, and checksums.
+- **Supported agent families:** Claude Code, Codex, opencode, Pi, Hermes, and
+  OpenClaw.
+- **Primary use cases:** skill catalog review, local session lookup,
+  configuration inspection, provider usage review, project context management,
+  and skill package workflows.
+- **Distribution:** architecture-specific macOS ZIP downloads for Apple Silicon
+  and Intel Macs.
 
-## What It Does Not Do
+## Architecture
 
-- No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
-  outbound network calls.
-- No default provider calls.
-- No hidden apply/write paths.
-- No skill-script execution from scans, imports, previews, recommendations, or
-  LLM output.
-- No credential storage in project directories, SQLite, logs, prompts,
-  screenshots, reports, or response artifacts.
-- No Developer ID signing, notarization, DMG, updater, or release automation by
-  default. The v0.1.2 macOS ZIPs are manually scoped release artifacts with
-  ad-hoc signed app bundles.
+Agent Copilot is organized as a local-first desktop product:
 
-## Download
+- The macOS app provides the main navigation, detail views, settings, and
+  workflow panels.
+- A local processing layer handles scanning, catalog updates, session previews,
+  configuration reads, and package-manager operations.
+- Local caches keep the app responsive while preserving explicit refresh
+  controls for heavier scans.
+- The repository includes focused fixtures and validation scripts so app,
+  service, and documentation changes can be checked together before release.
 
-Download the latest macOS app from the GitHub release page:
+This split keeps the user experience native and fast while leaving the
+agent-specific parsing and workflow rules in shared project code.
 
-- [Agent Copilot v0.1.2](https://github.com/xjxtree/agent-copilot/releases/tag/v0.1.2)
-- Apple Silicon ZIP:
-  [AgentCopilot-0.1.2-macos-arm64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.2/AgentCopilot-0.1.2-macos-arm64.zip)
-- Intel ZIP:
-  [AgentCopilot-0.1.2-macos-x86_64.zip](https://github.com/xjxtree/agent-copilot/releases/download/v0.1.2/AgentCopilot-0.1.2-macos-x86_64.zip)
+## App Features
 
-Architecture note: choose `arm64` for Apple Silicon Macs and `x86_64` for Intel
-Macs.
+- **Skills:** scan supported agent roots, filter by agent/scope/status, inspect
+  metadata, review findings, and enable or disable supported local skills.
+- **Sessions:** browse local Claude Code, Codex, opencode, and Pi session
+  previews; search within supported history; open a selected session with
+  redacted message and skill-usage summaries.
+- **Global search:** search from the app toolbar and jump directly to matching
+  skills, sessions, configuration entries, or detail pages.
+- **Configuration:** review supported agent config snapshots, inspect current
+  files, preview rollback changes, and apply guarded config actions where the
+  app supports them.
+- **Skill Package Manager:** search, preview, install, update, remove, and
+  create local skill packages through the local `npx skills` manager.
+- **Provider Observability:** view read-only provider usage summaries, model
+  activity, latency, token estimates, and cost estimates over selectable date
+  ranges.
+- **Task Preflight:** paste a task and review local readiness, matching skills,
+  provider context, and diagnostic notes before taking action.
+- **Project Context:** pin or clear the current project root so app lists,
+  searches, and previews stay aligned with the workspace you are reviewing.
+- **Appearance:** follow the system appearance automatically, or choose light or
+  dark mode in Settings.
 
-The v0.1.2 app is distributed as an ad-hoc signed and unnotarized macOS app
-bundle inside a ZIP file. On first launch, macOS Gatekeeper may require explicit
-user approval. Use Finder's **Open** action from the context menu, or approve the
-app from **System Settings > Privacy & Security** if macOS blocks the first
-launch.
+## Download And Use
 
-## Use The App
+Download the latest macOS app from the
+[GitHub Releases](https://github.com/xjxtree/agent-copilot/releases/latest)
+page. Each release provides architecture-specific ZIP files and checksum
+information.
 
-1. Download the ZIP that matches your Mac architecture from the release page.
+Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
+
+1. Download the ZIP for your Mac architecture.
 2. Unzip it and move `AgentCopilot.app` to `/Applications` or another local
    folder you control.
 3. Open `AgentCopilot.app`.
-4. Use **Scan** or project context controls inside the app to inspect supported
-   local agent sessions, skill roots, and config snapshots.
+4. Use the sidebar to review skills, sessions, config, provider activity, and
+   settings.
 
-Agent Copilot is local-first. It does not send provider requests unless optional
-provider features are configured and a prompt is previewed and explicitly
-confirmed.
+If macOS blocks the first launch, open the app from Finder's context menu or
+approve it in **System Settings > Privacy & Security**.
 
-Skill Package Manager workflows use the local `npx skills` manager and require a
-local Node/npm install. The macOS app detects common Homebrew, Volta, asdf, and
-nvm paths when launched from Finder; custom installs can set
+Skill Package Manager workflows require a local Node/npm install because they
+use the local `npx skills` manager. The app detects common Homebrew, Volta,
+asdf, and nvm paths when launched from Finder. Custom installs can set
 `SKILLS_COPILOT_NPX_PATH`.
 
 ## Build From Source
@@ -103,37 +121,35 @@ pnpm check:macos
 pnpm check:privacy
 ```
 
-## Documentation
+## Documentation Guide
 
 | File | Use |
 | --- | --- |
-| `AGENTS.md` | Agent-facing operating rules |
-| `CLAUDE.md` | Claude Code-specific compatibility behavior |
-| `docs/architecture.md` | Repository architecture |
-| `docs/adapters/agent-adapters.md` | Adapter roots, write scopes, and blocked operations |
-| `docs/service-protocol.md` | Typed service method contract |
-| `docs/security-model.md` | Security and privacy rules |
-| `docs/data-model.md` | Persisted and transient data model |
-| `docs/ai-layer.md` | Provider and LLM safety boundary |
-| `docs/ui-delivery-standards.md` | UI and screenshot validation standards |
-| `docs/plans/roadmap.md` | Future work and non-goals |
+| `docs/architecture.md` | Repository architecture and code ownership |
+| `docs/data-model.md` | Persisted and transient data overview |
+| `docs/adapters/agent-adapters.md` | Supported agent roots, config behavior, and adapter scope |
+| `docs/service-protocol.md` | Service method contract for app/service integration |
+| `docs/security-model.md` | Security, privacy, credential, and local data rules |
+| `docs/ai-layer.md` | Optional provider workflow boundary |
+| `docs/ui-delivery-standards.md` | Native UI and screenshot validation standards |
+| `docs/runbooks/macos-app-runbook.md` | Local macOS build, run, and smoke validation flow |
+| `docs/runbooks/release-checklist.md` | Maintainer release-readiness checklist |
+| `docs/plans/roadmap.md` | Future work and deferred scope |
 | `docs/plans/development-tasks.md` | Active task routing |
-| `CHANGELOG.md` | Versioned release-impact notes |
-| `docs/verification/` | Version checklists and benchmark trends |
+| `AGENTS.md` | Coding-agent operating rules for this repository |
 
-## Common Commands
+## Contributing
 
-```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features
-pnpm test:macos-native-models
-swift test --package-path apps/macos
-pnpm check:macos
-pnpm check:privacy
-pnpm verify:gate-parity
-pnpm verify:service-protocol-drift
-pnpm verify:module-size
-pnpm verify:macos-ui-layout
-pnpm smoke:macos-app -- --fixture-data --capture-window
-pnpm dev:macos
-```
+Contributions are welcome. For a smooth review:
+
+- Read `AGENTS.md` and the relevant docs before editing.
+- Keep changes scoped to the current app surface and existing architecture.
+- Update fixtures and `docs/service-protocol.md` when service behavior changes.
+- Run focused checks for small changes and `pnpm check:macos` for UI,
+  protocol, or publishing work.
+- Run `pnpm check:privacy` before committing or publishing evidence.
+- Include the commands you ran in your PR or handoff notes.
+
+## License
+
+Agent Copilot is released under the [MIT License](LICENSE).

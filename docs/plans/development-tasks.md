@@ -1,7 +1,7 @@
 # Development Tasks
 
-This file is for active task routing. Completed version history belongs in
-`CHANGELOG.md` and version verification checklists.
+This file is for active task routing. Completed release history, version
+numbers, and main changelogs belong in GitHub tags and GitHub Releases.
 
 ## Active Task Rules
 
@@ -22,6 +22,7 @@ This file is for active task routing. Completed version history belongs in
 
 ## Done Elsewhere
 
-- Versioned release-impact notes live in `CHANGELOG.md`.
-- Version-specific evidence lives in `docs/verification/v2.*-verification-checklist.md`.
+- User-facing release notes and main changelogs live in GitHub Releases.
+- Release versions are determined from GitHub tags or an explicit maintainer
+  instruction.
 - UI artifact evidence lives under `docs/ui-artifacts/`.

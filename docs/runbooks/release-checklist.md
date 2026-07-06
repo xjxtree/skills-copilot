@@ -19,8 +19,8 @@ a public distribution checklist.
 
 - [ ] Inspect the service crate version.
 - [ ] Build or verify the app bundle through the normal macOS gate.
-- [ ] Confirm bundle version, changelog draft, PR title, and tracking issue
-  agree.
+- [ ] Confirm bundle version, GitHub Release draft, tag name, PR title, and
+  tracking issue agree.
 - [ ] Do not tag or announce a version when source, bundle, and notes disagree.
 
 ## Required Gates
@@ -89,6 +89,8 @@ real-local interaction evidence.
 ## Closeout
 
 - [ ] Record commands run and exact outcomes.
-- [ ] Link release-impact notes in `CHANGELOG.md`.
-- [ ] Keep version-specific evidence in verification checklists.
+- [ ] Put the version number, release notes, assets, and checksums in the
+  GitHub Release.
+- [ ] Confirm the GitHub tag, release title, bundle version, and asset names
+  agree before publishing.
 - [ ] Do not hand off or publish artifacts when any abort condition applies.

@@ -1,7 +1,8 @@
 # Roadmap
 
-This file tracks future work and deferred scope. Completed version history
-belongs in `CHANGELOG.md` and version verification checklists.
+This file tracks future work and deferred scope. Completed release history,
+version numbers, and main changelogs belong in GitHub tags and GitHub
+Releases.
 
 ## Near-Term Work
 
@@ -29,6 +30,6 @@ belongs in `CHANGELOG.md` and version verification checklists.
 
 - Prefer small scoped changes with focused validation.
 - Do not mark work complete from docs alone; link completion claims to real
-  verifier output or version checklists.
-- Keep historical status out of entry docs. Use changelog/checklists for
-  versioned evidence.
+  verifier output or release evidence.
+- Keep historical status out of entry docs. Use GitHub Releases and tags for
+  release history.

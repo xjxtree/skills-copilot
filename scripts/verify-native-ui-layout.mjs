@@ -719,25 +719,25 @@ const detailEvidenceLists = [
 
 const nativeIPCCleanupChecks = [
   {
-    label: "V2.81 ServiceClient keeps short-lived stdio Process IPC shape",
+    label: "ServiceClient keeps short-lived stdio Process IPC shape",
     passed: /Process\(\)/.test(files.serviceIPC)
       && /\.standardInput\s*=\s*stdin/.test(files.serviceIPC)
       && /\.standardOutput\s*=\s*stdout/.test(files.serviceIPC)
       && /\.standardError\s*=\s*stderr/.test(files.serviceIPC),
   },
   {
-    label: "V2.81 ServiceClient wraps runService with task cancellation cleanup",
+    label: "ServiceClient wraps runService with task cancellation cleanup",
     passed: /processRunner\.run\(\s*executableURL:\s*resolveServiceURL\(\),\s*input:\s*input(?:,\s*timeoutNanoseconds:\s*timeoutNanoseconds)?\s*\)/.test(runServiceBody)
       && /withTaskCancellationHandler/.test(files.serviceProcessRunner),
   },
   {
-    label: "V2.81 ServiceClient terminates and reaps the child process on cancel or timeout",
+    label: "ServiceClient terminates and reaps the child process on cancel or timeout",
     passed: /terminate\s*\(/.test(files.serviceProcessRunner)
       && /waitUntilExit\s*\(/.test(files.serviceProcessRunner)
       && /(onCancel|Task\.isCancelled|Cancellation|cancel|timeout|timedOut|forceTerminate)/i.test(files.serviceProcessRunner),
   },
   {
-    label: "V2.81 ServiceClient closes stdin and releases stdout and stderr handles during IPC cleanup",
+    label: "ServiceClient closes stdin and releases stdout and stderr handles during IPC cleanup",
     passed: countMatches(files.serviceIPC, /fileHandleForWriting[\s\S]{0,180}\.(?:close|closeFile)\s*\(/g) >= 1
       && /stdinWriter\?\.(?:close|closeFile)\s*\(/.test(files.serviceProcessRunner)
       && /stdoutReader\s*=\s*nil/.test(files.serviceProcessRunner)
@@ -1069,7 +1069,7 @@ const customChecks = [
       && !/AgentProfileInfoRow/.test(files.agentSessionDetail),
   },
   {
-    label: "V2.80 detail evidence lists are row-capped and use privacy rendering",
+    label: "detail evidence lists are row-capped and use privacy rendering",
     passed: detailEvidenceLists.every((name) => {
       const body = extractStructBody(files.detailSurface, name);
       return (body.includes("ForEach(evidence.prefix(") || body.includes("DenseDisclosureList(evidence, visibleLimit:"))
