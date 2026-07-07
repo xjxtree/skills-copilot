@@ -699,11 +699,9 @@ struct SkillStoreTests {
     }
 
     private func scanAllUsesGenericCatalogMethod() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "normal")
+        let runner = CatalogRefreshServiceRunner()
 
-        let store = SkillStore(service: fake.serviceClient())
+        let store = SkillStore(service: runner.serviceClient())
         await store.scanAll()
 
         try expectFalse(store.isScanning, "Scan should reset scanning state.")
@@ -716,12 +714,13 @@ struct SkillStoreTests {
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.rootsSkipped, ["/tmp/missing-claude"], "Scan diagnostics should decode skipped roots.")
         store.agentFilter = .codex
         try expectEqual(store.selectedAgentRefreshSummary?.rootsScanned, ["/tmp/codex"], "Selected adapter diagnostics should follow the agent filter.")
-        try expectEqual(countOccurrences("app.stateSnapshot", in: fake.calls()), 1, "Scan should refresh collections with one app state snapshot call.")
-        try expectEqual(countOccurrences("catalog.listSkills", in: fake.calls()), 0, "Scan refresh should not launch a separate skills list sidecar.")
-        try expectEqual(countOccurrences("catalog.listFindings", in: fake.calls()), 0, "Scan refresh should not launch a separate findings list sidecar.")
-        try expectEqual(countOccurrences("catalog.listConflicts", in: fake.calls()), 0, "Scan refresh should not launch a separate conflicts list sidecar.")
-        try expectEqual(countMethodCalls("snapshot.list", in: fake.calls()), 0, "Scan refresh should not launch a global snapshots list sidecar.")
-        try expectFalse(countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 0, "Scan refresh should refresh at least one writable agent config history.")
+        let calls = await runner.calls()
+        try expectEqual(countOccurrences("app.stateSnapshot", in: calls), 1, "Scan should refresh collections with one app state snapshot call.")
+        try expectEqual(countOccurrences("catalog.listSkills", in: calls), 0, "Scan refresh should not launch a separate skills list sidecar.")
+        try expectEqual(countOccurrences("catalog.listFindings", in: calls), 0, "Scan refresh should not launch a separate findings list sidecar.")
+        try expectEqual(countOccurrences("catalog.listConflicts", in: calls), 0, "Scan refresh should not launch a separate conflicts list sidecar.")
+        try expectEqual(countMethodCalls("snapshot.list", in: calls), 0, "Scan refresh should not launch a global snapshots list sidecar.")
+        try expectFalse(countMethodCalls("snapshot.listAgentConfig", in: calls) == 0, "Scan refresh should refresh at least one writable agent config history.")
     }
 
     private func searchAndFilterChangesNormalizeSelectionAndDetail() async throws {
@@ -1053,11 +1052,9 @@ struct SkillStoreTests {
     }
 
     private func allAgentFilterDoesNotFetchMixedConfigHistory() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "normal")
+        let runner = CatalogRefreshServiceRunner()
 
-        let store = SkillStore(service: fake.serviceClient())
+        let store = SkillStore(service: runner.serviceClient())
         store.agentFilter = .all
         await store.reload()
 
@@ -1908,6 +1905,118 @@ struct SkillStoreTests {
 private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
         throw NativeModelTestFailure(description: "Whitespace-only task cockpit input should not call the service.")
+    }
+}
+
+private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
+    private let recorder = CatalogRefreshCallRecorder()
+
+    func serviceClient() -> ServiceClient {
+        ServiceClient(
+            processRunner: self,
+            serviceURL: URL(fileURLWithPath: "/tmp/catalog-refresh-service")
+        )
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let rawInput = String(data: input, encoding: .utf8) ?? ""
+        await recorder.record(rawInput)
+
+        let object = try JSONSerialization.jsonObject(with: input) as? [String: Any]
+        let method = object?["method"] as? String ?? ""
+        switch method {
+        case "catalog.scanAll":
+            return Self.ok(Self.scanResult)
+        case "app.stateSnapshot":
+            return Self.ok(Self.stateSnapshot)
+        case "catalog.getSkill":
+            return Self.ok(Self.detail(for: rawInput))
+        case "skill.listEvents", "snapshot.listAgentConfig":
+            return Self.ok("[]")
+        case "project.getContext":
+            return Self.ok(Self.projectContext)
+        case "llm.status",
+             "llm.listProviderProfiles",
+             "llm.listPromptRuns",
+             "rules.listTuning":
+            return Self.unknown(method)
+        default:
+            return Self.unexpected(method)
+        }
+    }
+
+    func calls() async -> String {
+        await recorder.calls()
+    }
+
+    private static func ok(_ result: String) -> Data {
+        Data("{\"id\":\"test\",\"ok\":true,\"result\":\(result)}".utf8)
+    }
+
+    private static func unknown(_ method: String) -> Data {
+        Data("{\"id\":\"test\",\"ok\":false,\"result\":null,\"error\":{\"code\":\"unknown_method\",\"message\":\"unknown method: \(method)\"}}".utf8)
+    }
+
+    private static func unexpected(_ method: String) -> Data {
+        Data("{\"id\":\"test\",\"ok\":false,\"result\":null,\"error\":{\"code\":\"unexpected_method\",\"message\":\"unexpected method: \(method)\"}}".utf8)
+    }
+
+    private static func detail(for rawInput: String) -> String {
+        if rawInput.contains("\"instance_id\":\"gamma\"") {
+            return detailGamma
+        }
+        if rawInput.contains("\"instance_id\":\"beta\"") {
+            return detailBeta
+        }
+        return detailAlpha
+    }
+
+    private static let supportedMethods = """
+    ["app.stateSnapshot","catalog.scanAll","catalog.getSkill","skill.listEvents","snapshot.listAgentConfig","project.getContext","llm.status","llm.listProviderProfiles","llm.listPromptRuns","rules.listTuning"]
+    """
+
+    private static let status = """
+    {"protocol_version":1,"version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":\(supportedMethods)}
+    """
+
+    private static let skills = """
+    [{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","state":"loaded","enabled":true},{"id":"beta","agent":"claude-code","scope":"agent-project","path":"/tmp/project/beta/SKILL.md","display_path":"/tmp/project/beta/SKILL.md","definition_id":"def.beta","name":"Beta","state":"loaded","enabled":true},{"id":"gamma","agent":"codex","scope":"agent-global","path":"/tmp/codex/skills/gamma/SKILL.md","display_path":"~/.codex/skills/gamma/SKILL.md","definition_id":"codex:gamma","name":"Gamma","state":"loaded","enabled":true}]
+    """
+
+    private static let stateSnapshot = """
+    {"status":\(status),"skills":\(skills),"findings":[],"conflicts":[],"snapshots":[]}
+    """
+
+    private static let scanResult = """
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"scan","status":"ok","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["/tmp/global","/tmp/codex"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["/tmp/global","/tmp/missing-claude"],"roots_scanned":["/tmp/global"],"roots_skipped":["/tmp/missing-claude"],"recovery_actions":["Create missing Claude root."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["/tmp/codex"],"roots_scanned":["/tmp/codex"],"roots_skipped":[],"recovery_actions":[]}]}}
+    """
+
+    private static let projectContext = """
+    {"active":null,"recent":[]}
+    """
+
+    private static let detailAlpha = """
+    {"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","description":"Alpha fixture","state":"loaded","enabled":true,"frontmatter_raw":"","body":"","permissions":{},"fingerprint":"fp-alpha"}
+    """
+
+    private static let detailBeta = """
+    {"id":"beta","agent":"claude-code","scope":"agent-project","path":"/tmp/project/beta/SKILL.md","display_path":"/tmp/project/beta/SKILL.md","definition_id":"def.beta","name":"Beta","description":"Beta fixture","state":"loaded","enabled":true,"frontmatter_raw":"","body":"","permissions":{},"fingerprint":"fp-beta"}
+    """
+
+    private static let detailGamma = """
+    {"id":"gamma","agent":"codex","scope":"agent-global","path":"/tmp/codex/skills/gamma/SKILL.md","display_path":"~/.codex/skills/gamma/SKILL.md","definition_id":"codex:gamma","name":"Gamma","description":"Gamma fixture","state":"loaded","enabled":true,"frontmatter_raw":"","body":"","permissions":{},"fingerprint":"fp-gamma"}
+    """
+}
+
+private actor CatalogRefreshCallRecorder {
+    private var recordedCalls: [String] = []
+
+    func record(_ rawInput: String) {
+        recordedCalls.append(rawInput)
+    }
+
+    func calls() -> String {
+        recordedCalls.joined(separator: "\n")
     }
 }
 
