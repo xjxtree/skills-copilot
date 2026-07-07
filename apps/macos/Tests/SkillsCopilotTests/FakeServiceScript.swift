@@ -36,6 +36,7 @@ final class FakeServiceScript: ServiceProcessRunning {
     }
 
     func cleanup() {
+        guard ProcessInfo.processInfo.environment["CI"] != "true" else { return }
         try? FileManager.default.removeItem(at: directory)
     }
 

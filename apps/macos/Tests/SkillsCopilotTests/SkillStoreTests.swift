@@ -1641,26 +1641,13 @@ struct SkillStoreTests {
     }
 
     private func taskCockpitWhitespaceOnlyInputRequiresTask() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "prompt-ready")
-
-        let historyStore = makeTemporaryTaskCockpitHistoryStore()
-        defer { cleanupTaskCockpitHistoryStore(historyStore) }
-        let store = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
-        store.selectedSkillID = "beta"
+        let store = SkillStore(service: unexpectedServiceClient())
         store.taskCockpitText = " \n\t "
-        await store.reload()
         await store.buildTaskCockpit()
 
         try expectEqual(store.selectedTaskCockpitInput, "", "Whitespace-only cockpit input should not reuse old task fields.")
         try expectEqual(store.taskCockpitResult?.isUnavailable, true, "Whitespace-only cockpit input should produce an unavailable result.")
         try expectEqual(store.taskCockpitResult?.fallbackReason, UIStrings.taskCockpitTaskRequired, "Whitespace-only cockpit input should ask for a task.")
-
-        let calls = fake.calls()
-        try expectFalse(calls.contains("llm.previewPrompt"), "Whitespace-only cockpit input must not prepare a provider prompt.")
-        try expectFalse(calls.contains("config.toggleSkill"), "Whitespace-only cockpit flow must not call config write paths.")
-        try expectFalse(calls.contains("script.execute"), "Whitespace-only cockpit flow must not call execution paths.")
     }
 
     private func taskCockpitFallsBackWhenMethodUnavailable() async throws {
@@ -1891,7 +1878,15 @@ struct SkillStoreTests {
     }
 
     private func cleanupTaskCockpitHistoryStore(_ store: TaskCockpitHistoryStore) {
+        guard ProcessInfo.processInfo.environment["CI"] != "true" else { return }
         try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent())
+    }
+
+    private func unexpectedServiceClient() -> ServiceClient {
+        ServiceClient(
+            processRunner: UnexpectedServiceProcessRunner(),
+            serviceURL: URL(fileURLWithPath: "/dev/null")
+        )
     }
 
     private func permissionMarker(_ detail: SkillDetailRecord?) -> String? {
@@ -1902,5 +1897,11 @@ struct SkillStoreTests {
             return nil
         }
         return marker
+    }
+}
+
+private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        throw NativeModelTestFailure(description: "Whitespace-only task cockpit input should not call the service.")
     }
 }
