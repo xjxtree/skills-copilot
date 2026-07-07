@@ -1472,6 +1472,7 @@ struct SkillStoreTests {
         try await waitUntil("Startup should preload provider observability in the background.") {
             countMethodCalls("llm.providerObservability", in: fake.calls()) == 1
                 && store.providerObservabilityResult?.summary.callCount == 3
+                && !store.isLoadingProviderObservability
         }
         try expectEqual(store.providerObservabilityResult?.summary.callCount, 3, "Startup observability preload should keep the decoded dashboard.")
 
@@ -1484,6 +1485,7 @@ struct SkillStoreTests {
         try await waitUntil("Global reload should refresh provider observability in the background.") {
             countMethodCalls("llm.providerObservability", in: fake.calls()) == 2
                 && store.providerObservabilityResult?.summary.callCount == 3
+                && !store.isLoadingProviderObservability
         }
 
         await store.loadProviderObservabilityIfNeeded()
