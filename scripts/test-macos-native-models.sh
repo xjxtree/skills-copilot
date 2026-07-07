@@ -63,7 +63,7 @@ let package = Package(
 SWIFT
 
 cat > "${TARGET_DIR}/main.swift" <<'SWIFT'
-runNativeModelTests()
+await runNativeModelTestsMain()
 SWIFT
 
 cd "${REPO_ROOT}"
