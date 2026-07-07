@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 @testable import SkillsCopilot
 
@@ -512,11 +513,224 @@ private actor FakeServiceProcessGate {
         timeoutNanoseconds: UInt64?,
         environmentOverrides: [String: String]
     ) async throws -> Data {
-        let runner = StdioServiceProcessRunner(environmentOverrides: environmentOverrides)
-        return try await runner.run(
+        let runner = PosixFakeServiceProcessRunner(environmentOverrides: environmentOverrides)
+        return try runner.run(
             executableURL: executableURL,
             input: input,
             timeoutNanoseconds: timeoutNanoseconds
         )
+    }
+}
+
+private struct PosixFakeServiceProcessRunner {
+    let environmentOverrides: [String: String]
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) throws -> Data {
+        let executablePath = executableURL.path
+        let environment = ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, override in
+            override
+        }
+        return try runFakeServiceProcess(
+            executablePath: executablePath,
+            input: input,
+            environment: environment,
+            timeoutNanoseconds: timeoutNanoseconds
+        )
+    }
+}
+
+private func runFakeServiceProcess(
+    executablePath: String,
+    input: Data,
+    environment: [String: String],
+    timeoutNanoseconds: UInt64?
+) throws -> Data {
+    var stdinPipe: [Int32] = [-1, -1]
+    var stdoutPipe: [Int32] = [-1, -1]
+    var stderrPipe: [Int32] = [-1, -1]
+
+    try checkErrno(pipe(&stdinPipe), "pipe stdin")
+    try checkErrno(pipe(&stdoutPipe), "pipe stdout")
+    try checkErrno(pipe(&stderrPipe), "pipe stderr")
+
+    defer {
+        closeIfOpen(&stdinPipe[0])
+        closeIfOpen(&stdinPipe[1])
+        closeIfOpen(&stdoutPipe[0])
+        closeIfOpen(&stdoutPipe[1])
+        closeIfOpen(&stderrPipe[0])
+        closeIfOpen(&stderrPipe[1])
+    }
+
+    var actions: posix_spawn_file_actions_t? = nil
+    try checkPOSIX(posix_spawn_file_actions_init(&actions), "posix_spawn_file_actions_init")
+    defer { posix_spawn_file_actions_destroy(&actions) }
+
+    try checkPOSIX(posix_spawn_file_actions_adddup2(&actions, stdinPipe[0], STDIN_FILENO), "dup stdin")
+    try checkPOSIX(posix_spawn_file_actions_adddup2(&actions, stdoutPipe[1], STDOUT_FILENO), "dup stdout")
+    try checkPOSIX(posix_spawn_file_actions_adddup2(&actions, stderrPipe[1], STDERR_FILENO), "dup stderr")
+    try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stdinPipe[0]), "close child stdin reader")
+    try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stdinPipe[1]), "close child stdin writer")
+    try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stdoutPipe[0]), "close child stdout reader")
+    try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stdoutPipe[1]), "close child stdout writer")
+    try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stderrPipe[0]), "close child stderr reader")
+    try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stderrPipe[1]), "close child stderr writer")
+
+    var argv = [strdup(executablePath), nil]
+    var envp = environment
+        .map { key, value in strdup("\(key)=\(value)") }
+    envp.append(nil)
+    defer {
+        argv.compactMap { $0 }.forEach { free($0) }
+        envp.compactMap { $0 }.forEach { free($0) }
+    }
+
+    var pid: pid_t = 0
+    let spawnResult = executablePath.withCString { pathPointer in
+        argv.withUnsafeMutableBufferPointer { argvBuffer in
+            envp.withUnsafeMutableBufferPointer { envBuffer in
+                posix_spawn(
+                    &pid,
+                    pathPointer,
+                    &actions,
+                    nil,
+                    argvBuffer.baseAddress,
+                    envBuffer.baseAddress
+                )
+            }
+        }
+    }
+    try checkPOSIX(spawnResult, "posix_spawn")
+
+    closeIfOpen(&stdinPipe[0])
+    closeIfOpen(&stdoutPipe[1])
+    closeIfOpen(&stderrPipe[1])
+
+    try writeAll(input, to: stdinPipe[1])
+    closeIfOpen(&stdinPipe[1])
+
+    try setNonBlocking(stdoutPipe[0])
+    try setNonBlocking(stderrPipe[0])
+
+    let startedAt = DispatchTime.now().uptimeNanoseconds
+    let deadline = timeoutNanoseconds.map { startedAt &+ $0 }
+    var stdout = Data()
+    var stderr = Data()
+    var stdoutOpen = true
+    var stderrOpen = true
+    var processExited = false
+    var status: Int32 = 0
+
+    while stdoutOpen || stderrOpen || !processExited {
+        if let deadline, DispatchTime.now().uptimeNanoseconds >= deadline {
+            kill(pid, SIGKILL)
+            _ = waitpid(pid, &status, 0)
+            throw ServiceClient.ClientError.processTimedOut
+        }
+
+        if stdoutOpen {
+            stdoutOpen = try readAvailable(from: stdoutPipe[0], into: &stdout)
+        }
+        if stderrOpen {
+            stderrOpen = try readAvailable(from: stderrPipe[0], into: &stderr)
+        }
+        if !processExited {
+            let waitResult = waitpid(pid, &status, WNOHANG)
+            if waitResult == pid {
+                processExited = true
+            } else if waitResult == -1 && errno != EINTR {
+                throw POSIXProcessError(operation: "waitpid", code: errno)
+            }
+        }
+        if stdoutOpen || stderrOpen || !processExited {
+            usleep(1_000)
+        }
+    }
+
+    let exitCode = normalizedExitCode(status)
+    guard exitCode == 0 else {
+        let message = String(data: stderr, encoding: .utf8) ?? ""
+        throw ServiceClient.ClientError.processFailed(exitCode, message)
+    }
+    return stdout
+}
+
+private func checkPOSIX(_ result: Int32, _ operation: String) throws {
+    guard result != 0 else { return }
+    throw POSIXProcessError(operation: operation, code: result)
+}
+
+private func checkErrno(_ result: Int32, _ operation: String) throws {
+    guard result == 0 else {
+        throw POSIXProcessError(operation: operation, code: errno)
+    }
+}
+
+private func closeIfOpen(_ fd: inout Int32) {
+    guard fd >= 0 else { return }
+    close(fd)
+    fd = -1
+}
+
+private func setNonBlocking(_ fd: Int32) throws {
+    let flags = fcntl(fd, F_GETFL)
+    guard flags >= 0 else {
+        throw POSIXProcessError(operation: "fcntl(F_GETFL)", code: errno)
+    }
+    guard fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+        throw POSIXProcessError(operation: "fcntl(F_SETFL)", code: errno)
+    }
+}
+
+private func writeAll(_ data: Data, to fd: Int32) throws {
+    guard !data.isEmpty else { return }
+    try data.withUnsafeBytes { rawBuffer in
+        guard var pointer = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+        var remaining = rawBuffer.count
+        while remaining > 0 {
+            let written = Darwin.write(fd, pointer, remaining)
+            if written > 0 {
+                pointer = pointer.advanced(by: written)
+                remaining -= written
+            } else if written == -1 && errno == EINTR {
+                continue
+            } else {
+                throw POSIXProcessError(operation: "write", code: errno)
+            }
+        }
+    }
+}
+
+private func readAvailable(from fd: Int32, into data: inout Data) throws -> Bool {
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = Darwin.read(fd, &buffer, buffer.count)
+        if count > 0 {
+            data.append(buffer, count: count)
+        } else if count == 0 {
+            return false
+        } else if errno == EINTR {
+            continue
+        } else if errno == EAGAIN || errno == EWOULDBLOCK {
+            return true
+        } else {
+            throw POSIXProcessError(operation: "read", code: errno)
+        }
+    }
+}
+
+private func normalizedExitCode(_ status: Int32) -> Int32 {
+    if status & 0x7f == 0 {
+        return (status >> 8) & 0xff
+    }
+    return 128 + (status & 0x7f)
+}
+
+private struct POSIXProcessError: Error, CustomStringConvertible {
+    let operation: String
+    let code: Int32
+
+    var description: String {
+        "\(operation) failed: \(String(cString: strerror(code)))"
     }
 }
