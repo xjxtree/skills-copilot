@@ -2,6 +2,8 @@ import Foundation
 @testable import SkillsCopilot
 
 final class FakeServiceScript: ServiceProcessRunning {
+    private static let processGate = FakeServiceProcessGate()
+
     private let directory: URL
     let executableURL: URL
     private let callsURL: URL
@@ -41,16 +43,14 @@ final class FakeServiceScript: ServiceProcessRunning {
     }
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
-        let runner = StdioServiceProcessRunner(
+        try await Self.processGate.run(
+            executableURL: self.executableURL,
+            input: input,
+            timeoutNanoseconds: timeoutNanoseconds,
             environmentOverrides: [
                 "SKILLS_COPILOT_FAKE_SERVICE_SCENARIO": scenario,
                 "SKILLS_COPILOT_FAKE_SERVICE_CALLS": callsURL.path
             ]
-        )
-        return try await runner.run(
-            executableURL: self.executableURL,
-            input: input,
-            timeoutNanoseconds: timeoutNanoseconds
         )
     }
 
@@ -502,5 +502,21 @@ final class FakeServiceScript: ServiceProcessRunning {
             ;;
         esac
         """
+    }
+}
+
+private actor FakeServiceProcessGate {
+    func run(
+        executableURL: URL,
+        input: Data,
+        timeoutNanoseconds: UInt64?,
+        environmentOverrides: [String: String]
+    ) async throws -> Data {
+        let runner = StdioServiceProcessRunner(environmentOverrides: environmentOverrides)
+        return try await runner.run(
+            executableURL: executableURL,
+            input: input,
+            timeoutNanoseconds: timeoutNanoseconds
+        )
     }
 }
