@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 @testable import SkillsCopilot
 
@@ -42,22 +41,17 @@ final class FakeServiceScript: ServiceProcessRunning {
     }
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
-        let invocation = FakeServiceFileProcessInvocation(
-            executableURL: self.executableURL,
-            workingDirectory: directory,
-            input: input,
+        let runner = StdioServiceProcessRunner(
             environmentOverrides: [
                 "SKILLS_COPILOT_FAKE_SERVICE_SCENARIO": scenario,
                 "SKILLS_COPILOT_FAKE_SERVICE_CALLS": callsURL.path
             ]
         )
-        return try await withTaskCancellationHandler {
-            try await Task.detached(priority: .userInitiated) {
-                try invocation.run(timeoutNanoseconds: timeoutNanoseconds)
-            }.value
-        } onCancel: {
-            invocation.cancel()
-        }
+        return try await runner.run(
+            executableURL: self.executableURL,
+            input: input,
+            timeoutNanoseconds: timeoutNanoseconds
+        )
     }
 
     func calls() -> String {
@@ -508,122 +502,5 @@ final class FakeServiceScript: ServiceProcessRunning {
             ;;
         esac
         """
-    }
-}
-
-private final class FakeServiceFileProcessInvocation {
-    private let executableURL: URL
-    private let workingDirectory: URL
-    private let input: Data
-    private let environmentOverrides: [String: String]
-    private let lock = NSLock()
-    private var process: Process?
-
-    init(
-        executableURL: URL,
-        workingDirectory: URL,
-        input: Data,
-        environmentOverrides: [String: String]
-    ) {
-        self.executableURL = executableURL
-        self.workingDirectory = workingDirectory
-        self.input = input
-        self.environmentOverrides = environmentOverrides
-    }
-
-    func run(timeoutNanoseconds: UInt64?) throws -> Data {
-        try Task.checkCancellation()
-
-        let invocationID = UUID().uuidString
-        let stdoutURL = workingDirectory.appendingPathComponent("stdout-\(invocationID).json")
-        let stderrURL = workingDirectory.appendingPathComponent("stderr-\(invocationID).log")
-        _ = FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
-        _ = FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
-
-        let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
-        let stderrHandle = try FileHandle(forWritingTo: stderrURL)
-        defer {
-            try? stdoutHandle.close()
-            try? stderrHandle.close()
-            try? FileManager.default.removeItem(at: stdoutURL)
-            try? FileManager.default.removeItem(at: stderrURL)
-        }
-
-        let process = Process()
-        process.executableURL = executableURL
-        var environment = ProcessInfo.processInfo.environment
-        environmentOverrides.forEach { key, value in
-            environment[key] = value
-        }
-        process.environment = environment
-        process.standardInput = Pipe()
-        process.standardOutput = stdoutHandle
-        process.standardError = stderrHandle
-
-        register(process)
-        defer { clear(process) }
-
-        let completed = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            completed.signal()
-        }
-        defer { process.terminationHandler = nil }
-
-        try process.run()
-
-        if let stdin = process.standardInput as? Pipe {
-            try stdin.fileHandleForWriting.write(contentsOf: input)
-            try stdin.fileHandleForWriting.close()
-        }
-
-        if let timeoutNanoseconds {
-            let timeout = DispatchTime.now() + .nanoseconds(Int(min(timeoutNanoseconds, UInt64(Int.max))))
-            if completed.wait(timeout: timeout) == .timedOut {
-                cancel()
-                _ = completed.wait(timeout: .now() + .milliseconds(500))
-                throw ServiceClient.ClientError.processTimedOut
-            }
-        } else {
-            completed.wait()
-        }
-
-        try Task.checkCancellation()
-        let output = try Data(contentsOf: stdoutURL)
-        let errorOutput = try Data(contentsOf: stderrURL)
-        if process.terminationStatus != 0 {
-            let message = String(data: errorOutput, encoding: .utf8) ?? ""
-            throw ServiceClient.ClientError.processFailed(process.terminationStatus, message)
-        }
-        return output
-    }
-
-    func cancel() {
-        lock.lock()
-        let process = self.process
-        lock.unlock()
-
-        guard let process, process.isRunning else { return }
-        process.terminate()
-        let deadline = Date().addingTimeInterval(0.25)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-    }
-
-    private func register(_ process: Process) {
-        lock.lock()
-        self.process = process
-        lock.unlock()
-    }
-
-    private func clear(_ process: Process) {
-        lock.lock()
-        if self.process === process {
-            self.process = nil
-        }
-        lock.unlock()
     }
 }
