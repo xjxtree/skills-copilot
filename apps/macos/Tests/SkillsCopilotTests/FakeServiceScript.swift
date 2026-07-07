@@ -588,9 +588,6 @@ private final class FakeServiceFileProcessInvocation {
         }
 
         try Task.checkCancellation()
-        try stdoutHandle.close()
-        try stderrHandle.close()
-
         let output = try Data(contentsOf: stdoutURL)
         let errorOutput = try Data(contentsOf: stderrURL)
         if process.terminationStatus != 0 {

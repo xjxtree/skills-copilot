@@ -70,6 +70,8 @@ coding agents working in this repository.
 - For docs that claim implementation status, screenshots, or validation
   results, run the relevant verifier or change the wording.
 - Before committing, pushing, or handing off evidence, run `pnpm check:privacy`.
+- After pushing to a GitHub remote, confirm the GitHub Actions run triggered by
+  that push completes successfully before reporting the push as done.
 - Smoke validation uses fixture data and must not touch real user config.
 - Real local validation uses the developer's real local HOME, app data, and
   agent configs.
