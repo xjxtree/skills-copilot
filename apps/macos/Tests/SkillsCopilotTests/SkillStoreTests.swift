@@ -1651,13 +1651,17 @@ struct SkillStoreTests {
     }
 
     private func taskCockpitFallsBackWhenMethodUnavailable() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "normal")
+        let runner = TaskCockpitFallbackServiceRunner()
 
         let historyStore = makeTemporaryTaskCockpitHistoryStore()
         defer { cleanupTaskCockpitHistoryStore(historyStore) }
-        let store = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
+        let store = SkillStore(
+            service: ServiceClient(
+                processRunner: runner,
+                serviceURL: URL(fileURLWithPath: "/tmp/task-cockpit-fallback-service")
+            ),
+            taskCockpitHistoryStore: historyStore
+        )
         store.selectedSkillID = "beta"
         store.taskCockpitText = "Route a local audit release note task."
         await store.reload()
@@ -1666,11 +1670,12 @@ struct SkillStoreTests {
         try expectEqual(store.taskCockpitResult?.isUnavailable, true, "Task cockpit should expose unavailable fallback for older services.")
         try expectEqual(store.taskCockpitResult?.fallbackReason, UIStrings.taskCockpitUnavailable, "Unknown method fallback should use the localized unavailable copy.")
         try expectFalse(store.isBuildingTaskCockpit, "Unavailable task cockpit should reset loading state.")
-        try expectContains(fake.calls(), "llm.previewPrompt", "Fallback should still prove the intended provider preview method was attempted.")
-        try expectContains(fake.calls(), "\"task_text\":\"Route a local audit release note task.\"", "Fallback should reuse existing routing task text when cockpit input is blank.")
-        try expectFalse(fake.calls().contains("llm.confirmPromptAndSend"), "Unavailable cockpit flow must not send to provider.")
-        try expectFalse(fake.calls().contains("config.toggleSkill"), "Unavailable cockpit flow must not call config write paths.")
-        try expectFalse(fake.calls().contains("script.execute"), "Unavailable cockpit flow must not call execution paths.")
+        let calls = await runner.calls()
+        try expectContains(calls, "llm.previewPrompt", "Fallback should still prove the intended provider preview method was attempted.")
+        try expectContains(calls, "\"task_text\":\"Route a local audit release note task.\"", "Fallback should reuse existing routing task text when cockpit input is blank.")
+        try expectFalse(calls.contains("llm.confirmPromptAndSend"), "Unavailable cockpit flow must not send to provider.")
+        try expectFalse(calls.contains("config.toggleSkill"), "Unavailable cockpit flow must not call config write paths.")
+        try expectFalse(calls.contains("script.execute"), "Unavailable cockpit flow must not call execution paths.")
     }
 
     private func taskCockpitTimeoutShowsRecoveryAndIgnoresStaleResponse() async throws {
@@ -1903,5 +1908,55 @@ struct SkillStoreTests {
 private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
         throw NativeModelTestFailure(description: "Whitespace-only task cockpit input should not call the service.")
+    }
+}
+
+private final class TaskCockpitFallbackServiceRunner: ServiceProcessRunning {
+    private let recorder = TaskCockpitFallbackCallRecorder()
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let rawInput = String(data: input, encoding: .utf8) ?? ""
+        await recorder.record(rawInput)
+
+        let object = try JSONSerialization.jsonObject(with: input) as? [String: Any]
+        let method = object?["method"] as? String ?? ""
+        switch method {
+        case "app.stateSnapshot":
+            return Data(Self.stateSnapshotResponse.utf8)
+        case "llm.previewPrompt":
+            return Data(Self.unknownPreviewPromptResponse.utf8)
+        default:
+            return Data(Self.unexpectedMethodResponse(method).utf8)
+        }
+    }
+
+    func calls() async -> String {
+        await recorder.calls()
+    }
+
+    private static let stateSnapshotResponse = """
+    {"id":"test","ok":true,"result":{"status":{"protocol_version":1,"version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","llm.previewPrompt"]},"skills":[{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","state":"loaded","enabled":true},{"id":"beta","agent":"claude-code","scope":"agent-project","path":"/tmp/project/beta/SKILL.md","display_path":"/tmp/project/beta/SKILL.md","definition_id":"def.beta","name":"Beta","state":"loaded","enabled":true}],"findings":[],"conflicts":[]}}
+    """
+
+    private static let unknownPreviewPromptResponse = """
+    {"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.previewPrompt"}}
+    """
+
+    private static func unexpectedMethodResponse(_ method: String) -> String {
+        """
+        {"id":"test","ok":false,"result":null,"error":{"code":"unexpected_method","message":"unexpected method: \(method)"}}
+        """
+    }
+}
+
+private actor TaskCockpitFallbackCallRecorder {
+    private var recordedCalls: [String] = []
+
+    func record(_ rawInput: String) {
+        recordedCalls.append(rawInput)
+    }
+
+    func calls() -> String {
+        recordedCalls.joined(separator: "\n")
     }
 }
