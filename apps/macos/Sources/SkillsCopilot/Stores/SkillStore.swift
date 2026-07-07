@@ -838,17 +838,12 @@ final class SkillStore: ObservableObject {
             let startupAgentFilter = agentFilter
             let shouldLoadClaudeSettings = startupAgentFilter == .claudeCode
                 && status?.supportedMethods.contains("config.readClaudeSettings") == true
-            async let localSessionsLoad: Void = refreshSelectedAgentLocalSessionsIfNeeded()
-            async let currentConfigDocumentsLoad: Void = loadCurrentAgentConfigDocumentsIfNeeded(agent: startupAgentFilter.rawValue)
-            async let providerObservabilityLoad: Void = loadProviderObservabilityDuringRefresh(force: false)
+            await refreshSelectedAgentLocalSessionsIfNeeded()
+            await loadCurrentAgentConfigDocumentsIfNeeded(agent: startupAgentFilter.rawValue)
+            await loadProviderObservabilityDuringRefresh(force: false)
             if shouldLoadClaudeSettings {
                 await loadClaudeSettingsIfNeeded()
             }
-            _ = await (
-                localSessionsLoad,
-                currentConfigDocumentsLoad,
-                providerObservabilityLoad
-            )
 
             setStartupLoading(UIStrings.startupDetailLoading, progress: 0.90)
             await loadSelectedDetail()
@@ -875,8 +870,7 @@ final class SkillStore: ObservableObject {
 
         do {
             try await refreshCollections()
-            async let providerObservabilityLoad: Void = loadProviderObservabilityDuringRefresh(force: true)
-            _ = await providerObservabilityLoad
+            await loadProviderObservabilityDuringRefresh(force: true)
             refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
@@ -2542,27 +2536,12 @@ final class SkillStore: ObservableObject {
 
     private func refreshCollections() async throws {
         let snapshot = try await service.appStateSnapshot()
-        async let llmStatusTask = service.llmStatus()
-        async let aiProviderStatusTask = fetchAIProviderStatus()
-        async let llmPromptRunsTask = fetchLLMPromptRuns()
-        async let projectContextTask = service.getProjectContext()
-        async let agentConfigSnapshotsTask = fetchAgentConfigSnapshots()
-        async let ruleTuningTask = service.listRuleTuning()
-        let (
-            fetchedLLMStatus,
-            fetchedAIProviderStatus,
-            fetchedLLMPromptRuns,
-            fetchedProjectContextState,
-            fetchedAgentConfigSnapshots,
-            fetchedRuleTuning
-        ) = try await (
-            llmStatusTask,
-            aiProviderStatusTask,
-            llmPromptRunsTask,
-            projectContextTask,
-            agentConfigSnapshotsTask,
-            ruleTuningTask
-        )
+        let fetchedLLMStatus = try await service.llmStatus()
+        let fetchedAIProviderStatus = await fetchAIProviderStatus()
+        let fetchedLLMPromptRuns = await fetchLLMPromptRuns()
+        let fetchedProjectContextState = try await service.getProjectContext()
+        let fetchedAgentConfigSnapshots = try await fetchAgentConfigSnapshots()
+        let fetchedRuleTuning = try await service.listRuleTuning()
 
         self.status = snapshot.status
         self.llmStatus = fetchedLLMStatus

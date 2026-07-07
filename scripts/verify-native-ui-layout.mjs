@@ -191,7 +191,7 @@ const checks = [
       && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
       && /@Published private\(set\) var hasCompletedStartupLoad = false/.test(files.store)
-      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?async let localSessionsLoad:\s*Void = refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?async let currentConfigDocumentsLoad:\s*Void = loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*startupAgentFilter\.rawValue\)[\s\S]*?_ = await \([\s\S]*?localSessionsLoad[\s\S]*?currentConfigDocumentsLoad[\s\S]*?\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
+      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?await refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?await loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*startupAgentFilter\.rawValue\)[\s\S]*?await loadProviderObservabilityDuringRefresh\(force:\s*false\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
       && /"startup\.catalog" = "Loading catalog data\.\.\."/.test(files.localizable),
   },
   {
