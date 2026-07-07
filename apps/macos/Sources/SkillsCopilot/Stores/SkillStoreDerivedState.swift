@@ -12,7 +12,6 @@ extension SkillStore {
             || isTestingAIProvider
             || isApplyingBatchToggle
             || isSkillManagerBusy
-            || isLoadingProviderObservability
             || isBuildingTaskCockpit
             || isLLMPromptBusy
     }

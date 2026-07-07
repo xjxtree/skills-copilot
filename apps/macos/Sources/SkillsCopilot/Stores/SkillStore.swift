@@ -386,6 +386,7 @@ final class SkillStore: ObservableObject {
     private var localSessionCriteriaTask: Task<Void, Never>?
     private var appSearchTask: Task<Void, Never>?
     private var providerObservabilityCriteriaTask: Task<Void, Never>?
+    private var postRefreshSupplementalLoadTask: Task<Void, Never>?
     private var appSearchQuery = ""
     private var taskCockpitTimeoutTask: Task<Void, Never>?
     private var taskCockpitServiceTask: Task<TaskCockpitResult, Error>?
@@ -476,6 +477,75 @@ final class SkillStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard let self, !Task.isCancelled else { return }
             await self.loadProviderObservability(force: true, allowDuringRefresh: true)
+        }
+    }
+
+    private func scheduleStartupSupplementalLoads(
+        agentFilter requestedAgentFilter: SkillAgentFilter,
+        shouldLoadClaudeSettings: Bool
+    ) {
+        schedulePostRefreshSupplementalLoads(
+            agentFilter: requestedAgentFilter,
+            loadLocalSessions: true,
+            loadAgentConfigDocuments: true,
+            loadClaudeSettings: shouldLoadClaudeSettings,
+            forceAgentConfigSnapshots: false,
+            forceAIProviderStatus: false,
+            forceProviderObservability: false
+        )
+    }
+
+    private func scheduleReloadSupplementalLoads(agentFilter requestedAgentFilter: SkillAgentFilter) {
+        schedulePostRefreshSupplementalLoads(
+            agentFilter: requestedAgentFilter,
+            loadLocalSessions: false,
+            loadAgentConfigDocuments: false,
+            loadClaudeSettings: false,
+            forceAgentConfigSnapshots: true,
+            forceAIProviderStatus: false,
+            forceProviderObservability: true
+        )
+    }
+
+    private func schedulePostRefreshSupplementalLoads(
+        agentFilter requestedAgentFilter: SkillAgentFilter,
+        loadLocalSessions: Bool,
+        loadAgentConfigDocuments: Bool,
+        loadClaudeSettings: Bool,
+        forceAgentConfigSnapshots: Bool,
+        forceAIProviderStatus: Bool,
+        forceProviderObservability: Bool
+    ) {
+        postRefreshSupplementalLoadTask?.cancel()
+        postRefreshSupplementalLoadTask = Task { @MainActor [weak self, requestedAgentFilter] in
+            guard let self, !Task.isCancelled else { return }
+            if forceAIProviderStatus {
+                await self.loadAIProviderStatus()
+            } else {
+                await self.loadAIProviderStatusIfNeeded()
+            }
+            guard !Task.isCancelled else { return }
+            if loadLocalSessions {
+                await self.refreshSelectedAgentLocalSessionsIfNeeded()
+                guard !Task.isCancelled else { return }
+            }
+            if forceAgentConfigSnapshots {
+                await self.loadAgentConfigSnapshots(agent: requestedAgentFilter.rawValue)
+            } else {
+                await self.loadAgentConfigSnapshotsIfNeeded(agent: requestedAgentFilter.rawValue)
+            }
+            guard !Task.isCancelled else { return }
+            if loadAgentConfigDocuments {
+                await self.loadCurrentAgentConfigDocumentsIfNeeded(agent: requestedAgentFilter.rawValue)
+                guard !Task.isCancelled else { return }
+            }
+            if loadClaudeSettings {
+                await self.loadClaudeSettingsIfNeeded()
+                guard !Task.isCancelled else { return }
+            }
+            await self.loadLLMPromptRuns()
+            guard !Task.isCancelled else { return }
+            await self.loadProviderObservabilityDuringRefresh(force: forceProviderObservability)
         }
     }
 
@@ -818,6 +888,7 @@ final class SkillStore: ObservableObject {
 
     func loadAppStartupDataIfNeeded() async {
         guard !hasCompletedStartupLoad, !isRunningStartupLoad else { return }
+        postRefreshSupplementalLoadTask?.cancel()
         isRunningStartupLoad = true
         isLoading = true
         errorMessage = nil
@@ -832,18 +903,12 @@ final class SkillStore: ObservableObject {
 
         do {
             setStartupLoading(UIStrings.startupCatalogLoading, progress: 0.16)
-            try await refreshCollections()
+            try await refreshCollections(includeSupplementalData: false, includeAIProviderStatus: false)
 
             setStartupLoading(UIStrings.startupAnalysisLoading, progress: 0.40)
             let startupAgentFilter = agentFilter
             let shouldLoadClaudeSettings = startupAgentFilter == .claudeCode
                 && status?.supportedMethods.contains("config.readClaudeSettings") == true
-            await refreshSelectedAgentLocalSessionsIfNeeded()
-            await loadCurrentAgentConfigDocumentsIfNeeded(agent: startupAgentFilter.rawValue)
-            await loadProviderObservabilityDuringRefresh(force: false)
-            if shouldLoadClaudeSettings {
-                await loadClaudeSettingsIfNeeded()
-            }
 
             setStartupLoading(UIStrings.startupDetailLoading, progress: 0.90)
             await loadSelectedDetail()
@@ -852,6 +917,10 @@ final class SkillStore: ObservableObject {
             refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
+            scheduleStartupSupplementalLoads(
+                agentFilter: startupAgentFilter,
+                shouldLoadClaudeSettings: shouldLoadClaudeSettings
+            )
         } catch {
             handleRefreshFailure(error, action: .reload)
         }
@@ -863,18 +932,19 @@ final class SkillStore: ObservableObject {
 
     func reload() async {
         guard !isRefreshBusy else { return }
+        postRefreshSupplementalLoadTask?.cancel()
         isLoading = true
         errorMessage = nil
         beginRefresh(.reload, message: UIStrings.refreshReloading)
         defer { isLoading = false }
 
         do {
-            try await refreshCollections()
-            await loadProviderObservabilityDuringRefresh(force: true)
+            try await refreshCollections(includeSupplementalData: false, includeAIProviderStatus: true)
             refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
             await loadSelectedDetail()
+            scheduleReloadSupplementalLoads(agentFilter: agentFilter)
         } catch {
             handleRefreshFailure(error, action: .reload)
         }
@@ -2534,36 +2604,54 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func refreshCollections() async throws {
+    private func refreshCollections(
+        includeSupplementalData: Bool = true,
+        includeAIProviderStatus: Bool = true
+    ) async throws {
         let snapshot = try await service.appStateSnapshot()
         let fetchedLLMStatus = try await service.llmStatus()
-        let fetchedAIProviderStatus = await fetchAIProviderStatus()
-        let fetchedLLMPromptRuns = await fetchLLMPromptRuns()
         let fetchedProjectContextState = try await service.getProjectContext()
-        let fetchedAgentConfigSnapshots = try await fetchAgentConfigSnapshots()
         let fetchedRuleTuning = try await service.listRuleTuning()
+        let fetchedAIProviderStatus = includeAIProviderStatus ? await fetchAIProviderStatus() : nil
+        let fetchedLLMPromptRuns: LLMPromptRunListResult?
+        let fetchedAgentConfigSnapshots: [ConfigSnapshotRecord]?
+        if includeSupplementalData {
+            fetchedLLMPromptRuns = await fetchLLMPromptRuns()
+            fetchedAgentConfigSnapshots = try await fetchAgentConfigSnapshots()
+        } else {
+            fetchedLLMPromptRuns = nil
+            fetchedAgentConfigSnapshots = nil
+        }
 
         self.status = snapshot.status
         self.llmStatus = fetchedLLMStatus
-        self.aiProviderStatus = fetchedAIProviderStatus
-        self.hasLoadedAIProviderStatus = true
-        self.aiProviderTestResult = self.aiProviderStatus.lastTest ?? aiProviderTestResult
-        self.llmPromptRunList = fetchedLLMPromptRuns
         self.projectContextState = fetchedProjectContextState
         self.skills = snapshot.skills
         self.findings = snapshot.findings
         self.ruleTuning = fetchedRuleTuning
         self.conflicts = snapshot.conflicts
         self.healthSummary = snapshot.health
-        self.agentConfigSnapshots = fetchedAgentConfigSnapshots
-        if let agent = selectedAgentConfigTimelineAgent {
-            loadedAgentConfigSnapshotRequestKey = agentConfigRequestKey(agent: agent)
-        } else {
-            loadedAgentConfigSnapshotRequestKey = nil
+        if let fetchedAIProviderStatus {
+            self.aiProviderStatus = fetchedAIProviderStatus
+            self.hasLoadedAIProviderStatus = true
+            self.aiProviderTestResult = self.aiProviderStatus.lastTest ?? aiProviderTestResult
+        }
+        if let fetchedLLMPromptRuns {
+            self.llmPromptRunList = fetchedLLMPromptRuns
+        }
+        if let fetchedAgentConfigSnapshots {
+            self.agentConfigSnapshots = fetchedAgentConfigSnapshots
+            if let agent = selectedAgentConfigTimelineAgent {
+                loadedAgentConfigSnapshotRequestKey = agentConfigRequestKey(agent: agent)
+            } else {
+                loadedAgentConfigSnapshotRequestKey = nil
+            }
         }
         let currentSkillIDs = Set(snapshot.skills.map(\.id))
         scriptExecutionPreviews = scriptExecutionPreviews.filter { currentSkillIDs.contains($0.key) }
-        hydratePromptSendResultsFromRuns(currentSkillIDs: currentSkillIDs)
+        if fetchedLLMPromptRuns != nil {
+            hydratePromptSendResultsFromRuns(currentSkillIDs: currentSkillIDs)
+        }
         skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
         batchTogglePreview = nil
         refreshWatcherMessage(from: self.status)

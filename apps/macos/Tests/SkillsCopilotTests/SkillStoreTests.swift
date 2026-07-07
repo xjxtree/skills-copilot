@@ -576,9 +576,12 @@ struct SkillStoreTests {
         try expectEqual(countOccurrences("catalog.listFindings", in: calls), 0, "Reload collection refresh should not launch a separate findings list sidecar.")
         try expectEqual(countOccurrences("catalog.listConflicts", in: calls), 0, "Reload collection refresh should not launch a separate conflicts list sidecar.")
         try expectEqual(countMethodCalls("snapshot.list", in: calls), 0, "Reload collection refresh should not launch a global snapshots list sidecar.")
-        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: calls), 1, "Reload should refresh the selected agent config history.")
+        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: calls), 0, "Reload should not block the core refresh on selected agent config history.")
         try expectContains(calls, "llm.status", "Reload should preserve the separate LLM status behavior.")
         try expectContains(calls, "project.getContext", "Reload should preserve the separate project context behavior.")
+        try await waitUntil("Reload should refresh selected agent config history in the background.") {
+            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+        }
     }
 
     private func startupLoadPrewarmsLaunchDataWithoutScanningOrWriting() async throws {
@@ -597,16 +600,21 @@ struct SkillStoreTests {
         try expectNil(store.startupLoadingState, "Startup should clear the progress overlay when prewarm completes.")
         try expectFalse(store.isLoading, "Startup should reset the global loading state.")
         try expectNil(store.errorMessage, "Startup should not surface a background error on success.")
-        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 2, "Startup should prewarm the selected agent session summary.")
         try expectEqual(store.selectedSkillDetail?.id, "alpha", "Startup should prewarm the first selected skill detail.")
         try expectEqual(countOccurrences("app.stateSnapshot", in: calls), 1, "Startup should use the combined state snapshot once.")
-        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: calls), 1, "Startup should prewarm selected-agent config history.")
-        try expectContains(calls, "session.previewLocalSessions", "Startup should prewarm selected-agent local sessions.")
-        try expectContains(calls, "config.readAgentConfig", "Startup should prewarm selected-agent current config documents.")
+        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: calls), 0, "Startup should not block the progress overlay on selected-agent config history.")
+        try expectFalse(calls.contains("session.previewLocalSessions"), "Startup should not block the progress overlay on selected-agent local sessions.")
+        try expectFalse(calls.contains("config.readAgentConfig"), "Startup should not block the progress overlay on selected-agent current config documents.")
         try expectContains(calls, "catalog.getSkill", "Startup should prewarm the selected skill detail.")
-        try expectEqual(countMethodCalls("llm.listProviderProfiles", in: calls), 1, "Startup should prewarm the AI provider status once.")
+        try expectEqual(countMethodCalls("llm.listProviderProfiles", in: calls), 0, "Startup should not block the progress overlay on AI provider status.")
         try expectFalse(calls.contains("\"method\":\"catalog.scanAll\""), "Startup should not scan roots automatically.")
         try expectFalse(calls.contains("\"method\":\"config.toggleSkill\""), "Startup should not write agent config.")
+        try await waitUntil("Startup should prewarm supplemental launch data in the background.") {
+            store.localSessionPreviewResult.sessionRows.count == 2
+                && countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+                && fake.calls().contains("config.readAgentConfig")
+                && countMethodCalls("llm.listProviderProfiles", in: fake.calls()) == 1
+        }
 
         await store.loadAIProviderStatusIfNeeded()
 
@@ -782,6 +790,9 @@ struct SkillStoreTests {
         store.selectedSkillID = "beta"
         await store.reload()
 
+        try await waitUntil("Reload should fill the default Claude config timeline in the background.") {
+            store.agentConfigSnapshots.map(\.id) == ["snap-claude-new", "snap-claude-old"]
+        }
         try expectEqual(store.selectedAgentConfigTimelineAgent, "claude-code", "Default timeline should use the selected agent filter.")
         try expectEqual(store.agentConfigSnapshots.map(\.id), ["snap-claude-new", "snap-claude-old"], "Claude filter should show only Claude config snapshots.")
         try expectEqual(Set(store.agentConfigSnapshots.map(\.agent)), Set(["claude-code"]), "Claude timeline should not include other agents.")
@@ -814,6 +825,9 @@ struct SkillStoreTests {
 
         let store = SkillStore(service: fake.serviceClient())
         await store.reload()
+        try await waitUntil("Reload should fill the default Claude config timeline in the background.") {
+            store.agentConfigSnapshots.map(\.id) == ["snap-claude-new", "snap-claude-old"]
+        }
 
         let preview = try await store.previewRollback(snapshotID: "snap-claude-new")
 
@@ -1027,6 +1041,9 @@ struct SkillStoreTests {
 
         let store = SkillStore(service: fake.serviceClient())
         await store.reload()
+        try await waitUntil("Reload should fill the default Claude config timeline in the background.") {
+            store.agentConfigSnapshots.map(\.id) == ["snap-claude-new", "snap-claude-old"]
+        }
 
         await store.rollbackSnapshot(snapshotID: "snap-codex")
 
@@ -1380,6 +1397,12 @@ struct SkillStoreTests {
         let store = SkillStore(service: fake.serviceClient())
         store.selectedSkillID = "beta"
         await store.reload()
+        try await waitUntil("Reload supplemental reads should settle before the observability contract check.") {
+            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+                && countMethodCalls("llm.providerObservability", in: fake.calls()) == 1
+                && !store.isLoadingProviderObservability
+                && store.providerObservabilityResult != nil
+        }
         let snapshotCallsBeforeObservability = countOccurrences("snapshot.", in: fake.calls())
         await store.loadProviderObservability()
 
@@ -1446,7 +1469,10 @@ struct SkillStoreTests {
         let store = SkillStore(service: fake.serviceClient())
         await store.loadAppStartupDataIfNeeded()
 
-        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 1, "Startup should preload provider observability once.")
+        try await waitUntil("Startup should preload provider observability in the background.") {
+            countMethodCalls("llm.providerObservability", in: fake.calls()) == 1
+                && store.providerObservabilityResult?.summary.callCount == 3
+        }
         try expectEqual(store.providerObservabilityResult?.summary.callCount, 3, "Startup observability preload should keep the decoded dashboard.")
 
         await store.loadProviderObservabilityIfNeeded()
@@ -1455,7 +1481,10 @@ struct SkillStoreTests {
 
         await store.reload()
 
-        try expectEqual(countMethodCalls("llm.providerObservability", in: fake.calls()), 2, "Global reload should refresh provider observability because Settings has no local build button.")
+        try await waitUntil("Global reload should refresh provider observability in the background.") {
+            countMethodCalls("llm.providerObservability", in: fake.calls()) == 2
+                && store.providerObservabilityResult?.summary.callCount == 3
+        }
 
         await store.loadProviderObservabilityIfNeeded()
 
@@ -1505,6 +1534,9 @@ struct SkillStoreTests {
         store.selectedSkillID = "beta"
         store.taskCockpitText = "Prepare local release audit work."
         await store.reload()
+        try await waitUntil("Reload supplemental reads should settle before the Task Cockpit contract check.") {
+            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+        }
         store.selectedSidebarSelection = .skill("beta")
         let snapshotCallsBeforeCockpit = countOccurrences("snapshot.", in: fake.calls())
         await store.buildTaskCockpit()

@@ -198,7 +198,9 @@ const checks = [
       && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
       && /@Published private\(set\) var hasCompletedStartupLoad = false/.test(files.store)
-      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(\)[\s\S]*?await refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?await loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*startupAgentFilter\.rawValue\)[\s\S]*?await loadProviderObservabilityDuringRefresh\(force:\s*false\)[\s\S]*?await loadSelectedDetail\(\)/.test(files.store)
+      && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(includeSupplementalData:\s*false,\s*includeAIProviderStatus:\s*false\)[\s\S]*?await loadSelectedDetail\(\)[\s\S]*?scheduleStartupSupplementalLoads\(/.test(files.store)
+      && /private func scheduleStartupSupplementalLoads\([\s\S]*?loadLocalSessions:\s*true[\s\S]*?loadAgentConfigDocuments:\s*true[\s\S]*?forceProviderObservability:\s*false/.test(files.store)
+      && /private func schedulePostRefreshSupplementalLoads\([\s\S]*?await self\.loadAIProviderStatusIfNeeded\(\)[\s\S]*?await self\.refreshSelectedAgentLocalSessionsIfNeeded\(\)[\s\S]*?await self\.loadCurrentAgentConfigDocumentsIfNeeded\(agent:\s*requestedAgentFilter\.rawValue\)[\s\S]*?await self\.loadLLMPromptRuns\(\)[\s\S]*?await self\.loadProviderObservabilityDuringRefresh\(force:\s*forceProviderObservability\)/.test(files.store)
       && /"startup\.catalog" = "Loading catalog data\.\.\."/.test(files.localizable),
   },
   {
@@ -856,15 +858,16 @@ const customChecks = [
       && !/allowsHitTesting\(false\)[\s\S]*?DetailFeedbackToast/.test(files.detail),
   },
   {
-    label: "settings owns startup-loaded lightweight Provider Observability dashboard",
+    label: "settings owns background-loaded lightweight Provider Observability dashboard",
     passed: /ProviderObservabilitySettingsPanel\(\)/.test(files.settings)
       && /loadAIProviderStatusIfNeeded\(\)/.test(files.settings)
       && !/store\.reload\(\)/.test(files.settings)
       && /case \.providerObservability:\s*break/.test(files.settings)
       && /func loadAIProviderStatusIfNeeded\(\) async/.test(files.store)
       && /func loadProviderObservabilityIfNeeded\(\) async/.test(files.store)
-      && /loadProviderObservabilityDuringRefresh\(force:\s*false\)/.test(files.store)
-      && /loadProviderObservabilityDuringRefresh\(force:\s*true\)/.test(files.store)
+      && /scheduleStartupSupplementalLoads\([\s\S]*?forceProviderObservability:\s*false/.test(files.store)
+      && /scheduleReloadSupplementalLoads\([\s\S]*?forceProviderObservability:\s*true/.test(files.store)
+      && /loadProviderObservabilityDuringRefresh\(force:\s*forceProviderObservability\)/.test(files.store)
       && /allowDuringRefresh:\s*Bool/.test(files.store)
       && /providerObservabilityRowLimit\s*=\s*100/.test(files.store)
       && /ProviderObservabilityDateRangeControls/.test(files.providerObservabilitySettings)
