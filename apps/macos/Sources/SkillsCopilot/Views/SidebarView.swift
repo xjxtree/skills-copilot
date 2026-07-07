@@ -757,30 +757,20 @@ private extension View {
         modifier(SecondarySidebarPaneBackground())
     }
 
-    @ViewBuilder
     func secondarySidebarHeaderControlCapsule() -> some View {
-        if #available(macOS 26.0, *) {
-            glassEffect(.regular.interactive(), in: Capsule())
-        } else {
-            background(Color.agentCopilotPanelBackground, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-                )
-        }
+        background(Color.agentCopilotPanelBackground, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+            )
     }
 
-    @ViewBuilder
     func secondarySidebarHeaderControlCircle() -> some View {
-        if #available(macOS 26.0, *) {
-            glassEffect(.regular.interactive(), in: Circle())
-        } else {
-            background(Color.agentCopilotPanelBackground, in: Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-                )
-        }
+        background(Color.agentCopilotPanelBackground, in: Circle())
+            .overlay(
+                Circle()
+                    .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+            )
     }
 
     func listPageChromeRow() -> some View {
