@@ -182,6 +182,13 @@ const checks = [
       && !/private func applyGlobalSearch/.test(files.content),
   },
   {
+    label: "secondary sidebar header preserves liquid glass behind a toolchain guard",
+    text: files.sidebar,
+    passed: /func secondarySidebarHeaderControlCapsule\(\)[\s\S]*?#if compiler\(>=6\.2\)[\s\S]*?glassEffect\(\.regular\.interactive\(\), in:\s*Capsule\(\)\)[\s\S]*?#else[\s\S]*?secondarySidebarHeaderControlFallback\(shape:\s*Capsule\(\)\)[\s\S]*?#endif/.test(files.sidebar)
+      && /func secondarySidebarHeaderControlCircle\(\)[\s\S]*?#if compiler\(>=6\.2\)[\s\S]*?glassEffect\(\.regular\.interactive\(\), in:\s*Circle\(\)\)[\s\S]*?#else[\s\S]*?secondarySidebarHeaderControlFallback\(shape:\s*Circle\(\)\)[\s\S]*?#endif/.test(files.sidebar)
+      && /func secondarySidebarHeaderControlFallback<S:\s*Shape>\(shape:\s*S\)[\s\S]*?background\(Color\.agentCopilotPanelBackground,\s*in:\s*shape\)[\s\S]*?shape[\s\S]*?\.stroke\(Color\.secondary\.opacity\(0\.12\), lineWidth:\s*1\)/.test(files.sidebar),
+  },
+  {
     label: "startup prewarm shows only loading progress before revealing the app shell",
     text: files.content + "\n" + files.store + "\n" + files.localizable,
     passed: /ZStack\(alignment:\s*\.topTrailing\)\s*{[\s\S]*?appShell[\s\S]*?\.opacity\(store\.startupLoadingState == nil \? 1 : 0\)[\s\S]*?\.allowsHitTesting\(store\.startupLoadingState == nil\)[\s\S]*?if let state = store\.startupLoadingState[\s\S]*?AppStartupLoadingView\(state:\s*state\)[\s\S]*?pinnedWindowChromeControls/.test(files.content)

@@ -757,18 +757,36 @@ private extension View {
         modifier(SecondarySidebarPaneBackground())
     }
 
+    @ViewBuilder
     func secondarySidebarHeaderControlCapsule() -> some View {
-        background(Color.agentCopilotPanelBackground, in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-            )
+#if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            secondarySidebarHeaderControlFallback(shape: Capsule())
+        }
+#else
+        secondarySidebarHeaderControlFallback(shape: Capsule())
+#endif
     }
 
+    @ViewBuilder
     func secondarySidebarHeaderControlCircle() -> some View {
-        background(Color.agentCopilotPanelBackground, in: Circle())
+#if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            secondarySidebarHeaderControlFallback(shape: Circle())
+        }
+#else
+        secondarySidebarHeaderControlFallback(shape: Circle())
+#endif
+    }
+
+    func secondarySidebarHeaderControlFallback<S: Shape>(shape: S) -> some View {
+        background(Color.agentCopilotPanelBackground, in: shape)
             .overlay(
-                Circle()
+                shape
                     .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
             )
     }
