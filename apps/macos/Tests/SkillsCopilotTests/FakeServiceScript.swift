@@ -528,13 +528,10 @@ private struct PosixFakeServiceProcessRunner {
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) throws -> Data {
         let executablePath = executableURL.path
-        let environment = ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, override in
-            override
-        }
         return try runFakeServiceProcess(
             executablePath: executablePath,
             input: input,
-            environment: environment,
+            environmentOverrides: environmentOverrides,
             timeoutNanoseconds: timeoutNanoseconds
         )
     }
@@ -543,7 +540,7 @@ private struct PosixFakeServiceProcessRunner {
 private func runFakeServiceProcess(
     executablePath: String,
     input: Data,
-    environment: [String: String],
+    environmentOverrides: [String: String],
     timeoutNanoseconds: UInt64?
 ) throws -> Data {
     var stdinPipe: [Int32] = [-1, -1]
@@ -577,26 +574,21 @@ private func runFakeServiceProcess(
     try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stderrPipe[0]), "close child stderr reader")
     try checkPOSIX(posix_spawn_file_actions_addclose(&actions, stderrPipe[1]), "close child stderr writer")
 
-    var argv = [strdup(executablePath), nil]
-    var envp = environment
-        .map { key, value in strdup("\(key)=\(value)") }
-    envp.append(nil)
-    defer {
-        argv.compactMap { $0 }.forEach { free($0) }
-        envp.compactMap { $0 }.forEach { free($0) }
-    }
-
     var pid: pid_t = 0
-    let spawnResult = executablePath.withCString { pathPointer in
-        argv.withUnsafeMutableBufferPointer { argvBuffer in
-            envp.withUnsafeMutableBufferPointer { envBuffer in
+    let spawnResult = try withTemporaryEnvironment(environmentOverrides) {
+        executablePath.withCString { pathPointer in
+            var argv: [UnsafeMutablePointer<CChar>?] = [
+                UnsafeMutablePointer(mutating: pathPointer),
+                nil
+            ]
+            return argv.withUnsafeMutableBufferPointer { argvBuffer in
                 posix_spawn(
                     &pid,
                     pathPointer,
                     &actions,
                     nil,
                     argvBuffer.baseAddress,
-                    envBuffer.baseAddress
+                    skillsCopilotNativeTestEnviron().pointee
                 )
             }
         }
@@ -720,6 +712,38 @@ private func readAvailable(from fd: Int32, into data: inout Data) throws -> Bool
     }
 }
 
+private func withTemporaryEnvironment<Result>(
+    _ overrides: [String: String],
+    _ body: () throws -> Result
+) throws -> Result {
+    var previousValues: [String: String?] = [:]
+    for key in overrides.keys {
+        if let value = getenv(key) {
+            previousValues[key] = String(cString: value)
+        } else {
+            previousValues[key] = nil
+        }
+    }
+
+    for (key, value) in overrides {
+        guard setenv(key, value, 1) == 0 else {
+            throw POSIXProcessError(operation: "setenv", code: errno)
+        }
+    }
+
+    defer {
+        for (key, previousValue) in previousValues {
+            if let previousValue {
+                _ = setenv(key, previousValue, 1)
+            } else {
+                _ = unsetenv(key)
+            }
+        }
+    }
+
+    return try body()
+}
+
 private func normalizedExitCode(_ status: Int32) -> Int32 {
     if status & 0x7f == 0 {
         return (status >> 8) & 0xff
@@ -735,3 +759,6 @@ private struct POSIXProcessError: Error, CustomStringConvertible {
         "\(operation) failed: \(String(cString: strerror(code)))"
     }
 }
+
+@_silgen_name("_NSGetEnviron")
+private func skillsCopilotNativeTestEnviron() -> UnsafeMutablePointer<UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?>
