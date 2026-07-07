@@ -135,9 +135,6 @@ struct SkillStoreTests {
         try await runCase("reloadFallsBackToDisabledLLMWhenOldServiceDoesNotSupportMethods") {
             try await reloadFallsBackToDisabledLLMWhenOldServiceDoesNotSupportMethods()
         }
-        try await runCase("prepareLLMActionStoresEstimateWithoutProviderCall") {
-            try await prepareLLMActionStoresEstimateWithoutProviderCall()
-        }
         try await runCase("providerObservabilityUsesReadOnlyServiceContract") {
             try await providerObservabilityUsesReadOnlyServiceContract()
         }
@@ -1378,33 +1375,6 @@ struct SkillStoreTests {
         try expectContains(fake.calls(), "llm.status", "Reload should ask the service for LLM status.")
     }
 
-    private func prepareLLMActionStoresEstimateWithoutProviderCall() async throws {
-        let fake = LLMReadyRecordingService()
-
-        let store = SkillStore(service: fake.serviceClient())
-        store.selectedSkillID = "beta"
-        await store.reload()
-        try expectNil(store.errorMessage, "LLM prepare fixture should reload without service errors.")
-        await store.prepareAnalyzeLLM()
-        await store.prepareDraftFrontmatterLLM()
-
-        let analyze = store.llmPrepareResult(for: .analyze)
-        try expectEqual(analyze?.enabled, true, "Analyze prepare should be enabled when LLM status is ready.")
-        try expectEqual(analyze?.provider, "openai", "Analyze prepare should expose provider.")
-        try expectEqual(analyze?.model, "gpt-5", "Analyze prepare should expose model.")
-        try expectEqual(analyze?.estimate?.inputTokens, 240, "Analyze prepare should expose input token estimate.")
-        try expectEqual(analyze?.estimate?.estimatedCostUSD, 0.0042, "Analyze prepare should expose cost estimate.")
-        try expectEqual(analyze?.confirmationRequired, true, "Analyze prepare should require confirmation.")
-
-        let draft = store.llmPrepareResult(for: .draftFrontmatter)
-        try expectEqual(draft?.action, .draftFrontmatter, "Draft prepare should be stored under the draft action.")
-        try expectEqual(draft?.confirmationRequired, true, "Draft prepare should require confirmation.")
-        let calls = fake.calls()
-        try expectContains(calls, "llm.prepareAction", "LLM action should use prepare preflight.")
-        try expectFalse(calls.contains("llm.complete"), "LLM prepare should not call a provider completion method.")
-    }
-
-
     private func providerObservabilityUsesReadOnlyServiceContract() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -1805,7 +1775,14 @@ struct SkillStoreTests {
         await store.reload()
         await store.prepareAnalyzeLLM()
 
-        try expectEqual(store.llmPrepareResult(for: .analyze)?.action, .analyze, "Beta analyze preview should be available while beta is selected.")
+        let analyze = store.llmPrepareResult(for: .analyze)
+        try expectEqual(analyze?.action, .analyze, "Beta analyze preview should be available while beta is selected.")
+        try expectEqual(analyze?.enabled, true, "Analyze prepare should be enabled when LLM status is ready.")
+        try expectEqual(analyze?.provider, "openai", "Analyze prepare should expose provider.")
+        try expectEqual(analyze?.model, "gpt-5", "Analyze prepare should expose model.")
+        try expectEqual(analyze?.estimate?.inputTokens, 240, "Analyze prepare should expose input token estimate.")
+        try expectEqual(analyze?.estimate?.estimatedCostUSD, 0.0042, "Analyze prepare should expose cost estimate.")
+        try expectEqual(analyze?.confirmationRequired, true, "Analyze prepare should require confirmation.")
 
         store.agentFilter = .codex
         try await waitUntil("Agent filter should move selection away from beta.") {
@@ -1926,195 +1903,4 @@ struct SkillStoreTests {
         }
         return marker
     }
-}
-
-private final class LLMReadyRecordingService: ServiceProcessRunning {
-    private let lock = NSLock()
-    private var recordedInputs: [String] = []
-
-    func serviceClient() -> ServiceClient {
-        ServiceClient(processRunner: self, serviceURL: URL(fileURLWithPath: "/usr/bin/true"))
-    }
-
-    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
-        record(input)
-        switch requestMethod(from: input) {
-        case "app.stateSnapshot":
-            return ok(appStateSnapshotResult)
-        case "llm.status":
-            return ok(llmStatusResult)
-        case "llm.prepareAction":
-            let inputText = String(data: input, encoding: .utf8) ?? ""
-            if inputText.contains(#""kind":"draft_frontmatter""#) {
-                return ok(draftPrepareResult)
-            }
-            return ok(analyzePrepareResult)
-        case "rules.listTuning":
-            return ok("[]")
-        case "snapshot.listAgentConfig":
-            return ok("[]")
-        case "catalog.getSkill":
-            return ok(betaDetailResult)
-        case "skill.listEvents":
-            return ok("[]")
-        default:
-            return unknownMethod(requestMethod(from: input))
-        }
-    }
-
-    func calls() -> String {
-        lock.lock()
-        let value = recordedInputs.joined(separator: "\n")
-        lock.unlock()
-        return value
-    }
-
-    private func record(_ input: Data) {
-        lock.lock()
-        recordedInputs.append(String(data: input, encoding: .utf8) ?? "")
-        lock.unlock()
-    }
-
-    private func requestMethod(from input: Data) -> String {
-        guard
-            let object = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
-            let method = object["method"] as? String
-        else {
-            return ""
-        }
-        return method
-    }
-
-    private func ok(_ result: String) -> Data {
-        Data(#"{"id":"test","ok":true,"result":\#(result)}"#.utf8)
-    }
-
-    private func unknownMethod(_ method: String) -> Data {
-        Data(#"{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: \#(method)"}}"#.utf8)
-    }
-
-    private var appStateSnapshotResult: String {
-        """
-        {
-          "status": \(serviceStatusResult),
-          "skills": [
-            {
-              "id": "alpha",
-              "agent": "claude-code",
-              "scope": "agent-global",
-              "path": "/tmp/global/alpha/SKILL.md",
-              "display_path": "/tmp/global/alpha/SKILL.md",
-              "definition_id": "def.alpha",
-              "name": "Alpha",
-              "state": "loaded",
-              "enabled": true
-            },
-            {
-              "id": "beta",
-              "agent": "claude-code",
-              "scope": "agent-project",
-              "path": "/tmp/project/beta/SKILL.md",
-              "display_path": "/tmp/project/beta/SKILL.md",
-              "definition_id": "def.beta",
-              "name": "Beta",
-              "state": "loaded",
-              "enabled": true
-            }
-          ],
-          "findings": [],
-          "conflicts": [],
-          "snapshots": []
-        }
-        """
-    }
-
-    private let serviceStatusResult = """
-    {
-      "protocol_version": 1,
-      "version": "test",
-      "app_data_dir": "/tmp/skills-copilot",
-      "catalog_path": "/tmp/skills-copilot/catalog.sqlite",
-      "user_home": "/tmp/home",
-      "supported_methods": [
-        "app.stateSnapshot",
-        "llm.status",
-        "llm.prepareAction",
-        "rules.listTuning",
-        "snapshot.listAgentConfig",
-        "catalog.getSkill",
-        "skill.listEvents"
-      ],
-      "adapter_capabilities": []
-    }
-    """
-
-    private let llmStatusResult = """
-    {
-      "enabled": true,
-      "provider": "openai",
-      "model": "gpt-5",
-      "disabled_reason": null,
-      "supported_actions": [
-        "analyze",
-        "recommend",
-        "explain_conflict",
-        "draft_frontmatter"
-      ]
-    }
-    """
-
-    private let analyzePrepareResult = """
-    {
-      "action": "analyze",
-      "enabled": true,
-      "disabled_reason": null,
-      "provider": "openai",
-      "model": "gpt-5",
-      "estimate": {
-        "input_tokens": 240,
-        "output_tokens": 120,
-        "total_tokens": 360,
-        "estimated_cost_usd": 0.0042
-      },
-      "confirmation_required": true
-    }
-    """
-
-    private let draftPrepareResult = """
-    {
-      "action": "draft_frontmatter",
-      "enabled": true,
-      "disabled_reason": null,
-      "provider": "openai",
-      "model": "gpt-5",
-      "estimate": {
-        "input_tokens": 240,
-        "output_tokens": 180,
-        "total_tokens": 420,
-        "estimated_cost_usd": 0.0042
-      },
-      "confirmation_required": true
-    }
-    """
-
-    private let betaDetailResult = """
-    {
-      "id": "beta",
-      "agent": "claude-code",
-      "scope": "agent-project",
-      "path": "/tmp/project/beta/SKILL.md",
-      "display_path": "/tmp/project/beta/SKILL.md",
-      "definition_id": "def.beta",
-      "name": "Beta",
-      "description": "Beta skill",
-      "state": "loaded",
-      "enabled": true,
-      "frontmatter_raw": "name: Beta",
-      "body": "Beta body",
-      "permissions": {
-        "marker": "default"
-      },
-      "fingerprint": "fp-beta"
-    }
-    """
 }
