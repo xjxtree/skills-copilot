@@ -39,6 +39,10 @@ impl AgentAdapter for ClaudeCodeAdapter {
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
+        self.parse_content(path, content)
+    }
+
+    fn parse_content(&self, path: &Path, content: String) -> Result<SkillInstance, AdapterError> {
         let display_name = path
             .parent()
             .and_then(Path::file_name)
@@ -244,6 +248,14 @@ mod tests {
         assert_eq!(skill.name, "summarize-changes");
         assert_eq!(skill.state, SkillState::Loaded);
         assert!(skill.permissions.tools.iter().any(|tool| tool == "Read"));
+    }
+
+    #[test]
+    fn path_and_content_parsing_are_equivalent() {
+        let adapter = ClaudeCodeAdapter;
+        let fixture = fixture_path("fixtures/claude-code/personal/valid-summarize/SKILL.md");
+
+        crate::assert_parse_equivalent(&adapter, &fixture);
     }
 
     #[test]

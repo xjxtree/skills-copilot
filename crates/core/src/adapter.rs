@@ -7,6 +7,11 @@ pub trait AgentAdapter: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot>;
     fn parse(&self, path: &std::path::Path) -> Result<SkillInstance, AdapterError>;
+    fn parse_content(
+        &self,
+        path: &std::path::Path,
+        content: String,
+    ) -> Result<SkillInstance, AdapterError>;
     fn is_enabled(&self, instance: &SkillInstance) -> bool;
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf>;
 }

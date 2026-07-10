@@ -54,6 +54,10 @@ impl AgentAdapter for OpencodeAdapter {
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
+        self.parse_content(path, content)
+    }
+
+    fn parse_content(&self, path: &Path, content: String) -> Result<SkillInstance, AdapterError> {
         let fallback_name = containing_dir_name(path);
         let parsed = parse_skill_content(&content, &fallback_name);
         let (frontmatter_raw, body, name, description, state, enabled) = match parsed {
@@ -783,6 +787,16 @@ mod tests {
         assert!(skill.permissions.tools.is_empty());
         assert!(skill.frontmatter_raw.contains("name: global-review"));
         assert!(skill.body.contains("# Global Review"));
+    }
+
+    #[test]
+    fn path_and_content_parsing_are_equivalent() {
+        let adapter = OpencodeAdapter;
+        let fixture = fixture_path(
+            "fixtures/opencode/user-home/.config/opencode/skills/global-review/SKILL.md",
+        );
+
+        crate::assert_parse_equivalent(&adapter, &fixture);
     }
 
     #[test]

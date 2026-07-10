@@ -53,6 +53,10 @@ impl AgentAdapter for OpenclawAdapter {
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
+        self.parse_content(path, content)
+    }
+
+    fn parse_content(&self, path: &Path, content: String) -> Result<SkillInstance, AdapterError> {
         let fallback_name = containing_dir_name(path);
         let parsed = parse_skill_content(&content, &fallback_name);
         let (frontmatter_raw, body, name, description, version, state, enabled) = match parsed {
@@ -460,6 +464,15 @@ mod tests {
         );
         assert_eq!(skill.state, SkillState::Loaded);
         assert!(skill.enabled);
+    }
+
+    #[test]
+    fn path_and_content_parsing_are_equivalent() {
+        let adapter = OpenclawAdapter;
+        let fixture =
+            fixture_path("fixtures/openclaw/skill-evidence/sample-openclaw-skill/SKILL.md");
+
+        crate::assert_parse_equivalent(&adapter, &fixture);
     }
 
     #[test]

@@ -21,4 +21,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let _ = ClaudeCodeAdapter.parse(&skill_path);
+    if let Ok(content) = String::from_utf8(data.to_vec()) {
+        let _ = ClaudeCodeAdapter.parse_content(&skill_path, content);
+    }
 });

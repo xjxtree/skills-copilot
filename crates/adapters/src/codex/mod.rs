@@ -59,6 +59,10 @@ impl AgentAdapter for CodexAdapter {
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
+        self.parse_content(path, content)
+    }
+
+    fn parse_content(&self, path: &Path, content: String) -> Result<SkillInstance, AdapterError> {
         let fallback_name = path
             .parent()
             .and_then(Path::file_name)
@@ -768,12 +772,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_valid_skill_frontmatter() {
+    fn path_and_content_parsing_are_equivalent() {
         let adapter = CodexAdapter;
-        let fixture = write_skill(
-            "valid-codex",
-            "---\nname: codex-alpha\ndescription: Alpha Codex skill.\n---\nBody.\n",
-        );
+        let valid_frontmatter =
+            "---\nname: codex-alpha\ndescription: Alpha Codex skill.\n---\nBody.\n";
+        let fixture = write_skill("valid-codex", valid_frontmatter);
 
         let skill = adapter.parse(&fixture).expect("skill parses");
 
@@ -788,6 +791,8 @@ mod tests {
         assert_eq!(skill.state, SkillState::Loaded);
         assert!(skill.enabled);
         assert!(skill.permissions.tools.is_empty());
+
+        crate::assert_parse_equivalent(&adapter, &fixture);
     }
 
     #[test]

@@ -35,6 +35,10 @@ impl AgentAdapter for HermesAdapter {
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
+        self.parse_content(path, content)
+    }
+
+    fn parse_content(&self, path: &Path, content: String) -> Result<SkillInstance, AdapterError> {
         let fallback_name = containing_dir_name(path);
         let parsed = parse_skill_content(&content);
         let (frontmatter_raw, body, name, description, version, state, enabled) = match parsed {
@@ -423,6 +427,16 @@ mod tests {
         assert_eq!(skill.version.as_deref(), Some("0.1.0"));
         assert_eq!(skill.state, SkillState::Loaded);
         assert!(skill.enabled);
+    }
+
+    #[test]
+    fn path_and_content_parsing_are_equivalent() {
+        let adapter = HermesAdapter;
+        let fixture = fixture_path(
+            "fixtures/hermes/active-home/.hermes/skills/nested/research-brief/SKILL.md",
+        );
+
+        crate::assert_parse_equivalent(&adapter, &fixture);
     }
 
     #[test]
