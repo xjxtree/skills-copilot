@@ -200,10 +200,10 @@ function recordingDependencies(trace, overrides = {}) {
   });
 }
 
-test("headless flow reaches only bundle and fixture-sidecar dependencies", () => {
+test("headless flow reaches only bundle and fixture-sidecar dependencies", async () => {
   const trace = [];
 
-  runSmokeFlow(headlessOptions(), recordingDependencies(trace));
+  await runSmokeFlow(headlessOptions(), recordingDependencies(trace));
 
   const env = {
     SKILLS_COPILOT_APP_DATA_DIR: "/fixture/app-data",
@@ -232,7 +232,7 @@ test("headless flow reaches only bundle and fixture-sidecar dependencies", () =>
   ]);
 });
 
-test("headless flow always cleans its fixture after a sidecar failure", () => {
+test("headless flow always cleans its fixture after a sidecar failure", async () => {
   const trace = [];
   const failure = new Error("fixture sidecar failed");
   const dependencies = recordingDependencies(trace, {
@@ -242,7 +242,10 @@ test("headless flow always cleans its fixture after a sidecar failure", () => {
     },
   });
 
-  assert.throws(() => runSmokeFlow(headlessOptions(), dependencies), failure);
+  await assert.rejects(
+    () => runSmokeFlow(headlessOptions(), dependencies),
+    (error) => error === failure,
+  );
   assert.deepEqual(trace.slice(-2), [
     ["assert-real-opencode", ["real-opencode-snapshot"]],
     ["cleanup-fixture", "/fixture/root"],

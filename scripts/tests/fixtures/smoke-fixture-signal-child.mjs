@@ -9,11 +9,11 @@ const watchedEvents = ["exit", "SIGHUP", "SIGINT", "SIGTERM"];
 const baselineListeners = new Map(
   watchedEvents.map((event) => [event, process.listenerCount(event)]),
 );
-snapshotBoundedPathIdentity(root);
+await snapshotBoundedPathIdentity(root);
 const installedListeners = new Map(
   watchedEvents.map((event) => [event, process.listenerCount(event)]),
 );
-snapshotBoundedPathIdentity(root);
+await snapshotBoundedPathIdentity(root);
 for (const event of watchedEvents) {
   if (installedListeners.get(event) !== baselineListeners.get(event) + 1) {
     throw new Error(`missing cleanup listener for ${event}`);

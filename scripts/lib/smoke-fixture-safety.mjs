@@ -1,8 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const defaultSnapshotBounds = Object.freeze({
   maxDepth: 32,
@@ -27,6 +28,7 @@ const nativeHelperSources = [
 const nativeHelperCleanupSignals = ["SIGHUP", "SIGINT", "SIGTERM"];
 let nativeHelperBuild = null;
 let nativeHelperCleanupHooks = null;
+const executeFile = promisify(execFile);
 
 class SmokeFixtureSafetyError extends Error {
   constructor(message) {
@@ -112,33 +114,47 @@ function installNativeHelperCleanupHooks() {
   }
 }
 
-function nativeSnapshotHelper() {
-  if (nativeHelperBuild) {
+async function nativeSnapshotHelper() {
+  if (nativeHelperBuild?.ready) {
     return nativeHelperBuild.binary;
+  }
+  if (nativeHelperBuild?.compilation) {
+    return nativeHelperBuild.compilation;
   }
   if (process.platform !== "darwin") {
     throw snapshotFailure();
   }
 
   const root = mkdtempSync(join(tmpdir(), "smoke-fixture-identity-helper-"));
-  const binary = join(root, "smoke-fixture-identity");
-  const compilation = spawnSync(
-    "swiftc",
-    [...nativeHelperSources, "-O", "-o", binary],
-    {
-      encoding: "utf8",
-      maxBuffer: 1_024 * 1_024,
-      timeout: 60_000,
-    },
-  );
-  if (compilation.status !== 0) {
-    rmSync(root, { force: true, recursive: true });
-    throw snapshotFailure();
-  }
-
-  nativeHelperBuild = { binary, root };
   installNativeHelperCleanupHooks();
-  return binary;
+  const binary = join(root, "smoke-fixture-identity");
+  const build = { binary, compilation: null, ready: false, root };
+  nativeHelperBuild = build;
+  build.compilation = (async () => {
+    try {
+      await executeFile(
+        "swiftc",
+        [...nativeHelperSources, "-O", "-o", binary],
+        {
+          encoding: "utf8",
+          maxBuffer: 1_024 * 1_024,
+          timeout: 60_000,
+        },
+      );
+      if (nativeHelperBuild !== build) {
+        throw snapshotFailure();
+      }
+      build.ready = true;
+      return binary;
+    } catch {
+      if (nativeHelperBuild === build) {
+        cleanupNativeHelper();
+        removeNativeHelperCleanupHooks();
+      }
+      throw snapshotFailure();
+    }
+  })();
+  return build.compilation;
 }
 
 function validNativeSnapshotResult(result, bounds) {
@@ -157,32 +173,34 @@ function validNativeSnapshotResult(result, bounds) {
   );
 }
 
-function nativeSnapshot(rootPath, bounds) {
-  const result = spawnSync(
-    nativeSnapshotHelper(),
-    [
-      rootPath,
-      String(bounds.maxDepth),
-      String(bounds.maxEntries),
-      String(bounds.maxFileBytes),
-      String(bounds.maxTotalBytes),
-    ],
-    {
-      encoding: "utf8",
-      maxBuffer: 1_024 * 1_024,
-      timeout: 30_000,
-    },
-  );
-  if (result.status === 3) {
-    throw boundedSnapshotFailure();
-  }
-  if (result.status !== 0) {
+async function nativeSnapshot(rootPath, bounds) {
+  let stdout;
+  try {
+    ({ stdout } = await executeFile(
+      await nativeSnapshotHelper(),
+      [
+        rootPath,
+        String(bounds.maxDepth),
+        String(bounds.maxEntries),
+        String(bounds.maxFileBytes),
+        String(bounds.maxTotalBytes),
+      ],
+      {
+        encoding: "utf8",
+        maxBuffer: 1_024 * 1_024,
+        timeout: 30_000,
+      },
+    ));
+  } catch (error) {
+    if (error?.code === 3) {
+      throw boundedSnapshotFailure();
+    }
     throw snapshotFailure();
   }
 
   let snapshot;
   try {
-    snapshot = JSON.parse(result.stdout);
+    snapshot = JSON.parse(stdout);
   } catch {
     throw snapshotFailure();
   }
@@ -192,10 +210,10 @@ function nativeSnapshot(rootPath, bounds) {
   return snapshot;
 }
 
-export function snapshotBoundedPathIdentity(path, bounds = {}) {
+export async function snapshotBoundedPathIdentity(path, bounds = {}) {
   const rootPath = resolve(path);
   const resolvedBounds = validatedSnapshotBounds(bounds);
-  const snapshot = nativeSnapshot(rootPath, resolvedBounds);
+  const snapshot = await nativeSnapshot(rootPath, resolvedBounds);
   return {
     bounds: resolvedBounds,
     digest: snapshot.digest,
@@ -206,8 +224,11 @@ export function snapshotBoundedPathIdentity(path, bounds = {}) {
   };
 }
 
-export function assertBoundedPathIdentityUnchanged(before) {
-  const after = snapshotBoundedPathIdentity(before.rootPath, before.bounds);
+export async function assertBoundedPathIdentityUnchanged(before) {
+  const after = await snapshotBoundedPathIdentity(
+    before.rootPath,
+    before.bounds,
+  );
   if (before.exists !== after.exists || before.digest !== after.digest) {
     throw new SmokeFixtureSafetyError(
       "real opencode config changed during fixture smoke",
@@ -215,10 +236,10 @@ export function assertBoundedPathIdentityUnchanged(before) {
   }
 }
 
-export function initializeAllocatedFixture({ allocateRoot, initializeRoot }) {
+export async function initializeAllocatedFixture({ allocateRoot, initializeRoot }) {
   const root = allocateRoot();
   try {
-    return initializeRoot(root);
+    return await initializeRoot(root);
   } catch (error) {
     try {
       rmSync(root, { force: true, recursive: true });

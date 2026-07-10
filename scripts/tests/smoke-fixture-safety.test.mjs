@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
@@ -24,17 +25,17 @@ import {
   snapshotBoundedPathIdentity,
 } from "../lib/smoke-fixture-safety.mjs";
 
-function withTemporaryDirectory(prefix, run) {
+async function withTemporaryDirectory(prefix, run) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   try {
-    run(root);
+    await run(root);
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
 }
 
-test("detects an in-place config rewrite while the parent directory mtime is preserved", () => {
-  withTemporaryDirectory("smoke-tree-identity-", (root) => {
+test("detects an in-place config rewrite while the parent directory mtime is preserved", async () => {
+  await withTemporaryDirectory("smoke-tree-identity-", async (root) => {
     const configRoot = join(root, "opencode");
     const configFile = join(configRoot, "opencode.json");
     mkdirSync(configRoot);
@@ -43,7 +44,7 @@ test("detects an in-place config rewrite while the parent directory mtime is pre
     const stableTimestampSeconds = Math.floor(Date.now() / 1_000) - 60;
     utimesSync(configRoot, stableTimestampSeconds, stableTimestampSeconds);
     const parentMtimeBefore = statSync(configRoot).mtimeMs;
-    const before = snapshotBoundedPathIdentity(configRoot);
+    const before = await snapshotBoundedPathIdentity(configRoot);
 
     writeFileSync(configFile, "secret-after!");
     utimesSync(configRoot, stableTimestampSeconds, stableTimestampSeconds);
@@ -51,7 +52,7 @@ test("detects an in-place config rewrite while the parent directory mtime is pre
 
     let detected;
     try {
-      assertBoundedPathIdentityUnchanged(before);
+      await assertBoundedPathIdentityUnchanged(before);
     } catch (error) {
       detected = error;
     }
@@ -100,13 +101,13 @@ for (const [label, seed, mutate] of [
     },
   ],
 ]) {
-  test(`detects ${label} without exposing tree details`, () => {
-    withTemporaryDirectory("smoke-tree-mutation-", (root) => {
+  test(`detects ${label} without exposing tree details`, async () => {
+    await withTemporaryDirectory("smoke-tree-mutation-", async (root) => {
       seed(root);
-      const before = snapshotBoundedPathIdentity(root);
+      const before = await snapshotBoundedPathIdentity(root);
       mutate(root);
 
-      assert.throws(
+      await assert.rejects(
         () => assertBoundedPathIdentityUnchanged(before),
         /real opencode config changed/,
       );
@@ -114,14 +115,14 @@ for (const [label, seed, mutate] of [
   });
 }
 
-test("bounds file reads and does not disclose the path or content", () => {
-  withTemporaryDirectory("smoke-tree-bounds-", (root) => {
+test("bounds file reads and does not disclose the path or content", async () => {
+  await withTemporaryDirectory("smoke-tree-bounds-", async (root) => {
     const content = "private-config-content";
     writeFileSync(join(root, "opencode.json"), content);
 
     let failure;
     try {
-      snapshotBoundedPathIdentity(root, {
+      await snapshotBoundedPathIdentity(root, {
         maxDepth: 4,
         maxEntries: 8,
         maxFileBytes: 4,
@@ -151,9 +152,9 @@ for (const field of [
     Number.MAX_SAFE_INTEGER + 1,
     "4",
   ]) {
-    test(`rejects invalid ${field} bound ${String(invalid)}`, () => {
-      withTemporaryDirectory("smoke-tree-invalid-bound-", (root) => {
-        assert.throws(
+    test(`rejects invalid ${field} bound ${String(invalid)}`, async () => {
+      await withTemporaryDirectory("smoke-tree-invalid-bound-", async (root) => {
+        await assert.rejects(
           () => snapshotBoundedPathIdentity(root, { [field]: invalid }),
           new RegExp(`invalid smoke snapshot bound ${field}`),
         );
@@ -162,15 +163,15 @@ for (const field of [
   }
 }
 
-test("copies and freezes validated bounds", () => {
-  withTemporaryDirectory("smoke-tree-frozen-bounds-", (root) => {
+test("copies and freezes validated bounds", async () => {
+  await withTemporaryDirectory("smoke-tree-frozen-bounds-", async (root) => {
     const customBounds = {
       maxDepth: 4,
       maxEntries: 8,
       maxFileBytes: 16,
       maxTotalBytes: 32,
     };
-    const snapshot = snapshotBoundedPathIdentity(root, customBounds);
+    const snapshot = await snapshotBoundedPathIdentity(root, customBounds);
     customBounds.maxEntries = Number.MAX_SAFE_INTEGER;
 
     assert.equal(Object.isFrozen(snapshot.bounds), true);
@@ -181,11 +182,11 @@ test("copies and freezes validated bounds", () => {
   });
 });
 
-test("zero byte bounds can snapshot an empty regular file", () => {
-  withTemporaryDirectory("smoke-tree-zero-byte-bound-", (root) => {
+test("zero byte bounds can snapshot an empty regular file", async () => {
+  await withTemporaryDirectory("smoke-tree-zero-byte-bound-", async (root) => {
     writeFileSync(join(root, "empty"), "");
 
-    const snapshot = snapshotBoundedPathIdentity(root, {
+    const snapshot = await snapshotBoundedPathIdentity(root, {
       maxDepth: 1,
       maxEntries: 2,
       maxFileBytes: 0,
@@ -196,15 +197,15 @@ test("zero byte bounds can snapshot an empty regular file", () => {
   });
 });
 
-test("does not follow a symlink outside the explicitly scoped config root", () => {
-  withTemporaryDirectory("smoke-tree-symlink-scope-", (root) => {
+test("does not follow a symlink outside the explicitly scoped config root", async () => {
+  await withTemporaryDirectory("smoke-tree-symlink-scope-", async (root) => {
     const configRoot = join(root, "opencode");
     const outside = join(root, "outside-private-config");
     mkdirSync(configRoot);
     writeFileSync(outside, "content larger than the four byte file bound");
     symlinkSync(outside, join(configRoot, "external-link"));
 
-    const snapshot = snapshotBoundedPathIdentity(configRoot, {
+    const snapshot = await snapshotBoundedPathIdentity(configRoot, {
       maxDepth: 4,
       maxEntries: 8,
       maxFileBytes: 4,
@@ -215,11 +216,11 @@ test("does not follow a symlink outside the explicitly scoped config root", () =
   });
 });
 
-test("removes an allocated fixture root when initialization throws", () => {
+test("removes an allocated fixture root when initialization throws", async () => {
   let allocatedRoot;
   const failure = new Error("injected fixture initialization failure");
 
-  assert.throws(
+  await assert.rejects(
     () =>
       initializeAllocatedFixture({
         allocateRoot() {
@@ -241,8 +242,8 @@ test("removes an allocated fixture root when initialization throws", () => {
 test(
   "native descriptor walker fails closed across file, directory, and FIFO swaps",
   { skip: process.platform !== "darwin" },
-  () => {
-    withTemporaryDirectory("smoke-native-race-test-", (buildRoot) => {
+  async () => {
+    await withTemporaryDirectory("smoke-native-race-test-", async (buildRoot) => {
       const binary = join(buildRoot, "smoke-fixture-identity-race-tests");
       const compile = spawnSync(
         "swiftc",
@@ -281,6 +282,94 @@ test(
     });
   },
 );
+
+async function waitForHelperAllocation(helperTmp, child) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const helpers = readdirSync(helperTmp).filter((name) =>
+      name.startsWith("smoke-fixture-identity-helper-"),
+    );
+    if (helpers.length > 0) {
+      assert.equal(helpers.length, 1);
+      return;
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("compile-window child exited before helper allocation");
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error("timed out waiting for helper allocation");
+}
+
+for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {
+  test(
+    `${signal} during helper compilation cleans the directory and preserves the signal`,
+    { skip: process.platform !== "darwin", timeout: 20_000 },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "smoke-helper-compile-signal-"));
+      const configRoot = join(root, "config");
+      const helperTmp = join(root, "helper-tmp");
+      const fakeBin = join(root, "fake-bin");
+      mkdirSync(configRoot);
+      mkdirSync(helperTmp);
+      mkdirSync(fakeBin);
+      writeFileSync(join(configRoot, "opencode.json"), "{}\n");
+      const fakeSwiftc = join(fakeBin, "swiftc");
+      writeFileSync(
+        fakeSwiftc,
+        [
+          "#!/bin/sh",
+          "while kill -0 \"$PPID\" 2>/dev/null; do",
+          "  /bin/sleep 0.1",
+          "done",
+          "exit 1",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(fakeSwiftc, 0o755);
+
+      const child = spawn(
+        process.execPath,
+        [
+          resolve(
+            "scripts/tests/fixtures/smoke-fixture-signal-child.mjs",
+          ),
+        ],
+        {
+          env: {
+            ...process.env,
+            PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+            SKILLS_COPILOT_SIGNAL_TEST_ROOT: configRoot,
+            TMPDIR: `${helperTmp}/`,
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        },
+      );
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+
+      try {
+        await waitForHelperAllocation(helperTmp, child);
+        const exit = once(child, "exit");
+        assert.equal(child.kill(signal), true);
+        const [code, receivedSignal] = await exit;
+        assert.equal(code, null);
+        assert.equal(receivedSignal, signal);
+        assert.equal(stderr, "");
+        assert.deepEqual(readdirSync(helperTmp), []);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await once(child, "exit");
+        }
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+}
 
 test(
   "signal termination removes the private helper and preserves SIGTERM",

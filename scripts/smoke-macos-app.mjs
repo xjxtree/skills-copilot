@@ -284,7 +284,7 @@ function filesUnder(dir, extensions) {
   return files;
 }
 
-function createFixtureEnvironment() {
+async function createFixtureEnvironment() {
   return initializeAllocatedFixture({
     allocateRoot: () =>
       mkdtempSync(join(tmpdir(), "skills-copilot-native-smoke-")),
@@ -292,8 +292,8 @@ function createFixtureEnvironment() {
   });
 }
 
-function initializeFixtureEnvironment(root) {
-  const realOpencodeConfigSnapshot = snapshotRealOpencodeConfig();
+async function initializeFixtureEnvironment(root) {
+  const realOpencodeConfigSnapshot = await snapshotRealOpencodeConfig();
   const home = join(root, "home");
   const appData = join(root, "app-data");
   const claudeSkillsRoot = join(home, ".claude", "skills");
@@ -449,19 +449,19 @@ function initializeFixtureEnvironment(root) {
   };
 }
 
-function snapshotRealOpencodeConfig() {
+async function snapshotRealOpencodeConfig() {
   const realHome = process.env.HOME;
   if (!realHome) {
     fail("HOME is not set; cannot verify real opencode config isolation");
   }
-  return snapshotBoundedPathIdentity(
+  return await snapshotBoundedPathIdentity(
     join(realHome, ".config", "opencode"),
   );
 }
 
-function assertRealOpencodeConfigUntouched(snapshot) {
+async function assertRealOpencodeConfigUntouched(snapshot) {
   try {
-    assertBoundedPathIdentityUnchanged(snapshot);
+    await assertBoundedPathIdentityUnchanged(snapshot);
   } catch {
     fail("fixture run modified real opencode config");
   }
@@ -1259,7 +1259,7 @@ function checkSystemLogs(pid) {
 
 try {
   const options = parseSmokeOptions(process.argv.slice(2), process.env);
-  runSmokeFlow(options, {
+  await runSmokeFlow(options, {
     assertRealOpencodeConfigUntouched,
     captureAppWindow,
     checkSystemLogs,

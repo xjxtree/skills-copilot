@@ -5,20 +5,20 @@ function fixtureEnvironment(fixture) {
   };
 }
 
-export function runSmokeFlow(options, dependencies) {
+export async function runSmokeFlow(options, dependencies) {
   dependencies.verifyBundle();
   dependencies.verifyBundleFreshness(options.allowStaleApp);
 
   if (options.headlessSidecar) {
-    const fixture = dependencies.createFixtureEnvironment();
+    const fixture = await dependencies.createFixtureEnvironment();
     try {
       const env = fixtureEnvironment(fixture);
       dependencies.note(`headless fixture data enabled: ${fixture.root}`);
-      const status = dependencies.runFixtureServiceSmoke(env);
-      dependencies.runFixtureProjectContextSmoke(env, fixture, status);
+      const status = await dependencies.runFixtureServiceSmoke(env);
+      await dependencies.runFixtureProjectContextSmoke(env, fixture, status);
     } finally {
       try {
-        dependencies.assertRealOpencodeConfigUntouched(
+        await dependencies.assertRealOpencodeConfigUntouched(
           fixture.realOpencodeConfigSnapshot,
         );
       } finally {
@@ -38,7 +38,7 @@ export function runSmokeFlow(options, dependencies) {
   let pid = null;
   try {
     fixture = options.fixtureData
-      ? dependencies.createFixtureEnvironment()
+      ? await dependencies.createFixtureEnvironment()
       : null;
     const env = fixture ? fixtureEnvironment(fixture) : {};
     if (fixture) {
@@ -51,9 +51,9 @@ export function runSmokeFlow(options, dependencies) {
       dependencies.captureAppWindow(pid, launched.windowId);
     }
     if (fixture) {
-      const status = dependencies.runFixtureServiceSmoke(env);
-      dependencies.runFixtureProjectContextSmoke(env, fixture, status);
-      dependencies.assertRealOpencodeConfigUntouched(
+      const status = await dependencies.runFixtureServiceSmoke(env);
+      await dependencies.runFixtureProjectContextSmoke(env, fixture, status);
+      await dependencies.assertRealOpencodeConfigUntouched(
         fixture.realOpencodeConfigSnapshot,
       );
     }
