@@ -1369,6 +1369,11 @@ mod bounded_content_tests {
         append_supported_scalar_fragment(&mut compacted, &fragment, max_bytes);
 
         let line = compacted.trim_end_matches('\n');
+        assert!(
+            compacted.len() <= max_bytes,
+            "retained line and delimiter use {} bytes",
+            compacted.len()
+        );
         assert!(line.len() <= max_bytes, "retained {} bytes", line.len());
         assert!(serde_json::from_str::<Value>(line).is_ok());
     }
