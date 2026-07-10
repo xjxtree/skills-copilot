@@ -1,10 +1,8 @@
 # Contributing to Agent Copilot
 
-Agent Copilot is currently at the V2.98 completed baseline after the Claude
-Code MVP, native macOS productization, adapter expansion, Agent Config, and
-automatic local session discovery line. The product UI direction is Rust core +
-typed service protocol + native macOS SwiftUI/AppKit shell. The native shell
-lives in `apps/macos`; the old Tauri/React shell has been removed.
+Agent Copilot uses a Rust core, a typed service protocol, and a native macOS
+SwiftUI/AppKit shell. The native shell lives in `apps/macos`; the retired
+Tauri/React shell must not be recreated.
 
 ## Current Contribution Scope
 
@@ -13,11 +11,12 @@ Good contributions right now:
 - Fix contradictions, unclear wording, or stale assumptions in `docs/`
 - Improve verified adapter specs and fixtures for Claude Code, Codex, opencode, Pi, Hermes, or OpenClaw
 - Provide real sample layouts and config files for supported agents
-- Improve tests, docs, service protocol fixtures, and native macOS UI plans for the completed V2.98 baseline
+- Improve tests, docs, service protocol fixtures, and native macOS UI behavior
 - Help define service protocol fixtures for native and future desktop shells
-- Help harden the native macOS shell described in `docs/architecture.md` and `docs/macos-app-runbook.md`
+- Help harden the native macOS shell described in `docs/architecture.md` and `docs/runbooks/macos-app-runbook.md`
 - Improve native validation assets and app-window-only screenshots
-- Add narrowly scoped implementation PRs that keep the MVP/V1/V2 boundary intact
+- Add narrowly scoped implementation PRs that preserve the architecture,
+  adapter, security, and write boundaries
 
 ## Design Rules
 
@@ -59,7 +58,7 @@ Before opening a PR:
 - [ ] Any new agent behavior is backed by a source or fixture
 - [ ] I updated related docs when changing scope, lifecycle, or security behavior
 - [ ] I checked for broken internal links by inspection
-- [ ] I kept the V2.98 product and safety boundary intact
+- [ ] I kept the architecture, adapter, security, and write boundaries intact
 - [ ] For code changes, I launched and operated the macOS app with macOS Computer Use, or documented the blocker
 - [ ] For UI changes, I updated prototype and completed UI artifacts under `docs/ui-artifacts/`
 

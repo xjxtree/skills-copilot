@@ -829,7 +829,7 @@ Expected: FAIL on stale version/scope wording, broken repository paths, and gate
 
 - [ ] **Step 2: Replace contribution status snapshots with durable scope language**
 
-Rewrite the `CONTRIBUTING.md` introduction and checklist around the current architecture and links. Replace `docs/macos-app-runbook.md` with `docs/runbooks/macos-app-runbook.md`. Remove all milestone labels from current-scope/checklist text. Keep release history directed to GitHub tags/Releases.
+Rewrite the `CONTRIBUTING.md` introduction and checklist around the current architecture and links. Replace its stale misplaced runbook link with `docs/runbooks/macos-app-runbook.md`. Remove all milestone labels from current-scope/checklist text. Keep release history directed to GitHub tags/Releases.
 
 - [ ] **Step 3: Correct fixture contract paths and current behavior**
 

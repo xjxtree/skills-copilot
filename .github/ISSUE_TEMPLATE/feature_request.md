@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Propose a capability for a future milestone
+about: Propose a capability or scoped product change
 title: "[feature] "
 labels: enhancement
 assignees: ""
@@ -12,7 +12,7 @@ What user problem does this solve?
 
 ## Proposed Scope
 
-MVP / V1 / V2 / later:
+Current / future / requires scoped safety review:
 
 ## Constraints
 
@@ -21,4 +21,3 @@ Security, privacy, compatibility, or platform constraints:
 ## Alternatives
 
 Other ways to solve it:
-

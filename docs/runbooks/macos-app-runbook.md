@@ -36,13 +36,25 @@ pnpm check:macos
 
 ## Gate Parity
 
-`pnpm verify:gate-parity` is the deterministic local/CI shared gate. It covers
-service protocol drift, module-size budgets, documentation governance, JS syntax,
-Rust docs, benchmark trends, fixture verifiers, version checklist verifiers,
-validation blocker classification, and screenshot artifact checks.
+`pnpm verify:gate-parity` is the deterministic local/CI shared gate. It runs
+these members in this exact order:
 
-This gate does not replace real-local UI operation when a user-visible change
-needs visual or interaction evidence.
+1. `verify:service-protocol-drift`
+2. `verify:module-size`
+3. `verify:doc-governance`
+4. `verify:macos-native-test-registry`
+5. `verify:js-syntax`
+6. `verify:rust-docs`
+7. `verify:validation-blockers`
+8. `verify:screenshot-artifacts`
+
+The live `pnpm benchmark:10k` and `pnpm benchmark:macos-list-model` checks are
+separate CI/release commands, not members of the deterministic parity gate.
+Fixture-only headless bundled-sidecar smoke is also separate from real-local
+GUI validation and cannot substitute for operating the visible app window.
+
+The parity gate does not replace real-local UI operation when a user-visible
+change needs visual or interaction evidence.
 
 ## Smoke Rules
 
