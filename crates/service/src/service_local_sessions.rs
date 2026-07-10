@@ -911,6 +911,15 @@ fn compact_bounded_local_session_content(
 
     let mut content = String::new();
     let complete_head_end = bounded.head.rfind('\n').map_or(0, |newline| newline + 1);
+    if complete_head_end == 0 && !bounded.tail.contains('\n') {
+        content.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
+        let mut fields = supported_scalar_fragment(&bounded.head, max_line_fragment_bytes);
+        for (key, value) in supported_scalar_fragment(&bounded.tail, max_line_fragment_bytes) {
+            fields.insert(key, value);
+        }
+        append_supported_scalar_fields(&mut content, fields);
+        return content;
+    }
     content.push_str(&compact_local_session_records(
         &bounded.head[..complete_head_end],
         max_line_fragment_bytes,
@@ -950,6 +959,10 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
 }
 
 fn append_supported_scalar_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
+    append_supported_scalar_fields(content, supported_scalar_fragment(fragment, max_bytes));
+}
+
+fn supported_scalar_fragment(fragment: &str, max_bytes: usize) -> serde_json::Map<String, Value> {
     let mut fields = serde_json::Map::new();
     for key in [
         "type",
@@ -967,6 +980,10 @@ fn append_supported_scalar_fragment(content: &mut String, fragment: &str, max_by
             fields.insert(key.to_string(), value);
         }
     }
+    fields
+}
+
+fn append_supported_scalar_fields(content: &mut String, fields: serde_json::Map<String, Value>) {
     if fields.is_empty() {
         return;
     }

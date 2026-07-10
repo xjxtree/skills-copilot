@@ -582,20 +582,28 @@ fn local_session_preview_keeps_tail_timestamp_after_read_cap() {
 #[test]
 fn local_session_preview_bounds_single_line_json() {
     let filler = "forbidden-session-blob-".repeat(30_000);
-    let session = json!({
-        "type": "user",
-        "role": "user",
-        "data": filler,
-        "text": "single-line-tail-visible",
-        "timestamp": "2026-07-10T08:09:10Z"
-    })
-    .to_string();
+    let session = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"data\":{},\"text\":\"single-line-tail-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}",
+        serde_json::to_string(&filler).expect("serialize filler")
+    );
     let result = preview_codex_session_fixture("single-line-bounded-json", &session);
     let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
 
     assert!(
         serialized.contains("single-line-tail-visible"),
         "{serialized}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/title")
+            .and_then(Value::as_str),
+        Some("single-line-tail-visible")
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message")
     );
     assert!(!serialized.contains("forbidden-session-blob-"));
     assert!(!serialized.contains("\"data\""));
