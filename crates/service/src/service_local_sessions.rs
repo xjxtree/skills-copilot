@@ -910,37 +910,61 @@ fn compact_bounded_local_session_content(
     }
 
     let complete_head_end = bounded.head.rfind('\n').map_or(0, |newline| newline + 1);
-    if complete_head_end == 0 && !bounded.tail.contains('\n') {
-        let mut fields = supported_scalar_fragment(&bounded.head, max_line_fragment_bytes);
-        for (key, value) in supported_scalar_fragment(&bounded.tail, max_line_fragment_bytes) {
+    let head_fragment = bounded.head[complete_head_end..].trim();
+    let (tail_leading_fragment, tail_remainder) = split_tail_leading_fragment(&bounded.tail);
+    let tail_leading_fragment = tail_leading_fragment.trim_end_matches('\r').trim();
+    let head_fragment_is_complete = is_complete_json_record(head_fragment);
+    let tail_leading_is_complete = is_complete_json_record(tail_leading_fragment);
+
+    let mut retained_head =
+        compact_local_session_records(&bounded.head[..complete_head_end], max_line_fragment_bytes);
+    let mut recovered = String::new();
+    let mut consumed_tail_leading = false;
+
+    if !head_fragment.is_empty() && head_fragment_is_complete {
+        append_compacted_record(&mut recovered, head_fragment, max_line_fragment_bytes);
+    } else if !head_fragment.is_empty()
+        && !tail_leading_fragment.is_empty()
+        && !tail_leading_is_complete
+    {
+        let mut fields = top_level_scalar_fields_from_prefix(head_fragment);
+        for (key, value) in top_level_scalar_fields_from_suffix(tail_leading_fragment) {
             fields.insert(key, value);
         }
-        let mut compacted = String::new();
-        append_supported_scalar_fields(&mut compacted, fields);
-        if compacted.is_empty() {
-            return compacted;
-        }
-        let mut content = String::from("{\"type\":\"skills-copilot-truncation-marker\"}\n");
-        content.push_str(&compacted);
-        return content;
+        append_supported_scalar_fields(&mut recovered, fields, max_line_fragment_bytes);
+        consumed_tail_leading = true;
+    } else if !head_fragment.is_empty() {
+        append_structured_fragment(
+            &mut recovered,
+            head_fragment,
+            FragmentDirection::Prefix,
+            max_line_fragment_bytes,
+        );
     }
 
-    let mut head =
-        compact_local_session_records(&bounded.head[..complete_head_end], max_line_fragment_bytes);
-    append_supported_scalar_fragment(
-        &mut head,
-        &bounded.head[complete_head_end..],
-        max_line_fragment_bytes,
-    );
-    let tail = compact_local_session_records(&bounded.tail, max_line_fragment_bytes);
-    if head.is_empty() && tail.is_empty() {
+    if head_fragment.is_empty() && !tail_leading_fragment.is_empty() && !tail_leading_is_complete {
+        append_structured_fragment(
+            &mut recovered,
+            tail_leading_fragment,
+            FragmentDirection::Suffix,
+            max_line_fragment_bytes,
+        );
+        consumed_tail_leading = true;
+    }
+
+    let retained_tail = if consumed_tail_leading {
+        compact_local_session_records(tail_remainder, max_line_fragment_bytes)
+    } else {
+        compact_local_session_records(&bounded.tail, max_line_fragment_bytes)
+    };
+    if retained_head.is_empty() && recovered.is_empty() && retained_tail.is_empty() {
         return String::new();
     }
 
-    let mut content = head;
-    content.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
-    content.push_str(&tail);
-    content
+    retained_head.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
+    retained_head.push_str(&recovered);
+    retained_head.push_str(&retained_tail);
+    retained_head
 }
 
 fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> String {
@@ -950,50 +974,46 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
         if trimmed.is_empty() || should_skip_local_session_sidecar_line(trimmed) {
             continue;
         }
-        if trimmed.len() > max_line_fragment_bytes {
-            append_supported_scalar_fragment(&mut content, trimmed, max_line_fragment_bytes);
+        if trimmed.len() > max_line_fragment_bytes || looks_like_json_fragment(trimmed) {
+            append_compacted_record(&mut content, trimmed, max_line_fragment_bytes);
             continue;
         }
-        if looks_like_json_fragment(trimmed) && serde_json::from_str::<Value>(trimmed).is_err() {
-            append_supported_scalar_fragment(&mut content, trimmed, max_line_fragment_bytes);
-            continue;
-        }
-        content.push_str(trimmed);
+        content.push_str(&truncate_utf8_bytes(
+            trimmed,
+            max_line_fragment_bytes.saturating_sub(1),
+        ));
         content.push('\n');
     }
     content
 }
 
 fn append_supported_scalar_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
-    append_supported_scalar_fields(content, supported_scalar_fragment(fragment, max_bytes));
+    append_supported_scalar_fields(content, supported_scalar_fragment(fragment), max_bytes);
 }
 
-fn supported_scalar_fragment(fragment: &str, max_bytes: usize) -> serde_json::Map<String, Value> {
-    let mut fields = serde_json::Map::new();
-    for key in [
-        "type",
-        "role",
-        "text",
-        "content",
-        "title",
-        "aiTitle",
-        "timestamp",
-        "sessionId",
-        "id",
-        "cwd",
-    ] {
-        if let Some(value) = last_json_scalar_for_key(fragment, key, max_bytes) {
-            fields.insert(key.to_string(), value);
-        }
+fn supported_scalar_fragment(fragment: &str) -> serde_json::Map<String, Value> {
+    let mut fields = top_level_scalar_fields_from_prefix(fragment);
+    for (key, value) in top_level_scalar_fields_from_suffix(fragment) {
+        fields.insert(key, value);
     }
     fields
 }
 
-fn append_supported_scalar_fields(content: &mut String, fields: serde_json::Map<String, Value>) {
-    if fields.is_empty() {
+fn append_supported_scalar_fields(
+    content: &mut String,
+    fields: serde_json::Map<String, Value>,
+    max_bytes: usize,
+) {
+    if fields
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(is_skipped_local_session_record_type)
+    {
         return;
     }
-    let compacted = Value::Object(fields).to_string();
+    let Some(compacted) = bounded_supported_scalar_object(fields, max_bytes) else {
+        return;
+    };
     if should_skip_local_session_sidecar_line(&compacted) {
         return;
     }
@@ -1001,36 +1021,320 @@ fn append_supported_scalar_fields(content: &mut String, fields: serde_json::Map<
     content.push('\n');
 }
 
-fn last_json_scalar_for_key(fragment: &str, key: &str, max_bytes: usize) -> Option<Value> {
-    let needle = format!("\"{key}\"");
-    let mut latest = None;
-    for (offset, _) in fragment.match_indices(&needle) {
-        let mut cursor = offset + needle.len();
-        cursor += fragment[cursor..]
-            .bytes()
-            .take_while(|byte| byte.is_ascii_whitespace())
-            .count();
-        if fragment.as_bytes().get(cursor) != Some(&b':') {
+#[derive(Clone, Copy)]
+enum FragmentDirection {
+    Prefix,
+    Suffix,
+}
+
+fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
+    tail.find('\n').map_or((tail, ""), |newline| {
+        (&tail[..newline], &tail[newline + 1..])
+    })
+}
+
+fn is_complete_json_record(fragment: &str) -> bool {
+    !fragment.is_empty() && serde_json::from_str::<Value>(fragment).is_ok()
+}
+
+fn append_structured_fragment(
+    content: &mut String,
+    fragment: &str,
+    direction: FragmentDirection,
+    max_bytes: usize,
+) {
+    if looks_like_json_fragment(fragment) {
+        let fields = match direction {
+            FragmentDirection::Prefix => top_level_scalar_fields_from_prefix(fragment),
+            FragmentDirection::Suffix => top_level_scalar_fields_from_suffix(fragment),
+        };
+        append_supported_scalar_fields(content, fields, max_bytes);
+        return;
+    }
+    let retained = truncate_utf8_bytes(fragment, max_bytes.saturating_sub(1));
+    if !retained.is_empty() {
+        content.push_str(&retained);
+        content.push('\n');
+    }
+}
+
+fn append_compacted_record(content: &mut String, record: &str, max_bytes: usize) {
+    match serde_json::from_str::<Value>(record) {
+        Ok(mut value) => {
+            if value
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(is_skipped_local_session_record_type)
+            {
+                return;
+            }
+            prune_omitted_local_session_values(&mut value);
+            let compacted = value.to_string();
+            if compacted.len().saturating_add(1) <= max_bytes {
+                if !should_skip_local_session_sidecar_line(&compacted) {
+                    content.push_str(&compacted);
+                    content.push('\n');
+                }
+                return;
+            }
+            append_supported_scalar_fields(
+                content,
+                top_level_scalar_fields_from_prefix(&compacted),
+                max_bytes,
+            );
+        }
+        Err(_) => append_supported_scalar_fragment(content, record, max_bytes),
+    }
+}
+
+fn prune_omitted_local_session_values(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                prune_omitted_local_session_values(item);
+            }
+        }
+        Value::Object(map) => {
+            let omitted = map
+                .keys()
+                .filter(|key| is_omitted_local_session_key(key))
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in omitted {
+                map.remove(&key);
+            }
+            for nested in map.values_mut() {
+                prune_omitted_local_session_values(nested);
+            }
+        }
+        Value::String(text) if text.len() > 4_096 => {
+            *text = truncate_utf8_bytes(text, 4_096);
+        }
+        _ => {}
+    }
+}
+
+fn is_omitted_local_session_key(key: &str) -> bool {
+    matches!(
+        key,
+        "base64" | "blob" | "bytes" | "data" | "image" | "image_data"
+    )
+}
+
+fn is_supported_local_session_scalar_key(key: &str) -> bool {
+    matches!(
+        key,
+        "type"
+            | "role"
+            | "text"
+            | "content"
+            | "title"
+            | "aiTitle"
+            | "timestamp"
+            | "sessionId"
+            | "id"
+            | "cwd"
+    )
+}
+
+fn top_level_scalar_fields_from_prefix(fragment: &str) -> serde_json::Map<String, Value> {
+    let bytes = fragment.as_bytes();
+    let mut fields = serde_json::Map::new();
+    let mut object_depth = 0_i32;
+    let mut array_depth = 0_i32;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => {
+                let Some(end) = json_string_end(bytes, cursor) else {
+                    break;
+                };
+                if object_depth == 1 && array_depth == 0 {
+                    if let Some((key, value)) = scalar_field_at(fragment, cursor, end) {
+                        fields.insert(key, value);
+                    }
+                }
+                cursor = end + 1;
+            }
+            b'{' => {
+                object_depth += 1;
+                cursor += 1;
+            }
+            b'}' => {
+                object_depth -= 1;
+                cursor += 1;
+            }
+            b'[' => {
+                array_depth += 1;
+                cursor += 1;
+            }
+            b']' => {
+                array_depth -= 1;
+                cursor += 1;
+            }
+            _ => cursor += 1,
+        }
+    }
+    fields
+}
+
+fn top_level_scalar_fields_from_suffix(fragment: &str) -> serde_json::Map<String, Value> {
+    let bytes = fragment.as_bytes();
+    let mut fields = serde_json::Map::new();
+    let mut object_depth = 0_i32;
+    let mut array_depth = 0_i32;
+    let mut string_end = None;
+    let mut cursor = bytes.len();
+    while cursor > 0 {
+        cursor -= 1;
+        let byte = bytes[cursor];
+        if let Some(end) = string_end {
+            if byte == b'"' && !json_quote_is_escaped(bytes, cursor) {
+                if object_depth == 1 && array_depth == 0 {
+                    if let Some((key, value)) = scalar_field_at(fragment, cursor, end) {
+                        fields.entry(key).or_insert(value);
+                    }
+                }
+                string_end = None;
+            }
             continue;
         }
+        match byte {
+            b'"' if !json_quote_is_escaped(bytes, cursor) => string_end = Some(cursor),
+            b'}' => object_depth += 1,
+            b'{' => object_depth -= 1,
+            b']' => array_depth += 1,
+            b'[' => array_depth -= 1,
+            _ => {}
+        }
+    }
+    fields
+}
+
+fn json_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut escaped = false;
+    for (offset, byte) in bytes[start + 1..].iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' => escaped = true,
+            b'"' => return Some(start + 1 + offset),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn json_quote_is_escaped(bytes: &[u8], quote: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut cursor = quote;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        backslashes += 1;
+        cursor -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+fn scalar_field_at(fragment: &str, start: usize, end: usize) -> Option<(String, Value)> {
+    let key = serde_json::from_str::<String>(&fragment[start..=end]).ok()?;
+    if !is_supported_local_session_scalar_key(&key) {
+        return None;
+    }
+    let bytes = fragment.as_bytes();
+    let mut cursor = end + 1;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
         cursor += 1;
-        cursor += fragment[cursor..]
-            .bytes()
-            .take_while(|byte| byte.is_ascii_whitespace())
-            .count();
-        let mut values =
-            serde_json::Deserializer::from_str(&fragment[cursor..]).into_iter::<Value>();
-        let Some(Ok(value)) = values.next() else {
+    }
+    if bytes.get(cursor) != Some(&b':') {
+        return None;
+    }
+    cursor += 1;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    if matches!(bytes.get(cursor), Some(b'{') | Some(b'[')) {
+        return None;
+    }
+    let value = serde_json::Deserializer::from_str(&fragment[cursor..])
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
+    matches!(
+        value,
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null
+    )
+    .then_some((key, value))
+}
+
+fn bounded_supported_scalar_object(
+    mut fields: serde_json::Map<String, Value>,
+    max_bytes: usize,
+) -> Option<String> {
+    let maximum_object_bytes = max_bytes.checked_sub(1)?;
+    let mut retained = serde_json::Map::new();
+    for key in [
+        "type",
+        "role",
+        "timestamp",
+        "sessionId",
+        "id",
+        "cwd",
+        "title",
+        "aiTitle",
+        "text",
+        "content",
+    ] {
+        let Some(value) = fields.remove(key) else {
             continue;
         };
-        let value = match value {
-            Value::String(text) => Value::String(truncate_utf8_bytes(&text, max_bytes)),
-            Value::Number(_) | Value::Bool(_) | Value::Null => value,
-            Value::Array(_) | Value::Object(_) => continue,
-        };
-        latest = Some(value);
+        if let Some(value) =
+            value_fitting_scalar_object(&retained, key, value, maximum_object_bytes)
+        {
+            retained.insert(key.to_string(), value);
+        }
     }
-    latest
+    if retained.is_empty() {
+        return None;
+    }
+    let compacted = Value::Object(retained).to_string();
+    (compacted.len() <= maximum_object_bytes).then_some(compacted)
+}
+
+fn value_fitting_scalar_object(
+    retained: &serde_json::Map<String, Value>,
+    key: &str,
+    value: Value,
+    maximum_object_bytes: usize,
+) -> Option<Value> {
+    let Value::String(text) = value else {
+        let mut candidate = retained.clone();
+        candidate.insert(key.to_string(), value.clone());
+        return (Value::Object(candidate).to_string().len() <= maximum_object_bytes)
+            .then_some(value);
+    };
+    let mut boundaries = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    boundaries.push(text.len());
+    let mut low = 0usize;
+    let mut high = boundaries.len();
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        let mut candidate = retained.clone();
+        candidate.insert(
+            key.to_string(),
+            Value::String(text[..boundaries[middle - 1]].to_string()),
+        );
+        if Value::Object(candidate).to_string().len() <= maximum_object_bytes {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    (low > 0).then(|| Value::String(text[..boundaries[low - 1]].to_string()))
 }
 
 fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> String {
@@ -1048,21 +1352,80 @@ fn looks_like_json_fragment(text: &str) -> bool {
     text.starts_with('{') || text.starts_with('[') || text.ends_with('}') || text.ends_with(']')
 }
 
+#[cfg(test)]
+mod bounded_content_tests {
+    use super::*;
+
+    #[test]
+    fn recovered_scalar_record_respects_aggregate_line_fragment_limit() {
+        let max_bytes = 1_024;
+        let fragment = format!(
+            "{{\"type\":\"user\",\"role\":\"user\",\"text\":{},\"content\":{}}}",
+            serde_json::to_string(&"t".repeat(max_bytes)).expect("serialize text"),
+            serde_json::to_string(&"c".repeat(max_bytes)).expect("serialize content")
+        );
+        let mut compacted = String::new();
+
+        append_supported_scalar_fragment(&mut compacted, &fragment, max_bytes);
+
+        let line = compacted.trim_end_matches('\n');
+        assert!(line.len() <= max_bytes, "retained {} bytes", line.len());
+        assert!(serde_json::from_str::<Value>(line).is_ok());
+    }
+
+    #[test]
+    fn prefix_scalar_recovery_ignores_nested_omitted_fields() {
+        let fragment = r#"{"type":"user","role":"user","data":{"text":"nested-private""#;
+
+        let fields = top_level_scalar_fields_from_prefix(fragment);
+
+        assert_eq!(fields.get("type").and_then(Value::as_str), Some("user"));
+        assert_eq!(fields.get("role").and_then(Value::as_str), Some("user"));
+        assert!(!fields.contains_key("text"));
+    }
+
+    #[test]
+    fn suffix_scalar_recovery_ignores_nested_data_and_keeps_outer_text() {
+        let fragment = concat!(
+            "private-tail\",\"text\":\"nested-private\",\"type\":\"assistant\"},",
+            "\"text\":\"outer-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}"
+        );
+
+        let fields = top_level_scalar_fields_from_suffix(fragment);
+
+        assert_eq!(
+            fields.get("text").and_then(Value::as_str),
+            Some("outer-visible")
+        );
+        assert_eq!(
+            fields.get("timestamp").and_then(Value::as_str),
+            Some("2026-07-10T08:09:10Z")
+        );
+        assert!(!fields.contains_key("type"));
+    }
+}
+
 fn should_skip_local_session_sidecar_line(line: &str) -> bool {
     let prefix = line.chars().take(4_096).collect::<String>();
-    [
-        "attachment",
-        "file-history-snapshot",
-        "last-prompt",
-        "mode",
-        "permission-mode",
-        "queue-operation",
-    ]
-    .iter()
-    .any(|record_type| {
-        prefix.contains(&format!("\"type\":\"{record_type}\""))
-            || prefix.contains(&format!("\"type\": \"{record_type}\""))
-    })
+    SKIPPED_LOCAL_SESSION_RECORD_TYPES
+        .iter()
+        .any(|record_type| {
+            prefix.contains(&format!("\"type\":\"{record_type}\""))
+                || prefix.contains(&format!("\"type\": \"{record_type}\""))
+        })
+}
+
+const SKIPPED_LOCAL_SESSION_RECORD_TYPES: [&str; 6] = [
+    "attachment",
+    "file-history-snapshot",
+    "last-prompt",
+    "mode",
+    "permission-mode",
+    "queue-operation",
+];
+
+fn is_skipped_local_session_record_type(record_type: &str) -> bool {
+    SKIPPED_LOCAL_SESSION_RECORD_TYPES.contains(&record_type)
 }
 
 fn local_session_row_id(path: &Path) -> String {

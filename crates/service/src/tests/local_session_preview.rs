@@ -583,7 +583,7 @@ fn local_session_preview_keeps_tail_timestamp_after_read_cap() {
 fn local_session_preview_bounds_single_line_json() {
     let filler = "forbidden-session-blob-".repeat(30_000);
     let session = format!(
-        "{{\"type\":\"user\",\"role\":\"user\",\"data\":{},\"text\":\"single-line-tail-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}",
+        "{{\"type\":\"mode\"}}\n{{\"type\":\"user\",\"role\":\"user\",\"data\":{},\"text\":\"single-line-tail-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
         serde_json::to_string(&filler).expect("serialize filler")
     );
     let result = preview_codex_session_fixture("single-line-bounded-json", &session);
@@ -613,16 +613,38 @@ fn local_session_preview_bounds_single_line_json() {
 fn local_session_preview_skips_truncated_single_sidecar_record() {
     let filler = "ignored-file-history-data-".repeat(30_000);
     let session = format!(
-        "{{\"type\":\"file-history-snapshot\",\"data\":{}}}",
+        "{{\"type\":\"file-history-snapshot\",\"data\":{},\"text\":\"skipped-tail-must-not-surface\"}}\n",
         serde_json::to_string(&filler).expect("serialize filler")
     );
     let result = preview_codex_session_fixture("single-truncated-sidecar", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize skipped preview");
 
     assert_eq!(result.get("count").and_then(Value::as_u64), Some(0));
     assert!(result
         .get("session_rows")
         .and_then(Value::as_array)
         .is_some_and(Vec::is_empty));
+    assert!(!serialized.contains("skipped-tail-must-not-surface"));
+}
+
+#[test]
+fn local_session_preview_does_not_recover_scalars_nested_in_omitted_data() {
+    let filler = "nested-private-blob-".repeat(36_000);
+    let session = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"data\":{{\"blob\":{},\"text\":\"inside-data-must-not-surface\",\"type\":\"assistant\"}}}}\n",
+        serde_json::to_string(&filler).expect("serialize nested filler")
+    );
+    let result = preview_codex_session_fixture("nested-omitted-data", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize nested-data preview");
+
+    assert!(!serialized.contains("inside-data-must-not-surface"));
+    assert!(!serialized.contains("nested-private-blob-"));
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
 }
 
 fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
