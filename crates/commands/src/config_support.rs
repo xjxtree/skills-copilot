@@ -128,14 +128,16 @@ fn config_format_label(format: ConfigFormat) -> &'static str {
     }
 }
 
-fn validate_config_read_target(
+pub(super) fn validate_config_read_target(
     ctx: &AdapterContext,
     agent: AgentId,
     scope: Scope,
     path: &Path,
 ) -> Result<(), CommandError> {
     let expected = read_config_target(ctx, agent, scope)?;
-    if path != expected.path.as_path() {
+    let normalized_path = normalize_path_lexically(path);
+    let normalized_expected = normalize_path_lexically(&expected.path);
+    if normalized_path != normalized_expected {
         return Err(CommandError::UnsafeConfigPath(format!(
             "{} does not match expected {} config path {}",
             path.display(),
@@ -159,16 +161,11 @@ fn validate_config_read_target(
         Scope::ToolGlobal => return Err(CommandError::UnsupportedScope(scope)),
         _ => return Err(CommandError::UnsupportedScope(scope)),
     };
-    let parent = path
+    let normalized_allowed_root = normalize_path_lexically(allowed_root);
+    let parent = normalized_path
         .parent()
         .ok_or_else(|| CommandError::UnsafeConfigPath("config path has no parent".to_string()))?;
-
-    reject_symlink(parent, "config directory")?;
-    reject_symlink(path, "config file")?;
-
-    let normalized_parent = normalize_path_lexically(parent);
-    let normalized_allowed_root = normalize_path_lexically(allowed_root);
-    if !normalized_parent.starts_with(&normalized_allowed_root) {
+    if !parent.starts_with(&normalized_allowed_root) {
         return Err(CommandError::UnsafeConfigPath(format!(
             "config directory {} is outside allowed root {}",
             parent.display(),
@@ -176,6 +173,69 @@ fn validate_config_read_target(
         )));
     }
 
+    validate_config_read_path_components(path, allowed_root, &normalized_path)?;
+
+    Ok(())
+}
+
+fn validate_config_read_path_components(
+    path: &Path,
+    allowed_root: &Path,
+    normalized_path: &Path,
+) -> Result<(), CommandError> {
+    use std::path::Component;
+
+    let relative = path.strip_prefix(allowed_root).map_err(|_| {
+        CommandError::UnsafeConfigPath(format!(
+            "config path {} is not rooted at allowed path {}",
+            path.display(),
+            allowed_root.display()
+        ))
+    })?;
+    let normalized_allowed_root = normalize_path_lexically(allowed_root);
+    reject_symlink(&normalized_allowed_root, "config allowed root")?;
+
+    let mut cursor = allowed_root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalize_path_lexically(&cursor) == normalized_allowed_root {
+                    return Err(CommandError::UnsafeConfigPath(format!(
+                        "config path {} leaves allowed root {}",
+                        path.display(),
+                        allowed_root.display()
+                    )));
+                }
+                if !cursor.pop()
+                    || !normalize_path_lexically(&cursor).starts_with(&normalized_allowed_root)
+                {
+                    return Err(CommandError::UnsafeConfigPath(format!(
+                        "config path {} leaves allowed root {}",
+                        path.display(),
+                        allowed_root.display()
+                    )));
+                }
+            }
+            Component::Normal(value) => {
+                cursor.push(value);
+                reject_symlink(&cursor, "config path component")?;
+            }
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(CommandError::UnsafeConfigPath(format!(
+                    "config path {} contains an unexpected absolute component",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    if normalize_path_lexically(&cursor) != normalized_path {
+        return Err(CommandError::UnsafeConfigPath(format!(
+            "config path {} could not be validated component by component",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -357,5 +417,190 @@ pub(super) fn agent_from_snapshot(agent: &str) -> Result<AgentId, CommandError> 
         other => Err(CommandError::UnsafeConfigPath(format!(
             "snapshot agent {other} is not writable by config rollback commands"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "skills-copilot-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_agent_config_rejects_symlinked_existing_ancestor_of_missing_parent() {
+        let temp_root = temp_test_dir("read-agent-config-ancestor-symlink");
+        let home = temp_root.join("home");
+        let outside = temp_root.join("outside");
+        fs::create_dir_all(&home).expect("create home");
+        fs::create_dir_all(&outside).expect("create outside");
+        std::os::unix::fs::symlink(&outside, home.join(".config"))
+            .expect("create intermediate config symlink");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let result = read_agent_config(&ctx, "opencode", Some("agent-global"));
+
+        assert!(
+            matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+            "read must reject an existing symlink ancestor even when descendants are missing"
+        );
+        assert!(
+            !outside.join("opencode").exists(),
+            "validation must not create a path through the symlink"
+        );
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_claude_settings_rejects_symlinked_allowed_root() {
+        let temp_root = temp_test_dir("read-config-root-symlink");
+        let real_home = temp_root.join("real-home");
+        let linked_home = temp_root.join("linked-home");
+        fs::create_dir_all(&real_home).expect("create real home");
+        std::os::unix::fs::symlink(&real_home, &linked_home).expect("create home symlink");
+        let ctx = AdapterContext {
+            user_home: linked_home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let result = super::super::read_claude_settings(&ctx);
+
+        assert!(
+            matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+            "read must reject a symlinked allowed root"
+        );
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_claude_settings_rejects_symlinked_allowed_root_with_lexical_suffixes() {
+        let temp_root = temp_test_dir("read-config-root-symlink-suffixes");
+        let real_home = temp_root.join("real-home");
+        let linked_home = temp_root.join("linked-home");
+        fs::create_dir_all(real_home.join(".claude")).expect("create real config directory");
+        fs::write(real_home.join(".claude/settings.json"), "{}\n").expect("write real settings");
+        std::os::unix::fs::symlink(&real_home, &linked_home).expect("create home symlink");
+        let suffixed_roots = [
+            linked_home.join("."),
+            std::path::PathBuf::from(format!("{}/", linked_home.display())),
+        ];
+
+        for user_home in suffixed_roots {
+            let ctx = AdapterContext {
+                user_home,
+                project_root: None,
+                project_cwd: None,
+                extra_roots: vec![],
+            };
+            let result = super::super::read_claude_settings(&ctx);
+            assert!(
+                matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+                "read must reject a symlinked allowed root despite trailing lexical suffixes"
+            );
+        }
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn config_read_validation_compares_normalized_component_paths_without_creating_them() {
+        let temp_root = temp_test_dir("read-config-normalized-path");
+        let home = temp_root.join("home");
+        fs::create_dir_all(&home).expect("create home");
+        let ctx = AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let aliased_target = home.join(".claude/../.claude/settings.json");
+
+        validate_config_read_target(
+            &ctx,
+            AgentId::ClaudeCode,
+            Scope::AgentGlobal,
+            &aliased_target,
+        )
+        .expect("lexically equivalent read target should be accepted");
+
+        assert!(!home.join(".claude").exists());
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn config_read_validation_rejects_symlink_component_removed_by_parent_traversal() {
+        let temp_root = temp_test_dir("read-config-cancelled-symlink");
+        let home = temp_root.join("home");
+        let outside = temp_root.join("outside/nested");
+        fs::create_dir_all(&home).expect("create home");
+        fs::create_dir_all(&outside).expect("create outside target");
+        std::os::unix::fs::symlink(&outside, home.join("link"))
+            .expect("create cancelled path symlink");
+        let ctx = AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let aliased_target = home.join("link/../.claude/settings.json");
+
+        let result = validate_config_read_target(
+            &ctx,
+            AgentId::ClaudeCode,
+            Scope::AgentGlobal,
+            &aliased_target,
+        );
+
+        assert!(
+            matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+            "a symlink component must be rejected even when a later parent component removes it"
+        );
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn config_read_validation_rejects_parent_excursion_above_allowed_root() {
+        let temp_root = temp_test_dir("read-config-parent-excursion");
+        let home = temp_root.join("home");
+        fs::create_dir_all(&home).expect("create home");
+        let ctx = AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let aliased_target = home.join("../home/.claude/settings.json");
+
+        let result = validate_config_read_target(
+            &ctx,
+            AgentId::ClaudeCode,
+            Scope::AgentGlobal,
+            &aliased_target,
+        );
+
+        assert!(
+            matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+            "a read path must not leave and then re-enter its allowed root"
+        );
+        let _ = fs::remove_dir_all(&temp_root);
     }
 }

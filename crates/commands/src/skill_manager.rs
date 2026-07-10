@@ -1401,6 +1401,9 @@ fn unix_timestamp_millis() -> i64 {
 }
 
 #[cfg(test)]
+mod effects_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1565,19 +1568,5 @@ mod tests {
             detail,
             "No matching skills found for: alibabacloud-find-skills"
         );
-    }
-
-    #[test]
-    fn search_parser_extracts_ansi_find_results() {
-        let stdout = "\n\u{1b}[38;5;102mInstall with\u{1b}[0m npx skills add <owner/repo@skill>\n\n\u{1b}[38;5;145mobra/superpowers@brainstorming\u{1b}[0m \u{1b}[36m245.4K installs\u{1b}[0m\n\u{1b}[38;5;102m└ https://skills.sh/obra/superpowers/brainstorming\u{1b}[0m\n\n\u{1b}[38;5;145mobra/superpowers@systematic-debugging\u{1b}[0m \u{1b}[36m161.5K installs\u{1b}[0m\n\u{1b}[38;5;102m└ https://skills.sh/obra/superpowers/systematic-debugging\u{1b}[0m\n";
-
-        let results = parse_search_results(stdout);
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].name, "brainstorming");
-        assert_eq!(results[0].source.as_deref(), Some("obra/superpowers"));
-        assert_eq!(results[0].description.as_deref(), Some("245.4K installs"));
-        assert_eq!(results[1].name, "systematic-debugging");
-        assert_eq!(results[1].source.as_deref(), Some("obra/superpowers"));
     }
 }

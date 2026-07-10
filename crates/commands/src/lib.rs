@@ -43,7 +43,7 @@ use analysis::{
 use config_support::{
     agent_from_snapshot, batch_capability_label, batch_capability_labels, batch_skip_reason,
     batch_snapshot_rollback_notes, minimal_skill_instance, normalize_initial_config_text,
-    patch_enabled_for_agent, scope_from_snapshot,
+    patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
 
 pub use analysis::*;
@@ -1985,7 +1985,7 @@ pub struct ConfigDocumentRecord {
 
 pub fn read_claude_settings(ctx: &AdapterContext) -> Result<ConfigDocumentRecord, CommandError> {
     let target = claude_global_settings_path(ctx);
-    validate_config_write_target(ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
+    validate_config_read_target(ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
     let (content, exists) = match fs::read_to_string(&target) {
         Ok(content) => (content, true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => ("{}\n".to_string(), false),
@@ -2094,7 +2094,7 @@ fn preview_snapshot_rollback_for_record(
     let target = PathBuf::from(&snapshot.target);
     let scope = scope_from_snapshot(&snapshot.scope)?;
     let agent = agent_from_snapshot(&snapshot.agent)?;
-    validate_config_write_target(ctx, agent, scope, &target)?;
+    validate_config_read_target(ctx, agent, scope, &target)?;
 
     let (current_content, current_read_error) = match fs::read_to_string(&target) {
         Ok(content) => (content, None),

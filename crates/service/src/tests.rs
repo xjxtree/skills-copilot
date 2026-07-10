@@ -13,6 +13,7 @@ mod dispatch_fixtures;
 mod llm_provider;
 mod local_session_preview;
 mod local_session_project_scope;
+mod method_effects;
 mod protocol_fixtures;
 mod skill_manager_fixtures;
 mod support_and_status;

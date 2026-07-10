@@ -141,7 +141,7 @@ impl ServiceHost {
                 serde_json::to_value(self.prepare_llm_action(params)?).map_err(Into::into)
             }
             "rules.listTuning" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let tuning: Vec<RuleTuningRecord> = list_rule_tuning(&catalog)?;
                 serde_json::to_value(tuning).map_err(Into::into)
             }
@@ -195,7 +195,7 @@ impl ServiceHost {
             "batch.previewSkillToggles" => {
                 let params: BatchPreviewSkillTogglesParams =
                     serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let preview: BatchTogglePreviewRecord = preview_skill_toggles(
                     &catalog,
@@ -350,35 +350,35 @@ impl ServiceHost {
                 serde_json::to_value(context).map_err(Into::into)
             }
             "catalog.listSkills" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 serde_json::to_value(self.list_visible_skill_records(&catalog)?).map_err(Into::into)
             }
             "catalog.getSkill" => {
                 let params: GetSkillParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let detail: SkillDetailRecord = get_skill(&catalog, &params.instance_id)?;
                 serde_json::to_value(detail).map_err(Into::into)
             }
             "catalog.analysis" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let analysis: CrossAgentAnalysisRecord = analyze_catalog(&catalog, &adapter_ctx)?;
                 serde_json::to_value(analysis).map_err(Into::into)
             }
             "skill.listEvents" => {
                 let params: ListSkillEventsParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let events: Vec<SkillEventRecord> =
                     list_skill_events(&catalog, &params.instance_id, params.limit)?;
                 serde_json::to_value(events).map_err(Into::into)
             }
             "catalog.listFindings" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
                 serde_json::to_value(findings).map_err(Into::into)
             }
             "catalog.listFindingTriage" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let triage: Vec<FindingTriageRecord> = list_finding_triage(&catalog)?;
                 serde_json::to_value(triage).map_err(Into::into)
             }
@@ -400,7 +400,7 @@ impl ServiceHost {
                 serde_json::to_value(cleared).map_err(Into::into)
             }
             "catalog.listConflicts" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let conflicts: Vec<ConflictGroupRecord> = list_conflicts(&catalog)?;
                 serde_json::to_value(conflicts).map_err(Into::into)
             }
@@ -566,14 +566,14 @@ impl ServiceHost {
                 serde_json::to_value(document).map_err(Into::into)
             }
             "snapshot.list" => {
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog)?;
                 serde_json::to_value(snapshots).map_err(Into::into)
             }
             "snapshot.listAgentConfig" => {
                 let params: ListAgentConfigSnapshotsParams =
                     serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let scope = params.scope.as_deref().filter(|scope| !scope.is_empty());
                 let snapshots: Vec<ConfigSnapshotRecord> =
                     list_agent_config_snapshots(&catalog, &params.agent, scope)?;
@@ -581,7 +581,7 @@ impl ServiceHost {
             }
             "snapshot.previewRollback" => {
                 let params: SnapshotParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
+                let catalog = self.open_catalog_for_read()?;
                 let preview: SnapshotRollbackPreviewRecord =
                     preview_snapshot_rollback(&catalog, &params.snapshot_id)?;
                 serde_json::to_value(preview).map_err(Into::into)
@@ -605,7 +605,7 @@ impl ServiceHost {
     }
 
     pub fn app_state_snapshot(&self) -> Result<AppStateSnapshot, ServiceError> {
-        let catalog = self.open_catalog()?;
+        let catalog = self.open_catalog_for_read()?;
         let adapter_ctx = self.effective_adapter_ctx()?;
         let skills = self.list_visible_skill_records(&catalog)?;
         let findings = list_findings(&catalog)?;
@@ -662,6 +662,16 @@ impl ServiceHost {
     pub(crate) fn open_catalog(&self) -> Result<Catalog, ServiceError> {
         create_private_dir_all(&self.app_data_dir)?;
         let catalog = Catalog::open(&self.catalog_path())?;
+        catalog.init()?;
+        Ok(catalog)
+    }
+
+    pub(crate) fn open_catalog_for_read(&self) -> Result<Catalog, ServiceError> {
+        let path = self.catalog_path();
+        if path.exists() {
+            return Catalog::open_read_only(&path).map_err(Into::into);
+        }
+        let catalog = Catalog::in_memory()?;
         catalog.init()?;
         Ok(catalog)
     }
