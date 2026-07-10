@@ -732,25 +732,21 @@ struct SkillManagerPanel: View {
         }
     }
 
-    private func applyCurrentMutation(_ kind: SkillManagerMutationInputs.Kind) async {
-        switch kind {
-        case .install:
-            await store.applySkillManagerInstall()
-        case .remove:
-            await store.applySkillManagerRemove()
-        case .update:
-            await store.applySkillManagerUpdate()
-        }
-    }
-
     private func applyConfirmed(_ confirmation: SkillManagerWriteConfirmation) async {
         switch confirmation {
         case .mutation(let confirmation):
-            await applyCurrentMutation(confirmation.inputs.kind)
-        case .localCreate:
-            await store.applySkillManagerLocalCreate()
-        case .localDelete:
-            await store.applySkillManagerLocalDelete()
+            switch confirmation.inputs.kind {
+            case .install:
+                await store.applySkillManagerInstall(confirmation: confirmation)
+            case .remove:
+                await store.applySkillManagerRemove(confirmation: confirmation)
+            case .update:
+                await store.applySkillManagerUpdate(confirmation: confirmation)
+            }
+        case .localCreate(let confirmation):
+            await store.applySkillManagerLocalCreate(confirmation: confirmation)
+        case .localDelete(let confirmation):
+            await store.applySkillManagerLocalDelete(confirmation: confirmation)
         }
     }
 

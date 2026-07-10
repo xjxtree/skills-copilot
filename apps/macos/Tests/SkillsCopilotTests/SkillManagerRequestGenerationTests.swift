@@ -11,6 +11,9 @@ struct SkillManagerRequestGenerationTests {
         try await inputChangeInvalidatesMutationPreview()
         try await localCreateInputChangeIgnoresOldPreview()
         try await localDeleteSelectionChangeIgnoresOldPreview()
+        try await staleMutationConfirmationCannotApplyCurrentPreview()
+        try await staleLocalCreateConfirmationCannotApplyCurrentPreview()
+        try await staleLocalDeleteConfirmationCannotApplyCurrentPreview()
         try await applyUsesExactPreviewInputsAndToken()
         try await oldCompletionDoesNotClearCurrentLoadingState()
     }
@@ -119,11 +122,14 @@ struct SkillManagerRequestGenerationTests {
         store.skillManagerSelectedAgentIDs = ["codex"]
 
         await store.previewSkillManagerInstall()
-        try expectEqual(store.skillManagerMutationConfirmation?.inputs.source, "owner/repo", "Preview should capture canonical mutation inputs.")
+        guard let confirmation = store.skillManagerMutationConfirmation else {
+            throw NativeModelTestFailure(description: "Preview should capture canonical mutation inputs.")
+        }
+        try expectEqual(confirmation.inputs.source, "owner/repo", "Preview should capture canonical mutation inputs.")
 
         store.skillManagerSource = "other/repo"
         try expectNil(store.skillManagerMutationConfirmation, "Changing mutation input should invalidate confirmation.")
-        await store.applySkillManagerInstall()
+        await store.applySkillManagerInstall(confirmation: confirmation)
         try expectEqual(
             await runner.recordedCalls(method: "skillManager.applyInstall").count,
             0,
@@ -166,6 +172,98 @@ struct SkillManagerRequestGenerationTests {
         try expectEqual(store.skillManagerLocalDeleteConfirmation?.instanceID, "local-b", "Only the newest local-delete selection should remain confirmable.")
     }
 
+    private func staleMutationConfirmationCannotApplyCurrentPreview() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerSelectedAgentIDs = ["codex"]
+        store.skillManagerSource = "owner/a"
+        store.skillManagerInstallSkillName = "alpha"
+        await store.previewSkillManagerInstall()
+        guard let capturedA = store.skillManagerMutationConfirmation else {
+            throw NativeModelTestFailure(description: "Mutation preview A should be captured.")
+        }
+
+        store.skillManagerSource = "owner/b"
+        store.skillManagerInstallSkillName = "beta"
+        await store.previewSkillManagerInstall()
+        guard let currentB = store.skillManagerMutationConfirmation else {
+            throw NativeModelTestFailure(description: "Mutation preview B should be current.")
+        }
+
+        await store.applySkillManagerInstall(confirmation: capturedA)
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.applyInstall").count,
+            0,
+            "A stale mutation confirmation must not apply the current preview."
+        )
+        try expectEqual(store.skillManagerMutationConfirmation, currentB, "A stale mutation apply must leave current preview B intact.")
+        try expectNil(store.skillManagerMessage, "A stale mutation apply must not publish success feedback.")
+
+        await store.applySkillManagerInstall(confirmation: currentB)
+        guard let apply = await runner.recordedCalls(method: "skillManager.applyInstall").last else {
+            throw NativeModelTestFailure(description: "Current mutation preview B should apply.")
+        }
+        try expectEqual(apply.source, currentB.inputs.source, "Current mutation apply should use B's captured source.")
+        try expectEqual(apply.previewToken, currentB.previewToken, "Current mutation apply should use B's exact token.")
+    }
+
+    private func staleLocalCreateConfirmationCannotApplyCurrentPreview() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerLocalSkillName = "local-a"
+        await store.previewSkillManagerLocalCreate()
+        guard let capturedA = store.skillManagerLocalCreateConfirmation else {
+            throw NativeModelTestFailure(description: "Local-create preview A should be captured.")
+        }
+
+        store.skillManagerLocalSkillName = "local-b"
+        await store.previewSkillManagerLocalCreate()
+        guard let currentB = store.skillManagerLocalCreateConfirmation else {
+            throw NativeModelTestFailure(description: "Local-create preview B should be current.")
+        }
+
+        await store.applySkillManagerLocalCreate(confirmation: capturedA)
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.applyLocalCreate").count,
+            0,
+            "A stale local-create confirmation must not apply the current preview."
+        )
+        try expectEqual(store.skillManagerLocalCreateConfirmation, currentB, "A stale local-create apply must leave current preview B intact.")
+        try expectNil(store.skillManagerMessage, "A stale local-create apply must not publish success feedback.")
+
+        await store.applySkillManagerLocalCreate(confirmation: currentB)
+        guard let apply = await runner.recordedCalls(method: "skillManager.applyLocalCreate").last else {
+            throw NativeModelTestFailure(description: "Current local-create preview B should apply.")
+        }
+        try expectEqual(apply.name, currentB.name, "Current local-create apply should use B's captured name.")
+        try expectEqual(apply.previewToken, currentB.previewToken, "Current local-create apply should use B's exact token.")
+    }
+
+    private func staleLocalDeleteConfirmationCannotApplyCurrentPreview() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        await store.previewSkillManagerLocalDelete(skill: localSkill(id: "local-a"))
+        guard let capturedA = store.skillManagerLocalDeleteConfirmation else {
+            throw NativeModelTestFailure(description: "Local-delete preview A should be captured.")
+        }
+
+        await store.previewSkillManagerLocalDelete(skill: localSkill(id: "local-b"))
+        guard let currentB = store.skillManagerLocalDeleteConfirmation else {
+            throw NativeModelTestFailure(description: "Local-delete preview B should be current.")
+        }
+
+        await store.applySkillManagerLocalDelete(confirmation: capturedA)
+        let staleApplyCalls = await runner.recordedCalls(method: "skillManager.deleteLocal").filter { $0.confirmed }
+        try expectEqual(staleApplyCalls.count, 0, "A stale local-delete confirmation must not delete the current target.")
+        try expectEqual(store.skillManagerLocalDeleteConfirmation, currentB, "A stale local-delete apply must leave current preview B intact.")
+        try expectNil(store.skillManagerMessage, "A stale local-delete apply must not publish success feedback.")
+
+        await store.applySkillManagerLocalDelete(confirmation: currentB)
+        let currentApplyCalls = await runner.recordedCalls(method: "skillManager.deleteLocal").filter { $0.confirmed }
+        try expectEqual(currentApplyCalls.count, 1, "Current local-delete preview B should apply once.")
+        try expectEqual(currentApplyCalls.first?.instanceID, currentB.instanceID, "Current local-delete apply should use B's captured instance ID.")
+    }
+
     private func applyUsesExactPreviewInputsAndToken() async throws {
         let runner = SkillManagerGenerationServiceRunner()
         let store = makeStore(runner)
@@ -182,7 +280,7 @@ struct SkillManagerRequestGenerationTests {
         }
         store.skillManagerSearchQuery = "unrelated live edit"
         store.skillManagerOwner = "unrelated-owner"
-        await store.applySkillManagerInstall()
+        await store.applySkillManagerInstall(confirmation: confirmation)
 
         guard let apply = await runner.recordedCalls(method: "skillManager.applyInstall").last else {
             throw NativeModelTestFailure(description: "Install apply should reach the service.")

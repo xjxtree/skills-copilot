@@ -1382,8 +1382,8 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func applySkillManagerInstall() async {
-        guard let confirmation = skillManagerMutationConfirmation,
+    func applySkillManagerInstall(confirmation: SkillManagerMutationConfirmation) async {
+        guard skillManagerMutationConfirmation == confirmation,
               confirmation.inputs.kind == .install else { return }
         await applySkillManagerMutation(confirmation)
     }
@@ -1417,8 +1417,8 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func applySkillManagerRemove() async {
-        guard let confirmation = skillManagerMutationConfirmation,
+    func applySkillManagerRemove(confirmation: SkillManagerMutationConfirmation) async {
+        guard skillManagerMutationConfirmation == confirmation,
               confirmation.inputs.kind == .remove else { return }
         await applySkillManagerMutation(confirmation)
     }
@@ -1448,8 +1448,8 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func applySkillManagerUpdate() async {
-        guard let confirmation = skillManagerMutationConfirmation,
+    func applySkillManagerUpdate(confirmation: SkillManagerMutationConfirmation) async {
+        guard skillManagerMutationConfirmation == confirmation,
               confirmation.inputs.kind == .update else { return }
         await applySkillManagerMutation(confirmation)
     }
@@ -1484,8 +1484,8 @@ final class SkillStore: ObservableObject {
         await task.value
     }
 
-    func applySkillManagerLocalCreate() async {
-        guard let confirmation = skillManagerLocalCreateConfirmation else { return }
+    func applySkillManagerLocalCreate(confirmation: SkillManagerLocalCreateConfirmation) async {
+        guard skillManagerLocalCreateConfirmation == confirmation else { return }
         guard !isApplyingSkillManagerMutation else { return }
         isApplyingSkillManagerMutation = true
         isWriting = true
@@ -1535,8 +1535,8 @@ final class SkillStore: ObservableObject {
         await task.value
     }
 
-    func applySkillManagerLocalDelete() async {
-        guard let confirmation = skillManagerLocalDeleteConfirmation else { return }
+    func applySkillManagerLocalDelete(confirmation: SkillManagerLocalDeleteConfirmation) async {
+        guard skillManagerLocalDeleteConfirmation == confirmation else { return }
         guard confirmation.result.physicalDeleteAllowed else {
             setSkillManagerError(confirmation.result.summary)
             return
