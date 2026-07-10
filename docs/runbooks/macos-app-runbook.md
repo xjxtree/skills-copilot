@@ -15,6 +15,7 @@ Common entrypoints:
 ./script/build_and_run.sh --verify
 pnpm dev:macos
 pnpm build:macos
+pnpm verify:macos-launch
 pnpm test:macos-native-models
 pnpm check:macos
 ```
@@ -26,7 +27,9 @@ pnpm check:macos
 | Scenario | Command | Data environment | Use |
 | --- | --- | --- | --- |
 | Local App Run | `./script/build_and_run.sh run` or `pnpm dev:macos` | Real local HOME and app data | Manual behavior and visual checks |
-| Launch Verify | `./script/build_and_run.sh --verify` or `pnpm build:macos` | Real local HOME and app data | Rebuild and confirm launch |
+| Bundle Build | `pnpm build:macos` | No app data access | Rebuild without launching or stopping an existing app |
+| Launch Verify | `./script/build_and_run.sh --verify` or `pnpm verify:macos-launch` | Real local HOME and app data | Rebuild and confirm a visible window |
+| Headless Sidecar Smoke | `pnpm smoke:macos-app -- --fixture-data --headless-sidecar` | Temporary fixture HOME, app data, and project roots | Validate the bundled Rust sidecar without GUI or Accessibility |
 | Smoke App Run | `pnpm smoke:macos-app -- --fixture-data --capture-window` | Temporary fixture HOME, app data, and project roots | Automated validation without real config |
 | Native Model Tests | `pnpm test:macos-native-models` | Temporary SwiftPM test package | Explicit native model runner without SwiftPM test-bundle loading |
 | macOS Check | `pnpm check:macos` | Combined local gate | fmt/test/clippy/native model tests/build/launch/smoke/window screenshot |
@@ -46,8 +49,13 @@ needs visual or interaction evidence.
 Smoke validation must use fixture data:
 
 ```sh
+pnpm smoke:macos-app -- --fixture-data --headless-sidecar
 pnpm smoke:macos-app -- --fixture-data --capture-window
 ```
+
+The headless command is suitable for CI and exercises the bundled sidecar
+directly. It does not launch the app and is not evidence of a real-local window
+or interaction. The capture command remains the local fixture GUI check.
 
 Smoke must:
 

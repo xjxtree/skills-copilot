@@ -256,3 +256,53 @@ test("smoke script delegates argument parsing instead of inspecting argv directl
   const source = readFileSync("scripts/smoke-macos-app.mjs", "utf8");
   assert.doesNotMatch(source, /process\.argv\.includes/);
 });
+
+test("CI builds without launching and validates the bundled sidecar headlessly", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  const buildScript = readFileSync("script/build_and_run.sh", "utf8");
+  const localGate = readFileSync("scripts/check-macos.mjs", "utf8");
+  const smokeScript = readFileSync("scripts/smoke-macos-app.mjs", "utf8");
+
+  assert.match(workflow, /^on:\n  pull_request:\n  push:\n\n/m);
+  assert.match(
+    workflow,
+    /run: pnpm smoke:macos-app -- --fixture-data --headless-sidecar/,
+  );
+  assert.doesNotMatch(workflow, /--bundle-only/);
+  assert.match(workflow, /run: pnpm verify:macos-native-test-registry/);
+  assert.match(
+    workflow,
+    /run: swift test --package-path apps\/macos --scratch-path "\$RUNNER_TEMP\/swift-tests"/,
+  );
+  assert.doesNotMatch(workflow, /run: swift build --package-path apps\/macos/);
+  assert.ok(
+    workflow.indexOf("uses: actions/setup-node@v4") <
+      workflow.indexOf("run: corepack enable"),
+    "Node 22 must be installed before Corepack is invoked",
+  );
+  assert.doesNotMatch(workflow, /cache: pnpm/);
+  assert.equal(packageJson.scripts.build, "./script/build_and_run.sh --build-only");
+  assert.equal(
+    packageJson.scripts["build:macos"],
+    "./script/build_and_run.sh --build-only",
+  );
+  assert.equal(
+    packageJson.scripts["verify:macos-launch"],
+    "./script/build_and_run.sh --verify",
+  );
+  assert.match(
+    buildScript,
+    /case "\$MODE" in\n  --build-only\|build-only\)\n    ;;\n  \*\)\n    terminate_existing_app_instances/,
+  );
+  assert.match(localGate, /"\.\/script\/build_and_run\.sh",\s*\["--verify"\]/);
+  assert.match(
+    localGate,
+    /\["pnpm", \["smoke:macos-app", "--", "--fixture-data", "--capture-window"\]/,
+  );
+  assert.match(smokeScript, /Run pnpm build:macos before Smoke App Run/);
+  assert.doesNotMatch(
+    smokeScript,
+    /Run \.\/script\/build_and_run\.sh --verify or pnpm check:macos before Smoke App Run/,
+  );
+});

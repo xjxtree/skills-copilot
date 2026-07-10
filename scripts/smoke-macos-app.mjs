@@ -280,7 +280,7 @@ function assertTargetFresh(label, targetPath, inputPaths) {
   fail(
     `stale-bundle: ${label} is older than source inputs.\n` +
       `${examples}\n` +
-      "Run ./script/build_and_run.sh --verify or pnpm check:macos before Smoke App Run.",
+      "Run pnpm build:macos before Smoke App Run; use pnpm verify:macos-launch only for interactive launch/window proof.",
   );
 }
 

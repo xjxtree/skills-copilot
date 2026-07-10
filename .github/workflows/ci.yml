@@ -3,9 +3,6 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - "gd-ops/**"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -110,14 +107,13 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Enable pnpm
-        run: corepack enable
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+
+      - name: Enable pnpm
+        run: corepack enable
 
       - name: Prepare pnpm
         run: corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
@@ -137,11 +133,14 @@ jobs:
       - name: Test native macOS models
         run: pnpm test:macos-native-models
 
-      - name: Build SwiftPM macOS app
-        run: swift build --package-path apps/macos
+      - name: Verify native test registry
+        run: pnpm verify:macos-native-test-registry
+
+      - name: Test SwiftPM package completely
+        run: swift test --package-path apps/macos --scratch-path "$RUNNER_TEMP/swift-tests"
 
       - name: Build native macOS app bundle
         run: pnpm build:macos
 
-      - name: Smoke macOS app bundle
-        run: pnpm smoke:macos-app -- --bundle-only
+      - name: Smoke bundled Rust sidecar with fixtures
+        run: pnpm smoke:macos-app -- --fixture-data --headless-sidecar

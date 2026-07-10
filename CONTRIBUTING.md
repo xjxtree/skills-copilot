@@ -76,12 +76,13 @@ Before opening a PR:
 - `cargo clippy --workspace --all-targets --all-features` target: 0 warnings.
 - `pnpm verify:gate-parity` must pass for protocol/docs/gate governance changes.
 - `pnpm check:privacy` must pass before committing validation evidence, screenshots, or privacy-sensitive docs.
-- `./script/build_and_run.sh --verify` should pass for native macOS UI/service changes; this builds the Rust sidecar, builds SwiftPM, assembles `dist/AgentCopilot.app`, launches it, and checks the process.
+- `pnpm verify:macos-launch` should pass for native macOS UI/service changes; this builds the Rust sidecar, builds SwiftPM, assembles `dist/AgentCopilot.app`, launches it, and verifies a visible window.
 - Run macOS Computer Use against `dist/AgentCopilot.app` for affected runtime flows and record the result under `docs/ui-artifacts/` when UI behavior changes.
-- `pnpm build:macos && pnpm smoke:macos-app` should pass on macOS before release-oriented changes. The smoke script validates the bundle and app launch by default; fixture mode validates native service write flows without touching real config.
+- `pnpm build:macos` builds the bundle without launching or stopping an existing app. Pair it with `pnpm smoke:macos-app -- --fixture-data --headless-sidecar` for fixture-only sidecar validation that needs no GUI.
+- `pnpm smoke:macos-app -- --fixture-data --capture-window` remains the local fixture app/window check and must not touch real config.
 - `pnpm smoke:macos-app -- --fixture-data --check-logs` should pass before macOS release candidates to validate deterministic fixture launch and unknown app error/fault filtering.
 - `pnpm benchmark:10k` and `pnpm benchmark:macos-list-model` should be rerun before performance-sensitive releases.
-- CI runs the macOS app smoke in `--bundle-only` mode because hosted runners may not expose a stable GUI/Accessibility session.
+- CI builds the app without launching it, runs both complete native-test entrypoints, and validates the bundled Rust sidecar with fixture data in `--headless-sidecar` mode. This is not real-local GUI evidence.
 - New adapters must include at least 3 fixture tests (happy path + broken cases).
 
 ## Code layout

@@ -67,6 +67,9 @@ coding agents working in this repository.
 - For small code changes, run focused checks for the touched area.
 - For major changes, user-visible behavior, UI work, service protocol changes,
   or milestone completion, run `pnpm check:macos`.
+- `pnpm build:macos` builds the app bundle without launching or stopping an
+  existing app. Use `pnpm verify:macos-launch` for explicit local launch/window
+  proof; CI uses the fixture-only headless bundled-sidecar smoke.
 - For docs that claim implementation status, screenshots, or validation
   results, run the relevant verifier or change the wording.
 - Before committing, pushing, or handing off evidence, run `pnpm check:privacy`.
@@ -94,6 +97,9 @@ pnpm verify:gate-parity
 pnpm verify:service-protocol-drift
 pnpm verify:module-size
 pnpm verify:macos-ui-layout
+pnpm build:macos
+pnpm verify:macos-launch
+pnpm smoke:macos-app -- --fixture-data --headless-sidecar
 pnpm smoke:macos-app -- --fixture-data --capture-window
 pnpm dev:macos
 ```

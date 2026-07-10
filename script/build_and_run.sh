@@ -43,6 +43,8 @@ usage() {
 usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only] [--arch arm64|x86_64]
 
 Builds dist/$APP_NAME.app before running the selected mode.
+Use "pnpm build:macos" for a build that neither launches nor stops the app.
+Use "pnpm verify:macos-launch" only for interactive launch/window proof.
 Set AGENT_COPILOT_ARCH or pass --arch to cross-build architecture-specific bundles.
 USAGE
 }
@@ -357,7 +359,13 @@ ad_hoc_sign_app_bundle() {
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 }
 
-terminate_existing_app_instances
+case "$MODE" in
+  --build-only|build-only)
+    ;;
+  *)
+    terminate_existing_app_instances
+    ;;
+esac
 
 env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
 swift build "${SWIFT_BUILD_ARGS[@]}"
