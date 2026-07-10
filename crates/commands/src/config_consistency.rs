@@ -126,12 +126,19 @@ mod tests {
     }
 
     #[test]
-    fn rollback_token_changes_with_snapshot_target_content_or_current_revision() {
+    fn rollback_token_changes_with_snapshot_id_target_content_or_current_revision() {
         let base = config_snapshot("snap-1", "/tmp/config.json", "{}\n");
         let base_token = rollback_preview_token(&base, "sha256:current-a");
         assert_ne!(
             base_token,
             rollback_preview_token(&base, "sha256:current-b")
+        );
+        assert_ne!(
+            base_token,
+            rollback_preview_token(
+                &config_snapshot("snap-2", "/tmp/config.json", "{}\n"),
+                "sha256:current-a",
+            )
         );
         assert_ne!(
             base_token,
@@ -147,5 +154,14 @@ mod tests {
                 "sha256:current-a",
             )
         );
+    }
+
+    #[test]
+    fn forged_rollback_token_is_rejected() {
+        let snapshot = config_snapshot("snap-1", "/tmp/config.json", "{}\n");
+        assert!(matches!(
+            ensure_rollback_preview_token("sha256:forged", &snapshot, "sha256:current"),
+            Err(CommandError::StalePreviewToken)
+        ));
     }
 }

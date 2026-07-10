@@ -2688,6 +2688,143 @@ fn stale_rollback_preview_token_rejects_external_change_without_writes() {
 }
 
 #[test]
+fn rollback_deleted_before_invocation_returns_stale_without_writes() {
+    use rusqlite::Connection;
+
+    let temp_root = temp_test_dir("rollback-deleted-before-call");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    let current_content = "{\n  \"current\": true\n}\n";
+    std::fs::write(&settings_path, current_content).expect("write current settings");
+    let catalog_path = temp_root.join("catalog.sqlite");
+    let catalog = Catalog::open(&catalog_path).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "deleted-before-call",
+            agent: ClaudeCodeAdapter.id().as_str(),
+            scope: Scope::AgentGlobal.as_str(),
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create snapshot");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "deleted-before-call")
+        .expect("preview rollback");
+    Connection::open(&catalog_path)
+        .expect("open raw catalog")
+        .execute(
+            "DELETE FROM config_snapshot WHERE id = ?1",
+            ["deleted-before-call"],
+        )
+        .expect("delete snapshot after preview");
+
+    let result = rollback_snapshot(
+        &catalog,
+        &ctx,
+        "deleted-before-call",
+        &preview.preview_token,
+    );
+
+    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read unchanged target"),
+        current_content
+    );
+    assert!(!settings_path.with_extension("lock").exists());
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn rollback_preview_to_call_snapshot_identity_drift_returns_stale_without_writes() {
+    use rusqlite::{params, Connection};
+
+    for changed_field in ["target", "scope", "agent"] {
+        let temp_root = temp_test_dir(&format!("rollback-before-call-{changed_field}"));
+        let home = temp_root.join("home");
+        let settings_path = home.join(".claude/settings.json");
+        let outside_target = temp_root.join("outside/unsafe-settings.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        std::fs::create_dir_all(outside_target.parent().expect("outside parent"))
+            .expect("create outside directory");
+        let current_content = "{\n  \"current\": true\n}\n";
+        let outside_content = "do not read or write\n";
+        std::fs::write(&settings_path, current_content).expect("write current settings");
+        std::fs::write(&outside_target, outside_content).expect("write outside sentinel");
+        let catalog_path = temp_root.join("catalog.sqlite");
+        let catalog = Catalog::open(&catalog_path).expect("catalog opens");
+        catalog.init().expect("catalog initializes");
+        catalog
+            .create_config_snapshot(ConfigSnapshotDraft {
+                id: "identity-drift-before-call",
+                agent: ClaudeCodeAdapter.id().as_str(),
+                scope: Scope::AgentGlobal.as_str(),
+                target: &settings_path.to_string_lossy(),
+                content: "{}\n",
+                reason: "pre-config-edit",
+                created_at_ms: current_time_ms(),
+            })
+            .expect("create snapshot");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let preview =
+            preview_snapshot_rollback_with_context(&catalog, &ctx, "identity-drift-before-call")
+                .expect("preview rollback");
+        let replacement = match changed_field {
+            "target" => outside_target.to_string_lossy().to_string(),
+            "scope" => "tool-global".to_string(),
+            "agent" => "tool-global".to_string(),
+            _ => unreachable!(),
+        };
+        let connection = Connection::open(&catalog_path).expect("open raw catalog");
+        let sql = format!("UPDATE config_snapshot SET {changed_field} = ?1 WHERE id = ?2");
+        connection
+            .execute(&sql, params![replacement, "identity-drift-before-call"])
+            .expect("drift snapshot identity");
+        drop(connection);
+
+        let result = rollback_snapshot(
+            &catalog,
+            &ctx,
+            "identity-drift-before-call",
+            &preview.preview_token,
+        );
+
+        assert!(
+            matches!(result, Err(CommandError::StalePreviewToken)),
+            "{changed_field} drift returned {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&settings_path).expect("read unchanged target"),
+            current_content
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_target).expect("read outside sentinel"),
+            outside_content
+        );
+        assert!(!settings_path.with_extension("lock").exists());
+        assert!(!outside_target.with_extension("lock").exists());
+
+        drop(catalog);
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+}
+
+#[test]
 fn rollback_rechecks_state_after_lock() {
     let temp_root = temp_test_dir("rollback-lock-recheck");
     let home = temp_root.join("home");
@@ -2754,6 +2891,112 @@ fn rollback_rechecks_state_after_lock() {
         "lock-time rejection must not create a temporary config file"
     );
 
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn rollback_maps_unreadable_target_shape_after_lock_to_stale() {
+    let temp_root = temp_test_dir("rollback-directory-after-lock");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::write(&settings_path, "{\n  \"current\": true\n}\n").expect("write current settings");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "directory-after-lock",
+            agent: ClaudeCodeAdapter.id().as_str(),
+            scope: Scope::AgentGlobal.as_str(),
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create snapshot");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "directory-after-lock")
+        .expect("preview rollback");
+
+    let result = rollback_snapshot_with_after_lock(
+        &catalog,
+        &ctx,
+        "directory-after-lock",
+        &preview.preview_token,
+        || {
+            std::fs::remove_file(&settings_path).expect("remove target after lock");
+            std::fs::create_dir(&settings_path).expect("replace target with directory");
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert!(settings_path.is_dir());
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn rollback_revalidates_symlinked_target_after_lock_before_reading_it() {
+    let temp_root = temp_test_dir("rollback-symlink-after-lock");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    let outside_target = temp_root.join("outside/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(outside_target.parent().expect("outside parent"))
+        .expect("create outside directory");
+    let current_content = "{\n  \"current\": true\n}\n";
+    std::fs::write(&settings_path, current_content).expect("write current settings");
+    std::fs::write(&outside_target, current_content).expect("write identical outside sentinel");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "symlink-after-lock",
+            agent: ClaudeCodeAdapter.id().as_str(),
+            scope: Scope::AgentGlobal.as_str(),
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create snapshot");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "symlink-after-lock")
+        .expect("preview rollback");
+
+    let result = rollback_snapshot_with_after_lock(
+        &catalog,
+        &ctx,
+        "symlink-after-lock",
+        &preview.preview_token,
+        || {
+            std::fs::remove_file(&settings_path).expect("remove target after lock");
+            std::os::unix::fs::symlink(&outside_target, &settings_path)
+                .expect("replace target with symlink");
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert_eq!(
+        std::fs::read_to_string(&outside_target).expect("read outside sentinel"),
+        current_content
+    );
+    assert!(std::fs::symlink_metadata(&settings_path)
+        .expect("target metadata")
+        .file_type()
+        .is_symlink());
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
@@ -2999,6 +3242,53 @@ fn stale_claude_settings_save_is_rejected_without_snapshot_or_write() {
         "stale rejection must happen before snapshot creation"
     );
 
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn save_rechecks_state_after_preflight_under_lock() {
+    let temp_root = temp_test_dir("save-preflight-lock-race");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::write(&settings_path, "{}\n").expect("write initial settings");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let revision = read_claude_settings(&ctx)
+        .expect("read initial settings")
+        .revision;
+    let external_content = "{\n  \"changedAfterPreflight\": true\n}\n";
+
+    let result = prepare_claude_settings_save_with_before_lock(
+        &ctx,
+        "{\n  \"requested\": true\n}\n",
+        &revision,
+        || {
+            std::fs::write(&settings_path, external_content)
+                .expect("write concurrent external change");
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::ConfigConflict { .. })));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read preserved external content"),
+        external_content
+    );
+    assert!(
+        std::fs::read_dir(settings_path.parent().expect("settings parent"))
+            .expect("list settings directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+        "lock-time conflict must not prepare a temporary config file"
+    );
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
@@ -3875,7 +4165,7 @@ fn save_claude_settings_rejects_symlinked_config_directory() {
 }
 
 #[test]
-fn rollback_snapshot_rejects_target_outside_expected_config_path() {
+fn rollback_snapshot_maps_target_outside_expected_config_path_to_stale_preview() {
     let temp_root = std::env::temp_dir().join(format!(
         "skills-copilot-rollback-path-{}",
         std::process::id()
@@ -3907,8 +4197,8 @@ fn rollback_snapshot_rejects_target_outside_expected_config_path() {
     let result = rollback_snapshot(&catalog, &ctx, "tampered-snapshot", "sha256:unused");
 
     assert!(
-        matches!(result, Err(CommandError::UnsafeConfigPath(_))),
-        "rollback must reject snapshot targets outside the expected settings path"
+        matches!(result, Err(CommandError::StalePreviewToken)),
+        "rollback must map a drifted snapshot target to a stale preview token"
     );
     assert!(
         !outside_target.exists(),

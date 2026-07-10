@@ -21,3 +21,6 @@ skills-copilot-core.workspace = true
 [[bin]]
 name = "skills-copilot-service"
 path = "src/main.rs"
+
+[dev-dependencies]
+rusqlite.workspace = true

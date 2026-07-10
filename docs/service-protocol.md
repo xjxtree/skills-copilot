@@ -58,10 +58,13 @@ conditional on the exact local state that the client reviewed.
   file, while UI-only default content does not change the missing-file
   revision.
 - `config.saveClaudeSettings` requires `content` and `expected_revision`. The
-  service acquires the existing config lock, rereads the target, and compares
-  its current revision before creating a snapshot or preparing a target write.
-  A mismatch returns the stable `config_conflict` error and leaves the external
-  bytes and snapshot history unchanged.
+  service first performs a non-creating read preflight before initializing the
+  catalog or preparing a lock path. If that passes, it acquires the existing
+  config lock and authoritatively rereads and compares the target again before
+  catalog initialization, snapshot creation, or a target write. An initial
+  mismatch returns the stable `config_conflict` error with no filesystem
+  entries created; either mismatch leaves the external bytes, catalog, and
+  snapshot history unchanged.
 - `snapshot.previewRollback` returns `current_revision` and an opaque
   `preview_token`. The token binds the snapshot id, target, a digest of the
   snapshot content, and the current target revision; it does not expose the
@@ -71,7 +74,9 @@ conditional on the exact local state that the client reviewed.
   snapshot by id, rereads the target, and checks the token again before writing
   the reloaded snapshot content. Snapshot replacement or target drift returns
   the stable `stale_preview_token` error without a target write, catalog
-  refresh, or rollback-owned snapshot.
+  refresh, or rollback-owned snapshot. A snapshot deleted after preview, or a
+  snapshot whose agent, scope, or target no longer validates, is also reported
+  as `stale_preview_token`; rollback does not read a rejected drifted target.
 - Clients must surface either conflict and ask the user to read or preview
   again. They must not automatically retry a stale save or rollback. A bare
   revision is not a rollback authorization token. Toggle and batch operations

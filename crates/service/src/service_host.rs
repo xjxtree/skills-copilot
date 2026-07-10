@@ -559,14 +559,15 @@ impl ServiceHost {
             }
             "config.saveClaudeSettings" => {
                 let params: SaveClaudeSettingsParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let document: ConfigDocumentRecord = save_claude_settings(
-                    &catalog,
+                let prepared = prepare_claude_settings_save(
                     &adapter_ctx,
                     &params.content,
                     &params.expected_revision,
                 )?;
+                let catalog = self.open_catalog()?;
+                let document: ConfigDocumentRecord =
+                    commit_prepared_claude_settings_save(&catalog, prepared)?;
                 serde_json::to_value(document).map_err(Into::into)
             }
             "snapshot.list" => {

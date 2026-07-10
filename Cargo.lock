@@ -809,6 +809,7 @@ name = "skills-copilot-service"
 version = "0.1.2"
 dependencies = [
  "keyring",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
