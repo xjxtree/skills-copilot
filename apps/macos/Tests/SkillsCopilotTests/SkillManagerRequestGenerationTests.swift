@@ -22,6 +22,8 @@ struct SkillManagerRequestGenerationTests {
         try await localDeleteApplyCompletionPreservesNewerAndCrossFamilyConfirmations()
         try await callerCancellationPropagatesToAllRequestFamilies()
         try await hungCancelledRequestDoesNotRetainStore()
+        try await sameFamilyGenerationReleasesSupersededCaller()
+        try await inputInvalidationReleasesHungRequestAndStore()
         try await mutationApplyConvergesAfterCallerCancellation()
         try await localCreateApplyConvergesAfterCallerCancellation()
         try await localDeleteApplyConvergesAfterCallerCancellation()
@@ -580,6 +582,89 @@ struct SkillManagerRequestGenerationTests {
         )
     }
 
+    private func inputInvalidationReleasesHungRequestAndStore() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("search:internally-invalidated")
+        var store: SkillStore? = makeStore(runner)
+        weak let weakStore = store
+        store?.skillManagerSearchQuery = "internally-invalidated"
+        let completion = SkillManagerRequestCompletionFlag()
+
+        let request = Task { [weak store] in
+            await store?.searchSkillManager()
+            await completion.markFinished()
+        }
+        try await waitForPending("search:internally-invalidated", runner: runner)
+        store?.skillManagerSearchQuery = "replacement-input"
+        store = nil
+
+        let completedBeforeServiceReturned = await waitForCompletion(completion)
+        let releasedBeforeServiceReturned = weakStore == nil
+        await runner.resumeSuccess("search:internally-invalidated")
+        await request.value
+
+        try expectEqual(
+            completedBeforeServiceReturned,
+            true,
+            "Input invalidation should wake a superseded caller even when its transport ignores cancellation."
+        )
+        try expectEqual(
+            releasedBeforeServiceReturned,
+            true,
+            "Input invalidation should release the Store before the superseded transport returns."
+        )
+    }
+
+    private func sameFamilyGenerationReleasesSupersededCaller() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspendNext("search:same-family")
+        let store = makeStore(runner)
+        store.skillManagerSearchQuery = "same-family"
+        let firstCompletion = SkillManagerRequestCompletionFlag()
+
+        let first = Task {
+            await store.searchSkillManager()
+            await firstCompletion.markFinished()
+        }
+        try await waitForPending("search:same-family", runner: runner)
+
+        let second = Task { await store.searchSkillManager() }
+        await second.value
+        let firstCompletedBeforeServiceReturned = await waitForCompletion(firstCompletion)
+        let currentResultBeforeLateError = store.skillManagerSearchResult?.results.first?.name
+        let loadingBeforeLateError = store.isSearchingSkillManager
+
+        await runner.resumeServiceError("search:same-family")
+        await first.value
+
+        try expectEqual(
+            firstCompletedBeforeServiceReturned,
+            true,
+            "Beginning generation B should wake generation A's caller when A ignores cancellation."
+        )
+        try expectEqual(
+            currentResultBeforeLateError,
+            "same-family",
+            "Generation B should publish its own success before generation A is released."
+        )
+        try expectEqual(
+            loadingBeforeLateError,
+            false,
+            "Generation A must not keep generation B's completed loading state active."
+        )
+        try expectEqual(
+            store.skillManagerSearchResult?.results.first?.name,
+            "same-family",
+            "Generation A's late service error must not replace generation B's success."
+        )
+        try expectNil(store.skillManagerErrorMessage, "Generation A's late service error must remain silent.")
+        try expectEqual(
+            store.isSearchingSkillManager,
+            false,
+            "Generation A's late completion must not restore or clear generation B's loading state."
+        )
+    }
+
     private func mutationApplyConvergesAfterCallerCancellation() async throws {
         let runner = SkillManagerGenerationServiceRunner()
         let store = makeStore(runner)
@@ -820,12 +905,18 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
 
     private var calls: [RecordedSkillManagerCall] = []
     private var suspendedLabels: Set<String> = []
+    private var suspendNextLabels: Set<String> = []
     private var cancellationAwareLabels: Set<String> = []
     private var cancellationCounts: [String: Int] = [:]
     private var pending: [String: PendingRequest] = [:]
 
     func suspend(_ label: String) {
         suspendedLabels.insert(label)
+    }
+
+    func suspendNext(_ label: String) {
+        suspendedLabels.insert(label)
+        suspendNextLabels.insert(label)
     }
 
     func suspendCancellable(_ label: String) {
@@ -864,6 +955,9 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         calls.append(call)
         let label = Self.label(for: call)
         if suspendedLabels.contains(label) {
+            if suspendNextLabels.remove(label) != nil {
+                suspendedLabels.remove(label)
+            }
             if cancellationAwareLabels.contains(label) {
                 return try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { continuation in

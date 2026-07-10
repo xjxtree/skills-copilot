@@ -37,6 +37,33 @@ private final class SkillManagerRequestTaskWaiter: @unchecked Sendable {
     }
 }
 
+private final class SkillManagerRequestTaskHandle: @unchecked Sendable {
+    private let task: Task<Void, Never>
+    private let waiter = SkillManagerRequestTaskWaiter()
+
+    init(task: Task<Void, Never>) {
+        self.task = task
+        let waiter = self.waiter
+        Task {
+            await task.value
+            waiter.finish()
+        }
+    }
+
+    func wait() async {
+        await withTaskCancellationHandler {
+            await waiter.wait()
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    func cancel() {
+        task.cancel()
+        waiter.finish()
+    }
+}
+
 struct FilteredSkillListCacheKey: Equatable {
     let dataRevision: Int
     let searchText: String
@@ -463,11 +490,11 @@ final class SkillStore: ObservableObject {
     private var currentSkillManagerMutationGeneration: SkillManagerRequestGeneration?
     private var currentSkillManagerLocalCreateGeneration: SkillManagerRequestGeneration?
     private var currentSkillManagerLocalDeleteGeneration: SkillManagerRequestGeneration?
-    private var skillManagerSearchTask: Task<Void, Never>?
-    private var skillManagerInstalledTask: Task<Void, Never>?
-    private var skillManagerMutationTask: Task<Void, Never>?
-    private var skillManagerLocalCreateTask: Task<Void, Never>?
-    private var skillManagerLocalDeleteTask: Task<Void, Never>?
+    private var skillManagerSearchTask: SkillManagerRequestTaskHandle?
+    private var skillManagerInstalledTask: SkillManagerRequestTaskHandle?
+    private var skillManagerMutationTask: SkillManagerRequestTaskHandle?
+    private var skillManagerLocalCreateTask: SkillManagerRequestTaskHandle?
+    private var skillManagerLocalDeleteTask: SkillManagerRequestTaskHandle?
     // A confirmed write owns the Store until its result is known; caller cancellation must not
     // interrupt an external mutation after the service RPC has started.
     private var skillManagerApplyTask: Task<Void, Never>?
@@ -1345,9 +1372,10 @@ final class SkillStore: ObservableObject {
                 self.skillManagerSearchResult = nil
             }
         }
-        skillManagerSearchTask = task
-        await awaitSkillManagerRequestTask(task) { [self] in
-            guard currentSkillManagerSearchGeneration == generation else { return }
+        let handle = SkillManagerRequestTaskHandle(task: task)
+        skillManagerSearchTask = handle
+        await handle.wait()
+        if Task.isCancelled, currentSkillManagerSearchGeneration == generation {
             invalidateSkillManagerSearch()
         }
     }
@@ -1379,9 +1407,10 @@ final class SkillStore: ObservableObject {
                 self.skillManagerInstalled = nil
             }
         }
-        skillManagerInstalledTask = task
-        await awaitSkillManagerRequestTask(task) { [self] in
-            guard currentSkillManagerInstalledGeneration == generation else { return }
+        let handle = SkillManagerRequestTaskHandle(task: task)
+        skillManagerInstalledTask = handle
+        await handle.wait()
+        if Task.isCancelled, currentSkillManagerInstalledGeneration == generation {
             invalidateSkillManagerInstalledList()
         }
     }
@@ -1547,9 +1576,10 @@ final class SkillStore: ObservableObject {
                 self.skillManagerLocalCreateConfirmation = nil
             }
         }
-        skillManagerLocalCreateTask = task
-        await awaitSkillManagerRequestTask(task) { [self] in
-            guard currentSkillManagerLocalCreateGeneration == generation else { return }
+        let handle = SkillManagerRequestTaskHandle(task: task)
+        skillManagerLocalCreateTask = handle
+        await handle.wait()
+        if Task.isCancelled, currentSkillManagerLocalCreateGeneration == generation {
             invalidateSkillManagerLocalCreatePreview()
         }
     }
@@ -1599,9 +1629,10 @@ final class SkillStore: ObservableObject {
                 self.skillManagerLocalDeleteConfirmation = nil
             }
         }
-        skillManagerLocalDeleteTask = task
-        await awaitSkillManagerRequestTask(task) { [self] in
-            guard currentSkillManagerLocalDeleteGeneration == generation else { return }
+        let handle = SkillManagerRequestTaskHandle(task: task)
+        skillManagerLocalDeleteTask = handle
+        await handle.wait()
+        if Task.isCancelled, currentSkillManagerLocalDeleteGeneration == generation {
             invalidateSkillManagerLocalDeletePreview()
         }
     }
@@ -1734,30 +1765,11 @@ final class SkillStore: ObservableObject {
                 self.skillManagerMutationConfirmation = nil
             }
         }
-        skillManagerMutationTask = task
-        await awaitSkillManagerRequestTask(task) { [self] in
-            guard currentSkillManagerMutationGeneration == generation else { return }
+        let handle = SkillManagerRequestTaskHandle(task: task)
+        skillManagerMutationTask = handle
+        await handle.wait()
+        if Task.isCancelled, currentSkillManagerMutationGeneration == generation {
             invalidateSkillManagerMutationPreview()
-        }
-    }
-
-    private func awaitSkillManagerRequestTask(
-        _ task: Task<Void, Never>,
-        onCancellation: () -> Void
-    ) async {
-        let waiter = SkillManagerRequestTaskWaiter()
-        Task {
-            await task.value
-            waiter.finish()
-        }
-        await withTaskCancellationHandler {
-            await waiter.wait()
-        } onCancel: {
-            task.cancel()
-            waiter.finish()
-        }
-        if Task.isCancelled {
-            onCancellation()
         }
     }
 
@@ -1839,6 +1851,7 @@ final class SkillStore: ObservableObject {
 
     private func beginSkillManagerSearch(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
         skillManagerSearchTask?.cancel()
+        skillManagerSearchTask = nil
         skillManagerSearchGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerSearchGenerationValue, key: key)
         currentSkillManagerSearchGeneration = generation
@@ -1864,6 +1877,7 @@ final class SkillStore: ObservableObject {
 
     private func beginSkillManagerInstalledList(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
         skillManagerInstalledTask?.cancel()
+        skillManagerInstalledTask = nil
         skillManagerInstalledGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerInstalledGenerationValue, key: key)
         currentSkillManagerInstalledGeneration = generation
@@ -1889,6 +1903,7 @@ final class SkillStore: ObservableObject {
 
     private func beginSkillManagerMutationPreview(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
         skillManagerMutationTask?.cancel()
+        skillManagerMutationTask = nil
         skillManagerMutationGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerMutationGenerationValue, key: key)
         currentSkillManagerMutationGeneration = generation
@@ -1914,6 +1929,7 @@ final class SkillStore: ObservableObject {
 
     private func beginSkillManagerLocalCreate(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
         skillManagerLocalCreateTask?.cancel()
+        skillManagerLocalCreateTask = nil
         skillManagerLocalCreateGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerLocalCreateGenerationValue, key: key)
         currentSkillManagerLocalCreateGeneration = generation
@@ -1939,6 +1955,7 @@ final class SkillStore: ObservableObject {
 
     private func beginSkillManagerLocalDelete(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
         skillManagerLocalDeleteTask?.cancel()
+        skillManagerLocalDeleteTask = nil
         skillManagerLocalDeleteGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerLocalDeleteGenerationValue, key: key)
         currentSkillManagerLocalDeleteGeneration = generation
