@@ -53,6 +53,7 @@ struct SkillManagerMutationInputs: Hashable {
 }
 
 struct SkillManagerMutationConfirmation: Hashable {
+    let generation: SkillManagerRequestGeneration
     let inputs: SkillManagerMutationInputs
     let result: SkillManagerMutationRecord
 
@@ -60,6 +61,7 @@ struct SkillManagerMutationConfirmation: Hashable {
 }
 
 struct SkillManagerLocalCreateConfirmation: Hashable {
+    let generation: SkillManagerRequestGeneration
     let name: String
     let result: SkillManagerLocalCreateRecord
 
@@ -67,11 +69,12 @@ struct SkillManagerLocalCreateConfirmation: Hashable {
 }
 
 struct SkillManagerLocalDeleteConfirmation: Hashable {
+    let generation: SkillManagerRequestGeneration
     let instanceID: String
     let result: SkillManagerLocalDeleteRecord
 }
 
-struct SkillManagerRequestGeneration: Equatable {
+struct SkillManagerRequestGeneration: Hashable {
     let value: UInt64
     let key: SkillManagerRequestKey
 }

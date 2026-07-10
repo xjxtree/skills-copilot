@@ -1,5 +1,42 @@
 import Foundation
 
+private final class SkillManagerRequestTaskWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var finished = false
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume: Bool
+            lock.lock()
+            if finished {
+                shouldResume = true
+            } else {
+                self.continuation = continuation
+                shouldResume = false
+            }
+            lock.unlock()
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+
+    func finish() {
+        let continuation: CheckedContinuation<Void, Never>?
+        lock.lock()
+        if finished {
+            continuation = nil
+        } else {
+            finished = true
+            continuation = self.continuation
+            self.continuation = nil
+        }
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
 struct FilteredSkillListCacheKey: Equatable {
     let dataRevision: Int
     let searchText: String
@@ -431,6 +468,9 @@ final class SkillStore: ObservableObject {
     private var skillManagerMutationTask: Task<Void, Never>?
     private var skillManagerLocalCreateTask: Task<Void, Never>?
     private var skillManagerLocalDeleteTask: Task<Void, Never>?
+    // A confirmed write owns the Store until its result is known; caller cancellation must not
+    // interrupt an external mutation after the service RPC has started.
+    private var skillManagerApplyTask: Task<Void, Never>?
     private var hasLoadedAIProviderStatus = false
     private var hasLoadedProviderObservability = false
     private var taskCockpitOperationID: UUID?
@@ -468,6 +508,14 @@ final class SkillStore: ObservableObject {
         } catch {
             taskCockpitHistoryCleanupMessage = UIStrings.taskCockpitHistoryCleanupFailed
         }
+    }
+
+    deinit {
+        skillManagerSearchTask?.cancel()
+        skillManagerInstalledTask?.cancel()
+        skillManagerMutationTask?.cancel()
+        skillManagerLocalCreateTask?.cancel()
+        skillManagerLocalDeleteTask?.cancel()
     }
 
     private func scheduleLastMutationMessageDismissal() {
@@ -1276,25 +1324,32 @@ final class SkillStore: ObservableObject {
         isSearchingSkillManager = true
         clearSkillManagerFeedback()
 
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.finishSkillManagerSearch(generation) }
+        let service = service
+        let task = Task { @MainActor [weak self, service] in
             do {
-                let result = try await self.service.searchSkillManager(
+                let result = try await service.searchSkillManager(
                     query: query,
                     owner: owner,
                     networkAllowed: networkAllowed
                 )
+                guard let self else { return }
+                defer { self.finishSkillManagerSearch(generation) }
                 guard self.currentSkillManagerSearchGeneration == generation else { return }
                 self.skillManagerSearchResult = result
             } catch {
+                guard let self else { return }
+                defer { self.finishSkillManagerSearch(generation) }
                 guard self.currentSkillManagerSearchGeneration == generation else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
                 self.skillManagerSearchResult = nil
             }
         }
         skillManagerSearchTask = task
-        await task.value
+        await awaitSkillManagerRequestTask(task) { [self] in
+            guard currentSkillManagerSearchGeneration == generation else { return }
+            invalidateSkillManagerSearch()
+        }
     }
 
     func listSkillManagerInstalled() async {
@@ -1304,24 +1359,31 @@ final class SkillStore: ObservableObject {
         let generation = beginSkillManagerInstalledList(for: key)
         clearSkillManagerFeedback()
 
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.finishSkillManagerInstalledList(generation) }
+        let service = service
+        let task = Task { @MainActor [weak self, service] in
             do {
-                let result = try await self.service.listSkillManagerInstalled(
+                let result = try await service.listSkillManagerInstalled(
                     agents: agents,
                     scope: scope
                 )
+                guard let self else { return }
+                defer { self.finishSkillManagerInstalledList(generation) }
                 guard self.currentSkillManagerInstalledGeneration == generation else { return }
                 self.skillManagerInstalled = result
             } catch {
+                guard let self else { return }
+                defer { self.finishSkillManagerInstalledList(generation) }
                 guard self.currentSkillManagerInstalledGeneration == generation else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
                 self.skillManagerInstalled = nil
             }
         }
         skillManagerInstalledTask = task
-        await task.value
+        await awaitSkillManagerRequestTask(task) { [self] in
+            guard currentSkillManagerInstalledGeneration == generation else { return }
+            invalidateSkillManagerInstalledList()
+        }
     }
 
     func setSkillManagerAgent(_ agentID: String, selected: Bool) {
@@ -1464,48 +1526,49 @@ final class SkillStore: ObservableObject {
         let generation = beginSkillManagerLocalCreate(for: key)
         clearSkillManagerFeedback()
 
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.finishSkillManagerLocalCreate(generation) }
+        let service = service
+        let task = Task { @MainActor [weak self, service] in
             do {
-                let result = try await self.service.previewSkillManagerLocalCreate(name: name)
+                let result = try await service.previewSkillManagerLocalCreate(name: name)
+                guard let self else { return }
+                defer { self.finishSkillManagerLocalCreate(generation) }
                 guard self.currentSkillManagerLocalCreateGeneration == generation else { return }
                 self.skillManagerLocalCreateConfirmation = SkillManagerLocalCreateConfirmation(
+                    generation: generation,
                     name: name,
                     result: result
                 )
             } catch {
+                guard let self else { return }
+                defer { self.finishSkillManagerLocalCreate(generation) }
                 guard self.currentSkillManagerLocalCreateGeneration == generation else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
                 self.skillManagerLocalCreateConfirmation = nil
             }
         }
         skillManagerLocalCreateTask = task
-        await task.value
+        await awaitSkillManagerRequestTask(task) { [self] in
+            guard currentSkillManagerLocalCreateGeneration == generation else { return }
+            invalidateSkillManagerLocalCreatePreview()
+        }
     }
 
     func applySkillManagerLocalCreate(confirmation: SkillManagerLocalCreateConfirmation) async {
         guard skillManagerLocalCreateConfirmation == confirmation else { return }
-        guard !isApplyingSkillManagerMutation else { return }
-        isApplyingSkillManagerMutation = true
-        isWriting = true
-        clearSkillManagerFeedback()
-        defer {
-            isWriting = false
-            isApplyingSkillManagerMutation = false
-        }
-
-        do {
-            _ = try await service.applySkillManagerLocalCreate(
-                preview: confirmation.result,
-                name: confirmation.name
-            )
-            clearSkillManagerWritePreviews()
-            try await refreshCollections()
-            skillManagerMessage = UIStrings.text("skillManager.localCreate.applied", "Local skill template created and imported.")
-            recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-        } catch {
-            setSkillManagerError(error.localizedDescription)
+        await runSkillManagerConfirmedWrite { [self] in
+            do {
+                _ = try await service.applySkillManagerLocalCreate(
+                    preview: confirmation.result,
+                    name: confirmation.name
+                )
+                retireSkillManagerLocalCreateConfirmation(confirmation)
+                try await refreshCollections()
+                skillManagerMessage = UIStrings.text("skillManager.localCreate.applied", "Local skill template created and imported.")
+                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+            } catch {
+                setSkillManagerError(error.localizedDescription)
+            }
         }
     }
 
@@ -1515,24 +1578,32 @@ final class SkillStore: ObservableObject {
         let generation = beginSkillManagerLocalDelete(for: key)
         clearSkillManagerFeedback()
 
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.finishSkillManagerLocalDelete(generation) }
+        let service = service
+        let task = Task { @MainActor [weak self, service] in
             do {
-                let result = try await self.service.previewSkillManagerLocalDelete(instanceID: instanceID)
+                let result = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
+                guard let self else { return }
+                defer { self.finishSkillManagerLocalDelete(generation) }
                 guard self.currentSkillManagerLocalDeleteGeneration == generation else { return }
                 self.skillManagerLocalDeleteConfirmation = SkillManagerLocalDeleteConfirmation(
+                    generation: generation,
                     instanceID: instanceID,
                     result: result
                 )
             } catch {
+                guard let self else { return }
+                defer { self.finishSkillManagerLocalDelete(generation) }
                 guard self.currentSkillManagerLocalDeleteGeneration == generation else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
                 self.skillManagerLocalDeleteConfirmation = nil
             }
         }
         skillManagerLocalDeleteTask = task
-        await task.value
+        await awaitSkillManagerRequestTask(task) { [self] in
+            guard currentSkillManagerLocalDeleteGeneration == generation else { return }
+            invalidateSkillManagerLocalDeletePreview()
+        }
     }
 
     func applySkillManagerLocalDelete(confirmation: SkillManagerLocalDeleteConfirmation) async {
@@ -1541,23 +1612,16 @@ final class SkillStore: ObservableObject {
             setSkillManagerError(confirmation.result.summary)
             return
         }
-        guard !isApplyingSkillManagerMutation else { return }
-        isApplyingSkillManagerMutation = true
-        isWriting = true
-        clearSkillManagerFeedback()
-        defer {
-            isWriting = false
-            isApplyingSkillManagerMutation = false
-        }
-
-        do {
-            _ = try await service.applySkillManagerLocalDelete(instanceID: confirmation.instanceID)
-            clearSkillManagerWritePreviews()
-            try await refreshCollections()
-            skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
-            recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-        } catch {
-            setSkillManagerError(error.localizedDescription)
+        await runSkillManagerConfirmedWrite { [self] in
+            do {
+                _ = try await service.applySkillManagerLocalDelete(instanceID: confirmation.instanceID)
+                retireSkillManagerLocalDeleteConfirmation(confirmation)
+                try await refreshCollections()
+                skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
+                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+            } catch {
+                setSkillManagerError(error.localizedDescription)
+            }
         }
     }
 
@@ -1618,6 +1682,21 @@ final class SkillStore: ObservableObject {
         invalidateSkillManagerLocalDeletePreview()
     }
 
+    private func retireSkillManagerMutationConfirmation(_ confirmation: SkillManagerMutationConfirmation) {
+        guard skillManagerMutationConfirmation?.generation == confirmation.generation else { return }
+        invalidateSkillManagerMutationPreview()
+    }
+
+    private func retireSkillManagerLocalCreateConfirmation(_ confirmation: SkillManagerLocalCreateConfirmation) {
+        guard skillManagerLocalCreateConfirmation?.generation == confirmation.generation else { return }
+        invalidateSkillManagerLocalCreatePreview()
+    }
+
+    private func retireSkillManagerLocalDeleteConfirmation(_ confirmation: SkillManagerLocalDeleteConfirmation) {
+        guard skillManagerLocalDeleteConfirmation?.generation == confirmation.generation else { return }
+        invalidateSkillManagerLocalDeletePreview()
+    }
+
     private func clearSkillManagerFeedback() {
         skillManagerErrorMessage = nil
         skillManagerMessage = nil
@@ -1636,85 +1715,125 @@ final class SkillStore: ObservableObject {
         clearSkillManagerFeedback()
 
         let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.finishSkillManagerMutationPreview(generation) }
             do {
                 let result = try await operation()
+                guard let self else { return }
+                defer { self.finishSkillManagerMutationPreview(generation) }
                 guard self.currentSkillManagerMutationGeneration == generation else { return }
                 self.skillManagerMutationConfirmation = SkillManagerMutationConfirmation(
+                    generation: generation,
                     inputs: inputs,
                     result: result
                 )
             } catch {
+                guard let self else { return }
+                defer { self.finishSkillManagerMutationPreview(generation) }
                 guard self.currentSkillManagerMutationGeneration == generation else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
                 self.skillManagerMutationConfirmation = nil
             }
         }
         skillManagerMutationTask = task
+        await awaitSkillManagerRequestTask(task) { [self] in
+            guard currentSkillManagerMutationGeneration == generation else { return }
+            invalidateSkillManagerMutationPreview()
+        }
+    }
+
+    private func awaitSkillManagerRequestTask(
+        _ task: Task<Void, Never>,
+        onCancellation: () -> Void
+    ) async {
+        let waiter = SkillManagerRequestTaskWaiter()
+        Task {
+            await task.value
+            waiter.finish()
+        }
+        await withTaskCancellationHandler {
+            await waiter.wait()
+        } onCancel: {
+            task.cancel()
+            waiter.finish()
+        }
+        if Task.isCancelled {
+            onCancellation()
+        }
+    }
+
+    private func runSkillManagerConfirmedWrite(
+        _ operation: @escaping @MainActor () async -> Void
+    ) async {
+        guard !isApplyingSkillManagerMutation else { return }
+        isApplyingSkillManagerMutation = true
+        isWriting = true
+        clearSkillManagerFeedback()
+
+        let task = Task { @MainActor [self] in
+            defer {
+                isWriting = false
+                isApplyingSkillManagerMutation = false
+                skillManagerApplyTask = nil
+            }
+            await operation()
+        }
+        skillManagerApplyTask = task
         await task.value
     }
 
     private func applySkillManagerMutation(_ confirmation: SkillManagerMutationConfirmation) async {
         guard skillManagerMutationConfirmation == confirmation else { return }
-        guard !isApplyingSkillManagerMutation else { return }
-        isApplyingSkillManagerMutation = true
-        isWriting = true
-        clearSkillManagerFeedback()
-        defer {
-            isWriting = false
-            isApplyingSkillManagerMutation = false
-        }
-
-        do {
-            let result: SkillManagerMutationRecord
-            switch confirmation.inputs.kind {
-            case .install:
-                guard let source = confirmation.inputs.source,
-                      !source.isEmpty,
-                      let distribution = confirmation.inputs.distribution else {
-                    setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
-                    return
+        await runSkillManagerConfirmedWrite { [self] in
+            do {
+                let result: SkillManagerMutationRecord
+                switch confirmation.inputs.kind {
+                case .install:
+                    guard let source = confirmation.inputs.source,
+                          !source.isEmpty,
+                          let distribution = confirmation.inputs.distribution else {
+                        setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
+                        return
+                    }
+                    result = try await service.applySkillManagerInstall(
+                        preview: confirmation.result,
+                        source: source,
+                        skills: confirmation.inputs.skills,
+                        agents: confirmation.inputs.agents,
+                        scope: confirmation.inputs.scope,
+                        distribution: distribution,
+                        networkAllowed: confirmation.inputs.networkAllowed
+                    )
+                case .remove:
+                    guard let skill = confirmation.inputs.skills.first else {
+                        setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
+                        return
+                    }
+                    result = try await service.applySkillManagerRemove(
+                        preview: confirmation.result,
+                        skill: skill,
+                        agents: confirmation.inputs.agents,
+                        scope: confirmation.inputs.scope
+                    )
+                case .update:
+                    result = try await service.applySkillManagerUpdate(
+                        preview: confirmation.result,
+                        skills: confirmation.inputs.skills,
+                        agents: confirmation.inputs.agents,
+                        scope: confirmation.inputs.scope,
+                        networkAllowed: confirmation.inputs.networkAllowed
+                    )
                 }
-                result = try await service.applySkillManagerInstall(
-                    preview: confirmation.result,
-                    source: source,
-                    skills: confirmation.inputs.skills,
-                    agents: confirmation.inputs.agents,
-                    scope: confirmation.inputs.scope,
-                    distribution: distribution,
-                    networkAllowed: confirmation.inputs.networkAllowed
-                )
-            case .remove:
-                guard let skill = confirmation.inputs.skills.first else {
-                    setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
-                    return
-                }
-                result = try await service.applySkillManagerRemove(
-                    preview: confirmation.result,
-                    skill: skill,
-                    agents: confirmation.inputs.agents,
-                    scope: confirmation.inputs.scope
-                )
-            case .update:
-                result = try await service.applySkillManagerUpdate(
-                    preview: confirmation.result,
-                    skills: confirmation.inputs.skills,
-                    agents: confirmation.inputs.agents,
-                    scope: confirmation.inputs.scope,
-                    networkAllowed: confirmation.inputs.networkAllowed
-                )
+                retireSkillManagerMutationConfirmation(confirmation)
+                invalidateDetailCaches(for: result.updatedSkills.map(\.id))
+                try await refreshCollections()
+                pruneDetailCaches(to: Set(skills.map(\.id)))
+                await listSkillManagerInstalled()
+                skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
+                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                await loadSelectedDetail()
+            } catch {
+                setSkillManagerError(error.localizedDescription)
             }
-            clearSkillManagerWritePreviews()
-            invalidateDetailCaches(for: result.updatedSkills.map(\.id))
-            try await refreshCollections()
-            pruneDetailCaches(to: Set(skills.map(\.id)))
-            await listSkillManagerInstalled()
-            skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
-            recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-            await loadSelectedDetail()
-        } catch {
-            setSkillManagerError(error.localizedDescription)
         }
     }
 
