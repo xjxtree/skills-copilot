@@ -1,9 +1,13 @@
-import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+
+import {
+  allocateOwnedTemporaryRoot,
+  cleanupOwnedTemporaryRoot,
+  executeOwnedFile,
+} from "./smoke-lifecycle.mjs";
 
 const defaultSnapshotBounds = Object.freeze({
   maxDepth: 32,
@@ -25,10 +29,7 @@ const nativeHelperSources = [
   join(sourceDirectory, "Snapshot.swift"),
   join(sourceDirectory, "main.swift"),
 ];
-const nativeHelperCleanupSignals = ["SIGHUP", "SIGINT", "SIGTERM"];
 let nativeHelperBuild = null;
-let nativeHelperCleanupHooks = null;
-const executeFile = promisify(execFile);
 
 class SmokeFixtureSafetyError extends Error {
   constructor(message) {
@@ -72,45 +73,9 @@ function cleanupNativeHelper() {
   const build = nativeHelperBuild;
   nativeHelperBuild = null;
   try {
-    rmSync(build.root, { force: true, recursive: true });
+    cleanupOwnedTemporaryRoot(build.root);
   } catch {
     // Cleanup is best effort during process teardown; owned paths are private.
-  }
-}
-
-function removeNativeHelperCleanupHooks() {
-  if (!nativeHelperCleanupHooks) {
-    return;
-  }
-  const hooks = nativeHelperCleanupHooks;
-  nativeHelperCleanupHooks = null;
-  process.removeListener("exit", hooks.exit);
-  for (const [signal, listener] of hooks.signals) {
-    process.removeListener(signal, listener);
-  }
-}
-
-function installNativeHelperCleanupHooks() {
-  if (nativeHelperCleanupHooks) {
-    return;
-  }
-  const hooks = {
-    exit() {
-      removeNativeHelperCleanupHooks();
-      cleanupNativeHelper();
-    },
-    signals: new Map(),
-  };
-  nativeHelperCleanupHooks = hooks;
-  process.once("exit", hooks.exit);
-  for (const signal of nativeHelperCleanupSignals) {
-    const listener = () => {
-      removeNativeHelperCleanupHooks();
-      cleanupNativeHelper();
-      process.kill(process.pid, signal);
-    };
-    hooks.signals.set(signal, listener);
-    process.once(signal, listener);
   }
 }
 
@@ -125,14 +90,15 @@ async function nativeSnapshotHelper() {
     throw snapshotFailure();
   }
 
-  const root = mkdtempSync(join(tmpdir(), "smoke-fixture-identity-helper-"));
-  installNativeHelperCleanupHooks();
+  const root = allocateOwnedTemporaryRoot(() =>
+    mkdtempSync(join(tmpdir(), "smoke-fixture-identity-helper-")),
+  );
   const binary = join(root, "smoke-fixture-identity");
   const build = { binary, compilation: null, ready: false, root };
   nativeHelperBuild = build;
   build.compilation = (async () => {
     try {
-      await executeFile(
+      await executeOwnedFile(
         "swiftc",
         [...nativeHelperSources, "-O", "-o", binary],
         {
@@ -149,7 +115,6 @@ async function nativeSnapshotHelper() {
     } catch {
       if (nativeHelperBuild === build) {
         cleanupNativeHelper();
-        removeNativeHelperCleanupHooks();
       }
       throw snapshotFailure();
     }
@@ -176,7 +141,7 @@ function validNativeSnapshotResult(result, bounds) {
 async function nativeSnapshot(rootPath, bounds) {
   let stdout;
   try {
-    ({ stdout } = await executeFile(
+    ({ stdout } = await executeOwnedFile(
       await nativeSnapshotHelper(),
       [
         rootPath,
@@ -237,12 +202,14 @@ export async function assertBoundedPathIdentityUnchanged(before) {
 }
 
 export async function initializeAllocatedFixture({ allocateRoot, initializeRoot }) {
-  const root = allocateRoot();
+  const root = allocateOwnedTemporaryRoot(allocateRoot, {
+    cleanupOnExit: false,
+  });
   try {
     return await initializeRoot(root);
   } catch (error) {
     try {
-      rmSync(root, { force: true, recursive: true });
+      cleanupOwnedTemporaryRoot(root);
     } catch {
       throw new SmokeFixtureSafetyError(
         "failed to clean fixture root after initialization error",

@@ -8,7 +8,6 @@ import {
   readFileSync,
   realpathSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -22,6 +21,7 @@ import {
 import { runSmokeFlow } from "./lib/smoke-flow.mjs";
 import { parseSmokeOptions } from "./lib/smoke-options.mjs";
 import { sameFilesystemEntry } from "./lib/path-identity.mjs";
+import { cleanupOwnedTemporaryRoot } from "./lib/smoke-lifecycle.mjs";
 import { formatValidationBlocker } from "./validation-blockers.mjs";
 
 const appName = "AgentCopilot";
@@ -1264,7 +1264,7 @@ try {
     captureAppWindow,
     checkSystemLogs,
     cleanupFixture(root) {
-      rmSync(root, { force: true, recursive: true });
+      cleanupOwnedTemporaryRoot(root);
     },
     createFixtureEnvironment,
     launchApp,

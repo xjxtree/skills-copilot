@@ -6,6 +6,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   readdirSync,
   rmSync,
@@ -299,6 +300,189 @@ async function waitForHelperAllocation(helperTmp, child) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 20));
   }
   throw new Error("timed out waiting for helper allocation");
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function waitForOwnedHeadlessState(ownedTmp, pidFile, child) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const entries = readdirSync(ownedTmp);
+    const helperRoots = entries.filter((name) =>
+      name.startsWith("smoke-fixture-identity-helper-"),
+    );
+    const fixtureRoots = entries.filter((name) =>
+      name.startsWith("skills-copilot-native-smoke-"),
+    );
+    if (existsSync(pidFile) && helperRoots.length === 1 && fixtureRoots.length === 1) {
+      const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+      assert.equal(Number.isSafeInteger(pid) && pid > 0, true);
+      assert.equal(processExists(pid), true);
+      return pid;
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("headless signal child exited before owning all resources");
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error("timed out waiting for owned headless resources");
+}
+
+async function waitForProcessExit(pid, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) {
+      return true;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  return !processExists(pid);
+}
+
+function writeBlockingFakeSwiftc(fakeBin, fakeHelper, pidFile) {
+  const fakeSwiftc = join(fakeBin, "swiftc");
+  writeFileSync(
+    fakeSwiftc,
+    [
+      "#!/usr/bin/env node",
+      'const { chmodSync, copyFileSync, writeFileSync } = require("node:fs");',
+      'const phase = process.env.SKILLS_COPILOT_FAKE_CHILD_PHASE;',
+      'const pidFile = process.env.SKILLS_COPILOT_FAKE_CHILD_PID_FILE;',
+      'const helperSource = process.env.SKILLS_COPILOT_FAKE_HELPER_SOURCE;',
+      "function blockForever() {",
+      '  writeFileSync(pidFile, `${process.pid}\\n`);',
+      '  for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
+      "    process.on(signal, () => {});",
+      "  }",
+      "  setInterval(() => {}, 60_000);",
+      "}",
+      'if (phase === "compile") {',
+      "  blockForever();",
+      "} else {",
+      '  const outputIndex = process.argv.indexOf("-o");',
+      "  if (outputIndex < 0 || !process.argv[outputIndex + 1]) {",
+      '    throw new Error("missing fake swiftc output path");',
+      "  }",
+      "  copyFileSync(helperSource, process.argv[outputIndex + 1]);",
+      "  chmodSync(process.argv[outputIndex + 1], 0o755);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeSwiftc, 0o755);
+
+  writeFileSync(
+    fakeHelper,
+    [
+      "#!/usr/bin/env node",
+      'const { writeFileSync } = require("node:fs");',
+      'writeFileSync(process.env.SKILLS_COPILOT_FAKE_CHILD_PID_FILE, `${process.pid}\\n`);',
+      'for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
+      "  process.on(signal, () => {});",
+      "}",
+      "setInterval(() => {}, 60_000);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeHelper, 0o755);
+  assert.equal(existsSync(pidFile), false);
+}
+
+for (const phase of ["compile", "helper"]) {
+  for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {
+    test(
+      `${signal} during full headless ${phase} cleans every root and child`,
+      { skip: process.platform !== "darwin", timeout: 20_000 },
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "smoke-headless-signal-test-"));
+        const configRoot = join(root, "config");
+        const ownedTmp = join(root, "owned-tmp");
+        const fakeBin = join(root, "fake-bin");
+        const fakeHelper = join(root, "fake-helper");
+        const pidFile = join(root, "fake-child.pid");
+        mkdirSync(configRoot);
+        mkdirSync(ownedTmp);
+        mkdirSync(fakeBin);
+        writeFileSync(join(configRoot, "opencode.json"), "{}\n");
+        writeBlockingFakeSwiftc(fakeBin, fakeHelper, pidFile);
+
+        const child = spawn(
+          process.execPath,
+          [
+            resolve(
+              "scripts/tests/fixtures/smoke-headless-lifecycle-signal-child.mjs",
+            ),
+          ],
+          {
+            env: {
+              ...process.env,
+              PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+              SKILLS_COPILOT_FAKE_CHILD_PHASE: phase,
+              SKILLS_COPILOT_FAKE_CHILD_PID_FILE: pidFile,
+              SKILLS_COPILOT_FAKE_HELPER_SOURCE: fakeHelper,
+              SKILLS_COPILOT_SIGNAL_TEST_ROOT: configRoot,
+              TMPDIR: `${ownedTmp}/`,
+            },
+            stdio: ["ignore", "ignore", "pipe"],
+          },
+        );
+        let fakePid = null;
+        let stderr = "";
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+
+        try {
+          fakePid = await waitForOwnedHeadlessState(ownedTmp, pidFile, child);
+          const exit = once(child, "exit");
+          assert.equal(child.kill(signal), true);
+          const [code, receivedSignal] = await exit;
+          assert.equal(code, null);
+          assert.equal(receivedSignal, signal);
+          const fakeExited = await waitForProcessExit(fakePid);
+          const entries = readdirSync(ownedTmp);
+          assert.deepEqual(
+            {
+              fakeChildStillRunning: !fakeExited,
+              fixtureRoots: entries.filter((name) =>
+                name.startsWith("skills-copilot-native-smoke-"),
+              ),
+              helperRoots: entries.filter((name) =>
+                name.startsWith("smoke-fixture-identity-helper-"),
+              ),
+            },
+            {
+              fakeChildStillRunning: false,
+              fixtureRoots: [],
+              helperRoots: [],
+            },
+          );
+          assert.equal(stderr, "");
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+            await once(child, "exit");
+          }
+          if (fakePid && processExists(fakePid)) {
+            process.kill(fakePid, "SIGKILL");
+            await waitForProcessExit(fakePid);
+          }
+          rmSync(root, { force: true, recursive: true });
+        }
+      },
+    );
+  }
 }
 
 for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {
