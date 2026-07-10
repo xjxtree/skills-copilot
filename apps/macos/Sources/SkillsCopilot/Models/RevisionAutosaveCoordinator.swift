@@ -14,6 +14,47 @@ struct RevisionAutosaveCompletion<Value> {
     let succeeded: Bool
 }
 
+enum AutosaveDraftSubmissionPolicy {
+    static func shouldSubmit(
+        hasChangesFromPersistedValue: Bool,
+        hasActiveSave: Bool
+    ) -> Bool {
+        hasChangesFromPersistedValue || hasActiveSave
+    }
+}
+
+@MainActor
+final class AutosaveMutationLane {
+    typealias Operation<Result> = @MainActor () async -> Result
+
+    private var isOccupied = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func perform<Result>(_ operation: Operation<Result>) async -> Result {
+        await acquire()
+        defer { release() }
+        return await operation()
+    }
+
+    private func acquire() async {
+        if !isOccupied {
+            isOccupied = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        guard !waiters.isEmpty else {
+            isOccupied = false
+            return
+        }
+        waiters.removeFirst().resume()
+    }
+}
+
 @MainActor
 final class RevisionAutosaveCoordinator<Value: Equatable> {
     typealias Sleep = @Sendable (UInt64) async throws -> Void
@@ -32,6 +73,9 @@ final class RevisionAutosaveCoordinator<Value: Equatable> {
     private var workerTask: Task<Void, Never>?
     private var activeRevision: UInt64?
     private(set) var phase: RevisionAutosavePhase = .idle
+
+    var hasActiveSave: Bool { workerTask != nil }
+    var activeSaveRevision: UInt64? { activeRevision }
 
     init(
         delayNanoseconds: UInt64,

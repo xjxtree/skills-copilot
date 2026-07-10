@@ -315,6 +315,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isTestingAIProvider = false
     @Published private(set) var configAutosavePhase: RevisionAutosavePhase = .idle
     @Published private(set) var providerAutosavePhase: RevisionAutosavePhase = .idle
+    @Published private(set) var configAutosaveDraft: String?
     @Published private(set) var providerAutosaveDraft: AIProviderSettingsDraft?
     @Published private(set) var lastMutationMessage: String? {
         didSet { scheduleLastMutationMessageDismissal() }
@@ -524,23 +525,26 @@ final class SkillStore: ObservableObject {
     private let taskCockpitTimeoutSeconds: TimeInterval
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
     private let autosaveDelayNanoseconds: UInt64
+    private let autosaveMutationLane = AutosaveMutationLane()
+    private var configAutosaveAgentByRevision: [UInt64: String] = [:]
     private var latestProviderAutosaveRevision: UInt64?
     private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>(
         delayNanoseconds: autosaveDelayNanoseconds,
-        save: { [weak self] content, _ in
+        save: { [weak self] content, revision in
             guard let self else { return false }
-            let saved = await self.saveClaudeSettings(content: content)
-            if saved {
-                let agent = self.agentFilter.rawValue
-                await self.loadAgentConfigSnapshots(agent: agent)
-                await self.loadCurrentAgentConfigDocuments(agent: agent)
-            }
-            return saved
+            let submittedAgent = self.configAutosaveAgentByRevision[revision]
+                ?? SkillAgentFilter.claudeCode.rawValue
+            return await self.saveClaudeSettings(
+                content: content,
+                submittedAgent: submittedAgent
+            )
         },
         phaseChanged: { [weak self] phase in
             self?.configAutosavePhase = phase
         },
-        completion: { _ in }
+        completion: { [weak self] completion in
+            self?.configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
+        }
     )
     private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>(
         delayNanoseconds: autosaveDelayNanoseconds,
@@ -2759,9 +2763,9 @@ final class SkillStore: ObservableObject {
         defer {
             if generation == claudeSettingsLoadGeneration {
                 isLoadingSettings = false
-            }
-            if activeClaudeSettingsRequestKey == requestKey {
-                activeClaudeSettingsRequestKey = nil
+                if activeClaudeSettingsRequestKey == requestKey {
+                    activeClaudeSettingsRequestKey = nil
+                }
             }
         }
 
@@ -2809,9 +2813,9 @@ final class SkillStore: ObservableObject {
         defer {
             if generation == agentConfigDocumentLoadGeneration {
                 isLoadingAgentConfigDocuments = false
-            }
-            if activeAgentConfigDocumentRequestKey == requestKey {
-                activeAgentConfigDocumentRequestKey = nil
+                if activeAgentConfigDocumentRequestKey == requestKey {
+                    activeAgentConfigDocumentRequestKey = nil
+                }
             }
         }
 
@@ -2835,7 +2839,17 @@ final class SkillStore: ObservableObject {
 
     @discardableResult
     func submitConfigAutosave(content: String, validationError: String?) -> UInt64 {
-        configAutosaveCoordinator.submit(content, validationError: validationError)
+        configAutosaveDraft = content
+        let submittedAgent = agentFilter.rawValue
+        let activeRevision = configAutosaveCoordinator.activeSaveRevision
+        configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
+            $0.key == activeRevision
+        }
+        let revision = configAutosaveCoordinator.submit(content, validationError: validationError)
+        if validationError == nil {
+            configAutosaveAgentByRevision[revision] = submittedAgent
+        }
+        return revision
     }
 
     @discardableResult
@@ -2850,7 +2864,12 @@ final class SkillStore: ObservableObject {
     }
 
     func cancelPendingConfigAutosave() {
+        let activeRevision = configAutosaveCoordinator.activeSaveRevision
         configAutosaveCoordinator.cancelPendingDebounce()
+        configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
+            $0.key == activeRevision
+        }
+        configAutosaveDraft = nil
     }
 
     func cancelPendingProviderAutosave() {
@@ -2864,10 +2883,19 @@ final class SkillStore: ObservableObject {
         await providerAutosaveCoordinator.flush()
     }
 
+    var configAutosaveHasActiveSave: Bool {
+        configAutosaveCoordinator.hasActiveSave
+    }
+
+    var providerAutosaveHasActiveSave: Bool {
+        providerAutosaveCoordinator.hasActiveSave
+    }
+
     private func handleProviderAutosaveCompletion(
         _ completion: RevisionAutosaveCompletion<AIProviderSettingsDraft>
     ) {
-        guard completion.revision == latestProviderAutosaveRevision else { return }
+        guard completion.revision == latestProviderAutosaveRevision,
+              completion.succeeded else { return }
         var clearedDraft = completion.value
         clearedDraft.apiKey = ""
         providerAutosaveDraft = clearedDraft
@@ -2957,6 +2985,12 @@ final class SkillStore: ObservableObject {
 
     @discardableResult
     func saveAIProviderSettings(draft: AIProviderSettingsDraft) async -> Bool {
+        await autosaveMutationLane.perform { [self] in
+            await saveAIProviderSettingsInsideMutationLane(draft: draft)
+        }
+    }
+
+    private func saveAIProviderSettingsInsideMutationLane(draft: AIProviderSettingsDraft) async -> Bool {
         guard !isRefreshBusy else {
             aiProviderErrorMessage = UIStrings.operationUnavailableBusy
             return false
@@ -2972,7 +3006,14 @@ final class SkillStore: ObservableObject {
         defer { isSavingAIProvider = false }
 
         do {
-            aiProviderStatus = try await service.saveAIProviderSettings(draft: draft)
+            let savedStatus = try await service.saveAIProviderSettings(draft: draft)
+            guard savedStatus.serviceAvailable else {
+                aiProviderStatus = savedStatus
+                hasLoadedAIProviderStatus = true
+                aiProviderErrorMessage = UIStrings.aiProviderUnavailable
+                return false
+            }
+            aiProviderStatus = savedStatus
             aiProviderTestResult = aiProviderStatus.lastTest
             hasLoadedAIProviderStatus = true
             aiProviderMessage = UIStrings.aiProviderSaved
@@ -3024,6 +3065,22 @@ final class SkillStore: ObservableObject {
 
     @discardableResult
     func saveClaudeSettings(content: String) async -> Bool {
+        await saveClaudeSettings(content: content, submittedAgent: agentFilter.rawValue)
+    }
+
+    private func saveClaudeSettings(content: String, submittedAgent: String) async -> Bool {
+        await autosaveMutationLane.perform { [self] in
+            await saveClaudeSettingsInsideMutationLane(
+                content: content,
+                submittedAgent: submittedAgent
+            )
+        }
+    }
+
+    private func saveClaudeSettingsInsideMutationLane(
+        content: String,
+        submittedAgent: String
+    ) async -> Bool {
         guard !isRefreshBusy else {
             settingsErrorMessage = UIStrings.operationUnavailableBusy
             return false
@@ -3034,9 +3091,12 @@ final class SkillStore: ObservableObject {
         defer { isSavingSettings = false }
 
         do {
-            claudeSettings = try await service.saveClaudeSettings(content: content)
+            let savedSettings = try await service.saveClaudeSettings(content: content)
+            invalidateConfigReadGenerations()
+            claudeSettings = savedSettings
             detailsByID.removeAll()
-            try await refreshCollections()
+            try await refreshCollections(includeSupplementalData: false)
+            await refreshConfigCachesAfterSave(submittedAgent: submittedAgent)
             settingsMessage = UIStrings.savedSettings
             lastMutationMessage = settingsMessage
             recordLocalRefresh(message: UIStrings.refreshAfterSettingsSave)
@@ -3045,6 +3105,39 @@ final class SkillStore: ObservableObject {
         } catch {
             settingsErrorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func invalidateConfigReadGenerations() {
+        claudeSettingsLoadGeneration &+= 1
+        agentConfigDocumentLoadGeneration &+= 1
+        agentConfigSnapshotLoadGeneration &+= 1
+        activeClaudeSettingsRequestKey = nil
+        activeAgentConfigDocumentRequestKey = nil
+        activeAgentConfigSnapshotRequestKey = nil
+        loadedClaudeSettingsRequestKey = nil
+        loadedAgentConfigDocumentRequestKey = nil
+        loadedAgentConfigSnapshotRequestKey = nil
+        isLoadingSettings = false
+        isLoadingAgentConfigDocuments = false
+        isLoadingAgentConfigSnapshots = false
+    }
+
+    private func refreshConfigCachesAfterSave(submittedAgent: String) async {
+        await loadClaudeSettings()
+
+        let visibleAgent = normalizedConfigAgent(nil)
+        if visibleAgent == submittedAgent {
+            await loadCurrentAgentConfigDocuments(agent: submittedAgent)
+            await loadAgentConfigSnapshots(agent: submittedAgent)
+            return
+        }
+
+        _ = try? await service.readAgentConfig(agent: submittedAgent)
+        _ = try? await service.listAgentConfigSnapshots(agent: submittedAgent, scope: nil)
+        if let visibleAgent {
+            await loadCurrentAgentConfigDocuments(agent: visibleAgent)
+            await loadAgentConfigSnapshots(agent: visibleAgent)
         }
     }
 
@@ -3109,9 +3202,9 @@ final class SkillStore: ObservableObject {
         defer {
             if generation == agentConfigSnapshotLoadGeneration {
                 isLoadingAgentConfigSnapshots = false
-            }
-            if activeAgentConfigSnapshotRequestKey == requestKey {
-                activeAgentConfigSnapshotRequestKey = nil
+                if activeAgentConfigSnapshotRequestKey == requestKey {
+                    activeAgentConfigSnapshotRequestKey = nil
+                }
             }
         }
 

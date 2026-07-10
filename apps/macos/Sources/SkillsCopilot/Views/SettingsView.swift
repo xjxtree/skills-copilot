@@ -117,14 +117,14 @@ struct SettingsView: View {
                 break
             case .provider:
                 await store.loadAIProviderStatusIfNeeded()
-                resetProviderDraftFromStore()
+                hydrateProviderDraftFromStore()
             case .providerObservability:
                 break
             }
         }
         .onChange(of: store.aiProviderStatus) { _ in
-            if !hasEditedProviderDraft {
-                resetProviderDraftFromStore()
+            if store.providerAutosaveDraft != nil || !hasEditedProviderDraft {
+                hydrateProviderDraftFromStore()
             }
         }
         .onChange(of: providerDraft) { _ in
@@ -544,6 +544,13 @@ struct SettingsView: View {
         }
     }
 
+    private func hydrateProviderDraftFromStore() {
+        providerDraft = store.providerAutosaveDraft
+            ?? AIProviderSettingsDraft(status: store.aiProviderStatus)
+        hasEditedProviderDraft = false
+        resetProviderEditedState()
+    }
+
     private func resetProviderDraftFromStore() {
         store.cancelPendingProviderAutosave()
         providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
@@ -557,11 +564,10 @@ struct SettingsView: View {
     private func handleProviderDraftChange() {
         resetProviderEditedState()
         guard store.providerAutosaveDraft != providerDraft else { return }
-        guard hasEditedProviderDraft else {
-            store.cancelPendingProviderAutosave()
-            return
-        }
-        guard store.aiProviderStatus.serviceAvailable else {
+        guard AutosaveDraftSubmissionPolicy.shouldSubmit(
+            hasChangesFromPersistedValue: hasEditedProviderDraft,
+            hasActiveSave: store.providerAutosaveHasActiveSave
+        ) else {
             store.cancelPendingProviderAutosave()
             return
         }

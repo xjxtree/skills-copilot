@@ -7,7 +7,8 @@ final class FakeServiceScript: ServiceProcessRunning {
 
     private let directory: URL
     let executableURL: URL
-    private let callsURL: URL
+    private let stateURL: URL
+    private let callRecorder = FakeServiceCallRecorder()
     private let delayedConfigSaveReleaseURL: URL
     private let delayedProviderSaveAReleaseURL: URL
     private let delayedProviderSaveBReleaseURL: URL
@@ -18,12 +19,12 @@ final class FakeServiceScript: ServiceProcessRunning {
         directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("skills-copilot-fake-service-\(UUID().uuidString)", isDirectory: true)
         executableURL = directory.appendingPathComponent("fake-service.sh")
-        callsURL = directory.appendingPathComponent("calls.log")
+        stateURL = directory.appendingPathComponent("method-state.log")
         delayedConfigSaveReleaseURL = directory.appendingPathComponent("release-config-save-a")
         delayedProviderSaveAReleaseURL = directory.appendingPathComponent("release-provider-save-a")
         delayedProviderSaveBReleaseURL = directory.appendingPathComponent("release-provider-save-b")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: callsURL.path, contents: nil)
+        FileManager.default.createFile(atPath: stateURL.path, contents: nil)
         try script.write(to: executableURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o755))],
@@ -42,7 +43,6 @@ final class FakeServiceScript: ServiceProcessRunning {
     }
 
     func cleanup() {
-        guard ProcessInfo.processInfo.environment["CI"] != "true" else { return }
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -66,13 +66,14 @@ final class FakeServiceScript: ServiceProcessRunning {
     }
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
-        try await Self.processGate.run(
+        callRecorder.record(input, methodStateURL: stateURL)
+        return try await Self.processGate.run(
             executableURL: self.executableURL,
             input: input,
             timeoutNanoseconds: timeoutNanoseconds,
             environmentOverrides: [
                 "SKILLS_COPILOT_FAKE_SERVICE_SCENARIO": scenario,
-                "SKILLS_COPILOT_FAKE_SERVICE_CALLS": callsURL.path,
+                "SKILLS_COPILOT_FAKE_SERVICE_CALLS": stateURL.path,
                 "SKILLS_COPILOT_FAKE_CONFIG_RELEASE": delayedConfigSaveReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE": delayedProviderSaveAReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE": delayedProviderSaveBReleaseURL.path
@@ -81,7 +82,7 @@ final class FakeServiceScript: ServiceProcessRunning {
     }
 
     func calls() -> String {
-        (try? String(contentsOf: callsURL, encoding: .utf8)) ?? ""
+        callRecorder.calls()
     }
 
     private var scenario: String {
@@ -96,10 +97,6 @@ final class FakeServiceScript: ServiceProcessRunning {
         #!/bin/sh
         input=$(cat)
         scenario=${SKILLS_COPILOT_FAKE_SERVICE_SCENARIO:-normal}
-
-        if [ -n "$SKILLS_COPILOT_FAKE_SERVICE_CALLS" ]; then
-          printf '%s\\n' "$input" >> "$SKILLS_COPILOT_FAKE_SERVICE_CALLS"
-        fi
 
         respond() {
           printf '%s' "$1"
@@ -561,6 +558,59 @@ final class FakeServiceScript: ServiceProcessRunning {
             ;;
         esac
         """
+    }
+}
+
+private final class FakeServiceCallRecorder {
+    private let lock = NSLock()
+    private var records: [String] = []
+
+    func record(_ input: Data, methodStateURL: URL) {
+        guard let request = try? JSONSerialization.jsonObject(with: input),
+              let dictionary = request as? [String: Any],
+              let method = dictionary["method"] as? String else {
+            return
+        }
+        let redactedRequest = Self.redactedJSONValue(request)
+        let redactedData = try? JSONSerialization.data(
+            withJSONObject: redactedRequest,
+            options: [.sortedKeys]
+        )
+        let redactedRecord = redactedData.flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"method":"invalid"}"#
+        let methodState = Data(#"{"method":"\#(method)"}"#.utf8)
+
+        lock.lock()
+        records.append(redactedRecord)
+        var existingState = (try? Data(contentsOf: methodStateURL)) ?? Data()
+        existingState.append(methodState)
+        existingState.append(0x0A)
+        try? existingState.write(to: methodStateURL, options: .atomic)
+        lock.unlock()
+    }
+
+    func calls() -> String {
+        lock.lock()
+        let value = records.joined(separator: "\n")
+        lock.unlock()
+        return value
+    }
+
+    private static func redactedJSONValue(_ value: Any, key: String? = nil) -> Any {
+        if let key, ConfigContentRedactor.containsSensitiveKey(key) {
+            return ConfigContentRedactor.redactedValue
+        }
+        if let dictionary = value as? [String: Any] {
+            var redacted: [String: Any] = [:]
+            for (childKey, child) in dictionary {
+                redacted[childKey] = redactedJSONValue(child, key: childKey)
+            }
+            return redacted
+        }
+        if let array = value as? [Any] {
+            return array.map { redactedJSONValue($0) }
+        }
+        return value
     }
 }
 

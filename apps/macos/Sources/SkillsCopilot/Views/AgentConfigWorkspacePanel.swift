@@ -132,13 +132,17 @@ private struct AgentConfigOverviewDetailPanel: View {
         .task(id: store.selectedAgentConfigRefreshKey) {
             await store.loadSelectedAgentConfigDataIfNeeded()
             if store.agentFilter == .claudeCode {
-                resetDraftFromStore()
+                hydrateConfigDraftFromStore()
             }
         }
         .onChange(of: store.claudeSettings) { _ in
-            if !hasDraftChanges {
-                resetDraftFromStore(revealsSensitive: revealsSensitiveConfig)
+            if !revealsSensitiveConfig || store.configAutosaveDraft != nil || !hasDraftChanges {
+                hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
             }
+        }
+        .onChange(of: store.configAutosaveDraft) { latestDraft in
+            guard let latestDraft, latestDraft != draft else { return }
+            draft = latestDraft
         }
         .onChange(of: draft) { _ in
             handleConfigDraftChange()
@@ -234,10 +238,14 @@ private struct AgentConfigOverviewDetailPanel: View {
         }
     }
 
+    private func hydrateConfigDraftFromStore(revealsSensitive: Bool = false) {
+        draft = store.configAutosaveDraft ?? store.claudeSettings?.content ?? ""
+        revealsSensitiveConfig = revealsSensitive
+    }
+
     private func resetDraftFromStore(revealsSensitive: Bool = false) {
         store.cancelPendingConfigAutosave()
-        draft = store.claudeSettings?.content ?? ""
-        revealsSensitiveConfig = revealsSensitive
+        hydrateConfigDraftFromStore(revealsSensitive: revealsSensitive)
     }
 
     private func reloadClaudeConfig() {
@@ -267,15 +275,18 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func handleConfigDraftChange() {
-        let autosaveValidationError: String?
-        if !revealsSensitiveConfig || !hasDraftChanges {
-            autosaveValidationError = "Autosave is inactive for the current draft."
-        } else {
-            autosaveValidationError = validationMessage
+        guard store.configAutosaveDraft != draft else { return }
+        guard revealsSensitiveConfig else { return }
+        guard AutosaveDraftSubmissionPolicy.shouldSubmit(
+            hasChangesFromPersistedValue: hasDraftChanges,
+            hasActiveSave: store.configAutosaveHasActiveSave
+        ) else {
+            store.cancelPendingConfigAutosave()
+            return
         }
         store.submitConfigAutosave(
             content: draft,
-            validationError: autosaveValidationError
+            validationError: validationMessage
         )
     }
 

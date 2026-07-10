@@ -35,12 +35,8 @@ extension ServiceClient {
             singleRequestTokenLimit: draft.parsedSingleRequestTokenLimit,
             monthlyBudgetUSD: draft.parsedMonthlyBudgetUSD
         )
-        do {
-            let _: AIProviderSaveResult = try await call(method: "llm.saveProviderProfile", params: params)
-            return try await aiProviderStatus()
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable()
-        }
+        let _: AIProviderSaveResult = try await call(method: "llm.saveProviderProfile", params: params)
+        return try await aiProviderStatus()
     }
 
     func testAIProviderConnection(draft: AIProviderSettingsDraft) async throws -> AIProviderTestResult {

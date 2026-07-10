@@ -10,6 +10,13 @@ struct RevisionAutosaveCoordinatorTests {
         try await invalidRevisionWaitsUntilInputIsValid()
         try await cancellingDebounceDoesNotCancelActiveSave()
         try await completionIdentifiesExactlyCommittedRevision()
+        try await concurrentFlushesShareOnePendingSave()
+        try await cancellingFlushCallerDoesNotCancelActiveSave()
+        try await phaseCallbackPublishesCompleteLifecycle()
+        try await failedSaveWithoutPendingIsNotRetriedByFlush()
+        try await invalidEditDuringActiveSaveLeavesNoPendingRevision()
+        try await editsBAndCDuringSaveRunOnlyLatestC()
+        try persistedValueDuringActiveSaveMustSubmit()
     }
 
     private func rapidEditsSaveOnlyLatestRevision() async throws {
@@ -128,6 +135,185 @@ struct RevisionAutosaveCoordinatorTests {
         try expectEqual(completions.first?.revision, revision, "Completion should carry the exact committed revision.")
         try expectEqual(completions.first?.value, "committed", "Completion should carry the exact committed value.")
         try expectEqual(completions.first?.succeeded, true, "Completion should carry the save outcome.")
+    }
+
+    private func concurrentFlushesShareOnePendingSave() async throws {
+        let clock = ControlledAutosaveClock()
+        let recorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let coordinator = makeCoordinator(clock: clock, recorder: recorder)
+
+        _ = coordinator.submit("pending", validationError: nil)
+        let firstFlush = Task { @MainActor in await coordinator.flush() }
+        let secondFlush = Task { @MainActor in await coordinator.flush() }
+
+        try await waitUntil("concurrent flush starts one pending save") {
+            recorder.calls.map(\.value) == ["pending"]
+        }
+        try expectEqual(
+            recorder.calls.map(\.value),
+            ["pending"],
+            "Concurrent termination flush callers must share one worker instead of duplicating a save."
+        )
+
+        recorder.resumeNext(success: true)
+        await firstFlush.value
+        await secondFlush.value
+        try expectEqual(coordinator.phase, .idle, "Both concurrent flush callers should observe the settled worker.")
+    }
+
+    private func cancellingFlushCallerDoesNotCancelActiveSave() async throws {
+        let clock = ControlledAutosaveClock()
+        let recorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let coordinator = makeCoordinator(clock: clock, recorder: recorder)
+
+        _ = coordinator.submit("active", validationError: nil)
+        let flush = Task { @MainActor in await coordinator.flush() }
+        try await waitUntil("flush starts active save") {
+            recorder.calls.map(\.value) == ["active"]
+        }
+
+        flush.cancel()
+        await Task.yield()
+        try expectEqual(
+            recorder.calls.map(\.value),
+            ["active"],
+            "Cancelling a termination waiter must not duplicate or cancel the worker it is observing."
+        )
+
+        recorder.resumeNext(success: true)
+        await flush.value
+        try await waitUntil("active save survives flush caller cancellation") {
+            coordinator.phase == .idle
+        }
+    }
+
+    private func phaseCallbackPublishesCompleteLifecycle() async throws {
+        let clock = ControlledAutosaveClock()
+        let recorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        var phases: [RevisionAutosavePhase] = []
+        let coordinator = RevisionAutosaveCoordinator(
+            delayNanoseconds: 900_000_000,
+            sleep: { nanoseconds in try await clock.sleep(nanoseconds) },
+            save: { value, revision in await recorder.save(value, revision: revision) },
+            phaseChanged: { phases.append($0) },
+            completion: { _ in }
+        )
+
+        let revision = coordinator.submit("phase", validationError: nil)
+        try await releaseNextDebounce(clock)
+        try await waitUntil("phase callback reaches saving") {
+            recorder.calls.map(\.value) == ["phase"]
+        }
+        recorder.resumeNext(success: true)
+        try await waitUntil("phase callback reaches idle") { coordinator.phase == .idle }
+
+        try expectEqual(
+            phases,
+            [.debouncing(revision: revision), .saving(revision: revision), .idle],
+            "Phase callbacks should publish the exact debounce, active-save, and settled lifecycle."
+        )
+    }
+
+    private func failedSaveWithoutPendingIsNotRetriedByFlush() async throws {
+        let clock = ControlledAutosaveClock()
+        let recorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let coordinator = makeCoordinator(clock: clock, recorder: recorder)
+
+        let revision = coordinator.submit("fails", validationError: nil)
+        try await releaseNextDebounce(clock)
+        try await waitUntil("failed save starts") { recorder.calls.map(\.value) == ["fails"] }
+        recorder.resumeNext(success: false)
+        try await waitUntil("failed save settles") {
+            coordinator.phase == .failed(revision: revision, message: "Autosave failed.")
+        }
+
+        await coordinator.flush()
+        try expectEqual(
+            recorder.calls.map(\.value),
+            ["fails"],
+            "Flush must not silently retry a failed revision when no newer value is pending."
+        )
+    }
+
+    private func invalidEditDuringActiveSaveLeavesNoPendingRevision() async throws {
+        let clock = ControlledAutosaveClock()
+        let recorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let coordinator = makeCoordinator(clock: clock, recorder: recorder)
+
+        let revisionA = coordinator.submit("A", validationError: nil)
+        try await releaseNextDebounce(clock)
+        try await waitUntil("active save A starts before invalid edit") {
+            recorder.calls.map(\.value) == ["A"]
+        }
+        _ = coordinator.submit("invalid", validationError: "invalid")
+        try expectEqual(
+            coordinator.phase,
+            .saving(revision: revisionA),
+            "An invalid current edit should remove pending work without relabeling the active save."
+        )
+
+        recorder.resumeNext(success: true)
+        await coordinator.flush()
+        try expectEqual(
+            recorder.calls.map(\.value),
+            ["A"],
+            "An invalid edit arriving during A must not revive or enqueue an older valid draft."
+        )
+    }
+
+    private func editsBAndCDuringSaveRunOnlyLatestC() async throws {
+        let clock = ControlledAutosaveClock()
+        let recorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let coordinator = makeCoordinator(clock: clock, recorder: recorder)
+
+        _ = coordinator.submit("A", validationError: nil)
+        try await releaseNextDebounce(clock)
+        try await waitUntil("A starts before B and C") { recorder.calls.map(\.value) == ["A"] }
+        _ = coordinator.submit("B", validationError: nil)
+        let revisionC = coordinator.submit("C", validationError: nil)
+        try expectEqual(
+            coordinator.phase,
+            .pendingAfterSave(revision: revisionC),
+            "C should replace B as the only pending revision while A is active."
+        )
+
+        recorder.resumeNext(success: true)
+        try await releaseNextDebounce(clock)
+        try await waitUntil("C starts after A") { recorder.calls.map(\.value) == ["A", "C"] }
+        recorder.resumeNext(success: true)
+        await coordinator.flush()
+
+        try expectEqual(
+            recorder.calls.map(\.value),
+            ["A", "C"],
+            "A/B/C ordering should coalesce the edits made during A to only the latest C."
+        )
+    }
+
+    private func persistedValueDuringActiveSaveMustSubmit() throws {
+        try expectFalse(
+            AutosaveDraftSubmissionPolicy.shouldSubmit(
+                hasChangesFromPersistedValue: false,
+                hasActiveSave: false
+            ),
+            "An unchanged idle draft should not create a redundant autosave."
+        )
+        try expectEqual(
+            AutosaveDraftSubmissionPolicy.shouldSubmit(
+                hasChangesFromPersistedValue: false,
+                hasActiveSave: true
+            ),
+            true,
+            "Reverting to the old persisted value while A saves must enqueue a newer revision."
+        )
+        try expectEqual(
+            AutosaveDraftSubmissionPolicy.shouldSubmit(
+                hasChangesFromPersistedValue: true,
+                hasActiveSave: false
+            ),
+            true,
+            "A changed valid draft should autosave while the worker is idle."
+        )
     }
 
     private func makeCoordinator(

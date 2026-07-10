@@ -110,6 +110,14 @@ const checks = [
       && /static func configureWindow\(_ window: NSWindow,\s*theme: AppTheme = \.current\)[\s\S]*?window\.appearance = theme\.nsAppearance[\s\S]*?window\.isMovableByWindowBackground = false/.test(files.mainWindowCoordinator),
   },
   {
+    label: "application termination waits for pending and active autosaves",
+    text: files.app + "\n" + files.store,
+    passed: /applicationShouldTerminate\(_ sender:\s*NSApplication\)[\s\S]*?\.terminateLater[\s\S]*?flushPendingAutosaves\(\)[\s\S]*?reply\(toApplicationShouldTerminate:\s*true\)/.test(files.app)
+      && /hasRepliedToTerminationRequest = false[\s\S]*?guard !hasRepliedToTerminationRequest[\s\S]*?self\.hasRepliedToTerminationRequest = true[\s\S]*?reply\(toApplicationShouldTerminate:\s*true\)/.test(files.app)
+      && /configureAutosaveFlusher\([\s\S]*?store:\s*SkillStore/.test(files.app)
+      && /appDelegate\.configureAutosaveFlusher\(store:\s*store\)/.test(files.app),
+  },
+  {
     label: "main shell uses NavigationSplitView",
     text: files.content,
     pattern: /NavigationSplitView(?:\([\s\S]*?\))?\s*{/,
@@ -351,7 +359,7 @@ const checks = [
       && /private func toggleSensitiveEditing\(\)[\s\S]*?if revealsSensitiveConfig \{[\s\S]*?resetDraftFromStore\(\)[\s\S]*?\} else \{[\s\S]*?isConfirmingConfigEdit = true[\s\S]*?\}/.test(files.agentConfigWorkspace)
       && /\.confirmationDialog\(\s*UIStrings\.agentConfigEditConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingConfigEdit[\s\S]*?Button\(UIStrings\.agentConfigShowSensitive,\s*role:\s*\.destructive\)[\s\S]*?revealsSensitiveConfig = true[\s\S]*?Text\(UIStrings\.agentConfigEditConfirmationMessage\)/.test(files.agentConfigWorkspace)
       && /if revealsSensitiveConfig \{[\s\S]*?JSONLineNumberedEditor\(text:\s*displayedDraft\)[\s\S]*?\} else \{[\s\S]*?JSONSyntaxHighlightedText\(content:\s*displayedDraft\.wrappedValue\)/.test(files.agentConfigWorkspace)
-      && /private func handleConfigDraftChange\(\)[\s\S]*?store\.submitConfigAutosave\([\s\S]*?content:\s*draft,[\s\S]*?validationError:\s*autosaveValidationError/.test(files.agentConfigWorkspace)
+      && /private func handleConfigDraftChange\(\)[\s\S]*?store\.submitConfigAutosave\([\s\S]*?content:\s*draft,[\s\S]*?validationError:\s*validationMessage/.test(files.agentConfigWorkspace)
       && !/private func handleConfigDraftChange\(\)[\s\S]*?Task\.sleep|private func handleConfigDraftChange\(\)[\s\S]*?store\.saveClaudeSettings/.test(files.agentConfigWorkspace)
       && /@Published private\(set\) var configAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
       && /private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>/.test(files.store)
@@ -367,6 +375,15 @@ const checks = [
       && /"settings\.agentConfig\.autosavePending"/.test(files.localizable)
       && /"settings\.agentConfig\.autosaveSaving"/.test(files.localizableZh)
       && /"action\.formatJSON"/.test(files.localizableZh),
+  },
+  {
+    label: "config passive hydration preserves the store-owned latest autosave draft",
+    text: files.agentConfigWorkspace + "\n" + files.store,
+    passed: /@Published private\(set\) var configAutosaveDraft:\s*String\?/.test(files.store)
+      && /private func hydrateConfigDraftFromStore\([\s\S]*?store\.configAutosaveDraft\s*\?\?\s*store\.claudeSettings\?\.content/.test(files.agentConfigWorkspace)
+      && /\.task\(id:\s*store\.selectedAgentConfigRefreshKey\)[\s\S]*?hydrateConfigDraftFromStore\(\)/.test(files.agentConfigWorkspace)
+      && !extractFunctionBody(files.agentConfigWorkspace, "hydrateConfigDraftFromStore").includes("cancelPendingConfigAutosave")
+      && /private func handleConfigDraftChange\([\s\S]*?configAutosaveHasActiveSave[\s\S]*?submitConfigAutosave/.test(files.agentConfigWorkspace),
   },
   {
     label: "detail sections use expanded tag selector",
@@ -621,7 +638,10 @@ const checks = [
       && /@State private var isConfirmingProviderTest = false/.test(files.settings)
       && /\.onChange\(of:\s*providerDraft\)[\s\S]*?handleProviderDraftChange\(\)/.test(files.settings)
       && /\.onChange\(of:\s*store\.providerAutosaveDraft\)[\s\S]*?providerDraft = latestDraft/.test(files.settings)
-      && /private func handleProviderDraftChange\(\)[\s\S]*?store\.providerAutosaveDraft != providerDraft[\s\S]*?store\.submitProviderAutosave\(draft:\s*providerDraft\)/.test(files.settings)
+      && /\.task\(id:\s*selectedSettingsTab\)[\s\S]*?case \.provider:[\s\S]*?hydrateProviderDraftFromStore\(\)/.test(files.settings)
+      && /private func hydrateProviderDraftFromStore\(\)[\s\S]*?store\.providerAutosaveDraft\s*\?\?\s*AIProviderSettingsDraft\(status:\s*store\.aiProviderStatus\)/.test(files.settings)
+      && !extractFunctionBody(files.settings, "hydrateProviderDraftFromStore").includes("cancelPendingProviderAutosave")
+      && /private func handleProviderDraftChange\(\)[\s\S]*?store\.providerAutosaveDraft != providerDraft[\s\S]*?providerAutosaveHasActiveSave[\s\S]*?store\.submitProviderAutosave\(draft:\s*providerDraft\)/.test(files.settings)
       && !/private func handleProviderDraftChange\(\)[\s\S]*?Task\.sleep|private func handleProviderDraftChange\(\)[\s\S]*?store\.saveAIProviderSettings/.test(files.settings)
       && /@Published private\(set\) var providerAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
       && /private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>/.test(files.store)
