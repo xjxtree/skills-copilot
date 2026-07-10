@@ -8,10 +8,18 @@ enum RevisionAutosavePhase: Equatable {
     case failed(revision: UInt64, message: String)
 }
 
+enum RevisionAutosaveSaveOutcome: Equatable {
+    case succeeded
+    case failed
+    case cancelled
+}
+
 struct RevisionAutosaveCompletion<Value> {
     let revision: UInt64
     let value: Value
-    let succeeded: Bool
+    let outcome: RevisionAutosaveSaveOutcome
+
+    var succeeded: Bool { outcome == .succeeded }
 }
 
 enum AutosaveDraftSubmissionPolicy {
@@ -23,42 +31,126 @@ enum AutosaveDraftSubmissionPolicy {
     }
 }
 
+enum AutosaveDraftPresentation {
+    static func resolve<Value>(storeDraft: Value?, persistedValue: @autoclosure () -> Value) -> Value {
+        storeDraft ?? persistedValue()
+    }
+}
+
+@MainActor
+struct AutosaveMutationLaneToken: Hashable {
+    enum Family: Hashable {
+        case config
+        case provider
+    }
+
+    let family: Family
+    let revision: UInt64
+}
+
+enum AutosaveMutationLaneResult<Result> {
+    case completed(Result)
+    case cancelled
+}
+
+extension AutosaveMutationLaneResult: Equatable where Result: Equatable {}
+
 @MainActor
 final class AutosaveMutationLane {
     typealias Operation<Result> = @MainActor () async -> Result
 
+    private struct Waiter {
+        let token: AutosaveMutationLaneToken?
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private var isOccupied = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isShutdown = false
+    private var waiters: [Waiter] = []
+
+    var queuedCount: Int { waiters.count }
 
     func perform<Result>(_ operation: Operation<Result>) async -> Result {
-        await acquire()
+        let acquired = await acquire(token: nil)
+        precondition(acquired, "Untracked mutation operations cannot start after lane shutdown.")
         defer { release() }
         return await operation()
     }
 
-    private func acquire() async {
+    func perform<Result>(
+        token: AutosaveMutationLaneToken,
+        _ operation: Operation<Result>
+    ) async -> AutosaveMutationLaneResult<Result> {
+        guard await acquire(token: token) else { return .cancelled }
+        defer { release() }
+        return .completed(await operation())
+    }
+
+    @discardableResult
+    func cancelQueued(_ token: AutosaveMutationLaneToken) -> Bool {
+        guard let index = waiters.firstIndex(where: { $0.token == token }) else { return false }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
+        return true
+    }
+
+    @discardableResult
+    func shutdown() -> Int {
+        isShutdown = true
+        let queued = waiters
+        waiters.removeAll()
+        for waiter in queued {
+            waiter.continuation.resume(returning: false)
+        }
+        return queued.count
+    }
+
+    private func acquire(token: AutosaveMutationLaneToken?) async -> Bool {
+        guard !isShutdown else { return false }
+        if token != nil, Task.isCancelled { return false }
         if !isOccupied {
             isOccupied = true
-            return
+            return true
         }
+        guard let token else {
+            return await enqueue(token: nil)
+        }
+        return await withTaskCancellationHandler {
+            await enqueue(token: token)
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelQueued(token)
+            }
+        }
+    }
+
+    private func enqueue(token: AutosaveMutationLaneToken?) async -> Bool {
         await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+            guard !isShutdown else {
+                continuation.resume(returning: false)
+                return
+            }
+            waiters.append(Waiter(token: token, continuation: continuation))
         }
     }
 
     private func release() {
+        guard !isShutdown else {
+            isOccupied = false
+            return
+        }
         guard !waiters.isEmpty else {
             isOccupied = false
             return
         }
-        waiters.removeFirst().resume()
+        waiters.removeFirst().continuation.resume(returning: true)
     }
 }
 
 @MainActor
 final class RevisionAutosaveCoordinator<Value: Equatable> {
     typealias Sleep = @Sendable (UInt64) async throws -> Void
-    typealias Save = @MainActor (Value, UInt64) async -> Bool
+    typealias Save = @MainActor (Value, UInt64) async -> RevisionAutosaveSaveOutcome
     typealias Completion = @MainActor (RevisionAutosaveCompletion<Value>) -> Void
     typealias PhaseChanged = @MainActor (RevisionAutosavePhase) -> Void
 
@@ -164,12 +256,16 @@ final class RevisionAutosaveCoordinator<Value: Equatable> {
         setPhase(.saving(revision: revision))
         let save = save
         workerTask = Task { @MainActor [weak self] in
-            let succeeded = await save(value, revision)
-            self?.workerFinished(revision: revision, value: value, succeeded: succeeded)
+            let outcome = await save(value, revision)
+            self?.workerFinished(revision: revision, value: value, outcome: outcome)
         }
     }
 
-    private func workerFinished(revision: UInt64, value: Value, succeeded: Bool) {
+    private func workerFinished(
+        revision: UInt64,
+        value: Value,
+        outcome: RevisionAutosaveSaveOutcome
+    ) {
         guard activeRevision == revision else { return }
         activeRevision = nil
         workerTask = nil
@@ -177,13 +273,13 @@ final class RevisionAutosaveCoordinator<Value: Equatable> {
             RevisionAutosaveCompletion(
                 revision: revision,
                 value: value,
-                succeeded: succeeded
+                outcome: outcome
             )
         )
 
         if let pending {
             scheduleDebounce(revision: pending.revision)
-        } else if succeeded {
+        } else if outcome != .failed {
             setPhase(.idle)
         } else {
             setPhase(.failed(revision: revision, message: "Autosave failed."))

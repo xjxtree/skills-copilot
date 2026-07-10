@@ -39,6 +39,7 @@ const files = {
   sidebar: await read("apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift"),
   sidebarSelection: await read("apps/macos/Sources/SkillsCopilot/Models/SidebarSelection.swift"),
   uiOptimization: await read("apps/macos/Sources/SkillsCopilot/Models/UIOptimizationPresentation.swift"),
+  revisionAutosave: await read("apps/macos/Sources/SkillsCopilot/Models/RevisionAutosaveCoordinator.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
@@ -116,6 +117,18 @@ const checks = [
       && /hasRepliedToTerminationRequest = false[\s\S]*?guard !hasRepliedToTerminationRequest[\s\S]*?self\.hasRepliedToTerminationRequest = true[\s\S]*?reply\(toApplicationShouldTerminate:\s*true\)/.test(files.app)
       && /configureAutosaveFlusher\([\s\S]*?store:\s*SkillStore/.test(files.app)
       && /appDelegate\.configureAutosaveFlusher\(store:\s*store\)/.test(files.app),
+  },
+  {
+    label: "autosave mutation lane cancels only queued revision tokens and drains them on shutdown",
+    text: files.revisionAutosave + "\n" + files.store,
+    passed: /struct AutosaveMutationLaneToken:[\s\S]*?case config[\s\S]*?case provider[\s\S]*?let revision:\s*UInt64/.test(files.revisionAutosave)
+      && /enum AutosaveMutationLaneResult<Result>[\s\S]*?case completed\(Result\)[\s\S]*?case cancelled/.test(files.revisionAutosave)
+      && /func cancelQueued\(_ token:\s*AutosaveMutationLaneToken\)[\s\S]*?waiters\.remove\(at:\s*index\)[\s\S]*?resume\(returning:\s*false\)/.test(files.revisionAutosave)
+      && /func shutdown\(\)[\s\S]*?waiters\.removeAll\(\)[\s\S]*?resume\(returning:\s*false\)/.test(files.revisionAutosave)
+      && /waiters\.removeFirst\(\)\.continuation\.resume\(returning:\s*true\)/.test(files.revisionAutosave)
+      && /cancelPendingConfigAutosave\(\)[\s\S]*?AutosaveMutationLaneToken\(family:\s*\.config,\s*revision:\s*activeRevision\)/.test(files.store)
+      && /cancelPendingProviderAutosave\(\)[\s\S]*?AutosaveMutationLaneToken\(family:\s*\.provider,\s*revision:\s*activeRevision\)/.test(files.store)
+      && /deinit[\s\S]*?lane\.shutdown\(\)/.test(files.store),
   },
   {
     label: "main shell uses NavigationSplitView",
@@ -377,13 +390,16 @@ const checks = [
       && /"action\.formatJSON"/.test(files.localizableZh),
   },
   {
-    label: "config passive hydration preserves the store-owned latest autosave draft",
+    label: "config passive hydration preserves pending work and adopts persisted state after success",
     text: files.agentConfigWorkspace + "\n" + files.store,
     passed: /@Published private\(set\) var configAutosaveDraft:\s*String\?/.test(files.store)
-      && /private func hydrateConfigDraftFromStore\([\s\S]*?store\.configAutosaveDraft\s*\?\?\s*store\.claudeSettings\?\.content/.test(files.agentConfigWorkspace)
+      && /private func hydrateConfigDraftFromStore\([\s\S]*?AutosaveDraftPresentation\.resolve\([\s\S]*?storeDraft:\s*store\.configAutosaveDraft[\s\S]*?persistedValue:\s*store\.claudeSettings\?\.content/.test(files.agentConfigWorkspace)
+      && /\.onChange\(of:\s*store\.configAutosaveDraft\)[\s\S]*?AutosaveDraftPresentation\.resolve/.test(files.agentConfigWorkspace)
       && /\.task\(id:\s*store\.selectedAgentConfigRefreshKey\)[\s\S]*?hydrateConfigDraftFromStore\(\)/.test(files.agentConfigWorkspace)
       && !extractFunctionBody(files.agentConfigWorkspace, "hydrateConfigDraftFromStore").includes("cancelPendingConfigAutosave")
-      && /private func handleConfigDraftChange\([\s\S]*?configAutosaveHasActiveSave[\s\S]*?submitConfigAutosave/.test(files.agentConfigWorkspace),
+      && /private func handleConfigDraftChange\([\s\S]*?configAutosaveHasActiveSave[\s\S]*?submitConfigAutosave/.test(files.agentConfigWorkspace)
+      && /latestConfigAutosaveRevision/.test(files.store)
+      && /handleConfigAutosaveCompletion\([\s\S]*?completion\.revision == latestConfigAutosaveRevision[\s\S]*?configAutosaveDraft = nil/.test(files.store),
   },
   {
     label: "detail sections use expanded tag selector",
@@ -637,15 +653,15 @@ const checks = [
     passed: !/@State private var providerAutosaveTask: Task<Void,\s*Never>\?/.test(files.settings)
       && /@State private var isConfirmingProviderTest = false/.test(files.settings)
       && /\.onChange\(of:\s*providerDraft\)[\s\S]*?handleProviderDraftChange\(\)/.test(files.settings)
-      && /\.onChange\(of:\s*store\.providerAutosaveDraft\)[\s\S]*?providerDraft = latestDraft/.test(files.settings)
+      && /\.onChange\(of:\s*store\.providerAutosaveDraft\)[\s\S]*?AutosaveDraftPresentation\.resolve[\s\S]*?providerDraft = resolvedDraft/.test(files.settings)
       && /\.task\(id:\s*selectedSettingsTab\)[\s\S]*?case \.provider:[\s\S]*?hydrateProviderDraftFromStore\(\)/.test(files.settings)
-      && /private func hydrateProviderDraftFromStore\(\)[\s\S]*?store\.providerAutosaveDraft\s*\?\?\s*AIProviderSettingsDraft\(status:\s*store\.aiProviderStatus\)/.test(files.settings)
+      && /private func hydrateProviderDraftFromStore\(\)[\s\S]*?AutosaveDraftPresentation\.resolve\([\s\S]*?storeDraft:\s*store\.providerAutosaveDraft[\s\S]*?persistedValue:\s*AIProviderSettingsDraft\(status:\s*store\.aiProviderStatus\)/.test(files.settings)
       && !extractFunctionBody(files.settings, "hydrateProviderDraftFromStore").includes("cancelPendingProviderAutosave")
       && /private func handleProviderDraftChange\(\)[\s\S]*?store\.providerAutosaveDraft != providerDraft[\s\S]*?providerAutosaveHasActiveSave[\s\S]*?store\.submitProviderAutosave\(draft:\s*providerDraft\)/.test(files.settings)
       && !/private func handleProviderDraftChange\(\)[\s\S]*?Task\.sleep|private func handleProviderDraftChange\(\)[\s\S]*?store\.saveAIProviderSettings/.test(files.settings)
       && /@Published private\(set\) var providerAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
       && /private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>/.test(files.store)
-      && /private func handleProviderAutosaveCompletion\([\s\S]*?completion\.revision == latestProviderAutosaveRevision[\s\S]*?clearedDraft\.apiKey = ""/.test(files.store)
+      && /private func handleProviderAutosaveCompletion\([\s\S]*?completion\.revision == latestProviderAutosaveRevision[\s\S]*?providerAutosaveDraft = nil/.test(files.store)
       && /UIStrings\.aiProviderAutosavePending/.test(files.settings)
       && /Button\s*\{[\s\S]*?isConfirmingProviderTest = true[\s\S]*?\} label:\s*\{[\s\S]*?Label\(UIStrings\.aiProviderTest,\s*systemImage:\s*"network"\)/.test(files.settings)
       && /\.confirmationDialog\(\s*UIStrings\.aiProviderTestConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingProviderTest[\s\S]*?Button\(UIStrings\.aiProviderTest,\s*role:\s*\.destructive\)[\s\S]*?testProviderConnection\(\)[\s\S]*?Text\(UIStrings\.aiProviderTestConfirmationMessage\)/.test(files.settings)

@@ -141,8 +141,12 @@ private struct AgentConfigOverviewDetailPanel: View {
             }
         }
         .onChange(of: store.configAutosaveDraft) { latestDraft in
-            guard let latestDraft, latestDraft != draft else { return }
-            draft = latestDraft
+            let resolvedDraft = AutosaveDraftPresentation.resolve(
+                storeDraft: latestDraft,
+                persistedValue: store.claudeSettings?.content ?? ""
+            )
+            guard resolvedDraft != draft else { return }
+            draft = resolvedDraft
         }
         .onChange(of: draft) { _ in
             handleConfigDraftChange()
@@ -239,7 +243,10 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func hydrateConfigDraftFromStore(revealsSensitive: Bool = false) {
-        draft = store.configAutosaveDraft ?? store.claudeSettings?.content ?? ""
+        draft = AutosaveDraftPresentation.resolve(
+            storeDraft: store.configAutosaveDraft,
+            persistedValue: store.claudeSettings?.content ?? ""
+        )
         revealsSensitiveConfig = revealsSensitive
     }
 

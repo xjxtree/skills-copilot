@@ -17,6 +17,11 @@ struct RevisionAutosaveCoordinatorTests {
         try await invalidEditDuringActiveSaveLeavesNoPendingRevision()
         try await editsBAndCDuringSaveRunOnlyLatestC()
         try persistedValueDuringActiveSaveMustSubmit()
+        try passiveHydrationUsesPendingDraftOrLatestPersistedValue()
+        try await cancelledSaveSettlesIdleWithoutFailure()
+        try await mutationLaneCancellationIsIdempotent()
+        try await mutationLaneCancellationPreservesFIFO()
+        try await mutationLaneShutdownReleasesQueuedWaiters()
     }
 
     private func rapidEditsSaveOnlyLatestRevision() async throws {
@@ -316,6 +321,176 @@ struct RevisionAutosaveCoordinatorTests {
         )
     }
 
+    private func passiveHydrationUsesPendingDraftOrLatestPersistedValue() throws {
+        try expectEqual(
+            AutosaveDraftPresentation.resolve(
+                storeDraft: Optional<String>.none,
+                persistedValue: "config-external"
+            ),
+            "config-external",
+            "Config hydration should use the latest persisted value after a successful draft retires."
+        )
+        try expectEqual(
+            AutosaveDraftPresentation.resolve(
+                storeDraft: "config-pending",
+                persistedValue: "config-external"
+            ),
+            "config-pending",
+            "Config hydration should keep a genuinely pending draft."
+        )
+
+        var persistedProvider = AIProviderSettingsDraft(status: .unavailable())
+        persistedProvider.endpoint = "https://provider-external.example.com/v1"
+        var pendingProvider = persistedProvider
+        pendingProvider.endpoint = "https://provider-pending.example.com/v1"
+        try expectEqual(
+            AutosaveDraftPresentation.resolve(
+                storeDraft: Optional<AIProviderSettingsDraft>.none,
+                persistedValue: persistedProvider
+            ),
+            persistedProvider,
+            "Provider hydration should use refreshed status after a successful draft retires."
+        )
+        try expectEqual(
+            AutosaveDraftPresentation.resolve(
+                storeDraft: pendingProvider,
+                persistedValue: persistedProvider
+            ),
+            pendingProvider,
+            "Provider hydration should keep a genuinely pending or failed draft."
+        )
+    }
+
+    private func cancelledSaveSettlesIdleWithoutFailure() async throws {
+        let clock = ControlledAutosaveClock()
+        var completions: [RevisionAutosaveCompletion<String>] = []
+        let coordinator = RevisionAutosaveCoordinator<String>(
+            delayNanoseconds: 900_000_000,
+            sleep: { nanoseconds in try await clock.sleep(nanoseconds) },
+            save: { _, _ in .cancelled },
+            phaseChanged: { _ in },
+            completion: { completions.append($0) }
+        )
+
+        let revision = coordinator.submit("cancelled", validationError: nil)
+        try await releaseNextDebounce(clock)
+        try await waitUntil("cancelled save settles idle") { coordinator.phase == .idle }
+
+        try expectEqual(completions.count, 1, "A cancelled worker should complete exactly once.")
+        try expectEqual(completions.first?.revision, revision, "Cancellation should retain exact revision identity.")
+        try expectEqual(completions.first?.outcome, .cancelled, "Cancellation should be distinct from failure.")
+        try expectFalse(completions.first?.succeeded == true, "A cancelled worker must not report success.")
+    }
+
+    private func mutationLaneCancellationIsIdempotent() async throws {
+        let lane = AutosaveMutationLane()
+        let ownerRecorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let ownerToken = AutosaveMutationLaneToken(family: .config, revision: 1)
+        let cancelledToken = AutosaveMutationLaneToken(family: .provider, revision: 2)
+        var cancelledOperationRan = false
+
+        let owner = Task { @MainActor in
+            await lane.perform(token: ownerToken) {
+                await ownerRecorder.save("owner", revision: 1)
+            }
+        }
+        try await waitUntil("lane owner starts") { ownerRecorder.calls.map(\.value) == ["owner"] }
+        let waiter = Task { @MainActor in
+            await lane.perform(token: cancelledToken) {
+                cancelledOperationRan = true
+                return "unexpected"
+            }
+        }
+        try await waitUntil("cancellable waiter queues") { lane.queuedCount == 1 }
+
+        try expectEqual(lane.cancelQueued(ownerToken), false, "Cancelling the current owner token must not interrupt its RPC.")
+        try expectEqual(lane.cancelQueued(cancelledToken), true, "The first queued cancellation should remove its token.")
+        try expectEqual(lane.cancelQueued(cancelledToken), false, "A repeated cancellation must not resume the waiter twice.")
+        ownerRecorder.resumeNext(success: true)
+
+        try expectEqual(await waiter.value, .cancelled, "A removed waiter should receive the independent cancelled outcome.")
+        try expectFalse(cancelledOperationRan, "A cancelled waiter must never invoke its operation.")
+        try expectEqual(await owner.value, .completed(.succeeded), "The lane owner should finish normally.")
+    }
+
+    private func mutationLaneCancellationPreservesFIFO() async throws {
+        let lane = AutosaveMutationLane()
+        let ownerRecorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        var executionOrder: [String] = []
+        let owner = Task { @MainActor in
+            await lane.perform(token: AutosaveMutationLaneToken(family: .config, revision: 1)) {
+                await ownerRecorder.save("owner", revision: 1)
+            }
+        }
+        try await waitUntil("FIFO lane owner starts") { ownerRecorder.calls.map(\.value) == ["owner"] }
+
+        let tokenB = AutosaveMutationLaneToken(family: .provider, revision: 2)
+        let tokenC = AutosaveMutationLaneToken(family: .config, revision: 3)
+        let tokenD = AutosaveMutationLaneToken(family: .provider, revision: 4)
+        let waiterB = Task { @MainActor in
+            await lane.perform(token: tokenB) {
+                executionOrder.append("B")
+                return "B"
+            }
+        }
+        try await waitUntil("FIFO waiter B queues") { lane.queuedCount == 1 }
+        let waiterC = Task { @MainActor in
+            await lane.perform(token: tokenC) {
+                executionOrder.append("C")
+                return "C"
+            }
+        }
+        try await waitUntil("FIFO waiter C queues") { lane.queuedCount == 2 }
+        let waiterD = Task { @MainActor in
+            await lane.perform(token: tokenD) {
+                executionOrder.append("D")
+                return "D"
+            }
+        }
+        try await waitUntil("FIFO waiter D queues") { lane.queuedCount == 3 }
+
+        try expectEqual(lane.cancelQueued(tokenC), true, "The middle FIFO waiter should be cancellable by token.")
+        ownerRecorder.resumeNext(success: true)
+        _ = await owner.value
+
+        try expectEqual(await waiterB.value, .completed("B"), "The first surviving waiter should retain ownership order.")
+        try expectEqual(await waiterC.value, .cancelled, "The removed middle waiter should not run.")
+        try expectEqual(await waiterD.value, .completed("D"), "The last surviving waiter should run after B.")
+        try expectEqual(executionOrder, ["B", "D"], "Cancelling C must preserve FIFO among B and D.")
+    }
+
+    private func mutationLaneShutdownReleasesQueuedWaiters() async throws {
+        let lane = AutosaveMutationLane()
+        let ownerRecorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let owner = Task { @MainActor in
+            await lane.perform(token: AutosaveMutationLaneToken(family: .config, revision: 1)) {
+                await ownerRecorder.save("owner", revision: 1)
+            }
+        }
+        try await waitUntil("shutdown lane owner starts") { ownerRecorder.calls.map(\.value) == ["owner"] }
+
+        let waiterB = Task { @MainActor in
+            await lane.perform(token: AutosaveMutationLaneToken(family: .provider, revision: 2)) { "B" }
+        }
+        let waiterC = Task { @MainActor in
+            await lane.perform(token: AutosaveMutationLaneToken(family: .config, revision: 3)) { "C" }
+        }
+        try await waitUntil("shutdown waiters queue") { lane.queuedCount == 2 }
+
+        try expectEqual(lane.shutdown(), 2, "Lane shutdown should release every queued waiter exactly once.")
+        try expectEqual(lane.shutdown(), 0, "Repeated lane shutdown must not resume released waiters again.")
+        try expectEqual(await waiterB.value, .cancelled, "Shutdown should cancel queued waiter B.")
+        try expectEqual(await waiterC.value, .cancelled, "Shutdown should cancel queued waiter C.")
+
+        let future = await lane.perform(
+            token: AutosaveMutationLaneToken(family: .provider, revision: 4)
+        ) { "future" }
+        try expectEqual(future, .cancelled, "A shut down lane must reject future tracked operations.")
+
+        ownerRecorder.resumeNext(success: true)
+        try expectEqual(await owner.value, .completed(.succeeded), "Shutdown must not cancel the current lane owner.")
+    }
+
     private func makeCoordinator(
         clock: ControlledAutosaveClock,
         recorder: ControlledAutosaveSaveRecorder<String>,
@@ -409,12 +584,13 @@ private final class ControlledAutosaveSaveRecorder<Value: Equatable> {
         self.suspends = suspends
     }
 
-    func save(_ value: Value, revision: UInt64) async -> Bool {
+    func save(_ value: Value, revision: UInt64) async -> RevisionAutosaveSaveOutcome {
         calls.append(Call(value: value, revision: revision))
-        guard suspends else { return true }
-        return await withCheckedContinuation { continuation in
+        guard suspends else { return .succeeded }
+        let succeeded = await withCheckedContinuation { continuation in
             continuations.append(continuation)
         }
+        return succeeded ? .succeeded : .failed
     }
 
     func resumeNext(success: Bool) {

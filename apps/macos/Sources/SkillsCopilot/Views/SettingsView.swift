@@ -131,8 +131,12 @@ struct SettingsView: View {
             handleProviderDraftChange()
         }
         .onChange(of: store.providerAutosaveDraft) { latestDraft in
-            guard let latestDraft, latestDraft != providerDraft else { return }
-            providerDraft = latestDraft
+            let resolvedDraft = AutosaveDraftPresentation.resolve(
+                storeDraft: latestDraft,
+                persistedValue: AIProviderSettingsDraft(status: store.aiProviderStatus)
+            )
+            guard resolvedDraft != providerDraft else { return }
+            providerDraft = resolvedDraft
             resetProviderEditedState()
         }
         .transaction { transaction in
@@ -545,8 +549,10 @@ struct SettingsView: View {
     }
 
     private func hydrateProviderDraftFromStore() {
-        providerDraft = store.providerAutosaveDraft
-            ?? AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerDraft = AutosaveDraftPresentation.resolve(
+            storeDraft: store.providerAutosaveDraft,
+            persistedValue: AIProviderSettingsDraft(status: store.aiProviderStatus)
+        )
         hasEditedProviderDraft = false
         resetProviderEditedState()
     }

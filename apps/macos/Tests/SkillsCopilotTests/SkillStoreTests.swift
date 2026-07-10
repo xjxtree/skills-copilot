@@ -97,6 +97,15 @@ struct SkillStoreTests {
         try await runCase("configAndProviderAutosavesShareOneMutationLane") {
             try await configAndProviderAutosavesShareOneMutationLane()
         }
+        try await runCase("cancellingQueuedProviderAutosaveMakesZeroRPCs") {
+            try await cancellingQueuedProviderAutosaveMakesZeroRPCs()
+        }
+        try await runCase("cancellingQueuedConfigAutosaveMakesZeroRPCs") {
+            try await cancellingQueuedConfigAutosaveMakesZeroRPCs()
+        }
+        try await runCase("releasingStoreCancelsQueuedAutosaveWaiter") {
+            try await releasingStoreCancelsQueuedAutosaveWaiter()
+        }
         try await runCase("configSaveInvalidatesInFlightConfigReaders") {
             try await configSaveInvalidatesInFlightConfigReaders()
         }
@@ -105,6 +114,15 @@ struct SkillStoreTests {
         }
         try await runCase("providerUnknownMutationDoesNotReportSaved") {
             try await providerUnknownMutationDoesNotReportSaved()
+        }
+        try await runCase("successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh") {
+            try await successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh()
+        }
+        try await runCase("successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh") {
+            try await successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh()
+        }
+        try await runCase("failedConfigAutosaveKeepsDraft") {
+            try await failedConfigAutosaveKeepsDraft()
         }
         try await runCase("previewRollbackShowsDiffWithoutCallingRollback") {
             try await previewRollbackShowsDiffWithoutCallingRollback()
@@ -1218,8 +1236,10 @@ struct SkillStoreTests {
             throw NativeModelTestFailure(description: "Provider autosave calls should preserve both draft values.")
         }
         try expectEqual(callA.lowerBound < callB.lowerBound, true, "Provider autosave should preserve A then B service order.")
-        try expectEqual(store.providerAutosaveDraft?.endpoint, draftB.endpoint, "The final provider draft should be revision B.")
-        try expectEqual(store.providerAutosaveDraft?.apiKey, "", "The latest committed API-key draft should be cleared.")
+        try expectNil(store.providerAutosaveDraft, "The latest committed provider draft should retire after revision B succeeds.")
+        let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        try expectEqual(committedDraft.endpoint, draftB.endpoint, "Persisted provider state should settle on revision B.")
+        try expectEqual(committedDraft.apiKey, "", "Hydrating committed provider state must not restore its API key.")
         try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after both writes.")
     }
 
@@ -1248,6 +1268,11 @@ struct SkillStoreTests {
         try await waitUntil("Reverting to X during A should enqueue a second config save.") {
             await runner.startedConfigSaveCount == 2
         }
+        try expectEqual(
+            store.configAutosaveDraft,
+            "config-x",
+            "Completion A must not clear the newer reverted config draft."
+        )
         await runner.releaseNextConfigSave()
         await store.flushPendingAutosaves()
 
@@ -1292,8 +1317,10 @@ struct SkillStoreTests {
             [draftA.endpoint, baseline.endpoint],
             "Provider X to A saving to X must persist the final revert as a newer revision."
         )
-        try expectEqual(store.providerAutosaveDraft?.endpoint, baseline.endpoint, "The provider draft should settle on X.")
-        try expectEqual(store.providerAutosaveDraft?.apiKey, "", "Only the newest committed provider revision may clear its API key.")
+        try expectNil(store.providerAutosaveDraft, "The latest committed provider revert should retire its draft.")
+        let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        try expectEqual(committedDraft.endpoint, baseline.endpoint, "Persisted provider state should settle on X.")
+        try expectEqual(committedDraft.apiKey, "", "Hydrating the newest committed revision must not restore its API key.")
     }
 
     private func configAndProviderAutosavesShareOneMutationLane() async throws {
@@ -1332,6 +1359,117 @@ struct SkillStoreTests {
         await store.flushPendingAutosaves()
         try expectEqual(store.configAutosavePhase, .idle, "Config autosave should settle after the shared lane drains.")
         try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after the shared lane drains.")
+    }
+
+    private func cancellingQueuedProviderAutosaveMakesZeroRPCs() async throws {
+        let runner = AutosaveControlServiceRunner()
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+
+        _ = store.submitConfigAutosave(content: "config-owner", validationError: nil)
+        try await waitUntil("Config autosave should own the lane before provider cancellation.") {
+            await runner.startedConfigSaveCount == 1
+        }
+
+        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerDraft.endpoint = "https://provider-cancelled.example.com/v1"
+        providerDraft.model = "cancelled-model"
+        _ = store.submitProviderAutosave(draft: providerDraft)
+        try await waitUntil("Provider autosave worker should be waiting for the lane.") {
+            store.providerAutosaveHasActiveSave
+        }
+        try expectEqual(await runner.startedProviderSaveCount, 0, "Queued provider autosave must not start before lane ownership.")
+
+        store.cancelPendingProviderAutosave()
+        await runner.releaseNextConfigSave()
+        try await waitUntil("Config owner and cancelled provider waiter should settle.", timeout: 5) {
+            await runner.startedProviderSaveCount == 1
+                || (store.configAutosavePhase == .idle && store.providerAutosavePhase == .idle)
+        }
+
+        let unexpectedProviderCalls = await runner.startedProviderSaveCount
+        if unexpectedProviderCalls > 0 {
+            await runner.releaseNextProviderSave()
+            await store.flushPendingAutosaves()
+        }
+        try expectEqual(unexpectedProviderCalls, 0, "Cancelling a provider waiter before lane ownership must make zero provider RPCs.")
+        try expectEqual(store.providerAutosavePhase, .idle, "A cancelled provider waiter should settle idle, not failed.")
+        try expectNil(store.aiProviderErrorMessage, "A cancelled provider waiter should not publish a failure.")
+    }
+
+    private func cancellingQueuedConfigAutosaveMakesZeroRPCs() async throws {
+        let runner = AutosaveControlServiceRunner()
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+
+        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerDraft.endpoint = "https://provider-owner.example.com/v1"
+        providerDraft.model = "owner-model"
+        _ = store.submitProviderAutosave(draft: providerDraft)
+        try await waitUntil("Provider autosave should own the lane before config cancellation.") {
+            await runner.startedProviderSaveCount == 1
+        }
+
+        _ = store.submitConfigAutosave(content: "config-cancelled", validationError: nil)
+        try await waitUntil("Config autosave worker should be waiting for the lane.") {
+            store.configAutosaveHasActiveSave
+        }
+        try expectEqual(await runner.startedConfigSaveCount, 0, "Queued config autosave must not start before lane ownership.")
+
+        store.cancelPendingConfigAutosave()
+        await runner.releaseNextProviderSave()
+        try await waitUntil("Provider owner and cancelled config waiter should settle.", timeout: 5) {
+            await runner.startedConfigSaveCount == 1
+                || (store.providerAutosavePhase == .idle && store.configAutosavePhase == .idle)
+        }
+
+        let unexpectedConfigCalls = await runner.startedConfigSaveCount
+        if unexpectedConfigCalls > 0 {
+            await runner.releaseNextConfigSave()
+            await store.flushPendingAutosaves()
+        }
+        try expectEqual(unexpectedConfigCalls, 0, "Cancelling a config waiter before lane ownership must make zero config RPCs.")
+        try expectEqual(store.configAutosavePhase, .idle, "A cancelled config waiter should settle idle, not failed.")
+        try expectNil(store.settingsErrorMessage, "A cancelled config waiter should not publish a failure.")
+    }
+
+    private func releasingStoreCancelsQueuedAutosaveWaiter() async throws {
+        let runner = AutosaveControlServiceRunner()
+        var store: SkillStore? = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        weak let releasedStore = store
+        guard store != nil else {
+            throw NativeModelTestFailure(description: "Store should exist for release testing.")
+        }
+        await store?.loadAIProviderStatus()
+
+        var providerDraft = AIProviderSettingsDraft(status: store?.aiProviderStatus ?? .unavailable())
+        providerDraft.endpoint = "https://provider-release-owner.example.com/v1"
+        providerDraft.model = "release-owner"
+        _ = store?.submitProviderAutosave(draft: providerDraft)
+        try await waitUntil("Provider owner should hold the lane before Store release.") {
+            await runner.startedProviderSaveCount == 1
+        }
+        _ = store?.submitConfigAutosave(content: "config-must-not-outlive-store", validationError: nil)
+        try await waitUntil("Config worker should queue before Store release.") {
+            store?.configAutosaveHasActiveSave == true
+        }
+        try expectEqual(await runner.startedConfigSaveCount, 0, "Queued config mutation should not own the lane yet.")
+
+        store = nil
+        await runner.releaseNextProviderSave()
+        try await waitUntil("Store should release or expose the old queued mutation.", timeout: 5) {
+            if releasedStore == nil { return true }
+            return await runner.startedConfigSaveCount == 1
+        }
+        let unexpectedConfigCalls = await runner.startedConfigSaveCount
+        if unexpectedConfigCalls > 0 {
+            await runner.releaseNextConfigSave()
+        }
+        try await waitUntil("Store should deinitialize after its active owner finishes.", timeout: 5) {
+            releasedStore == nil
+        }
+
+        try expectEqual(unexpectedConfigCalls, 0, "Store release must cancel a queued autosave before it reaches the service.")
     }
 
     private func configSaveInvalidatesInFlightConfigReaders() async throws {
@@ -1419,6 +1557,80 @@ struct SkillStoreTests {
         )
         guard case .failed = store.providerAutosavePhase else {
             throw NativeModelTestFailure(description: "A failed provider mutation should leave the autosave phase failed.")
+        }
+    }
+
+    private func successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh() async throws {
+        let runner = AutosaveControlServiceRunner(suspendMutations: false)
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+
+        _ = store.submitConfigAutosave(content: "config-saved", validationError: nil)
+        await store.flushPendingAutosaves()
+        try expectNil(
+            store.configAutosaveDraft,
+            "The latest successful config completion should retire its Store-owned draft."
+        )
+
+        await runner.setExternalConfigContent("config-external")
+        await store.loadClaudeSettings()
+        let effectiveDraft = store.configAutosaveDraft ?? store.claudeSettings?.content
+        try expectEqual(
+            effectiveDraft,
+            "config-external",
+            "Passive config hydration should adopt an external refresh after the last draft commits."
+        )
+    }
+
+    private func successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh() async throws {
+        let runner = AutosaveControlServiceRunner(suspendMutations: false)
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+        var draft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        draft.endpoint = "https://provider-saved.example.com/v1"
+        draft.model = "model-saved"
+        draft.apiKey = "provider-secret"
+
+        _ = store.submitProviderAutosave(draft: draft)
+        await store.flushPendingAutosaves()
+        try expectNil(
+            store.providerAutosaveDraft,
+            "The latest successful provider completion should retire its Store-owned draft."
+        )
+        let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        try expectEqual(committedDraft.endpoint, draft.endpoint, "Committed provider hydration should retain the saved endpoint.")
+        try expectEqual(committedDraft.apiKey, "", "Committed provider hydration must not retain the submitted API key.")
+
+        await runner.setExternalProvider(
+            endpoint: "https://provider-external.example.com/v1",
+            model: "model-external"
+        )
+        await store.loadAIProviderStatus()
+        let effectiveDraft = store.providerAutosaveDraft
+            ?? AIProviderSettingsDraft(status: store.aiProviderStatus)
+        try expectEqual(
+            effectiveDraft.endpoint,
+            "https://provider-external.example.com/v1",
+            "Passive provider hydration should adopt an external status refresh after the last draft commits."
+        )
+        try expectEqual(effectiveDraft.apiKey, "", "External provider hydration must not restore an API key draft.")
+    }
+
+    private func failedConfigAutosaveKeepsDraft() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "normal")
+        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
+
+        _ = store.submitConfigAutosave(content: "config-unsaved", validationError: nil)
+        await store.flushPendingAutosaves()
+
+        try expectEqual(
+            store.configAutosaveDraft,
+            "config-unsaved",
+            "A failed config completion must retain the unsaved draft."
+        )
+        guard case .failed = store.configAutosavePhase else {
+            throw NativeModelTestFailure(description: "A failed config completion should keep the autosave phase failed.")
         }
     }
 
@@ -2614,6 +2826,14 @@ private final class AutosaveControlServiceRunner: ServiceProcessRunning {
     func releaseInitialConfigReads() async {
         await state.releaseInitialConfigReads()
     }
+
+    func setExternalConfigContent(_ content: String) async {
+        await state.setExternalConfigContent(content)
+    }
+
+    func setExternalProvider(endpoint: String, model: String) async {
+        await state.setExternalProvider(endpoint: endpoint, model: model)
+    }
 }
 
 private actor AutosaveControlServiceState {
@@ -2777,6 +2997,15 @@ private actor AutosaveControlServiceState {
         for read in reads {
             read.continuation.resume(returning: read.response)
         }
+    }
+
+    func setExternalConfigContent(_ content: String) {
+        configContent = content
+    }
+
+    func setExternalProvider(endpoint: String, model: String) {
+        providerEndpoint = endpoint
+        providerModel = model
     }
 
     private func configReadResponse(method: String, oldResult: Any, currentResult: Any) async -> Data {

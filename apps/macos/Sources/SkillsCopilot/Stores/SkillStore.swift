@@ -527,30 +527,51 @@ final class SkillStore: ObservableObject {
     private let autosaveDelayNanoseconds: UInt64
     private let autosaveMutationLane = AutosaveMutationLane()
     private var configAutosaveAgentByRevision: [UInt64: String] = [:]
+    private var latestConfigAutosaveRevision: UInt64?
     private var latestProviderAutosaveRevision: UInt64?
     private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>(
         delayNanoseconds: autosaveDelayNanoseconds,
         save: { [weak self] content, revision in
-            guard let self else { return false }
-            let submittedAgent = self.configAutosaveAgentByRevision[revision]
-                ?? SkillAgentFilter.claudeCode.rawValue
-            return await self.saveClaudeSettings(
-                content: content,
-                submittedAgent: submittedAgent
-            )
+            guard let lane = self?.autosaveMutationLane else { return .cancelled }
+            let result = await lane.perform(
+                token: AutosaveMutationLaneToken(family: .config, revision: revision)
+            ) { [weak self] in
+                guard let self else { return false }
+                let submittedAgent = self.configAutosaveAgentByRevision[revision]
+                    ?? SkillAgentFilter.claudeCode.rawValue
+                return await self.saveClaudeSettingsInsideMutationLane(
+                    content: content,
+                    submittedAgent: submittedAgent
+                )
+            }
+            switch result {
+            case .completed(true): return .succeeded
+            case .completed(false): return .failed
+            case .cancelled: return .cancelled
+            }
         },
         phaseChanged: { [weak self] phase in
             self?.configAutosavePhase = phase
         },
         completion: { [weak self] completion in
-            self?.configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
+            self?.handleConfigAutosaveCompletion(completion)
         }
     )
     private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>(
         delayNanoseconds: autosaveDelayNanoseconds,
-        save: { [weak self] draft, _ in
-            guard let self else { return false }
-            return await self.saveAIProviderSettings(draft: draft)
+        save: { [weak self] draft, revision in
+            guard let lane = self?.autosaveMutationLane else { return .cancelled }
+            let result = await lane.perform(
+                token: AutosaveMutationLaneToken(family: .provider, revision: revision)
+            ) { [weak self] in
+                guard let self else { return false }
+                return await self.saveAIProviderSettingsInsideMutationLane(draft: draft)
+            }
+            switch result {
+            case .completed(true): return .succeeded
+            case .completed(false): return .failed
+            case .cancelled: return .cancelled
+            }
         },
         phaseChanged: { [weak self] phase in
             self?.providerAutosavePhase = phase
@@ -584,6 +605,10 @@ final class SkillStore: ObservableObject {
         skillManagerMutationTask?.cancel()
         skillManagerLocalCreateTask?.cancel()
         skillManagerLocalDeleteTask?.cancel()
+        let lane = autosaveMutationLane
+        Task { @MainActor in
+            lane.shutdown()
+        }
     }
 
     private func scheduleLastMutationMessageDismissal() {
@@ -2846,6 +2871,7 @@ final class SkillStore: ObservableObject {
             $0.key == activeRevision
         }
         let revision = configAutosaveCoordinator.submit(content, validationError: validationError)
+        latestConfigAutosaveRevision = revision
         if validationError == nil {
             configAutosaveAgentByRevision[revision] = submittedAgent
         }
@@ -2865,14 +2891,25 @@ final class SkillStore: ObservableObject {
 
     func cancelPendingConfigAutosave() {
         let activeRevision = configAutosaveCoordinator.activeSaveRevision
+        if let activeRevision {
+            autosaveMutationLane.cancelQueued(
+                AutosaveMutationLaneToken(family: .config, revision: activeRevision)
+            )
+        }
         configAutosaveCoordinator.cancelPendingDebounce()
         configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
             $0.key == activeRevision
         }
+        latestConfigAutosaveRevision = nil
         configAutosaveDraft = nil
     }
 
     func cancelPendingProviderAutosave() {
+        if let activeRevision = providerAutosaveCoordinator.activeSaveRevision {
+            autosaveMutationLane.cancelQueued(
+                AutosaveMutationLaneToken(family: .provider, revision: activeRevision)
+            )
+        }
         providerAutosaveCoordinator.cancelPendingDebounce()
         latestProviderAutosaveRevision = nil
         providerAutosaveDraft = nil
@@ -2891,14 +2928,23 @@ final class SkillStore: ObservableObject {
         providerAutosaveCoordinator.hasActiveSave
     }
 
+    private func handleConfigAutosaveCompletion(
+        _ completion: RevisionAutosaveCompletion<String>
+    ) {
+        configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
+        guard completion.revision == latestConfigAutosaveRevision,
+              completion.succeeded else { return }
+        latestConfigAutosaveRevision = nil
+        configAutosaveDraft = nil
+    }
+
     private func handleProviderAutosaveCompletion(
         _ completion: RevisionAutosaveCompletion<AIProviderSettingsDraft>
     ) {
         guard completion.revision == latestProviderAutosaveRevision,
               completion.succeeded else { return }
-        var clearedDraft = completion.value
-        clearedDraft.apiKey = ""
-        providerAutosaveDraft = clearedDraft
+        latestProviderAutosaveRevision = nil
+        providerAutosaveDraft = nil
     }
 
     func loadAIProviderStatusIfNeeded() async {
