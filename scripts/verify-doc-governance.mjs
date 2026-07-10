@@ -109,7 +109,7 @@ export function verifyRepositoryGovernance() {
   for (const patternText of manifest.forbidden_patterns) {
     let pattern;
     try {
-      pattern = new RegExp(patternText, "iu");
+      pattern = new RegExp(patternText, "u");
     } catch (error) {
       errors.push(`invalid forbidden pattern ${patternText}: ${error.message}`);
       continue;

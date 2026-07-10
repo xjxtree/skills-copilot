@@ -6,6 +6,9 @@ const ROOT_MARKDOWN_PATHS = new Set([
   "CONTRIBUTING.md",
   "CLAUDE.md",
 ]);
+// `SKILL.md` is a format basename used throughout prose for arbitrary skill
+// directories, not a reference to a sibling repository document.
+const GENERIC_MARKDOWN_FILENAMES = new Set(["SKILL.md"]);
 const REPOSITORY_PREFIX = /^(?:docs|fixtures|\.github|scripts)\//;
 const EXTERNAL_DESTINATION = /^(?:https?:|mailto:|data:)/i;
 
@@ -83,7 +86,9 @@ function normalizeTarget(destination, sourcePath, rootRelative) {
 }
 
 function repositoryCodeTarget(token, sourcePath) {
-  const value = token.trim();
+  const value = token
+    .trim()
+    .replace(/:L?\d+(?:-L?\d+)?(?=#|$)/i, "");
   if (!value) return undefined;
   const { pathname } = splitDestination(value);
   if (REPOSITORY_PREFIX.test(pathname)) {
@@ -92,6 +97,7 @@ function repositoryCodeTarget(token, sourcePath) {
   if (ROOT_MARKDOWN_PATHS.has(pathname)) {
     return normalizeTarget(value, sourcePath, true);
   }
+  if (GENERIC_MARKDOWN_FILENAMES.has(pathname)) return undefined;
   if (/^[^/\\]+\.md(?:#.*)?$/i.test(value)) {
     return normalizeTarget(value, sourcePath, false);
   }
@@ -157,6 +163,27 @@ function targetParts(target) {
 
 function trackedPathExists(pathname, trackedFiles) {
   if (trackedFiles.has(pathname)) return true;
+  if (/[*?]/.test(pathname)) {
+    let expression = "^";
+    for (let index = 0; index < pathname.length; index += 1) {
+      const character = pathname[index];
+      if (character === "*" && pathname[index + 1] === "*") {
+        expression += ".*";
+        index += 1;
+      } else if (character === "*") {
+        expression += "[^/]*";
+      } else if (character === "?") {
+        expression += "[^/]";
+      } else {
+        expression += character.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+      }
+    }
+    const matcher = new RegExp(`${expression}$`);
+    for (const tracked of trackedFiles) {
+      if (matcher.test(tracked)) return true;
+    }
+    return false;
+  }
   const prefix = pathname.endsWith("/") ? pathname : `${pathname}/`;
   for (const tracked of trackedFiles) {
     if (tracked.startsWith(prefix)) return true;

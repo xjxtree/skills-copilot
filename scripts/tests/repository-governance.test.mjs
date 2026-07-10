@@ -116,6 +116,44 @@ test("normalizes dot segments and same-document anchors", () => {
   ]);
 });
 
+test("validates repository globs and strips backticked line locations", () => {
+  const references = collectMarkdownReferences(
+    "Read `docs/service-protocol.md:100-115`, `fixtures/api/*.json`, and `SKILL.md` records.",
+    "docs/index.md",
+  );
+  assert.deepEqual(references.map((reference) => reference.target), [
+    "docs/service-protocol.md",
+    "fixtures/api/*.json",
+  ]);
+  assert.deepEqual(
+    validateReferences({
+      references,
+      trackedFiles: new Set([
+        "docs/index.md",
+        "docs/service-protocol.md",
+        "fixtures/api/request.json",
+      ]),
+      headingsByFile: new Map(),
+    }),
+    [],
+  );
+  assert.deepEqual(
+    validateReferences({
+      references: [
+        {
+          source: "docs/index.md",
+          target: "fixtures/missing/*.json",
+          line: 2,
+          kind: "backtick",
+        },
+      ],
+      trackedFiles: new Set(["docs/index.md"]),
+      headingsByFile: new Map(),
+    }),
+    ["docs/index.md:2 -> fixtures/missing/*.json is missing"],
+  );
+});
+
 test("builds lowercase GitHub-style slugs for ATX, duplicate, and setext headings", () => {
   const markdown = [
     "# Launch Check",
