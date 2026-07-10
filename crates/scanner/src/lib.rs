@@ -7,17 +7,59 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use skills_copilot_core::{
-    AdapterContext, AdapterRoot, AgentAdapter, AgentId, Scope, SkillInstance, SkillState,
+    AdapterContext, AdapterRoot, AgentAdapter, AgentId, RootSource, Scope, SkillInstance,
+    SkillState,
 };
 use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ScanIssueKind {
+    RootUnavailable,
+    RootOutsideAllowlist,
+    DirectoryUnreadable,
+    EntryUnreadable,
+    FileUnreadable,
+    FileTooLarge,
+    BudgetExceeded,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ScanIssue {
+    pub path: PathBuf,
+    pub kind: ScanIssueKind,
+    pub detail: String,
+}
+
 #[derive(Debug, Default)]
 pub struct ScanReport {
     pub instances: Vec<SkillInstance>,
     pub skipped_roots: Vec<PathBuf>,
-    /// Canonical paths of roots that were actually walked this round.
+    /// Canonical paths of roots that were completely enumerated this round.
     /// Callers (e.g. catalog sweep) should only consider records whose
     /// path is under one of these roots as candidates for cleanup.
     pub scanned_roots: Vec<PathBuf>,
+    /// Canonical paths of roots whose traversal encountered a filesystem error.
+    pub partial_roots: Vec<PathBuf>,
+    pub issues: Vec<ScanIssue>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedScanRoot {
+    declared: AdapterRoot,
+    canonical: PathBuf,
+    declared_is_symlink: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAllowedRoot {
+    scope: Scope,
+    canonical: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RootWalkStatus {
+    Complete,
+    Partial,
 }
 
 #[derive(Debug, Error)]
@@ -42,48 +84,165 @@ pub fn scan_agent(
     adapter: &dyn AgentAdapter,
     ctx: &AdapterContext,
 ) -> Result<ScanReport, ScannerError> {
+    scan_agent_with_symlink_inspector(adapter, ctx, |path| {
+        fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_symlink())
+    })
+}
+
+fn scan_agent_with_symlink_inspector<F>(
+    adapter: &dyn AgentAdapter,
+    ctx: &AdapterContext,
+    mut inspect_declared_symlink: F,
+) -> Result<ScanReport, ScannerError>
+where
+    F: FnMut(&Path) -> std::io::Result<bool>,
+{
     let mut report = ScanReport::default();
     let roots = adapter.roots(ctx);
-    let mut scanned_root_keys = HashSet::new();
     let overrides = SkillConfigOverrides::preload(adapter.id(), ctx, &roots);
-    for root in roots {
-        if !root.path.exists() {
-            report.skipped_roots.push(root.path);
+    let mut resolved_roots = Vec::new();
+
+    for declared in roots {
+        let declared_is_symlink = match inspect_declared_symlink(&declared.path) {
+            Ok(declared_is_symlink) => declared_is_symlink,
+            Err(error) => {
+                report.skipped_roots.push(declared.path.clone());
+                report.issues.push(ScanIssue {
+                    path: declared.path,
+                    kind: ScanIssueKind::RootUnavailable,
+                    detail: format!("failed to inspect declared root: {error}"),
+                });
+                continue;
+            }
+        };
+        let canonical = match resolve_directory_root(&declared.path) {
+            Ok(canonical) => canonical,
+            Err(detail) => {
+                report.skipped_roots.push(declared.path.clone());
+                report.issues.push(ScanIssue {
+                    path: declared.path,
+                    kind: ScanIssueKind::RootUnavailable,
+                    detail,
+                });
+                continue;
+            }
+        };
+        let location_authorization_is_deferred =
+            !root_source_self_authorizes(&declared.source) && declared_is_symlink;
+        if !location_authorization_is_deferred
+            && !is_allowed_canonical_root(adapter.id(), ctx, &declared, &canonical)
+        {
+            report.skipped_roots.push(declared.path.clone());
+            report.issues.push(ScanIssue {
+                path: declared.path,
+                kind: ScanIssueKind::RootOutsideAllowlist,
+                detail: format!(
+                    "canonical root {} is outside its declared scope",
+                    canonical.display()
+                ),
+            });
             continue;
         }
-        let canonical_root =
-            root.path
-                .canonicalize()
-                .map_err(|source| ScannerError::CanonicalizeRoot {
-                    path: root.path.clone(),
-                    source,
-                })?;
-        if !is_allowed_canonical_root(adapter.id(), ctx, &root, &canonical_root) {
-            report.skipped_roots.push(root.path);
+        resolved_roots.push(ResolvedScanRoot {
+            declared,
+            canonical,
+            declared_is_symlink,
+        });
+    }
+
+    let mut allowed_roots = adapter
+        .link_target_roots(ctx)
+        .into_iter()
+        .filter_map(|declared| {
+            let canonical = resolve_directory_root(&declared.path).ok()?;
+            is_allowed_canonical_root(adapter.id(), ctx, &declared, &canonical).then_some(
+                ResolvedAllowedRoot {
+                    scope: declared.scope,
+                    canonical,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    allowed_roots.extend(
+        resolved_roots
+            .iter()
+            .filter(|root| {
+                root_source_self_authorizes(&root.declared.source) || !root.declared_is_symlink
+            })
+            .map(|root| ResolvedAllowedRoot {
+                scope: root.declared.scope,
+                canonical: root.canonical.clone(),
+            }),
+    );
+
+    let mut resolved_root_keys = HashSet::new();
+    let mut walked_roots = Vec::new();
+    for root in resolved_roots {
+        let needs_external_authority =
+            !root_source_self_authorizes(&root.declared.source) && root.declared_is_symlink;
+        if needs_external_authority
+            && !target_is_allowlisted(&root.canonical, root.declared.scope, &allowed_roots)
+        {
+            report.skipped_roots.push(root.declared.path.clone());
+            report.issues.push(ScanIssue {
+                path: root.declared.path,
+                kind: ScanIssueKind::RootOutsideAllowlist,
+                detail: format!(
+                    "canonical root {} is not under another declared root with the same scope",
+                    root.canonical.display()
+                ),
+            });
             continue;
         }
         let root_key = format!(
             "{}|{}",
-            root.scope.as_str(),
-            canonical_root.to_string_lossy()
+            root.declared.scope.as_str(),
+            root.canonical.to_string_lossy()
         );
-        if !scanned_root_keys.insert(root_key) {
-            continue;
+        if resolved_root_keys.insert(root_key) {
+            walked_roots.push(root);
         }
-        report.scanned_roots.push(canonical_root.clone());
-        let allowed_target_base = allowed_target_base(adapter.id(), ctx, &root, &canonical_root);
-        visit_root(
-            adapter,
-            ctx,
-            &root,
-            &canonical_root,
-            &allowed_target_base,
-            &overrides,
-            &mut report,
-        )?;
+    }
+
+    for root in walked_roots {
+        match visit_root(adapter, ctx, &root, &allowed_roots, &overrides, &mut report) {
+            RootWalkStatus::Complete => report.scanned_roots.push(root.canonical),
+            RootWalkStatus::Partial => report.partial_roots.push(root.canonical),
+        }
     }
     report.instances = dedup_instances(report.instances);
     Ok(report)
+}
+
+fn resolve_directory_root(path: &Path) -> Result<PathBuf, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("failed to canonicalize root: {error}"))?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|error| format!("failed to inspect canonical root: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("root is not a directory".to_string());
+    }
+    Ok(canonical)
+}
+
+fn root_source_self_authorizes(source: &RootSource) -> bool {
+    matches!(
+        source,
+        RootSource::Configured
+            | RootSource::Admin
+            | RootSource::Plugin
+            | RootSource::System
+            | RootSource::Extra
+    )
+}
+
+fn target_is_allowlisted(path: &Path, scope: Scope, roots: &[ResolvedAllowedRoot]) -> bool {
+    roots
+        .iter()
+        .filter(|root| root.scope == scope)
+        .any(|root| path.starts_with(&root.canonical))
 }
 
 fn is_allowed_canonical_root(
@@ -92,90 +251,156 @@ fn is_allowed_canonical_root(
     root: &AdapterRoot,
     canonical_root: &Path,
 ) -> bool {
-    use skills_copilot_core::RootSource;
-
-    let allowed_base = match root.source {
-        RootSource::UserHome => ctx.user_home.canonicalize().ok(),
+    match root.source {
+        RootSource::UserHome => ctx
+            .user_home
+            .canonicalize()
+            .is_ok_and(|base| canonical_root.starts_with(base)),
         RootSource::Project if agent == AgentId::Openclaw => {
             openclaw_workspace_base_for_root_path(&root.path)
                 .and_then(|workspace_root| workspace_root.canonicalize().ok())
+                .is_some_and(|base| canonical_root.starts_with(base))
         }
         RootSource::Project => ctx
             .project_root
             .as_ref()
-            .and_then(|project_root| project_root.canonicalize().ok()),
+            .and_then(|project_root| project_root.canonicalize().ok())
+            .is_some_and(|base| canonical_root.starts_with(base)),
         RootSource::Compatibility => match root.scope {
-            Scope::AgentGlobal => ctx.user_home.canonicalize().ok(),
+            Scope::AgentGlobal => ctx
+                .user_home
+                .canonicalize()
+                .is_ok_and(|base| canonical_root.starts_with(base)),
             Scope::AgentProject => ctx
                 .project_root
                 .as_ref()
-                .and_then(|project_root| project_root.canonicalize().ok()),
-            Scope::ToolGlobal => None,
-            _ => None,
+                .and_then(|project_root| project_root.canonicalize().ok())
+                .is_some_and(|base| canonical_root.starts_with(base)),
+            Scope::ToolGlobal => false,
+            _ => false,
         },
         RootSource::Configured
         | RootSource::Admin
         | RootSource::Plugin
         | RootSource::System
-        | RootSource::Extra => Some(canonical_root.to_path_buf()),
-    };
-    allowed_base.is_none_or(|base| canonical_root.starts_with(base))
+        | RootSource::Extra => true,
+    }
 }
 
 fn visit_root(
     adapter: &dyn AgentAdapter,
     ctx: &AdapterContext,
-    root: &AdapterRoot,
-    canonical_root: &Path,
-    allowed_target_base: &Path,
+    root: &ResolvedScanRoot,
+    allowed_roots: &[ResolvedAllowedRoot],
     overrides: &SkillConfigOverrides,
     report: &mut ScanReport,
-) -> Result<(), ScannerError> {
+) -> RootWalkStatus {
     // Each stack entry is (resolved_dir, display_root).
     // `display_root` is the user-visible path of the directory being scanned.
-    // For the initial scan root it equals canonical_root; for symlinked
-    // subdirectories it is the original symlink path so that the user sees
+    // For the initial scan root it is the declared path; for symlinked
+    // subdirectories it remains the original link path so that the user sees
     // ~/.claude/skills/foo/SKILL.md rather than ~/.agents/skills/foo/SKILL.md.
     let mut stack: Vec<(PathBuf, PathBuf)> =
-        vec![(canonical_root.to_path_buf(), root.path.clone())];
+        vec![(root.canonical.clone(), root.declared.path.clone())];
     let mut visited_dirs = HashSet::new();
+    let mut partial = false;
     while let Some((dir, display_root)) = stack.pop() {
         if !visited_dirs.insert(dir.clone()) {
             continue;
         }
-        let entries = fs::read_dir(&dir).map_err(|source| ScannerError::ReadDir {
-            path: dir.clone(),
-            source,
-        })?;
-        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                partial = true;
+                report.issues.push(ScanIssue {
+                    path: dir,
+                    kind: ScanIssueKind::DirectoryUnreadable,
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let mut readable_entries = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => readable_entries.push(entry),
+                Err(error) => {
+                    partial = true;
+                    report.issues.push(ScanIssue {
+                        path: dir.clone(),
+                        kind: ScanIssueKind::EntryUnreadable,
+                        detail: error.to_string(),
+                    });
+                }
+            }
+        }
+        let mut entries = readable_entries;
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let path = entry.path();
             let display_path = display_root.join(entry.file_name());
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                let Ok(resolved) = path.canonicalize() else {
-                    continue;
-                };
-                if !is_allowed_scan_target(&resolved, canonical_root, allowed_target_base) {
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    partial = true;
+                    report.issues.push(ScanIssue {
+                        path,
+                        kind: ScanIssueKind::EntryUnreadable,
+                        detail: error.to_string(),
+                    });
                     continue;
                 }
-                if resolved.is_dir() {
+            };
+            if file_type.is_symlink() {
+                let resolved = match path.canonicalize() {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        partial = true;
+                        report.issues.push(ScanIssue {
+                            path,
+                            kind: ScanIssueKind::EntryUnreadable,
+                            detail: format!("failed to canonicalize entry: {error}"),
+                        });
+                        continue;
+                    }
+                };
+                if !target_is_allowlisted(&resolved, root.declared.scope, allowed_roots) {
+                    report.issues.push(ScanIssue {
+                        path,
+                        kind: ScanIssueKind::RootOutsideAllowlist,
+                        detail: format!(
+                            "symlink target {} is outside declared roots with the same scope",
+                            resolved.display()
+                        ),
+                    });
+                    continue;
+                }
+                let metadata = match fs::metadata(&resolved) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        partial = true;
+                        report.issues.push(ScanIssue {
+                            path: resolved,
+                            kind: ScanIssueKind::EntryUnreadable,
+                            detail: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                if metadata.is_dir() {
                     stack.push((resolved, display_path));
                 } else if resolved
                     .file_name()
                     .map(|n| n == "SKILL.md")
                     .unwrap_or(false)
                 {
-                    if !adapter_accepts_skill_path(adapter.id(), canonical_root, &resolved) {
+                    if !adapter_accepts_skill_path(adapter.id(), &root.canonical, &resolved) {
                         continue;
                     }
                     let mut instance = adapter.parse(&resolved).unwrap_or_else(|err| {
-                        broken_instance(adapter, root, resolved.clone(), err.message)
+                        broken_instance(adapter, &root.declared, resolved.clone(), err.message)
                     });
-                    normalize_instance(ctx, root, resolved, overrides, &mut instance);
+                    normalize_instance(ctx, &root.declared, resolved, overrides, &mut instance);
                     instance.display_path = display_path.clone();
                     report.instances.push(instance);
                 }
@@ -186,25 +411,52 @@ fn visit_root(
                 continue;
             }
             if entry.file_name() == "SKILL.md" {
-                let Ok(canonical_path) = path.canonicalize() else {
-                    continue;
+                let canonical_path = match path.canonicalize() {
+                    Ok(canonical_path) => canonical_path,
+                    Err(error) => {
+                        partial = true;
+                        report.issues.push(ScanIssue {
+                            path,
+                            kind: ScanIssueKind::EntryUnreadable,
+                            detail: format!("failed to canonicalize entry: {error}"),
+                        });
+                        continue;
+                    }
                 };
-                if !is_allowed_scan_target(&canonical_path, canonical_root, allowed_target_base) {
+                if !target_is_allowlisted(&canonical_path, root.declared.scope, allowed_roots) {
+                    report.issues.push(ScanIssue {
+                        path,
+                        kind: ScanIssueKind::RootOutsideAllowlist,
+                        detail: format!(
+                            "file target {} is outside declared roots with the same scope",
+                            canonical_path.display()
+                        ),
+                    });
                     continue;
                 }
-                if !adapter_accepts_skill_path(adapter.id(), canonical_root, &canonical_path) {
+                if !adapter_accepts_skill_path(adapter.id(), &root.canonical, &canonical_path) {
                     continue;
                 }
                 let mut instance = adapter.parse(&canonical_path).unwrap_or_else(|err| {
-                    broken_instance(adapter, root, canonical_path.clone(), err.message)
+                    broken_instance(adapter, &root.declared, canonical_path.clone(), err.message)
                 });
-                normalize_instance(ctx, root, canonical_path, overrides, &mut instance);
+                normalize_instance(
+                    ctx,
+                    &root.declared,
+                    canonical_path,
+                    overrides,
+                    &mut instance,
+                );
                 instance.display_path = display_path.clone();
                 report.instances.push(instance);
             }
         }
     }
-    Ok(())
+    if partial {
+        RootWalkStatus::Partial
+    } else {
+        RootWalkStatus::Complete
+    }
 }
 
 fn adapter_accepts_skill_path(
@@ -242,54 +494,6 @@ fn dedup_instances(instances: Vec<SkillInstance>) -> Vec<SkillInstance> {
     }
 
     deduped
-}
-
-fn allowed_target_base(
-    agent: AgentId,
-    ctx: &AdapterContext,
-    root: &AdapterRoot,
-    canonical_root: &Path,
-) -> PathBuf {
-    use skills_copilot_core::RootSource;
-
-    match root.source {
-        RootSource::UserHome => ctx
-            .user_home
-            .canonicalize()
-            .unwrap_or_else(|_| canonical_root.to_path_buf()),
-        RootSource::Project if agent == AgentId::Openclaw => {
-            openclaw_workspace_base_for_root_path(&root.path)
-                .and_then(|workspace_root| workspace_root.canonicalize().ok())
-                .unwrap_or_else(|| canonical_root.to_path_buf())
-        }
-        RootSource::Project => ctx
-            .project_root
-            .as_ref()
-            .and_then(|project_root| project_root.canonicalize().ok())
-            .unwrap_or_else(|| canonical_root.to_path_buf()),
-        RootSource::Compatibility => match root.scope {
-            Scope::AgentGlobal => ctx
-                .user_home
-                .canonicalize()
-                .unwrap_or_else(|_| canonical_root.to_path_buf()),
-            Scope::AgentProject => ctx
-                .project_root
-                .as_ref()
-                .and_then(|project_root| project_root.canonicalize().ok())
-                .unwrap_or_else(|| canonical_root.to_path_buf()),
-            Scope::ToolGlobal => canonical_root.to_path_buf(),
-            _ => canonical_root.to_path_buf(),
-        },
-        RootSource::Configured
-        | RootSource::Admin
-        | RootSource::Plugin
-        | RootSource::System
-        | RootSource::Extra => canonical_root.to_path_buf(),
-    }
-}
-
-fn is_allowed_scan_target(path: &Path, canonical_root: &Path, allowed_target_base: &Path) -> bool {
-    path.starts_with(canonical_root) || path.starts_with(allowed_target_base)
 }
 
 fn openclaw_workspace_base_for_root_path(root_path: &Path) -> Option<PathBuf> {
@@ -693,6 +897,50 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
+    struct TestAdapter {
+        roots: Vec<AdapterRoot>,
+        link_target_roots: Vec<AdapterRoot>,
+    }
+
+    impl AgentAdapter for TestAdapter {
+        fn id(&self) -> AgentId {
+            AgentId::ClaudeCode
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Scanner Test Adapter"
+        }
+
+        fn roots(&self, _ctx: &AdapterContext) -> Vec<AdapterRoot> {
+            self.roots.clone()
+        }
+
+        fn link_target_roots(&self, _ctx: &AdapterContext) -> Vec<AdapterRoot> {
+            self.link_target_roots.clone()
+        }
+
+        fn parse(&self, path: &Path) -> Result<SkillInstance, skills_copilot_core::AdapterError> {
+            ClaudeCodeAdapter.parse(path)
+        }
+
+        fn parse_content(
+            &self,
+            path: &Path,
+            content: String,
+        ) -> Result<SkillInstance, skills_copilot_core::AdapterError> {
+            ClaudeCodeAdapter.parse_content(path, content)
+        }
+
+        fn is_enabled(&self, instance: &SkillInstance) -> bool {
+            instance.enabled
+        }
+
+        fn config_paths(&self, _ctx: &AdapterContext) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+
     #[test]
     fn scans_extra_root_for_skill_files() {
         let ctx = AdapterContext {
@@ -836,22 +1084,22 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn follows_user_home_symlinks_that_stay_inside_user_home() {
+    fn allows_symlink_target_inside_another_declared_root_with_same_scope() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-home-symlink-{}",
             std::process::id()
         ));
         let home = temp_root.join("home");
         let claude_skills_dir = home.join(".claude/skills");
-        let real_skill_dir = home.join(".agents/skills/symlink-test");
+        let real_skill_dir = home.join(".agents/skills/shared");
         std::fs::create_dir_all(&real_skill_dir).expect("create real skill dir");
         std::fs::create_dir_all(&claude_skills_dir).expect("create claude skills dir");
         std::fs::write(
             real_skill_dir.join("SKILL.md"),
-            "---\nname: symlink-test\ndescription: follows user-home symlinks\n---\nBody.",
+            "---\nname: shared\ndescription: follows explicit compatibility-root symlinks\n---\nBody.",
         )
         .expect("write SKILL.md");
-        std::os::unix::fs::symlink(&real_skill_dir, claude_skills_dir.join("symlink-test"))
+        std::os::unix::fs::symlink(&real_skill_dir, claude_skills_dir.join("shared"))
             .expect("create symlink");
 
         let ctx = AdapterContext {
@@ -862,13 +1110,206 @@ mod tests {
         };
 
         let report = scan_agent(&ClaudeCodeAdapter, &ctx).expect("scan succeeds");
+        let canonical_skill_path = real_skill_dir
+            .join("SKILL.md")
+            .canonicalize()
+            .expect("canonicalize shared skill");
 
         assert_eq!(report.instances.len(), 1);
-        assert_eq!(report.instances[0].name, "symlink-test");
+        assert_eq!(report.instances[0].agent, AgentId::ClaudeCode);
+        assert_eq!(report.instances[0].name, "shared");
+        assert_eq!(report.instances[0].path, canonical_skill_path);
         assert_eq!(
             report.instances[0].display_path,
-            claude_skills_dir.join("symlink-test").join("SKILL.md"),
+            claude_skills_dir.join("shared").join("SKILL.md"),
             "display_path should show the original symlink location"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_symlink_target_outside_declared_adapter_roots() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-undeclared-home-symlink-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let claude_skills_dir = home.join(".claude/skills");
+        let private_skill_dir = home.join("private-skill");
+        std::fs::create_dir_all(&claude_skills_dir).expect("create Claude skills dir");
+        std::fs::create_dir_all(&private_skill_dir).expect("create private skill dir");
+        std::fs::write(
+            private_skill_dir.join("SKILL.md"),
+            "---\nname: private-skill\ndescription: undeclared private skill\n---\nBody.",
+        )
+        .expect("write private SKILL.md");
+        std::os::unix::fs::symlink(&private_skill_dir, claude_skills_dir.join("linked"))
+            .expect("create symlink");
+
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&ClaudeCodeAdapter, &ctx).expect("scan succeeds");
+        let canonical_private_dir = private_skill_dir
+            .canonicalize()
+            .expect("canonicalize private skill dir");
+
+        assert!(
+            report
+                .instances
+                .iter()
+                .all(|instance| !instance.path.starts_with(&canonical_private_dir)),
+            "scanner must reject targets outside every declared adapter root"
+        );
+        assert!(report
+            .scanned_roots
+            .iter()
+            .all(|root| !root.starts_with(&canonical_private_dir)));
+        assert!(report
+            .partial_roots
+            .iter()
+            .all(|root| !root.starts_with(&canonical_private_dir)));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn unavailable_root_is_reported_and_other_roots_continue() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-unavailable-root-{}",
+            std::process::id()
+        ));
+        let unavailable_root = temp_root.join("not-a-directory");
+        let valid_root = temp_root.join("valid-skills");
+        let valid_skill_dir = valid_root.join("valid-review");
+        std::fs::create_dir_all(&valid_skill_dir).expect("create valid skill dir");
+        std::fs::write(&unavailable_root, "ordinary file").expect("write ordinary file root");
+        std::fs::write(
+            valid_skill_dir.join("SKILL.md"),
+            "---\nname: valid-review\ndescription: valid Claude fixture\n---\nBody.",
+        )
+        .expect("write valid SKILL.md");
+        let adapter = TestAdapter {
+            roots: vec![
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: unavailable_root.clone(),
+                    source: RootSource::Extra,
+                },
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: valid_root,
+                    source: RootSource::Extra,
+                },
+            ],
+            link_target_roots: Vec::new(),
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan degrades unavailable root");
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].name, "valid-review");
+        assert!(report.skipped_roots.contains(&unavailable_root));
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .filter(|issue| {
+                    issue.path == unavailable_root && issue.kind == ScanIssueKind::RootUnavailable
+                })
+                .count(),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn declared_root_inspection_error_is_reported_and_other_roots_continue() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-root-inspection-error-{}",
+            std::process::id()
+        ));
+        let uninspectable_root = temp_root.join("uninspectable");
+        let uninspectable_skill_dir = uninspectable_root.join("must-not-scan");
+        let valid_root = temp_root.join("valid-skills");
+        let valid_skill_dir = valid_root.join("valid-review");
+        std::fs::create_dir_all(&uninspectable_skill_dir).expect("create uninspectable skill dir");
+        std::fs::create_dir_all(&valid_skill_dir).expect("create valid skill dir");
+        std::fs::write(
+            uninspectable_skill_dir.join("SKILL.md"),
+            "---\nname: must-not-scan\ndescription: unavailable declaration\n---\nBody.",
+        )
+        .expect("write uninspectable SKILL.md");
+        std::fs::write(
+            valid_skill_dir.join("SKILL.md"),
+            "---\nname: valid-review\ndescription: valid Claude fixture\n---\nBody.",
+        )
+        .expect("write valid SKILL.md");
+        let adapter = TestAdapter {
+            roots: vec![
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: uninspectable_root.clone(),
+                    source: RootSource::Extra,
+                },
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: valid_root.clone(),
+                    source: RootSource::Extra,
+                },
+            ],
+            link_target_roots: Vec::new(),
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent_with_symlink_inspector(&adapter, &ctx, |path| {
+            if path == uninspectable_root {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected metadata denial",
+                ))
+            } else {
+                Ok(false)
+            }
+        })
+        .expect("scan degrades root inspection error");
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].name, "valid-review");
+        assert_eq!(report.skipped_roots, vec![uninspectable_root.clone()]);
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .filter(|issue| {
+                    issue.path == uninspectable_root
+                        && issue.kind == ScanIssueKind::RootUnavailable
+                        && issue.detail.contains("injected metadata denial")
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            report.scanned_roots,
+            vec![valid_root.canonicalize().expect("canonicalize valid root")]
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);
@@ -947,6 +1388,140 @@ mod tests {
             "builtin user-home root symlink must not let the scanner escape user_home"
         );
         assert_eq!(report.skipped_roots, vec![home.join(".claude/skills")]);
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn allows_builtin_leaf_symlink_when_same_scope_target_root_is_explicit() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-explicit-root-symlink-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let claude_dir = home.join(".claude");
+        let declared_path = claude_dir.join("skills");
+        let explicit_target = temp_root.join("explicit-target");
+        let skill_dir = explicit_target.join("authorized");
+        std::fs::create_dir_all(&claude_dir).expect("create Claude dir");
+        std::fs::create_dir_all(&skill_dir).expect("create explicitly allowed skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: authorized\ndescription: explicit same-scope target\n---\nBody.",
+        )
+        .expect("write authorized SKILL.md");
+        std::os::unix::fs::symlink(&explicit_target, &declared_path)
+            .expect("create built-in root symlink");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: declared_path.clone(),
+                source: RootSource::UserHome,
+            }],
+            link_target_roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: explicit_target.clone(),
+                source: RootSource::Extra,
+            }],
+        };
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+        let canonical_target = explicit_target
+            .canonicalize()
+            .expect("canonicalize explicit target");
+        let canonical_skill = skill_dir
+            .join("SKILL.md")
+            .canonicalize()
+            .expect("canonicalize authorized skill");
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].path, canonical_skill);
+        assert_eq!(
+            report.instances[0].display_path,
+            declared_path.join("authorized/SKILL.md")
+        );
+        assert!(!report.skipped_roots.contains(&declared_path));
+        assert_eq!(report.scanned_roots, vec![canonical_target]);
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_builtin_leaf_symlink_when_explicit_target_has_different_scope() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-cross-scope-root-symlink-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let claude_dir = home.join(".claude");
+        let declared_path = claude_dir.join("skills");
+        let explicit_target = temp_root.join("explicit-target");
+        let skill_dir = explicit_target.join("cross-scope");
+        std::fs::create_dir_all(&claude_dir).expect("create Claude dir");
+        std::fs::create_dir_all(&skill_dir).expect("create cross-scope skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: cross-scope\ndescription: differently scoped target\n---\nBody.",
+        )
+        .expect("write cross-scope SKILL.md");
+        std::os::unix::fs::symlink(&explicit_target, &declared_path)
+            .expect("create built-in root symlink");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: declared_path.clone(),
+                source: RootSource::UserHome,
+            }],
+            link_target_roots: vec![AdapterRoot {
+                scope: Scope::AgentProject,
+                path: explicit_target,
+                source: RootSource::Extra,
+            }],
+        };
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let mut classifications = [true, false, true].into_iter();
+
+        let report = scan_agent_with_symlink_inspector(&adapter, &ctx, |_path| {
+            Ok::<bool, std::io::Error>(
+                classifications
+                    .next()
+                    .expect("scanner must not inspect one declared leaf more than three times"),
+            )
+        })
+        .expect("scan succeeds");
+
+        assert_eq!(
+            classifications.next(),
+            Some(false),
+            "each declared root leaf must be inspected exactly once"
+        );
+        assert!(report.instances.is_empty());
+        assert_eq!(report.skipped_roots, vec![declared_path.clone()]);
+        assert!(report.scanned_roots.is_empty());
+        assert!(report.partial_roots.is_empty());
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .filter(|issue| {
+                    issue.path == declared_path && issue.kind == ScanIssueKind::RootOutsideAllowlist
+                })
+                .count(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

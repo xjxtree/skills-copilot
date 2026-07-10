@@ -6,6 +6,9 @@ pub trait AgentAdapter: Send + Sync {
     fn id(&self) -> AgentId;
     fn display_name(&self) -> &'static str;
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot>;
+    fn link_target_roots(&self, _ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        Vec::new()
+    }
     fn parse(&self, path: &std::path::Path) -> Result<SkillInstance, AdapterError>;
     fn parse_content(
         &self,

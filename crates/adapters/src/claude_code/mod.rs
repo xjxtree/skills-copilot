@@ -36,6 +36,14 @@ impl AgentAdapter for ClaudeCodeAdapter {
         roots
     }
 
+    fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        vec![AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: ctx.user_home.join(".agents/skills"),
+            source: RootSource::Compatibility,
+        }]
+    }
+
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
