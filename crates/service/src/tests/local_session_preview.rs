@@ -609,6 +609,22 @@ fn local_session_preview_bounds_single_line_json() {
     assert!(!serialized.contains("\"data\""));
 }
 
+#[test]
+fn local_session_preview_skips_truncated_single_sidecar_record() {
+    let filler = "ignored-file-history-data-".repeat(30_000);
+    let session = format!(
+        "{{\"type\":\"file-history-snapshot\",\"data\":{}}}",
+        serde_json::to_string(&filler).expect("serialize filler")
+    );
+    let result = preview_codex_session_fixture("single-truncated-sidecar", &session);
+
+    assert_eq!(result.get("count").and_then(Value::as_u64), Some(0));
+    assert!(result
+        .get("session_rows")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+}
+
 fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(

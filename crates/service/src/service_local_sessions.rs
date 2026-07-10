@@ -909,31 +909,37 @@ fn compact_bounded_local_session_content(
         return compact_local_session_records(&contiguous, max_line_fragment_bytes);
     }
 
-    let mut content = String::new();
     let complete_head_end = bounded.head.rfind('\n').map_or(0, |newline| newline + 1);
     if complete_head_end == 0 && !bounded.tail.contains('\n') {
-        content.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
         let mut fields = supported_scalar_fragment(&bounded.head, max_line_fragment_bytes);
         for (key, value) in supported_scalar_fragment(&bounded.tail, max_line_fragment_bytes) {
             fields.insert(key, value);
         }
-        append_supported_scalar_fields(&mut content, fields);
+        let mut compacted = String::new();
+        append_supported_scalar_fields(&mut compacted, fields);
+        if compacted.is_empty() {
+            return compacted;
+        }
+        let mut content = String::from("{\"type\":\"skills-copilot-truncation-marker\"}\n");
+        content.push_str(&compacted);
         return content;
     }
-    content.push_str(&compact_local_session_records(
-        &bounded.head[..complete_head_end],
-        max_line_fragment_bytes,
-    ));
+
+    let mut head =
+        compact_local_session_records(&bounded.head[..complete_head_end], max_line_fragment_bytes);
     append_supported_scalar_fragment(
-        &mut content,
+        &mut head,
         &bounded.head[complete_head_end..],
         max_line_fragment_bytes,
     );
+    let tail = compact_local_session_records(&bounded.tail, max_line_fragment_bytes);
+    if head.is_empty() && tail.is_empty() {
+        return String::new();
+    }
+
+    let mut content = head;
     content.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
-    content.push_str(&compact_local_session_records(
-        &bounded.tail,
-        max_line_fragment_bytes,
-    ));
+    content.push_str(&tail);
     content
 }
 
@@ -987,7 +993,11 @@ fn append_supported_scalar_fields(content: &mut String, fields: serde_json::Map<
     if fields.is_empty() {
         return;
     }
-    content.push_str(&Value::Object(fields).to_string());
+    let compacted = Value::Object(fields).to_string();
+    if should_skip_local_session_sidecar_line(&compacted) {
+        return;
+    }
+    content.push_str(&compacted);
     content.push('\n');
 }
 
