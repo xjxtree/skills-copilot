@@ -1,5 +1,7 @@
+use super::service_local_session_io::{
+    read_bounded_text, BoundedReadSpec, BoundedText, LocalSessionIoContext, LocalSessionReadLimits,
+};
 use super::*;
-use std::io::BufRead;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 impl ServiceHost {
@@ -98,6 +100,7 @@ impl ServiceHost {
         let mut skill_usage = BTreeMap::<String, LocalSessionSkillUsageAccumulator>::new();
         let skill_matchers = self.local_session_skill_matchers(requested_agent)?;
         let mut total_candidate_count = 0usize;
+        let mut io = LocalSessionIoContext::new(LocalSessionReadLimits::default());
 
         for root_request in root_requests {
             let root = root_request.path.to_string_lossy().to_string();
@@ -170,7 +173,13 @@ impl ServiceHost {
                     project_filter_roots: &project_filter_roots,
                     search: search.as_deref(),
                 };
-                match local_session_preview_row(&file, &canonical_root, options, &mut redactor) {
+                match local_session_preview_row(
+                    &file,
+                    &canonical_root,
+                    options,
+                    &mut io,
+                    &mut redactor,
+                ) {
                     Ok(Some(entry)) => {
                         if seen_session_row_ids.insert(entry.row.id.clone()) {
                             root_candidate_count += 1;
@@ -758,12 +767,13 @@ fn local_session_preview_row(
     path: &Path,
     root: &Path,
     options: LocalSessionPreviewRowOptions<'_>,
+    io: &mut LocalSessionIoContext,
     redactor: &mut PromptRedactor<'_>,
 ) -> Result<Option<LocalSessionPreviewEntry>, ServiceError> {
     if !path.starts_with(root) {
         return Ok(None);
     }
-    let file_content = read_local_session_file_content(path)?;
+    let file_content = read_local_session_file_content(path, io)?;
     if file_content.is_empty() {
         return Ok(None);
     }
@@ -865,84 +875,150 @@ fn local_session_preview_row(
     }))
 }
 
-const LOCAL_SESSION_MAX_READ_BYTES: usize = 512_000;
-const LOCAL_SESSION_MAX_LINE_BYTES: usize = 64_000;
+fn read_local_session_file_content(
+    path: &Path,
+    io: &mut LocalSessionIoContext,
+) -> Result<String, ServiceError> {
+    let bounded = read_bounded_text(
+        path,
+        BoundedReadSpec {
+            head_bytes: io.limits.primary_head_bytes,
+            tail_bytes: io.limits.primary_tail_bytes,
+            line_fragment_bytes: io.limits.max_line_fragment_bytes,
+        },
+        &mut io.budget,
+    )?;
+    debug_assert!(bounded.bytes_read <= io.limits.max_preview_read_bytes);
+    Ok(compact_bounded_local_session_content(
+        &bounded,
+        io.limits.max_line_fragment_bytes,
+    ))
+}
 
-fn read_local_session_file_content(path: &Path) -> Result<String, ServiceError> {
-    let file = fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
+fn compact_bounded_local_session_content(
+    bounded: &BoundedText,
+    max_line_fragment_bytes: usize,
+) -> String {
+    if bounded.head.is_empty() && bounded.tail.is_empty() {
+        return String::new();
+    }
+    if !bounded.truncated {
+        let mut contiguous = String::with_capacity(bounded.head.len() + bounded.tail.len());
+        contiguous.push_str(&bounded.head);
+        contiguous.push_str(&bounded.tail);
+        return compact_local_session_records(&contiguous, max_line_fragment_bytes);
+    }
+
     let mut content = String::new();
-    let mut line = String::new();
+    let complete_head_end = bounded.head.rfind('\n').map_or(0, |newline| newline + 1);
+    content.push_str(&compact_local_session_records(
+        &bounded.head[..complete_head_end],
+        max_line_fragment_bytes,
+    ));
+    append_supported_scalar_fragment(
+        &mut content,
+        &bounded.head[complete_head_end..],
+        max_line_fragment_bytes,
+    );
+    content.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
+    content.push_str(&compact_local_session_records(
+        &bounded.tail,
+        max_line_fragment_bytes,
+    ));
+    content
+}
 
-    loop {
-        line.clear();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            break;
-        }
-        if should_skip_local_session_sidecar_line(&line) {
+fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> String {
+    let mut content = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || should_skip_local_session_sidecar_line(trimmed) {
             continue;
         }
-        if content.len() + line.len() > LOCAL_SESSION_MAX_READ_BYTES {
-            if let Some(compacted) = compact_oversized_local_session_json_line(&line) {
-                if content.len() + compacted.len() <= LOCAL_SESSION_MAX_READ_BYTES {
-                    content.push_str(&compacted);
-                    continue;
-                }
-            }
-            if content.is_empty() {
-                content.push_str(&truncate_chars(&line, LOCAL_SESSION_MAX_READ_BYTES));
-            }
-            break;
+        if trimmed.len() > max_line_fragment_bytes {
+            append_supported_scalar_fragment(&mut content, trimmed, max_line_fragment_bytes);
+            continue;
         }
-        if line.len() > LOCAL_SESSION_MAX_LINE_BYTES {
-            if let Some(compacted) = compact_oversized_local_session_json_line(&line) {
-                content.push_str(&compacted);
-                continue;
-            }
-            content.push_str(&truncate_chars(&line, LOCAL_SESSION_MAX_LINE_BYTES));
-            content.push('\n');
-            break;
+        if looks_like_json_fragment(trimmed) && serde_json::from_str::<Value>(trimmed).is_err() {
+            append_supported_scalar_fragment(&mut content, trimmed, max_line_fragment_bytes);
+            continue;
         }
-        content.push_str(&line);
+        content.push_str(trimmed);
+        content.push('\n');
     }
-
-    Ok(content)
+    content
 }
 
-fn compact_oversized_local_session_json_line(line: &str) -> Option<String> {
-    let mut value = serde_json::from_str::<Value>(line).ok()?;
-    prune_large_local_session_json_values(&mut value);
-    let mut compacted = serde_json::to_string(&value).ok()?;
-    compacted.push('\n');
-    Some(compacted)
+fn append_supported_scalar_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
+    let mut fields = serde_json::Map::new();
+    for key in [
+        "type",
+        "role",
+        "text",
+        "content",
+        "title",
+        "aiTitle",
+        "timestamp",
+        "sessionId",
+        "id",
+        "cwd",
+    ] {
+        if let Some(value) = last_json_scalar_for_key(fragment, key, max_bytes) {
+            fields.insert(key.to_string(), value);
+        }
+    }
+    if fields.is_empty() {
+        return;
+    }
+    content.push_str(&Value::Object(fields).to_string());
+    content.push('\n');
 }
 
-fn prune_large_local_session_json_values(value: &mut Value) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                prune_large_local_session_json_values(item);
-            }
+fn last_json_scalar_for_key(fragment: &str, key: &str, max_bytes: usize) -> Option<Value> {
+    let needle = format!("\"{key}\"");
+    let mut latest = None;
+    for (offset, _) in fragment.match_indices(&needle) {
+        let mut cursor = offset + needle.len();
+        cursor += fragment[cursor..]
+            .bytes()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count();
+        if fragment.as_bytes().get(cursor) != Some(&b':') {
+            continue;
         }
-        Value::Object(map) => {
-            for (key, nested) in map.iter_mut() {
-                if matches!(
-                    key.as_str(),
-                    "base64" | "blob" | "bytes" | "data" | "image" | "image_data"
-                ) && nested.as_str().is_some_and(|text| text.len() > 512)
-                {
-                    *nested = Value::String("<omitted-local-session-blob>".to_string());
-                    continue;
-                }
-                prune_large_local_session_json_values(nested);
-            }
-        }
-        Value::String(text) if text.len() > 4_096 => {
-            *text = truncate_chars(text, 4_096);
-        }
-        _ => {}
+        cursor += 1;
+        cursor += fragment[cursor..]
+            .bytes()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count();
+        let mut values =
+            serde_json::Deserializer::from_str(&fragment[cursor..]).into_iter::<Value>();
+        let Some(Ok(value)) = values.next() else {
+            continue;
+        };
+        let value = match value {
+            Value::String(text) => Value::String(truncate_utf8_bytes(&text, max_bytes)),
+            Value::Number(_) | Value::Bool(_) | Value::Null => value,
+            Value::Array(_) | Value::Object(_) => continue,
+        };
+        latest = Some(value);
     }
+    latest
+}
+
+fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+fn looks_like_json_fragment(text: &str) -> bool {
+    text.starts_with('{') || text.starts_with('[') || text.ends_with('}') || text.ends_with(']')
 }
 
 fn should_skip_local_session_sidecar_line(line: &str) -> bool {

@@ -510,3 +510,134 @@ fn local_session_preview_skips_claude_local_command_caveat_titles() {
     let _ = fs::remove_dir_all(app_data_dir);
     let _ = fs::remove_dir_all(user_home);
 }
+
+#[test]
+fn local_session_preview_keeps_tail_message_after_large_middle_record() {
+    let initial = json!({
+        "type": "user",
+        "role": "user",
+        "text": "clear",
+        "timestamp": "2026-07-10T08:00:00Z"
+    });
+    let middle = json!({
+        "type": "file-history-snapshot",
+        "data": "x".repeat(600 * 1024)
+    });
+    let final_event = json!({
+        "type": "user",
+        "role": "user",
+        "text": "tail-event-visible",
+        "timestamp": "2026-07-10T08:09:10Z"
+    });
+    let result = preview_codex_session_fixture(
+        "large-middle-tail-message",
+        &format!("{initial}\n{middle}\n{final_event}\n"),
+    );
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/title")
+            .and_then(Value::as_str),
+        Some("tail-event-visible")
+    );
+    assert!(result
+        .pointer("/session_rows/0/content_items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(|item| {
+            item.get("text").and_then(Value::as_str) == Some("tail-event-visible")
+        })));
+}
+
+#[test]
+fn local_session_preview_keeps_tail_timestamp_after_read_cap() {
+    let initial = json!({
+        "type": "user",
+        "role": "user",
+        "text": "clear",
+        "timestamp": "2026-07-10T08:00:00Z"
+    });
+    let middle = json!({
+        "type": "file-history-snapshot",
+        "data": "y".repeat(600 * 1024)
+    });
+    let final_event = json!({
+        "type": "user",
+        "role": "user",
+        "text": "tail-timestamp-visible",
+        "timestamp": "2026-07-10T08:09:10Z"
+    });
+    let result = preview_codex_session_fixture(
+        "large-middle-tail-timestamp",
+        &format!("{initial}\n{middle}\n{final_event}\n"),
+    );
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/ended_at")
+            .and_then(Value::as_i64),
+        Some(1_783_670_950_000)
+    );
+}
+
+#[test]
+fn local_session_preview_bounds_single_line_json() {
+    let filler = "forbidden-session-blob-".repeat(30_000);
+    let session = json!({
+        "type": "user",
+        "role": "user",
+        "data": filler,
+        "text": "single-line-tail-visible",
+        "timestamp": "2026-07-10T08:09:10Z"
+    })
+    .to_string();
+    let result = preview_codex_session_fixture("single-line-bounded-json", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        serialized.contains("single-line-tail-visible"),
+        "{serialized}"
+    );
+    assert!(!serialized.contains("forbidden-session-blob-"));
+    assert!(!serialized.contains("\"data\""));
+}
+
+fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
+    let unique = unique_suffix();
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-local-session-{test_name}-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-local-session-{test_name}-home-{}-{unique}",
+        std::process::id(),
+    ));
+    let session_root = user_home.join(".codex/sessions/2026/07/10");
+    fs::create_dir_all(&session_root).expect("create codex session root");
+    fs::write(
+        session_root.join(format!("rollout-2026-07-10T08-00-00-{test_name}.jsonl")),
+        content,
+    )
+    .expect("write codex session fixture");
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let response = host.handle(ServiceRequest {
+        id: Some(format!("session-preview-{test_name}")),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "limit": 10,
+            "max_excerpt_chars": 800
+        }),
+    });
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+    assert!(response.ok, "{:?}", response.error);
+    response.result.expect("local session preview result")
+}

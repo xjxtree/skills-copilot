@@ -47,6 +47,7 @@ mod service_app_search;
 mod service_host;
 mod service_llm;
 mod service_llm_prompt_helpers;
+mod service_local_session_io;
 mod service_local_sessions;
 mod service_observability_helpers;
 mod service_support_helpers;
