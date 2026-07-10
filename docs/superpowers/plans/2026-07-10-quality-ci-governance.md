@@ -4,9 +4,9 @@
 
 **Goal:** Consume the config consistency protocol safely in macOS, make every Swift test entrypoint prove the complete native suite, validate the bundled Rust sidecar without a GUI, run CI on all feature pushes, and enforce documentation, link, gate, performance, and module-size contracts from checked-in manifests.
 
-**Architecture:** The macOS client carries config revisions and preview-bound rollback tokens without automatic stale-write retries. Native model suites have one Swift registry, one XCTest entrypoint, one executable entrypoint, and a deterministic completion sentinel. CI builds the app bundle without launching it, then executes fixture RPCs directly against the sidecar embedded in that bundle. Repository governance and quality budgets live in small JSON manifests consumed by pure Node helpers with negative tests. The 10k benchmark builds first and measures only the benchmark test executable, so elapsed time and RSS exclude Cargo compilation.
+**Architecture:** The macOS client carries config revisions and preview-bound rollback tokens without automatic stale-write retries. Native model suites have one Swift registry, a conditional XCTest entrypoint with a no-XCTest SwiftPM fallback, one executable entrypoint, and a deterministic completion sentinel. CI builds the app bundle without launching it, then executes fixture RPCs directly against the sidecar embedded in that bundle. Repository governance and quality budgets live in small JSON manifests consumed by pure Node helpers with negative tests. The 10k benchmark builds first and measures only the benchmark test executable, so elapsed time and RSS exclude Cargo compilation.
 
-**Tech Stack:** Swift 5.9/XCTest, SwiftPM, Rust sidecar bundle, Node.js 22 ESM and `node:test`, Bash, pnpm 11.5.1, GitHub Actions on macOS 15, `/usr/bin/time`, Git.
+**Tech Stack:** Swift 5.9/conditional XCTest, SwiftPM, Rust sidecar bundle, Node.js 22 ESM and `node:test`, Bash, pnpm 11.5.1, GitHub Actions on macOS 15, `/usr/bin/time`, Git.
 
 ## Global Constraints
 
@@ -30,7 +30,7 @@
 
 ### New files
 
-- `apps/macos/Tests/SkillsCopilotTests/FullNativeModelSuiteTests.swift` — normal XCTest entrypoint for the complete native registry.
+- `apps/macos/Tests/SkillsCopilotTests/FullNativeModelSuiteTests.swift` — normal XCTest entrypoint when XCTest is available.
 - `scripts/verify-macos-native-test-registry.mjs` — static registry completeness verifier.
 - `scripts/tests/macos-native-test-registry.test.mjs` — missing/duplicate suite regression tests.
 - `scripts/lib/smoke-options.mjs` — pure smoke CLI parsing and headless incompatibility rules.
@@ -43,14 +43,10 @@
 - `scripts/lib/quality-budgets.mjs` — budget parsing, metric extraction, and comparison helpers.
 - `scripts/tests/quality-budgets.test.mjs` — missing/over-budget metric and module `+1` tests.
 
-### Deleted file
-
-- `apps/macos/Tests/SkillsCopilotTestHarness/NativeModelTestHarness.c` — constructor-based test-bundle exit path.
-
 ### Existing files modified
 
 - Native service client/model/store/view tests — consume revision and preview-token protocol fields.
-- `apps/macos/Package.swift`, `NativeModelTestRunner.swift`, and `scripts/test-macos-native-models.sh` — share one full suite registry without constructor exits.
+- `NativeModelTestHarness.c`, `NativeModelTestRunner.swift`, and `scripts/test-macos-native-models.sh` — share one full suite registry; the constructor is a no-XCTest fallback and never exits on success.
 - `scripts/smoke-macos-app.mjs` — add fixture-only headless sidecar mode.
 - `package.json`, `.github/workflows/ci.yml`, `script/build_and_run.sh`, and `scripts/check-macos.mjs` — separate build from launch and wire headless CI.
 - `scripts/verify-doc-governance.mjs` and governed Markdown files — enforce manifest coverage and remove stale paths/status claims.
@@ -238,17 +234,16 @@ git commit -m "fix: bind native config writes to service previews"
 - Create: `apps/macos/Tests/SkillsCopilotTests/FullNativeModelSuiteTests.swift`
 - Create: `scripts/verify-macos-native-test-registry.mjs`
 - Create: `scripts/tests/macos-native-test-registry.test.mjs`
-- Modify: `apps/macos/Package.swift`
 - Modify: `apps/macos/Tests/SkillsCopilotTests/NativeModelTestRunner.swift`
 - Modify: `scripts/test-macos-native-models.sh`
 - Modify: `package.json`
-- Delete: `apps/macos/Tests/SkillsCopilotTestHarness/NativeModelTestHarness.c`
+- Modify: `apps/macos/Tests/SkillsCopilotTestHarness/NativeModelTestHarness.c`
 
 **Interfaces:**
 - Produces: `runAllNativeModelTestsAsync() async throws -> NativeModelSuiteSummary`.
 - Produces: `NativeModelSuiteSummary { serviceSuiteCount, mainSuiteCount, skillStoreGroupCount, namedExecutionCount }`.
-- Required counts: service suites `2`, main suites `18`, SkillStore groups `64`, named executions `84`.
-- Completion line: `SkillsCopilotTests: full-suite-complete service=2 main=18 skill-store-groups=64 named=84`.
+- Required counts: service suites `2`, main suites `19`, SkillStore groups `64`, named executions `85`.
+- Completion line: `SkillsCopilotTests: full-suite-complete service=2 main=19 skill-store-groups=64 named=85`.
 - Produces: `verifyNativeTestRegistry({ discoveredTypes, registeredMainTypes }): string[]` in the Node verifier.
 
 - [ ] **Step 1: Write RED registry verifier tests**
@@ -295,7 +290,7 @@ Expected: FAIL because the verifier module and export do not exist.
 
 - [ ] **Step 3: Define one explicit Swift registry and full runner**
 
-In `NativeModelTestRunner.swift`, define the 18 synchronous main entries exactly once:
+In `NativeModelTestRunner.swift`, define the 19 synchronous main entries exactly once:
 
 ```swift
 private let mainNativeModelSuites: [(String, () throws -> Void)] = [
@@ -304,6 +299,7 @@ private let mainNativeModelSuites: [(String, () throws -> Void)] = [
     ("RuleTuningModelTests", { try RuleTuningModelTests().run() }),
     ("ProviderObservabilityModelTests", { try ProviderObservabilityModelTests().run() }),
     ("TaskCockpitModelTests", { try TaskCockpitModelTests().run() }),
+    ("TaskCockpitHistoryStoreTests", { try TaskCockpitHistoryStoreTests().run() }),
     ("TaskInputModelTests", { try TaskInputModelTests().run() }),
     ("AIProviderModelTests", { try AIProviderModelTests().run() }),
     ("LLMModelTests", { try LLMModelTests().run() }),
@@ -327,22 +323,27 @@ struct NativeModelSuiteSummary: Equatable {
 }
 
 func runAllNativeModelTestsAsync() async throws -> NativeModelSuiteSummary {
+    var namedExecutionCount = 0
     try await runAsyncNamed("ServiceClientProcessTests") { try await ServiceClientProcessTests().run() }
+    namedExecutionCount += 1
     try await runAsyncNamed("ServiceClientRPCTests") { try await ServiceClientRPCTests().run() }
+    namedExecutionCount += 1
     for (name, run) in mainNativeModelSuites {
         try runNamed(name, run)
+        namedExecutionCount += 1
     }
     let groupCount = 64
     for group in 0..<groupCount {
         try await runAsyncNamed("SkillStoreTests group \(group)") {
             try await SkillStoreTests(selectedGroup: group, groupCount: groupCount).run()
         }
+        namedExecutionCount += 1
     }
     let summary = NativeModelSuiteSummary(
         serviceSuiteCount: 2,
         mainSuiteCount: mainNativeModelSuites.count,
         skillStoreGroupCount: groupCount,
-        namedExecutionCount: 2 + mainNativeModelSuites.count + groupCount
+        namedExecutionCount: namedExecutionCount
     )
     fputs(
         "SkillsCopilotTests: full-suite-complete service=\(summary.serviceSuiteCount) main=\(summary.mainSuiteCount) skill-store-groups=\(summary.skillStoreGroupCount) named=\(summary.namedExecutionCount)\n",
@@ -355,11 +356,14 @@ func runAllNativeModelTestsAsync() async throws -> NativeModelSuiteSummary {
 
 Focused suite selection may remain for developer diagnosis, but the no-environment default and both canonical entrypoints must call `runAllNativeModelTestsAsync()`.
 
-- [ ] **Step 4: Replace the constructor with a normal XCTest**
+- [ ] **Step 4: Prefer a normal XCTest and retain a no-XCTest fallback**
 
-Remove the C target/dependency from `Package.swift` and delete the C file. Create:
+The repository's supported Command Line Tools environment may provide neither
+the `XCTest` nor Swift `Testing` module. Create the normal XCTest entry when the
+module is available:
 
 ```swift
+#if canImport(XCTest)
 import XCTest
 @testable import SkillsCopilot
 
@@ -367,14 +371,20 @@ final class FullNativeModelSuiteTests: XCTestCase {
     func testCompleteNativeModelRegistry() async throws {
         let summary = try await runAllNativeModelTestsAsync()
         XCTAssertEqual(summary.serviceSuiteCount, 2)
-        XCTAssertEqual(summary.mainSuiteCount, 18)
+        XCTAssertEqual(summary.mainSuiteCount, 19)
         XCTAssertEqual(summary.skillStoreGroupCount, 64)
-        XCTAssertEqual(summary.namedExecutionCount, 84)
+        XCTAssertEqual(summary.namedExecutionCount, 85)
     }
 }
+#endif
 ```
 
-Remove the exported C symbol and every success-path `_exit` from `NativeModelTestRunner.swift`.
+Retain the small C constructor only as a compile-time fallback for environments
+where `canImport(XCTest)` is false. The exported Swift symbol must be a no-op
+when XCTest is available; otherwise it synchronously waits for
+`runAllNativeModelTestsAsync()`. Remove every success-path `_exit`: success
+returns normally so the SwiftPM runner finishes itself, while failure still
+exits nonzero. Both paths must emit the same exact completion sentinel once.
 
 - [ ] **Step 5: Make the executable runner call the same function once**
 
@@ -395,7 +405,7 @@ Exclude `FullNativeModelSuiteTests.swift` from the executable package's test-sou
 
 - [ ] **Step 6: Implement static discovery and sentinel verification**
 
-`verify-macos-native-test-registry.mjs` must discover `^(struct|final class|class) ([A-Za-z0-9]+Tests)` in test files, exclude only `FullNativeModelSuiteTests`, classify `ServiceClientProcessTests` and `ServiceClientRPCTests` as service suites and `SkillStoreTests` as the sharded suite, and compare the remaining 18 types to `mainNativeModelSuites`. It must also accept `--log /absolute/test-output.log` and require the exact completion line with counts `2/18/64/84`. Export pure helpers and invoke filesystem/CLI work only when `process.argv[1] === fileURLToPath(import.meta.url)` so `node:test` imports do not execute the verifier main function.
+`verify-macos-native-test-registry.mjs` must discover `^(struct|final class|class) ([A-Za-z0-9]+Tests)` in test files, exclude only `FullNativeModelSuiteTests`, classify `ServiceClientProcessTests` and `ServiceClientRPCTests` as service suites and `SkillStoreTests` as the sharded suite, and compare the remaining 19 types to `mainNativeModelSuites`. It must also accept `--log /absolute/test-output.log` and require the exact completion line with counts `2/19/64/85`. Export pure helpers and invoke filesystem/CLI work only when `process.argv[1] === fileURLToPath(import.meta.url)` so `node:test` imports do not execute the verifier main function.
 
 - [ ] **Step 7: Wire and run GREEN checks**
 
@@ -416,13 +426,12 @@ pnpm verify:macos-native-test-registry -- --log /tmp/agent-copilot-swift-full.lo
 pnpm test:macos-native-models
 ```
 
-Expected: static registry verification passes; both test entrypoints emit the exact full-suite sentinel and execute all 84 named units.
+Expected: static registry verification passes; both test entrypoints emit the exact full-suite sentinel and execute all 85 named units.
 
 - [ ] **Step 8: Commit the complete suite runner**
 
 ```sh
-git add apps/macos/Package.swift apps/macos/Tests/SkillsCopilotTests/FullNativeModelSuiteTests.swift apps/macos/Tests/SkillsCopilotTests/NativeModelTestRunner.swift scripts/test-macos-native-models.sh scripts/verify-macos-native-test-registry.mjs scripts/tests/macos-native-test-registry.test.mjs package.json
-git rm apps/macos/Tests/SkillsCopilotTestHarness/NativeModelTestHarness.c
+git add apps/macos/Tests/SkillsCopilotTestHarness/NativeModelTestHarness.c apps/macos/Tests/SkillsCopilotTests/FullNativeModelSuiteTests.swift apps/macos/Tests/SkillsCopilotTests/NativeModelTestRunner.swift scripts/test-macos-native-models.sh scripts/verify-macos-native-test-registry.mjs scripts/tests/macos-native-test-registry.test.mjs package.json
 git commit -m "test: make swift entrypoints run the full suite"
 ```
 
@@ -1159,7 +1168,7 @@ pnpm verify:macos-native-test-registry -- --log /tmp/agent-copilot-swift-final.l
 pnpm test:macos-native-models
 ```
 
-Expected: both entrypoints report service `2`, main `18`, SkillStore groups `64`, named executions `84`.
+Expected: both entrypoints report service `2`, main `19`, SkillStore groups `64`, named executions `85`.
 
 - [ ] **Step 3: Build without launch and run headless bundle smoke**
 
@@ -1208,8 +1217,8 @@ git commit -m "test: align quality and governance gates"
 
 - Native settings save sends the loaded document revision; stale saves display `config_conflict` and are never retried automatically.
 - Native rollback is disabled until a valid preview is loaded; confirmation sends only that preview token; `stale_preview_token` clears the binding and requires a new preview.
-- The C constructor harness and success `_exit` path are gone.
-- Both Swift entrypoints execute 2 service suites, 18 main suites, and 64 SkillStore groups and emit the exact `named=84` completion sentinel.
+- The success `_exit` path is gone. XCTest runs the normal test entrypoint when available; otherwise the minimal constructor fallback runs the same complete registry and returns normally on success.
+- Both Swift entrypoints execute 2 service suites, 19 main suites, and 64 SkillStore groups and emit the exact `named=85` completion sentinel.
 - Adding an unregistered `*Tests` type or duplicating a registration makes the static verifier fail.
 - `pnpm build:macos` never launches the app; `pnpm verify:macos-launch` is the explicit local launch command.
 - CI triggers on pull requests and every branch push, including `codex/**`.

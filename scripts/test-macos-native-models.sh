@@ -41,7 +41,7 @@ run_native_model_suite() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BUILD_ROOT="${REPO_ROOT}/apps/macos/.build/native-model-tests"
+BUILD_ROOT="${RUNTIME_ROOT}/build"
 PACKAGE_DIR="${BUILD_ROOT}/package"
 TARGET_DIR="${PACKAGE_DIR}/Sources/SkillsCopilotNativeModelTests"
 
@@ -62,6 +62,7 @@ cp -R "${REPO_ROOT}/apps/macos/Sources/SkillsCopilot/Resources" "${TARGET_DIR}/R
 
 mkdir -p "${TARGET_DIR}/Tests"
 rsync -a \
+  --exclude='FullNativeModelSuiteTests.swift' \
   --include='*.swift' \
   --exclude='*' \
   "${REPO_ROOT}/apps/macos/Tests/SkillsCopilotTests/" \
@@ -101,7 +102,18 @@ let package = Package(
 SWIFT
 
 cat > "${TARGET_DIR}/main.swift" <<'SWIFT'
-await runNativeModelTestsMain()
+import Foundation
+
+do {
+    let summary = try await runAllNativeModelTestsAsync()
+    try expectEqual(summary.serviceSuiteCount, 2, "Service suite count")
+    try expectEqual(summary.mainSuiteCount, 19, "Main suite count")
+    try expectEqual(summary.skillStoreGroupCount, 64, "SkillStore group count")
+    try expectEqual(summary.namedExecutionCount, 85, "Named execution count")
+} catch {
+    fputs("SkillsCopilotTests: \(error)\n", stderr)
+    exit(1)
+}
 SWIFT
 
 cd "${REPO_ROOT}"
@@ -120,25 +132,7 @@ BINARY_DIR="$(swift build \
 # override it through run_native_model_suite or this sentinel will be purged.
 export SKILLS_COPILOT_APP_DATA_DIR="${SIMULATED_INHERITED_APP_DATA_DIR}"
 
-run_native_model_suite \
-  SKILLS_COPILOT_NATIVE_MODEL_TEST_SUITE=service-process \
-  "${BINARY_DIR}/SkillsCopilotNativeModelTests"
-
-run_native_model_suite \
-  SKILLS_COPILOT_NATIVE_MODEL_TEST_SUITE=service-rpc \
-  "${BINARY_DIR}/SkillsCopilotNativeModelTests"
-
-run_native_model_suite \
-  SKILLS_COPILOT_NATIVE_MODEL_TEST_SUITE=main \
-  "${BINARY_DIR}/SkillsCopilotNativeModelTests"
-
-SKILL_STORE_GROUP_COUNT=64
-for group in $(seq 0 $((SKILL_STORE_GROUP_COUNT - 1))); do
-  run_native_model_suite \
-    SKILLS_COPILOT_NATIVE_MODEL_TEST_SUITE="skill-store-${group}" \
-    SKILLS_COPILOT_SKILL_STORE_GROUP_COUNT="${SKILL_STORE_GROUP_COUNT}" \
-    "${BINARY_DIR}/SkillsCopilotNativeModelTests"
-done
+run_native_model_suite "${BINARY_DIR}/SkillsCopilotNativeModelTests"
 
 if [[ ! -f "${SIMULATED_INHERITED_SENTINEL}" ]] \
   || [[ "$(<"${SIMULATED_INHERITED_SENTINEL}")" != "${SIMULATED_INHERITED_SENTINEL_CONTENT}" ]]; then
