@@ -1105,6 +1105,81 @@ fn invalid_or_denying_classification_blocks_entire_nested_record() {
 }
 
 #[test]
+fn encoded_classification_tokens_over_limit_deny_complete_records() {
+    let escaped_value = "\\".repeat(3_000);
+    let encoded_value = serde_json::to_string(&escaped_value).expect("serialize classification");
+    assert!(escaped_value.len().saturating_add(2) <= 4 * 1024);
+    assert!(encoded_value.len() > 4 * 1024);
+
+    for (case, record_type, role) in [
+        ("role", json!("user"), json!(&escaped_value)),
+        ("type", json!(&escaped_value), json!("user")),
+    ] {
+        let marker = format!("ENCODED_{case}_OVER_LIMIT_MUST_NOT_SURFACE");
+        let session = json!({
+            "type": record_type,
+            "role": role,
+            "text": marker
+        })
+        .to_string();
+
+        let result = preview_codex_session_fixture(&format!("encoded-{case}-over-limit"), &session);
+
+        assert!(
+            result
+                .pointer("/session_rows/0/content_items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/user_message_count")
+                .and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn classification_tokens_at_encoded_limit_remain_usable() {
+    let boundary_value = "\\".repeat(2_047);
+    let encoded_value = serde_json::to_string(&boundary_value).expect("serialize classification");
+    assert_eq!(encoded_value.len(), 4 * 1024);
+
+    for (case, record_type, role) in [
+        ("role", json!("user"), json!(&boundary_value)),
+        ("type", json!(&boundary_value), json!("user")),
+    ] {
+        let marker = format!("ENCODED_{case}_AT_LIMIT_REMAINS_VISIBLE");
+        let session = json!({
+            "type": record_type,
+            "role": role,
+            "text": marker
+        })
+        .to_string();
+
+        let result = preview_codex_session_fixture(&format!("encoded-{case}-at-limit"), &session);
+
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/content_items/0/kind")
+                .and_then(Value::as_str),
+            Some("user_message"),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/user_message_count")
+                .and_then(Value::as_u64),
+            Some(1),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
 fn non_deny_tool_and_wrapper_records_keep_nested_content() {
     let tool_result = preview_codex_session_fixture(
         "non-deny-real-tool",

@@ -1106,7 +1106,7 @@ fn local_session_role_classification(role: &str) -> LocalSessionRecordClassifica
 }
 
 fn local_session_classification_value_is_supported(value: &str) -> bool {
-    value.len().saturating_add(2) <= MAX_PROVENANCE_TOKEN_BYTES
+    serde_json::to_string(value).is_ok_and(|encoded| encoded.len() <= MAX_PROVENANCE_TOKEN_BYTES)
 }
 
 fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
