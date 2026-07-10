@@ -902,7 +902,7 @@ fn compact_bounded_local_session_content(
     if bounded.head.is_empty() && bounded.tail.is_empty() {
         return String::new();
     }
-    if !bounded.truncated {
+    if !bounded.truncated && bounded.retained_head_end == bounded.retained_tail_start {
         let mut contiguous = String::with_capacity(bounded.head.len() + bounded.tail.len());
         contiguous.push_str(&bounded.head);
         contiguous.push_str(&bounded.tail);
@@ -914,14 +914,12 @@ fn compact_bounded_local_session_content(
     let (tail_leading_fragment, tail_remainder) = split_tail_leading_fragment(&bounded.tail);
     let tail_leading_fragment = tail_leading_fragment.trim_end_matches('\r').trim();
     let head_fragment_is_complete = is_complete_json_record(head_fragment);
-    let tail_leading_is_complete = is_complete_json_record(tail_leading_fragment);
 
     let mut retained_head =
         compact_local_session_records(&bounded.head[..complete_head_end], max_line_fragment_bytes);
     let mut recovered = String::new();
-    let mut consumed_tail_leading = false;
-    let incomplete_tail_fields = (!tail_leading_fragment.is_empty() && !tail_leading_is_complete)
-        .then(|| top_level_scalar_fields_from_suffix(tail_leading_fragment));
+    let consumed_tail_leading =
+        !bounded.tail_starts_at_line_boundary && !tail_leading_fragment.is_empty();
 
     if !head_fragment.is_empty() && head_fragment_is_complete {
         recovered.push_str(&compact_local_session_records(
@@ -929,47 +927,7 @@ fn compact_bounded_local_session_content(
             max_line_fragment_bytes,
         ));
     } else if !head_fragment.is_empty() {
-        if let Some(suffix_fields) = incomplete_tail_fields.as_ref() {
-            let prefix_fields = top_level_scalar_fields_from_prefix(head_fragment);
-            if let Some(fields) =
-                merge_correlated_scalar_fields(prefix_fields.clone(), suffix_fields.clone())
-            {
-                append_supported_scalar_fields(&mut recovered, fields, max_line_fragment_bytes);
-            } else {
-                append_supported_scalar_fields(
-                    &mut recovered,
-                    prefix_fields,
-                    max_line_fragment_bytes,
-                );
-                if suffix_fields.get("type").and_then(Value::as_str).is_some() {
-                    append_supported_scalar_fields(
-                        &mut recovered,
-                        suffix_fields.clone(),
-                        max_line_fragment_bytes,
-                    );
-                }
-            }
-            consumed_tail_leading = true;
-        } else {
-            append_structured_prefix_fragment(
-                &mut recovered,
-                head_fragment,
-                max_line_fragment_bytes,
-            );
-        }
-    }
-
-    if !consumed_tail_leading {
-        if let Some(suffix_fields) = incomplete_tail_fields {
-            if suffix_fields.get("type").and_then(Value::as_str).is_some() {
-                append_supported_scalar_fields(
-                    &mut recovered,
-                    suffix_fields,
-                    max_line_fragment_bytes,
-                );
-            }
-            consumed_tail_leading = true;
-        }
+        append_structured_prefix_fragment(&mut recovered, head_fragment, max_line_fragment_bytes);
     }
 
     let retained_tail = if consumed_tail_leading {
@@ -1026,29 +984,6 @@ fn supported_scalar_fragment(fragment: &str) -> serde_json::Map<String, Value> {
     fields
 }
 
-fn merge_correlated_scalar_fields(
-    mut prefix: serde_json::Map<String, Value>,
-    suffix: serde_json::Map<String, Value>,
-) -> Option<serde_json::Map<String, Value>> {
-    // The skipped gap may contain a JSONL delimiter, so complementary syntax
-    // alone cannot establish that both fragments belong to the same record.
-    let record_id = prefix.get("id")?;
-    if record_id.is_null() || suffix.get("id") != Some(record_id) {
-        return None;
-    }
-    for key in ["type", "role", "id", "sessionId", "cwd"] {
-        if let (Some(prefix_value), Some(suffix_value)) = (prefix.get(key), suffix.get(key)) {
-            if prefix_value != suffix_value {
-                return None;
-            }
-        }
-    }
-    for (key, value) in suffix {
-        prefix.entry(key).or_insert(value);
-    }
-    Some(prefix)
-}
-
 fn append_supported_scalar_fields(
     content: &mut String,
     fields: serde_json::Map<String, Value>,
@@ -1084,7 +1019,9 @@ fn is_complete_json_record(fragment: &str) -> bool {
 fn append_structured_prefix_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
     if looks_like_json_fragment(fragment) {
         let fields = top_level_scalar_fields_from_prefix(fragment);
-        append_supported_scalar_fields(content, fields, max_bytes);
+        if fields.get("type").and_then(Value::as_str).is_some() {
+            append_supported_scalar_fields(content, fields, max_bytes);
+        }
         return;
     }
     let retained = truncate_utf8_bytes(fragment, max_bytes.saturating_sub(1));
@@ -1401,6 +1338,9 @@ mod bounded_content_tests {
             )
             .to_string(),
             tail: String::new(),
+            retained_head_end: 80,
+            retained_tail_start: 100,
+            tail_starts_at_line_boundary: false,
             truncated: true,
             bytes_read: 80,
         };
@@ -1416,6 +1356,9 @@ mod bounded_content_tests {
         let bounded = BoundedText {
             head: "{\"type\":\"user\",\"role\":\"user\",\"text\":\"head-visible\"}\n".to_string(),
             tail: "private-tail\",\"text\":\"untyped-tail-must-not-surface\"}\n".to_string(),
+            retained_head_end: 64,
+            retained_tail_start: 128,
+            tail_starts_at_line_boundary: false,
             truncated: true,
             bytes_read: 128,
         };
@@ -1424,49 +1367,6 @@ mod bounded_content_tests {
 
         assert!(compacted.contains("head-visible"), "{compacted}");
         assert!(!compacted.contains("untyped-tail-must-not-surface"));
-    }
-
-    #[test]
-    fn fragment_merge_requires_matching_record_id_and_rejects_identity_drift() {
-        let prefix = serde_json::from_value::<serde_json::Map<String, Value>>(json!({
-            "type": "user",
-            "role": "user",
-            "id": "record-1",
-            "sessionId": "session-1",
-            "cwd": "/head"
-        }))
-        .expect("prefix fields");
-        let matching_suffix = serde_json::from_value::<serde_json::Map<String, Value>>(json!({
-            "role": "user",
-            "id": "record-1",
-            "sessionId": "session-1",
-            "cwd": "/head",
-            "text": "visible"
-        }))
-        .expect("matching suffix fields");
-        let drifting_suffix = serde_json::from_value::<serde_json::Map<String, Value>>(json!({
-            "type": "assistant",
-            "role": "assistant",
-            "id": "record-1",
-            "sessionId": "session-1",
-            "cwd": "/tail",
-            "text": "must-not-merge"
-        }))
-        .expect("drifting suffix fields");
-        let unrelated_suffix = serde_json::from_value::<serde_json::Map<String, Value>>(json!({
-            "id": "record-2",
-            "text": "must-not-merge"
-        }))
-        .expect("unrelated suffix fields");
-
-        let merged = merge_correlated_scalar_fields(prefix.clone(), matching_suffix)
-            .expect("matching record identity");
-        assert_eq!(merged.get("type").and_then(Value::as_str), Some("user"));
-        assert_eq!(merged.get("role").and_then(Value::as_str), Some("user"));
-        assert_eq!(merged.get("cwd").and_then(Value::as_str), Some("/head"));
-        assert_eq!(merged.get("text").and_then(Value::as_str), Some("visible"));
-        assert!(merge_correlated_scalar_fields(prefix.clone(), drifting_suffix).is_none());
-        assert!(merge_correlated_scalar_fields(prefix, unrelated_suffix).is_none());
     }
 
     #[test]

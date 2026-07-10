@@ -18,8 +18,17 @@ pub(crate) struct BoundedReadSpec {
 pub(crate) struct BoundedText {
     pub(crate) head: String,
     pub(crate) tail: String,
+    pub(crate) retained_head_end: u64,
+    pub(crate) retained_tail_start: u64,
+    pub(crate) tail_starts_at_line_boundary: bool,
     pub(crate) truncated: bool,
     pub(crate) bytes_read: usize,
+}
+
+struct RetainedTailWindow<'a> {
+    bytes: &'a [u8],
+    start_offset: usize,
+    starts_at_line_boundary: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,15 +130,26 @@ fn read_bounded_from<R: Read + Seek>(
     let tail_raw = read_window(reader, tail_grant)?;
 
     let bytes_read = head_raw.len().saturating_add(tail_raw.len());
-    let covered_end = tail_start.saturating_add(tail_raw.len() as u64);
-    let truncated = head_end < tail_start || covered_end < file_len;
     let head = valid_utf8_prefix(&head_raw).to_string();
+    let retained_head_end = head.len() as u64;
     let retained_tail = retain_tail_window(&tail_raw, spec.tail_bytes);
-    let tail = valid_utf8_window(retained_tail).to_string();
+    let (tail_utf8_offset, tail_text) = valid_utf8_window(retained_tail.bytes);
+    let retained_tail_start = tail_start
+        .saturating_add(retained_tail.start_offset as u64)
+        .saturating_add(tail_utf8_offset as u64);
+    let tail = tail_text.to_string();
+    let retained_tail_end = retained_tail_start.saturating_add(tail.len() as u64);
+    let retained_end = retained_head_end.max(retained_tail_end);
+    let truncated = retained_head_end < retained_tail_start || retained_end < file_len;
+    let tail_starts_at_line_boundary = retained_tail_start == 0
+        || (retained_tail.starts_at_line_boundary && tail_utf8_offset == 0);
 
     Ok(BoundedText {
         head,
         tail,
+        retained_head_end,
+        retained_tail_start,
+        tail_starts_at_line_boundary,
         truncated,
         bytes_read,
     })
@@ -151,12 +171,20 @@ fn read_window<R: Read>(reader: &mut R, limit: usize) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn retain_tail_window(bytes: &[u8], tail_bytes: usize) -> &[u8] {
+fn retain_tail_window(bytes: &[u8], tail_bytes: usize) -> RetainedTailWindow<'_> {
     if tail_bytes == 0 || bytes.is_empty() {
-        return &[];
+        return RetainedTailWindow {
+            bytes: &[],
+            start_offset: 0,
+            starts_at_line_boundary: false,
+        };
     }
     if bytes.len() <= tail_bytes {
-        return bytes;
+        return RetainedTailWindow {
+            bytes,
+            start_offset: 0,
+            starts_at_line_boundary: false,
+        };
     }
 
     let minimum_start = bytes.len() - tail_bytes;
@@ -165,10 +193,18 @@ fn retain_tail_window(bytes: &[u8], tail_bytes: usize) -> &[u8] {
         .position(|byte| *byte == b'\n')
     {
         let newline = minimum_start + relative_newline;
-        let candidate = &bytes[newline + 1..];
-        return candidate;
+        let start_offset = newline + 1;
+        return RetainedTailWindow {
+            bytes: &bytes[start_offset..],
+            start_offset,
+            starts_at_line_boundary: true,
+        };
     }
-    &bytes[minimum_start..]
+    RetainedTailWindow {
+        bytes: &bytes[minimum_start..],
+        start_offset: minimum_start,
+        starts_at_line_boundary: false,
+    }
 }
 
 fn valid_utf8_prefix(bytes: &[u8]) -> &str {
@@ -178,18 +214,21 @@ fn valid_utf8_prefix(bytes: &[u8]) -> &str {
     }
 }
 
-fn valid_utf8_window(bytes: &[u8]) -> &str {
+fn valid_utf8_window(bytes: &[u8]) -> (usize, &str) {
     for start in 0..=bytes.len().min(3) {
         let candidate = &bytes[start..];
         match std::str::from_utf8(candidate) {
-            Ok(text) => return text,
+            Ok(text) => return (start, text),
             Err(error) if error.error_len().is_none() => {
-                return std::str::from_utf8(&candidate[..error.valid_up_to()]).unwrap_or_default();
+                return (
+                    start,
+                    std::str::from_utf8(&candidate[..error.valid_up_to()]).unwrap_or_default(),
+                );
             }
             Err(_) => {}
         }
     }
-    ""
+    (bytes.len(), "")
 }
 
 fn usize_from_u64(value: u64) -> usize {
@@ -225,6 +264,32 @@ mod tests {
         assert_eq!(text.tail, "tail\n");
         assert!(text.truncated);
         assert!(text.bytes_read <= 19, "read {} bytes", text.bytes_read);
+    }
+
+    #[test]
+    fn bounded_reader_uses_retained_ranges_after_tail_alignment() {
+        let input = b"HEAD?drop\nTAIL\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(64);
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: 5,
+                tail_bytes: 6,
+                line_fragment_bytes: 8,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert_eq!(text.head, "HEAD?");
+        assert_eq!(text.tail, "TAIL\n");
+        assert_eq!(text.retained_head_end, 5);
+        assert_eq!(text.retained_tail_start, 10);
+        assert!(text.tail_starts_at_line_boundary);
+        assert!(text.truncated);
     }
 
     #[test]

@@ -582,15 +582,12 @@ fn local_session_preview_keeps_tail_timestamp_after_read_cap() {
 #[test]
 fn local_session_preview_bounds_single_line_json() {
     let filler = "forbidden-session-blob-".repeat(30_000);
-    // Repeating the stable record ID in both retained windows makes the
-    // cross-gap association explicit without reading or allocating the blob.
     let session = format!(
         concat!(
             "{{\"type\":\"mode\"}}\n",
             "{{\"type\":\"user\",\"role\":\"user\",",
-            "\"id\":\"single-line-user\",\"data\":{},",
-            "\"id\":\"single-line-user\",\"text\":\"single-line-tail-visible\",",
-            "\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n"
+            "\"text\":\"single-line-tail-visible\",",
+            "\"timestamp\":\"2026-07-10T08:09:10Z\",\"data\":{}}}\n"
         ),
         serde_json::to_string(&filler).expect("serialize filler")
     );
@@ -650,16 +647,14 @@ fn local_session_preview_does_not_merge_distinct_oversized_records() {
 #[test]
 fn local_session_preview_does_not_let_oversized_skipped_head_suppress_tail_user() {
     let skipped_filler = "skipped-head-data-".repeat(48_000);
-    let user_filler = "tail-user-data-".repeat(48_000);
     let session = format!(
         concat!(
             "{{\"type\":\"file-history-snapshot\",\"id\":\"head-snapshot\",",
             "\"text\":\"skipped-head-must-not-surface\",\"data\":{}}}\n",
-            "{{\"data\":{},\"type\":\"user\",\"role\":\"user\",\"id\":\"tail-user\",",
+            "{{\"type\":\"user\",\"role\":\"user\",\"id\":\"tail-user\",",
             "\"text\":\"tail-user-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n"
         ),
         serde_json::to_string(&skipped_filler).expect("serialize skipped filler"),
-        serde_json::to_string(&user_filler).expect("serialize user filler"),
     );
 
     let result = preview_codex_session_fixture("skipped-oversized-then-tail-user", &session);
@@ -710,6 +705,162 @@ fn local_session_preview_preserves_complete_small_data_wrapped_user_event() {
 }
 
 #[test]
+fn local_session_preview_uses_retained_ranges_for_continuity() {
+    const USER_RECORD_BYTES: usize = 553_111;
+    let prefix =
+        "{\"type\":\"user\",\"role\":\"user\",\"text\":\"HEAD_USER_SHOULD_SURVIVE\",\"data\":\"";
+    let suffix = "\"}";
+    let filler = "u".repeat(USER_RECORD_BYTES - prefix.len() - suffix.len());
+    let user_record = format!("{prefix}{filler}{suffix}");
+    assert_eq!(user_record.len(), USER_RECORD_BYTES);
+    let skipped = json!({
+        "type": "file-history-snapshot",
+        "text": "retained-tail-skip"
+    });
+    let session = format!("{user_record}\n{skipped}\n");
+
+    let result = preview_codex_session_fixture("retained-range-continuity", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        serialized.contains("HEAD_USER_SHOULD_SURVIVE"),
+        "{serialized}"
+    );
+    assert!(!serialized.contains("retained-tail-skip"));
+}
+
+#[test]
+fn local_session_preview_never_correlates_cross_record_scalar_ids() {
+    for (case, id, marker) in [
+        ("empty-id", "\"\"", "EMPTY_ID_CROSS_RECORD_LEAK"),
+        ("numeric-id", "7", "NUMERIC_ID_CROSS_RECORD_LEAK"),
+        ("bool-id", "true", "BOOL_ID_CROSS_RECORD_LEAK"),
+    ] {
+        let head_filler =
+            serde_json::to_string(&"h".repeat(700 * 1024)).expect("serialize head filler");
+        let tail_filler =
+            serde_json::to_string(&"t".repeat(700 * 1024)).expect("serialize tail filler");
+        let session = format!(
+            concat!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"id\":{id},",
+                "\"title\":\"head-{case}\",\"data\":{head_filler}}}\n",
+                "{{\"type\":\"file-history-snapshot\",\"id\":\"tail-original\",",
+                "\"data\":{tail_filler},\"id\":{id},\"text\":\"{marker}\"}}\n"
+            ),
+            id = id,
+            case = case,
+            head_filler = head_filler,
+            tail_filler = tail_filler,
+            marker = marker,
+        );
+
+        let result = preview_codex_session_fixture(case, &session);
+        let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+        assert!(!serialized.contains(marker), "{serialized}");
+    }
+}
+
+#[test]
+fn local_session_preview_rejects_reused_identity_across_unread_gap() {
+    let head_filler =
+        serde_json::to_string(&"h".repeat(700 * 1024)).expect("serialize head filler");
+    let tail_filler =
+        serde_json::to_string(&"t".repeat(700 * 1024)).expect("serialize tail filler");
+    let session = format!(
+        concat!(
+            "{{\"type\":\"user\",\"role\":\"user\",\"id\":\"reused\",",
+            "\"sessionId\":\"session-1\",\"cwd\":\"/same\",",
+            "\"title\":\"reused-head\",\"data\":{head_filler}}}\n",
+            "{{\"type\":\"file-history-snapshot\",\"data\":{tail_filler},",
+            "\"type\":\"user\",\"role\":\"user\",\"id\":\"reused\",",
+            "\"sessionId\":\"session-1\",\"cwd\":\"/same\",",
+            "\"text\":\"REUSED_ID_CROSS_RECORD_LEAK\"}}\n"
+        ),
+        head_filler = head_filler,
+        tail_filler = tail_filler,
+    );
+
+    let result = preview_codex_session_fixture("reused-cross-record-identity", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        !serialized.contains("REUSED_ID_CROSS_RECORD_LEAK"),
+        "{serialized}"
+    );
+}
+
+#[test]
+fn local_session_preview_rejects_id_overridden_inside_unread_gap() {
+    let head_filler =
+        serde_json::to_string(&"h".repeat(700 * 1024)).expect("serialize head filler");
+    let tail_filler =
+        serde_json::to_string(&"t".repeat(700 * 1024)).expect("serialize tail filler");
+    let session = format!(
+        concat!(
+            "{{\"type\":\"user\",\"role\":\"user\",\"id\":\"shared\",",
+            "\"title\":\"duplicate-id-head\",\"data\":{head_filler},",
+            "\"id\":\"hidden-final-id\"}}\n",
+            "{{\"type\":\"file-history-snapshot\",\"data\":{tail_filler},",
+            "\"id\":\"shared\",\"text\":\"DUPLICATE_ID_CROSS_RECORD_LEAK\"}}\n"
+        ),
+        head_filler = head_filler,
+        tail_filler = tail_filler,
+    );
+
+    let result = preview_codex_session_fixture("duplicate-id-inside-gap", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        !serialized.contains("DUPLICATE_ID_CROSS_RECORD_LEAK"),
+        "{serialized}"
+    );
+}
+
+#[test]
+fn local_session_preview_drops_incomplete_prefix_with_unknown_root_type() {
+    let filler =
+        serde_json::to_string(&"private".repeat(100 * 1024)).expect("serialize late-type filler");
+    let session = format!(
+        concat!(
+            "{{\"role\":\"user\",\"text\":\"SKIPPED_LATE_TYPE_LEAK\",",
+            "\"data\":{filler},\"type\":\"file-history-snapshot\"}}\n"
+        ),
+        filler = filler,
+    );
+
+    let result = preview_codex_session_fixture("late-skipped-root-type", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        !serialized.contains("SKIPPED_LATE_TYPE_LEAK"),
+        "{serialized}"
+    );
+}
+
+#[test]
+fn local_session_preview_keeps_newline_aligned_plain_text_tail() {
+    let session = format!(
+        "user: early plain text\n{}\nuser: LATE_PLAIN_TEXT_MISSING\n",
+        "x".repeat(700 * 1024)
+    );
+
+    for extension in ["log", "txt"] {
+        let result = preview_codex_session_fixture_with_extension(
+            &format!("newline-aligned-plain-tail-{extension}"),
+            extension,
+            &session,
+        );
+        let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+        assert!(
+            serialized.contains("LATE_PLAIN_TEXT_MISSING"),
+            "{extension}: {serialized}"
+        );
+    }
+}
+
+#[test]
 fn local_session_preview_skips_truncated_single_sidecar_record() {
     let filler = "ignored-file-history-data-".repeat(30_000);
     let session = format!(
@@ -748,6 +899,14 @@ fn local_session_preview_does_not_recover_scalars_nested_in_omitted_data() {
 }
 
 fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
+    preview_codex_session_fixture_with_extension(test_name, "jsonl", content)
+}
+
+fn preview_codex_session_fixture_with_extension(
+    test_name: &str,
+    extension: &str,
+    content: &str,
+) -> Value {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-local-session-{test_name}-test-{}-{unique}",
@@ -760,7 +919,9 @@ fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
     let session_root = user_home.join(".codex/sessions/2026/07/10");
     fs::create_dir_all(&session_root).expect("create codex session root");
     fs::write(
-        session_root.join(format!("rollout-2026-07-10T08-00-00-{test_name}.jsonl")),
+        session_root.join(format!(
+            "rollout-2026-07-10T08-00-00-{test_name}.{extension}"
+        )),
         content,
     )
     .expect("write codex session fixture");
