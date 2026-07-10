@@ -971,6 +971,10 @@
 "message.scannedSkills" = "Scanned %d skills across supported adapters.";
 "refresh.reloaded" = "Reloaded %d skills, %d findings, and %d same-agent conflicts.";
 "refresh.scanComplete" = "Scan complete: %d scanned, %d in catalog, %d findings, %d same-agent conflicts.";
+"refresh.scanPartial" = "Scan completed-partial: %d scanned, %d in catalog, %d findings, %d same-agent conflicts. First issue: %@. Recovery: %@";
+"refresh.partialIssueUnavailable" = "No typed issue detail was returned.";
+"refresh.partialIssue" = "%@ at %@: %@";
+"refresh.partialRecoveryDefault" = "Review scan diagnostics, fix the affected root, then retry Scan.";
 "refresh.failed" = "Refresh failed: %@. Retry when the issue is fixed.";
 "state.unknownValue" = "Unknown (%@)";
 "detail.toggleUnavailable.readOnlyAdapter" = "%@ skills are read-only in this build.";

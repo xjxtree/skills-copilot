@@ -27,7 +27,7 @@
       "conflict_count": 0,
       "snapshot_count": 1,
       "roots": [
-        "/tmp/skills-copilot-home/.claude/skills"
+        "$HOME/.claude/skills"
       ],
       "log_entries": [
         {
@@ -37,11 +37,35 @@
         {
           "level": "info",
           "message": "Catalog refresh completed with 1 skill(s), 0 finding(s), and 0 conflict group(s)."
+        },
+        {
+          "level": "info",
+          "message": "Claude Code discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."
         }
       ],
       "recovery_actions": [
         "Retry Scan if the catalog looks stale.",
-        "Use Reload to re-read the current catalog without touching Claude files."
+        "Use Reload to re-read the current catalog without touching agent files."
+      ],
+      "agent_summaries": [
+        {
+          "agent": "claude-code",
+          "display_label": "Claude Code",
+          "status": "completed",
+          "scanned_count": 1,
+          "catalog_count": 1,
+          "broken_count": 0,
+          "roots_considered": [
+            "$HOME/.claude/skills"
+          ],
+          "roots_scanned": [
+            "$HOME/.claude/skills"
+          ],
+          "roots_partial": [],
+          "roots_skipped": [],
+          "scan_issues": [],
+          "recovery_actions": []
+        }
       ]
     }
   }

@@ -24,7 +24,7 @@ use skills_copilot_core::{
     AdapterContext, AgentAdapter, AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess,
     PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
-use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScannerError};
+use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport, ScannerError};
 use thiserror::Error;
 
 #[cfg(test)]
@@ -122,7 +122,14 @@ pub fn scan_claude_to_catalog(
     ctx: &AdapterContext,
     catalog: &Catalog,
 ) -> Result<usize, CommandError> {
-    scan_single_agent_to_catalog(&ClaudeCodeAdapter, ctx, catalog)
+    Ok(scan_claude_catalog_report(ctx, catalog)?.scanned_count)
+}
+
+pub fn scan_claude_catalog_report(
+    ctx: &AdapterContext,
+    catalog: &Catalog,
+) -> Result<AgentCatalogScanReport, CommandError> {
+    scan_single_agent_catalog_report(&ClaudeCodeAdapter, ctx, catalog)
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +148,8 @@ pub struct AgentCatalogScanReport {
     pub partial_roots: Vec<PathBuf>,
     pub skipped_roots: Vec<PathBuf>,
     pub issues: Vec<AgentCatalogScanIssue>,
+    pub root_aliases: Vec<AgentCatalogScanPathAlias>,
+    pub budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -148,6 +157,12 @@ pub struct AgentCatalogScanIssue {
     pub path: PathBuf,
     pub kind: &'static str,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AgentCatalogScanPathAlias {
+    pub declared: PathBuf,
+    pub canonical: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -434,38 +449,12 @@ pub fn scan_all_catalog_report(
             .collect();
         let report = scan_agent_for_catalog(adapter.as_ref(), ctx)?;
         scanned_count += report.instances.len();
-        let seen: Vec<(String, std::path::PathBuf)> = report
-            .instances
-            .iter()
-            .map(|inst| (inst.scope.as_str().to_string(), inst.path.clone()))
-            .collect();
-        catalog.upsert_skill_instances(&report.instances)?;
-        if !report.scanned_roots.is_empty() {
-            catalog.mark_missing_except_for_project_context(
-                adapter.id().as_str(),
-                ctx.project_root.as_deref(),
-                &report.scanned_roots,
-                &seen,
-            )?;
-        }
-        agents.push(AgentCatalogScanReport {
-            agent: adapter.id(),
-            display_name: adapter.display_name(),
-            scanned_count: report.instances.len(),
+        update_catalog_from_scan_report(adapter.as_ref(), ctx, catalog, &report)?;
+        agents.push(agent_catalog_scan_report(
+            adapter.as_ref(),
             roots_considered,
-            scanned_roots: report.scanned_roots.clone(),
-            partial_roots: report.partial_roots.clone(),
-            skipped_roots: report.skipped_roots.clone(),
-            issues: report
-                .issues
-                .iter()
-                .map(|issue| AgentCatalogScanIssue {
-                    path: issue.path.clone(),
-                    kind: scan_issue_kind_key(issue.kind),
-                    detail: issue.detail.clone(),
-                })
-                .collect(),
-        });
+            &report,
+        ));
     }
     refresh_catalog_rule_outputs(catalog, ctx, previous_fingerprints)?;
     Ok(CatalogScanReport {
@@ -491,24 +480,90 @@ fn scan_single_agent_to_catalog(
     ctx: &AdapterContext,
     catalog: &Catalog,
 ) -> Result<usize, CommandError> {
+    Ok(scan_single_agent_catalog_report(adapter, ctx, catalog)?.scanned_count)
+}
+
+fn scan_single_agent_catalog_report(
+    adapter: &dyn AgentAdapter,
+    ctx: &AdapterContext,
+    catalog: &Catalog,
+) -> Result<AgentCatalogScanReport, CommandError> {
     let previous_fingerprints = catalog.instance_fingerprints()?;
+    let roots_considered = adapter
+        .roots(ctx)
+        .into_iter()
+        .map(|root| root.path)
+        .collect();
     let report = scan_agent_for_catalog(adapter, ctx)?;
+    update_catalog_from_scan_report(adapter, ctx, catalog, &report)?;
+    refresh_catalog_rule_outputs(catalog, ctx, previous_fingerprints)?;
+    Ok(agent_catalog_scan_report(
+        adapter,
+        roots_considered,
+        &report,
+    ))
+}
+
+fn agent_catalog_scan_report(
+    adapter: &dyn AgentAdapter,
+    roots_considered: Vec<PathBuf>,
+    report: &ScanReport,
+) -> AgentCatalogScanReport {
+    AgentCatalogScanReport {
+        agent: adapter.id(),
+        display_name: adapter.display_name(),
+        scanned_count: report.instances.len(),
+        roots_considered,
+        scanned_roots: report.scanned_roots.clone(),
+        partial_roots: report.partial_roots.clone(),
+        skipped_roots: report.skipped_roots.clone(),
+        issues: report
+            .issues
+            .iter()
+            .map(|issue| AgentCatalogScanIssue {
+                path: issue.path.clone(),
+                kind: scan_issue_kind_key(issue.kind),
+                detail: issue.detail.clone(),
+            })
+            .collect(),
+        root_aliases: report
+            .root_aliases
+            .iter()
+            .map(|alias| AgentCatalogScanPathAlias {
+                declared: alias.declared.clone(),
+                canonical: alias.canonical.clone(),
+            })
+            .collect(),
+        budget_exhausted: report.stats.budget_exhausted,
+    }
+}
+
+fn update_catalog_from_scan_report(
+    adapter: &dyn AgentAdapter,
+    ctx: &AdapterContext,
+    catalog: &Catalog,
+    report: &ScanReport,
+) -> Result<(), CommandError> {
     catalog.upsert_skill_instances(&report.instances)?;
     let seen: Vec<(String, std::path::PathBuf)> = report
         .instances
         .iter()
         .map(|inst| (inst.scope.as_str().to_string(), inst.path.clone()))
         .collect();
-    if !report.scanned_roots.is_empty() {
-        catalog.mark_missing_except_for_project_context(
+    if !report.scoped_scanned_roots.is_empty() {
+        let scoped_roots = report
+            .scoped_scanned_roots
+            .iter()
+            .map(|root| (root.scope, root.path.clone()))
+            .collect::<Vec<_>>();
+        catalog.mark_missing_except_scoped_for_project_context(
             adapter.id().as_str(),
             ctx.project_root.as_deref(),
-            &report.scanned_roots,
+            &scoped_roots,
             &seen,
         )?;
     }
-    refresh_catalog_rule_outputs(catalog, ctx, previous_fingerprints)?;
-    Ok(report.instances.len())
+    Ok(())
 }
 
 fn scan_agent_for_catalog(

@@ -215,6 +215,7 @@ final class SkillStore: ObservableObject {
         didSet { scheduleLastMutationMessageDismissal() }
     }
     @Published private(set) var refreshStatusMessage = UIStrings.refreshIdle
+    @Published private(set) var partialScanWarningMessage: String?
     @Published private(set) var watcherStatusMessage = UIStrings.refreshWatcherManual
     @Published private(set) var refreshLogEntries: [RefreshLogEntry] = []
     @Published private(set) var lastScanActivity: RefreshActivity?
@@ -3261,15 +3262,46 @@ final class SkillStore: ObservableObject {
     private func applyRefreshActivity(_ activity: RefreshActivity?) {
         if let activity {
             lastScanActivity = activity
-            refreshStatusMessage = UIStrings.refreshScanComplete(
-                activity.scannedCount,
-                activity.skillCount,
-                activity.findingCount,
-                sameAgentRuntimeConflictCount
-            )
+            if activity.status == "completed-partial" {
+                let partialSummary = activity.agentSummaries?.first { summary in
+                    summary.status == "completed-partial"
+                }
+                let issue = partialSummary?.scanIssues.first
+                let issueText = issue.map { issue in
+                    UIStrings.refreshPartialIssue(
+                        kind: issue.kind,
+                        path: issue.path,
+                        detail: issue.detail
+                    )
+                } ?? UIStrings.refreshPartialIssueUnavailable
+                let recovery = partialSummary?.recoveryActions.first
+                    ?? activity.recoveryActions.first
+                    ?? UIStrings.refreshPartialRecoveryDefault
+                refreshStatusMessage = UIStrings.refreshScanPartial(
+                    activity.scannedCount,
+                    activity.skillCount,
+                    activity.findingCount,
+                    sameAgentRuntimeConflictCount,
+                    issue: issueText,
+                    recovery: recovery
+                )
+                partialScanWarningMessage = refreshStatusMessage
+                // DetailFeedbackInlineView keeps this degraded completion visible
+                // as a warning instead of replacing it with a generic success.
+                lastMutationMessage = refreshStatusMessage
+            } else {
+                partialScanWarningMessage = nil
+                refreshStatusMessage = UIStrings.refreshScanComplete(
+                    activity.scannedCount,
+                    activity.skillCount,
+                    activity.findingCount,
+                    sameAgentRuntimeConflictCount
+                )
+            }
             refreshLogEntries = activity.logEntries + refreshLogEntries
             trimRefreshLog()
         } else {
+            partialScanWarningMessage = nil
             refreshStatusMessage = UIStrings.refreshScanComplete(
                 skills.count,
                 skills.count,

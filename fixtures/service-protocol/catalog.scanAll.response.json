@@ -2,14 +2,14 @@
   "id": "fixture-scan-all",
   "ok": true,
   "result": {
-    "scanned_count": 4,
+    "scanned_count": 6,
     "skills": [
       {
         "id": "claude-skill-instance-id",
         "agent": "claude-code",
         "scope": "agent-global",
-        "path": "/tmp/skills-copilot-home/.claude/skills/demo/SKILL.md",
-        "display_path": "/tmp/skills-copilot-home/.claude/skills/demo/SKILL.md",
+        "path": "/tmp/fixture-home/.claude/skills/demo/SKILL.md",
+        "display_path": "/tmp/fixture-home/.claude/skills/demo/SKILL.md",
         "definition_id": "claude-definition-id",
         "name": "demo",
         "state": "loaded",
@@ -19,8 +19,8 @@
         "id": "codex-skill-instance-id",
         "agent": "codex",
         "scope": "agent-global",
-        "path": "/tmp/skills-copilot-home/.agents/skills/review/SKILL.md",
-        "display_path": "/tmp/skills-copilot-home/.agents/skills/review/SKILL.md",
+        "path": "/tmp/fixture-external/codex/review/SKILL.md",
+        "display_path": "/tmp/fixture-home/.agents/skills/review/SKILL.md",
         "definition_id": "codex-definition-id",
         "name": "review",
         "state": "loaded",
@@ -30,10 +30,32 @@
         "id": "opencode-skill-instance-id",
         "agent": "opencode",
         "scope": "agent-global",
-        "path": "/tmp/skills-copilot-home/.config/opencode/skills/global-review/SKILL.md",
-        "display_path": "/tmp/skills-copilot-home/.config/opencode/skills/global-review/SKILL.md",
+        "path": "/tmp/fixture-home/.config/opencode/skills/global-review/SKILL.md",
+        "display_path": "/tmp/fixture-home/.config/opencode/skills/global-review/SKILL.md",
         "definition_id": "opencode-definition-id",
         "name": "global-review",
+        "state": "loaded",
+        "enabled": true
+      },
+      {
+        "id": "pi-skill-instance-id",
+        "agent": "pi",
+        "scope": "agent-global",
+        "path": "/tmp/fixture-home/.pi/agent/skills/plan/SKILL.md",
+        "display_path": "/tmp/fixture-home/.pi/agent/skills/plan/SKILL.md",
+        "definition_id": "pi-definition-id",
+        "name": "plan",
+        "state": "loaded",
+        "enabled": true
+      },
+      {
+        "id": "openclaw-skill-instance-id",
+        "agent": "openclaw",
+        "scope": "agent-global",
+        "path": "/tmp/fixture-home/.openclaw/skills/workshop/SKILL.md",
+        "display_path": "/tmp/fixture-home/.openclaw/skills/workshop/SKILL.md",
+        "definition_id": "openclaw-definition-id",
+        "name": "workshop",
         "state": "loaded",
         "enabled": true
       },
@@ -41,8 +63,8 @@
         "id": "hermes-skill-instance-id",
         "agent": "hermes",
         "scope": "agent-global",
-        "path": "/tmp/skills-copilot-home/.hermes/skills/research-brief/SKILL.md",
-        "display_path": "/tmp/skills-copilot-home/.hermes/skills/research-brief/SKILL.md",
+        "path": "/tmp/fixture-home/.hermes/skills/research-brief/SKILL.md",
+        "display_path": "/tmp/fixture-home/.hermes/skills/research-brief/SKILL.md",
         "definition_id": "hermes-definition-id",
         "name": "research-brief",
         "state": "loaded",
@@ -51,47 +73,59 @@
     ],
     "activity": {
       "operation": "catalog.scanAll",
-      "status": "completed",
+      "status": "completed-partial",
       "started_at": 1780590000000,
       "finished_at": 1780590000100,
-      "scanned_count": 4,
-      "skill_count": 4,
+      "scanned_count": 6,
+      "skill_count": 6,
       "finding_count": 0,
       "conflict_count": 0,
       "snapshot_count": 0,
       "roots": [
-        "/tmp/skills-copilot-home/.claude/skills",
-        "/tmp/skills-copilot-home/.agents/skills",
-        "/tmp/skills-copilot-home/.config/opencode/skills",
-        "/tmp/skills-copilot-home/.hermes/skills"
+        "$HOME/.claude/skills",
+        "$HOME/.agents/skills",
+        "$HOME/.config/opencode/skills",
+        "<adapter-root>/missing-opencode",
+        "$HOME/.pi/agent/skills",
+        "$HOME/.openclaw/skills",
+        "$HOME/.hermes/skills"
       ],
       "log_entries": [
         {
           "level": "info",
-          "message": "Queued Claude Code, Codex, opencode, and Hermes scan across 4 root(s)."
+          "message": "Queued Claude Code, Codex, opencode, Pi, OpenClaw, and Hermes scan across 7 root(s)."
         },
         {
           "level": "info",
-          "message": "Catalog refresh completed with 4 skill(s), 0 finding(s), and 0 conflict group(s)."
+          "message": "Catalog refresh completed with 6 skill(s), 0 finding(s), and 0 conflict group(s)."
         },
         {
           "level": "info",
-          "message": "Claude Code discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 scanned root(s) and 0 skipped root(s)."
+          "message": "Claude Code discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."
+        },
+        {
+          "level": "warning",
+          "message": "Codex discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 0 complete root(s), 1 partial root(s), and 0 skipped root(s); first scan issue entry_unreadable at <adapter-root>/dangling-link: A directory entry could not be inspected or resolved."
+        },
+        {
+          "level": "warning",
+          "message": "opencode discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 1 skipped root(s); root-error skipped-root path(s): <adapter-root>/missing-opencode; first scan issue root_unavailable at <adapter-root>/missing-opencode: A declared scan root was unavailable or not a directory."
         },
         {
           "level": "info",
-          "message": "Codex discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 scanned root(s) and 0 skipped root(s)."
+          "message": "Pi discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."
         },
         {
           "level": "info",
-          "message": "opencode discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 scanned root(s) and 0 skipped root(s)."
+          "message": "OpenClaw discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."
         },
         {
           "level": "info",
-          "message": "Hermes discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 scanned root(s) and 0 skipped root(s)."
+          "message": "Hermes discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."
         }
       ],
       "recovery_actions": [
+        "Review partial-root diagnostics; unseen rows under partial roots were preserved.",
         "Retry Scan if the catalog looks stale.",
         "Use Reload to re-read the current catalog without touching agent files."
       ],
@@ -104,10 +138,10 @@
           "catalog_count": 1,
           "broken_count": 0,
           "roots_considered": [
-            "/tmp/skills-copilot-home/.claude/skills"
+            "$HOME/.claude/skills"
           ],
           "roots_scanned": [
-            "/tmp/skills-copilot-home/.claude/skills"
+            "$HOME/.claude/skills"
           ],
           "roots_partial": [],
           "roots_skipped": [],
@@ -117,15 +151,70 @@
         {
           "agent": "codex",
           "display_label": "Codex",
+          "status": "completed-partial",
+          "scanned_count": 1,
+          "catalog_count": 1,
+          "broken_count": 0,
+          "roots_considered": [
+            "$HOME/.agents/skills"
+          ],
+          "roots_scanned": [],
+          "roots_partial": [
+            "<adapter-root>"
+          ],
+          "roots_skipped": [],
+          "scan_issues": [
+            {
+              "kind": "entry_unreadable",
+              "path": "<adapter-root>/dangling-link",
+              "detail": "A directory entry could not be inspected or resolved."
+            }
+          ],
+          "recovery_actions": [
+            "Review Codex partial-root diagnostics, then retry Scan; unseen catalog rows under partial roots were preserved."
+          ]
+        },
+        {
+          "agent": "opencode",
+          "display_label": "opencode",
+          "status": "completed-with-skipped-roots",
+          "scanned_count": 1,
+          "catalog_count": 1,
+          "broken_count": 0,
+          "roots_considered": [
+            "$HOME/.config/opencode/skills",
+            "<adapter-root>/missing-opencode"
+          ],
+          "roots_scanned": [
+            "$HOME/.config/opencode/skills"
+          ],
+          "roots_partial": [],
+          "roots_skipped": [
+            "<adapter-root>/missing-opencode"
+          ],
+          "scan_issues": [
+            {
+              "kind": "root_unavailable",
+              "path": "<adapter-root>/missing-opencode",
+              "detail": "A declared scan root was unavailable or not a directory."
+            }
+          ],
+          "recovery_actions": [
+            "Review opencode skipped-root diagnostics, then retry Scan."
+          ]
+        },
+        {
+          "agent": "pi",
+          "display_label": "Pi",
           "status": "completed",
           "scanned_count": 1,
           "catalog_count": 1,
           "broken_count": 0,
           "roots_considered": [
-            "/tmp/skills-copilot-home/.agents/skills"
+            "$HOME/.pi/agent/skills"
           ],
           "roots_scanned": [
-            "/tmp/skills-copilot-home/.agents/skills"
+            "$HOME/.pi/agent/skills"
           ],
           "roots_partial": [],
           "roots_skipped": [],
@@ -133,17 +222,17 @@
           "recovery_actions": []
         },
         {
-          "agent": "opencode",
-          "display_label": "opencode",
+          "agent": "openclaw",
+          "display_label": "OpenClaw",
           "status": "completed",
           "scanned_count": 1,
           "catalog_count": 1,
           "broken_count": 0,
           "roots_considered": [
-            "/tmp/skills-copilot-home/.config/opencode/skills"
+            "$HOME/.openclaw/skills"
           ],
           "roots_scanned": [
-            "/tmp/skills-copilot-home/.config/opencode/skills"
+            "$HOME/.openclaw/skills"
           ],
           "roots_partial": [],
           "roots_skipped": [],
@@ -158,10 +247,10 @@
           "catalog_count": 1,
           "broken_count": 0,
           "roots_considered": [
-            "/tmp/skills-copilot-home/.hermes/skills"
+            "$HOME/.hermes/skills"
           ],
           "roots_scanned": [
-            "/tmp/skills-copilot-home/.hermes/skills"
+            "$HOME/.hermes/skills"
           ],
           "roots_partial": [],
           "roots_skipped": [],

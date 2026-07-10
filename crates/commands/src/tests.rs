@@ -11,6 +11,8 @@ use skills_copilot_core::{
 
 use super::*;
 
+mod scanner_regressions;
+
 #[test]
 fn script_execution_preview_is_disabled_and_redacts_env_values() {
     let root = temp_test_dir("script-preview");
@@ -4410,15 +4412,21 @@ fn benchmark_10k_scan_to_catalog() {
     };
 
     let started_at = Instant::now();
-    let count = scan_claude_to_catalog(&ctx, &catalog).expect("benchmark scan succeeds");
+    let report = scan_claude_catalog_report(&ctx, &catalog).expect("benchmark scan succeeds");
+    let count = report.scanned_count;
     let elapsed = started_at.elapsed();
     let records = catalog.list_skill_records().expect("records list");
 
     assert_eq!(count, SKILL_COUNT);
     assert_eq!(records.len(), SKILL_COUNT);
+    assert!(
+        !report.budget_exhausted,
+        "production defaults must not exhaust the scanner budget for 10k skills"
+    );
     println!(
-        "skills-copilot-bench scanned={count} records={} elapsed_ms={} elapsed_s={:.3}",
+        "skills-copilot-bench scanned={count} records={} budget_exhausted={} elapsed_ms={} elapsed_s={:.3}",
         records.len(),
+        report.budget_exhausted,
         elapsed.as_millis(),
         elapsed.as_secs_f64()
     );

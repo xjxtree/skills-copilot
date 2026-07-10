@@ -20,7 +20,8 @@ struct DetailView: View {
                     VStack(alignment: .leading, spacing: 24) {
                         DetailFeedbackInlineView(
                             errorMessage: store.errorMessage,
-                            lastMutationMessage: store.lastMutationMessage
+                            lastMutationMessage: store.lastMutationMessage,
+                            partialRefreshMessage: store.partialScanWarningMessage
                         )
                         .equatable()
 
@@ -118,10 +119,12 @@ struct DetailView: View {
 private struct DetailFeedbackInlineView: View, Equatable {
     let errorMessage: String?
     let lastMutationMessage: String?
+    let partialRefreshMessage: String?
 
     static func == (lhs: DetailFeedbackInlineView, rhs: DetailFeedbackInlineView) -> Bool {
         lhs.errorMessage == rhs.errorMessage
             && lhs.lastMutationMessage == rhs.lastMutationMessage
+            && lhs.partialRefreshMessage == rhs.partialRefreshMessage
     }
 
     var body: some View {
@@ -130,6 +133,12 @@ private struct DetailFeedbackInlineView: View, Equatable {
                 message: error,
                 systemImage: "exclamationmark.triangle.fill",
                 color: .red
+            )
+        } else if let message = partialRefreshMessage {
+            DetailFeedbackToast(
+                message: message,
+                systemImage: "exclamationmark.triangle.fill",
+                color: .orange
             )
         } else if let message = lastMutationMessage {
             DetailFeedbackToast(

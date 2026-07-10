@@ -971,6 +971,10 @@
 "message.scannedSkills" = "已扫描受支持 adapter 中的 %d 个技能。";
 "refresh.reloaded" = "已重新加载 %d 个技能、%d 个 finding 和 %d 个同 agent 冲突。";
 "refresh.scanComplete" = "扫描完成：已扫描 %d 个，catalog 中 %d 个，%d 个 finding，%d 个同 agent 冲突。";
+"refresh.scanPartial" = "扫描部分完成（completed-partial）：已扫描 %d 个，catalog 中 %d 个，%d 个 finding，%d 个同 agent 冲突。首个问题：%@。恢复操作：%@";
+"refresh.partialIssueUnavailable" = "服务未返回类型化的问题详情。";
+"refresh.partialIssue" = "%@（%@）：%@";
+"refresh.partialRecoveryDefault" = "请检查扫描诊断，修复受影响的根目录，然后重试扫描。";
 "refresh.failed" = "刷新失败：%@。问题修复后请重试。";
 "state.unknownValue" = "未知（%@）";
 "detail.toggleUnavailable.readOnlyAdapter" = "此构建中 %@ 技能为只读。";

@@ -311,6 +311,18 @@ impl Catalog {
         scanned_roots: &[PathBuf],
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
+        let scoped_roots = legacy_scoped_scan_roots(scanned_roots);
+        self.mark_missing_except_with_project_context(agent, None, &scoped_roots, seen)
+    }
+
+    /// Scope-aware missing sweep. A complete path in one scope must not make a
+    /// row under the same canonical path eligible in a different scope.
+    pub fn mark_missing_except_scoped(
+        &self,
+        agent: &str,
+        scanned_roots: &[(Scope, PathBuf)],
+        seen: &[(String, PathBuf)],
+    ) -> Result<usize, CatalogError> {
         self.mark_missing_except_with_project_context(agent, None, scanned_roots, seen)
     }
 
@@ -326,6 +338,23 @@ impl Catalog {
         scanned_roots: &[PathBuf],
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
+        let scoped_roots = legacy_scoped_scan_roots(scanned_roots);
+        self.mark_missing_except_with_project_context(
+            agent,
+            Some(current_project_root),
+            &scoped_roots,
+            seen,
+        )
+    }
+
+    /// Scope-aware project-context variant used by scanner-backed refreshes.
+    pub fn mark_missing_except_scoped_for_project_context(
+        &self,
+        agent: &str,
+        current_project_root: Option<&Path>,
+        scanned_roots: &[(Scope, PathBuf)],
+        seen: &[(String, PathBuf)],
+    ) -> Result<usize, CatalogError> {
         self.mark_missing_except_with_project_context(
             agent,
             Some(current_project_root),
@@ -338,7 +367,7 @@ impl Catalog {
         &self,
         agent: &str,
         project_context: Option<Option<&Path>>,
-        scanned_roots: &[PathBuf],
+        scanned_roots: &[(Scope, PathBuf)],
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
         let seen_set: HashSet<(String, String)> = seen
@@ -391,9 +420,9 @@ impl Catalog {
                         return false;
                     }
                     let record_path = PathBuf::from(path);
-                    scanned_roots
-                        .iter()
-                        .any(|root| record_path.starts_with(root))
+                    scanned_roots.iter().any(|(root_scope, root)| {
+                        scope == root_scope.as_str() && record_path.starts_with(root)
+                    })
                 })
                 .map(|(id, _, _, _, _)| id)
                 .collect();
@@ -660,6 +689,17 @@ impl Catalog {
         )?;
         Ok(())
     }
+}
+
+fn legacy_scoped_scan_roots(scanned_roots: &[PathBuf]) -> Vec<(Scope, PathBuf)> {
+    scanned_roots
+        .iter()
+        .flat_map(|root| {
+            [Scope::AgentGlobal, Scope::AgentProject]
+                .into_iter()
+                .map(|scope| (scope, root.clone()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -964,6 +1004,92 @@ mod tests {
             outside_record.state, "loaded",
             "records outside any scanned_root are not swept"
         );
+    }
+
+    #[test]
+    fn scoped_missing_sweep_does_not_cross_scope_on_same_canonical_root() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let path = fixture_path("fixtures/claude-code/personal/valid-summarize/SKILL.md")
+            .canonicalize()
+            .expect("canonical skill path");
+        let root = path.parent().expect("skill parent").to_path_buf();
+        let mut global = ClaudeCodeAdapter.parse(&path).expect("global parses");
+        global.id = "same-root-global".to_string();
+        global.scope = Scope::AgentGlobal;
+        global.path = path.clone();
+        let mut project = global.clone();
+        project.id = "same-root-project".to_string();
+        project.scope = Scope::AgentProject;
+        project.project_root = Some(root.clone());
+
+        catalog
+            .upsert_skill_instances(&[global, project])
+            .expect("seed same-root rows");
+        let marked = catalog
+            .mark_missing_except_scoped("claude-code", &[(Scope::AgentGlobal, root)], &[])
+            .expect("scoped sweep succeeds");
+        let records = catalog.list_skill_records().expect("records after sweep");
+
+        assert_eq!(marked, 1);
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.id == "same-root-global")
+                .expect("global row")
+                .state,
+            "missing"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.id == "same-root-project")
+                .expect("project row")
+                .state,
+            "loaded"
+        );
+    }
+
+    #[test]
+    fn missing_event_insert_failure_rolls_back_state_transition() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let path = fixture_path("fixtures/claude-code/personal/valid-summarize/SKILL.md")
+            .canonicalize()
+            .expect("canonical skill path");
+        let root = path.parent().expect("skill parent").to_path_buf();
+        let mut instance = ClaudeCodeAdapter.parse(&path).expect("skill parses");
+        instance.id = "rollback-on-event-failure".to_string();
+        instance.scope = Scope::AgentGlobal;
+        instance.path = path;
+        catalog
+            .upsert_skill_instance(&instance)
+            .expect("seed instance");
+        catalog
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_missing_event
+                 BEFORE INSERT ON skill_event
+                 WHEN NEW.kind = 'missing'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected missing event failure');
+                 END;",
+            )
+            .expect("install failure trigger");
+
+        let result =
+            catalog.mark_missing_except_scoped("claude-code", &[(Scope::AgentGlobal, root)], &[]);
+        let record = catalog
+            .get_skill_record(&instance.id)
+            .expect("record lookup")
+            .expect("record remains");
+
+        assert!(matches!(result, Err(CatalogError::Sqlite(_))));
+        assert_eq!(record.state, "loaded");
+        assert!(catalog
+            .list_skill_events(&instance.id, None)
+            .expect("events after rollback")
+            .is_empty());
     }
 
     #[test]

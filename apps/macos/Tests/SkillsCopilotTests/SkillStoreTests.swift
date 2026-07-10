@@ -735,16 +735,19 @@ struct SkillStoreTests {
         try expectNil(store.errorMessage, "Generic scan should not set an error on success.")
         try expectEqual(store.skills.count, 3, "Generic scan should refresh the catalog collections.")
         try expectEqual(store.skills.first { $0.id == "gamma" }?.agent, "codex", "Scan fixtures should exercise a Codex skill record.")
-        try expectEqual(store.lastMutationMessage, UIStrings.scannedSkills(3), "Generic scan should expose adapter-neutral copy.")
-        try expectEqual(store.refreshStatusMessage, UIStrings.refreshScanComplete(3, 3, 0, 0), "Generic scan should use refresh activity counts.")
-        try expectEqual(store.lastScanActivity?.agentSummaries?.count, 2, "Scan should retain per-agent adapter diagnostics when the service provides them.")
-        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.rootsSkipped, ["/tmp/missing-claude"], "Scan diagnostics should decode skipped roots.")
+        try expectContains(store.refreshStatusMessage, "completed-partial", "A partial scan must remain visible in the primary refresh status.")
+        try expectContains(store.refreshStatusMessage, "<adapter-root>/dangling-link", "The primary partial status should include the first redacted issue path.")
+        try expectContains(store.refreshStatusMessage, "Review partial scan diagnostics.", "The primary partial status should include a recovery action.")
+        try expectEqual(store.lastMutationMessage, store.refreshStatusMessage, "The visible detail feedback must surface the partial status instead of a generic success toast.")
+        try expectEqual(store.partialScanWarningMessage, store.refreshStatusMessage, "Persistent partial feedback must not be coupled to later generic reload status text.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.count, 3, "Scan should retain complete, partial, and skipped adapter diagnostics when the service provides them.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "opencode" }?.rootsSkipped, ["<adapter-root>/missing-opencode"], "Scan diagnostics should decode skipped roots.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.status, "completed-partial", "A partial adapter scan must not decode as completed.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.rootsPartial, ["<adapter-root>"], "Scan diagnostics should decode partial roots.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues.first?.kind, "entry_unreadable", "Scan diagnostics should decode typed issue kinds.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues.first?.path, "<adapter-root>/dangling-link", "Scan issue paths should stay redacted on the client.")
         store.agentFilter = .codex
-        try expectEqual(store.selectedAgentRefreshSummary?.rootsScanned, ["/tmp/codex"], "Selected adapter diagnostics should follow the agent filter.")
+        try expectEqual(store.selectedAgentRefreshSummary?.rootsScanned, ["$HOME/.agents/skills"], "Selected adapter diagnostics should follow the agent filter.")
         let calls = await runner.calls()
         try expectEqual(countOccurrences("app.stateSnapshot", in: calls), 1, "Scan should refresh collections with one app state snapshot call.")
         try expectEqual(countOccurrences("catalog.listSkills", in: calls), 0, "Scan refresh should not launch a separate skills list sidecar.")
@@ -752,6 +755,10 @@ struct SkillStoreTests {
         try expectEqual(countOccurrences("catalog.listConflicts", in: calls), 0, "Scan refresh should not launch a separate conflicts list sidecar.")
         try expectEqual(countMethodCalls("snapshot.list", in: calls), 0, "Scan refresh should not launch a global snapshots list sidecar.")
         try expectFalse(countMethodCalls("snapshot.listAgentConfig", in: calls) == 0, "Scan refresh should refresh at least one writable agent config history.")
+        let partialWarning = store.partialScanWarningMessage
+        await store.reload()
+        try expectEqual(store.partialScanWarningMessage, partialWarning, "Reloading cached catalog data must not relabel or discard an unresolved partial-scan warning.")
+        try expectFalse(store.refreshStatusMessage == partialWarning, "Generic reload status and persistent partial-scan warning should remain independent.")
     }
 
     private func searchAndFilterChangesNormalizeSelectionAndDetail() async throws {
@@ -2258,7 +2265,7 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     """
 
     private static let scanResult = """
-    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"scan","status":"completed-partial","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["/tmp/global","/tmp/codex"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed-partial","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["<adapter-root>","/tmp/missing-claude"],"roots_scanned":["/tmp/global"],"roots_partial":["<adapter-root>"],"roots_skipped":["/tmp/missing-claude"],"scan_issues":[{"kind":"entry_unreadable","path":"<adapter-root>/dangling-link","detail":"A directory entry could not be inspected or resolved."}],"recovery_actions":["Review partial scan diagnostics."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["/tmp/codex"],"roots_scanned":["/tmp/codex"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed-partial","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills","$HOME/.agents/skills","<adapter-root>/missing-opencode"],"log_entries":[{"level":"warning","message":"Claude Code discovered 2 skill(s); catalog now has 2 skill(s), 0 broken, across 0 complete root(s), 1 partial root(s), and 0 skipped root(s); first scan issue entry_unreadable at <adapter-root>/dangling-link: A directory entry could not be inspected or resolved."},{"level":"info","message":"Codex discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."},{"level":"warning","message":"opencode discovered 0 skill(s); catalog now has 0 skill(s), 0 broken, across 0 complete root(s), 0 partial root(s), and 1 skipped root(s); root-error skipped-root path(s): <adapter-root>/missing-opencode."}],"recovery_actions":["Review partial-root diagnostics; unseen rows under partial roots were preserved."],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed-partial","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":[],"roots_partial":["<adapter-root>"],"roots_skipped":[],"scan_issues":[{"kind":"entry_unreadable","path":"<adapter-root>/dangling-link","detail":"A directory entry could not be inspected or resolved."}],"recovery_actions":["Review partial scan diagnostics."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["$HOME/.agents/skills"],"roots_scanned":["$HOME/.agents/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]},{"agent":"opencode","display_label":"opencode","status":"completed-with-skipped-roots","scanned_count":0,"catalog_count":0,"broken_count":0,"roots_considered":["<adapter-root>/missing-opencode"],"roots_scanned":[],"roots_partial":[],"roots_skipped":["<adapter-root>/missing-opencode"],"scan_issues":[{"kind":"root_unavailable","path":"<adapter-root>/missing-opencode","detail":"A declared scan root was unavailable or not a directory."}],"recovery_actions":["Review opencode skipped-root diagnostics, then retry Scan."]}]}}
     """
 
     private static let projectContext = """

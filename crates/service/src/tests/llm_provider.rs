@@ -2252,6 +2252,75 @@ fn scan_claude_returns_refresh_activity() {
 }
 
 #[test]
+#[cfg(unix)]
+fn scan_claude_surfaces_partial_root_and_issue_in_refresh_activity() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-scan-claude-partial-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let home = temp_root.join("home");
+    let skill_root = home.join(".claude/skills");
+    fs::create_dir_all(skill_root.join("valid")).expect("create skill root");
+    fs::write(
+        skill_root.join("valid/SKILL.md"),
+        "---\nname: valid\ndescription: valid fixture\n---\nbody\n",
+    )
+    .expect("write skill");
+    std::os::unix::fs::symlink(
+        skill_root.join("missing-target"),
+        skill_root.join("dangling-link"),
+    )
+    .expect("create dangling link");
+    let host = ServiceHost {
+        app_data_dir: temp_root.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+
+    let response = host.handle(ServiceRequest {
+        id: Some("scan-partial".to_string()),
+        method: "catalog.scanClaude".to_string(),
+        params: Value::Null,
+    });
+    let result = response.result.expect("scan result");
+    let activity = result.get("activity").expect("activity");
+    let summary = activity
+        .get("agent_summaries")
+        .and_then(Value::as_array)
+        .and_then(|summaries| summaries.first())
+        .expect("Claude summary");
+
+    assert_eq!(
+        activity.get("status").and_then(Value::as_str),
+        Some("completed-partial")
+    );
+    assert_eq!(
+        summary.get("status").and_then(Value::as_str),
+        Some("completed-partial")
+    );
+    assert!(summary
+        .get("roots_partial")
+        .and_then(Value::as_array)
+        .is_some_and(|roots| !roots.is_empty()));
+    assert_eq!(
+        summary
+            .get("scan_issues")
+            .and_then(Value::as_array)
+            .and_then(|issues| issues.first())
+            .and_then(|issue| issue.get("kind"))
+            .and_then(Value::as_str),
+        Some("entry_unreadable")
+    );
+
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
 fn import_skill_imports_local_directory_to_tool_global_staging_only() {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(
@@ -2608,6 +2677,8 @@ fn scan_all_label_formats_four_agent_reports() {
             partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
             issues: Vec::new(),
+            root_aliases: Vec::new(),
+            budget_exhausted: false,
         },
         AgentCatalogScanReport {
             agent: AgentId::Codex,
@@ -2618,6 +2689,8 @@ fn scan_all_label_formats_four_agent_reports() {
             partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
             issues: Vec::new(),
+            root_aliases: Vec::new(),
+            budget_exhausted: false,
         },
         AgentCatalogScanReport {
             agent: AgentId::Opencode,
@@ -2628,6 +2701,8 @@ fn scan_all_label_formats_four_agent_reports() {
             partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
             issues: Vec::new(),
+            root_aliases: Vec::new(),
+            budget_exhausted: false,
         },
         AgentCatalogScanReport {
             agent: AgentId::Pi,
@@ -2638,6 +2713,8 @@ fn scan_all_label_formats_four_agent_reports() {
             partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
             issues: Vec::new(),
+            root_aliases: Vec::new(),
+            budget_exhausted: false,
         },
     ];
 
@@ -2682,6 +2759,8 @@ fn partial_agent_refresh_summary_is_warning_and_redacts_issue_details() {
                 partial_root.join("private-target").display(),
             ),
         }],
+        root_aliases: Vec::new(),
+        budget_exhausted: false,
     };
 
     let summaries = host.agent_refresh_summaries(&[report], &[], &[]);
@@ -2726,11 +2805,134 @@ fn partial_agent_refresh_summary_is_warning_and_redacts_issue_details() {
         Some(summaries),
     );
     assert_eq!(activity.status, "completed-partial");
+    let warning = activity
+        .log_entries
+        .iter()
+        .find(|entry| {
+            entry.level == "warning"
+                && entry.message.contains("partial")
+                && entry.message.contains("entry_unreadable")
+        })
+        .expect("partial warning log");
+    assert!(
+        !warning.message.ends_with(".."),
+        "stable issue detail and enclosing sentence must not duplicate punctuation"
+    );
+
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn scan_summary_uses_immutable_nested_aliases_after_declared_symlink_changes() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-scan-alias-redaction-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let home = temp_root.join("private-home");
+    let declared_root = home.join(".claude/skills");
+    let external_root = temp_root.join("private-external-root");
+    let nested_root = external_root.join("nested-private-root");
+    let replacement_root = temp_root.join("replacement-private-root");
+    fs::create_dir_all(declared_root.parent().expect("declared parent"))
+        .expect("create declared parent");
+    fs::create_dir_all(&nested_root).expect("create nested external root");
+    fs::create_dir_all(&replacement_root).expect("create replacement root");
+    std::os::unix::fs::symlink(&external_root, &declared_root)
+        .expect("create declared root symlink");
+    let canonical_external = external_root
+        .canonicalize()
+        .expect("canonical external root");
+    let canonical_nested = nested_root.canonicalize().expect("canonical nested root");
+    let issue_path =
+        canonical_external.join("nested-private-root/../nested-private-root/private-entry");
+    let report = AgentCatalogScanReport {
+        agent: AgentId::ClaudeCode,
+        display_name: "Claude Code",
+        scanned_count: 0,
+        roots_considered: vec![home.join(".claude/../.claude/skills")],
+        scanned_roots: Vec::new(),
+        partial_roots: vec![canonical_external.clone()],
+        skipped_roots: Vec::new(),
+        issues: vec![skills_copilot_commands::AgentCatalogScanIssue {
+            path: issue_path,
+            kind: "entry_unreadable",
+            detail: "private raw detail".to_string(),
+        }],
+        root_aliases: vec![
+            skills_copilot_commands::AgentCatalogScanPathAlias {
+                declared: declared_root.clone(),
+                canonical: canonical_external,
+            },
+            skills_copilot_commands::AgentCatalogScanPathAlias {
+                declared: nested_root.clone(),
+                canonical: canonical_nested,
+            },
+        ],
+        budget_exhausted: false,
+    };
+    fs::remove_file(&declared_root).expect("remove original symlink");
+    std::os::unix::fs::symlink(&replacement_root, &declared_root)
+        .expect("replace declared symlink after scan");
+    let host = ServiceHost {
+        app_data_dir: temp_root.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+
+    let summaries = host.agent_refresh_summaries(&[report], &[], &[]);
+    let summary = summaries.first().expect("summary");
+    let serialized = serde_json::to_string(summary).expect("serialize summary");
+
+    assert_eq!(summary.roots_considered, vec!["$HOME/.claude/skills"]);
+    assert_eq!(summary.roots_partial, vec!["<adapter-root>"]);
+    assert_eq!(
+        summary.scan_issues.first().expect("scan issue").path,
+        "<adapter-root>/private-entry"
+    );
+    let activity = host.scan_activity(
+        "catalog.scanAll",
+        "Claude Code",
+        vec![declared_root],
+        1,
+        ScanActivityCounts {
+            scanned_count: 0,
+            skill_count: 0,
+            finding_count: 0,
+            conflict_count: 0,
+            snapshot_count: 0,
+        },
+        Some(summaries),
+    );
+    let serialized_activity = serde_json::to_string(&activity).expect("serialize activity");
     assert!(activity.log_entries.iter().any(|entry| {
         entry.level == "warning"
-            && entry.message.contains("partial")
+            && entry.message.contains("<adapter-root>/private-entry")
             && entry.message.contains("entry_unreadable")
     }));
+    for private_path in [
+        &home,
+        &external_root,
+        &nested_root,
+        &replacement_root,
+        &host.app_data_dir,
+    ] {
+        assert!(
+            !serialized.contains(&private_path.to_string_lossy().to_string()),
+            "serialized scan diagnostics leaked {}",
+            private_path.display()
+        );
+        assert!(
+            !serialized_activity.contains(&private_path.to_string_lossy().to_string()),
+            "serialized scan activity leaked {}",
+            private_path.display()
+        );
+    }
 
     let _ = fs::remove_dir_all(temp_root);
 }

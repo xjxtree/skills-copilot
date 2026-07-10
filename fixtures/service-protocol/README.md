@@ -14,11 +14,20 @@ Rules:
 - `service.status.response.json` must include the current `protocol_version`.
 - Use temporary paths in examples; do not encode a contributor's real home directory.
 
-V2.5 opencode note:
+Current catalog scan fixture contract:
 
-- `catalog.scanAll.response.json` includes the three-agent response shape for Claude Code, Codex, and read-only opencode native roots.
-- V2.5 did not add a separate opencode scan method; `catalog.scanAll` remained the single multi-agent scan method at that stage.
-- Fixture and smoke coverage must keep opencode visible for global no-project scans, visible for project scans after project context is active, and rejected for write toggles.
+- `catalog.scanAll.response.json` covers all six supported adapter families:
+  Claude Code, Codex, opencode, Pi, OpenClaw, and Hermes.
+- The fixture intentionally combines a complete root, a partial root with a
+  typed issue, and a skipped root. Its enclosing status, warning logs, and
+  recovery actions must agree with those outcomes rather than merely decode as
+  the right JSON shape.
+- Diagnostic paths use `$HOME` and `<adapter-root>` exactly as the service does;
+  contributor-specific absolute paths are forbidden in scan activity.
+- V2.5 did not add a separate opencode scan method; `catalog.scanAll` remains
+  the single multi-agent scan method. Fixture and smoke coverage keep opencode
+  visible for global and selected-project scans while respecting its current
+  guarded write capability.
 
 V2.9 local export note:
 

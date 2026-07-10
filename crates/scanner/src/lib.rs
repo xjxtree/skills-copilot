@@ -38,10 +38,32 @@ pub struct ScanReport {
     /// Callers (e.g. catalog sweep) should only consider records whose
     /// path is under one of these roots as candidates for cleanup.
     pub scanned_roots: Vec<PathBuf>,
+    /// Complete roots with their original adapter scope preserved. Catalog
+    /// missing-sweep must use this field instead of the path-only compatibility
+    /// field above.
+    pub scoped_scanned_roots: Vec<ScopedScanRoot>,
     /// Canonical paths of roots whose traversal encountered a filesystem error.
     pub partial_roots: Vec<PathBuf>,
+    /// Partial roots with their original adapter scope preserved.
+    pub scoped_partial_roots: Vec<ScopedScanRoot>,
     pub issues: Vec<ScanIssue>,
+    /// Immutable declared/canonical aliases captured while roots were
+    /// resolved. Service diagnostics use this snapshot and never re-resolve a
+    /// path after the scan.
+    pub root_aliases: Vec<ScanRootAlias>,
     pub stats: ScanStats,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ScopedScanRoot {
+    pub scope: Scope,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ScanRootAlias {
+    pub declared: PathBuf,
+    pub canonical: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,10 +178,26 @@ fn scan_agent_with_limits_and_symlink_inspector<F>(
     adapter: &dyn AgentAdapter,
     ctx: &AdapterContext,
     limits: ScanLimits,
-    mut inspect_declared_symlink: F,
+    inspect_declared_symlink: F,
 ) -> Result<ScanReport, ScannerError>
 where
     F: FnMut(&Path) -> std::io::Result<bool>,
+{
+    scan_agent_with_limits_and_inspectors(adapter, ctx, limits, inspect_declared_symlink, |path| {
+        fs::metadata(path).map(|metadata| metadata.len())
+    })
+}
+
+fn scan_agent_with_limits_and_inspectors<F, G>(
+    adapter: &dyn AgentAdapter,
+    ctx: &AdapterContext,
+    limits: ScanLimits,
+    mut inspect_declared_symlink: F,
+    mut inspect_skill_len: G,
+) -> Result<ScanReport, ScannerError>
+where
+    F: FnMut(&Path) -> std::io::Result<bool>,
+    G: FnMut(&Path) -> std::io::Result<u64>,
 {
     let mut report = ScanReport::default();
     let mut budget = ScanBudget::default();
@@ -192,6 +230,10 @@ where
                 continue;
             }
         };
+        report.root_aliases.push(ScanRootAlias {
+            declared: declared.path.clone(),
+            canonical: canonical.clone(),
+        });
         let location_authorization_is_deferred =
             !root_source_self_authorizes(&declared.source) && declared_is_symlink;
         if !location_authorization_is_deferred
@@ -215,19 +257,23 @@ where
         });
     }
 
-    let mut allowed_roots = adapter
-        .link_target_roots(ctx)
-        .into_iter()
-        .filter_map(|declared| {
-            let canonical = resolve_directory_root(&declared.path).ok()?;
-            is_allowed_canonical_root(adapter.id(), ctx, &declared, &canonical).then_some(
-                ResolvedAllowedRoot {
-                    scope: declared.scope,
-                    canonical,
-                },
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut allowed_roots = Vec::new();
+    for declared in adapter.link_target_roots(ctx) {
+        let Ok(canonical) = resolve_directory_root(&declared.path) else {
+            continue;
+        };
+        if !is_allowed_canonical_root(adapter.id(), ctx, &declared, &canonical) {
+            continue;
+        }
+        report.root_aliases.push(ScanRootAlias {
+            declared: declared.path,
+            canonical: canonical.clone(),
+        });
+        allowed_roots.push(ResolvedAllowedRoot {
+            scope: declared.scope,
+            canonical,
+        });
+    }
 
     allowed_roots.extend(
         resolved_roots
@@ -271,7 +317,7 @@ where
     }
 
     for root in walked_roots {
-        match visit_root(
+        let status = visit_root(
             adapter,
             ctx,
             &root,
@@ -279,13 +325,29 @@ where
             &overrides,
             &limits,
             &mut budget,
+            &mut inspect_skill_len,
             &mut report,
-        ) {
-            RootWalkStatus::Complete => report.scanned_roots.push(root.canonical),
-            RootWalkStatus::Partial => report.partial_roots.push(root.canonical),
+        );
+        let scoped_root = ScopedScanRoot {
+            scope: root.declared.scope,
+            path: root.canonical.clone(),
+        };
+        match status {
+            RootWalkStatus::Complete => {
+                report.scanned_roots.push(root.canonical);
+                report.scoped_scanned_roots.push(scoped_root);
+            }
+            RootWalkStatus::Partial => {
+                report.partial_roots.push(root.canonical);
+                report.scoped_partial_roots.push(scoped_root);
+            }
         }
     }
     report.instances = dedup_instances(report.instances);
+    let mut alias_keys = HashSet::new();
+    report
+        .root_aliases
+        .retain(|alias| alias_keys.insert((alias.declared.clone(), alias.canonical.clone())));
     report.stats = budget.stats;
     Ok(report)
 }
@@ -371,6 +433,7 @@ fn visit_root(
     overrides: &SkillConfigOverrides,
     limits: &ScanLimits,
     budget: &mut ScanBudget,
+    inspect_skill_len: &mut dyn FnMut(&Path) -> std::io::Result<u64>,
     report: &mut ScanReport,
 ) -> RootWalkStatus {
     // Each stack entry is (resolved_dir, display_root, depth).
@@ -506,19 +569,10 @@ fn visit_root(
                     .map(|n| n == "SKILL.md")
                     .unwrap_or(false)
                 {
-                    if depth >= limits.max_depth {
-                        partial = true;
-                        record_budget_exceeded(
-                            budget,
-                            report,
-                            resolved,
-                            format!("depth limit of {} was reached", limits.max_depth),
-                        );
-                        continue;
-                    }
                     if !adapter_accepts_skill_path(adapter.id(), &root.canonical, &resolved) {
                         continue;
                     }
+                    let metadata_len = inspect_skill_len(&resolved);
                     if visit_skill_file(
                         adapter,
                         ctx,
@@ -526,7 +580,7 @@ fn visit_root(
                         overrides,
                         resolved,
                         display_path,
-                        metadata.len(),
+                        metadata_len,
                         limits,
                         budget,
                         report,
@@ -579,42 +633,7 @@ fn visit_root(
                 if !adapter_accepts_skill_path(adapter.id(), &root.canonical, &canonical_path) {
                     continue;
                 }
-                if depth >= limits.max_depth {
-                    partial = true;
-                    record_budget_exceeded(
-                        budget,
-                        report,
-                        canonical_path,
-                        format!("depth limit of {} was reached", limits.max_depth),
-                    );
-                    continue;
-                }
-                let metadata = match fs::metadata(&canonical_path) {
-                    Ok(metadata) => metadata,
-                    Err(error) => {
-                        report.issues.push(ScanIssue {
-                            path: canonical_path.clone(),
-                            kind: ScanIssueKind::FileUnreadable,
-                            detail: error.to_string(),
-                        });
-                        let mut instance = broken_instance(
-                            adapter,
-                            &root.declared,
-                            canonical_path.clone(),
-                            format!("failed to inspect skill file: {error}"),
-                        );
-                        normalize_instance(
-                            ctx,
-                            &root.declared,
-                            canonical_path,
-                            overrides,
-                            &mut instance,
-                        );
-                        instance.display_path = display_path;
-                        report.instances.push(instance);
-                        continue;
-                    }
-                };
+                let metadata_len = inspect_skill_len(&canonical_path);
                 if visit_skill_file(
                     adapter,
                     ctx,
@@ -622,7 +641,7 @@ fn visit_root(
                     overrides,
                     canonical_path,
                     display_path,
-                    metadata.len(),
+                    metadata_len,
                     limits,
                     budget,
                     report,
@@ -658,7 +677,7 @@ fn visit_skill_file(
     overrides: &SkillConfigOverrides,
     canonical_path: PathBuf,
     display_path: PathBuf,
-    metadata_len: u64,
+    metadata_len: std::io::Result<u64>,
     limits: &ScanLimits,
     budget: &mut ScanBudget,
     report: &mut ScanReport,
@@ -674,14 +693,11 @@ fn visit_skill_file(
     }
     budget.stats.skill_files_seen += 1;
 
-    if metadata_len > limits.max_skill_bytes {
-        let detail = format!(
-            "skill file is {metadata_len} bytes; per-file limit is {} bytes",
-            limits.max_skill_bytes
-        );
+    if let Err(error) = metadata_len {
+        let detail = format!("failed to inspect skill file: {error}");
         report.issues.push(ScanIssue {
             path: canonical_path.clone(),
-            kind: ScanIssueKind::FileTooLarge,
+            kind: ScanIssueKind::FileUnreadable,
             detail: detail.clone(),
         });
         push_broken_instance(
@@ -697,38 +713,39 @@ fn visit_skill_file(
         return SkillVisitStatus::Complete;
     }
 
-    let Some(next_total) = budget.stats.bytes_read.checked_add(metadata_len) else {
-        record_budget_exceeded(
-            budget,
-            report,
-            canonical_path,
-            "total skill byte counter overflowed".to_string(),
-        );
-        return SkillVisitStatus::BudgetExceeded;
-    };
-    if next_total > limits.max_total_skill_bytes {
+    let total_remaining = limits
+        .max_total_skill_bytes
+        .saturating_sub(budget.stats.bytes_read);
+    if total_remaining == 0 {
         record_budget_exceeded(
             budget,
             report,
             canonical_path,
             format!(
-                "total skill byte limit of {} bytes would be exceeded",
+                "total skill byte limit of {} bytes was reached",
                 limits.max_total_skill_bytes
             ),
         );
         return SkillVisitStatus::BudgetExceeded;
     }
-    budget.stats.bytes_read = next_total;
 
-    let mut instance = match read_skill_content_bounded(&canonical_path, limits.max_skill_bytes) {
-        Ok(Some(content)) => adapter
+    let read = read_skill_content_bounded(&canonical_path, limits.max_skill_bytes, total_remaining);
+    debug_assert!(read.bytes_read <= total_remaining);
+    budget.stats.bytes_read = budget
+        .stats
+        .bytes_read
+        .checked_add(read.bytes_read)
+        .expect("bounded byte accounting cannot overflow");
+
+    let mut instance = match read.outcome {
+        Ok(BoundedSkillContent::Content(content)) => adapter
             .parse_content(&canonical_path, content)
             .unwrap_or_else(|err| {
                 broken_instance(adapter, &root.declared, canonical_path.clone(), err.message)
             }),
-        Ok(None) => {
+        Ok(BoundedSkillContent::FileTooLarge) => {
             let detail = format!(
-                "skill file grew beyond the per-file limit of {} bytes while being read",
+                "skill file exceeded the per-file limit of {} bytes while being read",
                 limits.max_skill_bytes
             );
             report.issues.push(ScanIssue {
@@ -737,6 +754,18 @@ fn visit_skill_file(
                 detail: detail.clone(),
             });
             broken_instance(adapter, &root.declared, canonical_path.clone(), detail)
+        }
+        Ok(BoundedSkillContent::TotalBudgetExceeded) => {
+            record_budget_exceeded(
+                budget,
+                report,
+                canonical_path,
+                format!(
+                    "total skill byte limit of {} bytes was reached while reading a skill file",
+                    limits.max_total_skill_bytes
+                ),
+            );
+            return SkillVisitStatus::BudgetExceeded;
         }
         Err(error) => {
             let detail = format!("failed to read skill file: {error}");
@@ -797,19 +826,75 @@ fn record_budget_exceeded(
     });
 }
 
-fn read_skill_content_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Option<String>> {
+#[derive(Debug)]
+enum BoundedSkillContent {
+    Content(String),
+    FileTooLarge,
+    TotalBudgetExceeded,
+}
+
+#[derive(Debug)]
+struct BoundedSkillRead {
+    bytes_read: u64,
+    outcome: std::io::Result<BoundedSkillContent>,
+}
+
+fn read_skill_content_bounded(
+    path: &Path,
+    max_file_bytes: u64,
+    total_remaining: u64,
+) -> BoundedSkillRead {
     use std::io::Read;
 
-    let file = fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity((max_bytes.min(64 * 1024)) as usize);
-    file.take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max_bytes {
-        return Ok(None);
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            return BoundedSkillRead {
+                bytes_read: 0,
+                outcome: Err(error),
+            };
+        }
+    };
+    let read_cap = max_file_bytes.saturating_add(1).min(total_remaining);
+    if read_cap == 0 {
+        return BoundedSkillRead {
+            bytes_read: 0,
+            outcome: Ok(BoundedSkillContent::TotalBudgetExceeded),
+        };
     }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    let read_cap = usize::try_from(read_cap).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(read_cap);
+    let mut chunk = [0_u8; 8 * 1024];
+    while bytes.len() < read_cap {
+        let remaining = read_cap - bytes.len();
+        let chunk_len = remaining.min(chunk.len());
+        match file.read(&mut chunk[..chunk_len]) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+            Err(error) => {
+                return BoundedSkillRead {
+                    bytes_read: bytes.len() as u64,
+                    outcome: Err(error),
+                };
+            }
+        }
+    }
+    let bytes_read = bytes.len() as u64;
+    let outcome = if bytes.len() == read_cap {
+        if bytes_read > max_file_bytes {
+            Ok(BoundedSkillContent::FileTooLarge)
+        } else {
+            Ok(BoundedSkillContent::TotalBudgetExceeded)
+        }
+    } else {
+        String::from_utf8(bytes)
+            .map(BoundedSkillContent::Content)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    };
+    BoundedSkillRead {
+        bytes_read,
+        outcome,
+    }
 }
 
 fn adapter_accepts_skill_path(
@@ -1415,6 +1500,46 @@ mod tests {
     }
 
     #[test]
+    fn stale_metadata_growth_never_reads_past_total_byte_budget() {
+        let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("stale-metadata");
+        let skill_path = write_budget_skill(
+            &scan_root,
+            "growing",
+            "---\nname: growing\ndescription: content larger than the injected metadata\n---\nbody that exceeds the total byte budget\n",
+        );
+        let canonical_skill = skill_path.canonicalize().expect("canonical skill path");
+        let mut limits = test_scan_limits();
+        limits.max_total_skill_bytes = 32;
+
+        let report = scan_agent_with_limits_and_inspectors(
+            &adapter,
+            &ctx,
+            limits,
+            |path| fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_symlink()),
+            |path| {
+                if path == canonical_skill {
+                    Ok(1)
+                } else {
+                    fs::metadata(path).map(|metadata| metadata.len())
+                }
+            },
+        )
+        .expect("bounded scan returns a report");
+        let canonical_root = scan_root.canonicalize().expect("canonical scan root");
+
+        assert_eq!(report.stats.bytes_read, limits.max_total_skill_bytes);
+        assert!(report.stats.budget_exhausted);
+        assert!(report.partial_roots.contains(&canonical_root));
+        assert!(!report.scanned_roots.contains(&canonical_root));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::BudgetExceeded));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
     fn entry_budget_marks_root_partial_and_records_budget_issue() {
         let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("entries");
         for index in 0..9 {
@@ -1432,6 +1557,172 @@ mod tests {
             .iter()
             .any(|issue| issue.kind == ScanIssueKind::BudgetExceeded));
         assert!(report.partial_roots.contains(&canonical_root));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn same_canonical_root_keeps_complete_and_partial_scopes_distinct() {
+        let (temp_root, scan_root, ctx, mut adapter) = budget_test_fixture("cross-scope-root");
+        write_budget_skill(
+            &scan_root,
+            "shared",
+            "---\nname: shared\ndescription: shared scope fixture\n---\nbody\n",
+        );
+        adapter.roots = vec![
+            AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: scan_root.clone(),
+                source: RootSource::Extra,
+            },
+            AdapterRoot {
+                scope: Scope::AgentProject,
+                path: scan_root.clone(),
+                source: RootSource::Extra,
+            },
+        ];
+        let mut limits = test_scan_limits();
+        limits.max_directories = 2;
+
+        let report =
+            scan_agent_with_limits(&adapter, &ctx, limits).expect("bounded scan returns a report");
+        let canonical_root = scan_root.canonicalize().expect("canonical scan root");
+
+        assert_eq!(
+            report.scoped_scanned_roots,
+            vec![ScopedScanRoot {
+                scope: Scope::AgentGlobal,
+                path: canonical_root.clone(),
+            }]
+        );
+        assert_eq!(
+            report.scoped_partial_roots,
+            vec![ScopedScanRoot {
+                scope: Scope::AgentProject,
+                path: canonical_root,
+            }]
+        );
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn depth_limit_accepts_skill_at_cap_and_marks_cap_plus_one_partial() {
+        let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("depth-cap");
+        write_budget_skill(
+            &scan_root,
+            "at-cap",
+            "---\nname: at-cap\ndescription: depth cap fixture\n---\nbody\n",
+        );
+        write_budget_skill(
+            &scan_root.join("too-deep-parent"),
+            "too-deep",
+            "---\nname: too-deep\ndescription: beyond depth cap fixture\n---\nbody\n",
+        );
+        let mut limits = test_scan_limits();
+        limits.max_depth = 1;
+
+        let report =
+            scan_agent_with_limits(&adapter, &ctx, limits).expect("bounded scan returns a report");
+        let canonical_root = scan_root.canonicalize().expect("canonical root");
+
+        assert!(report
+            .instances
+            .iter()
+            .any(|instance| instance.name == "at-cap"));
+        assert!(!report
+            .instances
+            .iter()
+            .any(|instance| instance.name == "too-deep"));
+        assert!(report.stats.budget_exhausted);
+        assert!(report.scoped_partial_roots.contains(&ScopedScanRoot {
+            scope: Scope::AgentGlobal,
+            path: canonical_root,
+        }));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn directory_limit_stops_at_cap_and_marks_root_partial() {
+        let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("directory-cap");
+        std::fs::create_dir_all(scan_root.join("a")).expect("create first directory");
+        std::fs::create_dir_all(scan_root.join("b")).expect("create second directory");
+        let mut limits = test_scan_limits();
+        limits.max_directories = 2;
+
+        let report =
+            scan_agent_with_limits(&adapter, &ctx, limits).expect("bounded scan returns a report");
+
+        assert_eq!(report.stats.directories_visited, 2);
+        assert!(report.stats.budget_exhausted);
+        assert_eq!(report.scoped_partial_roots.len(), 1);
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn skill_file_limit_counts_exact_cap_and_stops_before_cap_plus_one() {
+        let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("skill-file-cap");
+        for name in ["a", "b", "c"] {
+            write_budget_skill(
+                &scan_root,
+                name,
+                &format!("---\nname: {name}\ndescription: cap fixture\n---\nbody\n"),
+            );
+        }
+        let mut limits = test_scan_limits();
+        limits.max_directories = 8;
+        limits.max_entries = 16;
+        limits.max_skill_files = 2;
+
+        let report =
+            scan_agent_with_limits(&adapter, &ctx, limits).expect("bounded scan returns a report");
+
+        assert_eq!(report.stats.skill_files_seen, 2);
+        assert_eq!(report.instances.len(), 2);
+        assert!(report.stats.budget_exhausted);
+        assert_eq!(report.scoped_partial_roots.len(), 1);
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn failed_skill_metadata_still_counts_candidate_and_returns_broken_instance() {
+        let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("metadata-failure");
+        let skill_path = write_budget_skill(
+            &scan_root,
+            "metadata-failure",
+            "---\nname: metadata-failure\ndescription: metadata failure fixture\n---\nbody\n",
+        )
+        .canonicalize()
+        .expect("canonical skill");
+
+        let report = scan_agent_with_limits_and_inspectors(
+            &adapter,
+            &ctx,
+            test_scan_limits(),
+            |path| fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_symlink()),
+            |path| {
+                if path == skill_path {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "injected metadata failure",
+                    ))
+                } else {
+                    fs::metadata(path).map(|metadata| metadata.len())
+                }
+            },
+        )
+        .expect("scan returns degraded instance");
+
+        assert_eq!(report.stats.skill_files_seen, 1);
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].state, SkillState::Broken);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::FileUnreadable));
 
         let _ = std::fs::remove_dir_all(temp_root);
     }
@@ -1964,6 +2255,54 @@ mod tests {
         );
         assert!(!report.skipped_roots.contains(&declared_path));
         assert_eq!(report.scanned_roots, vec![canonical_target]);
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn report_snapshots_declared_and_canonical_root_aliases() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-root-alias-snapshot-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let declared_path = home.join(".claude/skills");
+        let target = temp_root.join("external-target");
+        write_budget_skill(
+            &target,
+            "aliased",
+            "---\nname: aliased\ndescription: aliased root fixture\n---\nbody\n",
+        );
+        std::fs::create_dir_all(declared_path.parent().expect("declared parent"))
+            .expect("create declared parent");
+        std::os::unix::fs::symlink(&target, &declared_path).expect("create root symlink");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: declared_path.clone(),
+                source: RootSource::UserHome,
+            }],
+            link_target_roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: target.clone(),
+                source: RootSource::Extra,
+            }],
+        };
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+        let canonical_target = target.canonicalize().expect("canonical target");
+        std::fs::remove_file(&declared_path).expect("remove declared symlink after scan");
+
+        assert!(report.root_aliases.iter().any(|alias| {
+            alias.declared == declared_path && alias.canonical == canonical_target
+        }));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

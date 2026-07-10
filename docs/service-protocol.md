@@ -201,6 +201,13 @@ date/filter range before evidence rows are limited.
   placeholders such as `$HOME` and `<project-root>`. Explicit adapter roots
   outside those locations use `<adapter-root>`; raw private absolute paths are
   not returned in scan issue summaries or refresh logs.
+- Redaction uses the declared/canonical aliases captured by the scanner. It is
+  lexical, longest-path-first, and does not re-canonicalize roots while
+  serializing a response, so a removed or redirected symlink cannot expose the
+  former target.
+- `catalog.scanClaude` returns the same single-entry `agent_summaries` contract
+  as `catalog.scanAll`, including partial roots, typed issues, and recovery
+  actions.
 
 ## Skill Manager
 

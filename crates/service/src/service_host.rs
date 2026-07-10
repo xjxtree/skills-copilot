@@ -428,15 +428,22 @@ impl ServiceHost {
                 let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let started_at = unix_timestamp_millis();
-                let scanned_count = scan_claude_to_catalog(&adapter_ctx, &catalog)?;
+                let scan_report = scan_claude_catalog_report(&adapter_ctx, &catalog)?;
+                let scanned_count = scan_report.scanned_count;
                 let skills = self.list_visible_skill_records(&catalog)?;
                 let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
                 let conflicts: Vec<ConflictGroupRecord> = list_conflicts(&catalog)?;
                 let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog)?;
+                let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
+                let agent_summaries = self.agent_refresh_summaries(
+                    std::slice::from_ref(&scan_report),
+                    &skills,
+                    &adapter_diagnostics,
+                );
                 let activity = self.scan_activity(
                     "catalog.scanClaude",
                     "Claude Code",
-                    self.claude_root_paths(),
+                    scan_report.roots_considered.clone(),
                     started_at,
                     ScanActivityCounts {
                         scanned_count,
@@ -445,7 +452,7 @@ impl ServiceHost {
                         conflict_count: conflicts.len(),
                         snapshot_count: snapshots.len(),
                     },
-                    None,
+                    Some(agent_summaries),
                 );
                 serde_json::to_value(ScanResult {
                     scanned_count,
@@ -1171,10 +1178,12 @@ impl ServiceHost {
         agent_summaries: Option<Vec<AgentRefreshSummary>>,
     ) -> RefreshActivity {
         let roots_count = roots.len();
-        let diagnostic_redaction_roots = self.scan_diagnostic_redaction_roots(&roots);
+        let diagnostic_redaction_roots = self.scan_diagnostic_redaction_roots(&roots, &[]);
         let redacted_roots = roots
             .iter()
-            .map(|path| observability_redact(&display_path(path), &diagnostic_redaction_roots, 320))
+            .map(|path| {
+                observability_redact(&lexical_path_text(path), &diagnostic_redaction_roots, 320)
+            })
             .collect();
         let has_partial_scan = agent_summaries.as_ref().is_some_and(|summaries| {
             summaries
@@ -1216,7 +1225,9 @@ impl ServiceHost {
                     .map(|issue| {
                         format!(
                             "; first scan issue {} at {}: {}",
-                            issue.kind, issue.path, issue.detail
+                            issue.kind,
+                            issue.path,
+                            issue.detail.trim_end_matches('.')
                         )
                     })
                     .unwrap_or_default();
@@ -1281,8 +1292,12 @@ impl ServiceHost {
             .iter()
             .flat_map(|report| report.roots_considered.iter().cloned())
             .collect::<Vec<_>>();
+        let all_root_aliases = agent_reports
+            .iter()
+            .flat_map(|report| report.root_aliases.iter().cloned())
+            .collect::<Vec<_>>();
         let diagnostic_redaction_roots =
-            self.scan_diagnostic_redaction_roots(&all_considered_roots);
+            self.scan_diagnostic_redaction_roots(&all_considered_roots, &all_root_aliases);
         agent_reports
             .iter()
             .map(|agent_report| {
@@ -1324,7 +1339,7 @@ impl ServiceHost {
                 };
                 let redact_path = |path: &Path| {
                     observability_redact(
-                        &display_path(path),
+                        &lexical_path_text(path),
                         &diagnostic_redaction_roots,
                         320,
                     )
@@ -1404,33 +1419,49 @@ impl ServiceHost {
     fn scan_diagnostic_redaction_roots(
         &self,
         adapter_roots: &[PathBuf],
+        root_aliases: &[AgentCatalogScanPathAlias],
     ) -> Vec<(String, &'static str)> {
         let adapter_ctx = self.status_adapter_ctx();
-        let mut roots = self.redaction_roots(&adapter_ctx);
-        for path in adapter_roots {
-            let text = path.to_string_lossy().to_string();
-            if !text.is_empty() {
-                roots.push((text, "<adapter-root>"));
-            }
-            if let Ok(canonical) = path.canonicalize() {
-                let canonical = canonical.to_string_lossy().to_string();
-                if !canonical.is_empty() {
-                    roots.push((canonical, "<adapter-root>"));
-                }
-            }
+        let privacy_roots = [
+            (&self.app_data_dir, "<app-data-dir>"),
+            (&adapter_ctx.user_home, "$HOME"),
+        ];
+        let mut roots = privacy_roots
+            .iter()
+            .map(|(path, placeholder)| (lexical_path_text(path), *placeholder))
+            .collect::<Vec<_>>();
+        if let Some(project_root) = adapter_ctx.project_root.as_ref() {
+            roots.push((lexical_path_text(project_root), "<project-root>"));
         }
-        roots.dedup_by(|left, right| left.0 == right.0);
-        roots
-    }
+        if let Some(project_cwd) = adapter_ctx.project_cwd.as_ref() {
+            roots.push((lexical_path_text(project_cwd), "<project-cwd>"));
+        }
 
-    pub(crate) fn claude_root_paths(&self) -> Vec<PathBuf> {
-        let mut roots = vec![self.adapter_ctx.user_home.join(".claude").join("skills")];
-        roots.extend(
-            self.adapter_ctx
-                .extra_roots
-                .iter()
-                .map(|root| root.path.clone()),
-        );
+        let private_paths = roots
+            .iter()
+            .map(|(path, _)| PathBuf::from(path))
+            .collect::<Vec<_>>();
+        let mut push_external_root = |path: &Path| {
+            let path = lexical_path_text(path);
+            let normalized = Path::new(&path);
+            if !path.is_empty()
+                && !private_paths
+                    .iter()
+                    .any(|private_root| normalized.starts_with(private_root))
+            {
+                roots.push((path, "<adapter-root>"));
+            }
+        };
+        for path in adapter_roots {
+            push_external_root(path);
+        }
+        for alias in root_aliases {
+            push_external_root(&alias.declared);
+            push_external_root(&alias.canonical);
+        }
+        roots.sort_by_key(|right| std::cmp::Reverse(right.0.len()));
+        let mut seen = BTreeSet::new();
+        roots.retain(|(path, _)| !path.is_empty() && seen.insert(path.clone()));
         roots
     }
 }
@@ -1448,6 +1479,29 @@ fn public_scan_issue_detail(kind: &str) -> &'static str {
         "budget_exceeded" => "The scan stopped after reaching a configured work budget.",
         _ => "The scanner reported a degraded condition.",
     }
+}
+
+fn lexical_path_text(path: &Path) -> String {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let can_pop = normalized
+                    .file_name()
+                    .is_some_and(|name| name != std::ffi::OsStr::new(".."));
+                if can_pop {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push("..");
+                }
+            }
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized_redaction_path_text(&normalized.to_string_lossy())
 }
 
 fn normalized_redaction_path_text(value: &str) -> String {

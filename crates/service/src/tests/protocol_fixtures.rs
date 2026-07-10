@@ -674,12 +674,23 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert_eq!(scan.activity.operation, method);
             assert_eq!(scan.scanned_count, scan.activity.scanned_count);
             if method == "catalog.scanAll" {
+                assert_eq!(
+                    scan.activity.status, "completed-partial",
+                    "scanAll fixture must exercise degraded completion semantics"
+                );
                 let agents = scan
                     .activity
                     .agent_summaries
                     .as_ref()
                     .expect("scanAll fixture should include agent summaries");
-                for agent in ["claude-code", "codex", "opencode"] {
+                for agent in [
+                    "claude-code",
+                    "codex",
+                    "opencode",
+                    "pi",
+                    "openclaw",
+                    "hermes",
+                ] {
                     assert!(
                         agents.iter().any(|summary| summary.agent == agent),
                         "scanAll fixture missing {agent} summary"
@@ -689,6 +700,49 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                         "scanAll fixture missing {agent} skill"
                     );
                 }
+                assert!(
+                    agents.iter().any(|summary| {
+                        summary.status == "completed"
+                            && !summary.roots_scanned.is_empty()
+                            && summary.roots_partial.is_empty()
+                            && summary.roots_skipped.is_empty()
+                    }),
+                    "scanAll fixture must include a complete adapter root"
+                );
+                assert!(
+                    agents.iter().any(|summary| {
+                        summary.status == "completed-partial"
+                            && !summary.roots_partial.is_empty()
+                            && !summary.scan_issues.is_empty()
+                    }),
+                    "scanAll fixture must include a partial root with a typed issue"
+                );
+                assert!(
+                    agents.iter().any(|summary| {
+                        summary.status == "completed-with-skipped-roots"
+                            && !summary.roots_skipped.is_empty()
+                    }),
+                    "scanAll fixture must include skipped-root recovery semantics"
+                );
+                let serialized =
+                    serde_json::to_string(result.get("activity").expect("scan fixture activity"))
+                        .expect("serialize scan fixture activity");
+                assert!(!serialized.contains("/tmp/skills-copilot-home"));
+                assert!(serialized.contains("$HOME"));
+                assert!(serialized.contains("<adapter-root>"));
+                assert!(scan.activity.log_entries.iter().any(|entry| {
+                    entry.level == "warning"
+                        && entry.message.contains("partial")
+                        && entry.message.contains("entry_unreadable")
+                }));
+            } else {
+                let agents = scan
+                    .activity
+                    .agent_summaries
+                    .as_ref()
+                    .expect("scanClaude fixture should include its Claude summary");
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].agent, "claude-code");
             }
         }
         "catalog.listSkills" => {

@@ -924,6 +924,38 @@ enum UIStrings {
         format("refresh.scanComplete", "Scan complete: %d scanned, %d in catalog, %d findings, %d same-agent conflicts.", scanned, skills, findings, conflicts)
     }
 
+    static func refreshScanPartial(
+        _ scanned: Int,
+        _ skills: Int,
+        _ findings: Int,
+        _ conflicts: Int,
+        issue: String,
+        recovery: String
+    ) -> String {
+        format(
+            "refresh.scanPartial",
+            "Scan completed-partial: %d scanned, %d in catalog, %d findings, %d same-agent conflicts. First issue: %@. Recovery: %@",
+            scanned,
+            skills,
+            findings,
+            conflicts,
+            issue,
+            recovery
+        )
+    }
+
+    static var refreshPartialIssueUnavailable: String {
+        text("refresh.partialIssueUnavailable", "No typed issue detail was returned.")
+    }
+
+    static func refreshPartialIssue(kind: String, path: String, detail: String) -> String {
+        format("refresh.partialIssue", "%@ at %@: %@", kind, path, detail)
+    }
+
+    static var refreshPartialRecoveryDefault: String {
+        text("refresh.partialRecoveryDefault", "Review scan diagnostics, fix the affected root, then retry Scan.")
+    }
+
     static func refreshFailed(_ reason: String) -> String {
         format("refresh.failed", "Refresh failed: %@. Retry when the issue is fixed.", reason)
     }

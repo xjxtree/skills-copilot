@@ -67,10 +67,18 @@ belongs in Rust crates; the UI presents state and sends typed requests.
   their canonical path is known, allowing enumeration to continue. Filesystem
   traversal failures or exhausted traversal budgets mark the root partial.
 - Commands upsert every observed instance, but catalog missing-sweep receives
-  only roots that were completely enumerated. Partial and skipped roots never
-  mark unseen rows missing. A first transition to missing and its compact
-  `missing` event are committed atomically; repeated complete scans do not
-  duplicate the event.
+  only `(scope, canonical root)` pairs that were completely enumerated. A
+  complete global root cannot sweep a partial project root that resolves to the
+  same path. Partial and skipped roots never mark unseen rows missing. A first
+  transition to missing and its compact `missing` event are committed
+  atomically; repeated complete scans do not duplicate the event.
+- Aggregate skill-byte accounting is based on bytes actually read. The bounded
+  reader never retains more than the remaining aggregate allowance, including
+  its limit-detection byte; stale file metadata cannot enlarge the read or
+  allocation budget.
+- Scanner reports snapshot declared/canonical root aliases during traversal.
+  Service diagnostics lexically normalize and redact those immutable aliases
+  longest-path-first without resolving the filesystem again after a scan.
 
 ## Extension Points
 
