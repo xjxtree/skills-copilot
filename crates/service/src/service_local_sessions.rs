@@ -926,21 +926,23 @@ fn compact_bounded_local_session_content(
     let consumed_tail_leading =
         !bounded.tail_starts_at_line_boundary && !tail_leading_fragment.is_empty();
 
-    if !head_fragment.is_empty() && head_fragment_is_complete {
+    if !head_fragment.is_empty()
+        && !head_fragment_is_complete
+        && consumed_tail_leading
+        && bounded.gap_stays_on_same_line
+    {
+        let mut fields = top_level_scalar_fields_from_prefix(head_fragment);
+        for (key, value) in top_level_scalar_fields_from_suffix(tail_leading_fragment) {
+            fields.insert(key, value);
+        }
+        append_supported_scalar_fields(&mut recovered, fields, max_line_fragment_bytes);
+    } else if !head_fragment.is_empty() && head_fragment_is_complete {
         recovered.push_str(&compact_local_session_records(
             head_fragment,
             max_line_fragment_bytes,
         ));
     } else if !head_fragment.is_empty() {
         append_structured_prefix_fragment(&mut recovered, head_fragment, max_line_fragment_bytes);
-    }
-
-    if consumed_tail_leading {
-        append_independent_suffix_scalar_fragment(
-            &mut recovered,
-            tail_leading_fragment,
-            max_line_fragment_bytes,
-        );
     }
     let retained_tail = if consumed_tail_leading {
         compact_local_session_records(tail_remainder, max_line_fragment_bytes)
@@ -975,6 +977,9 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
             append_compacted_record(&mut content, trimmed, max_line_fragment_bytes);
             continue;
         }
+        if looks_like_incomplete_json_record(trimmed) {
+            continue;
+        }
         content.push_str(&truncate_utf8_bytes(
             trimmed,
             max_line_fragment_bytes.saturating_sub(1),
@@ -986,29 +991,6 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
 
 fn append_supported_scalar_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
     append_supported_scalar_fields(content, supported_scalar_fragment(fragment), max_bytes);
-}
-
-fn append_independent_suffix_scalar_fragment(
-    content: &mut String,
-    fragment: &str,
-    max_bytes: usize,
-) {
-    let fields = top_level_scalar_fields_from_suffix(fragment);
-    let has_visible_content = ["text", "content", "title", "aiTitle"]
-        .iter()
-        .any(|key| fields.get(*key).is_some_and(json_scalar_is_visible));
-    if has_visible_content && fields.contains_key("timestamp") {
-        append_supported_scalar_fields(content, fields, max_bytes);
-    }
-}
-
-fn json_scalar_is_visible(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::String(text) => !text.trim().is_empty(),
-        Value::Bool(_) | Value::Number(_) => true,
-        Value::Array(_) | Value::Object(_) => false,
-    }
 }
 
 fn supported_scalar_fragment(fragment: &str) -> serde_json::Map<String, Value> {
@@ -1354,9 +1336,48 @@ fn looks_like_json_fragment(text: &str) -> bool {
     text.starts_with('{') || text.starts_with('[') || text.ends_with('}') || text.ends_with(']')
 }
 
+fn looks_like_incomplete_json_record(text: &str) -> bool {
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    let Some((opening, remainder)) = text
+        .chars()
+        .next()
+        .map(|opening| (opening, &text[opening.len_utf8()..]))
+    else {
+        return false;
+    };
+    let next = remainder.trim_start().chars().next();
+    match opening {
+        '{' => next.is_none() || matches!(next, Some('"' | '}')),
+        '[' => {
+            next.is_none()
+                || matches!(
+                    next,
+                    Some('"' | '{' | '[' | ']' | '-' | '0'..='9' | 't' | 'f' | 'n')
+                )
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod bounded_content_tests {
     use super::*;
+
+    #[test]
+    fn incomplete_json_detection_preserves_plaintext_with_json_punctuation() {
+        for incomplete in [r#"{"type":"user""#, r#"["partial""#, "{   ", "[true"] {
+            assert!(
+                looks_like_incomplete_json_record(incomplete),
+                "expected incomplete JSON: {incomplete}"
+            );
+        }
+        for plaintext in ["{plain visible", "[INFO] visible", "visible ]"] {
+            assert!(
+                !looks_like_incomplete_json_record(plaintext),
+                "expected plaintext: {plaintext}"
+            );
+        }
+    }
 
     #[test]
     fn complete_small_head_fragment_preserves_data_wrapped_event() {
@@ -1370,6 +1391,7 @@ mod bounded_content_tests {
             retained_head_end: 80,
             retained_tail_start: 100,
             tail_starts_at_line_boundary: false,
+            gap_stays_on_same_line: false,
             truncated: true,
             bytes_read: 80,
         };
@@ -1388,6 +1410,7 @@ mod bounded_content_tests {
             retained_head_end: 64,
             retained_tail_start: 128,
             tail_starts_at_line_boundary: false,
+            gap_stays_on_same_line: false,
             truncated: true,
             bytes_read: 128,
         };

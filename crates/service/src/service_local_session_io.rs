@@ -21,6 +21,7 @@ pub(crate) struct BoundedText {
     pub(crate) retained_head_end: u64,
     pub(crate) retained_tail_start: u64,
     pub(crate) tail_starts_at_line_boundary: bool,
+    pub(crate) gap_stays_on_same_line: bool,
     pub(crate) truncated: bool,
     pub(crate) bytes_read: usize,
 }
@@ -84,6 +85,14 @@ impl LocalSessionReadBudget {
         self.remaining_bytes -= granted;
         granted
     }
+
+    fn claim_exact(&mut self, requested: usize) -> bool {
+        if requested > self.remaining_bytes {
+            return false;
+        }
+        self.remaining_bytes -= requested;
+        true
+    }
 }
 
 pub(crate) struct LocalSessionIoContext {
@@ -135,7 +144,6 @@ fn read_bounded_from<R: Read + Seek>(
     reader.seek(SeekFrom::Start(tail_start))?;
     let tail_raw = read_window(reader, tail_grant)?;
 
-    let bytes_read = head_raw.len().saturating_add(tail_raw.len());
     let decoded_head = decode_utf8_window(&head_raw, false);
     let retained_head_end = decoded_head.end_offset as u64;
     let head = decoded_head.text;
@@ -153,6 +161,31 @@ fn read_bounded_from<R: Read + Seek>(
     let truncated = retained_head_end < retained_tail_start || retained_end < file_len;
     let tail_starts_at_line_boundary = retained_tail_start == 0
         || (retained_tail.starts_at_line_boundary && decoded_tail.start_offset == 0);
+    let observed_tail_prefix_end = usize_from_u64(
+        retained_tail_start
+            .saturating_sub(tail_start)
+            .min(tail_raw.len() as u64),
+    );
+    let observed_tail_prefix_has_line_break = tail_raw[..observed_tail_prefix_end].contains(&b'\n');
+    let unread_gap_len = usize_from_u64(tail_start.saturating_sub(head_end));
+    let (unread_gap_has_line_break, provenance_bytes_read) =
+        if unread_gap_len <= spec.line_fragment_bytes && budget.claim_exact(unread_gap_len) {
+            reader.seek(SeekFrom::Start(head_end))?;
+            let scan = scan_window_for_line_break(reader, unread_gap_len)?;
+            (
+                scan.has_line_break || scan.bytes_read != unread_gap_len,
+                scan.bytes_read,
+            )
+        } else {
+            (true, 0)
+        };
+    let gap_stays_on_same_line = !observed_tail_prefix_has_line_break
+        && !unread_gap_has_line_break
+        && !tail_starts_at_line_boundary;
+    let bytes_read = head_raw
+        .len()
+        .saturating_add(tail_raw.len())
+        .saturating_add(provenance_bytes_read);
 
     Ok(BoundedText {
         head,
@@ -160,8 +193,33 @@ fn read_bounded_from<R: Read + Seek>(
         retained_head_end,
         retained_tail_start,
         tail_starts_at_line_boundary,
+        gap_stays_on_same_line,
         truncated,
         bytes_read,
+    })
+}
+
+struct LineBreakScan {
+    has_line_break: bool,
+    bytes_read: usize,
+}
+
+fn scan_window_for_line_break<R: Read>(reader: &mut R, limit: usize) -> io::Result<LineBreakScan> {
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut remaining = limit;
+    let mut has_line_break = false;
+    while remaining > 0 {
+        let requested = remaining.min(buffer.len());
+        let count = reader.read(&mut buffer[..requested])?;
+        if count == 0 {
+            break;
+        }
+        has_line_break |= buffer[..count].contains(&b'\n');
+        remaining -= count;
+    }
+    Ok(LineBreakScan {
+        has_line_break,
+        bytes_read: limit - remaining,
     })
 }
 
@@ -293,6 +351,74 @@ mod tests {
         assert_eq!(text.tail, "tail\n");
         assert!(text.truncated);
         assert!(text.bytes_read <= 19, "read {} bytes", text.bytes_read);
+    }
+
+    #[test]
+    fn bounded_reader_verifies_a_small_unread_gap_stays_on_one_line() {
+        let input = b"HEAD?abcdefghijklTAIL\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(128);
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: 5,
+                tail_bytes: 5,
+                line_fragment_bytes: 8,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert_eq!(text.head, "HEAD?");
+        assert_eq!(text.tail, "TAIL\n");
+        assert!(text.gap_stays_on_same_line);
+        assert!(text.bytes_read <= 22, "read {} bytes", text.bytes_read);
+    }
+
+    #[test]
+    fn bounded_reader_rejects_a_line_break_inside_the_small_unread_gap() {
+        let input = b"HEAD?ab\ndefghijklTAIL\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(128);
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: 5,
+                tail_bytes: 5,
+                line_fragment_bytes: 8,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert!(!text.gap_stays_on_same_line);
+        assert!(text.bytes_read <= 23, "read {} bytes", text.bytes_read);
+    }
+
+    #[test]
+    fn bounded_reader_does_not_scan_an_unread_gap_larger_than_the_fragment_limit() {
+        let input = b"HEAD?abcdefghijklmnopqrstTAIL\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(128);
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: 5,
+                tail_bytes: 5,
+                line_fragment_bytes: 8,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert!(!text.gap_stays_on_same_line);
+        assert_eq!(text.bytes_read, 18);
     }
 
     #[test]

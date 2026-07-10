@@ -636,6 +636,137 @@ fn one_oversized_json_record_recovers_supported_tail_scalars() {
 }
 
 #[test]
+fn oversized_hidden_record_with_tail_timestamp_stays_hidden() {
+    for record_type in [
+        "attachment",
+        "file-history-snapshot",
+        "last-prompt",
+        "mode",
+        "permission-mode",
+        "queue-operation",
+    ] {
+        let marker = format!(
+            "HIDDEN_{}_TAIL_MUST_NOT_SURFACE",
+            record_type.replace('-', "_").to_ascii_uppercase()
+        );
+        let session = format!(
+            "{{\"type\":{record_type},\"data\":\"{}\",\"text\":{marker},\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+            "x".repeat(600 * 1024),
+            record_type = serde_json::to_string(record_type).expect("serialize record type"),
+            marker = serde_json::to_string(&marker).expect("serialize marker"),
+        );
+        let result = preview_codex_session_fixture(
+            &format!("hidden-tail-timestamp-{record_type}"),
+            &session,
+        );
+        let output = serde_json::to_string(&result).expect("serialize hidden preview");
+
+        assert!(!output.contains(&marker), "{record_type}: {output}");
+        assert_eq!(
+            result.get("count").and_then(Value::as_u64),
+            Some(0),
+            "{record_type}: {result}"
+        );
+    }
+}
+
+#[test]
+fn oversized_user_tail_text_with_head_timestamp_preserves_supported_scalars() {
+    let session = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"timestamp\":\"2026-07-10T08:09:10Z\",\"data\":\"{}\",\"text\":\"USER_TAIL_WITH_HEAD_TIMESTAMP\"}}\n",
+        "x".repeat(600 * 1024)
+    );
+    let result = preview_codex_session_fixture("user-head-timestamp", &session);
+    let output = serde_json::to_string(&result).expect("serialize user preview");
+
+    assert!(output.contains("USER_TAIL_WITH_HEAD_TIMESTAMP"), "{output}");
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/title")
+            .and_then(Value::as_str),
+        Some("USER_TAIL_WITH_HEAD_TIMESTAMP"),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message"),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/timestamp")
+            .and_then(Value::as_i64),
+        Some(1_783_670_950_000),
+        "{result}"
+    );
+}
+
+#[test]
+fn oversized_user_recovery_preserves_prefix_semantics_with_tail_timestamp() {
+    let session = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"data\":\"{}\",\"text\":\"USER_SEMANTICS_MUST_SURVIVE\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        "x".repeat(600 * 1024)
+    );
+    let result = preview_codex_session_fixture("user-semantics", &session);
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/title")
+            .and_then(Value::as_str),
+        Some("USER_SEMANTICS_MUST_SURVIVE"),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message"),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/timestamp")
+            .and_then(Value::as_i64),
+        Some(1_783_670_950_000),
+        "{result}"
+    );
+}
+
+#[test]
+fn small_incomplete_json_record_is_not_reinterpreted_as_plaintext() {
+    let session =
+        "{\"type\":\"user\",\"role\":\"user\",\"text\":\"INCOMPLETE_JSON_MUST_NOT_SURFACE\"";
+    let result = preview_codex_session_fixture("small-incomplete-json", session);
+    let output = serde_json::to_string(&result).expect("serialize incomplete preview");
+
+    assert!(
+        !output.contains("INCOMPLETE_JSON_MUST_NOT_SURFACE"),
+        "{output}"
+    );
+    assert_eq!(
+        result.get("count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+}
+
+#[test]
 fn interior_invalid_utf8_does_not_discard_later_complete_plaintext() {
     let mut bytes = b"user: BEFORE_INVALID_UTF8\n".to_vec();
     bytes.push(0xff);
@@ -1577,6 +1708,10 @@ fn preview_codex_session_fixture_with_extension_bytes(
             "max_excerpt_chars": 800
         }),
     });
+    assert!(
+        !app_data_dir.exists(),
+        "session preview must not create app-local persistence"
+    );
     let _ = fs::remove_dir_all(app_data_dir);
     let _ = fs::remove_dir_all(user_home);
     assert!(response.ok, "{:?}", response.error);
