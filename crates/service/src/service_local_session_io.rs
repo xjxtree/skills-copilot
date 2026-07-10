@@ -188,6 +188,13 @@ fn retain_tail_window(bytes: &[u8], tail_bytes: usize) -> RetainedTailWindow<'_>
     }
 
     let minimum_start = bytes.len() - tail_bytes;
+    if minimum_start > 0 && bytes[minimum_start - 1] == b'\n' {
+        return RetainedTailWindow {
+            bytes: &bytes[minimum_start..],
+            start_offset: minimum_start,
+            starts_at_line_boundary: true,
+        };
+    }
     if let Some(relative_newline) = bytes[minimum_start..bytes.len().saturating_sub(1)]
         .iter()
         .position(|byte| *byte == b'\n')
@@ -290,6 +297,34 @@ mod tests {
         assert_eq!(text.retained_tail_start, 10);
         assert!(text.tail_starts_at_line_boundary);
         assert!(text.truncated);
+    }
+
+    #[test]
+    fn bounded_reader_confirms_boundary_immediately_before_tail_cap() {
+        for (input, expected_tail_start) in [
+            (b"HEAD?drop\nTAIL\n".as_slice(), 10),
+            (b"HEAD?drop\r\nTAIL\n".as_slice(), 11),
+        ] {
+            let mut reader = Cursor::new(input.to_vec());
+            let mut budget = LocalSessionReadBudget::new(64);
+
+            let text = read_bounded_from(
+                &mut reader,
+                input.len() as u64,
+                BoundedReadSpec {
+                    head_bytes: 5,
+                    tail_bytes: 5,
+                    line_fragment_bytes: 8,
+                },
+                &mut budget,
+            )
+            .expect("bounded read");
+
+            assert_eq!(text.tail, "TAIL\n");
+            assert_eq!(text.retained_tail_start, expected_tail_start);
+            assert!(text.tail_starts_at_line_boundary);
+            assert!(text.truncated);
+        }
     }
 
     #[test]

@@ -587,7 +587,8 @@ fn local_session_preview_bounds_single_line_json() {
             "{{\"type\":\"mode\"}}\n",
             "{{\"type\":\"user\",\"role\":\"user\",",
             "\"text\":\"single-line-tail-visible\",",
-            "\"timestamp\":\"2026-07-10T08:09:10Z\",\"data\":{}}}\n"
+            "\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+            "{{\"type\":\"file-history-snapshot\",\"data\":{}}}\n"
         ),
         serde_json::to_string(&filler).expect("serialize filler")
     );
@@ -616,17 +617,15 @@ fn local_session_preview_bounds_single_line_json() {
 
 #[test]
 fn local_session_preview_does_not_merge_distinct_oversized_records() {
-    let head_filler = "head-user-data-".repeat(48_000);
     let tail_filler = "tail-snapshot-data-".repeat(48_000);
     let session = format!(
         concat!(
             "{{\"type\":\"user\",\"role\":\"user\",\"id\":\"head-user\",",
-            "\"text\":\"head-user-visible\",\"data\":{}}}\n",
+            "\"text\":\"head-user-visible\"}}\n",
             "{{\"type\":\"file-history-snapshot\",\"id\":\"tail-snapshot\",",
             "\"data\":{},\"role\":\"assistant\",",
             "\"text\":\"skipped-tail-must-not-surface\"}}\n"
         ),
-        serde_json::to_string(&head_filler).expect("serialize head filler"),
         serde_json::to_string(&tail_filler).expect("serialize tail filler"),
     );
 
@@ -705,19 +704,186 @@ fn local_session_preview_preserves_complete_small_data_wrapped_user_event() {
 }
 
 #[test]
+fn local_session_preview_skips_complete_record_with_late_top_level_type() {
+    let session = format!(
+        "{{\"role\":\"user\",\"text\":\"COMPLETE_LATE_TYPE_LEAK\",\"data\":\"{}\",\"type\":\"file-history-snapshot\"}}\n",
+        "x".repeat(6 * 1024)
+    );
+
+    let result = preview_codex_session_fixture("complete-late-root-type", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        !serialized.contains("COMPLETE_LATE_TYPE_LEAK"),
+        "{serialized}"
+    );
+}
+
+#[test]
+fn local_session_preview_decodes_escaped_top_level_type_before_skip() {
+    let session = concat!(
+        "{\"role\":\"user\",\"text\":\"ESCAPED_TYPE_LEAK\",",
+        "\"\\u0074ype\":\"file-history-snapshot\"}\n"
+    );
+
+    let result = preview_codex_session_fixture("escaped-root-type", session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(!serialized.contains("ESCAPED_TYPE_LEAK"), "{serialized}");
+}
+
+#[test]
+fn local_session_preview_ignores_nested_metadata_type_for_skip() {
+    let session = json!({
+        "role": "user",
+        "text": "NESTED_TYPE_VALID_USER",
+        "metadata": {
+            "type": "file-history-snapshot"
+        }
+    })
+    .to_string();
+
+    let result = preview_codex_session_fixture("nested-metadata-type", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        serialized.contains("NESTED_TYPE_VALID_USER"),
+        "{serialized}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message")
+    );
+}
+
+#[test]
+fn local_session_preview_uses_final_duplicate_top_level_type() {
+    let session = format!(
+        concat!(
+            "{{\"type\":\"user\",\"role\":\"user\",",
+            "\"text\":\"DUPLICATE_COMPLETE_TYPE_LEAK\",\"data\":\"{}\",",
+            "\"type\":\"file-history-snapshot\"}}\n"
+        ),
+        "x".repeat(6 * 1024)
+    );
+
+    let result = preview_codex_session_fixture("duplicate-complete-root-type", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        !serialized.contains("DUPLICATE_COMPLETE_TYPE_LEAK"),
+        "{serialized}"
+    );
+}
+
+#[test]
+fn local_session_preview_drops_incomplete_head_with_possible_late_type_override() {
+    let filler = serde_json::to_string(&"private".repeat(100 * 1024))
+        .expect("serialize duplicate-type filler");
+    let session = format!(
+        concat!(
+            "{{\"type\":\"user\",\"role\":\"user\",",
+            "\"text\":\"DUPLICATE_LATE_TYPE_LEAK\",\"data\":{filler},",
+            "\"type\":\"file-history-snapshot\"}}\n"
+        ),
+        filler = filler,
+    );
+
+    let result = preview_codex_session_fixture("duplicate-late-root-type", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(
+        !serialized.contains("DUPLICATE_LATE_TYPE_LEAK"),
+        "{serialized}"
+    );
+}
+
+#[test]
+fn local_session_preview_keeps_exact_tail_cap_plain_text_line() {
+    const TAIL_BYTES: usize = 128 * 1024;
+    let tail_prefix = "user: EXACT_TAIL_CAP_LINE";
+    let tail = format!(
+        "{tail_prefix}{}\n",
+        "y".repeat(TAIL_BYTES - tail_prefix.len() - 1)
+    );
+    assert_eq!(tail.len(), TAIL_BYTES);
+
+    for (case, boundary) in [("lf", "\n"), ("crlf", "\r\n")] {
+        let session = format!(
+            "user: early exact-cap line\n{}{boundary}{tail}",
+            "m".repeat(700 * 1024)
+        );
+        let result = preview_codex_session_fixture_with_extension(
+            &format!("exact-tail-cap-{case}"),
+            "log",
+            &session,
+        );
+        let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+        assert!(
+            serialized.contains("EXACT_TAIL_CAP_LINE"),
+            "{case}: {serialized}"
+        );
+    }
+}
+
+#[test]
+fn local_session_preview_hides_marker_and_does_not_count_structural_record() {
+    let marker = "{\"type\":\"skills-copilot-truncation-marker\"}\n";
+    let marker_result = preview_codex_session_fixture("marker-only", marker);
+    let marker_serialized =
+        serde_json::to_string(&marker_result).expect("serialize marker-only preview");
+
+    assert!(!marker_serialized.contains("skills-copilot-truncation-marker"));
+
+    let structural_session = format!(
+        "{{\"type\":\"user\",\"role\":\"user\"}}\n{{\"role\":\"user\",\"data\":\"{}\"}}\n",
+        "x".repeat(700 * 1024)
+    );
+    let structural_result =
+        preview_codex_session_fixture("structural-user-only", &structural_session);
+    let structural_serialized =
+        serde_json::to_string(&structural_result).expect("serialize structural preview");
+
+    assert_eq!(
+        structural_result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        structural_result
+            .pointer("/session_rows/0/total_message_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(structural_result
+        .pointer("/session_rows/0/content_items")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+    assert!(!structural_serialized.contains("skills-copilot-truncation-marker"));
+    assert!(!structural_serialized.contains("Session excerpt"));
+}
+
+#[test]
 fn local_session_preview_uses_retained_ranges_for_continuity() {
-    const USER_RECORD_BYTES: usize = 553_111;
-    let prefix =
-        "{\"type\":\"user\",\"role\":\"user\",\"text\":\"HEAD_USER_SHOULD_SURVIVE\",\"data\":\"";
-    let suffix = "\"}";
-    let filler = "u".repeat(USER_RECORD_BYTES - prefix.len() - suffix.len());
-    let user_record = format!("{prefix}{filler}{suffix}");
-    assert_eq!(user_record.len(), USER_RECORD_BYTES);
+    const PREFIX_SEGMENT_BYTES: usize = 553_111;
+    let user_record =
+        "{\"type\":\"user\",\"role\":\"user\",\"text\":\"HEAD_USER_SHOULD_SURVIVE\"}\n";
+    let carrier_prefix = "{\"type\":\"file-history-snapshot\",\"data\":\"";
+    let carrier_suffix = "\"}";
+    let filler = "u".repeat(
+        PREFIX_SEGMENT_BYTES - user_record.len() - carrier_prefix.len() - carrier_suffix.len(),
+    );
+    let prefix_segment = format!("{user_record}{carrier_prefix}{filler}{carrier_suffix}");
+    assert_eq!(prefix_segment.len(), PREFIX_SEGMENT_BYTES);
     let skipped = json!({
         "type": "file-history-snapshot",
         "text": "retained-tail-skip"
     });
-    let session = format!("{user_record}\n{skipped}\n");
+    let session = format!("{prefix_segment}\n{skipped}\n");
 
     let result = preview_codex_session_fixture("retained-range-continuity", &session);
     let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
@@ -891,9 +1057,7 @@ fn local_session_preview_does_not_recover_scalars_nested_in_omitted_data() {
     assert!(!serialized.contains("inside-data-must-not-surface"));
     assert!(!serialized.contains("nested-private-blob-"));
     assert_eq!(
-        result
-            .pointer("/session_rows/0/user_message_count")
-            .and_then(Value::as_u64),
+        result.get("user_message_count").and_then(Value::as_u64),
         Some(0)
     );
 }

@@ -773,7 +773,8 @@ fn local_session_preview_row(
     if !path.starts_with(root) {
         return Ok(None);
     }
-    let file_content = read_local_session_file_content(path, io)?;
+    let compacted_file_content = read_local_session_file_content(path, io)?;
+    let file_content = strip_internal_local_session_records(&compacted_file_content);
     if file_content.is_empty() {
         return Ok(None);
     }
@@ -939,7 +940,7 @@ fn compact_bounded_local_session_content(
         return String::new();
     }
 
-    retained_head.push_str("{\"type\":\"skills-copilot-truncation-marker\"}\n");
+    retained_head.push_str(LOCAL_SESSION_TRUNCATION_MARKER_LINE);
     retained_head.push_str(&recovered);
     retained_head.push_str(&retained_tail);
     retained_head
@@ -959,7 +960,7 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
             content.push('\n');
             continue;
         }
-        if trimmed.len() > max_line_fragment_bytes || looks_like_json_fragment(trimmed) {
+        if looks_like_json_fragment(trimmed) {
             append_compacted_record(&mut content, trimmed, max_line_fragment_bytes);
             continue;
         }
@@ -992,7 +993,7 @@ fn append_supported_scalar_fields(
     if fields
         .get("type")
         .and_then(Value::as_str)
-        .is_some_and(is_skipped_local_session_record_type)
+        .is_some_and(is_hidden_local_session_record_type)
     {
         return;
     }
@@ -1018,10 +1019,6 @@ fn is_complete_json_record(fragment: &str) -> bool {
 
 fn append_structured_prefix_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
     if looks_like_json_fragment(fragment) {
-        let fields = top_level_scalar_fields_from_prefix(fragment);
-        if fields.get("type").and_then(Value::as_str).is_some() {
-            append_supported_scalar_fields(content, fields, max_bytes);
-        }
         return;
     }
     let retained = truncate_utf8_bytes(fragment, max_bytes.saturating_sub(1));
@@ -1034,10 +1031,8 @@ fn append_structured_prefix_fragment(content: &mut String, fragment: &str, max_b
 fn append_compacted_record(content: &mut String, record: &str, max_bytes: usize) {
     match serde_json::from_str::<Value>(record) {
         Ok(mut value) => {
-            if value
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_skipped_local_session_record_type)
+            if local_session_top_level_record_type(&value)
+                .is_some_and(is_hidden_local_session_record_type)
             {
                 return;
             }
@@ -1424,14 +1419,16 @@ mod bounded_content_tests {
 }
 
 fn should_skip_local_session_sidecar_line(line: &str) -> bool {
-    let prefix = line.chars().take(4_096).collect::<String>();
-    SKIPPED_LOCAL_SESSION_RECORD_TYPES
-        .iter()
-        .any(|record_type| {
-            prefix.contains(&format!("\"type\":\"{record_type}\""))
-                || prefix.contains(&format!("\"type\": \"{record_type}\""))
-        })
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .as_ref()
+        .and_then(local_session_top_level_record_type)
+        .is_some_and(is_hidden_local_session_record_type)
 }
+
+const LOCAL_SESSION_TRUNCATION_MARKER_TYPE: &str = "skills-copilot-truncation-marker";
+const LOCAL_SESSION_TRUNCATION_MARKER_LINE: &str =
+    "{\"type\":\"skills-copilot-truncation-marker\"}\n";
 
 const SKIPPED_LOCAL_SESSION_RECORD_TYPES: [&str; 6] = [
     "attachment",
@@ -1444,6 +1441,36 @@ const SKIPPED_LOCAL_SESSION_RECORD_TYPES: [&str; 6] = [
 
 fn is_skipped_local_session_record_type(record_type: &str) -> bool {
     SKIPPED_LOCAL_SESSION_RECORD_TYPES.contains(&record_type)
+}
+
+fn is_hidden_local_session_record_type(record_type: &str) -> bool {
+    record_type == LOCAL_SESSION_TRUNCATION_MARKER_TYPE
+        || is_skipped_local_session_record_type(record_type)
+}
+
+fn local_session_top_level_record_type(value: &Value) -> Option<&str> {
+    value
+        .as_object()
+        .and_then(|map| map.get("type"))
+        .and_then(Value::as_str)
+}
+
+fn strip_internal_local_session_records(content: &str) -> String {
+    let mut visible = String::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let is_marker = serde_json::from_str::<Value>(trimmed)
+            .ok()
+            .as_ref()
+            .and_then(local_session_top_level_record_type)
+            == Some(LOCAL_SESSION_TRUNCATION_MARKER_TYPE);
+        if trimmed.is_empty() || is_marker {
+            continue;
+        }
+        visible.push_str(line);
+        visible.push('\n');
+    }
+    visible
 }
 
 fn local_session_row_id(path: &Path) -> String {
@@ -2195,13 +2222,15 @@ fn local_session_content_items(
     }
 
     if drafts.is_empty() {
-        drafts.push(LocalSessionContentDraft {
-            kind: "agent_reply".to_string(),
-            title: "Session excerpt".to_string(),
-            text: content.to_string(),
-            timestamp: None,
-            evidence_refs: vec![format!("session.content_hash:{short_hash}")],
-        });
+        if let Some(text) = local_session_plain_text_fallback(content) {
+            drafts.push(LocalSessionContentDraft {
+                kind: "agent_reply".to_string(),
+                title: "Session excerpt".to_string(),
+                text,
+                timestamp: None,
+                evidence_refs: vec![format!("session.content_hash:{short_hash}")],
+            });
+        }
     }
 
     drafts
@@ -2224,6 +2253,21 @@ fn local_session_content_items(
             }
         })
         .collect()
+}
+
+fn local_session_plain_text_fallback(content: &str) -> Option<String> {
+    let text = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| match serde_json::from_str::<Value>(line) {
+            Ok(value) => json_non_tool_message_text(&value),
+            Err(_) => Some(line.to_string()),
+        })
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }
 
 fn local_session_time_bounds(
@@ -3180,12 +3224,6 @@ fn local_session_metrics(
         }
     }
 
-    if metrics.total_message_count == 0 {
-        metrics.total_message_count = content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count();
-    }
     metrics.skill_call_count = count_skill_invocation_mentions(content);
     metrics
 }
