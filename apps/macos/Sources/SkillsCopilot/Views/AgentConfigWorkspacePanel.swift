@@ -82,7 +82,6 @@ private struct AgentConfigOverviewDetailPanel: View {
     @State private var draft = ""
     @State private var revealsSensitiveConfig = false
     @State private var isConfirmingConfigEdit = false
-    @State private var configAutosaveTask: Task<Void, Never>?
 
     private var validationMessage: String? {
         guard let data = draft.data(using: .utf8) else {
@@ -104,8 +103,6 @@ private struct AgentConfigOverviewDetailPanel: View {
         revealsSensitiveConfig
             && hasDraftChanges
             && validationMessage == nil
-            && !store.isSavingSettings
-            && !store.isLoadingSettings
     }
 
     private var displayedDraft: Binding<String> {
@@ -145,10 +142,6 @@ private struct AgentConfigOverviewDetailPanel: View {
         }
         .onChange(of: draft) { _ in
             handleConfigDraftChange()
-        }
-        .onDisappear {
-            configAutosaveTask?.cancel()
-            configAutosaveTask = nil
         }
     }
 
@@ -201,10 +194,19 @@ private struct AgentConfigOverviewDetailPanel: View {
 
             if let validationMessage {
                 ConfigInlineBanner(message: validationMessage, systemImage: "exclamationmark.triangle.fill", color: .red)
-            } else if canAutosaveConfig {
-                ConfigInlineBanner(message: UIStrings.jsonValidSettingsWrite, systemImage: "checkmark.circle.fill", color: .green)
-            } else if revealsSensitiveConfig && hasDraftChanges {
-                ConfigInlineBanner(message: UIStrings.configAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
+            } else {
+                switch store.configAutosavePhase {
+                case .saving:
+                    ConfigInlineBanner(message: UIStrings.configAutosaveSaving, systemImage: "hourglass", color: .secondary)
+                case .debouncing, .pendingAfterSave:
+                    ConfigInlineBanner(message: UIStrings.configAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
+                case .idle:
+                    if canAutosaveConfig {
+                        ConfigInlineBanner(message: UIStrings.jsonValidSettingsWrite, systemImage: "checkmark.circle.fill", color: .green)
+                    }
+                case .failed:
+                    EmptyView()
+                }
             }
 
             if let message = store.settingsMessage {
@@ -233,15 +235,13 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func resetDraftFromStore(revealsSensitive: Bool = false) {
-        configAutosaveTask?.cancel()
-        configAutosaveTask = nil
+        store.cancelPendingConfigAutosave()
         draft = store.claudeSettings?.content ?? ""
         revealsSensitiveConfig = revealsSensitive
     }
 
     private func reloadClaudeConfig() {
-        configAutosaveTask?.cancel()
-        configAutosaveTask = nil
+        store.cancelPendingConfigAutosave()
         Task {
             await store.refreshSelectedAgentConfigData()
             resetDraftFromStore()
@@ -250,9 +250,7 @@ private struct AgentConfigOverviewDetailPanel: View {
 
     private func toggleSensitiveEditing() {
         if revealsSensitiveConfig {
-            configAutosaveTask?.cancel()
-            configAutosaveTask = nil
-            revealsSensitiveConfig = false
+            resetDraftFromStore()
         } else {
             isConfirmingConfigEdit = true
         }
@@ -269,35 +267,16 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func handleConfigDraftChange() {
-        configAutosaveTask?.cancel()
-        configAutosaveTask = nil
-
-        let draftSnapshot = draft
-        guard canAutosaveConfig else { return }
-
-        configAutosaveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UIOptimizationPresentation.configEditor.autosaveDelayNanoseconds)
-            guard !Task.isCancelled else { return }
-            guard
-                revealsSensitiveConfig,
-                draft == draftSnapshot,
-                draftSnapshot != (store.claudeSettings?.content ?? ""),
-                validationMessage == nil,
-                !store.isSavingSettings,
-                !store.isLoadingSettings
-            else {
-                return
-            }
-
-            let saved = await store.saveClaudeSettings(content: draftSnapshot)
-            guard !Task.isCancelled else { return }
-            if saved {
-                draft = store.claudeSettings?.content ?? draftSnapshot
-                revealsSensitiveConfig = true
-                await store.loadAgentConfigSnapshots(agent: store.agentFilter.rawValue)
-                await store.loadCurrentAgentConfigDocuments(agent: store.agentFilter.rawValue)
-            }
+        let autosaveValidationError: String?
+        if !revealsSensitiveConfig || !hasDraftChanges {
+            autosaveValidationError = "Autosave is inactive for the current draft."
+        } else {
+            autosaveValidationError = validationMessage
         }
+        store.submitConfigAutosave(
+            content: draft,
+            validationError: autosaveValidationError
+        )
     }
 
     private static func formattedJSON(_ content: String) -> String? {

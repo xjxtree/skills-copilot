@@ -8,6 +8,9 @@ final class FakeServiceScript: ServiceProcessRunning {
     private let directory: URL
     let executableURL: URL
     private let callsURL: URL
+    private let delayedConfigSaveReleaseURL: URL
+    private let delayedProviderSaveAReleaseURL: URL
+    private let delayedProviderSaveBReleaseURL: URL
     private let scenarioLock = NSLock()
     private var currentScenario = "normal"
 
@@ -16,6 +19,9 @@ final class FakeServiceScript: ServiceProcessRunning {
             .appendingPathComponent("skills-copilot-fake-service-\(UUID().uuidString)", isDirectory: true)
         executableURL = directory.appendingPathComponent("fake-service.sh")
         callsURL = directory.appendingPathComponent("calls.log")
+        delayedConfigSaveReleaseURL = directory.appendingPathComponent("release-config-save-a")
+        delayedProviderSaveAReleaseURL = directory.appendingPathComponent("release-provider-save-a")
+        delayedProviderSaveBReleaseURL = directory.appendingPathComponent("release-provider-save-b")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: callsURL.path, contents: nil)
         try script.write(to: executableURL, atomically: true, encoding: .utf8)
@@ -40,6 +46,21 @@ final class FakeServiceScript: ServiceProcessRunning {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    @discardableResult
+    func releaseDelayedConfigSave() -> Bool {
+        FileManager.default.createFile(atPath: delayedConfigSaveReleaseURL.path, contents: Data())
+    }
+
+    @discardableResult
+    func releaseDelayedProviderSaveA() -> Bool {
+        FileManager.default.createFile(atPath: delayedProviderSaveAReleaseURL.path, contents: Data())
+    }
+
+    @discardableResult
+    func releaseDelayedProviderSaveB() -> Bool {
+        FileManager.default.createFile(atPath: delayedProviderSaveBReleaseURL.path, contents: Data())
+    }
+
     func serviceClient() -> ServiceClient {
         ServiceClient(processRunner: self, serviceURL: executableURL)
     }
@@ -51,7 +72,10 @@ final class FakeServiceScript: ServiceProcessRunning {
             timeoutNanoseconds: timeoutNanoseconds,
             environmentOverrides: [
                 "SKILLS_COPILOT_FAKE_SERVICE_SCENARIO": scenario,
-                "SKILLS_COPILOT_FAKE_SERVICE_CALLS": callsURL.path
+                "SKILLS_COPILOT_FAKE_SERVICE_CALLS": callsURL.path,
+                "SKILLS_COPILOT_FAKE_CONFIG_RELEASE": delayedConfigSaveReleaseURL.path,
+                "SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE": delayedProviderSaveAReleaseURL.path,
+                "SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE": delayedProviderSaveBReleaseURL.path
             ]
         )
     }
@@ -84,6 +108,16 @@ final class FakeServiceScript: ServiceProcessRunning {
 
         service_error() {
           respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.error","message":"boom"}}'
+        }
+
+        wait_for_release() {
+          release_path=$1
+          attempts=0
+          while [ ! -f "$release_path" ] && [ "$attempts" -lt 500 ]; do
+            sleep 0.01
+            attempts=$((attempts + 1))
+          done
+          [ -f "$release_path" ]
         }
 
         status_response() {
@@ -218,10 +252,23 @@ final class FakeServiceScript: ServiceProcessRunning {
             fi
             ;;
           *\\"llm.listProviderProfiles\\"*)
-            if [ "$scenario" = "prompt-ready" ]; then
+            if [ "$scenario" = "autosave-delayed-provider" ]; then
+              respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://provider-b.example.com/v1","model":"model-b","enabled":true,"configured":true,"has_api_key":true}]}}'
+            elif [ "$scenario" = "prompt-ready" ]; then
               respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://llm.example.com/v1","model":"gpt-5","enabled":true,"configured":true,"has_api_key":true}]}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.listProviderProfiles"}}'
+            ;;
+          *\\"llm.saveProviderProfile\\"*)
+            if [ "$scenario" = "autosave-delayed-provider" ]; then
+              if printf '%s' "$input" | grep -q '\\"api_key\\":\\"A\\"'; then
+                wait_for_release "$SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE" || service_error
+              elif printf '%s' "$input" | grep -q '\\"api_key\\":\\"B\\"'; then
+                wait_for_release "$SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE" || service_error
+              fi
+              respond '{"id":"test","ok":true,"result":{"profile":null}}'
+            fi
+            respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.saveProviderProfile"}}'
             ;;
           *\\"session.previewLocalSessions\\"*)
             if [ "$scenario" = "sessions-mixed" ]; then
@@ -484,6 +531,16 @@ final class FakeServiceScript: ServiceProcessRunning {
               esac
             fi
             respond '{"id":"test","ok":true,"result":[]}'
+            ;;
+          *\\"config.saveClaudeSettings\\"*)
+            if [ "$scenario" = "autosave-delayed-config" ]; then
+              if printf '%s' "$input" | grep -q 'config-a'; then
+                wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true}}'
+              fi
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true}}'
+            fi
+            respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.unknown","message":"unknown method"}}'
             ;;
           *\\"config.toggleSkill\\"*)
             if [ "$scenario" = "stale-after-toggle" ]; then

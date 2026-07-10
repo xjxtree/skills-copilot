@@ -790,6 +790,7 @@
 "settings.agentConfig.showSensitiveValues" = "显示值";
 "settings.agentConfig.hideSensitive" = "隐藏";
 "settings.agentConfig.autosavePending" = "有效改动将自动保存。";
+"settings.agentConfig.autosaveSaving" = "正在保存设置...";
 "settings.agentConfig.editConfirmation.title" = "显示并编辑原始配置？";
 "settings.agentConfig.editConfirmation.message" = "这会显示敏感配置值并启用原始编辑。有效改动会通过已验证的快照流程自动保存。";
 "settings.agentConfig.skillEnablement" = "技能生效配置";

@@ -404,6 +404,7 @@ enum UIStrings {
     static var agentConfigShowSensitiveValues: String { text("settings.agentConfig.showSensitiveValues", "Show Values") }
     static var agentConfigHideSensitive: String { text("settings.agentConfig.hideSensitive", "Hide") }
     static var configAutosavePending: String { text("settings.agentConfig.autosavePending", "Valid changes will be saved automatically.") }
+    static var configAutosaveSaving: String { text("settings.agentConfig.autosaveSaving", "Saving settings...") }
     static var agentConfigEditConfirmationTitle: String { text("settings.agentConfig.editConfirmation.title", "Show and edit raw config?") }
     static var agentConfigEditConfirmationMessage: String { text("settings.agentConfig.editConfirmation.message", "This reveals sensitive config values and enables raw editing. Valid changes auto-save through the verified snapshot flow.") }
     static var agentConfigSkillEnablement: String { text("settings.agentConfig.skillEnablement", "Skill enablement") }

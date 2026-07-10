@@ -345,22 +345,27 @@ const checks = [
   },
   {
     label: "config raw editing is confirmation-gated and read-only previews use syntax highlighting",
-    text: files.agentConfigWorkspace + "\n" + files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh,
+    text: files.agentConfigWorkspace + "\n" + files.store + "\n" + files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh,
     passed: /@State private var isConfirmingConfigEdit = false/.test(files.agentConfigWorkspace)
-      && /@State private var configAutosaveTask: Task<Void,\s*Never>\?/.test(files.agentConfigWorkspace)
-      && /private func toggleSensitiveEditing\(\)[\s\S]*?if revealsSensitiveConfig \{[\s\S]*?configAutosaveTask\?\.cancel\(\)[\s\S]*?revealsSensitiveConfig = false[\s\S]*?\} else \{[\s\S]*?isConfirmingConfigEdit = true[\s\S]*?\}/.test(files.agentConfigWorkspace)
+      && !/@State private var configAutosaveTask: Task<Void,\s*Never>\?/.test(files.agentConfigWorkspace)
+      && /private func toggleSensitiveEditing\(\)[\s\S]*?if revealsSensitiveConfig \{[\s\S]*?resetDraftFromStore\(\)[\s\S]*?\} else \{[\s\S]*?isConfirmingConfigEdit = true[\s\S]*?\}/.test(files.agentConfigWorkspace)
       && /\.confirmationDialog\(\s*UIStrings\.agentConfigEditConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingConfigEdit[\s\S]*?Button\(UIStrings\.agentConfigShowSensitive,\s*role:\s*\.destructive\)[\s\S]*?revealsSensitiveConfig = true[\s\S]*?Text\(UIStrings\.agentConfigEditConfirmationMessage\)/.test(files.agentConfigWorkspace)
       && /if revealsSensitiveConfig \{[\s\S]*?JSONLineNumberedEditor\(text:\s*displayedDraft\)[\s\S]*?\} else \{[\s\S]*?JSONSyntaxHighlightedText\(content:\s*displayedDraft\.wrappedValue\)/.test(files.agentConfigWorkspace)
-      && /private func handleConfigDraftChange\(\)[\s\S]*?configAutosaveTask\?\.cancel\(\)[\s\S]*?Task\.sleep\(nanoseconds:\s*UIOptimizationPresentation\.configEditor\.autosaveDelayNanoseconds\)[\s\S]*?await store\.saveClaudeSettings\(content:\s*draftSnapshot\)[\s\S]*?await store\.loadAgentConfigSnapshots/.test(files.agentConfigWorkspace)
+      && /private func handleConfigDraftChange\(\)[\s\S]*?store\.submitConfigAutosave\([\s\S]*?content:\s*draft,[\s\S]*?validationError:\s*autosaveValidationError/.test(files.agentConfigWorkspace)
+      && !/private func handleConfigDraftChange\(\)[\s\S]*?Task\.sleep|private func handleConfigDraftChange\(\)[\s\S]*?store\.saveClaudeSettings/.test(files.agentConfigWorkspace)
+      && /@Published private\(set\) var configAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
+      && /private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>/.test(files.store)
       && /private struct JSONSyntaxHighlightedText:[\s\S]*?ForEach\(Array\(Self\.lines\(in:\s*content\)\.enumerated\(\)\)[\s\S]*?Text\(Self\.highlighted[\s\S]*?NSRegularExpression[\s\S]*?AttributedString/.test(files.agentConfigWorkspace)
       && /private struct JSONLineNumberedEditor:[\s\S]*?ConfigLineNumberColumn\(lineCount:\s*lineCount\)[\s\S]*?TextEditor\(text:\s*\$text\)/.test(files.agentConfigWorkspace)
       && /static var agentConfigEditConfirmationTitle/.test(files.uiStrings)
       && /static var agentConfigEditConfirmationMessage/.test(files.uiStrings)
       && /static var configAutosavePending/.test(files.uiStrings)
+      && /static var configAutosaveSaving/.test(files.uiStrings)
       && /static var formatJSON/.test(files.uiStrings)
       && /"settings\.agentConfig\.editConfirmation\.title"/.test(files.localizable)
       && /"settings\.agentConfig\.editConfirmation\.message"/.test(files.localizableZh)
       && /"settings\.agentConfig\.autosavePending"/.test(files.localizable)
+      && /"settings\.agentConfig\.autosaveSaving"/.test(files.localizableZh)
       && /"action\.formatJSON"/.test(files.localizableZh),
   },
   {
@@ -611,11 +616,16 @@ const checks = [
   },
   {
     label: "settings AI provider autosaves profile edits while confirming provider tests",
-    text: files.settings + "\n" + files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh,
-    passed: /@State private var providerAutosaveTask: Task<Void,\s*Never>\?/.test(files.settings)
+    text: files.settings + "\n" + files.store + "\n" + files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh,
+    passed: !/@State private var providerAutosaveTask: Task<Void,\s*Never>\?/.test(files.settings)
       && /@State private var isConfirmingProviderTest = false/.test(files.settings)
       && /\.onChange\(of:\s*providerDraft\)[\s\S]*?handleProviderDraftChange\(\)/.test(files.settings)
-      && /private func handleProviderDraftChange\(\)[\s\S]*?providerAutosaveTask\?\.cancel\(\)[\s\S]*?Task\.sleep\(nanoseconds:\s*900_000_000\)[\s\S]*?await store\.saveAIProviderSettings\(draft:\s*draftSnapshot\)[\s\S]*?providerDraft\.apiKey = ""/.test(files.settings)
+      && /\.onChange\(of:\s*store\.providerAutosaveDraft\)[\s\S]*?providerDraft = latestDraft/.test(files.settings)
+      && /private func handleProviderDraftChange\(\)[\s\S]*?store\.providerAutosaveDraft != providerDraft[\s\S]*?store\.submitProviderAutosave\(draft:\s*providerDraft\)/.test(files.settings)
+      && !/private func handleProviderDraftChange\(\)[\s\S]*?Task\.sleep|private func handleProviderDraftChange\(\)[\s\S]*?store\.saveAIProviderSettings/.test(files.settings)
+      && /@Published private\(set\) var providerAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
+      && /private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>/.test(files.store)
+      && /private func handleProviderAutosaveCompletion\([\s\S]*?completion\.revision == latestProviderAutosaveRevision[\s\S]*?clearedDraft\.apiKey = ""/.test(files.store)
       && /UIStrings\.aiProviderAutosavePending/.test(files.settings)
       && /Button\s*\{[\s\S]*?isConfirmingProviderTest = true[\s\S]*?\} label:\s*\{[\s\S]*?Label\(UIStrings\.aiProviderTest,\s*systemImage:\s*"network"\)/.test(files.settings)
       && /\.confirmationDialog\(\s*UIStrings\.aiProviderTestConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingProviderTest[\s\S]*?Button\(UIStrings\.aiProviderTest,\s*role:\s*\.destructive\)[\s\S]*?testProviderConnection\(\)[\s\S]*?Text\(UIStrings\.aiProviderTestConfirmationMessage\)/.test(files.settings)

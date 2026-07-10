@@ -313,6 +313,9 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingAIProvider = false
     @Published private(set) var isSavingAIProvider = false
     @Published private(set) var isTestingAIProvider = false
+    @Published private(set) var configAutosavePhase: RevisionAutosavePhase = .idle
+    @Published private(set) var providerAutosavePhase: RevisionAutosavePhase = .idle
+    @Published private(set) var providerAutosaveDraft: AIProviderSettingsDraft?
     @Published private(set) var lastMutationMessage: String? {
         didSet { scheduleLastMutationMessageDismissal() }
     }
@@ -520,15 +523,49 @@ final class SkillStore: ObservableObject {
     var scopedLocalSessionSummaryCache: ScopedLocalSessionSummaryCache?
     private let taskCockpitTimeoutSeconds: TimeInterval
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
+    private let autosaveDelayNanoseconds: UInt64
+    private var latestProviderAutosaveRevision: UInt64?
+    private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>(
+        delayNanoseconds: autosaveDelayNanoseconds,
+        save: { [weak self] content, _ in
+            guard let self else { return false }
+            let saved = await self.saveClaudeSettings(content: content)
+            if saved {
+                let agent = self.agentFilter.rawValue
+                await self.loadAgentConfigSnapshots(agent: agent)
+                await self.loadCurrentAgentConfigDocuments(agent: agent)
+            }
+            return saved
+        },
+        phaseChanged: { [weak self] phase in
+            self?.configAutosavePhase = phase
+        },
+        completion: { _ in }
+    )
+    private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>(
+        delayNanoseconds: autosaveDelayNanoseconds,
+        save: { [weak self] draft, _ in
+            guard let self else { return false }
+            return await self.saveAIProviderSettings(draft: draft)
+        },
+        phaseChanged: { [weak self] phase in
+            self?.providerAutosavePhase = phase
+        },
+        completion: { [weak self] completion in
+            self?.handleProviderAutosaveCompletion(completion)
+        }
+    )
 
     init(
         service: ServiceClient,
         taskCockpitTimeoutSeconds: TimeInterval = 300,
-        taskCockpitHistoryStore: TaskCockpitHistoryStore = TaskCockpitHistoryStore()
+        taskCockpitHistoryStore: TaskCockpitHistoryStore = TaskCockpitHistoryStore(),
+        autosaveDelayNanoseconds: UInt64 = UIOptimizationPresentation.configEditor.autosaveDelayNanoseconds
     ) {
         self.service = service
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
         self.taskCockpitHistoryStore = taskCockpitHistoryStore
+        self.autosaveDelayNanoseconds = autosaveDelayNanoseconds
         taskCockpitHistory = []
         do {
             _ = try taskCockpitHistoryStore.purgeLegacyHistoryIfPresent()
@@ -2794,6 +2831,46 @@ final class SkillStore: ObservableObject {
     func clearSettingsFeedback() {
         settingsMessage = nil
         settingsErrorMessage = nil
+    }
+
+    @discardableResult
+    func submitConfigAutosave(content: String, validationError: String?) -> UInt64 {
+        configAutosaveCoordinator.submit(content, validationError: validationError)
+    }
+
+    @discardableResult
+    func submitProviderAutosave(draft: AIProviderSettingsDraft) -> UInt64 {
+        providerAutosaveDraft = draft
+        let revision = providerAutosaveCoordinator.submit(
+            draft,
+            validationError: draft.validationMessage
+        )
+        latestProviderAutosaveRevision = revision
+        return revision
+    }
+
+    func cancelPendingConfigAutosave() {
+        configAutosaveCoordinator.cancelPendingDebounce()
+    }
+
+    func cancelPendingProviderAutosave() {
+        providerAutosaveCoordinator.cancelPendingDebounce()
+        latestProviderAutosaveRevision = nil
+        providerAutosaveDraft = nil
+    }
+
+    func flushPendingAutosaves() async {
+        await configAutosaveCoordinator.flush()
+        await providerAutosaveCoordinator.flush()
+    }
+
+    private func handleProviderAutosaveCompletion(
+        _ completion: RevisionAutosaveCompletion<AIProviderSettingsDraft>
+    ) {
+        guard completion.revision == latestProviderAutosaveRevision else { return }
+        var clearedDraft = completion.value
+        clearedDraft.apiKey = ""
+        providerAutosaveDraft = clearedDraft
     }
 
     func loadAIProviderStatusIfNeeded() async {

@@ -82,6 +82,12 @@ struct SkillStoreTests {
         try await runCase("settingsFeedbackClearsAfterFailedConfigSave") {
             try await settingsFeedbackClearsAfterFailedConfigSave()
         }
+        try await runCase("configAutosaveKeepsEditArrivingDuringSave") {
+            try await configAutosaveKeepsEditArrivingDuringSave()
+        }
+        try await runCase("providerAutosaveKeepsEditArrivingDuringSave") {
+            try await providerAutosaveKeepsEditArrivingDuringSave()
+        }
         try await runCase("previewRollbackShowsDiffWithoutCallingRollback") {
             try await previewRollbackShowsDiffWithoutCallingRollback()
         }
@@ -1108,6 +1114,92 @@ struct SkillStoreTests {
 
         try expectNil(store.settingsErrorMessage, "Continuing to edit settings should clear stale config save errors.")
         try expectNil(store.settingsMessage, "Continuing to edit settings should clear stale config save success messages.")
+    }
+
+    private func configAutosaveKeepsEditArrivingDuringSave() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "autosave-delayed-config")
+
+        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
+        let revisionA = store.submitConfigAutosave(content: "config-a", validationError: nil)
+        try await waitUntil("Config autosave A should reach the service.", timeout: 5) {
+            countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
+        }
+
+        let revisionB = store.submitConfigAutosave(content: "config-b", validationError: nil)
+        try expectEqual(
+            store.configAutosavePhase,
+            .pendingAfterSave(revision: revisionB),
+            "Config edit B should remain pending while A is writing."
+        )
+        try expectEqual(revisionB, revisionA + 1, "Config autosave revisions should remain ordered.")
+
+        fake.releaseDelayedConfigSave()
+        await store.flushPendingAutosaves()
+
+        let calls = fake.calls()
+        try expectEqual(
+            countMethodCalls("config.saveClaudeSettings", in: calls),
+            2,
+            "Both config revisions should reach the service exactly once."
+        )
+        guard let callA = calls.range(of: "config-a"), let callB = calls.range(of: "config-b") else {
+            throw NativeModelTestFailure(description: "Config autosave calls should preserve both draft values.")
+        }
+        try expectEqual(callA.lowerBound < callB.lowerBound, true, "Config autosave should preserve A then B service order.")
+        try expectEqual(store.claudeSettings?.content, "config-b", "The final stored config should be revision B.")
+        try expectEqual(store.configAutosavePhase, .idle, "Config autosave should settle after both writes.")
+    }
+
+    private func providerAutosaveKeepsEditArrivingDuringSave() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "autosave-delayed-provider")
+
+        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+        var draftA = AIProviderSettingsDraft(status: .unavailable())
+        draftA.endpoint = "https://provider-a.example.com/v1"
+        draftA.model = "model-a"
+        draftA.apiKey = "A"
+        _ = store.submitProviderAutosave(draft: draftA)
+        try await waitUntil("Provider autosave A should reach the service.", timeout: 5) {
+            countMethodCalls("llm.saveProviderProfile", in: fake.calls()) == 1
+        }
+
+        var draftB = draftA
+        draftB.endpoint = "https://provider-b.example.com/v1"
+        draftB.model = "model-b"
+        draftB.apiKey = "B"
+        let revisionB = store.submitProviderAutosave(draft: draftB)
+        try expectEqual(
+            store.providerAutosavePhase,
+            .pendingAfterSave(revision: revisionB),
+            "Provider edit B should remain pending while A is writing."
+        )
+
+        fake.releaseDelayedProviderSaveA()
+        try await waitUntil("Provider autosave B should start after A.", timeout: 5) {
+            countMethodCalls("llm.saveProviderProfile", in: fake.calls()) == 2
+        }
+        try expectEqual(
+            store.providerAutosaveDraft?.apiKey,
+            "B",
+            "Completion A must not clear the newer provider API-key draft B."
+        )
+
+        fake.releaseDelayedProviderSaveB()
+        await store.flushPendingAutosaves()
+
+        let calls = fake.calls()
+        guard let callA = calls.range(of: "provider-a.example.com"), let callB = calls.range(of: "provider-b.example.com") else {
+            throw NativeModelTestFailure(description: "Provider autosave calls should preserve both draft values.")
+        }
+        try expectEqual(callA.lowerBound < callB.lowerBound, true, "Provider autosave should preserve A then B service order.")
+        try expectEqual(store.providerAutosaveDraft?.endpoint, draftB.endpoint, "The final provider draft should be revision B.")
+        try expectEqual(store.providerAutosaveDraft?.apiKey, "", "The latest committed API-key draft should be cleared.")
+        try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after both writes.")
     }
 
     private func rollbackSnapshotRequiresVisibleAgentTimelineRecord() async throws {

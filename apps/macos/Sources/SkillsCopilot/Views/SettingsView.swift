@@ -61,7 +61,6 @@ struct SettingsView: View {
     @State private var isConfirmingProviderTest = false
     @State private var showsServiceDiagnostics = false
     @State private var selectedSettingsTab: SettingsTab = .appearance
-    @State private var providerAutosaveTask: Task<Void, Never>?
 
     private var providerValidationMessage: String? {
         providerDraft.validationMessage
@@ -131,6 +130,11 @@ struct SettingsView: View {
         .onChange(of: providerDraft) { _ in
             handleProviderDraftChange()
         }
+        .onChange(of: store.providerAutosaveDraft) { latestDraft in
+            guard let latestDraft, latestDraft != providerDraft else { return }
+            providerDraft = latestDraft
+            resetProviderEditedState()
+        }
         .transaction { transaction in
             if reduceMotion {
                 transaction.animation = nil
@@ -149,10 +153,6 @@ struct SettingsView: View {
             }
         } message: {
             Text(UIStrings.aiProviderTestConfirmationMessage)
-        }
-        .onDisappear {
-            providerAutosaveTask?.cancel()
-            providerAutosaveTask = nil
         }
         .onExitCommand {
             NSApp.keyWindow?.close()
@@ -320,12 +320,21 @@ struct SettingsView: View {
                     SettingsBanner(message: UIStrings.localizedServiceMessage(error), systemImage: "exclamationmark.triangle.fill", color: .red)
                 }
 
-                if store.isSavingAIProvider {
-                    SettingsBanner(message: UIStrings.aiProviderSaving, systemImage: "hourglass", color: .secondary)
-                } else if store.isTestingAIProvider {
+                if store.isTestingAIProvider {
                     SettingsBanner(message: UIStrings.aiProviderTesting, systemImage: "network", color: .secondary)
-                } else if hasEditedProviderDraft, providerValidationMessage == nil {
-                    SettingsBanner(message: UIStrings.aiProviderAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
+                } else {
+                    switch store.providerAutosavePhase {
+                    case .saving:
+                        SettingsBanner(message: UIStrings.aiProviderSaving, systemImage: "hourglass", color: .secondary)
+                    case .debouncing, .pendingAfterSave:
+                        SettingsBanner(message: UIStrings.aiProviderAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
+                    case .idle:
+                        if hasEditedProviderDraft, providerValidationMessage == nil {
+                            SettingsBanner(message: UIStrings.aiProviderAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
+                        }
+                    case .failed:
+                        EmptyView()
+                    }
                 }
 
                 SettingsSectionCard(title: UIStrings.text("settings.actions", "Actions"), systemImage: "command") {
@@ -439,7 +448,7 @@ struct SettingsView: View {
         HStack {
             Button {
                 Task {
-                    providerAutosaveTask?.cancel()
+                    store.cancelPendingProviderAutosave()
                     await store.loadAIProviderStatus()
                     resetProviderDraftFromStore()
                 }
@@ -536,6 +545,7 @@ struct SettingsView: View {
     }
 
     private func resetProviderDraftFromStore() {
+        store.cancelPendingProviderAutosave()
         providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
         hasEditedProviderDraft = false
     }
@@ -546,43 +556,21 @@ struct SettingsView: View {
 
     private func handleProviderDraftChange() {
         resetProviderEditedState()
-        providerAutosaveTask?.cancel()
-
-        let draftSnapshot = providerDraft
-        guard
-            hasEditedProviderDraft,
-            draftSnapshot.validationMessage == nil,
-            !providerActionsDisabled
-        else {
+        guard store.providerAutosaveDraft != providerDraft else { return }
+        guard hasEditedProviderDraft else {
+            store.cancelPendingProviderAutosave()
             return
         }
-
-        providerAutosaveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            guard !Task.isCancelled else { return }
-            guard
-                providerDraft == draftSnapshot,
-                draftSnapshot.validationMessage == nil,
-                !providerActionsDisabled
-            else {
-                return
-            }
-
-            let saved = await store.saveAIProviderSettings(draft: draftSnapshot)
-            guard !Task.isCancelled else { return }
-            providerDraft.apiKey = ""
-            if saved {
-                await store.loadAIProviderStatus()
-                resetProviderDraftFromStore()
-            } else {
-                resetProviderEditedState()
-            }
+        guard store.aiProviderStatus.serviceAvailable else {
+            store.cancelPendingProviderAutosave()
+            return
         }
+        store.submitProviderAutosave(draft: providerDraft)
     }
 
     private func testProviderConnection() {
         Task {
-            providerAutosaveTask?.cancel()
+            store.cancelPendingProviderAutosave()
             _ = await store.testAIProviderConnection(draft: providerDraft)
             providerDraft.apiKey = ""
             resetProviderEditedState()

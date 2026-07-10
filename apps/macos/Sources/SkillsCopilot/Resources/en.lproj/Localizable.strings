@@ -790,6 +790,7 @@
 "settings.agentConfig.showSensitiveValues" = "Show Values";
 "settings.agentConfig.hideSensitive" = "Hide";
 "settings.agentConfig.autosavePending" = "Valid changes will be saved automatically.";
+"settings.agentConfig.autosaveSaving" = "Saving settings...";
 "settings.agentConfig.editConfirmation.title" = "Show and edit raw config?";
 "settings.agentConfig.editConfirmation.message" = "This reveals sensitive config values and enables raw editing. Valid changes auto-save through the verified snapshot flow.";
 "settings.agentConfig.skillEnablement" = "Skill enablement";

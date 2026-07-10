@@ -84,6 +84,7 @@ private let mainNativeModelSuites: [(String, () throws -> Void)] = [
     ("ToolGlobalModelTests", { try ToolGlobalModelTests().run() }),
     ("SkillManagerModelTests", { try SkillManagerModelTests().run() }),
     ("SkillManagerRequestGenerationTests", { try runAsyncTest { try await SkillManagerRequestGenerationTests().run() } }),
+    ("RevisionAutosaveCoordinatorTests", { try runAsyncTest { try await RevisionAutosaveCoordinatorTests().run() } }),
     ("AgentConfigTimelineModelTests", { try AgentConfigTimelineModelTests().run() }),
     ("ConfigContentRedactorTests", { try ConfigContentRedactorTests().run() }),
     ("LocalizationModelTests", { try LocalizationModelTests().run() }),
@@ -149,9 +150,9 @@ public func runNativeModelTestsFromSwiftPMFallback() {
         try runAsyncTest {
             let summary = try await runAllNativeModelTestsAsync()
             try expectEqual(summary.serviceSuiteCount, 2, "Service suite count")
-            try expectEqual(summary.mainSuiteCount, 21, "Main suite count")
+            try expectEqual(summary.mainSuiteCount, 22, "Main suite count")
             try expectEqual(summary.skillStoreGroupCount, 64, "SkillStore group count")
-            try expectEqual(summary.namedExecutionCount, 87, "Named execution count")
+            try expectEqual(summary.namedExecutionCount, 88, "Named execution count")
         }
     } catch {
         fputs("SkillsCopilotTests: \(error)\n", stderr)
