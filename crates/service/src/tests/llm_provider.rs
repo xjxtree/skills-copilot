@@ -2605,7 +2605,9 @@ fn scan_all_label_formats_four_agent_reports() {
             scanned_count: 1,
             roots_considered: vec![PathBuf::from("/tmp/home/.claude/skills")],
             scanned_roots: vec![PathBuf::from("/tmp/home/.claude/skills")],
+            partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
+            issues: Vec::new(),
         },
         AgentCatalogScanReport {
             agent: AgentId::Codex,
@@ -2613,7 +2615,9 @@ fn scan_all_label_formats_four_agent_reports() {
             scanned_count: 1,
             roots_considered: vec![PathBuf::from("/tmp/home/.agents/skills")],
             scanned_roots: vec![PathBuf::from("/tmp/home/.agents/skills")],
+            partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
+            issues: Vec::new(),
         },
         AgentCatalogScanReport {
             agent: AgentId::Opencode,
@@ -2621,7 +2625,9 @@ fn scan_all_label_formats_four_agent_reports() {
             scanned_count: 1,
             roots_considered: vec![PathBuf::from("/tmp/home/.config/opencode/skills")],
             scanned_roots: vec![PathBuf::from("/tmp/home/.config/opencode/skills")],
+            partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
+            issues: Vec::new(),
         },
         AgentCatalogScanReport {
             agent: AgentId::Pi,
@@ -2629,7 +2635,9 @@ fn scan_all_label_formats_four_agent_reports() {
             scanned_count: 1,
             roots_considered: vec![PathBuf::from("/tmp/home/.pi/agent/skills")],
             scanned_roots: vec![PathBuf::from("/tmp/home/.pi/agent/skills")],
+            partial_roots: Vec::new(),
             skipped_roots: Vec::new(),
+            issues: Vec::new(),
         },
     ];
 
@@ -2637,6 +2645,94 @@ fn scan_all_label_formats_four_agent_reports() {
         scan_all_label(&reports),
         "Claude Code, Codex, opencode, and Pi"
     );
+}
+
+#[test]
+fn partial_agent_refresh_summary_is_warning_and_redacts_issue_details() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-partial-refresh-summary-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let home = temp_root.join("private-home");
+    let partial_root = home.join(".claude/skills");
+    let issue_path = partial_root.join("dangling-link");
+    let host = ServiceHost {
+        app_data_dir: temp_root.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let report = AgentCatalogScanReport {
+        agent: AgentId::ClaudeCode,
+        display_name: "Claude Code",
+        scanned_count: 1,
+        roots_considered: vec![partial_root.clone()],
+        scanned_roots: Vec::new(),
+        partial_roots: vec![partial_root.clone()],
+        skipped_roots: Vec::new(),
+        issues: vec![skills_copilot_commands::AgentCatalogScanIssue {
+            path: issue_path,
+            kind: "entry_unreadable",
+            detail: format!(
+                "failed to canonicalize {} because target /Volumes/private-scan-target is unavailable",
+                partial_root.join("private-target").display(),
+            ),
+        }],
+    };
+
+    let summaries = host.agent_refresh_summaries(&[report], &[], &[]);
+    let summary = summaries.first().expect("partial summary");
+
+    assert_eq!(summary.status, "completed-partial");
+    assert_eq!(summary.roots_partial, vec!["$HOME/.claude/skills"]);
+    assert!(summary.roots_scanned.is_empty());
+    assert_eq!(summary.scan_issues.len(), 1);
+    assert_eq!(summary.scan_issues[0].kind, "entry_unreadable");
+    assert_eq!(
+        summary.scan_issues[0].path,
+        "$HOME/.claude/skills/dangling-link"
+    );
+    assert_eq!(
+        summary.scan_issues[0].detail,
+        "A directory entry could not be inspected or resolved."
+    );
+    assert!(!summary.scan_issues[0]
+        .detail
+        .contains(&home.to_string_lossy().to_string()));
+    assert!(!summary.scan_issues[0]
+        .detail
+        .contains("/Volumes/private-scan-target"));
+    assert!(summary
+        .recovery_actions
+        .iter()
+        .any(|action| action.contains("preserved")));
+
+    let activity = host.scan_activity(
+        "catalog.scanAll",
+        "supported-agent",
+        vec![partial_root],
+        1,
+        ScanActivityCounts {
+            scanned_count: 1,
+            skill_count: 1,
+            finding_count: 0,
+            conflict_count: 0,
+            snapshot_count: 0,
+        },
+        Some(summaries),
+    );
+    assert_eq!(activity.status, "completed-partial");
+    assert!(activity.log_entries.iter().any(|entry| {
+        entry.level == "warning"
+            && entry.message.contains("partial")
+            && entry.message.contains("entry_unreadable")
+    }));
+
+    let _ = fs::remove_dir_all(temp_root);
 }
 
 #[test]

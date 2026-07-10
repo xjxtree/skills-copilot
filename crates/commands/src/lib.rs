@@ -24,7 +24,7 @@ use skills_copilot_core::{
     AdapterContext, AgentAdapter, AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess,
     PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
-use skills_copilot_scanner::{scan_agent, ScannerError};
+use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScannerError};
 use thiserror::Error;
 
 #[cfg(test)]
@@ -138,7 +138,16 @@ pub struct AgentCatalogScanReport {
     pub scanned_count: usize,
     pub roots_considered: Vec<PathBuf>,
     pub scanned_roots: Vec<PathBuf>,
+    pub partial_roots: Vec<PathBuf>,
     pub skipped_roots: Vec<PathBuf>,
+    pub issues: Vec<AgentCatalogScanIssue>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AgentCatalogScanIssue {
+    pub path: PathBuf,
+    pub kind: &'static str,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -431,19 +440,31 @@ pub fn scan_all_catalog_report(
             .map(|inst| (inst.scope.as_str().to_string(), inst.path.clone()))
             .collect();
         catalog.upsert_skill_instances(&report.instances)?;
-        catalog.mark_missing_except_for_project_context(
-            adapter.id().as_str(),
-            ctx.project_root.as_deref(),
-            &report.scanned_roots,
-            &seen,
-        )?;
+        if !report.scanned_roots.is_empty() {
+            catalog.mark_missing_except_for_project_context(
+                adapter.id().as_str(),
+                ctx.project_root.as_deref(),
+                &report.scanned_roots,
+                &seen,
+            )?;
+        }
         agents.push(AgentCatalogScanReport {
             agent: adapter.id(),
             display_name: adapter.display_name(),
             scanned_count: report.instances.len(),
             roots_considered,
             scanned_roots: report.scanned_roots.clone(),
+            partial_roots: report.partial_roots.clone(),
             skipped_roots: report.skipped_roots.clone(),
+            issues: report
+                .issues
+                .iter()
+                .map(|issue| AgentCatalogScanIssue {
+                    path: issue.path.clone(),
+                    kind: scan_issue_kind_key(issue.kind),
+                    detail: issue.detail.clone(),
+                })
+                .collect(),
         });
     }
     refresh_catalog_rule_outputs(catalog, ctx, previous_fingerprints)?;
@@ -451,6 +472,18 @@ pub fn scan_all_catalog_report(
         scanned_count,
         agents,
     })
+}
+
+fn scan_issue_kind_key(kind: ScanIssueKind) -> &'static str {
+    match kind {
+        ScanIssueKind::RootUnavailable => "root_unavailable",
+        ScanIssueKind::RootOutsideAllowlist => "root_outside_allowlist",
+        ScanIssueKind::DirectoryUnreadable => "directory_unreadable",
+        ScanIssueKind::EntryUnreadable => "entry_unreadable",
+        ScanIssueKind::FileUnreadable => "file_unreadable",
+        ScanIssueKind::FileTooLarge => "file_too_large",
+        ScanIssueKind::BudgetExceeded => "budget_exceeded",
+    }
 }
 
 fn scan_single_agent_to_catalog(
@@ -466,12 +499,14 @@ fn scan_single_agent_to_catalog(
         .iter()
         .map(|inst| (inst.scope.as_str().to_string(), inst.path.clone()))
         .collect();
-    catalog.mark_missing_except_for_project_context(
-        adapter.id().as_str(),
-        ctx.project_root.as_deref(),
-        &report.scanned_roots,
-        &seen,
-    )?;
+    if !report.scanned_roots.is_empty() {
+        catalog.mark_missing_except_for_project_context(
+            adapter.id().as_str(),
+            ctx.project_root.as_deref(),
+            &report.scanned_roots,
+            &seen,
+        )?;
+    }
     refresh_catalog_rule_outputs(catalog, ctx, previous_fingerprints)?;
     Ok(report.instances.len())
 }

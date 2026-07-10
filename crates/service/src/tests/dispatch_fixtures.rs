@@ -1408,7 +1408,9 @@ pub(super) struct WireAgentRefreshSummary {
     pub(super) broken_count: usize,
     pub(super) roots_considered: Vec<String>,
     pub(super) roots_scanned: Vec<String>,
+    pub(super) roots_partial: Vec<String>,
     pub(super) roots_skipped: Vec<String>,
+    pub(super) scan_issues: Vec<WireAgentRefreshScanIssue>,
     #[serde(default)]
     pub(super) config_detected: bool,
     #[serde(default)]
@@ -1422,6 +1424,15 @@ pub(super) struct WireAgentRefreshSummary {
     #[serde(default)]
     pub(super) blockers: Vec<String>,
     pub(super) recovery_actions: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireAgentRefreshScanIssue {
+    pub(super) kind: String,
+    pub(super) path: String,
+    pub(super) detail: String,
 }
 
 #[allow(dead_code)]

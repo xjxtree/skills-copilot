@@ -341,59 +341,99 @@ impl Catalog {
         scanned_roots: &[PathBuf],
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, scope, project_root, path FROM skill_instance WHERE agent = ?1")?;
-        let rows = stmt.query_map(params![agent], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?;
-
-        let mut existing: Vec<(String, String, Option<String>, String)> = Vec::new();
-        for row in rows {
-            existing.push(row?);
-        }
-
         let seen_set: HashSet<(String, String)> = seen
             .iter()
             .map(|(scope, path)| (scope.clone(), path.to_string_lossy().to_string()))
             .collect();
+        let occurred_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(i64::MAX);
 
-        let to_mark: Vec<String> = existing
-            .into_iter()
-            .filter(|(_, scope, project_root, path)| {
-                if scope == Scope::ToolGlobal.as_str() {
-                    return false;
-                }
-                if seen_set.contains(&(scope.clone(), path.clone())) {
-                    return false;
-                }
-                if !record_matches_project_context(scope, project_root.as_deref(), project_context)
-                {
-                    return false;
-                }
-                let record_path = PathBuf::from(path);
-                scanned_roots
-                    .iter()
-                    .any(|root| record_path.starts_with(root))
-            })
-            .map(|(id, _, _, _)| id)
-            .collect();
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = (|| -> Result<usize, CatalogError> {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, scope, project_root, path, state
+                 FROM skill_instance WHERE agent = ?1",
+            )?;
+            let rows = stmt.query_map(params![agent], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
 
-        let count = to_mark.len();
-        if count > 0 {
-            let mut update = self
-                .conn
-                .prepare("UPDATE skill_instance SET state = 'missing' WHERE id = ?1")?;
+            let mut existing: Vec<(String, String, Option<String>, String, String)> = Vec::new();
+            for row in rows {
+                existing.push(row?);
+            }
+
+            let to_mark: Vec<String> = existing
+                .into_iter()
+                .filter(|(_, scope, project_root, path, state)| {
+                    if scope == Scope::ToolGlobal.as_str() || state == SkillState::Missing.as_str()
+                    {
+                        return false;
+                    }
+                    if seen_set.contains(&(scope.clone(), path.clone())) {
+                        return false;
+                    }
+                    if !record_matches_project_context(
+                        scope,
+                        project_root.as_deref(),
+                        project_context,
+                    ) {
+                        return false;
+                    }
+                    let record_path = PathBuf::from(path);
+                    scanned_roots
+                        .iter()
+                        .any(|root| record_path.starts_with(root))
+                })
+                .map(|(id, _, _, _, _)| id)
+                .collect();
+
+            let mut update = self.conn.prepare(
+                "UPDATE skill_instance SET state = 'missing'
+                 WHERE id = ?1 AND state <> 'missing'",
+            )?;
+            let mut insert_event = self.conn.prepare(
+                "INSERT INTO skill_event (instance_id, kind, payload, occurred_at)
+                 VALUES (?1, 'missing', ?2, ?3)",
+            )?;
+            let mut transitioned = 0;
             for id in &to_mark {
-                update.execute(params![id])?;
+                if update.execute(params![id])? == 0 {
+                    continue;
+                }
+                insert_event.execute(params![
+                    id,
+                    r#"{"reason":"not_seen_in_complete_scan"}"#,
+                    occurred_at_ms,
+                ])?;
+                transitioned += 1;
+            }
+            Ok(transitioned)
+        })();
+
+        match result {
+            Ok(count) => match self.conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(count),
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(CatalogError::Sqlite(error))
+                }
+            },
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
             }
         }
-        Ok(count)
     }
 
     /// Update the `enabled` flag and the human-facing `state` for a skill
@@ -847,6 +887,39 @@ mod tests {
             .expect("unseen record retained");
         assert_eq!(loaded.state, "loaded");
         assert_eq!(missing.state, "missing");
+
+        let events = catalog
+            .list_skill_events(&inst_b.id, None)
+            .expect("missing events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "missing");
+        assert_eq!(
+            events[0].payload,
+            serde_json::json!({ "reason": "not_seen_in_complete_scan" })
+        );
+        assert!(
+            !events[0]
+                .payload
+                .to_string()
+                .contains(&path_b.to_string_lossy().to_string()),
+            "missing event payload must not persist the local absolute path"
+        );
+
+        let marked_again = catalog
+            .mark_missing_except("claude-code", &scanned_roots, &seen)
+            .expect("repeated sweep succeeds");
+        assert_eq!(
+            marked_again, 0,
+            "already-missing rows are not transitioned again"
+        );
+        assert_eq!(
+            catalog
+                .list_skill_events(&inst_b.id, None)
+                .expect("events after repeated sweep")
+                .len(),
+            1,
+            "repeated complete scans do not duplicate missing events"
+        );
     }
 
     #[test]

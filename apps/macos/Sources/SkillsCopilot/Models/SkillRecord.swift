@@ -995,6 +995,14 @@ struct RefreshLogEntry: Codable, Hashable, Identifiable {
     var id: String { "\(level):\(message)" }
 }
 
+struct AgentRefreshScanIssue: Codable, Hashable, Identifiable {
+    let kind: String
+    let path: String
+    let detail: String
+
+    var id: String { "\(kind):\(path):\(detail)" }
+}
+
 struct AgentRefreshSummary: Codable, Hashable, Identifiable {
     let agent: String
     let displayLabel: String
@@ -1004,7 +1012,9 @@ struct AgentRefreshSummary: Codable, Hashable, Identifiable {
     let brokenCount: Int
     let rootsConsidered: [String]
     let rootsScanned: [String]
+    let rootsPartial: [String]
     let rootsSkipped: [String]
+    let scanIssues: [AgentRefreshScanIssue]
     let recoveryActions: [String]
 
     var id: String { agent }
@@ -1018,7 +1028,9 @@ struct AgentRefreshSummary: Codable, Hashable, Identifiable {
         case brokenCount = "broken_count"
         case rootsConsidered = "roots_considered"
         case rootsScanned = "roots_scanned"
+        case rootsPartial = "roots_partial"
         case rootsSkipped = "roots_skipped"
+        case scanIssues = "scan_issues"
         case recoveryActions = "recovery_actions"
     }
 }

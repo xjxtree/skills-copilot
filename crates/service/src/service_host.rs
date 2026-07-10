@@ -1171,6 +1171,16 @@ impl ServiceHost {
         agent_summaries: Option<Vec<AgentRefreshSummary>>,
     ) -> RefreshActivity {
         let roots_count = roots.len();
+        let diagnostic_redaction_roots = self.scan_diagnostic_redaction_roots(&roots);
+        let redacted_roots = roots
+            .iter()
+            .map(|path| observability_redact(&display_path(path), &diagnostic_redaction_roots, 320))
+            .collect();
+        let has_partial_scan = agent_summaries.as_ref().is_some_and(|summaries| {
+            summaries
+                .iter()
+                .any(|summary| !summary.roots_partial.is_empty())
+        });
         let mut log_entries = vec![
             RefreshLogEntry {
                 level: "info",
@@ -1194,31 +1204,59 @@ impl ServiceHost {
         }
         if let Some(summaries) = &agent_summaries {
             log_entries.extend(summaries.iter().map(|summary| {
-                let level = if summary.roots_scanned.is_empty() {
-                    "warning"
-                } else {
+                let level = if summary.status == "completed" {
                     "info"
+                } else {
+                    "warning"
                 };
                 let skipped_detail = skipped_roots_detail(&summary.roots_skipped);
+                let issue_detail = summary
+                    .scan_issues
+                    .first()
+                    .map(|issue| {
+                        format!(
+                            "; first scan issue {} at {}: {}",
+                            issue.kind, issue.path, issue.detail
+                        )
+                    })
+                    .unwrap_or_default();
                 RefreshLogEntry {
                     level,
                     message: format!(
-                        "{} discovered {} skill(s); catalog now has {} skill(s), {} broken, across {} scanned root(s) and {} skipped root(s){}.",
+                        "{} discovered {} skill(s); catalog now has {} skill(s), {} broken, across {} complete root(s), {} partial root(s), and {} skipped root(s){}{}.",
                         summary.display_label,
                         summary.scanned_count,
                         summary.catalog_count,
                         summary.broken_count,
                         summary.roots_scanned.len(),
+                        summary.roots_partial.len(),
                         summary.roots_skipped.len(),
-                        skipped_detail
+                        skipped_detail,
+                        issue_detail,
                     ),
                 }
             }));
         }
 
+        let mut recovery_actions = vec![
+            "Retry Scan if the catalog looks stale.".to_string(),
+            "Use Reload to re-read the current catalog without touching agent files.".to_string(),
+        ];
+        if has_partial_scan {
+            recovery_actions.insert(
+                0,
+                "Review partial-root diagnostics; unseen rows under partial roots were preserved."
+                    .to_string(),
+            );
+        }
+
         RefreshActivity {
             operation,
-            status: "completed",
+            status: if has_partial_scan {
+                "completed-partial"
+            } else {
+                "completed"
+            },
             started_at,
             finished_at: unix_timestamp_millis(),
             scanned_count: counts.scanned_count,
@@ -1226,13 +1264,9 @@ impl ServiceHost {
             finding_count: counts.finding_count,
             conflict_count: counts.conflict_count,
             snapshot_count: counts.snapshot_count,
-            roots: roots.into_iter().map(|path| display_path(&path)).collect(),
+            roots: redacted_roots,
             log_entries,
-            recovery_actions: vec![
-                "Retry Scan if the catalog looks stale.".to_string(),
-                "Use Reload to re-read the current catalog without touching agent files."
-                    .to_string(),
-            ],
+            recovery_actions,
             agent_summaries,
         }
     }
@@ -1243,6 +1277,12 @@ impl ServiceHost {
         skills: &[SkillRecord],
         adapter_diagnostics: &[AdapterDiagnosticsRecord],
     ) -> Vec<AgentRefreshSummary> {
+        let all_considered_roots = agent_reports
+            .iter()
+            .flat_map(|report| report.roots_considered.iter().cloned())
+            .collect::<Vec<_>>();
+        let diagnostic_redaction_roots =
+            self.scan_diagnostic_redaction_roots(&all_considered_roots);
         agent_reports
             .iter()
             .map(|agent_report| {
@@ -1255,39 +1295,75 @@ impl ServiceHost {
                     .iter()
                     .filter(|skill| skill.agent == agent && skill.state == "broken")
                     .count();
-                let recovery_actions = if agent_report.scanned_roots.is_empty() {
+                let recovery_actions = if !agent_report.partial_roots.is_empty() {
+                    vec![format!(
+                        "Review {} partial-root diagnostics, then retry Scan; unseen catalog rows under partial roots were preserved.",
+                        agent_report.display_name
+                    )]
+                } else if agent_report.scanned_roots.is_empty() {
                     vec![format!(
                         "Create a {} skills root or check skipped-root permissions, then retry Scan.",
+                        agent_report.display_name
+                    )]
+                } else if !agent_report.skipped_roots.is_empty() {
+                    vec![format!(
+                        "Review {} skipped-root diagnostics, then retry Scan.",
                         agent_report.display_name
                     )]
                 } else {
                     Vec::new()
                 };
+                let status = if !agent_report.partial_roots.is_empty() {
+                    "completed-partial"
+                } else if agent_report.scanned_roots.is_empty() {
+                    "completed-no-roots-scanned"
+                } else if !agent_report.skipped_roots.is_empty() {
+                    "completed-with-skipped-roots"
+                } else {
+                    "completed"
+                };
+                let redact_path = |path: &Path| {
+                    observability_redact(
+                        &display_path(path),
+                        &diagnostic_redaction_roots,
+                        320,
+                    )
+                };
                 AgentRefreshSummary {
                     agent: agent.to_string(),
                     display_label: agent_report.display_name.to_string(),
-                    status: if agent_report.scanned_roots.is_empty() {
-                        "completed-no-roots-scanned"
-                    } else {
-                        "completed"
-                    },
+                    status,
                     scanned_count: agent_report.scanned_count,
                     catalog_count,
                     broken_count,
                     roots_considered: agent_report
                         .roots_considered
                         .iter()
-                        .map(|path| display_path(path))
+                        .map(|path| redact_path(path))
                         .collect(),
                     roots_scanned: agent_report
                         .scanned_roots
                         .iter()
-                        .map(|path| display_path(path))
+                        .map(|path| redact_path(path))
+                        .collect(),
+                    roots_partial: agent_report
+                        .partial_roots
+                        .iter()
+                        .map(|path| redact_path(path))
                         .collect(),
                     roots_skipped: agent_report
                         .skipped_roots
                         .iter()
-                        .map(|path| display_path(path))
+                        .map(|path| redact_path(path))
+                        .collect(),
+                    scan_issues: agent_report
+                        .issues
+                        .iter()
+                        .map(|issue| AgentRefreshScanIssue {
+                            kind: issue.kind,
+                            path: redact_path(&issue.path),
+                            detail: public_scan_issue_detail(issue.kind).to_string(),
+                        })
                         .collect(),
                     config_detected: diagnostics
                         .is_some_and(|diagnostics| diagnostics.config.detected_count > 0),
@@ -1325,6 +1401,28 @@ impl ServiceHost {
             .collect()
     }
 
+    fn scan_diagnostic_redaction_roots(
+        &self,
+        adapter_roots: &[PathBuf],
+    ) -> Vec<(String, &'static str)> {
+        let adapter_ctx = self.status_adapter_ctx();
+        let mut roots = self.redaction_roots(&adapter_ctx);
+        for path in adapter_roots {
+            let text = path.to_string_lossy().to_string();
+            if !text.is_empty() {
+                roots.push((text, "<adapter-root>"));
+            }
+            if let Ok(canonical) = path.canonicalize() {
+                let canonical = canonical.to_string_lossy().to_string();
+                if !canonical.is_empty() {
+                    roots.push((canonical, "<adapter-root>"));
+                }
+            }
+        }
+        roots.dedup_by(|left, right| left.0 == right.0);
+        roots
+    }
+
     pub(crate) fn claude_root_paths(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.adapter_ctx.user_home.join(".claude").join("skills")];
         roots.extend(
@@ -1334,6 +1432,21 @@ impl ServiceHost {
                 .map(|root| root.path.clone()),
         );
         roots
+    }
+}
+
+fn public_scan_issue_detail(kind: &str) -> &'static str {
+    match kind {
+        "root_unavailable" => "A declared scan root was unavailable or not a directory.",
+        "root_outside_allowlist" => {
+            "A resolved path was outside the explicit same-scope adapter roots."
+        }
+        "directory_unreadable" => "A scan directory could not be read.",
+        "entry_unreadable" => "A directory entry could not be inspected or resolved.",
+        "file_unreadable" => "A skill file could not be inspected or read.",
+        "file_too_large" => "A skill file exceeded the per-file scan size limit.",
+        "budget_exceeded" => "The scan stopped after reaching a configured work budget.",
+        _ => "The scanner reported a degraded condition.",
     }
 }
 

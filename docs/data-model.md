@@ -22,6 +22,9 @@ This file summarizes persisted and transient data.
   Copilot provider output.
 - Session preview data and skill usage summaries are read-only diagnostics and
   must not persist raw transcript content.
+- Scan root and issue diagnostics are transient response data. Partial roots
+  preserve unseen catalog rows, and diagnostic paths/details are redacted
+  before crossing the service boundary.
 - Fixture data is test input; it must keep its wire shape unless protocol drift
   work is explicitly scoped.
 

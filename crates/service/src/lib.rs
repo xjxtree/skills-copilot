@@ -204,7 +204,9 @@ pub struct AgentRefreshSummary {
     pub broken_count: usize,
     pub roots_considered: Vec<String>,
     pub roots_scanned: Vec<String>,
+    pub roots_partial: Vec<String>,
     pub roots_skipped: Vec<String>,
+    pub scan_issues: Vec<AgentRefreshScanIssue>,
     pub config_detected: bool,
     pub config_paths: Vec<String>,
     pub writable_status: String,
@@ -213,6 +215,13 @@ pub struct AgentRefreshSummary {
     pub read_only_reason: String,
     pub blockers: Vec<String>,
     pub recovery_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct AgentRefreshScanIssue {
+    pub kind: &'static str,
+    pub path: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

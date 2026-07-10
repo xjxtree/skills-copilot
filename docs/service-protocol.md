@@ -181,6 +181,27 @@ date/filter range before evidence rows are limited.
   `total_*_count` / `returned_*_count`, plus `truncated`) so clients do not
   mistake a limited page for full history.
 
+## Catalog Scan Diagnostics
+
+- `catalog.scanAll` returns `activity.agent_summaries[]` with separate
+  `roots_scanned`, `roots_partial`, and `roots_skipped` arrays. Only
+  `roots_scanned` were completely enumerated and are eligible for catalog
+  missing-sweep.
+- Agent summary status is `completed` only when every considered existing root
+  was completely enumerated. `completed-partial`,
+  `completed-with-skipped-roots`, and `completed-no-roots-scanned` distinguish
+  degraded outcomes; the enclosing activity is `completed-partial` when any
+  adapter has a partial root.
+- `scan_issues[]` contains typed `kind`, redacted `path`, and a stable
+  privacy-safe `detail` field; raw filesystem error text does not cross the
+  service boundary. Stable kinds are `root_unavailable`,
+  `root_outside_allowlist`, `directory_unreadable`, `entry_unreadable`,
+  `file_unreadable`, `file_too_large`, and `budget_exceeded`.
+- Paths under the active home, project, project CWD, or app-data roots use
+  placeholders such as `$HOME` and `<project-root>`. Explicit adapter roots
+  outside those locations use `<adapter-root>`; raw private absolute paths are
+  not returned in scan issue summaries or refresh logs.
+
 ## Skill Manager
 
 - `npx skills` is the first writable manager. `skills-npm` is listed as a

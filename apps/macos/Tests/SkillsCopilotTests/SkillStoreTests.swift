@@ -739,6 +739,10 @@ struct SkillStoreTests {
         try expectEqual(store.refreshStatusMessage, UIStrings.refreshScanComplete(3, 3, 0, 0), "Generic scan should use refresh activity counts.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.count, 2, "Scan should retain per-agent adapter diagnostics when the service provides them.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.rootsSkipped, ["/tmp/missing-claude"], "Scan diagnostics should decode skipped roots.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.status, "completed-partial", "A partial adapter scan must not decode as completed.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.rootsPartial, ["<adapter-root>"], "Scan diagnostics should decode partial roots.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues.first?.kind, "entry_unreadable", "Scan diagnostics should decode typed issue kinds.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues.first?.path, "<adapter-root>/dangling-link", "Scan issue paths should stay redacted on the client.")
         store.agentFilter = .codex
         try expectEqual(store.selectedAgentRefreshSummary?.rootsScanned, ["/tmp/codex"], "Selected adapter diagnostics should follow the agent filter.")
         let calls = await runner.calls()
@@ -2254,7 +2258,7 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     """
 
     private static let scanResult = """
-    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"scan","status":"ok","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["/tmp/global","/tmp/codex"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["/tmp/global","/tmp/missing-claude"],"roots_scanned":["/tmp/global"],"roots_skipped":["/tmp/missing-claude"],"recovery_actions":["Create missing Claude root."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["/tmp/codex"],"roots_scanned":["/tmp/codex"],"roots_skipped":[],"recovery_actions":[]}]}}
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"scan","status":"completed-partial","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["/tmp/global","/tmp/codex"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed-partial","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["<adapter-root>","/tmp/missing-claude"],"roots_scanned":["/tmp/global"],"roots_partial":["<adapter-root>"],"roots_skipped":["/tmp/missing-claude"],"scan_issues":[{"kind":"entry_unreadable","path":"<adapter-root>/dangling-link","detail":"A directory entry could not be inspected or resolved."}],"recovery_actions":["Review partial scan diagnostics."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["/tmp/codex"],"roots_scanned":["/tmp/codex"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
     """
 
     private static let projectContext = """

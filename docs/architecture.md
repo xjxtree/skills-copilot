@@ -54,6 +54,24 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 6. The app reads typed service results for list, detail, config, session, and
    report surfaces.
 
+### Scanner Bounds And Catalog Completeness
+
+- A scan follows only explicit canonical adapter roots and explicitly declared
+  same-scope link-target roots. It does not treat the whole home or project
+  directory as an implicit symlink allowlist.
+- Production scans are bounded to depth 64, 50,000 directories, 200,000
+  entries, 25,000 skill files, 2 MiB per `SKILL.md`, and 256 MiB of aggregate
+  skill content. Skill content is read through the bounded scanner reader
+  before adapter parsing.
+- Oversized or unreadable skill files become broken catalog candidates when
+  their canonical path is known, allowing enumeration to continue. Filesystem
+  traversal failures or exhausted traversal budgets mark the root partial.
+- Commands upsert every observed instance, but catalog missing-sweep receives
+  only roots that were completely enumerated. Partial and skipped roots never
+  mark unseen rows missing. A first transition to missing and its compact
+  `missing` event are committed atomically; repeated complete scans do not
+  duplicate the event.
+
 ## Extension Points
 
 | Change | Add it here |

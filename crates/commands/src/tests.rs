@@ -1166,6 +1166,133 @@ fn scan_all_project_context_sweeps_only_current_boundary() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
+#[cfg(unix)]
+#[test]
+fn partial_scan_upserts_seen_rows_without_marking_unseen_rows_missing() {
+    let temp_root = temp_test_dir("partial-cache-refresh");
+    let scan_root = temp_root.join("skills");
+    let observed_path = write_command_scan_fixture(&scan_root, "observed");
+    let unobserved_path = write_command_scan_fixture(&scan_root, "unobserved");
+    let observed = seeded_command_scan_instance("seed-observed", &observed_path, "observed");
+    let unobserved =
+        seeded_command_scan_instance("seed-unobserved", &unobserved_path, "unobserved");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instances(&[observed, unobserved.clone()])
+        .expect("seed catalog rows");
+    std::fs::remove_file(&unobserved_path).expect("remove unobserved skill");
+    std::os::unix::fs::symlink(
+        scan_root.join("missing-target"),
+        scan_root.join("dangling-directory-link"),
+    )
+    .expect("create dangling directory link");
+    let ctx = AdapterContext {
+        user_home: temp_root.join("empty-home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: scan_root.clone(),
+            source: RootSource::Extra,
+        }],
+    };
+
+    let report = scan_all_catalog_report(&ctx, &catalog).expect("partial refresh succeeds");
+    let claude_report = report
+        .agents
+        .iter()
+        .find(|agent| agent.agent == AgentId::ClaudeCode)
+        .expect("Claude report");
+    let canonical_root = scan_root.canonicalize().expect("canonical scan root");
+    let instances = catalog
+        .list_skill_instances_for_project_context(None)
+        .expect("instances after partial refresh");
+    let observed = instances
+        .iter()
+        .find(|instance| instance.agent == AgentId::ClaudeCode && instance.name == "observed")
+        .expect("observed instance remains");
+    let unobserved_after = instances
+        .iter()
+        .find(|instance| instance.id == unobserved.id)
+        .expect("unobserved instance remains");
+
+    assert!(observed.last_seen > 0, "seen row should advance last_seen");
+    assert_eq!(observed.state, SkillState::Loaded);
+    assert_eq!(unobserved_after.state, SkillState::Loaded);
+    assert!(claude_report.partial_roots.contains(&canonical_root));
+    assert!(claude_report
+        .issues
+        .iter()
+        .any(|issue| issue.kind == "entry_unreadable"));
+    assert!(
+        catalog
+            .list_skill_events(&unobserved.id, None)
+            .expect("unobserved events")
+            .is_empty(),
+        "partial refresh must not create a missing event"
+    );
+
+    let _ = std::fs::remove_dir_all(temp_root);
+}
+
+#[test]
+fn complete_scan_marks_removed_rows_missing() {
+    let temp_root = temp_test_dir("complete-cache-refresh");
+    let scan_root = temp_root.join("skills");
+    let observed_path = write_command_scan_fixture(&scan_root, "observed");
+    let unobserved_path = write_command_scan_fixture(&scan_root, "unobserved");
+    let observed = seeded_command_scan_instance("seed-observed", &observed_path, "observed");
+    let unobserved =
+        seeded_command_scan_instance("seed-unobserved", &unobserved_path, "unobserved");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instances(&[observed, unobserved.clone()])
+        .expect("seed catalog rows");
+    std::fs::remove_file(&unobserved_path).expect("remove unobserved skill");
+    let ctx = AdapterContext {
+        user_home: temp_root.join("empty-home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: scan_root.clone(),
+            source: RootSource::Extra,
+        }],
+    };
+
+    let report = scan_all_catalog_report(&ctx, &catalog).expect("complete refresh succeeds");
+    let claude_report = report
+        .agents
+        .iter()
+        .find(|agent| agent.agent == AgentId::ClaudeCode)
+        .expect("Claude report");
+    let instances = catalog
+        .list_skill_instances_for_project_context(None)
+        .expect("instances after complete refresh");
+    let observed = instances
+        .iter()
+        .find(|instance| instance.agent == AgentId::ClaudeCode && instance.name == "observed")
+        .expect("observed instance remains");
+    let unobserved_after = instances
+        .iter()
+        .find(|instance| instance.id == unobserved.id)
+        .expect("unobserved instance remains");
+    let events = catalog
+        .list_skill_events(&unobserved.id, None)
+        .expect("unobserved events");
+
+    assert!(observed.last_seen > 0, "seen row should advance last_seen");
+    assert_eq!(observed.state, SkillState::Loaded);
+    assert_eq!(unobserved_after.state, SkillState::Missing);
+    assert!(claude_report.partial_roots.is_empty());
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "missing");
+
+    let _ = std::fs::remove_dir_all(temp_root);
+}
+
 #[test]
 fn marks_deleted_fixture_as_missing_on_rescan() {
     let temp_root =
@@ -4428,6 +4555,39 @@ fn write_claude_skill(root: &Path, name: &str) -> PathBuf {
     )
     .expect("write claude skill");
     skill_path.canonicalize().expect("canonicalize skill path")
+}
+
+fn write_command_scan_fixture(root: &Path, name: &str) -> PathBuf {
+    let skill_dir = root.join(name);
+    std::fs::create_dir_all(&skill_dir).expect("create command scan skill directory");
+    let skill_path = skill_dir.join("SKILL.md");
+    std::fs::write(
+        &skill_path,
+        format!("---\nname: {name}\ndescription: {name} fixture\n---\nbody\n"),
+    )
+    .expect("write command scan skill");
+    skill_path
+        .canonicalize()
+        .expect("canonicalize command scan skill")
+}
+
+fn seeded_command_scan_instance(id: &str, path: &Path, name: &str) -> SkillInstance {
+    let mut instance = ClaudeCodeAdapter
+        .parse(path)
+        .expect("parse command scan fixture");
+    instance.id = id.to_string();
+    instance.scope = Scope::AgentGlobal;
+    instance.project_root = None;
+    instance.path = path.to_path_buf();
+    instance.display_path = path.to_path_buf();
+    instance.name = name.to_string();
+    instance.display_name = name.to_string();
+    instance.state = SkillState::Loaded;
+    instance.enabled = true;
+    instance.mtime = 0;
+    instance.first_seen = 0;
+    instance.last_seen = 0;
+    instance
 }
 
 fn write_staging_skill(staging_root: &Path, name: &str) -> PathBuf {
