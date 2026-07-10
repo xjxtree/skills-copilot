@@ -11,6 +11,7 @@ SWIFT_PRODUCT_NAME="SkillsCopilot"
 MIN_SYSTEM_VERSION="13.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/script/path_identity.sh"
 APP_VERSION="$(awk -F'"' '/^version = / {print $2; exit}' "$ROOT_DIR/crates/service/Cargo.toml")"
 MACOS_DIR="$ROOT_DIR/apps/macos"
 DIST_DIR="$ROOT_DIR/dist"
@@ -140,7 +141,8 @@ for app in NSWorkspace.shared.runningApplications {
     let nameMatches = app.localizedName == appName || app.localizedName == legacyAppName
     guard identifierMatches || nameMatches else { continue }
     let bundlePath = app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path ?? ""
-    print("\(app.processIdentifier)\t\(bundlePath)")
+    let bundlePathBase64 = Data(bundlePath.utf8).base64EncodedString()
+    print("\(app.processIdentifier)\t\(bundlePathBase64)")
 }
 ' "$BUNDLE_ID" "$APP_NAME" "$LEGACY_BUNDLE_ID" "$LEGACY_APP_NAME"
 }
@@ -168,16 +170,22 @@ terminate_existing_app_instances() {
   fi
   local target_bundle
   target_bundle="$(canonical_app_bundle)"
-  while IFS=$'\t' read -r pid bundle_path; do
+  local pid bundle_path_base64 bundle_path
+  while IFS=$'\t' read -r pid bundle_path_base64; do
     [[ -z "$pid" ]] && continue
-    if [[ -n "$bundle_path" && "$bundle_path" != "$target_bundle" ]]; then
+    if ! decode_base64_path "$bundle_path_base64"; then
+      echo "tool-layer-unknown: invalid bundle path encoding for $APP_NAME pid $pid" >&2
+      return 1
+    fi
+    bundle_path="$DECODED_BASE64_PATH"
+    if [[ -n "$bundle_path" ]] && ! same_filesystem_entry "$bundle_path" "$target_bundle"; then
       echo "Stopping stale same-bundle $APP_NAME pid $pid from $bundle_path (target $target_bundle)." >&2
     fi
     kill "$pid" >/dev/null 2>&1 || true
   done <<<"$rows"
   if ! wait_for_no_running_app_instances --quiet; then
     rows="$(list_running_app_instances || true)"
-    while IFS=$'\t' read -r pid _bundle_path; do
+    while IFS=$'\t' read -r pid _bundle_path_base64; do
       [[ -n "$pid" ]] && kill -9 "$pid" >/dev/null 2>&1 || true
     done <<<"$rows"
     wait_for_no_running_app_instances
@@ -188,14 +196,22 @@ wait_for_current_bundle_process() {
   local deadline=$((SECONDS + 10))
   local target_bundle
   target_bundle="$(canonical_app_bundle)"
+  local pid bundle_path_base64 bundle_path
   while (( SECONDS < deadline )); do
     local rows exact_pids
     rows="$(list_running_app_instances || true)"
     exact_pids=""
     if [[ -n "$rows" ]]; then
-      while IFS=$'\t' read -r pid bundle_path; do
+      while IFS=$'\t' read -r pid bundle_path_base64; do
         [[ -z "$pid" ]] && continue
-        [[ "$bundle_path" == "$target_bundle" ]] && exact_pids+="${pid}"$'\n'
+        if ! decode_base64_path "$bundle_path_base64"; then
+          echo "tool-layer-unknown: invalid bundle path encoding for $APP_NAME pid $pid" >&2
+          return 1
+        fi
+        bundle_path="$DECODED_BASE64_PATH"
+        if same_filesystem_entry "$bundle_path" "$target_bundle"; then
+          exact_pids+="${pid}"$'\n'
+        fi
       done <<<"$rows"
     fi
     local exact_count
@@ -214,9 +230,16 @@ wait_for_current_bundle_process() {
   rows="$(list_running_app_instances || true)"
   stale_rows=""
   if [[ -n "$rows" ]]; then
-    while IFS=$'\t' read -r pid bundle_path; do
+    while IFS=$'\t' read -r pid bundle_path_base64; do
       [[ -z "$pid" ]] && continue
-      [[ "$bundle_path" != "$target_bundle" ]] && stale_rows+="${pid} ${bundle_path}"$'\n'
+      if ! decode_base64_path "$bundle_path_base64"; then
+        echo "tool-layer-unknown: invalid bundle path encoding for $APP_NAME pid $pid" >&2
+        return 1
+      fi
+      bundle_path="$DECODED_BASE64_PATH"
+      if ! same_filesystem_entry "$bundle_path" "$target_bundle"; then
+        stale_rows+="${pid} ${bundle_path}"$'\n'
+      fi
     done <<<"$rows"
   fi
   if [[ -n "$stale_rows" ]]; then

@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { sameFilesystemEntry } from "./lib/path-identity.mjs";
 import { formatValidationBlocker } from "./validation-blockers.mjs";
 
 const appName = "AgentCopilot";
@@ -158,12 +159,14 @@ print(String(data: data, encoding: .utf8)!)
 
 function targetRunningApps() {
   const target = targetBundlePath();
-  return queryRunningApps().filter((app) => app.bundlePath === target);
+  return queryRunningApps().filter((app) => sameFilesystemEntry(app.bundlePath, target));
 }
 
 function staleSameBundleApps() {
   const target = targetBundlePath();
-  return queryRunningApps().filter((app) => app.bundlePath && app.bundlePath !== target);
+  return queryRunningApps().filter(
+    (app) => app.bundlePath && !sameFilesystemEntry(app.bundlePath, target),
+  );
 }
 
 function verifyBundle() {
@@ -524,7 +527,7 @@ function terminateExistingApp() {
 
   const target = targetBundlePath();
   for (const app of apps) {
-    if (app.bundlePath && app.bundlePath !== target) {
+    if (app.bundlePath && !sameFilesystemEntry(app.bundlePath, target)) {
       note(
         `terminating stale same-bundle ${processName} pid ${app.pid} from ${app.bundlePath}`,
       );
