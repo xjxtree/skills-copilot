@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "policy_documents": [
+    "README.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "docs/ai-agent-workflow.md",
+    "docs/plans/roadmap.md",
+    "docs/plans/development-tasks.md",
+    "docs/runbooks/release-checklist.md",
+    "docs/runbooks/distribution-runbook.md",
+    "docs/runbooks/macos-app-runbook.md",
+    "docs/ui-artifacts/README.md",
+    "fixtures/opencode/README.md",
+    "fixtures/pi/README.md",
+    ".github/pull_request_template.md",
+    ".github/ISSUE_TEMPLATE/feature_request.md"
+  ],
+  "required_text": {
+    "README.md": ["## App Features", "GitHub Releases"],
+    "AGENTS.md": ["## Safety Boundaries"],
+    "docs/plans/roadmap.md": ["## Near-Term Work"],
+    "docs/plans/development-tasks.md": ["## Active Task Rules"],
+    "docs/runbooks/distribution-runbook.md": [
+      "GitHub tags and GitHub Releases"
+    ]
+  },
+  "forbidden_patterns": [
+    "\\bV\\d+\\.\\d+\\b",
+    "MVP\\s*(?:/|\\|)\\s*V1",
+    "Current (?:Status|State|Baseline)",
+    "Completed baseline",
+    "Current phase"
+  ],
+  "forbidden_paths": ["CHANGELOG.md", "docs/verification"],
+  "gate": {
+    "script": "verify:gate-parity",
+    "members": [
+      "verify:service-protocol-drift",
+      "verify:module-size",
+      "verify:doc-governance",
+      "verify:macos-native-test-registry",
+      "verify:js-syntax",
+      "verify:rust-docs",
+      "verify:validation-blockers",
+      "verify:screenshot-artifacts"
+    ]
+  }
+}

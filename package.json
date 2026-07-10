@@ -28,6 +28,7 @@
     "verify:module-size": "node scripts/verify-module-size.mjs",
     "verify:rust-docs": "cargo doc --workspace --no-deps",
     "verify:service-protocol-drift": "node scripts/verify-service-protocol-drift.mjs",
+    "test:repository-governance": "node --test scripts/tests/repository-governance.test.mjs",
     "test:service-protocol-effects": "node --test scripts/tests/service-protocol-effects.test.mjs",
     "verify:gate-parity": "pnpm verify:service-protocol-drift && pnpm verify:module-size && pnpm verify:doc-governance && pnpm verify:macos-native-test-registry && pnpm verify:js-syntax && pnpm verify:rust-docs && pnpm verify:validation-blockers && pnpm verify:screenshot-artifacts",
     "benchmark:10k": "node scripts/benchmark-10k.mjs",
