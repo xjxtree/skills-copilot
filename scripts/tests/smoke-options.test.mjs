@@ -1,0 +1,255 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import { runSmokeFlow } from "../lib/smoke-flow.mjs";
+import { parseSmokeOptions } from "../lib/smoke-options.mjs";
+
+const emptyOptions = {
+  allowStaleApp: false,
+  bundleOnly: false,
+  captureWindow: false,
+  checkLogs: false,
+  fixtureData: false,
+  headlessSidecar: false,
+  keepOpen: false,
+};
+
+test("returns every smoke option as a boolean when no flags are present", () => {
+  assert.deepEqual(parseSmokeOptions([], {}), emptyOptions);
+});
+
+for (const [flag, property] of [
+  ["--bundle-only", "bundleOnly"],
+  ["--fixture-data", "fixtureData"],
+  ["--keep-open", "keepOpen"],
+  ["--capture-window", "captureWindow"],
+  ["--check-logs", "checkLogs"],
+  ["--allow-stale-app", "allowStaleApp"],
+]) {
+  test(`maps ${flag} to ${property}`, () => {
+    assert.deepEqual(parseSmokeOptions([flag], {}), {
+      ...emptyOptions,
+      [property]: true,
+    });
+  });
+}
+
+test("preserves duplicate supported flag semantics", () => {
+  assert.deepEqual(
+    parseSmokeOptions(["--fixture-data", "--fixture-data"], {}),
+    { ...emptyOptions, fixtureData: true },
+  );
+});
+
+test("preserves the exact stale-app environment alias semantics", () => {
+  assert.equal(
+    parseSmokeOptions([], { SKILLS_COPILOT_ALLOW_STALE_APP: "1" }).allowStaleApp,
+    true,
+  );
+  for (const value of ["", "0", "true", "yes"]) {
+    assert.equal(
+      parseSmokeOptions([], { SKILLS_COPILOT_ALLOW_STALE_APP: value }).allowStaleApp,
+      false,
+      `expected ${JSON.stringify(value)} to remain false`,
+    );
+  }
+});
+
+test("the stale-app flag remains an alias for the environment switch", () => {
+  assert.equal(
+    parseSmokeOptions(["--allow-stale-app"], {
+      SKILLS_COPILOT_ALLOW_STALE_APP: "0",
+    }).allowStaleApp,
+    true,
+  );
+});
+
+for (const unknown of ["--unknown", "fixture-data"]) {
+  test(`rejects unknown argument ${unknown}`, () => {
+    assert.throws(() => parseSmokeOptions([unknown], {}), /unknown smoke option/);
+  });
+}
+
+test("accepts the leading pnpm argument separator", () => {
+  assert.deepEqual(
+    parseSmokeOptions(
+      ["--", "--fixture-data", "--headless-sidecar"],
+      {},
+    ),
+    {
+      ...emptyOptions,
+      fixtureData: true,
+      headlessSidecar: true,
+    },
+  );
+});
+
+test("rejects a misplaced argument separator", () => {
+  assert.throws(
+    () => parseSmokeOptions(["--fixture-data", "--"], {}),
+    /unknown smoke option/,
+  );
+});
+
+test("headless sidecar requires fixture data", () => {
+  assert.throws(
+    () => parseSmokeOptions(["--headless-sidecar"], {}),
+    /requires --fixture-data/,
+  );
+});
+
+for (const incompatible of [
+  "--bundle-only",
+  "--keep-open",
+  "--capture-window",
+  "--check-logs",
+]) {
+  test(`headless sidecar rejects ${incompatible}`, () => {
+    assert.throws(
+      () =>
+        parseSmokeOptions(
+          ["--fixture-data", "--headless-sidecar", incompatible],
+          {},
+        ),
+      /cannot be combined/,
+    );
+  });
+}
+
+test("accepts fixture-only headless mode", () => {
+  assert.deepEqual(
+    parseSmokeOptions(["--fixture-data", "--headless-sidecar"], {}),
+    {
+      ...emptyOptions,
+      fixtureData: true,
+      headlessSidecar: true,
+    },
+  );
+});
+
+test("headless mode may retain the existing stale-bundle override", () => {
+  assert.deepEqual(
+    parseSmokeOptions(
+      ["--fixture-data", "--headless-sidecar", "--allow-stale-app"],
+      {},
+    ),
+    {
+      ...emptyOptions,
+      allowStaleApp: true,
+      fixtureData: true,
+      headlessSidecar: true,
+    },
+  );
+});
+
+function headlessOptions() {
+  return parseSmokeOptions(["--fixture-data", "--headless-sidecar"], {});
+}
+
+function recordingDependencies(trace, overrides = {}) {
+  const fixture = {
+    appData: "/fixture/app-data",
+    home: "/fixture/home",
+    realOpencodeConfigSnapshot: ["real-opencode-snapshot"],
+    root: "/fixture/root",
+  };
+  const allowed = {
+    assertRealOpencodeConfigUntouched(snapshot) {
+      trace.push(["assert-real-opencode", snapshot]);
+    },
+    cleanupFixture(root) {
+      trace.push(["cleanup-fixture", root]);
+    },
+    createFixtureEnvironment() {
+      trace.push(["create-fixture"]);
+      return fixture;
+    },
+    note(message) {
+      trace.push(["note", message]);
+    },
+    runFixtureProjectContextSmoke(env, receivedFixture, status) {
+      trace.push(["project-smoke", env, receivedFixture, status]);
+    },
+    runFixtureServiceSmoke(env) {
+      trace.push(["service-smoke", env]);
+      return { protocol_version: 1 };
+    },
+    verifyBundle() {
+      trace.push(["verify-bundle"]);
+    },
+    verifyBundleFreshness(allowStaleApp) {
+      trace.push(["verify-freshness", allowStaleApp]);
+    },
+    ...overrides,
+  };
+  const forbidden = new Set([
+    "captureAppWindow",
+    "checkSystemLogs",
+    "launchApp",
+    "queryRunningApps",
+    "terminateExistingApp",
+  ]);
+  return new Proxy(allowed, {
+    get(target, property, receiver) {
+      if (forbidden.has(property)) {
+        assert.fail(`headless flow reached forbidden dependency ${property}`);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
+test("headless flow reaches only bundle and fixture-sidecar dependencies", () => {
+  const trace = [];
+
+  runSmokeFlow(headlessOptions(), recordingDependencies(trace));
+
+  const env = {
+    SKILLS_COPILOT_APP_DATA_DIR: "/fixture/app-data",
+    SKILLS_COPILOT_HOME: "/fixture/home",
+  };
+  assert.deepEqual(trace, [
+    ["verify-bundle"],
+    ["verify-freshness", false],
+    ["create-fixture"],
+    ["note", "headless fixture data enabled: /fixture/root"],
+    ["service-smoke", env],
+    [
+      "project-smoke",
+      env,
+      {
+        appData: "/fixture/app-data",
+        home: "/fixture/home",
+        realOpencodeConfigSnapshot: ["real-opencode-snapshot"],
+        root: "/fixture/root",
+      },
+      { protocol_version: 1 },
+    ],
+    ["assert-real-opencode", ["real-opencode-snapshot"]],
+    ["cleanup-fixture", "/fixture/root"],
+    ["note", "headless bundled-sidecar smoke completed"],
+  ]);
+});
+
+test("headless flow always cleans its fixture after a sidecar failure", () => {
+  const trace = [];
+  const failure = new Error("fixture sidecar failed");
+  const dependencies = recordingDependencies(trace, {
+    runFixtureServiceSmoke(env) {
+      trace.push(["service-smoke", env]);
+      throw failure;
+    },
+  });
+
+  assert.throws(() => runSmokeFlow(headlessOptions(), dependencies), failure);
+  assert.deepEqual(trace.slice(-2), [
+    ["assert-real-opencode", ["real-opencode-snapshot"]],
+    ["cleanup-fixture", "/fixture/root"],
+  ]);
+});
+
+test("smoke script delegates argument parsing instead of inspecting argv directly", () => {
+  const source = readFileSync("scripts/smoke-macos-app.mjs", "utf8");
+  assert.doesNotMatch(source, /process\.argv\.includes/);
+});

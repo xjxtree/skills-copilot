@@ -14,6 +14,8 @@ import {
 } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runSmokeFlow } from "./lib/smoke-flow.mjs";
+import { parseSmokeOptions } from "./lib/smoke-options.mjs";
 import { sameFilesystemEntry } from "./lib/path-identity.mjs";
 import { formatValidationBlocker } from "./validation-blockers.mjs";
 
@@ -29,15 +31,6 @@ const screenshotPath = resolve(
   process.env.SKILLS_COPILOT_SMOKE_SCREENSHOT ??
     join(tmpdir(), "agent-copilot-smoke-completed.png"),
 );
-const bundleOnly = process.argv.includes("--bundle-only");
-const fixtureData = process.argv.includes("--fixture-data");
-const keepOpen = process.argv.includes("--keep-open");
-const captureWindow = process.argv.includes("--capture-window");
-const checkLogs = process.argv.includes("--check-logs");
-const allowStaleApp =
-  process.argv.includes("--allow-stale-app") ||
-  process.env.SKILLS_COPILOT_ALLOW_STALE_APP === "1";
-
 const knownBenignLogPatterns = [
   /appintents/i,
   /StateRestoration.*restoreWindowWithIdentifier/i,
@@ -199,7 +192,7 @@ function verifyBundle() {
   note(`bundle ok: ${appPath}`);
 }
 
-function verifyBundleFreshness() {
+function verifyBundleFreshness(allowStaleApp) {
   if (allowStaleApp) {
     note("bundle freshness check skipped by --allow-stale-app");
     return;
@@ -1276,54 +1269,24 @@ function checkSystemLogs(pid) {
   }
 }
 
-function main() {
-  verifyBundle();
-  verifyBundleFreshness();
-  if (bundleOnly) {
-    note("bundle-only mode; launch and fixture checks skipped");
-    return;
-  }
-
-  let fixture = null;
-  let pid = null;
-  try {
-    fixture = fixtureData ? createFixtureEnvironment() : null;
-    const env = fixture
-      ? {
-          SKILLS_COPILOT_APP_DATA_DIR: fixture.appData,
-          SKILLS_COPILOT_HOME: fixture.home,
-        }
-      : {};
-    if (fixture) {
-      note(`fixture data enabled: ${fixture.root}`);
-    }
-    terminateExistingApp();
-    const launched = launchApp(env);
-    pid = launched.pid;
-    if (captureWindow) {
-      captureAppWindow(pid, launched.windowId);
-    }
-    if (fixture) {
-      const status = runFixtureServiceSmoke(env);
-      runFixtureProjectContextSmoke(env, fixture, status);
-      assertRealOpencodeConfigUntouched(fixture.realOpencodeConfigSnapshot);
-    }
-    if (checkLogs) {
-      checkSystemLogs(pid);
-    }
-  } finally {
-    if (!keepOpen) {
-      terminateExistingApp();
-    }
-    if (fixture && !keepOpen) {
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  }
-  note("native macOS app smoke completed");
-}
-
 try {
-  main();
+  const options = parseSmokeOptions(process.argv.slice(2), process.env);
+  runSmokeFlow(options, {
+    assertRealOpencodeConfigUntouched,
+    captureAppWindow,
+    checkSystemLogs,
+    cleanupFixture(root) {
+      rmSync(root, { force: true, recursive: true });
+    },
+    createFixtureEnvironment,
+    launchApp,
+    note,
+    runFixtureProjectContextSmoke,
+    runFixtureServiceSmoke,
+    terminateExistingApp,
+    verifyBundle,
+    verifyBundleFreshness,
+  });
 } catch (error) {
   if (error instanceof SmokeFailure) {
     console.error(`smoke: ${error.message}`);
