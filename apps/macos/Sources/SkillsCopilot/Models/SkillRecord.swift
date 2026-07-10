@@ -1033,6 +1033,22 @@ struct AgentRefreshSummary: Codable, Hashable, Identifiable {
         case scanIssues = "scan_issues"
         case recoveryActions = "recovery_actions"
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try container.decode(String.self, forKey: .agent)
+        displayLabel = try container.decode(String.self, forKey: .displayLabel)
+        status = try container.decode(String.self, forKey: .status)
+        scannedCount = try container.decode(Int.self, forKey: .scannedCount)
+        catalogCount = try container.decode(Int.self, forKey: .catalogCount)
+        brokenCount = try container.decode(Int.self, forKey: .brokenCount)
+        rootsConsidered = try container.decode([String].self, forKey: .rootsConsidered)
+        rootsScanned = try container.decode([String].self, forKey: .rootsScanned)
+        rootsPartial = try container.decodeIfPresent([String].self, forKey: .rootsPartial) ?? []
+        rootsSkipped = try container.decode([String].self, forKey: .rootsSkipped)
+        scanIssues = try container.decodeIfPresent([AgentRefreshScanIssue].self, forKey: .scanIssues) ?? []
+        recoveryActions = try container.decode([String].self, forKey: .recoveryActions)
+    }
 }
 
 struct SnapshotRollbackPreviewRecord: Codable, Identifiable, Hashable {

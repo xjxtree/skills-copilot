@@ -15,7 +15,7 @@ const serviceTypes = ["ServiceClientProcessTests", "ServiceClientRPCTests"];
 const shardedType = "SkillStoreTests";
 const excludedHarnessType = "FullNativeModelSuiteTests";
 const expectedCompletionLine =
-  "SkillsCopilotTests: full-suite-complete service=2 main=19 skill-store-groups=64 named=85";
+  "SkillsCopilotTests: full-suite-complete service=2 main=20 skill-store-groups=64 named=86";
 
 function duplicates(values) {
   const seen = new Set();

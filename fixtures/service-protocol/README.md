@@ -22,6 +22,9 @@ Current catalog scan fixture contract:
   typed issue, and a skipped root. Its enclosing status, warning logs, and
   recovery actions must agree with those outcomes rather than merely decode as
   the right JSON shape.
+- `catalog.scanClaude.response.json` exercises the same mixed-root semantics in
+  its single Claude Code summary, including stable issue detail, recovery copy,
+  warning logs, and both `$HOME` and `<adapter-root>` redaction.
 - Diagnostic paths use `$HOME` and `<adapter-root>` exactly as the service does;
   contributor-specific absolute paths are forbidden in scan activity.
 - V2.5 did not add a separate opencode scan method; `catalog.scanAll` remains

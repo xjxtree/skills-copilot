@@ -243,7 +243,7 @@ git commit -m "fix: bind native config writes to service previews"
 - Produces: `runAllNativeModelTestsAsync() async throws -> NativeModelSuiteSummary`.
 - Produces: `NativeModelSuiteSummary { serviceSuiteCount, mainSuiteCount, skillStoreGroupCount, namedExecutionCount }`.
 - Required counts: service suites `2`, main suites `19`, SkillStore groups `64`, named executions `85`.
-- Completion line: `SkillsCopilotTests: full-suite-complete service=2 main=19 skill-store-groups=64 named=85`.
+- Completion line: `SkillsCopilotTests: full-suite-complete service=2 main=20 skill-store-groups=64 named=86`.
 - Produces: `verifyNativeTestRegistry({ discoveredTypes, registeredMainTypes }): string[]` in the Node verifier.
 
 - [ ] **Step 1: Write RED registry verifier tests**
@@ -371,9 +371,9 @@ final class FullNativeModelSuiteTests: XCTestCase {
     func testCompleteNativeModelRegistry() async throws {
         let summary = try await runAllNativeModelTestsAsync()
         XCTAssertEqual(summary.serviceSuiteCount, 2)
-        XCTAssertEqual(summary.mainSuiteCount, 19)
+        XCTAssertEqual(summary.mainSuiteCount, 20)
         XCTAssertEqual(summary.skillStoreGroupCount, 64)
-        XCTAssertEqual(summary.namedExecutionCount, 85)
+        XCTAssertEqual(summary.namedExecutionCount, 86)
     }
 }
 #endif
@@ -1218,7 +1218,7 @@ git commit -m "test: align quality and governance gates"
 - Native settings save sends the loaded document revision; stale saves display `config_conflict` and are never retried automatically.
 - Native rollback is disabled until a valid preview is loaded; confirmation sends only that preview token; `stale_preview_token` clears the binding and requires a new preview.
 - The success `_exit` path is gone. XCTest runs the normal test entrypoint when available; otherwise the minimal constructor fallback runs the same complete registry and returns normally on success.
-- Both Swift entrypoints execute 2 service suites, 19 main suites, and 64 SkillStore groups and emit the exact `named=85` completion sentinel.
+- Both Swift entrypoints execute 2 service suites, 20 main suites, and 64 SkillStore groups and emit the exact `named=86` completion sentinel.
 - Adding an unregistered `*Tests` type or duplicating a registration makes the static verifier fail.
 - `pnpm build:macos` never launches the app; `pnpm verify:macos-launch` is the explicit local launch command.
 - CI triggers on pull requests and every branch push, including `codex/**`.

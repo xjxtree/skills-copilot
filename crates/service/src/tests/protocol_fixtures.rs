@@ -736,13 +736,47 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                         && entry.message.contains("entry_unreadable")
                 }));
             } else {
+                assert_eq!(
+                    scan.activity.status, "completed-partial",
+                    "scanClaude fixture must exercise mixed complete/partial/skipped semantics"
+                );
                 let agents = scan
                     .activity
                     .agent_summaries
                     .as_ref()
                     .expect("scanClaude fixture should include its Claude summary");
                 assert_eq!(agents.len(), 1);
-                assert_eq!(agents[0].agent, "claude-code");
+                let summary = &agents[0];
+                assert_eq!(summary.agent, "claude-code");
+                assert_eq!(summary.status, "completed-partial");
+                assert_eq!(summary.roots_scanned, ["$HOME/.claude/skills"]);
+                assert_eq!(summary.roots_partial, ["<adapter-root>/configured-claude"]);
+                assert_eq!(summary.roots_skipped, ["<adapter-root>/missing-claude"]);
+                assert_eq!(summary.scan_issues.len(), 2);
+                assert!(summary.scan_issues.iter().any(|issue| {
+                    issue.kind == "entry_unreadable"
+                        && issue.path == "<adapter-root>/configured-claude/dangling-link"
+                        && issue.detail == "A directory entry could not be inspected or resolved."
+                }));
+                assert!(summary.scan_issues.iter().any(|issue| {
+                    issue.kind == "root_unavailable"
+                        && issue.path == "<adapter-root>/missing-claude"
+                        && issue.detail
+                            == "A declared scan root was unavailable or not a directory."
+                }));
+                assert!(!summary.recovery_actions.is_empty());
+                assert!(!scan.activity.recovery_actions.is_empty());
+                assert!(scan.activity.log_entries.iter().any(|entry| {
+                    entry.level == "warning"
+                        && entry.message.contains("partial")
+                        && entry.message.contains("entry_unreadable")
+                }));
+                let serialized =
+                    serde_json::to_string(result.get("activity").expect("scan fixture activity"))
+                        .expect("serialize scan fixture activity");
+                assert!(!serialized.contains("/tmp/skills-copilot-home"));
+                assert!(serialized.contains("$HOME"));
+                assert!(serialized.contains("<adapter-root>"));
             }
         }
         "catalog.listSkills" => {

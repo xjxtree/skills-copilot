@@ -208,6 +208,10 @@ date/filter range before evidence rows are limited.
 - `catalog.scanClaude` returns the same single-entry `agent_summaries` contract
   as `catalog.scanAll`, including partial roots, typed issues, and recovery
   actions.
+- `roots_partial` and `scan_issues` are additive summary arrays. Native clients
+  decode either field as an empty array when reading a legal response from a
+  pre-diagnostics service, while all pre-existing summary fields remain
+  required and keep their original wire keys.
 
 ## Skill Manager
 

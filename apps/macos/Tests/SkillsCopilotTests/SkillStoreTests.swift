@@ -61,6 +61,9 @@ struct SkillStoreTests {
         try await runCase("scanAllUsesGenericCatalogMethod") {
             try await scanAllUsesGenericCatalogMethod()
         }
+        try await runCase("partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle") {
+            try await partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle()
+        }
         try await runCase("searchAndFilterChangesNormalizeSelectionAndDetail") {
             try await searchAndFilterChangesNormalizeSelectionAndDetail()
         }
@@ -759,6 +762,49 @@ struct SkillStoreTests {
         await store.reload()
         try expectEqual(store.partialScanWarningMessage, partialWarning, "Reloading cached catalog data must not relabel or discard an unresolved partial-scan warning.")
         try expectFalse(store.refreshStatusMessage == partialWarning, "Generic reload status and persistent partial-scan warning should remain independent.")
+    }
+
+    private func partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle() async throws {
+        let runner = CatalogRefreshServiceRunner(scanFixtures: [
+            .partial,
+            .complete,
+            .partial,
+            .legacySummary,
+            .partial,
+            .legacyWithoutActivity
+        ])
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.scanAll()
+        guard let firstPartialWarning = store.partialScanWarningMessage else {
+            throw NativeModelTestFailure(description: "A partial scan should create a persistent warning.")
+        }
+        try expectEqual(store.lastScanActivity?.status, "completed-partial", "The first scan should retain partial activity state.")
+
+        await store.reload()
+        try expectEqual(store.partialScanWarningMessage, firstPartialWarning, "A normal reload should preserve unresolved partial scan state.")
+
+        await store.scanAll()
+        try expectNil(store.errorMessage, "A subsequent complete scan should succeed.")
+        try expectNil(store.partialScanWarningMessage, "A subsequent complete scan should clear the warning.")
+        try expectEqual(store.lastScanActivity?.status, "completed", "The complete scan should replace prior partial activity state.")
+
+        await store.scanAll()
+        try expectFalse(store.partialScanWarningMessage == nil, "A later partial scan should recreate the warning.")
+
+        await store.scanAll()
+        try expectNil(store.errorMessage, "A legal pre-additive ScanResult should decode without becoming a refresh failure.")
+        try expectNil(store.partialScanWarningMessage, "A completed legacy summary should clear the warning.")
+        try expectEqual(store.lastScanActivity?.status, "completed", "A completed legacy summary should remain completed.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first?.rootsPartial, [], "A legacy summary should default missing partial roots to empty.")
+        try expectEqual(store.lastScanActivity?.agentSummaries?.first?.scanIssues, [], "A legacy summary should default missing scan issues to empty.")
+
+        await store.scanAll()
+        try expectFalse(store.partialScanWarningMessage == nil, "Another partial scan should recreate the warning before the activity-less compatibility case.")
+
+        await store.scanAll()
+        try expectNil(store.errorMessage, "A legacy ScanResult without activity should remain a successful scan.")
+        try expectNil(store.partialScanWarningMessage, "A legacy ScanResult without activity should exercise the nil-activity clear branch.")
     }
 
     private func searchAndFilterChangesNormalizeSelectionAndDetail() async throws {
@@ -2185,8 +2231,35 @@ private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {
     }
 }
 
+private enum CatalogRefreshScanFixture {
+    case partial
+    case complete
+    case legacySummary
+    case legacyWithoutActivity
+}
+
+private actor CatalogRefreshScanSequence {
+    private let fixtures: [CatalogRefreshScanFixture]
+    private var index = 0
+
+    init(fixtures: [CatalogRefreshScanFixture]) {
+        self.fixtures = fixtures.isEmpty ? [.partial] : fixtures
+    }
+
+    func next() -> CatalogRefreshScanFixture {
+        let fixture = fixtures[min(index, fixtures.count - 1)]
+        index += 1
+        return fixture
+    }
+}
+
 private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     private let recorder = CatalogRefreshCallRecorder()
+    private let scanSequence: CatalogRefreshScanSequence
+
+    init(scanFixtures: [CatalogRefreshScanFixture] = [.partial]) {
+        scanSequence = CatalogRefreshScanSequence(fixtures: scanFixtures)
+    }
 
     func serviceClient() -> ServiceClient {
         ServiceClient(
@@ -2203,7 +2276,7 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
         let method = object?["method"] as? String ?? ""
         switch method {
         case "catalog.scanAll":
-            return Self.ok(Self.scanResult)
+            return Self.ok(Self.scanResult(for: await scanSequence.next()))
         case "app.stateSnapshot":
             return Self.ok(Self.stateSnapshot)
         case "catalog.getSkill":
@@ -2248,6 +2321,19 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
         return detailAlpha
     }
 
+    private static func scanResult(for fixture: CatalogRefreshScanFixture) -> String {
+        switch fixture {
+        case .partial:
+            partialScanResult
+        case .complete:
+            completeScanResult
+        case .legacySummary:
+            legacySummaryScanResult
+        case .legacyWithoutActivity:
+            legacyActivitylessScanResult
+        }
+    }
+
     private static let supportedMethods = """
     ["app.stateSnapshot","catalog.scanAll","catalog.getSkill","skill.listEvents","snapshot.listAgentConfig","project.getContext","llm.status","llm.listProviderProfiles","llm.listPromptRuns","rules.listTuning"]
     """
@@ -2264,8 +2350,20 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     {"status":\(status),"skills":\(skills),"findings":[],"conflicts":[],"snapshots":[]}
     """
 
-    private static let scanResult = """
+    private static let partialScanResult = """
     {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed-partial","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills","$HOME/.agents/skills","<adapter-root>/missing-opencode"],"log_entries":[{"level":"warning","message":"Claude Code discovered 2 skill(s); catalog now has 2 skill(s), 0 broken, across 0 complete root(s), 1 partial root(s), and 0 skipped root(s); first scan issue entry_unreadable at <adapter-root>/dangling-link: A directory entry could not be inspected or resolved."},{"level":"info","message":"Codex discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."},{"level":"warning","message":"opencode discovered 0 skill(s); catalog now has 0 skill(s), 0 broken, across 0 complete root(s), 0 partial root(s), and 1 skipped root(s); root-error skipped-root path(s): <adapter-root>/missing-opencode."}],"recovery_actions":["Review partial-root diagnostics; unseen rows under partial roots were preserved."],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed-partial","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":[],"roots_partial":["<adapter-root>"],"roots_skipped":[],"scan_issues":[{"kind":"entry_unreadable","path":"<adapter-root>/dangling-link","detail":"A directory entry could not be inspected or resolved."}],"recovery_actions":["Review partial scan diagnostics."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["$HOME/.agents/skills"],"roots_scanned":["$HOME/.agents/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]},{"agent":"opencode","display_label":"opencode","status":"completed-with-skipped-roots","scanned_count":0,"catalog_count":0,"broken_count":0,"roots_considered":["<adapter-root>/missing-opencode"],"roots_scanned":[],"roots_partial":[],"roots_skipped":["<adapter-root>/missing-opencode"],"scan_issues":[{"kind":"root_unavailable","path":"<adapter-root>/missing-opencode","detail":"A declared scan root was unavailable or not a directory."}],"recovery_actions":["Review opencode skipped-root diagnostics, then retry Scan."]}]}}
+    """
+
+    private static let completeScanResult = """
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":["$HOME/.claude/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
+    """
+
+    private static let legacySummaryScanResult = """
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":5,"finished_at":6,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":["$HOME/.claude/skills"],"roots_skipped":[],"recovery_actions":[]}]}}
+    """
+
+    private static let legacyActivitylessScanResult = """
+    {"scanned_count":3,"skills":\(skills)}
     """
 
     private static let projectContext = """
