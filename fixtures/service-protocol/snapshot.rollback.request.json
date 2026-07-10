@@ -2,6 +2,7 @@
   "id": "fixture-snapshot-rollback",
   "method": "snapshot.rollback",
   "params": {
-    "snapshot_id": "snapshot-id"
+    "snapshot_id": "snapshot-id",
+    "preview_token": "sha256:a42abe9ac6a482bf8ca8030d1c518ef35d9aa3c870b86f8184c31831e7393c20"
   }
 }

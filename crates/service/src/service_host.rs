@@ -561,8 +561,12 @@ impl ServiceHost {
                 let params: SaveClaudeSettingsParams = serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let document: ConfigDocumentRecord =
-                    save_claude_settings(&catalog, &adapter_ctx, &params.content)?;
+                let document: ConfigDocumentRecord = save_claude_settings(
+                    &catalog,
+                    &adapter_ctx,
+                    &params.content,
+                    &params.expected_revision,
+                )?;
                 serde_json::to_value(document).map_err(Into::into)
             }
             "snapshot.list" => {
@@ -587,10 +591,15 @@ impl ServiceHost {
                 serde_json::to_value(preview).map_err(Into::into)
             }
             "snapshot.rollback" => {
-                let params: SnapshotParams = serde_json::from_value(request.params)?;
+                let params: RollbackSnapshotParams = serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let scanned_count = rollback_snapshot(&catalog, &adapter_ctx, &params.snapshot_id)?;
+                let scanned_count = rollback_snapshot(
+                    &catalog,
+                    &adapter_ctx,
+                    &params.snapshot_id,
+                    &params.preview_token,
+                )?;
                 serde_json::to_value(scanned_count).map_err(Into::into)
             }
             method => Err(ServiceError::UnknownMethod(method.to_string())),

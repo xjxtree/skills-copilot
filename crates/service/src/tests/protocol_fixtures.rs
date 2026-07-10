@@ -754,16 +754,28 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let _: Vec<WireSkillEventRecord> = decode_fixture_result(method, result, path);
         }
         "config.readAgentConfig" => {
-            let _: Vec<WireConfigDocumentRecord> = decode_fixture_result(method, result, path);
+            let documents: Vec<WireConfigDocumentRecord> =
+                decode_fixture_result(method, result, path);
+            assert!(!documents.is_empty());
+            assert!(
+                documents
+                    .iter()
+                    .all(|document| document.revision.starts_with("sha256:")),
+                "{method} revisions must use the tagged digest contract"
+            );
         }
         "config.readClaudeSettings" | "config.saveClaudeSettings" => {
-            let _: WireConfigDocumentRecord = decode_fixture_result(method, result, path);
+            let document: WireConfigDocumentRecord = decode_fixture_result(method, result, path);
+            assert!(document.revision.starts_with("sha256:"));
         }
         "snapshot.list" | "snapshot.listAgentConfig" => {
             let _: Vec<WireConfigSnapshotRecord> = decode_fixture_result(method, result, path);
         }
         "snapshot.previewRollback" => {
-            let _: WireSnapshotRollbackPreviewRecord = decode_fixture_result(method, result, path);
+            let preview: WireSnapshotRollbackPreviewRecord =
+                decode_fixture_result(method, result, path);
+            assert!(preview.current_revision.starts_with("sha256:"));
+            assert!(preview.preview_token.starts_with("sha256:"));
         }
         "snapshot.rollback" => {
             let _: usize = decode_fixture_result(method, result, path);

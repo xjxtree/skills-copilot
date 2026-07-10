@@ -46,6 +46,38 @@ verification.
 - Service method changes must update fixtures and pass
   `pnpm verify:service-protocol-drift`.
 
+## Config Consistency
+
+Protocol version 2 makes direct config saves and snapshot rollback confirmations
+conditional on the exact local state that the client reviewed.
+
+- `config.readClaudeSettings` and every row from `config.readAgentConfig`
+  include an opaque tagged `revision`. The revision is `sha256:` plus a
+  domain-separated digest of either `present\0` and the exact file bytes or
+  `missing\0`. A missing file is therefore distinct from an existing empty
+  file, while UI-only default content does not change the missing-file
+  revision.
+- `config.saveClaudeSettings` requires `content` and `expected_revision`. The
+  service acquires the existing config lock, rereads the target, and compares
+  its current revision before creating a snapshot or preparing a target write.
+  A mismatch returns the stable `config_conflict` error and leaves the external
+  bytes and snapshot history unchanged.
+- `snapshot.previewRollback` returns `current_revision` and an opaque
+  `preview_token`. The token binds the snapshot id, target, a digest of the
+  snapshot content, and the current target revision; it does not expose the
+  snapshot content or config values.
+- `snapshot.rollback` accepts only `snapshot_id` and `preview_token`. It checks
+  the token before write preparation, acquires the config lock, reloads the
+  snapshot by id, rereads the target, and checks the token again before writing
+  the reloaded snapshot content. Snapshot replacement or target drift returns
+  the stable `stale_preview_token` error without a target write, catalog
+  refresh, or rollback-owned snapshot.
+- Clients must surface either conflict and ask the user to read or preview
+  again. They must not automatically retry a stale save or rollback. A bare
+  revision is not a rollback authorization token. Toggle and batch operations
+  continue to patch the latest content read under their own existing lock and
+  do not accept client revisions or rollback preview tokens.
+
 ## Methods
 
 | Method | Local writes | External process | Network | Confirmation |

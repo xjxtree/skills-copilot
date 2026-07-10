@@ -1327,6 +1327,12 @@ pub struct SnapshotParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct RollbackSnapshotParams {
+    pub snapshot_id: String,
+    pub preview_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ListAgentConfigSnapshotsParams {
     pub agent: String,
     #[serde(default)]
@@ -1343,6 +1349,7 @@ pub struct ReadAgentConfigParams {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SaveClaudeSettingsParams {
     pub content: String,
+    pub expected_revision: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1392,6 +1399,12 @@ impl ServiceError {
             Self::UnknownMethod(_) => "unknown_method",
             Self::Io(_) => "io_error",
             Self::Catalog(_) => "catalog_error",
+            Self::Command(skills_copilot_commands::CommandError::ConfigConflict { .. }) => {
+                "config_conflict"
+            }
+            Self::Command(skills_copilot_commands::CommandError::StalePreviewToken) => {
+                "stale_preview_token"
+            }
             Self::Command(_) => "command_error",
             Self::Provider(_) => "provider_error",
             Self::Json(_) => "json_error",

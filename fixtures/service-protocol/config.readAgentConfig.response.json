@@ -8,7 +8,8 @@
       "target": "/tmp/skills-copilot-home/.pi/agent/settings.json",
       "format": "json",
       "content": "{\"skills\":{\"disabled\":[\"alibabacloud-agentbay-aio-skills\"]}}\n",
-      "exists": true
+      "exists": true,
+      "revision": "sha256:67d80929cb81dae2687787ecadb813b9e1e34560b31f941fa9bc2177bb09a19e"
     },
     {
       "agent": "pi",
@@ -16,7 +17,8 @@
       "target": "/tmp/skills-copilot-project/.pi/settings.json",
       "format": "json",
       "content": "{\"skills\":{\"disabled\":[]}}\n",
-      "exists": false
+      "exists": false,
+      "revision": "sha256:b7b3aede84b3cb0edbea85abfb62dab3e0d8e43975e68b80a5a411cf67c32ff4"
     }
   ]
 }

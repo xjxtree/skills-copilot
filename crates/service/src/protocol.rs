@@ -3,7 +3,7 @@ use serde_json::Value;
 
 pub const DEFAULT_BUNDLE_ID: &str = "dev.agent-copilot.native";
 pub const LEGACY_BUNDLE_ID: &str = "dev.skills-copilot.native";
-pub const SERVICE_PROTOCOL_VERSION: u32 = 1;
+pub const SERVICE_PROTOCOL_VERSION: u32 = 2;
 pub const SUPPORTED_METHODS: &[&str] = &[
     "app.version",
     "app.stateSnapshot",

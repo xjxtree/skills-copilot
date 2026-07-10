@@ -13,6 +13,7 @@ use super::{
     expected_config_target, normalize_path_lexically, reject_symlink, BatchToggleAffectedItem,
     BatchToggleSkippedItem, CommandError, ConfigDocumentRecord, ConfigTarget,
 };
+use crate::config_consistency::config_revision;
 
 pub fn read_agent_config(
     ctx: &AdapterContext,
@@ -31,6 +32,7 @@ pub fn read_agent_config(
             Err(err) if err.kind() == io::ErrorKind::NotFound => (default_content, false),
             Err(err) => return Err(err.into()),
         };
+        let revision = config_revision(exists, &content);
         documents.push(ConfigDocumentRecord {
             agent: agent.as_str().to_string(),
             scope: scope.as_str().to_string(),
@@ -38,6 +40,7 @@ pub fn read_agent_config(
             format: config_format_label(target.format).to_string(),
             content,
             exists,
+            revision,
         });
     }
     Ok(documents)

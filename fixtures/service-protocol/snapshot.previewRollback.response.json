@@ -13,6 +13,10 @@
     },
     "current_content": "{\n  \"skillOverrides\": {\n    \"demo\": \"off\"\n  }\n}\n",
     "current_read_error": null,
-    "changed": true
+    "current_revision": "sha256:ccfff1bc63fae50b64cae13531dd306a1a84e92ba0df35ad1caacecb6e3a02c6",
+    "preview_token": "sha256:a42abe9ac6a482bf8ca8030d1c518ef35d9aa3c870b86f8184c31831e7393c20",
+    "changed": true,
+    "redacted": false,
+    "rollback_supported": true
   }
 }

@@ -7,6 +7,7 @@
     "target": "/tmp/skills-copilot-home/.claude/settings.json",
     "format": "json",
     "content": "{}\n",
-    "exists": true
+    "exists": true,
+    "revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9"
   }
 }

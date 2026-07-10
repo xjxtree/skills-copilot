@@ -9,6 +9,7 @@ use std::{
 };
 
 mod app_wire_fixtures;
+mod config_consistency;
 mod dispatch_fixtures;
 mod llm_provider;
 mod local_session_preview;

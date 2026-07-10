@@ -124,13 +124,20 @@ fn dispatch_coverage_params(method: &str) -> Value {
         }),
         method if method.starts_with("skillManager.") => skill_manager_dispatch_params(method),
         "config.readAgentConfig" => json!({ "agent": "codex" }),
-        "config.saveClaudeSettings" => json!({ "content": "{}\n" }),
+        "config.saveClaudeSettings" => json!({
+            "content": "{}\n",
+            "expected_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }),
         "project.setContext" | "project.validateContext" => {
             json!({ "root_path": "/tmp/skills-copilot-missing-project" })
         }
-        "snapshot.previewRollback" | "snapshot.rollback" => {
+        "snapshot.previewRollback" => {
             json!({ "snapshot_id": "missing-snapshot" })
         }
+        "snapshot.rollback" => json!({
+            "snapshot_id": "missing-snapshot",
+            "preview_token": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }),
         "catalog.setFindingTriage" => json!({
             "triage_key": "missing-finding-key",
             "status": "reviewed"
@@ -1632,6 +1639,7 @@ pub(super) struct WireConfigDocumentRecord {
     pub(super) format: String,
     pub(super) content: String,
     pub(super) exists: bool,
+    pub(super) revision: String,
 }
 
 #[allow(dead_code)]
@@ -1702,7 +1710,9 @@ pub(super) struct WireSnapshotRollbackPreviewRecord {
     pub(super) snapshot: WireConfigSnapshotRecord,
     pub(super) current_content: String,
     pub(super) current_read_error: Option<String>,
+    pub(super) current_revision: String,
+    pub(super) preview_token: String,
     pub(super) changed: bool,
-    pub(super) redacted: Option<bool>,
-    pub(super) rollback_supported: Option<bool>,
+    pub(super) redacted: bool,
+    pub(super) rollback_supported: bool,
 }

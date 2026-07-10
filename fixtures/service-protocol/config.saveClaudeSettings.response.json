@@ -7,6 +7,7 @@
     "target": "/tmp/skills-copilot-home/.claude/settings.json",
     "format": "json",
     "content": "{\n  \"skillOverrides\": {}\n}\n",
-    "exists": true
+    "exists": true,
+    "revision": "sha256:41bfcc1a59cb27cffa3a7315208f660df8d859da753a481c9fbf51f97628ee35"
   }
 }

@@ -993,7 +993,8 @@ fn toggle_opencode_skill_writes_permission_skill_deny_and_rollback_restores_snap
     assert!(preview.changed);
     assert!(preview.rollback_supported);
 
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id).expect("opencode rollback succeeds");
+    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
+        .expect("opencode rollback succeeds");
     let config_text = std::fs::read_to_string(&config_path).expect("rolled back opencode config");
     assert_eq!(config_text, "{}\n");
     let rolled_back_record = catalog
@@ -1595,7 +1596,10 @@ fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
         .expect("list Pi snapshots");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].reason, "pre-toggle");
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id).expect("Pi rollback succeeds");
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
+        .expect("Pi rollback preview");
+    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
+        .expect("Pi rollback succeeds");
     let rolled_back = std::fs::read_to_string(&settings_path).unwrap_or_default();
     assert!(
         !rolled_back.contains("pi-toggle"),
@@ -1752,7 +1756,10 @@ fn toggle_hermes_global_skill_writes_config_rescans_and_rolls_back() {
         .list_config_snapshots("hermes", &config_path.to_string_lossy())
         .expect("list Hermes snapshots");
     assert_eq!(snapshots.len(), 1);
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id).expect("Hermes rollback succeeds");
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
+        .expect("Hermes rollback preview");
+    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
+        .expect("Hermes rollback succeeds");
     let rolled_back = std::fs::read_to_string(&config_path).unwrap_or_default();
     assert!(!rolled_back.contains("hermes-toggle"));
 
@@ -1810,7 +1817,10 @@ fn toggle_openclaw_skill_writes_json5_entries_rescans_and_rolls_back() {
         .list_config_snapshots("openclaw", &config_path.to_string_lossy())
         .expect("list OpenClaw snapshots");
     assert_eq!(snapshots.len(), 1);
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id).expect("OpenClaw rollback succeeds");
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
+        .expect("OpenClaw rollback preview");
+    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
+        .expect("OpenClaw rollback succeeds");
     let rolled_back = std::fs::read_to_string(&config_path).unwrap_or_default();
     assert!(!rolled_back.contains("routed-openclaw"));
     assert!(rolled_back.contains("other-skill"));
@@ -2595,7 +2605,7 @@ fn rollback_snapshot_restores_settings_and_rescans() {
     assert!(preview.changed, "preview detects changed content");
     assert!(!preview.redacted);
     assert!(preview.rollback_supported);
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id).expect("rollback");
+    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token).expect("rollback");
 
     let settings = std::fs::read_to_string(&settings_path).expect("settings");
     assert_eq!(settings, "{}\n");
@@ -2606,6 +2616,230 @@ fn rollback_snapshot_restores_settings_and_rescans() {
     assert_eq!(records[0].state, "loaded");
 
     let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn stale_rollback_preview_token_rejects_external_change_without_writes() {
+    let temp_root = temp_test_dir("stale-rollback-preview");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::write(&settings_path, "{\n  \"current\": true\n}\n").expect("write current settings");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "stale-preview-snapshot",
+            agent: ClaudeCodeAdapter.id().as_str(),
+            scope: Scope::AgentGlobal.as_str(),
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create snapshot");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "stale-preview-snapshot")
+        .expect("preview rollback");
+    assert!(preview.current_revision.starts_with("sha256:"));
+    assert!(preview.preview_token.starts_with("sha256:"));
+    let external_content = "{\n  \"external\": true\n}\n";
+    std::fs::write(&settings_path, external_content).expect("write external change");
+    let snapshots_before = catalog
+        .list_all_config_snapshots()
+        .expect("list snapshots before");
+
+    let result = rollback_snapshot(
+        &catalog,
+        &ctx,
+        "stale-preview-snapshot",
+        &preview.preview_token,
+    );
+
+    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read preserved external content"),
+        external_content
+    );
+    assert_eq!(
+        catalog
+            .list_all_config_snapshots()
+            .expect("list snapshots after"),
+        snapshots_before
+    );
+    assert!(
+        std::fs::read_dir(settings_path.parent().expect("settings parent"))
+            .expect("list settings directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+        "stale token rejection must not create a temporary config file"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn rollback_rechecks_state_after_lock() {
+    let temp_root = temp_test_dir("rollback-lock-recheck");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::write(&settings_path, "{\n  \"current\": true\n}\n").expect("write current settings");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "lock-recheck-snapshot",
+            agent: ClaudeCodeAdapter.id().as_str(),
+            scope: Scope::AgentGlobal.as_str(),
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create snapshot");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "lock-recheck-snapshot")
+        .expect("preview rollback");
+    let external_content = "{\n  \"changedAfterLock\": true\n}\n";
+    let snapshots_before = catalog
+        .list_all_config_snapshots()
+        .expect("list snapshots before");
+
+    let result = rollback_snapshot_with_after_lock(
+        &catalog,
+        &ctx,
+        "lock-recheck-snapshot",
+        &preview.preview_token,
+        || {
+            std::fs::write(&settings_path, external_content)
+                .expect("write concurrent external change");
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read preserved external content"),
+        external_content
+    );
+    assert_eq!(
+        catalog
+            .list_all_config_snapshots()
+            .expect("list snapshots after"),
+        snapshots_before
+    );
+    assert!(
+        std::fs::read_dir(settings_path.parent().expect("settings parent"))
+            .expect("list settings directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+        "lock-time rejection must not create a temporary config file"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn rollback_reloaded_snapshot_target_or_content_changes_invalidate_token() {
+    use rusqlite::{params, Connection};
+
+    for changed_field in ["content", "target"] {
+        let temp_root = temp_test_dir(&format!("rollback-reloaded-{changed_field}"));
+        let home = temp_root.join("home");
+        let settings_path = home.join(".claude/settings.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings directory");
+        let current_content = "{\n  \"current\": true\n}\n";
+        std::fs::write(&settings_path, current_content).expect("write current settings");
+        let catalog_path = temp_root.join("catalog.sqlite");
+        let catalog = Catalog::open(&catalog_path).expect("catalog opens");
+        catalog.init().expect("catalog initializes");
+        catalog
+            .create_config_snapshot(ConfigSnapshotDraft {
+                id: "reloaded-snapshot",
+                agent: ClaudeCodeAdapter.id().as_str(),
+                scope: Scope::AgentGlobal.as_str(),
+                target: &settings_path.to_string_lossy(),
+                content: "{}\n",
+                reason: "pre-config-edit",
+                created_at_ms: current_time_ms(),
+            })
+            .expect("create snapshot");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "reloaded-snapshot")
+            .expect("preview rollback");
+        let replacement = if changed_field == "content" {
+            "{\"catalogChanged\":true}\n".to_string()
+        } else {
+            temp_root
+                .join("other-settings.json")
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let result = rollback_snapshot_with_after_lock(
+            &catalog,
+            &ctx,
+            "reloaded-snapshot",
+            &preview.preview_token,
+            || {
+                let connection = Connection::open(&catalog_path).expect("open raw catalog");
+                let sql = format!("UPDATE config_snapshot SET {changed_field} = ?1 WHERE id = ?2");
+                connection
+                    .execute(&sql, params![replacement, "reloaded-snapshot"])
+                    .expect("replace snapshot field");
+            },
+        );
+
+        assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+        assert_eq!(
+            std::fs::read_to_string(&settings_path).expect("read unchanged target"),
+            current_content,
+            "changed snapshot {changed_field} must be rejected before a target write"
+        );
+        if changed_field == "target" {
+            assert!(
+                !temp_root.join("other-settings.json").exists(),
+                "the reloaded replacement target must not be written"
+            );
+        }
+        assert!(
+            std::fs::read_dir(settings_path.parent().expect("settings parent"))
+                .expect("list settings directory")
+                .all(|entry| !entry
+                    .expect("directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")),
+            "changed snapshot {changed_field} must not create a temporary config file"
+        );
+
+        drop(catalog);
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
 }
 
 #[test]
@@ -2726,6 +2960,49 @@ fn read_agent_config_returns_codex_user_and_project_documents_without_enabling_p
 }
 
 #[test]
+fn stale_claude_settings_save_is_rejected_without_snapshot_or_write() {
+    let temp_root = temp_test_dir("stale-claude-settings-save");
+    let home = temp_root.join("home");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::write(&settings_path, "{}\n").expect("write initial settings");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let read = read_claude_settings(&ctx).expect("read initial settings");
+    let external_content = "{\n  \"externallyChanged\": true\n}\n";
+    std::fs::write(&settings_path, external_content).expect("write external change");
+
+    let result = save_claude_settings(
+        &catalog,
+        &ctx,
+        "{\n  \"requested\": true\n}\n",
+        &read.revision,
+    );
+
+    assert!(matches!(result, Err(CommandError::ConfigConflict { .. })));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read preserved external content"),
+        external_content
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots()
+            .expect("list snapshots")
+            .is_empty(),
+        "stale rejection must happen before snapshot creation"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 #[cfg(unix)]
 fn read_claude_settings_rejects_symlinked_config_directory() {
     let temp_root = std::env::temp_dir().join(format!(
@@ -2779,13 +3056,17 @@ fn save_claude_settings_snapshots_validates_and_rescans() {
     };
     scan_claude_to_catalog(&ctx, &catalog).expect("initial scan");
 
-    let invalid = save_claude_settings(&catalog, &ctx, "{ broken");
+    let initial_revision = read_claude_settings(&ctx)
+        .expect("read initial settings")
+        .revision;
+    let invalid = save_claude_settings(&catalog, &ctx, "{ broken", &initial_revision);
     assert!(matches!(invalid, Err(CommandError::InvalidJson(_))));
 
     let updated = save_claude_settings(
         &catalog,
         &ctx,
         "{\n  \"skillOverrides\": {\n    \"config-editor\": \"off\"\n  }\n}\n",
+        &initial_revision,
     )
     .expect("save config");
 
@@ -3483,7 +3764,8 @@ fn save_claude_settings_redacts_sensitive_snapshot_content() {
         extra_roots: vec![],
     };
 
-    save_claude_settings(&catalog, &ctx, "{}\n").expect("save config");
+    let revision = read_claude_settings(&ctx).expect("read config").revision;
+    save_claude_settings(&catalog, &ctx, "{}\n", &revision).expect("save config");
 
     let snapshots = catalog
         .list_config_snapshots("claude-code", &settings_path.to_string_lossy())
@@ -3499,7 +3781,7 @@ fn save_claude_settings_redacts_sensitive_snapshot_content() {
         .expect("preview redacted snapshot");
     assert!(preview.redacted);
     assert!(!preview.rollback_supported);
-    let rollback = rollback_snapshot(&catalog, &ctx, &snapshots[0].id);
+    let rollback = rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token);
     assert!(
         matches!(rollback, Err(CommandError::UnsafeConfigPath(_))),
         "redacted snapshots must not be written back"
@@ -3531,7 +3813,14 @@ fn save_claude_settings_writes_private_config_and_lock_permissions() {
         extra_roots: vec![],
     };
 
-    save_claude_settings(&catalog, &ctx, "{\n  \"skillOverrides\": {}\n}\n").expect("save config");
+    let revision = read_claude_settings(&ctx).expect("read config").revision;
+    save_claude_settings(
+        &catalog,
+        &ctx,
+        "{\n  \"skillOverrides\": {}\n}\n",
+        &revision,
+    )
+    .expect("save config");
 
     let config_mode = std::fs::metadata(&settings_path)
         .expect("config metadata")
@@ -3571,7 +3860,7 @@ fn save_claude_settings_rejects_symlinked_config_directory() {
         extra_roots: vec![],
     };
 
-    let result = save_claude_settings(&catalog, &ctx, "{}\n");
+    let result = save_claude_settings(&catalog, &ctx, "{}\n", "sha256:missing");
 
     assert!(
         matches!(result, Err(CommandError::UnsafeConfigPath(_))),
@@ -3615,7 +3904,7 @@ fn rollback_snapshot_rejects_target_outside_expected_config_path() {
         extra_roots: vec![],
     };
 
-    let result = rollback_snapshot(&catalog, &ctx, "tampered-snapshot");
+    let result = rollback_snapshot(&catalog, &ctx, "tampered-snapshot", "sha256:unused");
 
     assert!(
         matches!(result, Err(CommandError::UnsafeConfigPath(_))),

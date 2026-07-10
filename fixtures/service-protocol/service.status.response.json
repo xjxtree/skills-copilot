@@ -2,7 +2,7 @@
   "id": "fixture-service-status",
   "ok": true,
   "result": {
-    "protocol_version": 1,
+    "protocol_version": 2,
     "version": "0.1.0",
     "app_data_dir": "/tmp/skills-copilot-app-data",
     "catalog_path": "/tmp/skills-copilot-app-data/catalog.sqlite",
