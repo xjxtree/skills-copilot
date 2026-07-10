@@ -31,15 +31,18 @@ struct SnapshotObserver {
     let afterEntryMetadata: ((String, SnapshotEntryKind) throws -> Void)?
     let beforeDirectoryEnumeration: ((String) throws -> Void)?
     let beforeFileRead: ((String) throws -> Void)?
+    let beforeSymlinkRead: ((String) throws -> Void)?
 
     init(
         afterEntryMetadata: ((String, SnapshotEntryKind) throws -> Void)? = nil,
         beforeDirectoryEnumeration: ((String) throws -> Void)? = nil,
-        beforeFileRead: ((String) throws -> Void)? = nil
+        beforeFileRead: ((String) throws -> Void)? = nil,
+        beforeSymlinkRead: ((String) throws -> Void)? = nil
     ) {
         self.afterEntryMetadata = afterEntryMetadata
         self.beforeDirectoryEnumeration = beforeDirectoryEnumeration
         self.beforeFileRead = beforeFileRead
+        self.beforeSymlinkRead = beforeSymlinkRead
     }
 }
 
@@ -61,6 +64,9 @@ private final class SnapshotState {
 
 private let directoryOpenFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
 private let fileOpenFlags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+// Darwin's O_SYMLINK atomically opens the link inode itself. O_NOFOLLOW cannot
+// be combined with it: the documented result for a final symlink is ELOOP.
+private let symlinkOpenFlags = O_SYMLINK | O_NONBLOCK | O_CLOEXEC
 private let readBufferBytes = 64 * 1_024
 private let maxSymlinkBytes = 64 * 1_024
 private let slashByte = UInt8(ascii: "/")
@@ -164,17 +170,12 @@ private func directoryNames(
     return names.sorted { $0.lexicographicallyPrecedes($1) }
 }
 
-private func readSymlink(
-    parentDescriptor: Int32,
-    name: [UInt8]
-) throws -> Data {
+private func readSymlink(descriptor: Int32) throws -> Data {
     var capacity = 256
     while capacity <= maxSymlinkBytes {
         var buffer = [UInt8](repeating: 0, count: capacity)
-        let count = withNameCString(name) { pointer in
-            buffer.withUnsafeMutableBytes { bytes in
-                readlinkat(parentDescriptor, pointer, bytes.baseAddress, capacity)
-            }
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            freadlink(descriptor, bytes.baseAddress, capacity)
         }
         guard count >= 0 else { throw SnapshotFailure.filesystem }
         if count < capacity {
@@ -303,10 +304,20 @@ private func hashChild(
             observer: observer
         )
     case .symlink:
-        framedUpdate(
-            try readSymlink(parentDescriptor: parentDescriptor, name: name),
-            state: state
-        )
+        let descriptor = withNameCString(name) { pointer in
+            openat(parentDescriptor, pointer, symlinkOpenFlags)
+        }
+        guard descriptor >= 0 else { throw SnapshotFailure.filesystem }
+        defer { close(descriptor) }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              sameIdentityAndType(expected, opened),
+              entryKind(opened.st_mode) == .symlink
+        else {
+            throw SnapshotFailure.filesystem
+        }
+        try observer.beforeSymlinkRead?(displayPath(relativePath))
+        framedUpdate(try readSymlink(descriptor: descriptor), state: state)
     case .blockDevice, .characterDevice, .fifo, .other, .socket:
         break
     }

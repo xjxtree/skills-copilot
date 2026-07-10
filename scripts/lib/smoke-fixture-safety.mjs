@@ -24,7 +24,9 @@ const nativeHelperSources = [
   join(sourceDirectory, "Snapshot.swift"),
   join(sourceDirectory, "main.swift"),
 ];
+const nativeHelperCleanupSignals = ["SIGHUP", "SIGINT", "SIGTERM"];
 let nativeHelperBuild = null;
+let nativeHelperCleanupHooks = null;
 
 class SmokeFixtureSafetyError extends Error {
   constructor(message) {
@@ -65,8 +67,49 @@ function cleanupNativeHelper() {
   if (!nativeHelperBuild) {
     return;
   }
-  rmSync(nativeHelperBuild.root, { force: true, recursive: true });
+  const build = nativeHelperBuild;
   nativeHelperBuild = null;
+  try {
+    rmSync(build.root, { force: true, recursive: true });
+  } catch {
+    // Cleanup is best effort during process teardown; owned paths are private.
+  }
+}
+
+function removeNativeHelperCleanupHooks() {
+  if (!nativeHelperCleanupHooks) {
+    return;
+  }
+  const hooks = nativeHelperCleanupHooks;
+  nativeHelperCleanupHooks = null;
+  process.removeListener("exit", hooks.exit);
+  for (const [signal, listener] of hooks.signals) {
+    process.removeListener(signal, listener);
+  }
+}
+
+function installNativeHelperCleanupHooks() {
+  if (nativeHelperCleanupHooks) {
+    return;
+  }
+  const hooks = {
+    exit() {
+      removeNativeHelperCleanupHooks();
+      cleanupNativeHelper();
+    },
+    signals: new Map(),
+  };
+  nativeHelperCleanupHooks = hooks;
+  process.once("exit", hooks.exit);
+  for (const signal of nativeHelperCleanupSignals) {
+    const listener = () => {
+      removeNativeHelperCleanupHooks();
+      cleanupNativeHelper();
+      process.kill(process.pid, signal);
+    };
+    hooks.signals.set(signal, listener);
+    process.once(signal, listener);
+  }
 }
 
 function nativeSnapshotHelper() {
@@ -94,7 +137,7 @@ function nativeSnapshotHelper() {
   }
 
   nativeHelperBuild = { binary, root };
-  process.once("exit", cleanupNativeHelper);
+  installNativeHelperCleanupHooks();
   return binary;
 }
 

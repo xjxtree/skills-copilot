@@ -138,10 +138,44 @@ func testDirectoryReplacementNeverEnumeratesExternalChildren() throws {
     try expect(!metadataPaths.contains("victim/external-child"))
 }
 
+func testSymlinkReplacementNeverHashesTheNewTarget() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let config = root.appendingPathComponent("config")
+    let victim = config.appendingPathComponent("victim")
+    try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(
+        atPath: victim.path,
+        withDestinationPath: "target-A"
+    )
+
+    var swapped = false
+    var readPaths: [String] = []
+    let observer = SnapshotObserver(
+        afterEntryMetadata: { relativePath, kind in
+            guard relativePath == "victim", kind == .symlink, !swapped else { return }
+            swapped = true
+            try FileManager.default.removeItem(at: victim)
+            try FileManager.default.createSymbolicLink(
+                atPath: victim.path,
+                withDestinationPath: "target-B-must-not-be-hashed"
+            )
+        },
+        beforeDirectoryEnumeration: nil,
+        beforeFileRead: nil,
+        beforeSymlinkRead: { relativePath in readPaths.append(relativePath) }
+    )
+
+    try expectSnapshotFailure(root: config, observer: observer)
+    try expect(swapped)
+    try expect(!readPaths.contains("victim"))
+}
+
 do {
     try testFileReplacementSymlinkNeverReadsExternalContent()
     try testFileReplacementFIFONeverBlocksOrReads()
     try testDirectoryReplacementNeverEnumeratesExternalChildren()
+    try testSymlinkReplacementNeverHashesTheNewTarget()
     print("native fixture identity race tests passed")
 } catch {
     fputs("native fixture identity race tests failed\n", stderr)

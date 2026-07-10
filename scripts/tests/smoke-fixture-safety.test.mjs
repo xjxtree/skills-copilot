@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -277,5 +279,79 @@ test(
       );
       assert.equal(run.stderr, "");
     });
+  },
+);
+
+test(
+  "signal termination removes the private helper and preserves SIGTERM",
+  { skip: process.platform !== "darwin", timeout: 30_000 },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "smoke-helper-signal-test-"));
+    const configRoot = join(root, "config");
+    const helperTmp = join(root, "helper-tmp");
+    mkdirSync(configRoot);
+    mkdirSync(helperTmp);
+    writeFileSync(join(configRoot, "opencode.json"), "{}\n");
+
+    const child = spawn(
+      process.execPath,
+      [
+        resolve(
+          "scripts/tests/fixtures/smoke-fixture-signal-child.mjs",
+        ),
+      ],
+      {
+        env: {
+          ...process.env,
+          SKILLS_COPILOT_SIGNAL_TEST_ROOT: configRoot,
+          TMPDIR: `${helperTmp}/`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    try {
+      const readiness = Promise.race([
+        once(child.stdout, "data"),
+        once(child, "exit").then(([code, signal]) => {
+          throw new Error(
+            `signal child exited before readiness: code=${code} signal=${signal}`,
+          );
+        }),
+        new Promise((_, reject) => {
+          setTimeout(
+            () => reject(new Error("signal child readiness timeout")),
+            15_000,
+          ).unref();
+        }),
+      ]);
+      const [readyChunk] = await readiness;
+      assert.equal(String(readyChunk), "ready\n");
+      assert.equal(
+        readdirSync(helperTmp).filter((name) =>
+          name.startsWith("smoke-fixture-identity-helper-"),
+        ).length,
+        1,
+      );
+
+      const exit = once(child, "exit");
+      assert.equal(child.kill("SIGTERM"), true);
+      const [code, signal] = await exit;
+      assert.equal(code, null);
+      assert.equal(signal, "SIGTERM");
+      assert.equal(stderr, "");
+      assert.deepEqual(readdirSync(helperTmp), []);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await once(child, "exit");
+      }
+      rmSync(root, { force: true, recursive: true });
+    }
   },
 );
