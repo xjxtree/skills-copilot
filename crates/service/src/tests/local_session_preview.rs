@@ -616,6 +616,114 @@ fn local_session_preview_bounds_single_line_json() {
 }
 
 #[test]
+fn local_session_preview_drops_complete_json_prefix_without_a_physical_record_boundary() {
+    const HEAD_BYTES: usize = 384 * 1024;
+    let marker = "UNPROVEN_HEAD_JSON_MUST_NOT_SURFACE";
+    let prefix = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"text\":{},\"padding\":\"",
+        serde_json::to_string(marker).expect("serialize marker")
+    );
+    let suffix = "\"}";
+    let padding = "x".repeat(HEAD_BYTES - prefix.len() - suffix.len());
+    let complete_prefix = format!("{prefix}{padding}{suffix}");
+    assert_eq!(complete_prefix.len(), HEAD_BYTES);
+    let session = format!("{complete_prefix}{}\n", "z".repeat(300 * 1024));
+
+    let result = preview_codex_session_fixture("unproven-complete-head-json", &session);
+    let output = serde_json::to_string(&result).expect("serialize preview");
+
+    assert!(!output.contains(marker), "{output}");
+    assert_eq!(result.get("count").and_then(Value::as_u64), Some(0));
+}
+
+#[test]
+fn local_session_preview_drops_plaintext_head_fragment_without_a_physical_record_boundary() {
+    const HEAD_BYTES: usize = 384 * 1024;
+    let marker = "UNPROVEN_HEAD_PLAINTEXT_MUST_NOT_SURFACE";
+    let prefix = format!("user: {marker}");
+    let head = format!("{prefix}{}", "x".repeat(HEAD_BYTES - prefix.len()));
+    assert_eq!(head.len(), HEAD_BYTES);
+    let session = format!("{head}{}\n", "z".repeat(300 * 1024));
+
+    let result =
+        preview_codex_session_fixture_with_extension("unproven-plaintext-head", "log", &session);
+    let output = serde_json::to_string(&result).expect("serialize preview");
+
+    assert!(!output.contains(marker), "{output}");
+    assert_eq!(result.get("count").and_then(Value::as_u64), Some(0));
+}
+
+#[test]
+fn local_session_preview_keeps_head_records_proven_at_newline_or_eof() {
+    let newline_marker = "PROVEN_HEAD_NEWLINE_REMAINS_VISIBLE";
+    let newline_record = json!({
+        "type": "user",
+        "role": "user",
+        "text": newline_marker
+    });
+    let newline_session = format!("{newline_record}\n{}\n", "x".repeat(700 * 1024));
+    let newline_result = preview_codex_session_fixture("proven-head-newline", &newline_session);
+    assert!(
+        serde_json::to_string(&newline_result)
+            .expect("serialize newline preview")
+            .contains(newline_marker),
+        "{newline_result}"
+    );
+
+    for (case, extension, content, marker) in [
+        (
+            "proven-json-eof",
+            "jsonl",
+            json!({"type":"user","role":"user","text":"PROVEN_JSON_EOF_VISIBLE"}).to_string(),
+            "PROVEN_JSON_EOF_VISIBLE",
+        ),
+        (
+            "proven-plaintext-eof",
+            "log",
+            "user: PROVEN_PLAINTEXT_EOF_VISIBLE".to_string(),
+            "PROVEN_PLAINTEXT_EOF_VISIBLE",
+        ),
+    ] {
+        let result = preview_codex_session_fixture_with_extension(case, extension, &content);
+        assert!(
+            serde_json::to_string(&result)
+                .expect("serialize EOF preview")
+                .contains(marker),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn local_session_preview_keeps_head_json_with_bounded_continuity_proof() {
+    const HEAD_BYTES: usize = 384 * 1024;
+    let marker = "BOUNDED_CONTINUITY_PROOF_REMAINS_VISIBLE";
+    let prefix = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"text\":{},\"padding\":\"",
+        serde_json::to_string(marker).expect("serialize marker")
+    );
+    let suffix = "\"}";
+    let padding = "x".repeat(HEAD_BYTES - prefix.len() - suffix.len());
+    let complete_prefix = format!("{prefix}{padding}{suffix}");
+    assert_eq!(complete_prefix.len(), HEAD_BYTES);
+
+    for (case, terminator) in [("eof", ""), ("newline", "\n")] {
+        let session = format!("{complete_prefix}{}{terminator}", " ".repeat(200 * 1024));
+        let result = preview_codex_session_fixture(&format!("bounded-continuity-{case}"), &session);
+        let output = serde_json::to_string(&result).expect("serialize preview");
+
+        assert!(output.contains(marker), "{case}: {output}");
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/user_message_count")
+                .and_then(Value::as_u64),
+            Some(1),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
 fn one_oversized_json_record_recovers_supported_tail_scalars() {
     let value = format!(
         "{{\"type\":\"user\",\"role\":\"user\",\"data\":\"{}\",\"text\":\"FINAL_SCALAR_MUST_SURVIVE\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
@@ -816,6 +924,88 @@ fn unusable_later_classification_clears_old_visible_classification() {
             let output = serde_json::to_string(&result).expect("serialize preview");
 
             assert!(!output.contains(&marker), "{field}/{case}: {output}");
+        }
+    }
+}
+
+#[test]
+fn final_deny_or_unusable_role_overrides_visible_type_during_recovery() {
+    for (case, later_role) in [
+        (
+            "developer",
+            serde_json::to_string("developer").expect("serialize role"),
+        ),
+        (
+            "summary",
+            serde_json::to_string("summary").expect("serialize role"),
+        ),
+        (
+            "tool",
+            serde_json::to_string("tool").expect("serialize role"),
+        ),
+        ("null", "null".to_string()),
+        ("object", "{}".to_string()),
+        (
+            "oversized",
+            serde_json::to_string(&"r".repeat(5 * 1024)).expect("serialize oversized role"),
+        ),
+    ] {
+        let marker = format!("FINAL_ROLE_{}_MUST_NOT_SURFACE", case.to_ascii_uppercase());
+        let session = format!(
+            "{{\"type\":\"user\",\"role\":\"user\",\"text\":{marker},\"data\":\"{}\",\"role\":{later_role},\"blob\":\"{}\"}}\n",
+            "a".repeat(400 * 1024),
+            "b".repeat(200 * 1024),
+            marker = serde_json::to_string(&marker).expect("serialize marker"),
+        );
+        let result = preview_codex_session_fixture(&format!("final-role-{case}"), &session);
+        let output = serde_json::to_string(&result).expect("serialize preview");
+
+        assert!(!output.contains(&marker), "{case}: {output}");
+        assert_eq!(
+            result.get("count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn complete_conflicting_classifications_use_fail_closed_precedence() {
+    for (role, expected_kind) in [
+        ("developer", None),
+        ("summary", None),
+        ("tool", Some("tool_call")),
+    ] {
+        let marker = format!("COMPLETE_CONFLICTING_{}_CONTENT", role.to_ascii_uppercase());
+        let session = json!({
+            "type": "user",
+            "role": role,
+            "text": marker
+        })
+        .to_string();
+        let result = preview_codex_session_fixture(&format!("complete-conflict-{role}"), &session);
+
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/user_message_count")
+                .and_then(Value::as_u64),
+            Some(0),
+            "{role}: {result}"
+        );
+        let items = result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .expect("content items");
+        match expected_kind {
+            Some(kind) => assert_eq!(
+                items
+                    .first()
+                    .and_then(|item| item.get("kind"))
+                    .and_then(Value::as_str),
+                Some(kind),
+                "{role}: {result}"
+            ),
+            None => assert!(items.is_empty(), "{role}: {result}"),
         }
     }
 }

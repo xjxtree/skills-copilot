@@ -918,19 +918,16 @@ fn compact_bounded_local_session_content(
     let head_fragment = head[complete_head_end..].trim();
     let (tail_leading_fragment, tail_remainder) = split_tail_leading_fragment(&bounded.tail);
     let tail_leading_fragment = tail_leading_fragment.trim_end_matches('\r').trim();
-    let head_fragment_is_complete = is_complete_json_record(head_fragment);
 
     let mut retained_head =
         compact_local_session_records(&head[..complete_head_end], max_line_fragment_bytes);
     let mut recovered = String::new();
     let consumed_tail_leading =
         !bounded.tail_starts_at_line_boundary && !tail_leading_fragment.is_empty();
-    let recoverable_provenance = bounded.record_provenance.as_ref().filter(|_| {
-        !head_fragment.is_empty()
-            && !head_fragment_is_complete
-            && consumed_tail_leading
-            && bounded.gap_stays_on_same_line
-    });
+    let recoverable_provenance = bounded
+        .record_provenance
+        .as_ref()
+        .filter(|_| !head_fragment.is_empty() && bounded.gap_stays_on_same_line);
 
     if let Some(provenance) = recoverable_provenance {
         let mut fields = top_level_scalar_fields_from_prefix(head_fragment);
@@ -939,13 +936,6 @@ fn compact_bounded_local_session_content(
         }
         provenance.merge_into(&mut fields);
         append_supported_scalar_fields(&mut recovered, fields, max_line_fragment_bytes);
-    } else if !head_fragment.is_empty() && head_fragment_is_complete {
-        recovered.push_str(&compact_local_session_records(
-            head_fragment,
-            max_line_fragment_bytes,
-        ));
-    } else if !head_fragment.is_empty() {
-        append_structured_prefix_fragment(&mut recovered, head_fragment, max_line_fragment_bytes);
     }
     let retained_tail = if consumed_tail_leading {
         compact_local_session_records(tail_remainder, max_line_fragment_bytes)
@@ -1023,32 +1013,89 @@ fn append_supported_scalar_fields(
 }
 
 fn supported_scalar_fields_are_non_message(fields: &serde_json::Map<String, Value>) -> bool {
-    if let Some(record_type) = fields.get("type") {
-        let Some(record_type) = record_type.as_str() else {
-            return true;
-        };
-        let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
-        if is_hidden_local_session_record_type(record_type)
-            || is_json_tool_type(&normalized)
-            || is_json_non_message_type(&normalized)
-        {
-            return true;
-        }
-        if is_json_visible_message_type(&normalized) {
-            return false;
+    matches!(
+        local_session_record_classification(fields, None),
+        LocalSessionRecordClassification::Deny | LocalSessionRecordClassification::Tool
+    )
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LocalSessionRecordClassification {
+    User,
+    Assistant,
+    Thinking,
+    Tool,
+    Deny,
+    Unknown,
+}
+
+fn local_session_record_classification(
+    fields: &serde_json::Map<String, Value>,
+    fallback_role: Option<&str>,
+) -> LocalSessionRecordClassification {
+    let type_classification = local_session_type_classification(fields.get("type"));
+    let role_classification = fields.get("role").map_or_else(
+        || {
+            fallback_role.map_or(LocalSessionRecordClassification::Unknown, |role| {
+                local_session_role_classification(role)
+            })
+        },
+        |role| {
+            role.as_str().map_or(
+                LocalSessionRecordClassification::Deny,
+                local_session_role_classification,
+            )
+        },
+    );
+
+    if matches!(type_classification, LocalSessionRecordClassification::Deny)
+        || matches!(role_classification, LocalSessionRecordClassification::Deny)
+    {
+        return LocalSessionRecordClassification::Deny;
+    }
+    if matches!(type_classification, LocalSessionRecordClassification::Tool)
+        || matches!(role_classification, LocalSessionRecordClassification::Tool)
+    {
+        return LocalSessionRecordClassification::Tool;
+    }
+    if type_classification != LocalSessionRecordClassification::Unknown {
+        return type_classification;
+    }
+    role_classification
+}
+
+fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecordClassification {
+    let Some(value) = value else {
+        return LocalSessionRecordClassification::Unknown;
+    };
+    let Some(record_type) = value.as_str() else {
+        return LocalSessionRecordClassification::Deny;
+    };
+    let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
+    if is_hidden_local_session_record_type(record_type) || is_json_non_message_type(&normalized) {
+        LocalSessionRecordClassification::Deny
+    } else if is_json_tool_type(&normalized) {
+        LocalSessionRecordClassification::Tool
+    } else if is_json_thinking_type(&normalized) {
+        LocalSessionRecordClassification::Thinking
+    } else {
+        match normalized.as_str() {
+            "user" | "human" => LocalSessionRecordClassification::User,
+            "assistant" | "agent" | "model" => LocalSessionRecordClassification::Assistant,
+            _ => LocalSessionRecordClassification::Unknown,
         }
     }
-    let Some(role) = fields.get("role") else {
-        return false;
-    };
-    let Some(role) = role.as_str() else {
-        return true;
-    };
-    let role = role.to_ascii_lowercase().replace(['_', '-'], "");
-    matches!(
-        role.as_str(),
-        "system" | "developer" | "summary" | "tool" | "function" | "toolresult"
-    )
+}
+
+fn local_session_role_classification(role: &str) -> LocalSessionRecordClassification {
+    let normalized = role.to_ascii_lowercase().replace(['_', '-'], "");
+    match normalized.as_str() {
+        "user" | "human" | "customer" => LocalSessionRecordClassification::User,
+        "assistant" | "agent" | "model" => LocalSessionRecordClassification::Assistant,
+        "tool" | "function" | "toolresult" => LocalSessionRecordClassification::Tool,
+        "system" | "developer" | "summary" => LocalSessionRecordClassification::Deny,
+        _ => LocalSessionRecordClassification::Unknown,
+    }
 }
 
 fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
@@ -1059,19 +1106,6 @@ fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
 
 fn is_complete_json_record(fragment: &str) -> bool {
     !fragment.is_empty() && serde_json::from_str::<Value>(fragment).is_ok()
-}
-
-fn append_structured_prefix_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
-    if looks_like_json_fragment(fragment)
-        || (fragment.starts_with('\u{feff}') && looks_like_incomplete_json_record(fragment))
-    {
-        return;
-    }
-    let retained = truncate_utf8_bytes(fragment, max_bytes.saturating_sub(1));
-    if !retained.is_empty() {
-        content.push_str(&retained);
-        content.push('\n');
-    }
 }
 
 fn append_compacted_record(content: &mut String, record: &str, max_bytes: usize) {
@@ -1410,7 +1444,7 @@ mod bounded_content_tests {
     }
 
     #[test]
-    fn complete_small_head_fragment_preserves_data_wrapped_event() {
+    fn complete_but_unproven_head_fragment_is_dropped() {
         let bounded = BoundedText {
             head: concat!(
                 "{\"type\":\"mode\"}\n",
@@ -1429,8 +1463,9 @@ mod bounded_content_tests {
 
         let compacted = compact_bounded_local_session_content(&bounded, 1_024);
 
-        assert!(compacted.contains("\"data\""), "{compacted}");
-        assert!(compacted.contains("head-hello"), "{compacted}");
+        assert!(!compacted.contains("\"data\""), "{compacted}");
+        assert!(!compacted.contains("head-hello"), "{compacted}");
+        assert!(compacted.is_empty(), "{compacted}");
     }
 
     #[test]
@@ -2843,16 +2878,13 @@ fn json_session_content_kind(
     map: &serde_json::Map<String, Value>,
     role: Option<&str>,
 ) -> Option<&'static str> {
-    if let Some(kind) = map.get("type").and_then(Value::as_str) {
-        let normalized = kind.to_ascii_lowercase().replace(['_', '-'], "");
-        match normalized.as_str() {
-            "user" | "human" => return Some("user_message"),
-            "assistant" | "agent" | "model" => return Some("agent_reply"),
-            value if is_json_thinking_type(value) => return Some("thinking"),
-            value if is_json_tool_type(value) => return Some("tool_call"),
-            value if is_json_non_message_type(value) => return None,
-            _ => {}
-        }
+    match local_session_record_classification(map, role) {
+        LocalSessionRecordClassification::User => return Some("user_message"),
+        LocalSessionRecordClassification::Assistant => return Some("agent_reply"),
+        LocalSessionRecordClassification::Thinking => return Some("thinking"),
+        LocalSessionRecordClassification::Tool => return Some("tool_call"),
+        LocalSessionRecordClassification::Deny => return None,
+        LocalSessionRecordClassification::Unknown => {}
     }
     if json_thinking_payload_text(&Value::Object(map.clone())).is_some() {
         return Some("thinking");
@@ -2863,13 +2895,7 @@ fn json_session_content_kind(
     {
         return Some("tool_call");
     }
-    role.and_then(|role| match role.to_ascii_lowercase().as_str() {
-        "user" | "human" | "customer" => Some("user_message"),
-        "assistant" | "agent" | "model" => Some("agent_reply"),
-        "tool" | "function" | "toolresult" | "tool_result" => Some("tool_call"),
-        "system" | "developer" => None,
-        _ => None,
-    })
+    None
 }
 
 fn json_session_title(map: &serde_json::Map<String, Value>, kind: &str) -> String {
@@ -3169,15 +3195,10 @@ fn json_non_tool_message_text(value: &Value) -> Option<String> {
 }
 
 fn json_session_blocks_plain_text_fallback(map: &serde_json::Map<String, Value>) -> bool {
-    map.get("type")
-        .and_then(Value::as_str)
-        .map(|kind| kind.to_ascii_lowercase().replace(['_', '-'], ""))
-        .is_some_and(|kind| is_json_non_message_type(&kind))
-        || map
-            .get("role")
-            .and_then(Value::as_str)
-            .map(|role| role.to_ascii_lowercase().replace(['_', '-'], ""))
-            .is_some_and(|role| matches!(role.as_str(), "system" | "developer" | "summary"))
+    matches!(
+        local_session_record_classification(map, json_session_role(map)),
+        LocalSessionRecordClassification::Deny | LocalSessionRecordClassification::Tool
+    )
 }
 
 fn is_json_tool_object(map: &serde_json::Map<String, Value>) -> bool {
@@ -3219,13 +3240,6 @@ fn is_json_non_message_type(normalized: &str) -> bool {
     matches!(
         normalized,
         "developer" | "system" | "summary" | "compaction" | "context" | "metadata"
-    )
-}
-
-fn is_json_visible_message_type(normalized: &str) -> bool {
-    matches!(
-        normalized,
-        "user" | "human" | "assistant" | "agent" | "model"
     )
 }
 
