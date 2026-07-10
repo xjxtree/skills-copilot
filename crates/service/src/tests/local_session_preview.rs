@@ -1011,6 +1011,152 @@ fn complete_conflicting_classifications_use_fail_closed_precedence() {
 }
 
 #[test]
+fn complete_deny_record_blocks_all_nested_content_extraction() {
+    let tool_marker = "DENY_TOOL_MUST_NOT_SURFACE";
+    let user_marker = "DENY_NESTED_USER_MUST_NOT_SURFACE";
+    let session = json!({
+        "type": "developer",
+        "role": "tool",
+        "tool_calls": [{
+            "name": tool_marker,
+            "arguments": { "secret": "nested" }
+        }],
+        "data": {
+            "type": "user",
+            "role": "user",
+            "text": user_marker
+        }
+    })
+    .to_string();
+
+    let result = preview_codex_session_fixture("complete-deny-nested-content", &session);
+
+    assert!(
+        result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{result}"
+    );
+    for metric in [
+        "tool_call_count",
+        "user_message_count",
+        "total_message_count",
+    ] {
+        assert_eq!(
+            result
+                .pointer(&format!("/session_rows/0/{metric}"))
+                .and_then(Value::as_u64),
+            Some(0),
+            "{metric}: {result}"
+        );
+    }
+}
+
+#[test]
+fn invalid_or_denying_classification_blocks_entire_nested_record() {
+    for (case, record_type, role) in [
+        ("null-role", json!("user"), Value::Null),
+        ("object-role", json!("user"), json!({})),
+        ("overlong-role", json!("user"), json!("r".repeat(5 * 1024))),
+        ("deny-type", json!("developer"), json!("user")),
+    ] {
+        let tool_marker = format!("{case}_TOOL_MUST_NOT_SURFACE");
+        let user_marker = format!("{case}_USER_MUST_NOT_SURFACE");
+        let session = json!({
+            "type": record_type,
+            "role": role,
+            "tool_calls": [{
+                "name": tool_marker,
+                "arguments": { "secret": "nested" }
+            }],
+            "data": {
+                "type": "user",
+                "role": "user",
+                "text": user_marker
+            }
+        })
+        .to_string();
+
+        let result = preview_codex_session_fixture(&format!("complete-{case}"), &session);
+
+        assert!(
+            result
+                .pointer("/session_rows/0/content_items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/tool_call_count")
+                .and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/user_message_count")
+                .and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn non_deny_tool_and_wrapper_records_keep_nested_content() {
+    let tool_result = preview_codex_session_fixture(
+        "non-deny-real-tool",
+        &json!({
+            "type": "tool_call",
+            "role": "assistant",
+            "name": "current_time",
+            "arguments": { "marker": "REAL_TOOL_REMAINS_VISIBLE" }
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        tool_result
+            .pointer("/session_rows/0/tool_call_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{tool_result}"
+    );
+    assert!(
+        serde_json::to_string(&tool_result)
+            .expect("serialize tool preview")
+            .contains("REAL_TOOL_REMAINS_VISIBLE"),
+        "{tool_result}"
+    );
+
+    let wrapper_result = preview_codex_session_fixture(
+        "non-deny-visible-wrapper",
+        &json!({
+            "data": {
+                "type": "user",
+                "role": "user",
+                "text": "VISIBLE_NESTED_USER_REMAINS_VISIBLE"
+            }
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        wrapper_result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{wrapper_result}"
+    );
+    assert!(
+        serde_json::to_string(&wrapper_result)
+            .expect("serialize wrapper preview")
+            .contains("VISIBLE_NESTED_USER_REMAINS_VISIBLE"),
+        "{wrapper_result}"
+    );
+}
+
+#[test]
 fn oversized_visible_user_and_assistant_classifications_remain_visible() {
     for (record_type, role, expected_kind) in [
         ("user", "user", "user_message"),

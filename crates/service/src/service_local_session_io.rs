@@ -91,7 +91,7 @@ impl ScalarProvenance {
     }
 }
 
-const MAX_PROVENANCE_TOKEN_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_PROVENANCE_TOKEN_BYTES: usize = 4 * 1024;
 const MAX_PROVENANCE_NESTING: usize = 128;
 
 fn is_json_whitespace(byte: u8) -> bool {

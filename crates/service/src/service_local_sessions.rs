@@ -1,5 +1,6 @@
 use super::service_local_session_io::{
     read_bounded_text, BoundedReadSpec, BoundedText, LocalSessionIoContext, LocalSessionReadLimits,
+    MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -1071,6 +1072,9 @@ fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecor
     let Some(record_type) = value.as_str() else {
         return LocalSessionRecordClassification::Deny;
     };
+    if !local_session_classification_value_is_supported(record_type) {
+        return LocalSessionRecordClassification::Deny;
+    }
     let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
     if is_hidden_local_session_record_type(record_type) || is_json_non_message_type(&normalized) {
         LocalSessionRecordClassification::Deny
@@ -1088,6 +1092,9 @@ fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecor
 }
 
 fn local_session_role_classification(role: &str) -> LocalSessionRecordClassification {
+    if !local_session_classification_value_is_supported(role) {
+        return LocalSessionRecordClassification::Deny;
+    }
     let normalized = role.to_ascii_lowercase().replace(['_', '-'], "");
     match normalized.as_str() {
         "user" | "human" | "customer" => LocalSessionRecordClassification::User,
@@ -1096,6 +1103,10 @@ fn local_session_role_classification(role: &str) -> LocalSessionRecordClassifica
         "system" | "developer" | "summary" => LocalSessionRecordClassification::Deny,
         _ => LocalSessionRecordClassification::Unknown,
     }
+}
+
+fn local_session_classification_value_is_supported(value: &str) -> bool {
+    value.len().saturating_add(2) <= MAX_PROVENANCE_TOKEN_BYTES
 }
 
 fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
@@ -2564,6 +2575,11 @@ fn collect_json_session_content_drafts(
         Value::Object(map) => {
             let timestamp = json_session_timestamp_millis(value).or(inherited_timestamp);
             let role = json_session_role(map).map(str::to_string);
+            if local_session_record_classification(map, role.as_deref())
+                == LocalSessionRecordClassification::Deny
+            {
+                return;
+            }
             let direct_kind = json_session_content_kind(map, role.as_deref());
             let direct_tool = direct_kind == Some("tool_call");
             let mut pushed_direct_tool = false;
