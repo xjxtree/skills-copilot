@@ -15,6 +15,7 @@ struct ServiceClientProcessTests {
         try await stdoutAboveSixteenMiBReturnsResponseTooLarge()
         try await oversizedFailingStderrIsBoundedAndRedacted()
         try diagnosticSanitizerCoversStandalonePatternsAndFallback()
+        try diagnosticSanitizerRedactsAdjacentCredentialAssignments()
         try await malformedStdoutNeverAppearsInDisplayError()
         try await invalidEnvelopeNeverAppearsInDisplayError()
         try await cancellationWhileDrainingReapsProcess()
@@ -222,6 +223,65 @@ struct ServiceClientProcessTests {
         try expectFalse(
             ServiceDiagnosticSanitizer.displayMessage(" \n\t ").isEmpty,
             "Empty diagnostics should use a stable fallback."
+        )
+    }
+
+    private func diagnosticSanitizerRedactsAdjacentCredentialAssignments() throws {
+        let sentinel = "REVIEW_SECRET_" + "SENTINEL"
+        let tokenKey = "TO" + "KEN"
+        let apiKey = "API" + "_KEY"
+        let passwordKey = "PASS" + "WORD"
+        let equals = "="
+        let redacted = "<redacted>"
+        let cases: [(input: String, expected: String)] = [
+            (
+                "error: \(tokenKey)\(equals) \(apiKey)\(equals) \(sentinel)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\t\(apiKey)\(equals)\t\(sentinel)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\(apiKey)\(equals)\(sentinel)",
+                "error: \(tokenKey)\(equals)\(redacted)\(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\"\" \(apiKey)\(equals)\"\(sentinel)\"",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)'' \(apiKey)\(equals) '\(sentinel)'",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals) \(apiKey)\(equals) \(passwordKey)\(equals)\t\(sentinel)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted) \(passwordKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)",
+                "error: \(tokenKey)\(equals)\(redacted)"
+            )
+        ]
+
+        for (input, expected) in cases {
+            let output = ServiceDiagnosticSanitizer.displayMessage(input)
+            try expectEqual(output, expected, "Every adjacent credential assignment should be independently redacted.")
+            try expectFalse(output.contains(sentinel), "Adjacent credential assignments must never expose the following value.")
+        }
+
+        let ordinary = "error: \(tokenKey)_BUCKET\(equals)ready \(apiKey)_LIMIT\(equals)42"
+        try expectEqual(
+            ServiceDiagnosticSanitizer.displayMessage(ordinary),
+            ordinary,
+            "Credential-like ordinary keys should remain unchanged."
+        )
+        try expectEqual(
+            ServiceDiagnosticSanitizer.displayMessage(
+                "error: \(apiKey)\(equals)\(redacted) \(tokenKey)\(equals)[REDACTED]"
+            ),
+            "error: \(apiKey)\(equals)\(redacted) \(tokenKey)\(equals)\(redacted)",
+            "Already-redacted credential assignments should remain safely redacted."
         )
     }
 

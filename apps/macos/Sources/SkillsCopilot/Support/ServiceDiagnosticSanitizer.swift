@@ -5,8 +5,9 @@ enum ServiceDiagnosticSanitizer {
 
     static func displayMessage(_ raw: String) -> String {
         var sanitized = ConfigContentRedactor.redactedForDisplay(raw)
+        // Preserve a following credential assignment for the next non-overlapping match.
         sanitized = replacing(
-            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=\s*(?:"[^"]*"|'[^']*'|[^\s]+)"#,
+            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=(?:\s*(?!(?:API_KEY|TOKEN|SECRET|PASSWORD)=)(?:"[^"]*"|'[^']*'|[^\s]+))?"#,
             in: sanitized,
             with: "$1=<redacted>"
         )
