@@ -258,6 +258,26 @@ struct ServiceClientProcessTests {
                 "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
             ),
             (
+                "error: \(tokenKey)\(equals)\"\"\(apiKey)\(equals)'\(sentinel) with spaces'",
+                "error: \(tokenKey)\(equals)\(redacted)\(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\"prefix\\\"\(realValue) with spaces\"",
+                "error: \(tokenKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)'prefix\\'\(realValue) with spaces'",
+                "error: \(tokenKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\"prefix \(realValue) with spaces",
+                "error: \(tokenKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)'prefix \(realValue) with spaces",
+                "error: \(tokenKey)\(equals)\(redacted)"
+            ),
+            (
                 "error: \(tokenKey)\(equals) \(apiKey)\(equals) \(passwordKey)\(equals)\t\(sentinel)",
                 "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted) \(passwordKey)\(equals)\(redacted)"
             ),
