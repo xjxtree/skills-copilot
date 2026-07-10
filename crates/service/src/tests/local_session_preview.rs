@@ -1327,7 +1327,16 @@ fn structural_skill_markers_do_not_count_as_invocations() {
             "role": "user",
             "id": "skill:structural-id",
             "title": "skill:structural-title",
-            "cwd": "/tmp/skill:structural-path",
+            "cwd": "skill:structural-cwd",
+            "path": "skill:structural-path",
+            "metadata": {
+                "note": "skill:structural-metadata",
+                "event": {
+                    "type": "user",
+                    "role": "user",
+                    "text": "skill:structural-metadata-event"
+                }
+            },
             "text": "accepted message without a skill invocation"
         })
         .to_string(),
@@ -1350,7 +1359,19 @@ fn structural_skill_markers_do_not_count_as_invocations() {
                 .all(|item| item.get("kind").and_then(Value::as_str) != Some("skill_call"))),
         "{result}"
     );
-    assert!(!serialized.contains("Skill: structural-"), "{serialized}");
+    assert!(
+        result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().all(|item| {
+                item.get("kind").and_then(Value::as_str) != Some("skill_call")
+                    && !item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.contains("structural-"))
+            })),
+        "{serialized}"
+    );
 }
 
 #[test]
@@ -1384,6 +1405,54 @@ fn plain_and_root_string_deny_records_do_not_surface() {
         serialized.contains("accepted plain sibling"),
         "{serialized}"
     );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/skill_call_count")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+}
+
+#[test]
+fn malformed_json_shaped_deny_records_fail_closed_without_dropping_plaintext() {
+    let result = preview_codex_session_fixture_with_extension(
+        "malformed-json-shaped-deny",
+        "log",
+        concat!(
+            "{system: MALFORMED_SYSTEM_MUST_NOT_SURFACE skill:malformed-system}\n",
+            "{developer: MALFORMED_DEVELOPER_MUST_NOT_SURFACE skill:malformed-developer}\n",
+            "[summary: MALFORMED_SUMMARY_MUST_NOT_SURFACE skill:malformed-summary]\n",
+            "{plain CURLY_PLAINTEXT_MUST_REMAIN\n",
+            "[INFO] BRACKET_PLAINTEXT_MUST_REMAIN\n",
+            "user: accepted plain sibling\n",
+        ),
+    );
+    let serialized = serde_json::to_string(&result).expect("serialize malformed deny result");
+
+    for hidden in [
+        "MALFORMED_SYSTEM_MUST_NOT_SURFACE",
+        "MALFORMED_DEVELOPER_MUST_NOT_SURFACE",
+        "MALFORMED_SUMMARY_MUST_NOT_SURFACE",
+        "malformed-system",
+        "malformed-developer",
+        "malformed-summary",
+    ] {
+        assert!(
+            !serialized.contains(hidden),
+            "surfaced {hidden}: {serialized}"
+        );
+    }
+    for visible in [
+        "CURLY_PLAINTEXT_MUST_REMAIN",
+        "BRACKET_PLAINTEXT_MUST_REMAIN",
+        "accepted plain sibling",
+    ] {
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
     assert_eq!(
         result
             .pointer("/session_rows/0/skill_call_count")
@@ -1436,6 +1505,65 @@ fn pretty_printed_primary_records_preserve_only_accepted_descendants() {
             .pointer("/session_rows/0/skill_call_count")
             .and_then(Value::as_u64),
         Some(0),
+        "{result}"
+    );
+}
+
+#[test]
+fn accepted_pretty_primary_is_one_semantic_record() {
+    let session = serde_json::to_string_pretty(&json!({
+        "type": "user",
+        "role": "user",
+        "id": "skill:pretty-structural-id",
+        "title": "skill:pretty-structural-title",
+        "cwd": "skill:pretty-structural-cwd",
+        "path": "skill:pretty-structural-path",
+        "metadata": {
+            "note": "skill:pretty-structural-metadata"
+        },
+        "text": "accepted pretty user skill:pretty-real-skill then skill:pretty-real-skill"
+    }))
+    .expect("serialize accepted pretty primary fixture");
+    let result =
+        preview_codex_session_fixture_with_extension("pretty-primary-accepted", "json", &session);
+    let row = result
+        .pointer("/session_rows/0")
+        .expect("accepted pretty primary row");
+    let items = row
+        .get("content_items")
+        .and_then(Value::as_array)
+        .expect("accepted pretty content items");
+    let skill_items = items
+        .iter()
+        .filter(|item| item.get("kind").and_then(Value::as_str) == Some("skill_call"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        row.get("user_message_count").and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        row.get("total_message_count").and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        row.get("skill_call_count").and_then(Value::as_u64),
+        Some(2),
+        "{result}"
+    );
+    assert_eq!(skill_items.len(), 1, "{result}");
+    assert_eq!(
+        skill_items[0].get("title").and_then(Value::as_str),
+        Some("Skill: pretty-real-skill"),
+        "{result}"
+    );
+    assert!(
+        skill_items[0]
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("2 calls")),
         "{result}"
     );
 }
@@ -1539,6 +1667,11 @@ fn malformed_or_deep_opencode_sidecars_fail_closed() {
     )
     .expect("write visible sidecar");
     fs::write(
+        message_root.join("04-malformed-denied.json"),
+        "{developer: MALFORMED_SIDECAR_DENY_MUST_NOT_SURFACE skill:malformed-sidecar-denied}\n",
+    )
+    .expect("write malformed denied sidecar");
+    fs::write(
         part_root.join("01-pretty-denied-part.json"),
         serde_json::to_string_pretty(&json!({
             "id": "part_pretty_denied",
@@ -1558,6 +1691,11 @@ fn malformed_or_deep_opencode_sidecars_fail_closed() {
         .to_string(),
     )
     .expect("write visible part");
+    fs::write(
+        part_root.join("03-malformed-denied-part.json"),
+        "{summary: MALFORMED_PART_DENY_MUST_NOT_SURFACE skill:malformed-part-denied}\n",
+    )
+    .expect("write malformed denied part");
 
     let host = ServiceHost {
         app_data_dir: app_data_dir.clone(),
@@ -1593,9 +1731,13 @@ fn malformed_or_deep_opencode_sidecars_fail_closed() {
         "PRETTY_SIDECAR_DENY_MUST_NOT_SURFACE",
         "DEEP_SIDECAR_DENY_MUST_NOT_SURFACE",
         "PRETTY_PART_DENY_MUST_NOT_SURFACE",
+        "MALFORMED_SIDECAR_DENY_MUST_NOT_SURFACE",
+        "MALFORMED_PART_DENY_MUST_NOT_SURFACE",
         "pretty-sidecar-denied",
         "deep-sidecar-denied",
         "pretty-part-denied",
+        "malformed-sidecar-denied",
+        "malformed-part-denied",
     ] {
         assert!(
             !serialized.contains(hidden),
@@ -1612,6 +1754,140 @@ fn malformed_or_deep_opencode_sidecars_fail_closed() {
     assert!(
         !app_data_dir.exists(),
         "sidecar preview must remain read-only"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+}
+
+#[test]
+fn accepted_pretty_opencode_message_and_part_survive_after_enrichment() {
+    let unique = unique_suffix();
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-pretty-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-pretty-home-{}-{unique}",
+        std::process::id(),
+    ));
+    let storage_root = user_home.join(".local/share/opencode/storage");
+    let session_root = storage_root.join("session");
+    let message_root = storage_root.join("message/ses_pretty_accepted");
+    let visible_part_root = storage_root.join("part/msg_pretty_visible");
+    let denied_part_root = storage_root.join("part/msg_pretty_denied");
+    fs::create_dir_all(&session_root).expect("create pretty opencode session root");
+    fs::create_dir_all(&message_root).expect("create pretty opencode message root");
+    fs::create_dir_all(&visible_part_root).expect("create pretty opencode part root");
+    fs::create_dir_all(&denied_part_root).expect("create denied opencode part root");
+    fs::write(
+        session_root.join("ses_pretty_accepted.json"),
+        json!({ "id": "ses_pretty_accepted", "title": "pretty accepted sidecars" }).to_string(),
+    )
+    .expect("write pretty opencode session");
+    fs::write(
+        message_root.join("01-pretty-visible.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "msg_pretty_visible",
+            "role": "assistant",
+            "content": "PRETTY_ACCEPTED_MESSAGE_MUST_SURVIVE skill:pretty-sidecar-skill"
+        }))
+        .expect("serialize pretty accepted message"),
+    )
+    .expect("write pretty accepted message");
+    fs::write(
+        visible_part_root.join("01-pretty-visible-part.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "part_pretty_visible",
+            "role": "tool",
+            "content": "PRETTY_ACCEPTED_PART_MUST_SURVIVE skill:pretty-sidecar-skill"
+        }))
+        .expect("serialize pretty accepted part"),
+    )
+    .expect("write pretty accepted part");
+    fs::write(
+        message_root.join("02-denied-parent.json"),
+        json!({
+            "id": "msg_pretty_denied",
+            "role": "developer",
+            "content": "DENIED_PARENT_MUST_NOT_SURFACE skill:denied-parent"
+        })
+        .to_string(),
+    )
+    .expect("write denied parent message");
+    fs::write(
+        denied_part_root.join("01-child.json"),
+        json!({
+            "id": "part_denied_parent_child",
+            "role": "assistant",
+            "content": "DENIED_PARENT_CHILD_MUST_NOT_SURFACE skill:denied-parent-child"
+        })
+        .to_string(),
+    )
+    .expect("write denied parent child part");
+
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let response = host.handle(ServiceRequest {
+        id: Some("session-preview-opencode-pretty-accepted".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "opencode",
+            "limit": 10,
+            "max_excerpt_chars": 4_000
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("pretty opencode preview result");
+    let serialized = serde_json::to_string(&result).expect("serialize pretty sidecar result");
+    let row = result
+        .pointer("/session_rows/0")
+        .expect("pretty opencode session row");
+
+    for visible in [
+        "PRETTY_ACCEPTED_MESSAGE_MUST_SURVIVE",
+        "PRETTY_ACCEPTED_PART_MUST_SURVIVE",
+    ] {
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
+    for hidden in [
+        "DENIED_PARENT_MUST_NOT_SURFACE",
+        "DENIED_PARENT_CHILD_MUST_NOT_SURFACE",
+        "denied-parent-child",
+    ] {
+        assert!(
+            !serialized.contains(hidden),
+            "surfaced {hidden}: {serialized}"
+        );
+    }
+    assert_eq!(
+        row.get("total_message_count").and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        row.get("tool_call_count").and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        row.get("skill_call_count").and_then(Value::as_u64),
+        Some(2),
+        "{result}"
+    );
+    assert!(
+        !app_data_dir.exists(),
+        "pretty sidecar preview must remain read-only"
     );
 
     let _ = fs::remove_dir_all(app_data_dir);
@@ -2771,6 +3047,16 @@ fn local_session_preview_counts_real_tool_payload_once() {
                 "content": { "status": "REAL_TOOL_ROLE_CONTENT" }
             }),
             "REAL_TOOL_ROLE_CONTENT",
+        ),
+        (
+            "real-tool-path-argument",
+            json!({
+                "type": "tool_call",
+                "role": "assistant",
+                "name": "read_file",
+                "arguments": { "path": "REAL_TOOL_PATH_ARGUMENT" }
+            }),
+            "REAL_TOOL_PATH_ARGUMENT",
         ),
         (
             "real-nested-tool-error",

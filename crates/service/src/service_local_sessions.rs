@@ -1720,11 +1720,12 @@ fn looks_like_incomplete_json_record(text: &str) -> bool {
 
 fn plain_local_session_record_is_denied(text: &str) -> bool {
     let normalized = text.trim().to_ascii_lowercase();
-    if let Some(delimiter) = normalized
+    let label_candidate = normalized.trim_start_matches(['{', '[']).trim_start();
+    if let Some(delimiter) = label_candidate
         .char_indices()
         .find_map(|(index, ch)| matches!(ch, ':' | '：').then_some(index))
     {
-        let label = normalized[..delimiter].trim();
+        let label = label_candidate[..delimiter].trim();
         if matches!(
             label,
             "system"
@@ -1932,19 +1933,14 @@ fn accepted_local_session_content(content: &str) -> String {
         .strip_prefix('\u{feff}')
         .unwrap_or_else(|| content.trim())
         .trim();
-    if let Ok((mut value, classification_changed)) =
+    if let Ok((mut value, _)) =
         parse_local_session_json_with_raw_classification_bounds(complete_document)
     {
-        let (retained, tree_changed) = retain_accepted_local_session_value(&mut value);
+        let (retained, _) = retain_accepted_local_session_value(&mut value);
         if !retained {
             return String::new();
         }
-        let mut accepted = String::new();
-        if classification_changed || tree_changed {
-            accepted.push_str(&value.to_string());
-        } else {
-            accepted.push_str(complete_document);
-        }
+        let mut accepted = value.to_string();
         accepted.push('\n');
         return accepted;
     }
@@ -3062,7 +3058,11 @@ fn collect_json_session_content_drafts(
             }
 
             for (key, nested) in map {
-                if is_json_session_structure_key(key)
+                if matches!(key.as_str(), "metadata" | "meta") {
+                    collect_json_metadata_tool_drafts(nested, timestamp, drafts);
+                    continue;
+                }
+                if is_json_session_content_structure_key(key)
                     || matches!(
                         key.as_str(),
                         "content"
@@ -3094,11 +3094,64 @@ fn collect_json_session_content_drafts(
                 {
                     continue;
                 }
-                collect_json_session_content_drafts(nested, timestamp, drafts);
+                collect_nested_json_session_content_drafts(nested, timestamp, drafts);
             }
         }
         Value::String(text) => {
             collect_text_session_content_drafts(text, inherited_timestamp, drafts)
+        }
+        _ => {}
+    }
+}
+
+fn collect_nested_json_session_content_drafts(
+    value: &Value,
+    inherited_timestamp: Option<i64>,
+    drafts: &mut Vec<LocalSessionContentDraft>,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_nested_json_session_content_drafts(item, inherited_timestamp, drafts);
+            }
+        }
+        Value::Object(_) => collect_json_session_content_drafts(value, inherited_timestamp, drafts),
+        _ => {}
+    }
+}
+
+fn is_json_session_content_structure_key(key: &str) -> bool {
+    is_json_session_structure_key(key)
+        || matches!(
+            key,
+            "path" | "file_path" | "filePath" | "project_root" | "projectRoot"
+        )
+}
+
+fn collect_json_metadata_tool_drafts(
+    value: &Value,
+    inherited_timestamp: Option<i64>,
+    drafts: &mut Vec<LocalSessionContentDraft>,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_json_metadata_tool_drafts(item, inherited_timestamp, drafts);
+            }
+        }
+        Value::Object(map) => {
+            if local_session_object_is_denied(map) {
+                return;
+            }
+            if local_session_record_classification(map, json_session_role(map))
+                == LocalSessionRecordClassification::Tool
+            {
+                collect_json_session_content_drafts(value, inherited_timestamp, drafts);
+                return;
+            }
+            for nested in map.values() {
+                collect_json_metadata_tool_drafts(nested, inherited_timestamp, drafts);
+            }
         }
         _ => {}
     }
