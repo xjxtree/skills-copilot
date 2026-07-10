@@ -18,6 +18,7 @@ struct ServiceClientProcessTests {
         try diagnosticSanitizerRedactsAdjacentCredentialAssignments()
         try diagnosticSanitizerKeepsLineBoundaryAfterEscapedUnterminatedQuote()
         try diagnosticSanitizerRedactsEscapedOuterQuotedValues()
+        try diagnosticSanitizerPreservesEvenParityJSONTerminators()
         try await malformedStdoutNeverAppearsInDisplayError()
         try await invalidEnvelopeNeverAppearsInDisplayError()
         try await cancellationWhileDrainingReapsProcess()
@@ -412,6 +413,36 @@ struct ServiceClientProcessTests {
                     "An escaped unterminated \(quote) value must remain redacted."
                 )
             }
+        }
+    }
+
+    private func diagnosticSanitizerPreservesEvenParityJSONTerminators() throws {
+        let tokenKey = "TO" + "KEN"
+        let redacted = "<redacted>"
+
+        for slashCount in [2, 4] {
+            let slashRun = String(repeating: "\\", count: slashCount)
+            let terminalJSON = "{\"message\":\"\(tokenKey)=\(slashRun)\"}"
+            try expectFalse(
+                (try? JSONSerialization.jsonObject(with: Data(terminalJSON.utf8))) == nil,
+                "Even parity \(slashCount) terminal JSON fixture must remain valid."
+            )
+            try expectEqual(
+                ServiceDiagnosticSanitizer.displayMessage(terminalJSON),
+                "{\"message\":\"\(tokenKey)=\(redacted)\"}",
+                "Even parity \(slashCount) must preserve a terminal JSON string delimiter."
+            )
+
+            let jsonWithSafeFields = "{\"message\":\"\(tokenKey)=\(slashRun)\",\"code\":\"E_CONN\",\"hint\":\"retry safely\"}"
+            try expectFalse(
+                (try? JSONSerialization.jsonObject(with: Data(jsonWithSafeFields.utf8))) == nil,
+                "Even parity \(slashCount) JSON fixture with safe fields must remain valid."
+            )
+            try expectEqual(
+                ServiceDiagnosticSanitizer.displayMessage(jsonWithSafeFields),
+                "{\"message\":\"\(tokenKey)=\(redacted)\",\"code\":\"E_CONN\",\"hint\":\"retry safely\"}",
+                "Even parity \(slashCount) must preserve safe JSON fields after the credential."
+            )
         }
     }
 

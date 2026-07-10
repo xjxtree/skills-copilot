@@ -52,6 +52,7 @@ enum ServiceDiagnosticSanitizer {
 
     private static func redactingCredentialAssignments(in value: String) -> String {
         let bytes = Array(value.utf8)
+        let jsonStringClosingQuotes = jsonStringClosingQuoteMap(in: bytes)
         var output: [UInt8] = []
         output.reserveCapacity(bytes.count)
         var copiedThrough = 0
@@ -61,7 +62,11 @@ enum ServiceDiagnosticSanitizer {
             output.append(contentsOf: bytes[copiedThrough..<assignment.valueStart])
             output.append(contentsOf: redactedCredentialValue)
 
-            let valueEnd = credentialValueEnd(in: bytes, afterEquals: assignment.valueStart)
+            let valueEnd = credentialValueEnd(
+                in: bytes,
+                afterEquals: assignment.valueStart,
+                jsonStringClosingQuotes: jsonStringClosingQuotes
+            )
             copiedThrough = valueEnd
             searchStart = valueEnd
         }
@@ -107,7 +112,11 @@ enum ServiceDiagnosticSanitizer {
         return nil
     }
 
-    private static func credentialValueEnd(in bytes: [UInt8], afterEquals: Int) -> Int {
+    private static func credentialValueEnd(
+        in bytes: [UInt8],
+        afterEquals: Int,
+        jsonStringClosingQuotes: [Bool]
+    ) -> Int {
         var tokenStart = afterEquals
         while tokenStart < bytes.count, isASCIIWhitespace(bytes[tokenStart]) {
             tokenStart += 1
@@ -124,6 +133,13 @@ enum ServiceDiagnosticSanitizer {
             tokenStart: tokenStart
         ) {
             return escapedQuotedValueEnd
+        }
+        if let jsonValueEnd = evenParityJSONValueEnd(
+            in: bytes,
+            tokenStart: tokenStart,
+            jsonStringClosingQuotes: jsonStringClosingQuotes
+        ) {
+            return jsonValueEnd
         }
 
         var cursor = tokenStart
@@ -176,7 +192,7 @@ enum ServiceDiagnosticSanitizer {
             openingQuoteIndex += 1
         }
         let openingSlashCount = openingQuoteIndex - tokenStart
-        guard openingSlashCount > 0,
+        guard openingSlashCount % 2 == 1,
               openingQuoteIndex < bytes.count,
               bytes[openingQuoteIndex] == 0x22 || bytes[openingQuoteIndex] == 0x27 else {
             return nil
@@ -205,6 +221,69 @@ enum ServiceDiagnosticSanitizer {
         return cursor
     }
 
+    private static func evenParityJSONValueEnd(
+        in bytes: [UInt8],
+        tokenStart: Int,
+        jsonStringClosingQuotes: [Bool]
+    ) -> Int? {
+        var quoteIndex = tokenStart
+        while quoteIndex < bytes.count, bytes[quoteIndex] == 0x5C {
+            quoteIndex += 1
+        }
+        let slashCount = quoteIndex - tokenStart
+        guard slashCount > 0,
+              slashCount % 2 == 0,
+              quoteIndex < bytes.count,
+              bytes[quoteIndex] == 0x22,
+              jsonStringClosingQuotes[quoteIndex],
+              jsonValueDelimiterFollowsQuote(in: bytes, quoteIndex: quoteIndex) else {
+            return nil
+        }
+        return quoteIndex
+    }
+
+    private static func jsonStringClosingQuoteMap(in bytes: [UInt8]) -> [Bool] {
+        var closingQuotes = Array(repeating: false, count: bytes.count)
+        var isInsideString = false
+        var slashCount = 0
+
+        for index in bytes.indices {
+            let byte = bytes[index]
+            if isLineBreak(byte) {
+                isInsideString = false
+                slashCount = 0
+                continue
+            }
+            if byte == 0x5C {
+                slashCount += 1
+                continue
+            }
+            if byte == 0x22, slashCount % 2 == 0 {
+                if isInsideString {
+                    closingQuotes[index] = true
+                }
+                isInsideString.toggle()
+            }
+            slashCount = 0
+        }
+
+        return closingQuotes
+    }
+
+    private static func jsonValueDelimiterFollowsQuote(
+        in bytes: [UInt8],
+        quoteIndex: Int
+    ) -> Bool {
+        var cursor = quoteIndex + 1
+        while cursor < bytes.count, isJSONWhitespace(bytes[cursor]) {
+            cursor += 1
+        }
+        guard cursor < bytes.count else { return true }
+        return bytes[cursor] == 0x2C
+            || bytes[cursor] == 0x5D
+            || bytes[cursor] == 0x7D
+    }
+
     private static func asciiUppercased(_ byte: UInt8) -> UInt8 {
         if byte >= 0x61, byte <= 0x7A {
             return byte - 32
@@ -230,6 +309,10 @@ enum ServiceDiagnosticSanitizer {
 
     private static func isLineBreak(_ byte: UInt8) -> Bool {
         byte == 0x0A || byte == 0x0D
+    }
+
+    private static func isJSONWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || isLineBreak(byte)
     }
 
     private static func normalizingConfigCredentialPlaceholders(in value: String) -> String {
