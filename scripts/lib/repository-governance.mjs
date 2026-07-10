@@ -228,10 +228,12 @@ export function parseGateMembers(command) {
     .map((term) => term.trim())
     .map((term) => {
       const match = term.match(
-        /^pnpm\s+(?:run\s+)?([^\s;&]+)(?:\s+.*)?$/,
+        /^pnpm[ \t]+(?:run[ \t]+)?([A-Za-z0-9@][A-Za-z0-9._:@/-]*)$/,
       );
       if (!match) {
-        throw new Error(`gate term must be pnpm <script>: ${term}`);
+        throw new Error(
+          `gate term must be exactly pnpm [run] <script>: ${term}`,
+        );
       }
       return match[1];
     });
