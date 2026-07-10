@@ -1041,6 +1041,10 @@ const customChecks = [
       && /skillManagerInstallSkillName/.test(files.store + "\n" + files.skillManager)
       && /skillManagerRemoveSkillName/.test(files.store + "\n" + files.skillManager)
       && /clearSkillManagerWorkflowPreviews/.test(files.store + "\n" + files.skillManager + "\n" + files.sidebar)
+      && /store\.skillManagerMutationConfirmation/.test(files.skillManager)
+      && /confirmation\.inputs\.agents\.map\(DisplayText\.agent\)/.test(files.skillManager)
+      && /\.accessibilityValue\(previewMatchAccessibilityValue\(matchesCurrentInputs\)\)/.test(files.skillManager)
+      && !/skillManagerMutationPreview/.test(files.store + "\n" + files.skillManager)
       && /private var canSearchSkillManager:[\s\S]*?skillManagerSearchQuery\.trimmingCharacters\(in:\s*\.whitespacesAndNewlines\)[\s\S]*?!store\.isSearchingSkillManager[\s\S]*?!externalMutationDisabled/.test(files.skillManager)
       && /\.disabled\(!canSearchSkillManager\)/.test(files.skillManager)
       && !/TextField\([\s\S]*?\$store\.skillManagerSkillName/.test(files.skillManager),

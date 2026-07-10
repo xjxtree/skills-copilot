@@ -1,0 +1,480 @@
+import Foundation
+@testable import SkillsCopilot
+
+@MainActor
+struct SkillManagerRequestGenerationTests {
+    func run() async throws {
+        try canonicalInputsNormalizeIdentity()
+        try await newerSearchWinsWhenOlderResponseFinishesLast()
+        try await staleSearchErrorDoesNotReplaceNewSuccess()
+        try await installedListIsScopedToCapturedAgentsAndScope()
+        try await inputChangeInvalidatesMutationPreview()
+        try await localCreateInputChangeIgnoresOldPreview()
+        try await localDeleteSelectionChangeIgnoresOldPreview()
+        try await applyUsesExactPreviewInputsAndToken()
+        try await oldCompletionDoesNotClearCurrentLoadingState()
+    }
+
+    private func canonicalInputsNormalizeIdentity() throws {
+        let inputs = SkillManagerMutationInputs(
+            kind: .install,
+            source: "  owner/repo  ",
+            skills: [" beta ", "alpha", "alpha", ""],
+            agents: ["codex", "claude-code", "codex"],
+            scope: .project,
+            distribution: .symlink,
+            networkAllowed: false
+        )
+
+        try expectEqual(inputs.source, "owner/repo", "Mutation source should be trimmed once when captured.")
+        try expectEqual(inputs.skills, ["alpha", "beta"], "Mutation skills should be trimmed, unique, and sorted.")
+        try expectEqual(inputs.agents, ["claude-code", "codex"], "Mutation agents should be unique and sorted.")
+    }
+
+    private func newerSearchWinsWhenOlderResponseFinishesLast() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("search:old")
+        await runner.suspend("search:new")
+        let store = makeStore(runner)
+
+        store.skillManagerSearchQuery = "old"
+        let old = Task { await store.searchSkillManager() }
+        try await waitForPending("search:old", runner: runner)
+
+        store.skillManagerSearchQuery = "new"
+        let new = Task { await store.searchSkillManager() }
+        try await waitForPending("search:new", runner: runner)
+
+        await runner.resumeSuccess("search:new")
+        await new.value
+        await runner.resumeSuccess("search:old")
+        await old.value
+
+        try expectEqual(
+            store.skillManagerSearchResult?.results.first?.name,
+            "new",
+            "An older search completion must not replace the newest result."
+        )
+        let calls = await runner.recordedCalls(method: "skillManager.search")
+        try expectEqual(
+            calls.map(\.owner),
+            [nil, nil] as [String?],
+            "Search requests should canonicalize a blank owner before constructing their request keys."
+        )
+    }
+
+    private func staleSearchErrorDoesNotReplaceNewSuccess() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("search:stale-error")
+        await runner.suspend("search:current")
+        let store = makeStore(runner)
+
+        store.skillManagerSearchQuery = "stale-error"
+        let stale = Task { await store.searchSkillManager() }
+        try await waitForPending("search:stale-error", runner: runner)
+        store.skillManagerSearchQuery = "current"
+        let current = Task { await store.searchSkillManager() }
+        try await waitForPending("search:current", runner: runner)
+
+        await runner.resumeSuccess("search:current")
+        await current.value
+        await runner.resumeServiceError("search:stale-error")
+        await stale.value
+
+        try expectEqual(store.skillManagerSearchResult?.results.first?.name, "current", "Current search success should remain visible.")
+        try expectNil(store.skillManagerErrorMessage, "A stale search error must not replace current success feedback.")
+    }
+
+    private func installedListIsScopedToCapturedAgentsAndScope() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("installed:project:codex")
+        await runner.suspend("installed:global:pi")
+        let store = makeStore(runner)
+        store.skillManagerSelectedAgentIDs = ["codex"]
+        store.skillManagerScope = .project
+
+        let old = Task { await store.listSkillManagerInstalled() }
+        try await waitForPending("installed:project:codex", runner: runner)
+        store.skillManagerSelectedAgentIDs = ["pi"]
+        store.skillManagerScope = .global
+        let current = Task { await store.listSkillManagerInstalled() }
+        try await waitForPending("installed:global:pi", runner: runner)
+
+        await runner.resumeSuccess("installed:global:pi")
+        await current.value
+        await runner.resumeSuccess("installed:project:codex")
+        await old.value
+
+        try expectEqual(store.skillManagerInstalled?.installed.first?.name, "global:pi", "Installed results should match the current captured request.")
+        let calls = await runner.recordedCalls(method: "skillManager.listInstalled")
+        try expectEqual(calls.map(\.scope), ["project", "global"], "Each installed request should retain its captured scope.")
+        try expectEqual(calls.map(\.agents), [["codex"], ["pi"]], "Each installed request should retain its captured agents.")
+    }
+
+    private func inputChangeInvalidatesMutationPreview() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerSource = "owner/repo"
+        store.skillManagerInstallSkillName = "alpha"
+        store.skillManagerSelectedAgentIDs = ["codex"]
+
+        await store.previewSkillManagerInstall()
+        try expectEqual(store.skillManagerMutationConfirmation?.inputs.source, "owner/repo", "Preview should capture canonical mutation inputs.")
+
+        store.skillManagerSource = "other/repo"
+        try expectNil(store.skillManagerMutationConfirmation, "Changing mutation input should invalidate confirmation.")
+        await store.applySkillManagerInstall()
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.applyInstall").count,
+            0,
+            "An invalidated mutation preview must not be applied."
+        )
+    }
+
+    private func localCreateInputChangeIgnoresOldPreview() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("local-create:old-name")
+        let store = makeStore(runner)
+        store.skillManagerLocalSkillName = "old-name"
+
+        let old = Task { await store.previewSkillManagerLocalCreate() }
+        try await waitForPending("local-create:old-name", runner: runner)
+        store.skillManagerLocalSkillName = "new-name"
+        await runner.resumeSuccess("local-create:old-name")
+        await old.value
+
+        try expectNil(store.skillManagerLocalCreateConfirmation, "An old local-create response should be ignored after name changes.")
+        try expectEqual(store.isPreviewingSkillManagerLocalCreate, false, "A stale local-create completion should not leave loading active.")
+    }
+
+    private func localDeleteSelectionChangeIgnoresOldPreview() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("local-delete:local-a")
+        await runner.suspend("local-delete:local-b")
+        let store = makeStore(runner)
+
+        let old = Task { await store.previewSkillManagerLocalDelete(skill: localSkill(id: "local-a")) }
+        try await waitForPending("local-delete:local-a", runner: runner)
+        let current = Task { await store.previewSkillManagerLocalDelete(skill: localSkill(id: "local-b")) }
+        try await waitForPending("local-delete:local-b", runner: runner)
+
+        await runner.resumeSuccess("local-delete:local-b")
+        await current.value
+        await runner.resumeSuccess("local-delete:local-a")
+        await old.value
+
+        try expectEqual(store.skillManagerLocalDeleteConfirmation?.instanceID, "local-b", "Only the newest local-delete selection should remain confirmable.")
+    }
+
+    private func applyUsesExactPreviewInputsAndToken() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerSource = " owner/repo "
+        store.skillManagerInstallSkillName = "beta, alpha, alpha"
+        store.skillManagerSelectedAgentIDs = ["codex", "claude-code"]
+        store.skillManagerScope = .project
+        store.skillManagerDistribution = .symlink
+        store.skillManagerNetworkAllowed = false
+
+        await store.previewSkillManagerInstall()
+        guard let confirmation = store.skillManagerMutationConfirmation else {
+            throw NativeModelTestFailure(description: "Install preview should create an immutable confirmation.")
+        }
+        store.skillManagerSearchQuery = "unrelated live edit"
+        store.skillManagerOwner = "unrelated-owner"
+        await store.applySkillManagerInstall()
+
+        guard let apply = await runner.recordedCalls(method: "skillManager.applyInstall").last else {
+            throw NativeModelTestFailure(description: "Install apply should reach the service.")
+        }
+        try expectEqual(apply.source, confirmation.inputs.source, "Apply should reuse the preview source.")
+        try expectEqual(apply.skills, confirmation.inputs.skills, "Apply should reuse canonical preview skills.")
+        try expectEqual(apply.agents, confirmation.inputs.agents, "Apply should reuse canonical preview agents.")
+        try expectEqual(apply.scope, confirmation.inputs.scope.rawValue, "Apply should reuse preview scope.")
+        try expectEqual(apply.distribution, nil, "Symlink distribution should preserve the service's omitted wire value.")
+        try expectEqual(apply.networkAllowed, confirmation.inputs.networkAllowed, "Apply should reuse preview network posture.")
+        try expectEqual(apply.previewToken, confirmation.previewToken, "Apply should reuse the exact preview token.")
+        try expectEqual(apply.confirmed, true, "Apply should remain explicitly confirmed.")
+    }
+
+    private func oldCompletionDoesNotClearCurrentLoadingState() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("search:first")
+        await runner.suspend("search:second")
+        let store = makeStore(runner)
+
+        store.skillManagerSearchQuery = "first"
+        let first = Task { await store.searchSkillManager() }
+        try await waitForPending("search:first", runner: runner)
+        store.skillManagerSearchQuery = "second"
+        let second = Task { await store.searchSkillManager() }
+        try await waitForPending("search:second", runner: runner)
+
+        await runner.resumeSuccess("search:first")
+        await first.value
+        try expectEqual(store.isSearchingSkillManager, true, "An old completion must not clear the current request's loading state.")
+        await runner.resumeSuccess("search:second")
+        await second.value
+        try expectEqual(store.isSearchingSkillManager, false, "The current completion should clear its own loading state.")
+    }
+
+    private func makeStore(_ runner: SkillManagerGenerationServiceRunner) -> SkillStore {
+        SkillStore(
+            service: ServiceClient(
+                processRunner: runner,
+                serviceURL: URL(fileURLWithPath: "/tmp/fake-skill-manager-service")
+            )
+        )
+    }
+
+    private func localSkill(id: String) -> SkillRecord {
+        SkillRecord(
+            id: id,
+            agent: "tool-global",
+            scope: "tool-global",
+            path: "/tmp/fixture/\(id)/SKILL.md",
+            displayPath: "Tool Pool/\(id)/SKILL.md",
+            definitionId: "tool:\(id)",
+            name: id,
+            state: "loaded",
+            enabled: true
+        )
+    }
+
+    private func waitForPending(
+        _ label: String,
+        runner: SkillManagerGenerationServiceRunner,
+        timeout: TimeInterval = 2
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await runner.hasPending(label)) {
+            if Date() > deadline {
+                throw NativeModelTestFailure(description: "Timed out waiting for \(label).")
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+}
+
+private struct RecordedSkillManagerCall: Sendable, Equatable {
+    let method: String
+    let query: String?
+    let owner: String?
+    let source: String?
+    let skills: [String]
+    let agents: [String]
+    let scope: String?
+    let distribution: String?
+    let networkAllowed: Bool
+    let confirmed: Bool
+    let previewToken: String?
+    let name: String?
+    let instanceID: String?
+}
+
+private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
+    private struct PendingRequest {
+        let call: RecordedSkillManagerCall
+        let continuation: CheckedContinuation<Data, Error>
+    }
+
+    private var calls: [RecordedSkillManagerCall] = []
+    private var suspendedLabels: Set<String> = []
+    private var pending: [String: PendingRequest] = [:]
+
+    func suspend(_ label: String) {
+        suspendedLabels.insert(label)
+    }
+
+    func hasPending(_ label: String) -> Bool {
+        pending[label] != nil
+    }
+
+    func resumeSuccess(_ label: String) {
+        guard let request = pending.removeValue(forKey: label) else { return }
+        request.continuation.resume(returning: Self.response(for: request.call))
+    }
+
+    func resumeServiceError(_ label: String) {
+        guard let request = pending.removeValue(forKey: label) else { return }
+        request.continuation.resume(returning: Self.serviceErrorResponse)
+    }
+
+    func recordedCalls(method: String) -> [RecordedSkillManagerCall] {
+        calls.filter { $0.method == method }
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let call = try Self.decodeCall(input)
+        calls.append(call)
+        let label = Self.label(for: call)
+        if suspendedLabels.contains(label) {
+            return try await withCheckedThrowingContinuation { continuation in
+                pending[label] = PendingRequest(call: call, continuation: continuation)
+            }
+        }
+        return Self.response(for: call)
+    }
+
+    private static func decodeCall(_ data: Data) throws -> RecordedSkillManagerCall {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let method = object["method"] as? String,
+              let params = object["params"] as? [String: Any] else {
+            throw NativeModelTestFailure(description: "Skill Manager test runner received malformed JSON.")
+        }
+        return RecordedSkillManagerCall(
+            method: method,
+            query: params["query"] as? String,
+            owner: params["owner"] as? String,
+            source: params["source"] as? String,
+            skills: params["skills"] as? [String] ?? ((params["skill"] as? String).map { [$0] } ?? []),
+            agents: params["agents"] as? [String] ?? [],
+            scope: params["scope"] as? String,
+            distribution: params["distribution"] as? String,
+            networkAllowed: params["network_allowed"] as? Bool ?? false,
+            confirmed: params["confirmed"] as? Bool ?? false,
+            previewToken: params["preview_token"] as? String,
+            name: params["name"] as? String,
+            instanceID: params["instance_id"] as? String
+        )
+    }
+
+    private static func label(for call: RecordedSkillManagerCall) -> String {
+        switch call.method {
+        case "skillManager.search":
+            return "search:\(call.query ?? "")"
+        case "skillManager.listInstalled":
+            return "installed:\(call.scope ?? ""):\(call.agents.joined(separator: ","))"
+        case "skillManager.previewInstall":
+            return "mutation:install:\(call.source ?? "")"
+        case "skillManager.previewLocalCreate":
+            return "local-create:\(call.name ?? "")"
+        case "skillManager.deleteLocal" where !call.confirmed:
+            return "local-delete:\(call.instanceID ?? "")"
+        default:
+            return call.method
+        }
+    }
+
+    private static func response(for call: RecordedSkillManagerCall) -> Data {
+        let result: Any
+        switch call.method {
+        case "skillManager.search":
+            let query = call.query ?? ""
+            result = [
+                "preview": preview(operation: "search", token: "search:\(query)", source: nil, skills: []),
+                "output": NSNull(),
+                "results": [["name": query, "source": "fixture/\(query)", "description": "fixture", "raw": [:]]]
+            ]
+        case "skillManager.listInstalled":
+            let name = "\(call.scope ?? "none"):\(call.agents.joined(separator: ","))"
+            result = [
+                "preview": preview(operation: "listInstalled", token: "installed:\(name)", source: nil, skills: []),
+                "output": output,
+                "installed": [["name": name, "source": "fixture", "agents": call.agents, "scope": call.scope ?? "", "path": "/tmp/fixture", "raw": [:]]]
+            ]
+        case "skillManager.previewInstall", "skillManager.applyInstall":
+            result = mutationResponse(call: call, operation: "install")
+        case "skillManager.previewRemove", "skillManager.applyRemove":
+            result = mutationResponse(call: call, operation: "remove")
+        case "skillManager.previewUpdate", "skillManager.applyUpdate":
+            result = mutationResponse(call: call, operation: "update")
+        case "skillManager.previewLocalCreate", "skillManager.applyLocalCreate":
+            let name = call.name ?? ""
+            result = [
+                "preview": preview(operation: "localCreate", token: "local-create:\(name)", source: nil, skills: [name]),
+                "output": NSNull(),
+                "imported": NSNull(),
+                "instance_id": "local:\(name)",
+                "source_path": "/tmp/fixture/\(name)",
+                "applied": call.confirmed
+            ]
+        case "skillManager.deleteLocal":
+            let instanceID = call.instanceID ?? ""
+            result = [
+                "instance_id": instanceID,
+                "skill_name": instanceID,
+                "path": "/tmp/fixture/\(instanceID)",
+                "app_owned": true,
+                "physical_delete_allowed": true,
+                "blocked_by_references": [],
+                "confirmed": call.confirmed,
+                "deleted": call.confirmed,
+                "summary": "fixture local delete"
+            ]
+        case "app.stateSnapshot":
+            result = [
+                "status": [
+                    "protocol_version": 2,
+                    "version": "test",
+                    "app_data_dir": "/tmp/app-data",
+                    "catalog_path": "/tmp/catalog",
+                    "user_home": "/tmp/home",
+                    "supported_methods": []
+                ],
+                "skills": [],
+                "findings": [],
+                "conflicts": [],
+                "snapshots": []
+            ]
+        default:
+            return serviceErrorResponse
+        }
+        return envelope(result: result)
+    }
+
+    private static func mutationResponse(call: RecordedSkillManagerCall, operation: String) -> [String: Any] {
+        let token = call.confirmed ? (call.previewToken ?? "missing-token") : "preview:\(operation):\(call.source ?? call.skills.joined(separator: ","))"
+        return [
+            "preview": preview(operation: operation, token: token, source: call.source, skills: call.skills),
+            "output": NSNull(),
+            "applied": call.confirmed,
+            "scanned_count": 0,
+            "updated_skills": []
+        ]
+    }
+
+    private static func preview(
+        operation: String,
+        token: String,
+        source: String?,
+        skills: [String]
+    ) -> [String: Any] {
+        [
+            "tool_id": "npx-skills",
+            "operation": operation,
+            "command": ["npx", "skills", operation],
+            "cwd": "/tmp/project",
+            "env": [],
+            "requires_confirmation": ["install", "remove", "update", "localCreate"].contains(operation),
+            "confirmed": false,
+            "network_required": ["search", "install", "update"].contains(operation),
+            "network_allowed": true,
+            "will_run": false,
+            "preview_token": token,
+            "summary": "fixture \(operation)",
+            "risks": [],
+            "source": source ?? NSNull(),
+            "skills": skills
+        ]
+    }
+
+    private static let output: [String: Any] = [
+        "status": "ok",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": ""
+    ]
+
+    private static func envelope(result: Any) -> Data {
+        try! JSONSerialization.data(withJSONObject: ["id": "test", "ok": true, "result": result])
+    }
+
+    private static let serviceErrorResponse = try! JSONSerialization.data(
+        withJSONObject: [
+            "id": "test",
+            "ok": false,
+            "error": ["code": "test.error", "message": "stale failure"]
+        ]
+    )
+}

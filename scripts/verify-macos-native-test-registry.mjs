@@ -15,7 +15,7 @@ const serviceTypes = ["ServiceClientProcessTests", "ServiceClientRPCTests"];
 const shardedType = "SkillStoreTests";
 const excludedHarnessType = "FullNativeModelSuiteTests";
 const expectedCompletionLine =
-  "SkillsCopilotTests: full-suite-complete service=2 main=20 skill-store-groups=64 named=86";
+  "SkillsCopilotTests: full-suite-complete service=2 main=21 skill-store-groups=64 named=87";
 
 function duplicates(values) {
   const seen = new Set();
@@ -151,8 +151,8 @@ function main(argv) {
   if (!discoveredTypes.includes(shardedType)) {
     errors.push(`missing sharded native test type: ${shardedType}`);
   }
-  if (mainTypes.length !== 20) {
-    errors.push(`main native test suite count differs: expected 20; actual ${mainTypes.length}`);
+  if (mainTypes.length !== 21) {
+    errors.push(`main native test suite count differs: expected 21; actual ${mainTypes.length}`);
   }
 
   if (logPath) {

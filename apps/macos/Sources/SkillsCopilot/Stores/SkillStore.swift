@@ -149,48 +149,86 @@ final class SkillStore: ObservableObject {
     @Published private(set) var skillManagerTools: [SkillManagerToolRecord] = []
     @Published private(set) var skillManagerSearchResult: SkillManagerSearchRecord?
     @Published private(set) var skillManagerInstalled: SkillManagerInstalledListRecord?
-    @Published private(set) var skillManagerMutationPreview: SkillManagerMutationRecord?
-    @Published private(set) var skillManagerLocalCreatePreview: SkillManagerLocalCreateRecord?
-    @Published private(set) var skillManagerLocalDeletePreview: SkillManagerLocalDeleteRecord?
+    @Published private(set) var skillManagerMutationConfirmation: SkillManagerMutationConfirmation?
+    @Published private(set) var skillManagerLocalCreateConfirmation: SkillManagerLocalCreateConfirmation?
+    @Published private(set) var skillManagerLocalDeleteConfirmation: SkillManagerLocalDeleteConfirmation?
     @Published private(set) var skillManagerErrorMessage: String?
     @Published private(set) var skillManagerMessage: String?
     @Published private(set) var isLoadingSkillManagerTools = false
     @Published private(set) var isSearchingSkillManager = false
     @Published private(set) var isListingSkillManagerInstalled = false
     @Published private(set) var isPreviewingSkillManagerMutation = false
+    @Published private(set) var isPreviewingSkillManagerLocalCreate = false
+    @Published private(set) var isPreviewingSkillManagerLocalDelete = false
     @Published private(set) var isApplyingSkillManagerMutation = false
     @Published var skillManagerSearchQuery = "" {
-        didSet { skillManagerSearchResult = nil }
+        didSet {
+            guard oldValue != skillManagerSearchQuery else { return }
+            invalidateSkillManagerSearch()
+        }
     }
     @Published var skillManagerOwner = "" {
-        didSet { skillManagerSearchResult = nil }
+        didSet {
+            guard oldValue != skillManagerOwner else { return }
+            invalidateSkillManagerSearch()
+        }
     }
     @Published var skillManagerSource = "" {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerSource else { return }
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerSkillName = "" {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerSkillName else { return }
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerInstallSkillName = "" {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerInstallSkillName else { return }
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerRemoveSkillName = "" {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerRemoveSkillName else { return }
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerLocalSkillName = "" {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerLocalSkillName else { return }
+            invalidateSkillManagerLocalCreatePreview()
+        }
     }
     @Published var skillManagerNetworkAllowed = false {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerNetworkAllowed else { return }
+            invalidateSkillManagerSearch()
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerScope: SkillManagerScope = .project {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerScope else { return }
+            invalidateSkillManagerInstalledList()
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerDistribution: SkillManagerDistribution = .symlink {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerDistribution else { return }
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published var skillManagerSelectedAgentIDs: Set<String> = Set(SkillManagerAgent.defaultTargets.map(\.rawValue)) {
-        didSet { clearSkillManagerWritePreviews() }
+        didSet {
+            guard oldValue != skillManagerSelectedAgentIDs else { return }
+            invalidateSkillManagerInstalledList()
+            invalidateSkillManagerMutationPreview()
+        }
     }
     @Published private(set) var projectContextState: ProjectContextState? {
         didSet { invalidateScopedLocalSessionSummaryCache() }
@@ -378,6 +416,21 @@ final class SkillStore: ObservableObject {
     private var localSessionPreviewGeneration = 0
     private var loadedLocalSessionPreviewRequestKey: String?
     private var activeLocalSessionPreviewRequestKey: String?
+    private var skillManagerSearchGenerationValue: UInt64 = 0
+    private var skillManagerInstalledGenerationValue: UInt64 = 0
+    private var skillManagerMutationGenerationValue: UInt64 = 0
+    private var skillManagerLocalCreateGenerationValue: UInt64 = 0
+    private var skillManagerLocalDeleteGenerationValue: UInt64 = 0
+    private var currentSkillManagerSearchGeneration: SkillManagerRequestGeneration?
+    private var currentSkillManagerInstalledGeneration: SkillManagerRequestGeneration?
+    private var currentSkillManagerMutationGeneration: SkillManagerRequestGeneration?
+    private var currentSkillManagerLocalCreateGeneration: SkillManagerRequestGeneration?
+    private var currentSkillManagerLocalDeleteGeneration: SkillManagerRequestGeneration?
+    private var skillManagerSearchTask: Task<Void, Never>?
+    private var skillManagerInstalledTask: Task<Void, Never>?
+    private var skillManagerMutationTask: Task<Void, Never>?
+    private var skillManagerLocalCreateTask: Task<Void, Never>?
+    private var skillManagerLocalDeleteTask: Task<Void, Never>?
     private var hasLoadedAIProviderStatus = false
     private var hasLoadedProviderObservability = false
     private var taskCockpitOperationID: UUID?
@@ -1211,38 +1264,64 @@ final class SkillStore: ObservableObject {
             setSkillManagerError(UIStrings.text("skillManager.search.required", "Enter a skill search query."))
             return
         }
-        guard !isSearchingSkillManager else { return }
+        let trimmedOwner = skillManagerOwner.trimmingCharacters(in: .whitespacesAndNewlines)
+        let owner = trimmedOwner.isEmpty ? nil : trimmedOwner
+        let networkAllowed = skillManagerNetworkAllowed
+        let key = SkillManagerRequestKey.search(
+            query: query,
+            owner: owner,
+            networkAllowed: networkAllowed
+        )
+        let generation = beginSkillManagerSearch(for: key)
         isSearchingSkillManager = true
         clearSkillManagerFeedback()
-        defer { isSearchingSkillManager = false }
 
-        do {
-            skillManagerSearchResult = try await service.searchSkillManager(
-                query: query,
-                owner: skillManagerOwner,
-                networkAllowed: skillManagerNetworkAllowed
-            )
-        } catch {
-            setSkillManagerError(error.localizedDescription)
-            skillManagerSearchResult = nil
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishSkillManagerSearch(generation) }
+            do {
+                let result = try await self.service.searchSkillManager(
+                    query: query,
+                    owner: owner,
+                    networkAllowed: networkAllowed
+                )
+                guard self.currentSkillManagerSearchGeneration == generation else { return }
+                self.skillManagerSearchResult = result
+            } catch {
+                guard self.currentSkillManagerSearchGeneration == generation else { return }
+                self.setSkillManagerError(error.localizedDescription)
+                self.skillManagerSearchResult = nil
+            }
         }
+        skillManagerSearchTask = task
+        await task.value
     }
 
     func listSkillManagerInstalled() async {
-        guard !isListingSkillManagerInstalled else { return }
-        isListingSkillManagerInstalled = true
+        let agents = canonicalSkillManagerAgentIDs(selectedSkillManagerAgentIDsForRead())
+        let scope = skillManagerScope
+        let key = SkillManagerRequestKey.installed(agents: agents, scope: scope)
+        let generation = beginSkillManagerInstalledList(for: key)
         clearSkillManagerFeedback()
-        defer { isListingSkillManagerInstalled = false }
 
-        do {
-            skillManagerInstalled = try await service.listSkillManagerInstalled(
-                agents: selectedSkillManagerAgentIDsForRead(),
-                scope: skillManagerScope
-            )
-        } catch {
-            setSkillManagerError(error.localizedDescription)
-            skillManagerInstalled = nil
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishSkillManagerInstalledList(generation) }
+            do {
+                let result = try await self.service.listSkillManagerInstalled(
+                    agents: agents,
+                    scope: scope
+                )
+                guard self.currentSkillManagerInstalledGeneration == generation else { return }
+                self.skillManagerInstalled = result
+            } catch {
+                guard self.currentSkillManagerInstalledGeneration == generation else { return }
+                self.setSkillManagerError(error.localizedDescription)
+                self.skillManagerInstalled = nil
+            }
         }
+        skillManagerInstalledTask = task
+        await task.value
     }
 
     func setSkillManagerAgent(_ agentID: String, selected: Bool) {
@@ -1282,32 +1361,31 @@ final class SkillStore: ObservableObject {
             return
         }
 
-        await previewSkillManagerMutation {
+        let inputs = SkillManagerMutationInputs(
+            kind: .install,
+            source: source,
+            skills: skills,
+            agents: agents,
+            scope: skillManagerScope,
+            distribution: skillManagerDistribution,
+            networkAllowed: skillManagerNetworkAllowed
+        )
+        await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerInstall(
-                source: source,
-                skills: skills,
-                agents: agents,
-                scope: skillManagerScope,
-                distribution: skillManagerDistribution,
-                networkAllowed: skillManagerNetworkAllowed
+                source: inputs.source ?? "",
+                skills: inputs.skills,
+                agents: inputs.agents,
+                scope: inputs.scope,
+                distribution: inputs.distribution ?? .symlink,
+                networkAllowed: inputs.networkAllowed
             )
         }
     }
 
     func applySkillManagerInstall() async {
-        guard let preview = skillManagerMutationPreview else { return }
-        guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
-        await applySkillManagerMutation {
-            try await service.applySkillManagerInstall(
-                preview: preview,
-                source: skillManagerSource.trimmingCharacters(in: .whitespacesAndNewlines),
-                skills: parsedSkillManagerSkillNames(from: skillManagerInstallSkillName),
-                agents: agents,
-                scope: skillManagerScope,
-                distribution: skillManagerDistribution,
-                networkAllowed: skillManagerNetworkAllowed
-            )
-        }
+        guard let confirmation = skillManagerMutationConfirmation,
+              confirmation.inputs.kind == .install else { return }
+        await applySkillManagerMutation(confirmation)
     }
 
     func previewSkillManagerRemove(skillName: String? = nil) async {
@@ -1321,26 +1399,28 @@ final class SkillStore: ObservableObject {
             return
         }
 
-        await previewSkillManagerMutation {
+        let inputs = SkillManagerMutationInputs(
+            kind: .remove,
+            source: nil,
+            skills: [skill],
+            agents: agents,
+            scope: skillManagerScope,
+            distribution: nil,
+            networkAllowed: false
+        )
+        await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerRemove(
-                skill: skill,
-                agents: agents,
-                scope: skillManagerScope
+                skill: inputs.skills.first ?? "",
+                agents: inputs.agents,
+                scope: inputs.scope
             )
         }
     }
 
     func applySkillManagerRemove() async {
-        guard let preview = skillManagerMutationPreview else { return }
-        guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
-        await applySkillManagerMutation {
-            try await service.applySkillManagerRemove(
-                preview: preview,
-                skill: skillManagerRemoveSkillName.trimmingCharacters(in: .whitespacesAndNewlines),
-                agents: agents,
-                scope: skillManagerScope
-            )
-        }
+        guard let confirmation = skillManagerMutationConfirmation,
+              confirmation.inputs.kind == .remove else { return }
+        await applySkillManagerMutation(confirmation)
     }
 
     func previewSkillManagerUpdate(skillName: String? = nil) async {
@@ -1349,28 +1429,29 @@ final class SkillStore: ObservableObject {
         }
         guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
 
-        await previewSkillManagerMutation {
+        let inputs = SkillManagerMutationInputs(
+            kind: .update,
+            source: nil,
+            skills: parsedSkillManagerSkillNames(from: skillManagerRemoveSkillName),
+            agents: agents,
+            scope: skillManagerScope,
+            distribution: nil,
+            networkAllowed: skillManagerNetworkAllowed
+        )
+        await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerUpdate(
-                skills: parsedSkillManagerSkillNames(from: skillManagerRemoveSkillName),
-                agents: agents,
-                scope: skillManagerScope,
-                networkAllowed: skillManagerNetworkAllowed
+                skills: inputs.skills,
+                agents: inputs.agents,
+                scope: inputs.scope,
+                networkAllowed: inputs.networkAllowed
             )
         }
     }
 
     func applySkillManagerUpdate() async {
-        guard let preview = skillManagerMutationPreview else { return }
-        guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
-        await applySkillManagerMutation {
-            try await service.applySkillManagerUpdate(
-                preview: preview,
-                skills: parsedSkillManagerSkillNames(from: skillManagerRemoveSkillName),
-                agents: agents,
-                scope: skillManagerScope,
-                networkAllowed: skillManagerNetworkAllowed
-            )
-        }
+        guard let confirmation = skillManagerMutationConfirmation,
+              confirmation.inputs.kind == .update else { return }
+        await applySkillManagerMutation(confirmation)
     }
 
     func previewSkillManagerLocalCreate() async {
@@ -1379,23 +1460,32 @@ final class SkillStore: ObservableObject {
             setSkillManagerError(UIStrings.text("skillManager.localCreate.required", "Enter a local skill name."))
             return
         }
-        guard !isPreviewingSkillManagerMutation else { return }
-        isPreviewingSkillManagerMutation = true
-        clearSkillManagerWorkflowPreviews()
-        defer { isPreviewingSkillManagerMutation = false }
+        let key = SkillManagerRequestKey.localCreate(name: name)
+        let generation = beginSkillManagerLocalCreate(for: key)
+        clearSkillManagerFeedback()
 
-        do {
-            skillManagerLocalCreatePreview = try await service.previewSkillManagerLocalCreate(name: name)
-        } catch {
-            setSkillManagerError(error.localizedDescription)
-            skillManagerLocalCreatePreview = nil
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishSkillManagerLocalCreate(generation) }
+            do {
+                let result = try await self.service.previewSkillManagerLocalCreate(name: name)
+                guard self.currentSkillManagerLocalCreateGeneration == generation else { return }
+                self.skillManagerLocalCreateConfirmation = SkillManagerLocalCreateConfirmation(
+                    name: name,
+                    result: result
+                )
+            } catch {
+                guard self.currentSkillManagerLocalCreateGeneration == generation else { return }
+                self.setSkillManagerError(error.localizedDescription)
+                self.skillManagerLocalCreateConfirmation = nil
+            }
         }
+        skillManagerLocalCreateTask = task
+        await task.value
     }
 
     func applySkillManagerLocalCreate() async {
-        guard let preview = skillManagerLocalCreatePreview else { return }
-        let name = skillManagerLocalSkillName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        guard let confirmation = skillManagerLocalCreateConfirmation else { return }
         guard !isApplyingSkillManagerMutation else { return }
         isApplyingSkillManagerMutation = true
         isWriting = true
@@ -1406,7 +1496,10 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            _ = try await service.applySkillManagerLocalCreate(preview: preview, name: name)
+            _ = try await service.applySkillManagerLocalCreate(
+                preview: confirmation.result,
+                name: confirmation.name
+            )
             clearSkillManagerWritePreviews()
             try await refreshCollections()
             skillManagerMessage = UIStrings.text("skillManager.localCreate.applied", "Local skill template created and imported.")
@@ -1417,23 +1510,35 @@ final class SkillStore: ObservableObject {
     }
 
     func previewSkillManagerLocalDelete(skill: SkillRecord) async {
-        guard !isPreviewingSkillManagerMutation else { return }
-        isPreviewingSkillManagerMutation = true
-        clearSkillManagerWorkflowPreviews()
-        defer { isPreviewingSkillManagerMutation = false }
+        let instanceID = skill.id
+        let key = SkillManagerRequestKey.localDelete(instanceID: instanceID)
+        let generation = beginSkillManagerLocalDelete(for: key)
+        clearSkillManagerFeedback()
 
-        do {
-            skillManagerLocalDeletePreview = try await service.previewSkillManagerLocalDelete(instanceID: skill.id)
-        } catch {
-            setSkillManagerError(error.localizedDescription)
-            skillManagerLocalDeletePreview = nil
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishSkillManagerLocalDelete(generation) }
+            do {
+                let result = try await self.service.previewSkillManagerLocalDelete(instanceID: instanceID)
+                guard self.currentSkillManagerLocalDeleteGeneration == generation else { return }
+                self.skillManagerLocalDeleteConfirmation = SkillManagerLocalDeleteConfirmation(
+                    instanceID: instanceID,
+                    result: result
+                )
+            } catch {
+                guard self.currentSkillManagerLocalDeleteGeneration == generation else { return }
+                self.setSkillManagerError(error.localizedDescription)
+                self.skillManagerLocalDeleteConfirmation = nil
+            }
         }
+        skillManagerLocalDeleteTask = task
+        await task.value
     }
 
     func applySkillManagerLocalDelete() async {
-        guard let preview = skillManagerLocalDeletePreview else { return }
-        guard preview.physicalDeleteAllowed else {
-            setSkillManagerError(preview.summary)
+        guard let confirmation = skillManagerLocalDeleteConfirmation else { return }
+        guard confirmation.result.physicalDeleteAllowed else {
+            setSkillManagerError(confirmation.result.summary)
             return
         }
         guard !isApplyingSkillManagerMutation else { return }
@@ -1446,7 +1551,7 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            _ = try await service.applySkillManagerLocalDelete(instanceID: preview.instanceId)
+            _ = try await service.applySkillManagerLocalDelete(instanceID: confirmation.instanceID)
             clearSkillManagerWritePreviews()
             try await refreshCollections()
             skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
@@ -1508,9 +1613,9 @@ final class SkillStore: ObservableObject {
     }
 
     private func clearSkillManagerWritePreviews() {
-        skillManagerMutationPreview = nil
-        skillManagerLocalCreatePreview = nil
-        skillManagerLocalDeletePreview = nil
+        invalidateSkillManagerMutationPreview()
+        invalidateSkillManagerLocalCreatePreview()
+        invalidateSkillManagerLocalDeletePreview()
     }
 
     private func clearSkillManagerFeedback() {
@@ -1523,21 +1628,35 @@ final class SkillStore: ObservableObject {
         skillManagerMessage = nil
     }
 
-    private func previewSkillManagerMutation(_ operation: () async throws -> SkillManagerMutationRecord) async {
-        guard !isPreviewingSkillManagerMutation else { return }
-        isPreviewingSkillManagerMutation = true
-        clearSkillManagerWorkflowPreviews()
-        defer { isPreviewingSkillManagerMutation = false }
+    private func previewSkillManagerMutation(
+        inputs: SkillManagerMutationInputs,
+        operation: @escaping () async throws -> SkillManagerMutationRecord
+    ) async {
+        let generation = beginSkillManagerMutationPreview(for: .mutation(inputs))
+        clearSkillManagerFeedback()
 
-        do {
-            skillManagerMutationPreview = try await operation()
-        } catch {
-            setSkillManagerError(error.localizedDescription)
-            skillManagerMutationPreview = nil
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishSkillManagerMutationPreview(generation) }
+            do {
+                let result = try await operation()
+                guard self.currentSkillManagerMutationGeneration == generation else { return }
+                self.skillManagerMutationConfirmation = SkillManagerMutationConfirmation(
+                    inputs: inputs,
+                    result: result
+                )
+            } catch {
+                guard self.currentSkillManagerMutationGeneration == generation else { return }
+                self.setSkillManagerError(error.localizedDescription)
+                self.skillManagerMutationConfirmation = nil
+            }
         }
+        skillManagerMutationTask = task
+        await task.value
     }
 
-    private func applySkillManagerMutation(_ operation: () async throws -> SkillManagerMutationRecord) async {
+    private func applySkillManagerMutation(_ confirmation: SkillManagerMutationConfirmation) async {
+        guard skillManagerMutationConfirmation == confirmation else { return }
         guard !isApplyingSkillManagerMutation else { return }
         isApplyingSkillManagerMutation = true
         isWriting = true
@@ -1548,7 +1667,44 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            let result = try await operation()
+            let result: SkillManagerMutationRecord
+            switch confirmation.inputs.kind {
+            case .install:
+                guard let source = confirmation.inputs.source,
+                      !source.isEmpty,
+                      let distribution = confirmation.inputs.distribution else {
+                    setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
+                    return
+                }
+                result = try await service.applySkillManagerInstall(
+                    preview: confirmation.result,
+                    source: source,
+                    skills: confirmation.inputs.skills,
+                    agents: confirmation.inputs.agents,
+                    scope: confirmation.inputs.scope,
+                    distribution: distribution,
+                    networkAllowed: confirmation.inputs.networkAllowed
+                )
+            case .remove:
+                guard let skill = confirmation.inputs.skills.first else {
+                    setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
+                    return
+                }
+                result = try await service.applySkillManagerRemove(
+                    preview: confirmation.result,
+                    skill: skill,
+                    agents: confirmation.inputs.agents,
+                    scope: confirmation.inputs.scope
+                )
+            case .update:
+                result = try await service.applySkillManagerUpdate(
+                    preview: confirmation.result,
+                    skills: confirmation.inputs.skills,
+                    agents: confirmation.inputs.agents,
+                    scope: confirmation.inputs.scope,
+                    networkAllowed: confirmation.inputs.networkAllowed
+                )
+            }
             clearSkillManagerWritePreviews()
             invalidateDetailCaches(for: result.updatedSkills.map(\.id))
             try await refreshCollections()
@@ -1562,8 +1718,133 @@ final class SkillStore: ObservableObject {
         }
     }
 
+    private func beginSkillManagerSearch(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
+        skillManagerSearchTask?.cancel()
+        skillManagerSearchGenerationValue &+= 1
+        let generation = SkillManagerRequestGeneration(value: skillManagerSearchGenerationValue, key: key)
+        currentSkillManagerSearchGeneration = generation
+        skillManagerSearchResult = nil
+        isSearchingSkillManager = true
+        return generation
+    }
+
+    private func finishSkillManagerSearch(_ generation: SkillManagerRequestGeneration) {
+        guard currentSkillManagerSearchGeneration == generation else { return }
+        skillManagerSearchTask = nil
+        isSearchingSkillManager = false
+    }
+
+    private func invalidateSkillManagerSearch() {
+        skillManagerSearchTask?.cancel()
+        skillManagerSearchTask = nil
+        skillManagerSearchGenerationValue &+= 1
+        currentSkillManagerSearchGeneration = nil
+        skillManagerSearchResult = nil
+        isSearchingSkillManager = false
+    }
+
+    private func beginSkillManagerInstalledList(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
+        skillManagerInstalledTask?.cancel()
+        skillManagerInstalledGenerationValue &+= 1
+        let generation = SkillManagerRequestGeneration(value: skillManagerInstalledGenerationValue, key: key)
+        currentSkillManagerInstalledGeneration = generation
+        skillManagerInstalled = nil
+        isListingSkillManagerInstalled = true
+        return generation
+    }
+
+    private func finishSkillManagerInstalledList(_ generation: SkillManagerRequestGeneration) {
+        guard currentSkillManagerInstalledGeneration == generation else { return }
+        skillManagerInstalledTask = nil
+        isListingSkillManagerInstalled = false
+    }
+
+    private func invalidateSkillManagerInstalledList() {
+        skillManagerInstalledTask?.cancel()
+        skillManagerInstalledTask = nil
+        skillManagerInstalledGenerationValue &+= 1
+        currentSkillManagerInstalledGeneration = nil
+        skillManagerInstalled = nil
+        isListingSkillManagerInstalled = false
+    }
+
+    private func beginSkillManagerMutationPreview(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
+        skillManagerMutationTask?.cancel()
+        skillManagerMutationGenerationValue &+= 1
+        let generation = SkillManagerRequestGeneration(value: skillManagerMutationGenerationValue, key: key)
+        currentSkillManagerMutationGeneration = generation
+        skillManagerMutationConfirmation = nil
+        isPreviewingSkillManagerMutation = true
+        return generation
+    }
+
+    private func finishSkillManagerMutationPreview(_ generation: SkillManagerRequestGeneration) {
+        guard currentSkillManagerMutationGeneration == generation else { return }
+        skillManagerMutationTask = nil
+        isPreviewingSkillManagerMutation = false
+    }
+
+    private func invalidateSkillManagerMutationPreview() {
+        skillManagerMutationTask?.cancel()
+        skillManagerMutationTask = nil
+        skillManagerMutationGenerationValue &+= 1
+        currentSkillManagerMutationGeneration = nil
+        skillManagerMutationConfirmation = nil
+        isPreviewingSkillManagerMutation = false
+    }
+
+    private func beginSkillManagerLocalCreate(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
+        skillManagerLocalCreateTask?.cancel()
+        skillManagerLocalCreateGenerationValue &+= 1
+        let generation = SkillManagerRequestGeneration(value: skillManagerLocalCreateGenerationValue, key: key)
+        currentSkillManagerLocalCreateGeneration = generation
+        skillManagerLocalCreateConfirmation = nil
+        isPreviewingSkillManagerLocalCreate = true
+        return generation
+    }
+
+    private func finishSkillManagerLocalCreate(_ generation: SkillManagerRequestGeneration) {
+        guard currentSkillManagerLocalCreateGeneration == generation else { return }
+        skillManagerLocalCreateTask = nil
+        isPreviewingSkillManagerLocalCreate = false
+    }
+
+    private func invalidateSkillManagerLocalCreatePreview() {
+        skillManagerLocalCreateTask?.cancel()
+        skillManagerLocalCreateTask = nil
+        skillManagerLocalCreateGenerationValue &+= 1
+        currentSkillManagerLocalCreateGeneration = nil
+        skillManagerLocalCreateConfirmation = nil
+        isPreviewingSkillManagerLocalCreate = false
+    }
+
+    private func beginSkillManagerLocalDelete(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
+        skillManagerLocalDeleteTask?.cancel()
+        skillManagerLocalDeleteGenerationValue &+= 1
+        let generation = SkillManagerRequestGeneration(value: skillManagerLocalDeleteGenerationValue, key: key)
+        currentSkillManagerLocalDeleteGeneration = generation
+        skillManagerLocalDeleteConfirmation = nil
+        isPreviewingSkillManagerLocalDelete = true
+        return generation
+    }
+
+    private func finishSkillManagerLocalDelete(_ generation: SkillManagerRequestGeneration) {
+        guard currentSkillManagerLocalDeleteGeneration == generation else { return }
+        skillManagerLocalDeleteTask = nil
+        isPreviewingSkillManagerLocalDelete = false
+    }
+
+    private func invalidateSkillManagerLocalDeletePreview() {
+        skillManagerLocalDeleteTask?.cancel()
+        skillManagerLocalDeleteTask = nil
+        skillManagerLocalDeleteGenerationValue &+= 1
+        currentSkillManagerLocalDeleteGeneration = nil
+        skillManagerLocalDeleteConfirmation = nil
+        isPreviewingSkillManagerLocalDelete = false
+    }
+
     private func selectedSkillManagerAgentIDsForMutation() -> [String]? {
-        let agents = skillManagerSelectedAgents
+        let agents = canonicalSkillManagerAgentIDs(skillManagerSelectedAgents)
         guard !agents.isEmpty else {
             setSkillManagerError(UIStrings.text("skillManager.agents.required", "Select at least one target agent."))
             return nil
@@ -1573,7 +1854,18 @@ final class SkillStore: ObservableObject {
 
     private func selectedSkillManagerAgentIDsForRead() -> [String] {
         let agents = skillManagerSelectedAgents
-        return agents.isEmpty ? SkillManagerAgent.defaultTargets.map(\.rawValue) : agents
+        let resolved = agents.isEmpty ? SkillManagerAgent.defaultTargets.map(\.rawValue) : agents
+        return canonicalSkillManagerAgentIDs(resolved)
+    }
+
+    private func canonicalSkillManagerAgentIDs(_ agents: [String]) -> [String] {
+        Array(
+            Set(
+                agents
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
     }
 
     private func parsedSkillManagerSkillNames(from rawValue: String) -> [String] {

@@ -53,6 +53,7 @@ struct SkillManagerPanel: View {
                     pendingConfirmation = nil
                     Task { await applyConfirmed(confirmed) }
                 }
+                .disabled(!isCurrentConfirmation(confirmation))
             }
             Button(UIStrings.cancel, role: .cancel) {
                 pendingConfirmation = nil
@@ -143,10 +144,12 @@ struct SkillManagerPanel: View {
                     store.selectAllSkillManagerAgents()
                 }
                 .controlSize(.small)
+                .disabled(isSkillManagerTargetRequestActive)
                 Button(UIStrings.text("selection.none", "None")) {
                     store.clearSkillManagerAgents()
                 }
                 .controlSize(.small)
+                .disabled(isSkillManagerTargetRequestActive)
                 Button {
                     withAnimation(.easeInOut(duration: 0.12)) {
                         isShowingSkillManagerTargets.toggle()
@@ -172,6 +175,7 @@ struct SkillManagerPanel: View {
                         }
                         .toggleStyle(.checkbox)
                         .controlSize(.small)
+                        .disabled(isSkillManagerTargetRequestActive)
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -185,6 +189,7 @@ struct SkillManagerPanel: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 220)
+                .disabled(isSkillManagerTargetRequestActive)
 
                 Picker(UIStrings.text("skillManager.distribution", "Distribution"), selection: $store.skillManagerDistribution) {
                     ForEach(SkillManagerDistribution.allCases) { distribution in
@@ -193,15 +198,21 @@ struct SkillManagerPanel: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 240)
+                .disabled(store.isPreviewingSkillManagerMutation)
 
                 Toggle(UIStrings.text("skillManager.network", "Network"), isOn: $store.skillManagerNetworkAllowed)
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .disabled(store.isSearchingSkillManager || store.isPreviewingSkillManagerMutation)
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativePanelSurface()
+    }
+
+    private var isSkillManagerTargetRequestActive: Bool {
+        store.isListingSkillManagerInstalled || store.isPreviewingSkillManagerMutation
     }
 
     private var workflowPicker: some View {
@@ -255,9 +266,9 @@ struct SkillManagerPanel: View {
 
     @ViewBuilder
     private var workflowPreview: some View {
-        if let preview = store.skillManagerMutationPreview {
+        if let confirmation = store.skillManagerMutationConfirmation {
             previewSection {
-                mutationPreview(preview)
+                mutationPreview(confirmation)
             }
         }
 
@@ -265,13 +276,13 @@ struct SkillManagerPanel: View {
         case .searchInstall, .installedUpdates:
             EmptyView()
         case .localLibrary:
-            if store.skillManagerLocalCreatePreview != nil || store.skillManagerLocalDeletePreview != nil {
+            if store.skillManagerLocalCreateConfirmation != nil || store.skillManagerLocalDeleteConfirmation != nil {
                 previewSection {
-                    if let preview = store.skillManagerLocalCreatePreview {
-                        localCreatePreview(preview)
+                    if let confirmation = store.skillManagerLocalCreateConfirmation {
+                        localCreatePreview(confirmation)
                     }
-                    if let preview = store.skillManagerLocalDeletePreview {
-                        localDeletePreview(preview)
+                    if let confirmation = store.skillManagerLocalDeleteConfirmation {
+                        localDeletePreview(confirmation)
                     }
                 }
             }
@@ -286,9 +297,11 @@ struct SkillManagerPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 TextField(UIStrings.text("skillManager.query", "Search skills"), text: $store.skillManagerSearchQuery)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(store.isSearchingSkillManager)
                 HStack(spacing: 10) {
                     TextField(UIStrings.text("skillManager.owner", "Owner"), text: $store.skillManagerOwner)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(store.isSearchingSkillManager)
                     Button {
                         Task { await store.searchSkillManager() }
                     } label: {
@@ -303,9 +316,11 @@ struct SkillManagerPanel: View {
             VStack(alignment: .leading, spacing: 10) {
                 TextField(UIStrings.text("skillManager.source", "Source"), text: $store.skillManagerSource)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(store.isPreviewingSkillManagerMutation)
                 HStack(spacing: 10) {
                     TextField(UIStrings.text("skillManager.installSkillName", "Skill name"), text: $store.skillManagerInstallSkillName)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(store.isPreviewingSkillManagerMutation)
                     Button {
                         Task { await store.previewSkillManagerInstall() }
                     } label: {
@@ -349,7 +364,7 @@ struct SkillManagerPanel: View {
                                     )
                                 }
                             }
-                            .disabled(externalMutationDisabled)
+                            .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
                         }
                     }
                 }
@@ -404,6 +419,7 @@ struct SkillManagerPanel: View {
                         }
                         .buttonStyle(.plain)
                         .help(suggestion)
+                        .disabled(store.isSearchingSkillManager)
                     }
                 }
             }
@@ -440,6 +456,7 @@ struct SkillManagerPanel: View {
                 VStack(alignment: .leading, spacing: 10) {
                     TextField(UIStrings.text("skillManager.removeSkillName", "Skill to remove or update"), text: $store.skillManagerRemoveSkillName)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(store.isPreviewingSkillManagerMutation)
                     HStack(spacing: 10) {
                         Button {
                             Task { await store.previewSkillManagerUpdate() }
@@ -508,13 +525,14 @@ struct SkillManagerPanel: View {
 
             TextField(UIStrings.text("skillManager.localName", "Local skill name"), text: $store.skillManagerLocalSkillName)
                 .textFieldStyle(.roundedBorder)
+                .disabled(store.isPreviewingSkillManagerLocalCreate)
             HStack(spacing: 10) {
                 Button {
                     Task { await store.previewSkillManagerLocalCreate() }
                 } label: {
                     Label(UIStrings.text("skillManager.previewCreate", "Preview Create"), systemImage: "doc.badge.plus")
                 }
-                .disabled(store.isPreviewingSkillManagerMutation)
+                .disabled(store.isPreviewingSkillManagerLocalCreate)
             }
         }
         .padding()
@@ -543,27 +561,49 @@ struct SkillManagerPanel: View {
         .nativePanelSurface()
     }
 
-    private func mutationPreview(_ preview: SkillManagerMutationRecord) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func mutationPreview(_ confirmation: SkillManagerMutationConfirmation) -> some View {
+        let preview = confirmation.result
+        let matchesCurrentInputs = store.skillManagerMutationConfirmation == confirmation
+        return VStack(alignment: .leading, spacing: 10) {
             commandPreviewBlock(preview.preview)
+            VStack(alignment: .leading, spacing: 4) {
+                if let source = confirmation.inputs.source, !source.isEmpty {
+                    MetadataLine(label: UIStrings.source, value: source)
+                }
+                if !confirmation.inputs.skills.isEmpty {
+                    MetadataLine(
+                        label: UIStrings.text("skillManager.skills", "Skills"),
+                        value: confirmation.inputs.skills.joined(separator: ", ")
+                    )
+                }
+                MetadataLine(
+                    label: UIStrings.text("skillManager.targets", "Targets"),
+                    value: confirmation.inputs.agents.map(DisplayText.agent).joined(separator: ", ")
+                )
+                MetadataLine(label: UIStrings.scope, value: confirmation.inputs.scope.title)
+            }
             if let output = preview.output {
                 commandOutput(output)
             }
             HStack {
                 Spacer()
                 Button {
-                    pendingConfirmation = .mutation(preview.preview)
+                    pendingConfirmation = .mutation(confirmation)
                 } label: {
                     Label(applyTitle(for: preview.preview.operation), systemImage: "checkmark.circle")
                 }
-                .disabled(!canApply(preview.preview))
+                .disabled(!canApply(preview.preview) || !matchesCurrentInputs)
+                .accessibilityValue(previewMatchAccessibilityValue(matchesCurrentInputs))
             }
         }
     }
 
-    private func localCreatePreview(_ preview: SkillManagerLocalCreateRecord) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func localCreatePreview(_ confirmation: SkillManagerLocalCreateConfirmation) -> some View {
+        let preview = confirmation.result
+        let matchesCurrentInputs = store.skillManagerLocalCreateConfirmation == confirmation
+        return VStack(alignment: .leading, spacing: 10) {
             commandPreviewBlock(preview.preview)
+            MetadataLine(label: UIStrings.text("metadata.skill", "Skill"), value: confirmation.name)
             MetadataLine(label: UIStrings.source, value: preview.sourcePath)
             if let output = preview.output {
                 commandOutput(output)
@@ -571,17 +611,20 @@ struct SkillManagerPanel: View {
             HStack {
                 Spacer()
                 Button {
-                    pendingConfirmation = .localCreate(preview.preview, sourcePath: preview.sourcePath)
+                    pendingConfirmation = .localCreate(confirmation)
                 } label: {
                     Label(UIStrings.text("skillManager.applyCreate", "Create"), systemImage: "checkmark.circle")
                 }
-                .disabled(!canApply(preview.preview))
+                .disabled(!canApply(preview.preview) || !matchesCurrentInputs)
+                .accessibilityValue(previewMatchAccessibilityValue(matchesCurrentInputs))
             }
         }
     }
 
-    private func localDeletePreview(_ preview: SkillManagerLocalDeleteRecord) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func localDeletePreview(_ confirmation: SkillManagerLocalDeleteConfirmation) -> some View {
+        let preview = confirmation.result
+        let matchesCurrentInputs = store.skillManagerLocalDeleteConfirmation == confirmation
+        return VStack(alignment: .leading, spacing: 10) {
             MetadataLine(label: UIStrings.text("metadata.skill", "Skill"), value: preview.skillName)
             MetadataLine(label: UIStrings.source, value: preview.path)
             Text(preview.summary)
@@ -600,11 +643,12 @@ struct SkillManagerPanel: View {
             HStack {
                 Spacer()
                 Button(role: .destructive) {
-                    pendingConfirmation = .localDelete(preview)
+                    pendingConfirmation = .localDelete(confirmation)
                 } label: {
                     Label(UIStrings.text("action.delete", "Delete"), systemImage: "trash")
                 }
-                .disabled(!preview.physicalDeleteAllowed || store.isApplyingSkillManagerMutation)
+                .disabled(!preview.physicalDeleteAllowed || store.isApplyingSkillManagerMutation || !matchesCurrentInputs)
+                .accessibilityValue(previewMatchAccessibilityValue(matchesCurrentInputs))
             }
         }
     }
@@ -669,6 +713,12 @@ struct SkillManagerPanel: View {
             && !store.isApplyingSkillManagerMutation
     }
 
+    private func previewMatchAccessibilityValue(_ matchesCurrentInputs: Bool) -> String {
+        matchesCurrentInputs
+            ? UIStrings.text("skillManager.preview.matches", "Preview matches current inputs")
+            : UIStrings.text("skillManager.preview.stale", "Preview no longer matches current inputs")
+    }
+
     private func applyTitle(for operation: String) -> String {
         switch operation {
         case "install":
@@ -682,27 +732,36 @@ struct SkillManagerPanel: View {
         }
     }
 
-    private func applyCurrentMutation(_ operation: String) async {
-        switch operation {
-        case "install":
+    private func applyCurrentMutation(_ kind: SkillManagerMutationInputs.Kind) async {
+        switch kind {
+        case .install:
             await store.applySkillManagerInstall()
-        case "remove":
+        case .remove:
             await store.applySkillManagerRemove()
-        case "update":
+        case .update:
             await store.applySkillManagerUpdate()
-        default:
-            break
         }
     }
 
     private func applyConfirmed(_ confirmation: SkillManagerWriteConfirmation) async {
         switch confirmation {
-        case .mutation(let preview):
-            await applyCurrentMutation(preview.operation)
+        case .mutation(let confirmation):
+            await applyCurrentMutation(confirmation.inputs.kind)
         case .localCreate:
             await store.applySkillManagerLocalCreate()
         case .localDelete:
             await store.applySkillManagerLocalDelete()
+        }
+    }
+
+    private func isCurrentConfirmation(_ confirmation: SkillManagerWriteConfirmation) -> Bool {
+        switch confirmation {
+        case .mutation(let confirmation):
+            return store.skillManagerMutationConfirmation == confirmation
+        case .localCreate(let confirmation):
+            return store.skillManagerLocalCreateConfirmation == confirmation
+        case .localDelete(let confirmation):
+            return store.skillManagerLocalDeleteConfirmation == confirmation
         }
     }
 
@@ -766,22 +825,20 @@ struct SkillManagerPanel: View {
 }
 
 private enum SkillManagerWriteConfirmation {
-    case mutation(SkillManagerCommandPreview)
-    case localCreate(SkillManagerCommandPreview, sourcePath: String)
-    case localDelete(SkillManagerLocalDeleteRecord)
+    case mutation(SkillManagerMutationConfirmation)
+    case localCreate(SkillManagerLocalCreateConfirmation)
+    case localDelete(SkillManagerLocalDeleteConfirmation)
 
     var title: String {
         switch self {
-        case .mutation(let preview):
-            switch preview.operation {
-            case "install":
+        case .mutation(let confirmation):
+            switch confirmation.inputs.kind {
+            case .install:
                 return UIStrings.text("skillManager.confirm.install.title", "Confirm Skill Install")
-            case "remove":
+            case .remove:
                 return UIStrings.text("skillManager.confirm.remove.title", "Confirm Skill Removal")
-            case "update":
+            case .update:
                 return UIStrings.text("skillManager.confirm.update.title", "Confirm Skill Update")
-            default:
-                return UIStrings.text("skillManager.confirm.title", "Confirm Skill Manager Operation")
             }
         case .localCreate:
             return UIStrings.text("skillManager.confirm.localCreate.title", "Confirm Local Skill Creation")
@@ -792,16 +849,14 @@ private enum SkillManagerWriteConfirmation {
 
     var confirmButtonTitle: String {
         switch self {
-        case .mutation(let preview):
-            switch preview.operation {
-            case "install":
+        case .mutation(let confirmation):
+            switch confirmation.inputs.kind {
+            case .install:
                 return UIStrings.text("skillManager.applyInstall", "Install")
-            case "remove":
+            case .remove:
                 return UIStrings.text("skillManager.applyRemove", "Remove")
-            case "update":
+            case .update:
                 return UIStrings.text("skillManager.applyUpdate", "Update")
-            default:
-                return UIStrings.text("action.apply", "Apply")
             }
         case .localCreate:
             return UIStrings.text("skillManager.applyCreate", "Create")
@@ -812,7 +867,7 @@ private enum SkillManagerWriteConfirmation {
 
     var role: ButtonRole? {
         switch self {
-        case .mutation(let preview) where preview.operation == "remove":
+        case .mutation(let confirmation) where confirmation.inputs.kind == .remove:
             return .destructive
         case .localDelete:
             return .destructive
@@ -823,46 +878,33 @@ private enum SkillManagerWriteConfirmation {
 
     var message: String {
         switch self {
-        case .mutation(let preview):
+        case .mutation(let confirmation):
+            let preview = confirmation.result.preview
             return [
                 preview.summary,
-                "\(UIStrings.text("skillManager.confirm.targets", "Targets")): \(targetSummary(from: preview.command))",
+                "\(UIStrings.text("skillManager.confirm.targets", "Targets")): \(confirmation.inputs.agents.map(DisplayText.agent).joined(separator: ", "))",
+                "\(UIStrings.text("skillManager.skills", "Skills")): \(confirmation.inputs.skills.joined(separator: ", "))",
+                "\(UIStrings.scope): \(confirmation.inputs.scope.title)",
                 "\(UIStrings.text("skillManager.cwd", "CWD")): \(preview.cwd)",
                 "\(UIStrings.text("skillManager.confirm.command", "Command")): \(preview.displayCommand)"
             ].joined(separator: "\n\n")
-        case .localCreate(let preview, let sourcePath):
+        case .localCreate(let confirmation):
+            let preview = confirmation.result.preview
             return [
                 preview.summary,
-                "\(UIStrings.source): \(sourcePath)",
+                "\(UIStrings.text("metadata.skill", "Skill")): \(confirmation.name)",
+                "\(UIStrings.source): \(confirmation.result.sourcePath)",
                 "\(UIStrings.text("skillManager.cwd", "CWD")): \(preview.cwd)",
                 "\(UIStrings.text("skillManager.confirm.command", "Command")): \(preview.displayCommand)"
             ].joined(separator: "\n\n")
-        case .localDelete(let preview):
+        case .localDelete(let confirmation):
+            let preview = confirmation.result
             return [
                 preview.summary,
                 "\(UIStrings.text("metadata.skill", "Skill")): \(preview.skillName)",
                 "\(UIStrings.source): \(preview.path)"
             ].joined(separator: "\n\n")
         }
-    }
-
-    private func targetSummary(from command: [String]) -> String {
-        var agents: [String] = []
-        var index = command.startIndex
-        while index < command.endIndex {
-            if command[index] == "--agent" {
-                let valueIndex = command.index(after: index)
-                if valueIndex < command.endIndex {
-                    agents.append(DisplayText.agent(command[valueIndex]))
-                    index = command.index(after: valueIndex)
-                } else {
-                    index = valueIndex
-                }
-            } else {
-                index = command.index(after: index)
-            }
-        }
-        return agents.isEmpty ? UIStrings.text("skillManager.agents.unknown", "unknown agents") : agents.joined(separator: ", ")
     }
 }
 
@@ -1033,14 +1075,14 @@ private struct InstalledSkillRow: View {
                 Label(UIStrings.text("skillManager.previewUpdate", "Preview Update"), systemImage: "arrow.triangle.2.circlepath")
             }
             .controlSize(.small)
-            .disabled(externalMutationDisabled)
+            .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
             Button(role: .destructive) {
                 Task { await store.previewSkillManagerRemove(skillName: record.name) }
             } label: {
                 Label(UIStrings.text("skillManager.previewRemove", "Preview Remove"), systemImage: "minus.circle")
             }
             .controlSize(.small)
-            .disabled(externalMutationDisabled)
+            .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
         }
         .padding(10)
         .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
@@ -1084,13 +1126,14 @@ private struct LocalSkillLibraryRow: View {
                 Label(UIStrings.text("skillManager.previewInstall", "Preview Install"), systemImage: "plus.circle")
             }
             .controlSize(.small)
-            .disabled(externalMutationDisabled)
+            .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
             Button(role: .destructive) {
                 Task { await store.previewSkillManagerLocalDelete(skill: skill) }
             } label: {
                 Label(UIStrings.text("skillManager.previewDelete", "Preview Delete"), systemImage: "trash")
             }
             .controlSize(.small)
+            .disabled(store.isPreviewingSkillManagerLocalDelete)
         }
         .padding(10)
         .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
