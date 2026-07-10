@@ -779,8 +779,14 @@ fn local_session_preview_row(
     if file_content.is_empty() {
         return Ok(None);
     }
-    let content = enrich_local_session_content(path, root, &file_content);
-    let mut metadata = local_session_parsed_metadata(path, &file_content, &content);
+    let accepted_file_content = accepted_local_session_content(&file_content);
+    let enriched_content = enrich_local_session_content(path, root, &accepted_file_content);
+    let content = if enriched_content == accepted_file_content {
+        accepted_file_content
+    } else {
+        accepted_local_session_content(&enriched_content)
+    };
+    let mut metadata = local_session_parsed_metadata(path, &content);
     if let Some(project_root) =
         local_session_storage_project_root(path, root, options.project_filter_roots)
     {
@@ -823,8 +829,9 @@ fn local_session_preview_row(
     ) {
         return Ok(None);
     }
+    let skill_invocations = extract_skill_invocation_names(&content);
     let skill_mentions = detect_local_session_skill_mentions(
-        &content,
+        &skill_invocations,
         options.skill_matchers,
         &format!("session.content_hash:{short_hash}"),
     );
@@ -833,11 +840,12 @@ fn local_session_preview_row(
         &short_hash,
         options.max_excerpt_chars,
         &skill_mentions,
+        &skill_invocations,
         redactor,
     );
     let modified_at = local_session_modified_at(path);
     let (started_at, ended_at) = local_session_time_bounds(&content, &content_items, modified_at);
-    let metrics = local_session_metrics(&content, &content_items);
+    let metrics = local_session_metrics(&content_items, skill_invocations.len());
     let agent = options
         .requested_agent
         .map(str::trim)
@@ -1030,6 +1038,18 @@ enum LocalSessionRecordClassification {
     Unknown,
 }
 
+fn local_session_object_is_denied(fields: &serde_json::Map<String, Value>) -> bool {
+    let fallback_role = json_session_role(fields).map(str::to_string);
+    local_session_record_classification(fields, fallback_role.as_deref())
+        == LocalSessionRecordClassification::Deny
+}
+
+fn local_session_value_is_denied(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(local_session_object_is_denied)
+}
+
 fn local_session_record_classification(
     fields: &serde_json::Map<String, Value>,
     fallback_role: Option<&str>,
@@ -1072,9 +1092,6 @@ fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecor
     let Some(record_type) = value.as_str() else {
         return LocalSessionRecordClassification::Deny;
     };
-    if !local_session_classification_value_is_supported(record_type) {
-        return LocalSessionRecordClassification::Deny;
-    }
     let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
     if is_hidden_local_session_record_type(record_type) || is_json_non_message_type(&normalized) {
         LocalSessionRecordClassification::Deny
@@ -1092,9 +1109,6 @@ fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecor
 }
 
 fn local_session_role_classification(role: &str) -> LocalSessionRecordClassification {
-    if !local_session_classification_value_is_supported(role) {
-        return LocalSessionRecordClassification::Deny;
-    }
     let normalized = role.to_ascii_lowercase().replace(['_', '-'], "");
     match normalized.as_str() {
         "user" | "human" | "customer" => LocalSessionRecordClassification::User,
@@ -1105,8 +1119,195 @@ fn local_session_role_classification(role: &str) -> LocalSessionRecordClassifica
     }
 }
 
-fn local_session_classification_value_is_supported(value: &str) -> bool {
-    serde_json::to_string(value).is_ok_and(|encoded| encoded.len() <= MAX_PROVENANCE_TOKEN_BYTES)
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LocalSessionJsonParseError {
+    Invalid,
+    UnsafeClassification,
+}
+
+fn parse_local_session_json_with_raw_classification_bounds(
+    text: &str,
+) -> Result<(Value, bool), LocalSessionJsonParseError> {
+    let parsed =
+        serde_json::from_str::<Value>(text).map_err(|_| LocalSessionJsonParseError::Invalid)?;
+    let overflow_ranges = raw_classification_token_overflow_ranges(text.as_bytes())
+        .ok_or(LocalSessionJsonParseError::UnsafeClassification)?;
+    if overflow_ranges.is_empty() {
+        return Ok((parsed, false));
+    }
+
+    let mut bounded = String::with_capacity(text.len());
+    let mut copied_end = 0usize;
+    for (start, end) in overflow_ranges {
+        if start < copied_end || end > text.len() {
+            return Err(LocalSessionJsonParseError::UnsafeClassification);
+        }
+        bounded.push_str(&text[copied_end..start]);
+        bounded.push_str("null");
+        copied_end = end;
+    }
+    bounded.push_str(&text[copied_end..]);
+    serde_json::from_str(&bounded)
+        .map(|value| (value, true))
+        .map_err(|_| LocalSessionJsonParseError::UnsafeClassification)
+}
+
+fn raw_classification_token_overflow_ranges(bytes: &[u8]) -> Option<Vec<(usize, usize)>> {
+    let mut cursor = 0usize;
+    let mut ranges = Vec::new();
+    scan_raw_json_value(bytes, &mut cursor, 0, &mut ranges)?;
+    skip_raw_json_whitespace(bytes, &mut cursor);
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+    (cursor == bytes.len()).then_some(ranges)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RawClassificationKey {
+    Type,
+    Role,
+    Other,
+}
+
+fn scan_raw_json_value(
+    bytes: &[u8],
+    cursor: &mut usize,
+    depth: usize,
+    ranges: &mut Vec<(usize, usize)>,
+) -> Option<()> {
+    const MAX_SCAN_NESTING: usize = 256;
+    if depth > MAX_SCAN_NESTING {
+        return None;
+    }
+    skip_raw_json_whitespace(bytes, cursor);
+    match bytes.get(*cursor)? {
+        b'{' => scan_raw_json_object(bytes, cursor, depth + 1, ranges),
+        b'[' => scan_raw_json_array(bytes, cursor, depth + 1, ranges),
+        b'"' => {
+            let end = json_string_end(bytes, *cursor)?;
+            *cursor = end + 1;
+            Some(())
+        }
+        _ => {
+            let start = *cursor;
+            while bytes.get(*cursor).is_some_and(|byte| {
+                !byte.is_ascii_whitespace() && !matches!(byte, b',' | b']' | b'}')
+            }) {
+                *cursor += 1;
+            }
+            (*cursor > start).then_some(())
+        }
+    }
+}
+
+fn scan_raw_json_object(
+    bytes: &[u8],
+    cursor: &mut usize,
+    depth: usize,
+    ranges: &mut Vec<(usize, usize)>,
+) -> Option<()> {
+    *cursor += 1;
+    let mut final_type_overflow = None;
+    let mut final_role_overflow = None;
+    skip_raw_json_whitespace(bytes, cursor);
+    if bytes.get(*cursor) == Some(&b'}') {
+        *cursor += 1;
+        return Some(());
+    }
+
+    loop {
+        let key_start = *cursor;
+        if bytes.get(key_start) != Some(&b'"') {
+            return None;
+        }
+        let key_end = json_string_end(bytes, key_start)?;
+        let key_token = &bytes[key_start..=key_end];
+        let classification_key = (key_token.len() <= 64)
+            .then(|| serde_json::from_slice::<String>(key_token).ok())
+            .flatten()
+            .map_or(RawClassificationKey::Other, |key| match key.as_str() {
+                "type" => RawClassificationKey::Type,
+                "role" => RawClassificationKey::Role,
+                _ => RawClassificationKey::Other,
+            });
+        *cursor = key_end + 1;
+        skip_raw_json_whitespace(bytes, cursor);
+        if bytes.get(*cursor) != Some(&b':') {
+            return None;
+        }
+        *cursor += 1;
+        skip_raw_json_whitespace(bytes, cursor);
+
+        if classification_key != RawClassificationKey::Other && bytes.get(*cursor) == Some(&b'"') {
+            let value_start = *cursor;
+            let value_end = json_string_end(bytes, value_start)? + 1;
+            let overflow = (value_end.saturating_sub(value_start) > MAX_PROVENANCE_TOKEN_BYTES)
+                .then_some((value_start, value_end));
+            match classification_key {
+                RawClassificationKey::Type => final_type_overflow = overflow,
+                RawClassificationKey::Role => final_role_overflow = overflow,
+                RawClassificationKey::Other => {}
+            }
+            *cursor = value_end;
+        } else {
+            match classification_key {
+                RawClassificationKey::Type => final_type_overflow = None,
+                RawClassificationKey::Role => final_role_overflow = None,
+                RawClassificationKey::Other => {}
+            }
+            scan_raw_json_value(bytes, cursor, depth, ranges)?;
+        }
+
+        skip_raw_json_whitespace(bytes, cursor);
+        match bytes.get(*cursor) {
+            Some(b',') => {
+                *cursor += 1;
+                skip_raw_json_whitespace(bytes, cursor);
+            }
+            Some(b'}') => {
+                *cursor += 1;
+                ranges.extend(final_type_overflow);
+                ranges.extend(final_role_overflow);
+                return Some(());
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn scan_raw_json_array(
+    bytes: &[u8],
+    cursor: &mut usize,
+    depth: usize,
+    ranges: &mut Vec<(usize, usize)>,
+) -> Option<()> {
+    *cursor += 1;
+    skip_raw_json_whitespace(bytes, cursor);
+    if bytes.get(*cursor) == Some(&b']') {
+        *cursor += 1;
+        return Some(());
+    }
+
+    loop {
+        scan_raw_json_value(bytes, cursor, depth, ranges)?;
+        skip_raw_json_whitespace(bytes, cursor);
+        match bytes.get(*cursor) {
+            Some(b',') => {
+                *cursor += 1;
+                skip_raw_json_whitespace(bytes, cursor);
+            }
+            Some(b']') => {
+                *cursor += 1;
+                return Some(());
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn skip_raw_json_whitespace(bytes: &[u8], cursor: &mut usize) {
+    while bytes.get(*cursor).is_some_and(u8::is_ascii_whitespace) {
+        *cursor += 1;
+    }
 }
 
 fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
@@ -1120,8 +1321,8 @@ fn is_complete_json_record(fragment: &str) -> bool {
 }
 
 fn append_compacted_record(content: &mut String, record: &str, max_bytes: usize) {
-    match serde_json::from_str::<Value>(record) {
-        Ok(mut value) => {
+    match parse_local_session_json_with_raw_classification_bounds(record) {
+        Ok((mut value, _)) => {
             if local_session_top_level_record_type(&value)
                 .is_some_and(is_hidden_local_session_record_type)
             {
@@ -1142,7 +1343,10 @@ fn append_compacted_record(content: &mut String, record: &str, max_bytes: usize)
                 max_bytes,
             );
         }
-        Err(_) => append_supported_scalar_fragment(content, record, max_bytes),
+        Err(LocalSessionJsonParseError::Invalid) => {
+            append_supported_scalar_fragment(content, record, max_bytes);
+        }
+        Err(LocalSessionJsonParseError::UnsafeClassification) => {}
     }
 }
 
@@ -1315,6 +1519,12 @@ fn scalar_field_at(fragment: &str, start: usize, end: usize) -> Option<(String, 
     }
     if matches!(bytes.get(cursor), Some(b'{') | Some(b'[')) {
         return None;
+    }
+    if matches!(key.as_str(), "type" | "role") && bytes.get(cursor) == Some(&b'"') {
+        let value_end = json_string_end(bytes, cursor)?;
+        if value_end.saturating_sub(cursor).saturating_add(1) > MAX_PROVENANCE_TOKEN_BYTES {
+            return Some((key, Value::Null));
+        }
     }
     let value = serde_json::Deserializer::from_str(&fragment[cursor..])
         .into_iter::<Value>()
@@ -1608,6 +1818,62 @@ fn strip_internal_local_session_records(content: &str) -> String {
     visible
 }
 
+fn accepted_local_session_content(content: &str) -> String {
+    let mut accepted = String::with_capacity(content.len());
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match parse_local_session_json_with_raw_classification_bounds(trimmed) {
+            Ok((mut value, classification_changed)) => {
+                let (retained, tree_changed) = retain_accepted_local_session_value(&mut value);
+                if retained {
+                    if classification_changed || tree_changed {
+                        accepted.push_str(&value.to_string());
+                    } else {
+                        accepted.push_str(trimmed);
+                    }
+                    accepted.push('\n');
+                }
+            }
+            Err(LocalSessionJsonParseError::Invalid) => {
+                accepted.push_str(line);
+                accepted.push('\n');
+            }
+            Err(LocalSessionJsonParseError::UnsafeClassification) => {}
+        }
+    }
+    accepted
+}
+
+fn retain_accepted_local_session_value(value: &mut Value) -> (bool, bool) {
+    match value {
+        Value::Array(items) => {
+            let mut changed = false;
+            items.retain_mut(|nested| {
+                let (retained, nested_changed) = retain_accepted_local_session_value(nested);
+                changed |= nested_changed || !retained;
+                retained
+            });
+            (true, changed)
+        }
+        Value::Object(map) => {
+            if local_session_object_is_denied(map) {
+                return (false, true);
+            }
+            let mut changed = false;
+            map.retain(|_, nested| {
+                let (retained, nested_changed) = retain_accepted_local_session_value(nested);
+                changed |= nested_changed || !retained;
+                retained
+            });
+            (true, changed)
+        }
+        _ => (true, false),
+    }
+}
+
 fn local_session_row_id(path: &Path) -> String {
     let path_key = local_session_normalized_path(path);
     let path_hash = trace_content_hash(&path_key)
@@ -1724,11 +1990,7 @@ fn opencode_storage_root(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn local_session_parsed_metadata(
-    path: &Path,
-    file_content: &str,
-    content: &str,
-) -> LocalSessionParsedMetadata {
+fn local_session_parsed_metadata(path: &Path, content: &str) -> LocalSessionParsedMetadata {
     let mut metadata = LocalSessionParsedMetadata::default();
     let mut parsed_json = false;
     if path
@@ -1742,17 +2004,15 @@ fn local_session_parsed_metadata(
             .map(str::to_string);
     }
 
-    for text in [file_content, content] {
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
-                if metadata.title.is_none() && !parsed_json {
-                    metadata.title = local_session_text_title_candidate(line);
-                }
-                continue;
-            };
-            parsed_json = true;
-            merge_local_session_metadata(&value, &mut metadata);
-        }
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            if metadata.title.is_none() && !parsed_json {
+                metadata.title = local_session_text_title_candidate(line);
+            }
+            continue;
+        };
+        parsed_json = true;
+        merge_local_session_metadata(&value, &mut metadata);
     }
     if metadata.title.is_none() && !parsed_json {
         metadata.title = local_session_text_title_candidate(content);
@@ -2115,14 +2375,13 @@ fn push_session_skill_needle(needles: &mut Vec<String>, value: &str) {
 }
 
 fn detect_local_session_skill_mentions(
-    content: &str,
+    invocations: &[String],
     skill_matchers: &[LocalSessionSkillMatcher],
     evidence_ref: &str,
 ) -> Vec<LocalSessionSkillMention> {
     if skill_matchers.is_empty() {
         return Vec::new();
     }
-    let invocations = extract_skill_invocation_names(content);
     if invocations.is_empty() {
         return Vec::new();
     }
@@ -2294,6 +2553,7 @@ fn local_session_content_items(
     short_hash: &str,
     max_item_chars: usize,
     skill_mentions: &[LocalSessionSkillMention],
+    skill_invocations: &[String],
     redactor: &mut PromptRedactor<'_>,
 ) -> Vec<LocalSessionContentItem> {
     const MAX_SESSION_CONTENT_ITEMS: usize = 240;
@@ -2335,11 +2595,11 @@ fn local_session_content_items(
         });
     }
     let mut unmatched_invocations = BTreeMap::<String, usize>::new();
-    for invocation in extract_skill_invocation_names(content) {
-        if matched_invocations.contains(&invocation) {
+    for invocation in skill_invocations {
+        if matched_invocations.contains(invocation) {
             continue;
         }
-        *unmatched_invocations.entry(invocation).or_default() += 1;
+        *unmatched_invocations.entry(invocation.clone()).or_default() += 1;
     }
     for (invocation, count) in unmatched_invocations {
         let text = if count > 1 {
@@ -2575,9 +2835,7 @@ fn collect_json_session_content_drafts(
         Value::Object(map) => {
             let timestamp = json_session_timestamp_millis(value).or(inherited_timestamp);
             let role = json_session_role(map).map(str::to_string);
-            if local_session_record_classification(map, role.as_deref())
-                == LocalSessionRecordClassification::Deny
-            {
+            if local_session_object_is_denied(map) {
                 return;
             }
             let direct_kind = json_session_content_kind(map, role.as_deref());
@@ -2678,6 +2936,9 @@ fn collect_json_tool_call_drafts(
         match value {
             Value::Array(items) => {
                 for item in items {
+                    if local_session_value_is_denied(item) {
+                        continue;
+                    }
                     if let Some(text) = json_tool_payload_text(item) {
                         drafts.push(LocalSessionContentDraft {
                             kind: "tool_call".to_string(),
@@ -2690,6 +2951,9 @@ fn collect_json_tool_call_drafts(
                 }
             }
             Value::Object(_) | Value::String(_) => {
+                if local_session_value_is_denied(value) {
+                    continue;
+                }
                 if let Some(text) = json_tool_payload_text(value) {
                     drafts.push(LocalSessionContentDraft {
                         kind: "tool_call".to_string(),
@@ -2717,6 +2981,9 @@ fn collect_json_tool_part_drafts(
             }
         }
         Value::Object(map) => {
+            if local_session_object_is_denied(map) {
+                return;
+            }
             let timestamp = json_session_timestamp_millis(value).or(inherited_timestamp);
             if let Some(kind) = map.get("type").and_then(Value::as_str) {
                 let normalized = kind.to_ascii_lowercase().replace(['_', '-'], "");
@@ -3279,6 +3546,9 @@ fn json_tool_payload_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => (!text.trim().is_empty()).then(|| text.clone()),
         Value::Object(map) => {
+            if local_session_object_is_denied(map) {
+                return None;
+            }
             for key in [
                 "content",
                 "text",
@@ -3445,8 +3715,8 @@ struct LocalSessionMetrics {
 }
 
 fn local_session_metrics(
-    content: &str,
     content_items: &[LocalSessionContentItem],
+    skill_call_count: usize,
 ) -> LocalSessionMetrics {
     let mut metrics = LocalSessionMetrics::default();
     for item in content_items {
@@ -3466,7 +3736,7 @@ fn local_session_metrics(
         }
     }
 
-    metrics.skill_call_count = count_skill_invocation_mentions(content);
+    metrics.skill_call_count = skill_call_count;
     metrics
 }
 
@@ -3500,10 +3770,6 @@ fn json_session_role(map: &serde_json::Map<String, Value>) -> Option<&str> {
                 .and_then(|author| author.get("role"))
                 .and_then(Value::as_str)
         })
-}
-
-fn count_skill_invocation_mentions(text: &str) -> usize {
-    extract_skill_invocation_names(text).len()
 }
 
 fn local_session_title(path: &Path, short_hash: &str) -> String {

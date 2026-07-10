@@ -1054,6 +1054,271 @@ fn complete_deny_record_blocks_all_nested_content_extraction() {
 }
 
 #[test]
+fn denied_descendants_block_every_specialized_tool_path() {
+    let session = json!([
+        {
+            "content": [{
+                "type": "developer",
+                "role": "developer",
+                "content": [{
+                    "type": "tool_call",
+                    "name": "blocked_content_tool",
+                    "arguments": { "marker": "denied content tool payload" }
+                }]
+            }]
+        },
+        {
+            "parts": [{
+                "type": "system",
+                "role": "system",
+                "parts": [{
+                    "type": "tool_call",
+                    "name": "blocked_parts_tool",
+                    "arguments": { "marker": "denied parts tool payload" }
+                }]
+            }]
+        },
+        {
+            "message": {
+                "type": "summary",
+                "role": "summary",
+                "content": [{
+                    "type": "tool_call",
+                    "name": "blocked_message_tool",
+                    "arguments": { "marker": "denied message tool payload" }
+                }]
+            }
+        },
+        {
+            "tool_calls": [{
+                "type": "tool_call",
+                "role": null,
+                "name": "blocked_invalid_tool",
+                "arguments": { "marker": "denied invalid tool payload" }
+            }]
+        },
+        {
+            "type": "user",
+            "role": "user",
+            "text": "accepted sibling remains visible"
+        }
+    ])
+    .to_string();
+
+    let result = preview_codex_session_fixture("deny-specialized-tool-paths", &session);
+    let items = result
+        .pointer("/session_rows/0/content_items")
+        .and_then(Value::as_array)
+        .expect("content items");
+
+    assert_eq!(items.len(), 1, "{result}");
+    assert_eq!(
+        items[0].get("text").and_then(Value::as_str),
+        Some("accepted sibling remains visible"),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/tool_call_count")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    let serialized = serde_json::to_string(&result).expect("serialize denied tool result");
+    for hidden in [
+        "denied content tool payload",
+        "denied parts tool payload",
+        "denied message tool payload",
+        "denied invalid tool payload",
+    ] {
+        assert!(
+            !serialized.contains(hidden),
+            "surfaced {hidden}: {serialized}"
+        );
+    }
+}
+
+#[test]
+fn complete_classification_uses_raw_token_spans_and_last_wins() {
+    let over_limit_token = format!("\"{}user\"", "\\u005f".repeat(700));
+    let exact_limit_token = format!("\"{}____user\"", "\\u005f".repeat(681));
+    assert!(over_limit_token.len() > 4 * 1024);
+    assert_eq!(exact_limit_token.len(), 4 * 1024);
+
+    let session = format!(
+        concat!(
+            "[",
+            "{{\"type\":\"user\",\"role\":{over},\"text\":\"raw over-limit role hidden\"}},",
+            "{{\"type\":\"user\",\"r\\u006fle\":{over},\"text\":\"escaped role key hidden\"}},",
+            "{{\"data\":{{\"type\":{over},\"role\":\"user\",\"text\":\"nested raw over-limit type hidden\"}}}},",
+            "{{\"type\":\"user\",\"role\":{exact},\"text\":\"exact raw boundary visible\"}},",
+            "{{\"type\":\"user\",\"role\":{over},\"role\":\"user\",\"text\":\"final supported duplicate visible\"}},",
+            "{{\"type\":\"user\",\"role\":\"user\",\"role\":{over},\"text\":\"final over-limit duplicate hidden\"}},",
+            "{{\"type\":\"assistant\",\"role\":\"assistant\",\"text\":\"positive array sibling visible\"}}",
+            "]"
+        ),
+        over = over_limit_token,
+        exact = exact_limit_token,
+    );
+
+    let result = preview_codex_session_fixture("raw-classification-spans", &session);
+    let items = result
+        .pointer("/session_rows/0/content_items")
+        .and_then(Value::as_array)
+        .expect("content items");
+    let texts = items
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(2),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/total_message_count")
+            .and_then(Value::as_u64),
+        Some(3),
+        "{result}"
+    );
+    for visible in [
+        "exact raw boundary visible",
+        "final supported duplicate visible",
+        "positive array sibling visible",
+    ] {
+        assert!(texts.contains(&visible), "missing {visible}: {result}");
+    }
+    for hidden in [
+        "raw over-limit role hidden",
+        "escaped role key hidden",
+        "nested raw over-limit type hidden",
+        "final over-limit duplicate hidden",
+    ] {
+        assert!(!texts.contains(&hidden), "surfaced {hidden}: {result}");
+    }
+    let serialized = serde_json::to_string(&result).expect("serialize raw-bound result");
+    for hidden in [
+        "raw over-limit role hidden",
+        "escaped role key hidden",
+        "nested raw over-limit type hidden",
+        "final over-limit duplicate hidden",
+    ] {
+        assert!(
+            !serialized.contains(hidden),
+            "surfaced {hidden}: {serialized}"
+        );
+    }
+}
+
+#[test]
+fn skill_invocations_only_come_from_accepted_records() {
+    let skill_name = "accepted-session-skill";
+    let denied = preview_codex_session_fixture_with_catalog_skill(
+        "deny-skill-invocation",
+        &json!([
+            {
+                "type": "developer",
+                "role": "developer",
+                "text": format!("skill:{skill_name}")
+            },
+            {
+                "type": "user",
+                "role": "user",
+                "text": "accepted non-skill sibling"
+            }
+        ])
+        .to_string(),
+        skill_name,
+    );
+
+    assert_eq!(
+        denied
+            .pointer("/session_rows/0/skill_call_count")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{denied}"
+    );
+    assert_eq!(
+        denied.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{denied}"
+    );
+    assert!(
+        denied
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items
+                .iter()
+                .all(|item| item.get("kind").and_then(Value::as_str) != Some("skill_call"))),
+        "{denied}"
+    );
+    assert!(
+        !serde_json::to_string(&denied)
+            .expect("serialize denied skill result")
+            .contains(&format!("skill:{skill_name}")),
+        "{denied}"
+    );
+    assert!(
+        denied
+            .get("skill_usage_rows")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{denied}"
+    );
+
+    let accepted = preview_codex_session_fixture_with_catalog_skill(
+        "accepted-skill-invocation",
+        &json!([
+            {
+                "type": "user",
+                "role": "user",
+                "text": format!("skill:{skill_name}")
+            },
+            {
+                "type": "assistant",
+                "role": "assistant",
+                "text": format!("skill:{skill_name}")
+            },
+            {
+                "type": "tool_call",
+                "role": "assistant",
+                "name": "accepted_tool",
+                "arguments": { "invocation": format!("skill:{skill_name}") }
+            }
+        ])
+        .to_string(),
+        skill_name,
+    );
+    assert_eq!(
+        accepted
+            .pointer("/session_rows/0/skill_call_count")
+            .and_then(Value::as_u64),
+        Some(3),
+        "{accepted}"
+    );
+    assert_eq!(
+        accepted
+            .pointer("/skill_usage_rows/0/call_count")
+            .and_then(Value::as_u64),
+        Some(3),
+        "{accepted}"
+    );
+    assert!(
+        accepted
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item.get("kind").and_then(Value::as_str) == Some("skill_call"))),
+        "{accepted}"
+    );
+}
+
+#[test]
 fn invalid_or_denying_classification_blocks_entire_nested_record() {
     for (case, record_type, role) in [
         ("null-role", json!("user"), Value::Null),
@@ -2379,6 +2644,30 @@ fn preview_codex_session_fixture_with_extension_bytes(
     extension: &str,
     content: &[u8],
 ) -> Value {
+    preview_codex_session_fixture_with_extension_bytes_and_catalog_skill(
+        test_name, extension, content, None,
+    )
+}
+
+fn preview_codex_session_fixture_with_catalog_skill(
+    test_name: &str,
+    content: &str,
+    skill_name: &str,
+) -> Value {
+    preview_codex_session_fixture_with_extension_bytes_and_catalog_skill(
+        test_name,
+        "jsonl",
+        content.as_bytes(),
+        Some(skill_name),
+    )
+}
+
+fn preview_codex_session_fixture_with_extension_bytes_and_catalog_skill(
+    test_name: &str,
+    extension: &str,
+    content: &[u8],
+    catalog_skill_name: Option<&str>,
+) -> Value {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-local-session-{test_name}-test-{}-{unique}",
@@ -2406,6 +2695,41 @@ fn preview_codex_session_fixture_with_extension_bytes(
             extra_roots: Vec::new(),
         },
     };
+    if let Some(skill_name) = catalog_skill_name {
+        fs::create_dir_all(&host.app_data_dir).expect("create catalog directory");
+        let catalog = Catalog::open(&host.catalog_path()).expect("open local-session catalog");
+        catalog.init().expect("initialize local-session catalog");
+        let skill_path = user_home
+            .join(".codex/skills")
+            .join(skill_name)
+            .join("SKILL.md");
+        let instance = SkillInstance {
+            id: format!("{skill_name}-id"),
+            agent: AgentId::Codex,
+            scope: Scope::AgentGlobal,
+            project_root: None,
+            path: skill_path.clone(),
+            display_path: skill_path,
+            definition_id: format!("{skill_name}-definition"),
+            name: skill_name.to_string(),
+            display_name: skill_name.to_string(),
+            description: "Local-session skill matching fixture.".to_string(),
+            version: None,
+            state: SkillState::Loaded,
+            enabled: true,
+            frontmatter_raw: format!("name: {skill_name}\ndescription: fixture\n"),
+            body: "Fixture body.".to_string(),
+            scripts: Vec::new(),
+            permissions: PermissionRequest::default(),
+            fingerprint: format!("{skill_name}-fingerprint"),
+            mtime: 1,
+            first_seen: 1,
+            last_seen: 1,
+        };
+        catalog
+            .upsert_skill_instance(&instance)
+            .expect("seed local-session skill");
+    }
     let response = host.handle(ServiceRequest {
         id: Some(format!("session-preview-{test_name}")),
         method: "session.previewLocalSessions".to_string(),
@@ -2415,10 +2739,12 @@ fn preview_codex_session_fixture_with_extension_bytes(
             "max_excerpt_chars": 800
         }),
     });
-    assert!(
-        !app_data_dir.exists(),
-        "session preview must not create app-local persistence"
-    );
+    if catalog_skill_name.is_none() {
+        assert!(
+            !app_data_dir.exists(),
+            "session preview must not create app-local persistence"
+        );
+    }
     let _ = fs::remove_dir_all(app_data_dir);
     let _ = fs::remove_dir_all(user_home);
     assert!(response.ok, "{:?}", response.error);
