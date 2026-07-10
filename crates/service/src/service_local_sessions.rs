@@ -1009,11 +1009,7 @@ fn append_supported_scalar_fields(
     fields: serde_json::Map<String, Value>,
     max_bytes: usize,
 ) {
-    if fields
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(is_hidden_local_session_record_type)
-    {
+    if supported_scalar_fields_are_non_message(&fields) {
         return;
     }
     let Some(compacted) = bounded_supported_scalar_object(fields, max_bytes) else {
@@ -1024,6 +1020,35 @@ fn append_supported_scalar_fields(
     }
     content.push_str(&compacted);
     content.push('\n');
+}
+
+fn supported_scalar_fields_are_non_message(fields: &serde_json::Map<String, Value>) -> bool {
+    if let Some(record_type) = fields.get("type") {
+        let Some(record_type) = record_type.as_str() else {
+            return true;
+        };
+        let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
+        if is_hidden_local_session_record_type(record_type)
+            || is_json_tool_type(&normalized)
+            || is_json_non_message_type(&normalized)
+        {
+            return true;
+        }
+        if is_json_visible_message_type(&normalized) {
+            return false;
+        }
+    }
+    let Some(role) = fields.get("role") else {
+        return false;
+    };
+    let Some(role) = role.as_str() else {
+        return true;
+    };
+    let role = role.to_ascii_lowercase().replace(['_', '-'], "");
+    matches!(
+        role.as_str(),
+        "system" | "developer" | "summary" | "tool" | "function" | "toolresult"
+    )
 }
 
 fn split_tail_leading_fragment(tail: &str) -> (&str, &str) {
@@ -1037,7 +1062,9 @@ fn is_complete_json_record(fragment: &str) -> bool {
 }
 
 fn append_structured_prefix_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
-    if looks_like_json_fragment(fragment) {
+    if looks_like_json_fragment(fragment)
+        || (fragment.starts_with('\u{feff}') && looks_like_incomplete_json_record(fragment))
+    {
         return;
     }
     let retained = truncate_utf8_bytes(fragment, max_bytes.saturating_sub(1));
@@ -2820,8 +2847,10 @@ fn json_session_content_kind(
         let normalized = kind.to_ascii_lowercase().replace(['_', '-'], "");
         match normalized.as_str() {
             "user" | "human" => return Some("user_message"),
+            "assistant" | "agent" | "model" => return Some("agent_reply"),
             value if is_json_thinking_type(value) => return Some("thinking"),
             value if is_json_tool_type(value) => return Some("tool_call"),
+            value if is_json_non_message_type(value) => return None,
             _ => {}
         }
     }
@@ -3114,7 +3143,7 @@ fn json_non_tool_message_text(value: &Value) -> Option<String> {
             (!texts.is_empty()).then(|| texts.join("\n"))
         }
         Value::Object(map) => {
-            if is_json_tool_object(map) {
+            if is_json_tool_object(map) || json_session_blocks_plain_text_fallback(map) {
                 return None;
             }
             for key in [
@@ -3137,6 +3166,18 @@ fn json_non_tool_message_text(value: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn json_session_blocks_plain_text_fallback(map: &serde_json::Map<String, Value>) -> bool {
+    map.get("type")
+        .and_then(Value::as_str)
+        .map(|kind| kind.to_ascii_lowercase().replace(['_', '-'], ""))
+        .is_some_and(|kind| is_json_non_message_type(&kind))
+        || map
+            .get("role")
+            .and_then(Value::as_str)
+            .map(|role| role.to_ascii_lowercase().replace(['_', '-'], ""))
+            .is_some_and(|role| matches!(role.as_str(), "system" | "developer" | "summary"))
 }
 
 fn is_json_tool_object(map: &serde_json::Map<String, Value>) -> bool {
@@ -3163,13 +3204,28 @@ fn is_json_thinking_type(normalized: &str) -> bool {
 fn is_json_tool_type(normalized: &str) -> bool {
     matches!(
         normalized,
-        "toolcall"
+        "tool"
+            | "toolcall"
             | "tooluse"
             | "functioncall"
             | "toolresult"
             | "tooluseresult"
             | "tooluseerror"
             | "functionresult"
+    )
+}
+
+fn is_json_non_message_type(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "developer" | "system" | "summary" | "compaction" | "context" | "metadata"
+    )
+}
+
+fn is_json_visible_message_type(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "user" | "human" | "assistant" | "agent" | "model"
     )
 }
 

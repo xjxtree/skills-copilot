@@ -734,6 +734,239 @@ fn later_hidden_duplicate_type_in_unread_gap_overrides_visible_head_type() {
 }
 
 #[test]
+fn oversized_non_message_classifications_never_become_plain_text_replies() {
+    for (region, first_blob_bytes) in [("gap", 400 * 1024), ("tail-prefix", 440 * 1024)] {
+        for record_type in ["developer", "summary", "tool", "tool_result"] {
+            let marker = format!(
+                "NON_MESSAGE_{}_{}_MUST_NOT_BECOME_REPLY",
+                region.replace('-', "_").to_ascii_uppercase(),
+                record_type.to_ascii_uppercase()
+            );
+            let session = format!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"text\":{marker},\"data\":\"{}\",\"type\":{record_type},\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+                "a".repeat(first_blob_bytes),
+                "b".repeat((600_usize * 1024).saturating_sub(first_blob_bytes)),
+                marker = serde_json::to_string(&marker).expect("serialize marker"),
+                record_type = serde_json::to_string(record_type).expect("serialize type"),
+            );
+            let result = preview_codex_session_fixture(
+                &format!("non-message-{region}-{record_type}"),
+                &session,
+            );
+            let output = serde_json::to_string(&result).expect("serialize preview");
+
+            assert!(
+                !output.contains(&marker),
+                "{region}/{record_type}: {output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn later_non_message_type_overrides_old_user_classification() {
+    for record_type in ["developer", "summary"] {
+        let marker = format!(
+            "LATER_{}_MUST_OVERRIDE_OLD_USER",
+            record_type.to_ascii_uppercase()
+        );
+        let session = format!(
+            "{{\"type\":\"user\",\"role\":\"user\",\"text\":{marker},\"data\":\"{}\",\"type\":{record_type},\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+            "a".repeat(400 * 1024),
+            "b".repeat(200 * 1024),
+            marker = serde_json::to_string(&marker).expect("serialize marker"),
+            record_type = serde_json::to_string(record_type).expect("serialize type"),
+        );
+        let result =
+            preview_codex_session_fixture(&format!("later-non-message-{record_type}"), &session);
+        let output = serde_json::to_string(&result).expect("serialize preview");
+
+        assert!(!output.contains(&marker), "{record_type}: {output}");
+    }
+}
+
+#[test]
+fn unusable_later_classification_clears_old_visible_classification() {
+    for (field, prefix) in [
+        ("type", "\"type\":\"user\",\"role\":\"user\","),
+        ("role", "\"role\":\"user\","),
+    ] {
+        for (case, later_value) in [
+            ("null", "null".to_string()),
+            ("object", "{}".to_string()),
+            (
+                "oversized",
+                serde_json::to_string(&"x".repeat(5 * 1024))
+                    .expect("serialize oversized classification"),
+            ),
+        ] {
+            let marker = format!(
+                "UNUSABLE_LATER_{}_{}_MUST_NOT_SURFACE",
+                field.to_ascii_uppercase(),
+                case.to_ascii_uppercase()
+            );
+            let session = format!(
+                "{{{prefix}\"text\":{marker},\"data\":\"{}\",\"{field}\":{later_value},\"blob\":\"{}\"}}\n",
+                "a".repeat(400 * 1024),
+                "b".repeat(200 * 1024),
+                marker = serde_json::to_string(&marker).expect("serialize marker"),
+            );
+            let result =
+                preview_codex_session_fixture(&format!("unusable-later-{field}-{case}"), &session);
+            let output = serde_json::to_string(&result).expect("serialize preview");
+
+            assert!(!output.contains(&marker), "{field}/{case}: {output}");
+        }
+    }
+}
+
+#[test]
+fn oversized_visible_user_and_assistant_classifications_remain_visible() {
+    for (record_type, role, expected_kind) in [
+        ("user", "user", "user_message"),
+        ("assistant", "assistant", "agent_reply"),
+    ] {
+        let marker = format!(
+            "VISIBLE_{}_RECOVERED_MESSAGE",
+            record_type.to_ascii_uppercase()
+        );
+        let session = format!(
+            "{{\"text\":{marker},\"data\":\"{}\",\"type\":{record_type},\"role\":{role},\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+            "a".repeat(400 * 1024),
+            "b".repeat(200 * 1024),
+            marker = serde_json::to_string(&marker).expect("serialize marker"),
+            record_type = serde_json::to_string(record_type).expect("serialize type"),
+            role = serde_json::to_string(role).expect("serialize role"),
+        );
+        let result =
+            preview_codex_session_fixture(&format!("visible-recovered-{record_type}"), &session);
+
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/content_items/0/kind")
+                .and_then(Value::as_str),
+            Some(expected_kind),
+            "{record_type}: {result}"
+        );
+        assert!(
+            result
+                .pointer("/session_rows/0/content_items/0/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains(&marker)),
+            "{record_type}: {result}"
+        );
+    }
+}
+
+#[test]
+fn invalid_oversized_json_never_produces_recovered_content() {
+    let cases = [
+        (
+            "invalid-nested-token",
+            format!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"text\":\"INVALID_NESTED_TOKEN_MUST_NOT_SURFACE\",\"data\":{{{}}},\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+                "x".repeat(600 * 1024)
+            ),
+            "INVALID_NESTED_TOKEN_MUST_NOT_SURFACE",
+        ),
+        (
+            "root-trailing-comma",
+            format!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"text\":\"ROOT_TRAILING_COMMA_MUST_NOT_SURFACE\",\"data\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\",}}\n",
+                "x".repeat(600 * 1024)
+            ),
+            "ROOT_TRAILING_COMMA_MUST_NOT_SURFACE",
+        ),
+        (
+            "nested-trailing-comma",
+            format!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"text\":\"NESTED_TRAILING_COMMA_MUST_NOT_SURFACE\",\"data\":{{\"blob\":\"{}\",}},\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+                "x".repeat(600 * 1024)
+            ),
+            "NESTED_TRAILING_COMMA_MUST_NOT_SURFACE",
+        ),
+        (
+            "invalid-array-token",
+            format!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"text\":\"INVALID_ARRAY_TOKEN_MUST_NOT_SURFACE\",\"data\":[{}],\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+                "x".repeat(600 * 1024)
+            ),
+            "INVALID_ARRAY_TOKEN_MUST_NOT_SURFACE",
+        ),
+    ];
+
+    for (case, session, marker) in cases {
+        let result = preview_codex_session_fixture(case, &session);
+        let output = serde_json::to_string(&result).expect("serialize invalid preview");
+
+        assert!(!output.contains(marker), "{case}: {output}");
+    }
+}
+
+#[test]
+fn later_supported_scalar_override_clears_stale_visible_text() {
+    for (region, first_blob_bytes) in [("gap", 400 * 1024), ("tail-prefix", 440 * 1024)] {
+        for (case, later_text) in [
+            ("null", "null".to_string()),
+            ("object", "{}".to_string()),
+            (
+                "oversized",
+                serde_json::to_string(&"z".repeat(5 * 1024)).expect("serialize oversized text"),
+            ),
+        ] {
+            let marker = format!(
+                "STALE_{}_{}_TEXT_MUST_BE_CLEARED",
+                region.replace('-', "_").to_ascii_uppercase(),
+                case.to_ascii_uppercase()
+            );
+            let session = format!(
+                "{{\"type\":\"user\",\"role\":\"user\",\"text\":{marker},\"data\":\"{}\",\"text\":{later_text},\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+                "a".repeat(first_blob_bytes),
+                "b".repeat((600_usize * 1024).saturating_sub(first_blob_bytes)),
+                marker = serde_json::to_string(&marker).expect("serialize marker"),
+            );
+            let result = preview_codex_session_fixture(
+                &format!("supported-text-override-{case}-{region}"),
+                &session,
+            );
+            let output =
+                serde_json::to_string(&result).expect("serialize supported override preview");
+
+            assert!(!output.contains(&marker), "{case}/{region}: {output}");
+        }
+    }
+}
+
+#[test]
+fn bom_prefixed_oversized_record_after_first_line_is_rejected() {
+    let first = json!({
+        "type": "user",
+        "role": "user",
+        "text": "FIRST_RECORD_REMAINS_VISIBLE"
+    });
+    let session = format!(
+        "{first}\n\u{feff}{{\"type\":\"user\",\"role\":\"user\",\"text\":\"MID_RECORD_BOM_MUST_NOT_SURFACE\",\"data\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        "x".repeat(600 * 1024)
+    );
+    let result = preview_codex_session_fixture("mid-record-bom-oversized", &session);
+    let output = serde_json::to_string(&result).expect("serialize BOM preview");
+
+    assert!(output.contains("FIRST_RECORD_REMAINS_VISIBLE"), "{output}");
+    assert!(
+        !output.contains("MID_RECORD_BOM_MUST_NOT_SURFACE"),
+        "{output}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{result}"
+    );
+}
+
+#[test]
 fn oversized_user_tail_text_with_head_timestamp_preserves_supported_scalars() {
     let session = format!(
         "{{\"type\":\"user\",\"role\":\"user\",\"timestamp\":\"2026-07-10T08:09:10Z\",\"data\":\"{}\",\"text\":\"USER_TAIL_WITH_HEAD_TIMESTAMP\"}}\n",

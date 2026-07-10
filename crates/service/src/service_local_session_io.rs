@@ -32,14 +32,28 @@ pub(crate) struct BoundedText {
 pub(crate) struct BoundedRecordProvenance {
     record_type: ScalarProvenance,
     role: ScalarProvenance,
+    text: ScalarProvenance,
+    content: ScalarProvenance,
+    title: ScalarProvenance,
+    ai_title: ScalarProvenance,
     timestamp: ScalarProvenance,
+    session_id: ScalarProvenance,
+    id: ScalarProvenance,
+    cwd: ScalarProvenance,
 }
 
 impl BoundedRecordProvenance {
     pub(crate) fn merge_into(&self, fields: &mut Map<String, Value>) {
-        self.record_type.merge_into(fields, "type");
-        self.role.merge_into(fields, "role");
+        self.record_type.merge_classification_into(fields, "type");
+        self.role.merge_classification_into(fields, "role");
+        self.text.merge_into(fields, "text");
+        self.content.merge_into(fields, "content");
+        self.title.merge_into(fields, "title");
+        self.ai_title.merge_into(fields, "aiTitle");
         self.timestamp.merge_into(fields, "timestamp");
+        self.session_id.merge_into(fields, "sessionId");
+        self.id.merge_into(fields, "id");
+        self.cwd.merge_into(fields, "cwd");
     }
 }
 
@@ -63,26 +77,49 @@ impl ScalarProvenance {
             }
         }
     }
+
+    fn merge_classification_into(&self, fields: &mut Map<String, Value>, key: &str) {
+        match self {
+            Self::Missing => {}
+            Self::Scalar(value) => {
+                fields.insert(key.to_string(), value.clone());
+            }
+            Self::Unsupported => {
+                fields.insert(key.to_string(), Value::Null);
+            }
+        }
+    }
 }
 
 const MAX_PROVENANCE_TOKEN_BYTES: usize = 4 * 1024;
 const MAX_PROVENANCE_NESTING: usize = 128;
 
+fn is_json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ProvenanceKey {
     RecordType,
     Role,
+    Text,
+    Content,
+    Title,
+    AiTitle,
     Timestamp,
+    SessionId,
+    Id,
+    Cwd,
     Other,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum RootParseState {
     Start,
-    KeyOrEnd,
+    FirstKeyOrEnd,
+    Key,
     Colon,
     Value,
-    Primitive,
     AfterValue,
     Complete,
     Invalid,
@@ -92,12 +129,31 @@ enum RootParseState {
 enum StringPurpose {
     RootKey,
     RootValue(ProvenanceKey),
-    Nested,
+    NestedKey,
+    NestedValue,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PrimitivePurpose {
+    RootValue(ProvenanceKey),
+    NestedValue,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum NestedParseState {
+    ObjectFirstKeyOrEnd,
+    ObjectKey,
+    ObjectColon,
+    ObjectValue,
+    ObjectAfterValue,
+    ArrayFirstValueOrEnd,
+    ArrayValue,
+    ArrayAfterValue,
 }
 
 struct TopLevelProvenanceScanner {
     state: RootParseState,
-    stack: Vec<u8>,
+    nested_stack: Vec<NestedParseState>,
     current_key: ProvenanceKey,
     string_purpose: Option<StringPurpose>,
     string_token: Vec<u8>,
@@ -107,8 +163,11 @@ struct TopLevelProvenanceScanner {
     utf8_remaining: u8,
     utf8_next_min: u8,
     utf8_next_max: u8,
+    unicode_escape_value: u16,
+    pending_high_surrogate: bool,
+    unicode_escape_is_low_surrogate: bool,
     primitive_token: Vec<u8>,
-    primitive_key: ProvenanceKey,
+    primitive_purpose: Option<PrimitivePurpose>,
     provenance: BoundedRecordProvenance,
 }
 
@@ -116,7 +175,7 @@ impl TopLevelProvenanceScanner {
     fn new() -> Self {
         Self {
             state: RootParseState::Start,
-            stack: Vec::with_capacity(16),
+            nested_stack: Vec::with_capacity(16),
             current_key: ProvenanceKey::Other,
             string_purpose: None,
             string_token: Vec::with_capacity(64),
@@ -126,12 +185,22 @@ impl TopLevelProvenanceScanner {
             utf8_remaining: 0,
             utf8_next_min: 0x80,
             utf8_next_max: 0xbf,
+            unicode_escape_value: 0,
+            pending_high_surrogate: false,
+            unicode_escape_is_low_surrogate: false,
             primitive_token: Vec::with_capacity(32),
-            primitive_key: ProvenanceKey::Other,
+            primitive_purpose: None,
             provenance: BoundedRecordProvenance {
                 record_type: ScalarProvenance::Missing,
                 role: ScalarProvenance::Missing,
+                text: ScalarProvenance::Missing,
+                content: ScalarProvenance::Missing,
+                title: ScalarProvenance::Missing,
+                ai_title: ScalarProvenance::Missing,
                 timestamp: ScalarProvenance::Missing,
+                session_id: ScalarProvenance::Missing,
+                id: ScalarProvenance::Missing,
+                cwd: ScalarProvenance::Missing,
             },
         }
     }
@@ -143,12 +212,13 @@ impl TopLevelProvenanceScanner {
     }
 
     fn finish(mut self) -> Option<BoundedRecordProvenance> {
-        if self.state == RootParseState::Primitive {
+        if self.primitive_purpose.is_some() {
             self.finish_primitive();
         }
         (self.state == RootParseState::Complete
-            && self.stack.is_empty()
-            && self.string_purpose.is_none())
+            && self.nested_stack.is_empty()
+            && self.string_purpose.is_none()
+            && self.primitive_purpose.is_none())
         .then_some(self.provenance)
     }
 
@@ -160,95 +230,202 @@ impl TopLevelProvenanceScanner {
             self.feed_string_byte(byte);
             return;
         }
-        if self.stack.len() > 1 {
+        if self.primitive_purpose.is_some() {
+            if is_json_whitespace(byte) || matches!(byte, b',' | b'}' | b']') {
+                self.finish_primitive();
+                if self.state != RootParseState::Invalid {
+                    self.feed_byte(byte);
+                }
+            } else {
+                self.push_primitive_byte(byte);
+            }
+            return;
+        }
+        if !self.nested_stack.is_empty() {
             self.feed_nested_byte(byte);
             return;
         }
 
-        let mut pending = Some(byte);
-        while let Some(byte) = pending.take() {
-            match self.state {
-                RootParseState::Start => {
-                    if byte.is_ascii_whitespace() {
-                        continue;
-                    }
-                    if byte == b'{' {
-                        self.stack.push(byte);
-                        self.state = RootParseState::KeyOrEnd;
-                    } else {
-                        self.invalidate();
-                    }
+        if is_json_whitespace(byte) && self.state != RootParseState::Value {
+            return;
+        }
+        match self.state {
+            RootParseState::Start => {
+                if byte == b'{' {
+                    self.state = RootParseState::FirstKeyOrEnd;
+                } else {
+                    self.invalidate();
                 }
-                RootParseState::KeyOrEnd => {
-                    if byte.is_ascii_whitespace() {
-                        continue;
-                    }
-                    match byte {
-                        b'"' => self.begin_string(StringPurpose::RootKey),
-                        b'}' => {
-                            self.stack.pop();
-                            self.state = RootParseState::Complete;
-                        }
-                        _ => self.invalidate(),
-                    }
-                }
-                RootParseState::Colon => {
-                    if byte.is_ascii_whitespace() {
-                        continue;
-                    }
-                    if byte == b':' {
-                        self.state = RootParseState::Value;
-                    } else {
-                        self.invalidate();
-                    }
-                }
-                RootParseState::Value => {
-                    if byte.is_ascii_whitespace() {
-                        continue;
-                    }
-                    match byte {
-                        b'"' => self.begin_string(StringPurpose::RootValue(self.current_key)),
-                        b'{' | b'[' => {
-                            self.set_current_field(ScalarProvenance::Unsupported);
-                            self.push_nested(byte);
-                        }
-                        b',' | b'}' | b']' => self.invalidate(),
-                        _ => {
-                            self.primitive_token.clear();
-                            self.primitive_key = self.current_key;
-                            self.push_primitive_byte(byte);
-                            self.state = RootParseState::Primitive;
-                        }
-                    }
-                }
-                RootParseState::Primitive => {
-                    if byte.is_ascii_whitespace() || matches!(byte, b',' | b'}') {
-                        self.finish_primitive();
-                        pending = Some(byte);
-                    } else {
-                        self.push_primitive_byte(byte);
-                    }
-                }
-                RootParseState::AfterValue => {
-                    if byte.is_ascii_whitespace() {
-                        continue;
-                    }
-                    match byte {
-                        b',' => self.state = RootParseState::KeyOrEnd,
-                        b'}' => {
-                            self.stack.pop();
-                            self.state = RootParseState::Complete;
-                        }
-                        _ => self.invalidate(),
-                    }
-                }
-                RootParseState::Complete => {
-                    if !byte.is_ascii_whitespace() {
-                        self.invalidate();
-                    }
-                }
-                RootParseState::Invalid => {}
             }
+            RootParseState::FirstKeyOrEnd => match byte {
+                b'"' => self.begin_string(StringPurpose::RootKey),
+                b'}' => self.state = RootParseState::Complete,
+                _ => self.invalidate(),
+            },
+            RootParseState::Key => {
+                if byte == b'"' {
+                    self.begin_string(StringPurpose::RootKey);
+                } else {
+                    self.invalidate();
+                }
+            }
+            RootParseState::Colon => {
+                if byte == b':' {
+                    self.state = RootParseState::Value;
+                } else {
+                    self.invalidate();
+                }
+            }
+            RootParseState::Value => {
+                if is_json_whitespace(byte) {
+                    return;
+                }
+                match byte {
+                    b'"' => self.begin_string(StringPurpose::RootValue(self.current_key)),
+                    b'{' | b'[' => {
+                        self.set_current_field(ScalarProvenance::Unsupported);
+                        self.state = RootParseState::AfterValue;
+                        self.push_nested(byte);
+                    }
+                    b',' | b'}' | b']' => self.invalidate(),
+                    _ => self.begin_primitive(PrimitivePurpose::RootValue(self.current_key), byte),
+                }
+            }
+            RootParseState::AfterValue => match byte {
+                b',' => self.state = RootParseState::Key,
+                b'}' => self.state = RootParseState::Complete,
+                _ => self.invalidate(),
+            },
+            RootParseState::Complete => self.invalidate(),
+            RootParseState::Invalid => {}
+        }
+    }
+
+    fn begin_primitive(&mut self, purpose: PrimitivePurpose, first_byte: u8) {
+        self.primitive_token.clear();
+        self.primitive_purpose = Some(purpose);
+        self.push_primitive_byte(first_byte);
+    }
+
+    fn feed_nested_byte(&mut self, byte: u8) {
+        let state = *self.nested_stack.last().expect("nested state");
+        if is_json_whitespace(byte)
+            && !matches!(
+                state,
+                NestedParseState::ObjectValue
+                    | NestedParseState::ArrayFirstValueOrEnd
+                    | NestedParseState::ArrayValue
+            )
+        {
+            return;
+        }
+        match state {
+            NestedParseState::ObjectFirstKeyOrEnd => match byte {
+                b'"' => self.begin_string(StringPurpose::NestedKey),
+                b'}' => self.close_nested(b'}'),
+                _ => self.invalidate(),
+            },
+            NestedParseState::ObjectKey => {
+                if byte == b'"' {
+                    self.begin_string(StringPurpose::NestedKey);
+                } else {
+                    self.invalidate();
+                }
+            }
+            NestedParseState::ObjectColon => {
+                if byte == b':' {
+                    *self.nested_stack.last_mut().expect("nested state") =
+                        NestedParseState::ObjectValue;
+                } else {
+                    self.invalidate();
+                }
+            }
+            NestedParseState::ObjectValue | NestedParseState::ArrayValue => {
+                if is_json_whitespace(byte) {
+                    return;
+                }
+                self.begin_nested_value(byte);
+            }
+            NestedParseState::ObjectAfterValue => match byte {
+                b',' => {
+                    *self.nested_stack.last_mut().expect("nested state") =
+                        NestedParseState::ObjectKey;
+                }
+                b'}' => self.close_nested(b'}'),
+                _ => self.invalidate(),
+            },
+            NestedParseState::ArrayFirstValueOrEnd => {
+                if is_json_whitespace(byte) {
+                    return;
+                }
+                if byte == b']' {
+                    self.close_nested(b']');
+                } else {
+                    self.begin_nested_value(byte);
+                }
+            }
+            NestedParseState::ArrayAfterValue => match byte {
+                b',' => {
+                    *self.nested_stack.last_mut().expect("nested state") =
+                        NestedParseState::ArrayValue;
+                }
+                b']' => self.close_nested(b']'),
+                _ => self.invalidate(),
+            },
+        }
+    }
+
+    fn begin_nested_value(&mut self, byte: u8) {
+        match byte {
+            b'"' => self.begin_string(StringPurpose::NestedValue),
+            b'{' | b'[' => {
+                self.complete_nested_value();
+                if self.state != RootParseState::Invalid {
+                    self.push_nested(byte);
+                }
+            }
+            b',' | b'}' | b']' => self.invalidate(),
+            _ => self.begin_primitive(PrimitivePurpose::NestedValue, byte),
+        }
+    }
+
+    fn complete_nested_value(&mut self) {
+        let Some(state) = self.nested_stack.last_mut() else {
+            self.invalidate();
+            return;
+        };
+        *state = match *state {
+            NestedParseState::ObjectValue => NestedParseState::ObjectAfterValue,
+            NestedParseState::ArrayFirstValueOrEnd | NestedParseState::ArrayValue => {
+                NestedParseState::ArrayAfterValue
+            }
+            _ => {
+                self.invalidate();
+                return;
+            }
+        };
+    }
+
+    fn close_nested(&mut self, closing: u8) {
+        let Some(state) = self.nested_stack.last().copied() else {
+            self.invalidate();
+            return;
+        };
+        let valid = match closing {
+            b'}' => matches!(
+                state,
+                NestedParseState::ObjectFirstKeyOrEnd | NestedParseState::ObjectAfterValue
+            ),
+            b']' => matches!(
+                state,
+                NestedParseState::ArrayFirstValueOrEnd | NestedParseState::ArrayAfterValue
+            ),
+            _ => false,
+        };
+        if valid {
+            self.nested_stack.pop();
+        } else {
+            self.invalidate();
         }
     }
 
@@ -261,9 +438,14 @@ impl TopLevelProvenanceScanner {
         self.utf8_remaining = 0;
         self.utf8_next_min = 0x80;
         self.utf8_next_max = 0xbf;
+        self.unicode_escape_value = 0;
+        self.pending_high_surrogate = false;
+        self.unicode_escape_is_low_surrogate = false;
         if !matches!(
             purpose,
-            StringPurpose::Nested | StringPurpose::RootValue(ProvenanceKey::Other)
+            StringPurpose::NestedKey
+                | StringPurpose::NestedValue
+                | StringPurpose::RootValue(ProvenanceKey::Other)
         ) {
             self.push_string_token_byte(b'"');
         }
@@ -273,25 +455,56 @@ impl TopLevelProvenanceScanner {
         let purpose = self.string_purpose.expect("string purpose");
         let capture = !matches!(
             purpose,
-            StringPurpose::Nested | StringPurpose::RootValue(ProvenanceKey::Other)
+            StringPurpose::NestedKey
+                | StringPurpose::NestedValue
+                | StringPurpose::RootValue(ProvenanceKey::Other)
         );
         if capture {
             self.push_string_token_byte(byte);
         }
 
         if self.unicode_escape_remaining > 0 {
-            if !byte.is_ascii_hexdigit() {
+            let Some(digit) = (byte as char).to_digit(16) else {
                 self.invalidate();
                 return;
-            }
+            };
+            self.unicode_escape_value = (self.unicode_escape_value << 4) | digit as u16;
             self.unicode_escape_remaining -= 1;
+            if self.unicode_escape_remaining == 0 {
+                let value = self.unicode_escape_value;
+                if self.unicode_escape_is_low_surrogate {
+                    if !(0xdc00..=0xdfff).contains(&value) {
+                        self.invalidate();
+                        return;
+                    }
+                    self.pending_high_surrogate = false;
+                    self.unicode_escape_is_low_surrogate = false;
+                } else if (0xd800..=0xdbff).contains(&value) {
+                    self.pending_high_surrogate = true;
+                } else if (0xdc00..=0xdfff).contains(&value) {
+                    self.invalidate();
+                }
+            }
             return;
         }
         if self.escaped {
             self.escaped = false;
+            if self.pending_high_surrogate {
+                if byte != b'u' {
+                    self.invalidate();
+                    return;
+                }
+                self.unicode_escape_remaining = 4;
+                self.unicode_escape_value = 0;
+                self.unicode_escape_is_low_surrogate = true;
+                return;
+            }
             match byte {
                 b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
-                b'u' => self.unicode_escape_remaining = 4,
+                b'u' => {
+                    self.unicode_escape_remaining = 4;
+                    self.unicode_escape_value = 0;
+                }
                 _ => self.invalidate(),
             }
             return;
@@ -304,6 +517,10 @@ impl TopLevelProvenanceScanner {
             self.utf8_remaining -= 1;
             self.utf8_next_min = 0x80;
             self.utf8_next_max = 0xbf;
+            return;
+        }
+        if self.pending_high_surrogate && byte != b'\\' {
+            self.invalidate();
             return;
         }
         match byte {
@@ -326,12 +543,15 @@ impl TopLevelProvenanceScanner {
         self.string_purpose = None;
         if self.string_token_overflowed {
             match purpose {
-                StringPurpose::RootKey => self.invalidate(),
+                StringPurpose::RootKey => {
+                    self.current_key = ProvenanceKey::Other;
+                    self.state = RootParseState::Colon;
+                }
                 StringPurpose::RootValue(key) => {
                     self.set_field(key, ScalarProvenance::Unsupported);
                     self.state = RootParseState::AfterValue;
                 }
-                StringPurpose::Nested => {}
+                StringPurpose::NestedKey | StringPurpose::NestedValue => unreachable!(),
             }
             return;
         }
@@ -344,7 +564,14 @@ impl TopLevelProvenanceScanner {
                 self.current_key = match key.as_str() {
                     "type" => ProvenanceKey::RecordType,
                     "role" => ProvenanceKey::Role,
+                    "text" => ProvenanceKey::Text,
+                    "content" => ProvenanceKey::Content,
+                    "title" => ProvenanceKey::Title,
+                    "aiTitle" => ProvenanceKey::AiTitle,
                     "timestamp" => ProvenanceKey::Timestamp,
+                    "sessionId" => ProvenanceKey::SessionId,
+                    "id" => ProvenanceKey::Id,
+                    "cwd" => ProvenanceKey::Cwd,
                     _ => ProvenanceKey::Other,
                 };
                 self.state = RootParseState::Colon;
@@ -359,7 +586,21 @@ impl TopLevelProvenanceScanner {
                 }
                 self.state = RootParseState::AfterValue;
             }
-            StringPurpose::Nested => {}
+            StringPurpose::NestedKey => {
+                let Some(state) = self.nested_stack.last_mut() else {
+                    self.invalidate();
+                    return;
+                };
+                if matches!(
+                    *state,
+                    NestedParseState::ObjectFirstKeyOrEnd | NestedParseState::ObjectKey
+                ) {
+                    *state = NestedParseState::ObjectColon;
+                } else {
+                    self.invalidate();
+                }
+            }
+            StringPurpose::NestedValue => self.complete_nested_value(),
         }
     }
 
@@ -369,31 +610,20 @@ impl TopLevelProvenanceScanner {
         self.utf8_next_max = next_max;
     }
 
-    fn feed_nested_byte(&mut self, byte: u8) {
-        match byte {
-            b'"' => self.begin_string(StringPurpose::Nested),
-            b'{' | b'[' => self.push_nested(byte),
-            b'}' | b']' => {
-                let expected = if byte == b'}' { b'{' } else { b'[' };
-                if self.stack.last() != Some(&expected) {
-                    self.invalidate();
-                    return;
-                }
-                self.stack.pop();
-                if self.stack.len() == 1 {
-                    self.state = RootParseState::AfterValue;
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn push_nested(&mut self, byte: u8) {
-        if self.stack.len() >= MAX_PROVENANCE_NESTING {
+        if self.nested_stack.len().saturating_add(1) >= MAX_PROVENANCE_NESTING {
             self.invalidate();
             return;
         }
-        self.stack.push(byte);
+        let state = match byte {
+            b'{' => NestedParseState::ObjectFirstKeyOrEnd,
+            b'[' => NestedParseState::ArrayFirstValueOrEnd,
+            _ => {
+                self.invalidate();
+                return;
+            }
+        };
+        self.nested_stack.push(state);
     }
 
     fn push_string_token_byte(&mut self, byte: u8) {
@@ -413,9 +643,9 @@ impl TopLevelProvenanceScanner {
     }
 
     fn finish_primitive(&mut self) {
-        if self.state == RootParseState::Invalid {
+        let Some(purpose) = self.primitive_purpose.take() else {
             return;
-        }
+        };
         let Ok(value) = serde_json::from_slice::<Value>(&self.primitive_token) else {
             self.invalidate();
             return;
@@ -424,8 +654,13 @@ impl TopLevelProvenanceScanner {
             self.invalidate();
             return;
         }
-        self.set_field(self.primitive_key, ScalarProvenance::Scalar(value));
-        self.state = RootParseState::AfterValue;
+        match purpose {
+            PrimitivePurpose::RootValue(key) => {
+                self.set_field(key, ScalarProvenance::Scalar(value));
+                self.state = RootParseState::AfterValue;
+            }
+            PrimitivePurpose::NestedValue => self.complete_nested_value(),
+        }
     }
 
     fn set_current_field(&mut self, value: ScalarProvenance) {
@@ -436,7 +671,14 @@ impl TopLevelProvenanceScanner {
         match key {
             ProvenanceKey::RecordType => self.provenance.record_type = value,
             ProvenanceKey::Role => self.provenance.role = value,
+            ProvenanceKey::Text => self.provenance.text = value,
+            ProvenanceKey::Content => self.provenance.content = value,
+            ProvenanceKey::Title => self.provenance.title = value,
+            ProvenanceKey::AiTitle => self.provenance.ai_title = value,
             ProvenanceKey::Timestamp => self.provenance.timestamp = value,
+            ProvenanceKey::SessionId => self.provenance.session_id = value,
+            ProvenanceKey::Id => self.provenance.id = value,
+            ProvenanceKey::Cwd => self.provenance.cwd = value,
             ProvenanceKey::Other => {}
         }
     }
@@ -444,6 +686,7 @@ impl TopLevelProvenanceScanner {
     fn invalidate(&mut self) {
         self.state = RootParseState::Invalid;
         self.string_purpose = None;
+        self.primitive_purpose = None;
     }
 }
 
@@ -593,9 +836,14 @@ fn read_bounded_from<R: Read + Seek>(
         .iter()
         .rposition(|byte| *byte == b'\n')
         .map_or(0, |newline| newline + 1);
-    let head_fragment = head_raw[head_fragment_start..]
-        .strip_prefix(&[0xef, 0xbb, 0xbf])
-        .unwrap_or(&head_raw[head_fragment_start..]);
+    let raw_head_fragment = &head_raw[head_fragment_start..];
+    let head_fragment = if head_fragment_start == 0 {
+        raw_head_fragment
+            .strip_prefix(&[0xef, 0xbb, 0xbf])
+            .unwrap_or(raw_head_fragment)
+    } else {
+        raw_head_fragment
+    };
     let mut provenance_scanner = TopLevelProvenanceScanner::new();
     provenance_scanner.feed(head_fragment);
     let (unread_gap_has_line_break, provenance_bytes_read) =
@@ -874,6 +1122,65 @@ mod tests {
         );
         assert_eq!(fields.get("role").and_then(Value::as_str), Some("user"));
         assert_eq!(fields.get("timestamp").and_then(Value::as_str), Some("new"));
+    }
+
+    #[test]
+    fn provenance_requires_complete_valid_json_syntax() {
+        for invalid in [
+            br#"{"type":"user","data":{xxxxx}}"#.as_slice(),
+            br#"{"type":"user","data":[xxxxx]}"#.as_slice(),
+            br#"{"type":"user","data":{"value":1,}}"#.as_slice(),
+            br#"{"type":"user",}"#.as_slice(),
+            br#"{"type":"user","data":{"value" 1}}"#.as_slice(),
+            br#"{"type":"user","data":{"value":}}"#.as_slice(),
+            br#"{"type":"user","data":[1 2]}"#.as_slice(),
+            br#"{"type":"user","data":[,]}"#.as_slice(),
+            br#"{"type":"user","data":01}"#.as_slice(),
+            br#"{"type":"user","data":+1}"#.as_slice(),
+            br#"{"type":"user","data":"\q"}"#.as_slice(),
+            br#"{"type":"user","data":"\uD800"}"#.as_slice(),
+            br#"{"type":"user"} trailing"#.as_slice(),
+            b"{\"type\"\x0b:\"user\"}".as_slice(),
+            b"{\"type\":\"user\"\x0c}".as_slice(),
+        ] {
+            let mut scanner = TopLevelProvenanceScanner::new();
+            scanner.feed(invalid);
+
+            assert!(
+                scanner.finish().is_none(),
+                "invalid JSON must not establish provenance: {}",
+                String::from_utf8_lossy(invalid)
+            );
+        }
+
+        for valid in [
+            br#"{"type":"user","data":{"value":1}}"#.as_slice(),
+            br#"{"type":"user","data":[true,false,null,-1.5e2]}"#.as_slice(),
+            br#"{"t\u0079pe":"user","data":{"nested":[{},[]]},"text":"\uD834\uDD1E"}"#.as_slice(),
+        ] {
+            let mut scanner = TopLevelProvenanceScanner::new();
+            scanner.feed(valid);
+
+            assert!(
+                scanner.finish().is_some(),
+                "valid JSON should establish provenance: {}",
+                String::from_utf8_lossy(valid)
+            );
+        }
+    }
+
+    #[test]
+    fn provenance_applies_last_supported_scalar_including_null() {
+        let mut scanner = TopLevelProvenanceScanner::new();
+        scanner
+            .feed(br#"{"type":"user","role":"user","text":"stale","data":"ignored","text":null}"#);
+        let provenance = scanner.finish().expect("complete object provenance");
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".to_string(), Value::String("stale".to_string()));
+
+        provenance.merge_into(&mut fields);
+
+        assert_eq!(fields.get("text"), Some(&Value::Null));
     }
 
     #[test]
