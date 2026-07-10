@@ -960,7 +960,7 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
             content.push('\n');
             continue;
         }
-        if looks_like_json_fragment(trimmed) {
+        if looks_like_json_fragment(trimmed) && is_complete_json_record(trimmed) {
             append_compacted_record(&mut content, trimmed, max_line_fragment_bytes);
             continue;
         }
@@ -2440,8 +2440,10 @@ fn collect_json_session_content_drafts(
         Value::Object(map) => {
             let timestamp = json_session_timestamp_millis(value).or(inherited_timestamp);
             let role = json_session_role(map).map(str::to_string);
+            let direct_kind = json_session_content_kind(map, role.as_deref());
+            let direct_tool = direct_kind == Some("tool_call");
             let mut pushed_direct_tool = false;
-            if let Some(kind) = json_session_content_kind(map, role.as_deref()) {
+            if let Some(kind) = direct_kind {
                 let text = json_session_text_for_kind(map, kind);
                 if let Some(text) = text {
                     if !text.trim().is_empty() && !is_internal_local_session_message(kind, &text) {
@@ -2467,6 +2469,29 @@ fn collect_json_session_content_drafts(
                 if matches!(
                     key.as_str(),
                     "author"
+                        | "type"
+                        | "kind"
+                        | "role"
+                        | "sender"
+                        | "id"
+                        | "name"
+                        | "title"
+                        | "tool_name"
+                        | "function_name"
+                        | "tool_use_id"
+                        | "toolUseId"
+                        | "tool_call_id"
+                        | "toolCallId"
+                        | "session_id"
+                        | "sessionId"
+                        | "conversation_id"
+                        | "conversationId"
+                        | "cwd"
+                        | "timestamp"
+                        | "created_at"
+                        | "createdAt"
+                        | "updated_at"
+                        | "updatedAt"
                         | "content"
                         | "text"
                         | "message"
@@ -2478,6 +2503,21 @@ fn collect_json_session_content_drafts(
                         | "function_call"
                         | "parts"
                 ) {
+                    continue;
+                }
+                if direct_tool
+                    && matches!(
+                        key.as_str(),
+                        "result"
+                            | "error"
+                            | "output"
+                            | "input"
+                            | "arguments"
+                            | "payload"
+                            | "data"
+                            | "function"
+                    )
+                {
                     continue;
                 }
                 collect_json_session_content_drafts(nested, timestamp, drafts);
@@ -2520,23 +2560,27 @@ fn collect_json_tool_call_drafts(
         match value {
             Value::Array(items) => {
                 for item in items {
+                    if let Some(text) = json_tool_payload_text(item) {
+                        drafts.push(LocalSessionContentDraft {
+                            kind: "tool_call".to_string(),
+                            title: json_tool_title(item),
+                            text,
+                            timestamp,
+                            evidence_refs: Vec::new(),
+                        });
+                    }
+                }
+            }
+            Value::Object(_) | Value::String(_) => {
+                if let Some(text) = json_tool_payload_text(value) {
                     drafts.push(LocalSessionContentDraft {
                         kind: "tool_call".to_string(),
-                        title: json_tool_title(item),
-                        text: compact_json_session_text(item),
+                        title: json_tool_title(value),
+                        text,
                         timestamp,
                         evidence_refs: Vec::new(),
                     });
                 }
-            }
-            Value::Object(_) | Value::String(_) => {
-                drafts.push(LocalSessionContentDraft {
-                    kind: "tool_call".to_string(),
-                    title: json_tool_title(value),
-                    text: compact_json_session_text(value),
-                    timestamp,
-                    evidence_refs: Vec::new(),
-                });
             }
             _ => {}
         }
@@ -2559,13 +2603,15 @@ fn collect_json_tool_part_drafts(
             if let Some(kind) = map.get("type").and_then(Value::as_str) {
                 let normalized = kind.to_ascii_lowercase().replace(['_', '-'], "");
                 if is_json_tool_type(&normalized) {
-                    drafts.push(LocalSessionContentDraft {
-                        kind: "tool_call".to_string(),
-                        title: json_tool_title(value),
-                        text: json_tool_payload_text(value),
-                        timestamp,
-                        evidence_refs: Vec::new(),
-                    });
+                    if let Some(text) = json_tool_payload_text(value) {
+                        drafts.push(LocalSessionContentDraft {
+                            kind: "tool_call".to_string(),
+                            title: json_tool_title(value),
+                            text,
+                            timestamp,
+                            evidence_refs: Vec::new(),
+                        });
+                    }
                     return;
                 }
             }
@@ -2797,7 +2843,7 @@ fn json_session_text(map: &serde_json::Map<String, Value>) -> Option<String> {
 
 fn json_session_text_for_kind(map: &serde_json::Map<String, Value>, kind: &str) -> Option<String> {
     if kind == "tool_call" || is_json_tool_object(map) {
-        return json_tool_payload_text(&Value::Object(map.clone())).into();
+        return json_tool_payload_text(&Value::Object(map.clone()));
     }
     if kind == "thinking" {
         if let Some(text) = json_thinking_payload_text(&Value::Object(map.clone())) {
@@ -3103,29 +3149,35 @@ fn is_tool_result_text(text: &str) -> bool {
     .any(|marker| lower.starts_with(marker) || lower.contains(marker))
 }
 
-fn json_tool_payload_text(value: &Value) -> String {
+fn json_tool_payload_text(value: &Value) -> Option<String> {
     match value {
-        Value::String(text) => text.clone(),
+        Value::String(text) => (!text.trim().is_empty()).then(|| text.clone()),
         Value::Object(map) => {
-            for key in [
-                "content",
-                "text",
-                "message",
-                "result",
-                "error",
-                "output",
-                "input",
-                "arguments",
-            ] {
+            for key in ["content", "text", "message", "error"] {
                 if let Some(text) = map.get(key).and_then(json_value_text) {
                     if !text.trim().is_empty() {
-                        return text;
+                        return Some(text);
                     }
                 }
             }
-            compact_json_session_text(value)
+            for key in ["result", "output", "input", "arguments", "payload", "data"] {
+                if let Some(text) = map.get(key).and_then(json_explicit_tool_payload_text) {
+                    return Some(text);
+                }
+            }
+            map.get("function").and_then(json_tool_payload_text)
         }
-        _ => compact_json_session_text(value),
+        _ => None,
+    }
+}
+
+fn json_explicit_tool_payload_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => (!text.trim().is_empty()).then(|| text.clone()),
+        Value::Array(items) => (!items.is_empty()).then(|| compact_json_session_text(value)),
+        Value::Object(map) => (!map.is_empty()).then(|| compact_json_session_text(value)),
+        Value::Bool(_) | Value::Number(_) => Some(compact_json_session_text(value)),
     }
 }
 

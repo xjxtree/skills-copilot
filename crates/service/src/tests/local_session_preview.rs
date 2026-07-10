@@ -1027,6 +1027,138 @@ fn local_session_preview_keeps_newline_aligned_plain_text_tail() {
 }
 
 #[test]
+fn local_session_preview_preserves_complete_plaintext_with_json_punctuation() {
+    let cases = [
+        ("bracket-info", "[INFO] BRACKET_INFO_VISIBLE"),
+        ("leading-warn", "   [WARN] LEADING_WARN_VISIBLE"),
+        ("curly-prefix", "{plain CURLY_PREFIX_VISIBLE"),
+        ("square-suffix", "SQUARE_SUFFIX_VISIBLE ]"),
+        ("bom-bracket", "\u{feff}[INFO] BOM_BRACKET_VISIBLE"),
+        ("crlf-bracket", "[INFO] CRLF_BRACKET_VISIBLE\r\n"),
+    ];
+
+    for extension in ["jsonl", "json", "txt", "log"] {
+        for (case, line) in cases {
+            let marker = case.to_ascii_uppercase().replace('-', "_");
+            let result = preview_codex_session_fixture_with_extension(
+                &format!("plain-punctuation-{extension}-{case}"),
+                extension,
+                line,
+            );
+            let serialized = serde_json::to_string(&result).expect("serialize plain preview");
+
+            assert!(
+                serialized.contains(&marker),
+                "{extension}/{case}: {serialized}"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_session_preview_does_not_count_structure_only_tools() {
+    let cases = [
+        (
+            "tool-call",
+            json!({
+                "type": "tool_call",
+                "role": "assistant",
+                "id": "tool_call_structure_only",
+                "name": "tool_call_structure_only"
+            }),
+        ),
+        (
+            "tool-result",
+            json!({ "type": "tool_result", "role": "assistant" }),
+        ),
+        ("tool-role", json!({ "role": "tool" })),
+        (
+            "nested-tool",
+            json!({ "metadata": { "type": "tool_call" } }),
+        ),
+    ];
+
+    for (case, value) in cases {
+        let result = preview_codex_session_fixture(case, &value.to_string());
+
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/tool_call_count")
+                .and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/total_message_count")
+                .and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert!(
+            result
+                .pointer("/session_rows/0/content_items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn local_session_preview_counts_real_tool_payload_once() {
+    for (case, value, marker) in [
+        (
+            "real-tool-call",
+            json!({
+                "type": "tool_call",
+                "role": "assistant",
+                "id": "tool_call_real_payload",
+                "name": "tool_call_real_payload",
+                "arguments": { "query": "REAL_TOOL_ARGUMENT" }
+            }),
+            "REAL_TOOL_ARGUMENT",
+        ),
+        (
+            "real-tool-result",
+            json!({
+                "type": "tool_result",
+                "role": "assistant",
+                "tool_call_id": "tool_call_real_result",
+                "result": { "status": "REAL_TOOL_RESULT" }
+            }),
+            "REAL_TOOL_RESULT",
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, &value.to_string());
+        let items = result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .expect("tool content items");
+
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/tool_call_count")
+                .and_then(Value::as_u64),
+            Some(1),
+            "{case}: {result}"
+        );
+        assert_eq!(items.len(), 1, "{case}: {result}");
+        assert_eq!(
+            items[0].get("kind").and_then(Value::as_str),
+            Some("tool_call")
+        );
+        assert!(
+            items[0]
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains(marker)),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
 fn local_session_preview_skips_truncated_single_sidecar_record() {
     let filler = "ignored-file-history-data-".repeat(30_000);
     let session = format!(
