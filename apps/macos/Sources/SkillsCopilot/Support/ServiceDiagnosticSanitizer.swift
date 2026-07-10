@@ -4,13 +4,14 @@ enum ServiceDiagnosticSanitizer {
     static let maximumDisplayCharacters = 512
 
     static func displayMessage(_ raw: String) -> String {
-        var sanitized = ConfigContentRedactor.redactedForDisplay(raw)
-        // Preserve a following credential assignment for the next non-overlapping match.
-        sanitized = replacing(
-            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=(?:\s*(?!(?:API_KEY|TOKEN|SECRET|PASSWORD)=)(?:"[^"]*"|'[^']*'|[^\s]+))?"#,
-            in: sanitized,
-            with: "$1=<redacted>"
-        )
+        var sanitized = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        // Redact credential chains before the line-oriented config pass can insert a
+        // placeholder between an assignment and its newline-delimited value.
+        sanitized = redactingCredentialAssignments(in: sanitized)
+        sanitized = ConfigContentRedactor.redactedForDisplay(sanitized)
+        sanitized = normalizingConfigCredentialPlaceholders(in: sanitized)
         sanitized = replacing(
             pattern: #"(?i)\bsk-[A-Za-z0-9_-]{20,}"#,
             in: sanitized,
@@ -40,6 +41,22 @@ enum ServiceDiagnosticSanitizer {
             )
         }
         return String(collapsed.prefix(maximumDisplayCharacters))
+    }
+
+    private static func redactingCredentialAssignments(in value: String) -> String {
+        replacing(
+            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=(?:\s*(?!(?:API_KEY|TOKEN|SECRET|PASSWORD)=)(?:"[^"]*"|'[^']*'|[^\s]+))?"#,
+            in: value,
+            with: "$1=<redacted>"
+        )
+    }
+
+    private static func normalizingConfigCredentialPlaceholders(in value: String) -> String {
+        replacing(
+            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=\s*"\[REDACTED\]""#,
+            in: value,
+            with: "$1=<redacted>"
+        )
     }
 
     private static func replacing(

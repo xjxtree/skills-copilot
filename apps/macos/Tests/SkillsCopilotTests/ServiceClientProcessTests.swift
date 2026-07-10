@@ -231,8 +231,11 @@ struct ServiceClientProcessTests {
         let tokenKey = "TO" + "KEN"
         let apiKey = "API" + "_KEY"
         let passwordKey = "PASS" + "WORD"
+        let secretKey = "SEC" + "RET"
         let equals = "="
         let redacted = "<redacted>"
+        let realValue = "GAMMA" + "_REAL_VALUE"
+        let ordinaryLine = "ordinary diagnostic context"
         let cases: [(input: String, expected: String)] = [
             (
                 "error: \(tokenKey)\(equals) \(apiKey)\(equals) \(sentinel)",
@@ -261,13 +264,43 @@ struct ServiceClientProcessTests {
             (
                 "error: \(tokenKey)\(equals)",
                 "error: \(tokenKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\n\(apiKey)\(equals)\n\(realValue)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\r\n\(apiKey)\(equals)\r\n\(realValue)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\n\n\(apiKey)\(equals)\n\n\(realValue)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\n\(apiKey)\(equals)\n\(passwordKey)\(equals)\n\(secretKey)\(equals)\n\(realValue)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted) \(passwordKey)\(equals)\(redacted) \(secretKey)\(equals)\(redacted)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\n\(apiKey)\(equals)\n\"\(realValue) with spaces\"\n\(ordinaryLine)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted) \(ordinaryLine)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\n\(apiKey)\(equals)\n'\(realValue) with spaces'\r\n\(ordinaryLine)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted) \(ordinaryLine)"
+            ),
+            (
+                "error: \(tokenKey)\(equals)\n\(apiKey)\(equals)\n\(realValue)\n\(ordinaryLine)",
+                "error: \(tokenKey)\(equals)\(redacted) \(apiKey)\(equals)\(redacted) \(ordinaryLine)"
             )
         ]
 
-        for (input, expected) in cases {
+        for (index, testCase) in cases.enumerated() {
+            let (input, expected) = testCase
             let output = ServiceDiagnosticSanitizer.displayMessage(input)
-            try expectEqual(output, expected, "Every adjacent credential assignment should be independently redacted.")
-            try expectFalse(output.contains(sentinel), "Adjacent credential assignments must never expose the following value.")
+            try expectEqual(output, expected, "Adjacent credential case \(index) should be independently redacted.")
+            try expectFalse(output.contains(sentinel), "Adjacent credential case \(index) must never expose the following value.")
+            try expectFalse(output.contains(realValue), "Adjacent credential case \(index) must never expose a newline-delimited value.")
         }
 
         let ordinary = "error: \(tokenKey)_BUCKET\(equals)ready \(apiKey)_LIMIT\(equals)42"
