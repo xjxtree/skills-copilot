@@ -48,75 +48,75 @@ verification.
 
 ## Methods
 
-| Method | Mutates local state |
-| --- | --- |
-| `app.version` | No |
-| `app.stateSnapshot` | No |
-| `app.search` | No |
-| `service.status` | No |
-| `adapter.listCapabilities` | No |
-| `adapter.listDiagnostics` | No |
-| `llm.status` | No |
-| `llm.listProviderProfiles` | No |
-| `llm.saveProviderProfile` | Yes, writes Agent Copilot provider metadata and Keychain secret when supplied |
-| `llm.deleteProviderProfile` | Yes, updates app-local Agent Copilot provider metadata |
-| `llm.testProviderConnection` | Yes, records minimal redacted Agent Copilot provider call metadata |
-| `llm.previewPrompt` | No |
-| `llm.confirmPromptAndSend` | Yes, records redacted Agent Copilot prompt-run metadata |
-| `llm.listPromptRuns` | No |
-| `llm.prepareAction` | No |
-| `llm.providerObservability` | No |
-| `llm.listModelTaskMatches` | No |
-| `llm.recordModelTaskMatch` | Yes, writes app-local redacted metadata only |
-| `llm.deleteModelTaskMatch` | Yes, updates app-local redacted metadata only |
-| `script.previewExecution` | No |
-| `script.execute` | No |
-| `skillManager.listTools` | No |
-| `skillManager.search` | No, may run a network-backed manager search only when allowed by the request |
-| `skillManager.listInstalled` | No, reads external manager state |
-| `skillManager.previewInstall` | No |
-| `skillManager.applyInstall` | Yes, after confirmation through the external manager CLI and catalog refresh |
-| `skillManager.previewRemove` | No |
-| `skillManager.applyRemove` | Yes, after confirmation through the external manager CLI and catalog refresh |
-| `skillManager.previewUpdate` | No |
-| `skillManager.applyUpdate` | Yes, after confirmation through the external manager CLI and catalog refresh |
-| `skillManager.previewLocalCreate` | No |
-| `skillManager.applyLocalCreate` | Yes, creates a manager template and imports it into app-owned local library |
-| `skillManager.deleteLocal` | Yes, physically deletes only app-owned local skills with no supported-agent references |
-| `project.getContext` | No |
-| `project.setContext` | Yes, writes app state |
-| `project.clearContext` | Yes, writes app state |
-| `project.validateContext` | No |
-| `catalog.listSkills` | No |
-| `catalog.getSkill` | No |
-| `catalog.analysis` | No |
-| `catalog.listFindings` | No |
-| `catalog.listFindingTriage` | No |
-| `catalog.setFindingTriage` | Yes, writes app-local triage metadata only |
-| `catalog.clearFindingTriage` | Yes, clears app-local triage metadata only |
-| `catalog.listConflicts` | No |
-| `catalog.importSkill` | Yes, writes app-controlled staging/catalog only |
-| `catalog.scanAll` | Yes, refreshes catalog |
-| `catalog.scanClaude` | Yes, refreshes catalog |
-| `skill.exportBundle` | Yes, writes app-controlled export files |
-| `skill.install` | Yes, after confirmation |
-| `skill.listEvents` | No |
-| `config.toggleSkill` | Yes, writes agent config |
-| `config.readAgentConfig` | No |
-| `config.readClaudeSettings` | No |
-| `config.saveClaudeSettings` | Yes, writes Claude settings and rescans |
-| `snapshot.list` | No |
-| `snapshot.listAgentConfig` | No |
-| `snapshot.previewRollback` | No |
-| `snapshot.rollback` | Yes, writes agent config snapshot content and rescans |
-| `session.previewLocalSessions` | No |
-| `rules.listTuning` | No |
-| `rules.setSeverityOverride` | Yes, writes app-local rule tuning metadata only |
-| `rules.clearSeverityOverride` | Yes, clears app-local rule tuning metadata only |
-| `rules.setSuppression` | Yes, writes app-local rule tuning metadata only |
-| `rules.clearSuppression` | Yes, clears app-local rule tuning metadata only |
-| `batch.previewSkillToggles` | No |
-| `batch.applySkillToggles` | Yes, writes through verified per-agent toggle paths after confirmation |
+| Method | Local writes | External process | Network | Confirmation |
+| --- | --- | --- | --- | --- |
+| `app.version` | None | Never | Never | None |
+| `app.stateSnapshot` | None | Never | Never | None |
+| `app.search` | None | Never | Never | None |
+| `service.status` | None | Never | Never | None |
+| `adapter.listCapabilities` | None | Never | Never | None |
+| `adapter.listDiagnostics` | None | Never | Never | None |
+| `session.previewLocalSessions` | None | Never | Never | None |
+| `llm.status` | None | Never | Never | None |
+| `llm.listProviderProfiles` | None | Never | Never | None |
+| `llm.saveProviderProfile` | App-local data, Keychain | Never | Never | None |
+| `llm.deleteProviderProfile` | App-local data, Keychain | Never | Never | None |
+| `llm.testProviderConnection` | App-local data | Never | Always | Required |
+| `llm.previewPrompt` | None | Never | Never | None |
+| `llm.confirmPromptAndSend` | App-local data | Never | Always | Required |
+| `llm.listPromptRuns` | None | Never | Never | None |
+| `llm.providerObservability` | None | Never | Never | None |
+| `llm.listModelTaskMatches` | None | Never | Never | None |
+| `llm.recordModelTaskMatch` | App-local data | Never | Never | None |
+| `llm.deleteModelTaskMatch` | App-local data | Never | Never | None |
+| `llm.prepareAction` | None | Never | Never | None |
+| `rules.listTuning` | None | Never | Never | None |
+| `rules.setSeverityOverride` | App-local data | Never | Never | None |
+| `rules.clearSeverityOverride` | App-local data | Never | Never | None |
+| `rules.setSuppression` | App-local data | Never | Never | None |
+| `rules.clearSuppression` | App-local data | Never | Never | None |
+| `batch.previewSkillToggles` | None | Never | Never | None |
+| `batch.applySkillToggles` | Agent config, App-local data | Never | Never | Required |
+| `script.previewExecution` | None | Never | Never | None |
+| `script.execute` | Blocked-attempt audit only | Never | Never | Required |
+| `skillManager.listTools` | None | Never | Never | None |
+| `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |
+| `skillManager.listInstalled` | External manager state may change when invoked | Always | Never | None |
+| `skillManager.previewInstall` | None | Never | Never | None |
+| `skillManager.applyInstall` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
+| `skillManager.previewRemove` | None | Never | Never | None |
+| `skillManager.applyRemove` | App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.previewUpdate` | None | Never | Never | None |
+| `skillManager.applyUpdate` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
+| `skillManager.previewLocalCreate` | None | Never | Never | None |
+| `skillManager.applyLocalCreate` | App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.deleteLocal` | App-local data | Never | Never | Required |
+| `project.getContext` | None | Never | Never | None |
+| `project.setContext` | App-local data | Never | Never | None |
+| `project.clearContext` | App-local data | Never | Never | None |
+| `project.validateContext` | None | Never | Never | None |
+| `catalog.listSkills` | None | Never | Never | None |
+| `catalog.getSkill` | None | Never | Never | None |
+| `catalog.analysis` | None | Never | Never | None |
+| `catalog.listFindings` | None | Never | Never | None |
+| `catalog.listFindingTriage` | None | Never | Never | None |
+| `catalog.setFindingTriage` | App-local data | Never | Never | None |
+| `catalog.clearFindingTriage` | App-local data | Never | Never | None |
+| `catalog.listConflicts` | None | Never | Never | None |
+| `catalog.importSkill` | App-local data | Never | Never | None |
+| `catalog.scanClaude` | App-local data | Never | Never | None |
+| `catalog.scanAll` | App-local data | Never | Never | None |
+| `skill.exportBundle` | Export destination | Never | Never | None |
+| `skill.install` | Agent skill files, App-local data | Never | Never | Required |
+| `skill.listEvents` | None | Never | Never | None |
+| `config.toggleSkill` | Agent config, App-local data | Never | Never | None |
+| `config.readAgentConfig` | None | Never | Never | None |
+| `config.readClaudeSettings` | None | Never | Never | None |
+| `config.saveClaudeSettings` | Agent config, App-local data | Never | Never | None |
+| `snapshot.list` | None | Never | Never | None |
+| `snapshot.listAgentConfig` | None | Never | Never | None |
+| `snapshot.previewRollback` | None | Never | Never | None |
+| `snapshot.rollback` | Agent config, App-local data | Never | Never | Required |
 
 ## Provider Observability
 

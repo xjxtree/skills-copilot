@@ -2,6 +2,10 @@
 
 These fixtures are the shared contract examples for native macOS and future Windows/Linux UI shells.
 
+`method-effects.json` is the exhaustive side-effect contract for every method in
+`SUPPORTED_METHODS`. The request and response JSON files remain wire-shape
+fixtures for typed protocol examples and error cases.
+
 Rules:
 
 - `*.request.json` must decode as `ServiceRequest`.
