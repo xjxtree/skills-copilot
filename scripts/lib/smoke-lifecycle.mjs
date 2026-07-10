@@ -1,15 +1,25 @@
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const cleanupSignals = ["SIGHUP", "SIGINT", "SIGTERM"];
+const controlMaxBytes = 8 * 1_024;
 const defaultMaxBuffer = 1_024 * 1_024;
 const groupTerminationGraceMs = 25;
+const orphanDrainGraceMs = 2_000;
 const signalCleanupTimeoutMs = 2_000;
 const signalPollIntervalMs = 10;
+const supervisorPath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "smoke-child-supervisor.mjs",
+);
 const synchronousWaitState = new Int32Array(new SharedArrayBuffer(4));
 const ownedRoots = new Map();
 const ownedChildren = new Set();
 let cleanupHooks = null;
+let idleRemovalHandle = null;
+let ownershipGeneration = 0;
 let terminationState = null;
 
 function boundedDelay(milliseconds) {
@@ -20,7 +30,19 @@ function waitSynchronously(milliseconds) {
   Atomics.wait(synchronousWaitState, 0, 0, milliseconds);
 }
 
+function markOwnershipChanged() {
+  ownershipGeneration += 1;
+}
+
+function cancelIdleRemoval() {
+  if (idleRemovalHandle !== null) {
+    clearImmediate(idleRemovalHandle);
+    idleRemovalHandle = null;
+  }
+}
+
 function removeCleanupHooks() {
+  cancelIdleRemoval();
   if (!cleanupHooks) {
     return;
   }
@@ -57,28 +79,36 @@ function signalOwnedProcessGroup(state, signal) {
   }
 }
 
-function requestGroupTermination(state, failure) {
+function requestGroupTermination(
+  state,
+  failure,
+  { markKilled = Boolean(failure) } = {},
+) {
   if (failure && !state.failure) {
     state.failure = failure;
+  }
+  if (markKilled) {
+    state.killed = true;
   }
   if (state.terminationRequested) {
     return;
   }
   state.terminationRequested = true;
-  state.killed = true;
+  clearTimeout(state.targetCleanupTimer);
 
   const initialSignal = state.killSignal ?? "SIGTERM";
   signalOwnedProcessGroup(state, initialSignal);
   if (initialSignal !== "SIGKILL" && initialSignal !== 9) {
-    // Keep the event loop from reaping the direct child between TERM and KILL.
-    // Its unreaped PID therefore cannot be reused for an unrelated group.
+    // The owned supervisor never exits voluntarily. Blocking this short grace
+    // prevents Node from reaping its PID between TERM and KILL, so the immutable
+    // group identity cannot be reused for an unrelated process group.
     waitSynchronously(groupTerminationGraceMs);
     signalOwnedProcessGroup(state, "SIGKILL");
   }
 }
 
 function processGroupExists(pgid) {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || !Number.isSafeInteger(pgid)) {
     return false;
   }
   try {
@@ -97,24 +127,12 @@ async function waitForChildAndGroup(state, deadline) {
       boundedDelay(closeRemaining),
     ]);
   }
-  while (
-    Number.isSafeInteger(state.pid) &&
-    processGroupExists(state.pid) &&
-    Date.now() < deadline
-  ) {
+  while (processGroupExists(state.pid) && Date.now() < deadline) {
     await boundedDelay(
       Math.min(signalPollIntervalMs, Math.max(1, deadline - Date.now())),
     );
   }
-  const groupGone =
-    !Number.isSafeInteger(state.pid) || !processGroupExists(state.pid);
-  return state.closed && groupGone;
-}
-
-function terminateAllChildrenForExit() {
-  for (const state of ownedChildren) {
-    requestGroupTermination(state);
-  }
+  return state.closed && !processGroupExists(state.pid);
 }
 
 function cleanupRoots({ exitOnly = false } = {}) {
@@ -127,19 +145,36 @@ function cleanupRoots({ exitOnly = false } = {}) {
     } catch {
       // Signal/exit cleanup is best effort for private, explicitly owned roots.
     } finally {
-      ownedRoots.delete(root);
+      if (ownedRoots.delete(root)) {
+        markOwnershipChanged();
+      }
     }
   }
 }
 
 function removeHooksIfIdle() {
   if (
-    !terminationState &&
-    ownedRoots.size === 0 &&
-    ownedChildren.size === 0
+    terminationState ||
+    ownedRoots.size !== 0 ||
+    ownedChildren.size !== 0 ||
+    idleRemovalHandle !== null
   ) {
-    removeCleanupHooks();
+    return;
   }
+  const expectedGeneration = ownershipGeneration;
+  idleRemovalHandle = setImmediate(() => {
+    idleRemovalHandle = null;
+    if (
+      terminationState ||
+      expectedGeneration !== ownershipGeneration ||
+      ownedRoots.size !== 0 ||
+      ownedChildren.size !== 0
+    ) {
+      removeHooksIfIdle();
+      return;
+    }
+    removeCleanupHooks();
+  });
 }
 
 async function handleTerminationSignal(signal) {
@@ -147,7 +182,7 @@ async function handleTerminationSignal(signal) {
   const deadline = Date.now() + signalCleanupTimeoutMs;
   try {
     for (const state of states) {
-      requestGroupTermination(state);
+      requestGroupTermination(state, null, { markKilled: true });
     }
     const cleanupConfirmed = await Promise.all(
       states.map((state) => waitForChildAndGroup(state, deadline)),
@@ -159,7 +194,9 @@ async function handleTerminationSignal(signal) {
     }
   } finally {
     for (const state of states) {
-      ownedChildren.delete(state);
+      if (ownedChildren.delete(state)) {
+        markOwnershipChanged();
+      }
     }
     cleanupRoots();
     removeCleanupHooks();
@@ -174,7 +211,9 @@ function installCleanupHooks() {
   const hooks = {
     exit() {
       terminationState = { kind: "exit" };
-      terminateAllChildrenForExit();
+      for (const state of ownedChildren) {
+        requestGroupTermination(state, null, { markKilled: true });
+      }
       cleanupRoots({ exitOnly: true });
       removeCleanupHooks();
     },
@@ -242,6 +281,12 @@ function abortFailure(reason) {
   return error;
 }
 
+function protocolFailure(message) {
+  const error = new Error(message);
+  error.code = "ERR_SMOKE_CHILD_SUPERVISOR";
+  return error;
+}
+
 function appendBoundedOutput(state, stream, chunk) {
   const chunks = state[`${stream}Chunks`];
   const byteKey = `${stream}Bytes`;
@@ -254,6 +299,38 @@ function appendBoundedOutput(state, stream, chunk) {
   if (kept < chunk.length) {
     requestGroupTermination(state, outputLimitFailure(stream));
   }
+}
+
+function appendControlOutput(state, chunk) {
+  const remaining = Math.max(0, controlMaxBytes - state.controlBytes);
+  const kept = Math.min(remaining, chunk.length);
+  if (kept > 0) {
+    state.controlChunks.push(chunk.subarray(0, kept));
+    state.controlBytes += kept;
+  }
+  if (kept < chunk.length) {
+    requestGroupTermination(
+      state,
+      protocolFailure("smoke child supervisor control limit exceeded"),
+    );
+    return;
+  }
+  const control = Buffer.concat(state.controlChunks, state.controlBytes);
+  const newline = control.indexOf(10);
+  if (newline < 0 || state.targetFinished) {
+    return;
+  }
+  let message;
+  try {
+    message = JSON.parse(control.subarray(0, newline).toString("utf8"));
+  } catch {
+    requestGroupTermination(
+      state,
+      protocolFailure("invalid smoke child supervisor response"),
+    );
+    return;
+  }
+  acceptTargetResult(state, message);
 }
 
 function boundedOutput(state, stream) {
@@ -271,6 +348,22 @@ function boundedOutput(state, stream) {
   return decoded;
 }
 
+function errorFromSupervisor(payload) {
+  const error = new Error(
+    String(payload?.message ?? "unable to spawn smoke child process").slice(
+      0,
+      512,
+    ),
+  );
+  error.name = String(payload?.name ?? "Error").slice(0, 64);
+  for (const field of ["code", "errno", "path", "syscall"]) {
+    if (payload?.[field] !== undefined) {
+      error[field] = payload[field];
+    }
+  }
+  return error;
+}
+
 function naturalExitFailure(code, signal) {
   const error = new Error(
     signal
@@ -281,25 +374,78 @@ function naturalExitFailure(code, signal) {
   return error;
 }
 
-function settleClosedChild(state) {
-  if (terminationState || state.settled) {
+function maybeFinishTarget(state) {
+  if (
+    !state.targetFinished ||
+    state.terminationRequested ||
+    terminationState
+  ) {
     return;
   }
-  state.settled = true;
+  if (state.stdoutEnded && state.stderrEnded) {
+    requestGroupTermination(state, null, { markKilled: false });
+    return;
+  }
+  if (state.targetCleanupTimer === null) {
+    state.targetCleanupTimer = setTimeout(() => {
+      requestGroupTermination(state, null, { markKilled: false });
+    }, orphanDrainGraceMs);
+  }
+}
+
+function acceptTargetResult(state, message) {
+  if (state.targetFinished) {
+    return;
+  }
+  if (message?.type === "exit") {
+    state.targetCode = message.code;
+    state.targetSignal = message.signal;
+  } else if (message?.type === "error") {
+    state.targetError = errorFromSupervisor(message.error);
+  } else {
+    requestGroupTermination(
+      state,
+      protocolFailure("unexpected smoke child supervisor response"),
+    );
+    return;
+  }
+  state.targetFinished = true;
+  maybeFinishTarget(state);
+}
+
+function clearStateTimers(state) {
+  clearTimeout(state.targetCleanupTimer);
   clearTimeout(state.timeoutTimer);
   if (state.abortSignal && state.abortListener) {
     state.abortSignal.removeEventListener("abort", state.abortListener);
   }
-  ownedChildren.delete(state);
+}
+
+function finalizeClosedChild(state, groupConfirmed) {
+  if (terminationState || state.settled) {
+    return;
+  }
+  state.settled = true;
+  clearStateTimers(state);
+  if (ownedChildren.delete(state)) {
+    markOwnershipChanged();
+  }
   removeHooksIfIdle();
 
   const stdout = boundedOutput(state, "stdout");
   const stderr = boundedOutput(state, "stderr");
+  if (!groupConfirmed && !state.failure) {
+    state.failure = protocolFailure(
+      "smoke child process group cleanup deadline exceeded",
+    );
+  }
   if (
     !state.failure &&
     !state.spawnError &&
-    state.closeCode === 0 &&
-    state.closeSignal === null
+    !state.targetError &&
+    state.targetFinished &&
+    state.targetCode === 0 &&
+    state.targetSignal === null
   ) {
     state.resolve({ stderr, stdout });
     return;
@@ -308,12 +454,28 @@ function settleClosedChild(state) {
   const error =
     state.failure ??
     state.spawnError ??
-    naturalExitFailure(state.closeCode, state.closeSignal);
+    state.targetError ??
+    naturalExitFailure(state.targetCode, state.targetSignal);
   error.killed = state.killed;
-  error.signal = state.closeSignal;
+  error.signal = state.targetFinished
+    ? state.targetSignal
+    : state.anchorCloseSignal;
   error.stderr = stderr;
   error.stdout = stdout;
   state.reject(error);
+}
+
+async function settleClosedChild(state) {
+  if (terminationState || state.settled || state.settling) {
+    return;
+  }
+  state.settling = true;
+  const groupConfirmed = await waitForChildAndGroup(
+    state,
+    Date.now() + signalCleanupTimeoutMs,
+  );
+  state.settling = false;
+  finalizeClosedChild(state, groupConfirmed);
 }
 
 export function allocateOwnedTemporaryRoot(
@@ -324,6 +486,7 @@ export function allocateOwnedTemporaryRoot(
   try {
     const root = allocateRoot();
     ownedRoots.set(root, { cleanupOnExit });
+    markOwnershipChanged();
     return root;
   } catch (error) {
     removeHooksIfIdle();
@@ -334,13 +497,23 @@ export function allocateOwnedTemporaryRoot(
 export function cleanupOwnedTemporaryRoot(root) {
   try {
     rmSync(root, { force: true, recursive: true });
-    ownedRoots.delete(root);
+    if (ownedRoots.delete(root)) {
+      markOwnershipChanged();
+    }
   } finally {
+    // Delay hook removal until libuv has dispatched signals queued while the
+    // synchronous recursive delete blocked this JavaScript turn.
     removeHooksIfIdle();
   }
 }
 
 export function executeOwnedFile(command, args, options = {}) {
+  if (typeof command !== "string" || !Array.isArray(args)) {
+    throw new TypeError("invalid smoke child-process command");
+  }
+  if (args.some((argument) => typeof argument !== "string")) {
+    throw new TypeError("invalid smoke child-process argument");
+  }
   const encoding = normalizedEncoding(options.encoding);
   const maxBuffer = validatedMaxBuffer(options.maxBuffer);
   const timeout = validatedTimeout(options.timeout);
@@ -352,18 +525,28 @@ export function executeOwnedFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(command, args, {
-        argv0: options.argv0,
-        cwd: options.cwd,
-        detached: process.platform !== "win32",
-        env: options.env,
-        gid: options.gid,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-        uid: options.uid,
-        windowsHide: options.windowsHide,
-        windowsVerbatimArguments: options.windowsVerbatimArguments,
-      });
+      child = spawn(
+        process.execPath,
+        [
+          supervisorPath,
+          JSON.stringify({
+            args,
+            argv0: options.argv0 ?? null,
+            command,
+          }),
+        ],
+        {
+          cwd: options.cwd,
+          detached: process.platform !== "win32",
+          env: options.env,
+          gid: options.gid,
+          shell: false,
+          stdio: ["ignore", "pipe", "pipe", "pipe"],
+          uid: options.uid,
+          windowsHide: options.windowsHide,
+          windowsVerbatimArguments: options.windowsVerbatimArguments,
+        },
+      );
     } catch (error) {
       removeHooksIfIdle();
       reject(error);
@@ -377,11 +560,12 @@ export function executeOwnedFile(command, args, options = {}) {
     const state = {
       abortListener: null,
       abortSignal: options.signal ?? null,
+      anchorCloseSignal: null,
       child,
-      closeCode: null,
       closePromise,
-      closeSignal: null,
       closed: false,
+      controlBytes: 0,
+      controlChunks: [],
       encoding,
       exitObserved: false,
       failure: null,
@@ -393,36 +577,61 @@ export function executeOwnedFile(command, args, options = {}) {
       resolve,
       resolveClose,
       settled: false,
+      settling: false,
       spawnError: null,
       stderrBytes: 0,
       stderrChunks: [],
+      stderrEnded: false,
       stdoutBytes: 0,
       stdoutChunks: [],
+      stdoutEnded: false,
+      targetCleanupTimer: null,
+      targetCode: null,
+      targetError: null,
+      targetFinished: false,
+      targetSignal: null,
       terminationRequested: false,
       timeoutTimer: null,
     };
     ownedChildren.add(state);
+    markOwnershipChanged();
 
     child.stdout.on("data", (chunk) => {
       appendBoundedOutput(state, "stdout", chunk);
     });
+    child.stdout.once("end", () => {
+      state.stdoutEnded = true;
+      maybeFinishTarget(state);
+    });
     child.stderr.on("data", (chunk) => {
       appendBoundedOutput(state, "stderr", chunk);
+    });
+    child.stderr.once("end", () => {
+      state.stderrEnded = true;
+      maybeFinishTarget(state);
+    });
+    child.stdio[3].on("data", (chunk) => {
+      appendControlOutput(state, chunk);
+    });
+    child.stdio[3].once("end", () => {
+      if (!state.targetFinished && !state.failure && !terminationState) {
+        requestGroupTermination(
+          state,
+          protocolFailure("smoke child supervisor closed without a result"),
+        );
+      }
     });
     child.once("error", (error) => {
       state.spawnError = error;
     });
-    child.once("exit", (code, signal) => {
+    child.once("exit", () => {
       state.exitObserved = true;
-      state.closeCode = code;
-      state.closeSignal = signal;
     });
-    child.once("close", (code, signal) => {
+    child.once("close", (_code, signal) => {
       state.closed = true;
-      state.closeCode = code;
-      state.closeSignal = signal;
+      state.anchorCloseSignal = signal;
       state.resolveClose();
-      settleClosedChild(state);
+      void settleClosedChild(state);
     });
 
     if (timeout > 0) {

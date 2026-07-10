@@ -342,7 +342,6 @@ async function waitForOwnedHeadlessState(
         Number.isSafeInteger(descendant.pid) && descendant.pid > 0,
         true,
       );
-      assert.equal(processExists(direct.pid), true);
       assert.equal(processExists(descendant.pid), true);
       return { descendant, direct };
     }
@@ -398,7 +397,7 @@ function writeBlockingFakeSwiftc(
       ").trim());",
       "writeFileSync(",
       "  process.env.SKILLS_COPILOT_FAKE_DESCENDANT_INFO_FILE,",
-      "  JSON.stringify({ pgid, pid: process.pid }),",
+      "  JSON.stringify({ pgid, pid: process.pid, ppid: process.ppid }),",
       ");",
       'for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
       "  process.on(signal, () => {});",
@@ -422,18 +421,14 @@ function writeBlockingFakeSwiftc(
       "  ).trim());",
       "  writeFileSync(",
       "    process.env.SKILLS_COPILOT_FAKE_DIRECT_INFO_FILE,",
-      "    JSON.stringify({ pgid, pid: process.pid }),",
+      "    JSON.stringify({ pgid, pid: process.pid, ppid: process.ppid }),",
       "  );",
       "  const descendant = spawn(",
       "    process.execPath,",
       "    [process.env.SKILLS_COPILOT_FAKE_DESCENDANT_SOURCE],",
-      '    { stdio: "ignore" },',
+      '    { stdio: ["ignore", "inherit", "inherit"] },',
       "  );",
       "  descendant.unref();",
-      '  for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
-      "    process.on(signal, () => {});",
-      "  }",
-      "  setInterval(() => {}, 60_000);",
       "};",
       "",
     ].join("\n"),
@@ -559,6 +554,7 @@ for (const phase of ["compile", "helper"]) {
               descendantGroup: fakeProcesses.descendant.pgid,
               descendantStillRunning: !descendantExited,
               directGroup: fakeProcesses.direct.pgid,
+              directParent: fakeProcesses.direct.ppid,
               directStillRunning: !directExited,
               fixtureRoots: entries.filter((name) =>
                 name.startsWith("skills-copilot-native-smoke-"),
@@ -567,13 +563,14 @@ for (const phase of ["compile", "helper"]) {
                 name.startsWith("smoke-fixture-identity-helper-"),
               ),
               ownedGroupStillRunning: processGroupExists(
-                fakeProcesses.direct.pid,
+                fakeProcesses.direct.pgid,
               ),
             },
             {
-              descendantGroup: fakeProcesses.direct.pid,
+              descendantGroup: fakeProcesses.direct.ppid,
               descendantStillRunning: false,
-              directGroup: fakeProcesses.direct.pid,
+              directGroup: fakeProcesses.direct.ppid,
+              directParent: fakeProcesses.direct.ppid,
               directStillRunning: false,
               fixtureRoots: [],
               helperRoots: [],
@@ -589,6 +586,7 @@ for (const phase of ["compile", "helper"]) {
           for (const pid of [
             fakeProcesses?.direct.pid,
             fakeProcesses?.descendant.pid,
+            fakeProcesses?.direct.ppid,
           ]) {
             if (pid && processExists(pid)) {
               process.kill(pid, "SIGKILL");
