@@ -99,8 +99,21 @@ private struct AgentConfigOverviewDetailPanel: View {
         draft != (store.claudeSettings?.content ?? "")
     }
 
+    private var hasWritableConfigBinding: Bool {
+        store.claudeSettings?.supportsCompareAndSwap == true
+    }
+
+    private var hasConfigConflict: Bool {
+        if case .conflict = store.configMutationState {
+            return true
+        }
+        return false
+    }
+
     private var canAutosaveConfig: Bool {
         revealsSensitiveConfig
+            && hasWritableConfigBinding
+            && !hasConfigConflict
             && hasDraftChanges
             && validationMessage == nil
     }
@@ -177,7 +190,9 @@ private struct AgentConfigOverviewDetailPanel: View {
             ConfigCodeToolbar(
                 isReloadDisabled: store.isLoadingSettings || store.isSavingSettings,
                 isFormatDisabled: !revealsSensitiveConfig || validationMessage != nil || draft.isEmpty,
-                isRevealDisabled: store.isLoadingSettings || store.isSavingSettings,
+                isRevealDisabled: store.isLoadingSettings
+                    || store.isSavingSettings
+                    || (store.claudeSettings != nil && !hasWritableConfigBinding),
                 isSensitiveVisible: revealsSensitiveConfig,
                 revealHelp: revealsSensitiveConfig ? UIStrings.agentConfigHideSensitive : UIStrings.agentConfigShowSensitive,
                 onReload: reloadClaudeConfig,
@@ -195,6 +210,8 @@ private struct AgentConfigOverviewDetailPanel: View {
 
             if let validationMessage {
                 ConfigInlineBanner(message: validationMessage, systemImage: "exclamationmark.triangle.fill", color: .red)
+            } else if store.claudeSettings != nil && !hasWritableConfigBinding {
+                ConfigInlineBanner(message: UIStrings.configRevisionUnavailable, systemImage: "lock.fill", color: .orange)
             } else {
                 switch store.configAutosavePhase {
                 case .saving:
@@ -379,7 +396,18 @@ private struct AgentConfigSnapshotDetailPanel: View {
 
     @State private var preview: SnapshotRollbackPreviewRecord?
     @State private var previewError: String?
-    @State private var snapshotToRollback: ConfigSnapshotRecord?
+    @State private var confirmationToApply: RollbackConfirmation?
+
+    private var confirmedPreview: SnapshotRollbackPreviewRecord? {
+        guard let preview,
+              preview.snapshot.id == snapshot.id,
+              preview.rollbackSupported,
+              let confirmation = store.rollbackConfirmation,
+              confirmation == RollbackConfirmation(preview: preview) else {
+            return nil
+        }
+        return preview
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -403,11 +431,13 @@ private struct AgentConfigSnapshotDetailPanel: View {
                     .disabled(store.isWriting)
 
                     Button(role: .destructive) {
-                        snapshotToRollback = snapshot
+                        guard confirmedPreview != nil,
+                              let confirmation = store.rollbackConfirmation else { return }
+                        confirmationToApply = confirmation
                     } label: {
                         Label(UIStrings.rollback, systemImage: "arrow.uturn.backward")
                     }
-                    .disabled(store.isWriting)
+                    .disabled(store.isWriting || confirmedPreview == nil)
                 }
             }
             .padding()
@@ -428,6 +458,10 @@ private struct AgentConfigSnapshotDetailPanel: View {
 
                     if let readError = preview.currentReadError {
                         ErrorBanner(message: readError)
+                    }
+
+                    if !preview.rollbackSupported {
+                        ErrorBanner(message: UIStrings.rollbackBindingUnavailable)
                     }
 
                     ViewThatFits(in: .horizontal) {
@@ -467,32 +501,45 @@ private struct AgentConfigSnapshotDetailPanel: View {
         .confirmationDialog(
             UIStrings.rollbackSnapshotQuestion,
             isPresented: Binding(
-                get: { snapshotToRollback != nil },
+                get: { confirmationToApply != nil },
                 set: { isPresented in
                     if !isPresented {
-                        snapshotToRollback = nil
+                        confirmationToApply = nil
                     }
                 }
             ),
             titleVisibility: .visible
         ) {
             Button(UIStrings.rollback, role: .destructive) {
-                guard let snapshotID = snapshotToRollback?.id else { return }
-                Task { await store.rollbackSnapshot(snapshotID: snapshotID) }
-                snapshotToRollback = nil
+                guard let confirmation = confirmationToApply else { return }
+                confirmationToApply = nil
+                Task {
+                    let succeeded = await store.rollbackSnapshot(confirmation: confirmation)
+                    guard !succeeded else { return }
+                    preview = nil
+                    previewError = store.errorMessage
+                }
             }
             Button(UIStrings.cancel, role: .cancel) {
-                snapshotToRollback = nil
+                confirmationToApply = nil
             }
         } message: {
             Text(UIStrings.agentConfigTimelineRollbackConfirm(
-                AgentConfigDisplay.pathSummary(snapshotToRollback?.target ?? "")
+                AgentConfigDisplay.pathSummary(snapshot.target)
             ))
+        }
+        .onChange(of: snapshot.id) { _ in
+            preview = nil
+            previewError = nil
+            confirmationToApply = nil
+            store.clearRollbackConfirmation()
         }
     }
 
     private func loadPreview() {
         previewError = nil
+        preview = nil
+        confirmationToApply = nil
         Task {
             do {
                 preview = try await store.previewRollback(snapshotID: snapshot.id)

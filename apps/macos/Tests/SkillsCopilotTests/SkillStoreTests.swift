@@ -137,8 +137,29 @@ struct SkillStoreTests {
         try await runCase("failedConfigAutosaveKeepsDraft") {
             try await failedConfigAutosaveKeepsDraft()
         }
+        try await runCase("configSaveUsesLoadedRevision") {
+            try await configSaveUsesLoadedRevision()
+        }
+        try await runCase("configSaveNeverFallsBackWithoutRevision") {
+            try await configSaveNeverFallsBackWithoutRevision()
+        }
+        try await runCase("configConflictPreservesDraftAndReloadsRevision") {
+            try await configConflictPreservesDraftAndReloadsRevision()
+        }
         try await runCase("previewRollbackShowsDiffWithoutCallingRollback") {
             try await previewRollbackShowsDiffWithoutCallingRollback()
+        }
+        try await runCase("rollbackUsesImmutablePreviewInputs") {
+            try await rollbackUsesImmutablePreviewInputs()
+        }
+        try await runCase("staleRollbackTokenRequiresAnotherPreview") {
+            try await staleRollbackTokenRequiresAnotherPreview()
+        }
+        try await runCase("rollbackConfirmationInvalidatesOnSelectionTimelineAndPreviewChanges") {
+            try await rollbackConfirmationInvalidatesOnSelectionTimelineAndPreviewChanges()
+        }
+        try await runCase("inFlightRollbackPreviewCannotRestoreInvalidatedConfirmation") {
+            try await inFlightRollbackPreviewCannotRestoreInvalidatedConfirmation()
         }
         try await runCase("rollbackSnapshotRequiresVisibleAgentTimelineRecord") {
             try await rollbackSnapshotRequiresVisibleAgentTimelineRecord()
@@ -1157,7 +1178,11 @@ struct SkillStoreTests {
         let saved = await store.saveClaudeSettings(content: "{")
 
         try expectFalse(saved, "Unsupported fake settings save should fail in this scenario.")
-        try expectContains(store.settingsErrorMessage, "test.unknown", "Failed config save should surface a settings error.")
+        try expectEqual(
+            store.settingsErrorMessage,
+            Optional(UIStrings.configRevisionUnavailable),
+            "A save attempted without a loaded revision should surface the read-only recovery message."
+        )
 
         store.clearSettingsFeedback()
 
@@ -1809,6 +1834,201 @@ struct SkillStoreTests {
         }
     }
 
+    private func configSaveUsesLoadedRevision() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-cas")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadClaudeSettings()
+        try expectEqual(store.claudeSettings?.revision, Optional("sha256:settings-revision"), "Config load should retain the exact service revision.")
+
+        let saved = await store.saveClaudeSettings(content: "{\"theme\":\"dark\"}\n")
+
+        try expectEqual(saved, true, "A revision-bound config save should succeed.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Config save should call the mutation RPC once.")
+        try expectContains(fake.calls(), #""expected_revision":"sha256:settings-revision""#, "Config save should send the revision paired with the loaded document.")
+        try expectEqual(store.claudeSettings?.revision, Optional("sha256:saved-revision"), "Successful save should publish the service's new revision.")
+        try expectEqual(store.configMutationState, .idle, "Successful save should leave the config mutation state idle.")
+    }
+
+    private func configSaveNeverFallsBackWithoutRevision() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-legacy")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadClaudeSettings()
+        try expectFalse(store.claudeSettings?.supportsCompareAndSwap ?? true, "Legacy config responses should be read-only.")
+
+        let saved = await store.saveClaudeSettings(content: "{\"theme\":\"dark\"}\n")
+
+        try expectEqual(saved, false, "A config document without a revision must not be saved.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Missing revision must make no write RPC call.")
+        try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configRevisionUnavailable), "Missing CAS capability should show a localized read-only message.")
+        try expectEqual(store.configMutationState, .failed(UIStrings.configRevisionUnavailable), "Missing CAS capability should publish a failed mutation state.")
+    }
+
+    private func configConflictPreservesDraftAndReloadsRevision() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-conflict")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadClaudeSettings()
+        let draft = "{\"theme\":\"draft\"}\n"
+
+        let saved = await store.saveClaudeSettings(content: draft)
+
+        try expectEqual(saved, false, "A stale revision must not be reported as saved.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "A config conflict must not retry the write.")
+        try expectEqual(countMethodCalls("config.readClaudeSettings", in: fake.calls()), 2, "A config conflict should perform one fresh read for comparison.")
+        try expectContains(fake.calls(), #""content":"{\"theme\":\"draft\"}\n""#, "The attempted draft should remain the exact write input.")
+        try expectEqual(store.claudeSettings?.content, Optional("{\"theme\":\"external\"}\n"), "Conflict handling should publish the freshly read external document for comparison.")
+        try expectEqual(store.claudeSettings?.revision, Optional("sha256:external-revision"), "Conflict reread should publish the latest revision without retrying.")
+        try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configConflict), "Config conflict should use localized recovery guidance.")
+        try expectNil(store.settingsMessage, "Config conflict must not publish save success.")
+        try expectNil(store.lastMutationMessage, "Config conflict must not publish a success mutation message.")
+        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), 0, "Config conflict must not perform a success-style collections refresh.")
+
+        guard case let .conflict(conflict) = store.configMutationState else {
+            throw NativeModelTestFailure(description: "Config conflict should publish conflict state.")
+        }
+        try expectEqual(conflict.attemptedRevision, "sha256:settings-revision", "Conflict state should retain the attempted revision.")
+        try expectEqual(conflict.latestRevision, Optional("sha256:external-revision"), "Conflict state should expose the freshly read revision for comparison.")
+        try expectEqual(conflict.displayMessage, UIStrings.configConflict, "Conflict state should use localized recovery guidance.")
+    }
+
+    private func rollbackUsesImmutablePreviewInputs() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-cas")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        guard let snapshot = store.agentConfigSnapshots.first else {
+            throw NativeModelTestFailure(description: "Config CAS fixture should expose a rollback snapshot.")
+        }
+        store.selectConfigSnapshot(snapshot)
+        let preview = try await store.previewRollback(snapshotID: snapshot.id)
+        guard let confirmation = store.rollbackConfirmation else {
+            throw NativeModelTestFailure(description: "A complete rollback preview should create an immutable confirmation.")
+        }
+        try expectEqual(confirmation.snapshotID, preview.snapshot.id, "Confirmation should capture the previewed snapshot id.")
+        try expectEqual(confirmation.previewToken, "sha256:rollback-preview", "Confirmation should capture the opaque preview token.")
+
+        let rolledBack = await store.rollbackSnapshot(confirmation: confirmation)
+
+        try expectEqual(rolledBack, true, "A matching rollback confirmation should succeed.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 1, "Rollback should issue one mutation RPC.")
+        try expectContains(fake.calls(), #""snapshot_id":"snap-claude-new""#, "Rollback should send the immutable confirmation snapshot id.")
+        try expectContains(fake.calls(), #""preview_token":"sha256:rollback-preview""#, "Rollback should send the immutable confirmation token.")
+        try expectFalse(fake.calls().contains("expected_revision"), "Rollback authorization must never use a bare revision.")
+    }
+
+    private func staleRollbackTokenRequiresAnotherPreview() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "rollback-stale")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        guard let snapshot = store.agentConfigSnapshots.first else {
+            throw NativeModelTestFailure(description: "Stale rollback fixture should expose a snapshot.")
+        }
+        store.selectConfigSnapshot(snapshot)
+        _ = try await store.previewRollback(snapshotID: snapshot.id)
+        guard let confirmation = store.rollbackConfirmation else {
+            throw NativeModelTestFailure(description: "Stale rollback fixture should initially create a confirmation.")
+        }
+        let snapshotRefreshesBeforeRollback = countMethodCalls("app.stateSnapshot", in: fake.calls())
+
+        let rolledBack = await store.rollbackSnapshot(confirmation: confirmation)
+
+        try expectEqual(rolledBack, false, "A stale preview token must not report rollback success.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 1, "A stale rollback must not retry automatically.")
+        try expectEqual(countMethodCalls("snapshot.previewRollback", in: fake.calls()), 1, "A stale rollback must not auto-preview a second token.")
+        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), snapshotRefreshesBeforeRollback, "A stale rollback must not perform a success refresh.")
+        try expectEqual(store.selectedConfigSnapshot?.id, Optional(snapshot.id), "A stale rollback should preserve the selected snapshot.")
+        try expectNil(store.rollbackConfirmation, "A stale rollback should clear its invalid confirmation.")
+        try expectEqual(store.errorMessage, Optional(UIStrings.rollbackPreviewAgain), "A stale rollback should ask for another preview with localized guidance.")
+        try expectNil(store.lastMutationMessage, "A stale rollback must not publish a success mutation message.")
+    }
+
+    private func rollbackConfirmationInvalidatesOnSelectionTimelineAndPreviewChanges() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-cas")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        guard store.agentConfigSnapshots.count == 2 else {
+            throw NativeModelTestFailure(description: "Config CAS fixture should expose two snapshots.")
+        }
+        let first = store.agentConfigSnapshots[0]
+        let second = store.agentConfigSnapshots[1]
+        store.selectConfigSnapshot(first)
+        _ = try await store.previewRollback(snapshotID: first.id)
+        guard let firstConfirmation = store.rollbackConfirmation else {
+            throw NativeModelTestFailure(description: "First preview should create a confirmation.")
+        }
+
+        store.selectConfigSnapshot(second)
+        try expectNil(store.rollbackConfirmation, "Changing snapshot selection should invalidate the old confirmation.")
+
+        _ = try await store.previewRollback(snapshotID: second.id)
+        guard let secondConfirmation = store.rollbackConfirmation else {
+            throw NativeModelTestFailure(description: "Second preview should replace the confirmation.")
+        }
+        try expectEqual(firstConfirmation.previewToken, "sha256:rollback-preview", "Previously captured confirmation should remain immutable.")
+        try expectEqual(secondConfirmation.previewToken, "sha256:rollback-preview-2", "Preview replacement should publish only the new token.")
+
+        let rejectedOldConfirmation = await store.rollbackSnapshot(confirmation: firstConfirmation)
+        try expectEqual(rejectedOldConfirmation, false, "An invalidated confirmation must be rejected before RPC.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "An invalidated confirmation must make no write call.")
+
+        _ = try await store.previewRollback(snapshotID: second.id)
+        try expectFalse(store.rollbackConfirmation == nil, "A new preview should restore confirmation.")
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        try expectNil(store.rollbackConfirmation, "Timeline reload should invalidate any prior confirmation.")
+
+        _ = try await store.previewRollback(snapshotID: second.id)
+        await store.reload()
+        try expectNil(store.rollbackConfirmation, "A full collection reload that replaces the timeline should invalidate confirmation.")
+
+        store.selectConfigSnapshot(second)
+        _ = try await store.previewRollback(snapshotID: second.id)
+        store.clearRollbackConfirmation()
+        try expectNil(store.rollbackConfirmation, "Explicit preview clearing should invalidate confirmation.")
+    }
+
+    private func inFlightRollbackPreviewCannotRestoreInvalidatedConfirmation() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "rollback-preview-delay")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        guard store.agentConfigSnapshots.count == 2 else {
+            throw NativeModelTestFailure(description: "Delayed preview fixture should expose two snapshots.")
+        }
+        let first = store.agentConfigSnapshots[0]
+        let second = store.agentConfigSnapshots[1]
+        store.selectConfigSnapshot(first)
+
+        let previewTask = Task {
+            try await store.previewRollback(snapshotID: first.id)
+        }
+        try await waitUntil("Delayed preview should reach the fake service before selection changes.") {
+            countMethodCalls("snapshot.previewRollback", in: fake.calls()) == 1
+        }
+        store.selectConfigSnapshot(second)
+        _ = try await previewTask.value
+
+        try expectEqual(store.selectedConfigSnapshot?.id, Optional(second.id), "Selection should remain on the newly chosen snapshot.")
+        try expectNil(store.rollbackConfirmation, "An invalidated in-flight preview must not restore its old confirmation.")
+    }
+
     private func rollbackSnapshotRequiresVisibleAgentTimelineRecord() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -1820,8 +2040,11 @@ struct SkillStoreTests {
             store.agentConfigSnapshots.map(\.id) == ["snap-claude-new", "snap-claude-old"]
         }
 
-        await store.rollbackSnapshot(snapshotID: "snap-codex")
+        let rejected = await store.rollbackSnapshot(
+            confirmation: RollbackConfirmation(snapshotID: "snap-codex", previewToken: "sha256:not-visible")
+        )
 
+        try expectEqual(rejected, false, "Rollback should reject snapshots outside the selected timeline.")
         try expectContains(store.errorMessage, "selected agent config timeline", "Rollback should reject snapshots outside the selected agent timeline.")
         try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "Rollback guard should not call the write API for hidden agent snapshots.")
     }

@@ -791,6 +791,10 @@
 "settings.agentConfig.hideSensitive" = "隐藏";
 "settings.agentConfig.autosavePending" = "有效改动将自动保存。";
 "settings.agentConfig.autosaveSaving" = "正在保存设置...";
+"settings.agentConfig.revisionUnavailable" = "服务未提供配置修订值。请使用协议 v2 重新加载；当前设置保持只读。";
+"settings.agentConfig.conflict" = "设置已在 Agent Copilot 外部发生变化。你的草稿已保留；请与最新配置比较后再保存。";
+"snapshot.rollback.previewAgain" = "回滚预览已不再是最新状态。请重新预览后再应用。";
+"snapshot.rollback.bindingUnavailable" = "服务未提供回滚预览令牌。重新连接协议 v2 前，回滚保持只读。";
 "settings.agentConfig.editConfirmation.title" = "显示并编辑原始配置？";
 "settings.agentConfig.editConfirmation.message" = "这会显示敏感配置值并启用原始编辑。有效改动会通过已验证的快照流程自动保存。";
 "settings.agentConfig.skillEnablement" = "技能生效配置";

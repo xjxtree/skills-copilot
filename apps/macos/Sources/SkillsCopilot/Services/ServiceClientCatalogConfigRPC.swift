@@ -258,10 +258,10 @@ extension ServiceClient {
         )
     }
 
-    func saveClaudeSettings(content: String) async throws -> ConfigDocumentRecord {
+    func saveClaudeSettings(content: String, expectedRevision: String) async throws -> ConfigDocumentRecord {
         try await call(
             method: "config.saveClaudeSettings",
-            params: SaveClaudeSettingsParams(content: content)
+            params: SaveClaudeSettingsParams(content: content, expectedRevision: expectedRevision)
         )
     }
 
@@ -272,10 +272,10 @@ extension ServiceClient {
         )
     }
 
-    func rollbackSnapshot(snapshotID: String) async throws -> Int {
+    func rollbackSnapshot(snapshotID: String, previewToken: String) async throws -> Int {
         try await call(
             method: "snapshot.rollback",
-            params: SnapshotParams(snapshotId: snapshotID)
+            params: RollbackSnapshotParams(snapshotId: snapshotID, previewToken: previewToken)
         )
     }
 }

@@ -327,6 +327,8 @@ final class SkillStore: ObservableObject {
     @Published private(set) var lastScanActivity: RefreshActivity?
     @Published private(set) var canRetryLastRefresh = false
     @Published private(set) var claudeSettings: ConfigDocumentRecord?
+    @Published private(set) var configMutationState: ConfigMutationState = .idle
+    @Published private(set) var rollbackConfirmation: RollbackConfirmation?
     @Published private(set) var currentAgentConfigDocuments: [ConfigDocumentRecord] = []
     @Published private(set) var isLoadingAgentConfigDocuments = false
     @Published private(set) var settingsMessage: String?
@@ -336,6 +338,7 @@ final class SkillStore: ObservableObject {
     @Published var selectedSidebarSelection: SidebarSelection? {
         didSet {
             guard oldValue != selectedSidebarSelection else { return }
+            clearRollbackConfirmation()
             handleSidebarSelectionChanged()
         }
     }
@@ -472,6 +475,7 @@ final class SkillStore: ObservableObject {
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
+    private var rollbackPreviewGeneration = 0
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
     private var selectedDetailLoadGeneration = 0
@@ -1154,6 +1158,7 @@ final class SkillStore: ObservableObject {
 
     func reload() async {
         guard !isRefreshBusy else { return }
+        clearRollbackConfirmation()
         postRefreshSupplementalLoadTask?.cancel()
         isLoading = true
         errorMessage = nil
@@ -2719,6 +2724,8 @@ final class SkillStore: ObservableObject {
     }
 
     func previewRollback(snapshotID: String) async throws -> SnapshotRollbackPreviewRecord {
+        clearRollbackConfirmation()
+        let previewGeneration = rollbackPreviewGeneration
         errorMessage = nil
         guard agentConfigSnapshots.contains(where: { $0.id == snapshotID }) else {
             let message = "Snapshot is not in the selected agent config timeline."
@@ -2726,34 +2733,68 @@ final class SkillStore: ObservableObject {
             throw ServiceClient.ClientError.invalidOutput(message)
         }
         do {
-            return try await service.previewSnapshotRollback(snapshotID: snapshotID)
+            let preview = try await service.previewSnapshotRollback(snapshotID: snapshotID)
+            guard preview.snapshot.id == snapshotID else {
+                let message = "Rollback preview did not match the requested snapshot."
+                errorMessage = message
+                throw ServiceClient.ClientError.invalidOutput(message)
+            }
+            if previewGeneration == rollbackPreviewGeneration {
+                rollbackConfirmation = RollbackConfirmation(preview: preview)
+            }
+            return preview
         } catch {
-            errorMessage = error.localizedDescription
+            if previewGeneration == rollbackPreviewGeneration {
+                errorMessage = error.localizedDescription
+            }
             throw error
         }
     }
 
-    func rollbackSnapshot(snapshotID: String) async {
-        guard !isRefreshBusy else { return }
-        guard agentConfigSnapshots.contains(where: { $0.id == snapshotID }) else {
+    func clearRollbackConfirmation() {
+        rollbackPreviewGeneration &+= 1
+        rollbackConfirmation = nil
+    }
+
+    @discardableResult
+    func rollbackSnapshot(confirmation: RollbackConfirmation) async -> Bool {
+        guard !isRefreshBusy else {
+            errorMessage = UIStrings.operationUnavailableBusy
+            return false
+        }
+        guard agentConfigSnapshots.contains(where: { $0.id == confirmation.snapshotID }) else {
             errorMessage = "Snapshot is not in the selected agent config timeline."
             lastMutationMessage = nil
-            return
+            return false
         }
+        guard rollbackConfirmation == confirmation else {
+            errorMessage = UIStrings.rollbackPreviewAgain
+            lastMutationMessage = nil
+            return false
+        }
+        clearRollbackConfirmation()
         isWriting = true
         errorMessage = nil
         lastMutationMessage = nil
         defer { isWriting = false }
 
         do {
-            let scannedCount = try await service.rollbackSnapshot(snapshotID: snapshotID)
+            let scannedCount = try await service.rollbackSnapshot(
+                snapshotID: confirmation.snapshotID,
+                previewToken: confirmation.previewToken
+            )
             detailsByID.removeAll()
             try await refreshCollections()
             lastMutationMessage = UIStrings.rollbackRescanned(scannedCount)
             recordLocalRefresh(message: UIStrings.refreshAfterRollback(scannedCount))
             await loadSelectedDetail()
+            return true
+        } catch ServiceClient.ClientError.service(let error) where error.code == "stale_preview_token" {
+            errorMessage = UIStrings.rollbackPreviewAgain
+            return false
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -2870,6 +2911,9 @@ final class SkillStore: ObservableObject {
     func clearSettingsFeedback() {
         settingsMessage = nil
         settingsErrorMessage = nil
+        if !isSavingSettings {
+            configMutationState = .idle
+        }
     }
 
     @discardableResult
@@ -3152,13 +3196,26 @@ final class SkillStore: ObservableObject {
             settingsErrorMessage = UIStrings.operationUnavailableBusy
             return false
         }
+        guard let loadedDocument = claudeSettings,
+              let expectedRevision = loadedDocument.revision,
+              !expectedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            settingsErrorMessage = UIStrings.configRevisionUnavailable
+            settingsMessage = nil
+            configMutationState = .failed(UIStrings.configRevisionUnavailable)
+            return false
+        }
         isSavingSettings = true
         settingsErrorMessage = nil
         settingsMessage = nil
+        lastMutationMessage = nil
+        configMutationState = .saving
         defer { isSavingSettings = false }
 
         do {
-            let savedSettings = try await service.saveClaudeSettings(content: content)
+            let savedSettings = try await service.saveClaudeSettings(
+                content: content,
+                expectedRevision: expectedRevision
+            )
             invalidateConfigReadGenerations()
             claudeSettings = savedSettings
             detailsByID.removeAll()
@@ -3168,9 +3225,24 @@ final class SkillStore: ObservableObject {
             lastMutationMessage = settingsMessage
             recordLocalRefresh(message: UIStrings.refreshAfterSettingsSave)
             await loadSelectedDetail()
+            configMutationState = .idle
             return true
+        } catch ServiceClient.ClientError.service(let error) where error.code == "config_conflict" {
+            let latestDocument = try? await service.readClaudeSettings()
+            let conflict = ConfigConflictState(
+                attemptedRevision: expectedRevision,
+                latestRevision: latestDocument?.revision,
+                displayMessage: UIStrings.configConflict
+            )
+            settingsErrorMessage = conflict.displayMessage
+            configMutationState = .conflict(conflict)
+            if let latestDocument {
+                claudeSettings = latestDocument
+            }
+            return false
         } catch {
             settingsErrorMessage = error.localizedDescription
+            configMutationState = .failed(error.localizedDescription)
             return false
         }
     }
@@ -3262,6 +3334,7 @@ final class SkillStore: ObservableObject {
         }
         guard activeAgentConfigSnapshotRequestKey != requestKey else { return }
 
+        clearRollbackConfirmation()
         agentConfigSnapshotLoadGeneration += 1
         let generation = agentConfigSnapshotLoadGeneration
         activeAgentConfigSnapshotRequestKey = requestKey
@@ -3323,6 +3396,7 @@ final class SkillStore: ObservableObject {
             self.llmPromptRunList = fetchedLLMPromptRuns
         }
         if let fetchedAgentConfigSnapshots {
+            clearRollbackConfirmation()
             self.agentConfigSnapshots = fetchedAgentConfigSnapshots
             if let agent = selectedAgentConfigTimelineAgent {
                 loadedAgentConfigSnapshotRequestKey = agentConfigRequestKey(agent: agent)

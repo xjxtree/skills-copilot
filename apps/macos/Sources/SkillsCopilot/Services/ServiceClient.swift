@@ -349,6 +349,22 @@ struct ClearRuleSuppressionParams: Encodable {
 
 struct SaveClaudeSettingsParams: Encodable {
     let content: String
+    let expectedRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case content
+        case expectedRevision = "expected_revision"
+    }
+}
+
+struct RollbackSnapshotParams: Encodable {
+    let snapshotId: String
+    let previewToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case snapshotId = "snapshot_id"
+        case previewToken = "preview_token"
+    }
 }
 
 struct SaveAIProviderProfileParams: Encodable {

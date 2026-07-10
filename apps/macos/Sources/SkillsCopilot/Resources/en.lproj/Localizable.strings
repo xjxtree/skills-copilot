@@ -791,6 +791,10 @@
 "settings.agentConfig.hideSensitive" = "Hide";
 "settings.agentConfig.autosavePending" = "Valid changes will be saved automatically.";
 "settings.agentConfig.autosaveSaving" = "Saving settings...";
+"settings.agentConfig.revisionUnavailable" = "This service did not provide a config revision. Reload with protocol v2; settings remain read-only.";
+"settings.agentConfig.conflict" = "Settings changed outside Agent Copilot. Your draft was kept; compare it with the latest config before saving again.";
+"snapshot.rollback.previewAgain" = "The rollback preview is no longer current. Preview again before applying.";
+"snapshot.rollback.bindingUnavailable" = "This service did not provide a rollback preview token. Rollback remains read-only until you reconnect with protocol v2.";
 "settings.agentConfig.editConfirmation.title" = "Show and edit raw config?";
 "settings.agentConfig.editConfirmation.message" = "This reveals sensitive config values and enables raw editing. Valid changes auto-save through the verified snapshot flow.";
 "settings.agentConfig.skillEnablement" = "Skill enablement";
