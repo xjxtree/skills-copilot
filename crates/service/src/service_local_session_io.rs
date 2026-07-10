@@ -251,6 +251,50 @@ mod tests {
     }
 
     #[test]
+    fn bounded_reader_does_not_duplicate_overlapping_windows() {
+        let input = b"short\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(64);
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: 4,
+                tail_bytes: 4,
+                line_fragment_bytes: 4,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert_eq!(format!("{}{}", text.head, text.tail), "short\n");
+        assert!(!text.truncated);
+        assert_eq!(text.bytes_read, input.len());
+    }
+
+    #[test]
+    fn bounded_reader_shares_budget_across_files() {
+        let spec = BoundedReadSpec {
+            head_bytes: 32,
+            tail_bytes: 0,
+            line_fragment_bytes: 0,
+        };
+        let mut budget = LocalSessionReadBudget::new(48);
+        let mut first = RecordingReadSeek::new(100);
+        let mut second = RecordingReadSeek::new(100);
+
+        let first_text =
+            read_bounded_from(&mut first, 100, spec, &mut budget).expect("first bounded read");
+        let second_text =
+            read_bounded_from(&mut second, 100, spec, &mut budget).expect("second bounded read");
+
+        assert_eq!(first_text.bytes_read, 32);
+        assert_eq!(second_text.bytes_read, 16);
+        assert_eq!(budget.remaining_bytes, 0);
+    }
+
+    #[test]
     fn bounded_reader_keeps_utf8_boundaries_valid() {
         let input = format!("开始{}结束", "x".repeat(128)).into_bytes();
         let mut reader = Cursor::new(input.clone());
