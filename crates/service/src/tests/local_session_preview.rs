@@ -616,6 +616,52 @@ fn local_session_preview_bounds_single_line_json() {
 }
 
 #[test]
+fn one_oversized_json_record_recovers_supported_tail_scalars() {
+    let value = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"data\":\"{}\",\"text\":\"FINAL_SCALAR_MUST_SURVIVE\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        "x".repeat(600 * 1024)
+    );
+    let result = preview_codex_session_fixture("single-record-tail-scalar", &value);
+    let output = serde_json::to_string(&result).expect("serialize single-record preview");
+
+    assert!(output.contains("FINAL_SCALAR_MUST_SURVIVE"), "{output}");
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/ended_at")
+            .and_then(Value::as_i64),
+        Some(1_783_670_950_000),
+        "{result}"
+    );
+    assert!(!output.contains("\"data\""), "{output}");
+}
+
+#[test]
+fn interior_invalid_utf8_does_not_discard_later_complete_plaintext() {
+    let mut bytes = b"user: BEFORE_INVALID_UTF8\n".to_vec();
+    bytes.push(0xff);
+    bytes.extend_from_slice(b"\nuser: AFTER_INVALID_UTF8\n");
+    let result = preview_codex_session_fixture_bytes("interior-invalid-utf8", &bytes);
+    let output = serde_json::to_string(&result).expect("serialize invalid-utf8 preview");
+
+    assert!(output.contains("BEFORE_INVALID_UTF8"), "{output}");
+    assert!(output.contains("AFTER_INVALID_UTF8"), "{output}");
+}
+
+#[test]
+fn interior_invalid_utf8_in_tail_does_not_discard_complete_plaintext() {
+    let mut bytes = b"user: HEAD_BEFORE_LARGE_GAP\n".to_vec();
+    bytes.extend(std::iter::repeat_n(b'x', 600 * 1024));
+    bytes.extend_from_slice(b"\nuser: BEFORE_TAIL_INVALID_UTF8\n");
+    bytes.push(0xff);
+    bytes.extend_from_slice(b"\nuser: AFTER_TAIL_INVALID_UTF8\n");
+    let result = preview_codex_session_fixture_bytes("tail-interior-invalid-utf8", &bytes);
+    let output = serde_json::to_string(&result).expect("serialize tail invalid-utf8 preview");
+
+    assert!(output.contains("BEFORE_TAIL_INVALID_UTF8"), "{output}");
+    assert!(output.contains("AFTER_TAIL_INVALID_UTF8"), "{output}");
+}
+
+#[test]
 fn local_session_preview_does_not_merge_distinct_oversized_records() {
     let tail_filler = "tail-snapshot-data-".repeat(48_000);
     let session = format!(
@@ -1365,6 +1411,80 @@ fn local_session_preview_counts_real_tool_payload_once() {
 }
 
 #[test]
+fn explicit_empty_tool_arguments_still_identify_a_real_call() {
+    let value = json!({
+        "type": "tool_call",
+        "role": "assistant",
+        "id": "real-no-argument-call",
+        "name": "current_time",
+        "arguments": {}
+    });
+    let result = preview_codex_session_fixture("empty-tool-arguments", &value.to_string());
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/tool_call_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+}
+
+#[test]
+fn explicit_empty_tool_payload_containers_count_once() {
+    for (case, value) in [
+        (
+            "empty-tool-input",
+            json!({
+                "type": "tool_call",
+                "name": "current_time",
+                "input": {}
+            }),
+        ),
+        (
+            "empty-tool-result",
+            json!({
+                "type": "tool_result",
+                "tool_call_id": "empty-result-call",
+                "result": {}
+            }),
+        ),
+        (
+            "nested-empty-tool-arguments",
+            json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_call",
+                    "id": "nested-empty-call",
+                    "name": "current_time",
+                    "arguments": {}
+                }]
+            }),
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, &value.to_string());
+        let items = result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .expect("tool content items");
+
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/tool_call_count")
+                .and_then(Value::as_u64),
+            Some(1),
+            "{case}: {result}"
+        );
+        assert_eq!(items.len(), 1, "{case}: {result}");
+        assert_eq!(
+            items[0].get("kind").and_then(Value::as_str),
+            Some("tool_call"),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
 fn local_session_preview_skips_truncated_single_sidecar_record() {
     let filler = "ignored-file-history-data-".repeat(30_000);
     let session = format!(
@@ -1404,10 +1524,22 @@ fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
     preview_codex_session_fixture_with_extension(test_name, "jsonl", content)
 }
 
+fn preview_codex_session_fixture_bytes(test_name: &str, content: &[u8]) -> Value {
+    preview_codex_session_fixture_with_extension_bytes(test_name, "jsonl", content)
+}
+
 fn preview_codex_session_fixture_with_extension(
     test_name: &str,
     extension: &str,
     content: &str,
+) -> Value {
+    preview_codex_session_fixture_with_extension_bytes(test_name, extension, content.as_bytes())
+}
+
+fn preview_codex_session_fixture_with_extension_bytes(
+    test_name: &str,
+    extension: &str,
+    content: &[u8],
 ) -> Value {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(

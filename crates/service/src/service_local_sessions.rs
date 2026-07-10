@@ -935,6 +935,13 @@ fn compact_bounded_local_session_content(
         append_structured_prefix_fragment(&mut recovered, head_fragment, max_line_fragment_bytes);
     }
 
+    if consumed_tail_leading {
+        append_independent_suffix_scalar_fragment(
+            &mut recovered,
+            tail_leading_fragment,
+            max_line_fragment_bytes,
+        );
+    }
     let retained_tail = if consumed_tail_leading {
         compact_local_session_records(tail_remainder, max_line_fragment_bytes)
     } else {
@@ -979,6 +986,29 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
 
 fn append_supported_scalar_fragment(content: &mut String, fragment: &str, max_bytes: usize) {
     append_supported_scalar_fields(content, supported_scalar_fragment(fragment), max_bytes);
+}
+
+fn append_independent_suffix_scalar_fragment(
+    content: &mut String,
+    fragment: &str,
+    max_bytes: usize,
+) {
+    let fields = top_level_scalar_fields_from_suffix(fragment);
+    let has_visible_content = ["text", "content", "title", "aiTitle"]
+        .iter()
+        .any(|key| fields.get(*key).is_some_and(json_scalar_is_visible));
+    if has_visible_content && fields.contains_key("timestamp") {
+        append_supported_scalar_fields(content, fields, max_bytes);
+    }
+}
+
+fn json_scalar_is_visible(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+        Value::Array(_) | Value::Object(_) => false,
+    }
 }
 
 fn supported_scalar_fragment(fragment: &str) -> serde_json::Map<String, Value> {
@@ -3147,7 +3177,13 @@ fn json_tool_payload_text(value: &Value) -> Option<String> {
                 "payload",
                 "data",
             ] {
-                if let Some(text) = map.get(key).and_then(json_tool_payload_value_text) {
+                let Some(value) = map.get(key) else {
+                    continue;
+                };
+                if is_meaningful_empty_tool_payload(key, value) {
+                    return Some(compact_json_session_text(value));
+                }
+                if let Some(text) = json_tool_payload_value_text(value) {
                     return Some(text);
                 }
             }
@@ -3155,6 +3191,15 @@ fn json_tool_payload_text(value: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn is_meaningful_empty_tool_payload(key: &str, value: &Value) -> bool {
+    matches!(key, "arguments" | "input" | "result" | "output")
+        && match value {
+            Value::Array(items) => items.is_empty(),
+            Value::Object(map) => map.is_empty(),
+            _ => false,
+        }
 }
 
 fn json_tool_payload_value_text(value: &Value) -> Option<String> {

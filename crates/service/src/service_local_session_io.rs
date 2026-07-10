@@ -31,6 +31,12 @@ struct RetainedTailWindow<'a> {
     starts_at_line_boundary: bool,
 }
 
+struct DecodedUtf8Window {
+    text: String,
+    start_offset: usize,
+    end_offset: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) struct LocalSessionReadLimits {
@@ -130,19 +136,23 @@ fn read_bounded_from<R: Read + Seek>(
     let tail_raw = read_window(reader, tail_grant)?;
 
     let bytes_read = head_raw.len().saturating_add(tail_raw.len());
-    let head = valid_utf8_prefix(&head_raw).to_string();
-    let retained_head_end = head.len() as u64;
+    let decoded_head = decode_utf8_window(&head_raw, false);
+    let retained_head_end = decoded_head.end_offset as u64;
+    let head = decoded_head.text;
     let retained_tail = retain_tail_window(&tail_raw, spec.tail_bytes);
-    let (tail_utf8_offset, tail_text) = valid_utf8_window(retained_tail.bytes);
-    let retained_tail_start = tail_start
-        .saturating_add(retained_tail.start_offset as u64)
-        .saturating_add(tail_utf8_offset as u64);
-    let tail = tail_text.to_string();
-    let retained_tail_end = retained_tail_start.saturating_add(tail.len() as u64);
+    let retained_tail_raw_start = tail_start.saturating_add(retained_tail.start_offset as u64);
+    let decoded_tail = decode_utf8_window(
+        retained_tail.bytes,
+        retained_tail_raw_start > 0 && !retained_tail.starts_at_line_boundary,
+    );
+    let retained_tail_start =
+        retained_tail_raw_start.saturating_add(decoded_tail.start_offset as u64);
+    let retained_tail_end = retained_tail_raw_start.saturating_add(decoded_tail.end_offset as u64);
+    let tail = decoded_tail.text;
     let retained_end = retained_head_end.max(retained_tail_end);
     let truncated = retained_head_end < retained_tail_start || retained_end < file_len;
     let tail_starts_at_line_boundary = retained_tail_start == 0
-        || (retained_tail.starts_at_line_boundary && tail_utf8_offset == 0);
+        || (retained_tail.starts_at_line_boundary && decoded_tail.start_offset == 0);
 
     Ok(BoundedText {
         head,
@@ -214,28 +224,40 @@ fn retain_tail_window(bytes: &[u8], tail_bytes: usize) -> RetainedTailWindow<'_>
     }
 }
 
-fn valid_utf8_prefix(bytes: &[u8]) -> &str {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(error) => std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or_default(),
+fn decode_utf8_window(bytes: &[u8], trim_leading_partial: bool) -> DecodedUtf8Window {
+    let start_offset = if trim_leading_partial {
+        bytes
+            .iter()
+            .take(3)
+            .take_while(|byte| **byte & 0b1100_0000 == 0b1000_0000)
+            .count()
+    } else {
+        0
+    };
+    let end_offset = start_offset + complete_utf8_end(&bytes[start_offset..]);
+    let text = String::from_utf8_lossy(&bytes[start_offset..end_offset]).into_owned();
+    DecodedUtf8Window {
+        text,
+        start_offset,
+        end_offset,
     }
 }
 
-fn valid_utf8_window(bytes: &[u8]) -> (usize, &str) {
-    for start in 0..=bytes.len().min(3) {
-        let candidate = &bytes[start..];
-        match std::str::from_utf8(candidate) {
-            Ok(text) => return (start, text),
-            Err(error) if error.error_len().is_none() => {
-                return (
-                    start,
-                    std::str::from_utf8(&candidate[..error.valid_up_to()]).unwrap_or_default(),
-                );
+fn complete_utf8_end(bytes: &[u8]) -> usize {
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        match std::str::from_utf8(&bytes[cursor..]) {
+            Ok(_) => return bytes.len(),
+            Err(error) => {
+                let invalid_start = cursor + error.valid_up_to();
+                let Some(invalid_len) = error.error_len() else {
+                    return invalid_start;
+                };
+                cursor = invalid_start.saturating_add(invalid_len);
             }
-            Err(_) => {}
         }
     }
-    (bytes.len(), "")
+    bytes.len()
 }
 
 fn usize_from_u64(value: u64) -> usize {
@@ -416,6 +438,56 @@ mod tests {
         assert_eq!(text.tail, "束");
         assert!(!text.head.contains('\u{fffd}'));
         assert!(!text.tail.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn bounded_reader_replaces_interior_invalid_utf8_without_changing_raw_ranges() {
+        let input = b"before\n\xff\nafter\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(input.len());
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: input.len(),
+                tail_bytes: 0,
+                line_fragment_bytes: 0,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert!(text.head.contains("before"), "{}", text.head);
+        assert!(text.head.contains("after"), "{}", text.head);
+        assert!(text.head.contains('\u{fffd}'), "{}", text.head);
+        assert_eq!(text.retained_head_end, input.len() as u64);
+        assert!(!text.truncated);
+    }
+
+    #[test]
+    fn bounded_reader_replaces_interior_invalid_utf8_in_aligned_tail() {
+        let input = b"HEAD?drop\nBEFORE\n\xff\nAFTER\n".to_vec();
+        let mut reader = Cursor::new(input.clone());
+        let mut budget = LocalSessionReadBudget::new(input.len());
+
+        let text = read_bounded_from(
+            &mut reader,
+            input.len() as u64,
+            BoundedReadSpec {
+                head_bytes: 5,
+                tail_bytes: 15,
+                line_fragment_bytes: 8,
+            },
+            &mut budget,
+        )
+        .expect("bounded read");
+
+        assert!(text.tail.contains("BEFORE"), "{}", text.tail);
+        assert!(text.tail.contains("AFTER"), "{}", text.tail);
+        assert!(text.tail.contains('\u{fffd}'), "{}", text.tail);
+        assert_eq!(text.retained_tail_start, 10);
+        assert!(text.tail_starts_at_line_boundary);
     }
 
     #[test]
