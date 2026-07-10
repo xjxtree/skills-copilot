@@ -185,13 +185,18 @@ test("create declarations must be exact and outside fences", () => {
   );
 });
 
-test("parses only pnpm gate terms and requires exact order and membership", () => {
+test("requires every gate term to be a pnpm script", () => {
   assert.deepEqual(
-    parseGateMembers(
-      "pnpm verify:a && pnpm verify:b --flag && node ignored.mjs && pnpm verify:c",
-    ),
+    parseGateMembers("pnpm verify:a && pnpm verify:b --flag && pnpm verify:c"),
     ["verify:a", "verify:b", "verify:c"],
   );
+  assert.throws(
+    () => parseGateMembers("pnpm verify:a && node ignored.mjs"),
+    /gate term must be pnpm <script>/,
+  );
+});
+
+test("requires exact gate order and membership", () => {
   assert.deepEqual(
     validateGateMembers(["verify:a", "verify:c"], ["verify:a", "verify:b"]),
     [

@@ -226,8 +226,15 @@ export function parseGateMembers(command) {
   return command
     .split("&&")
     .map((term) => term.trim())
-    .map((term) => term.match(/^pnpm\s+(?:run\s+)?([^\s;&]+)(?:\s+.*)?$/)?.[1])
-    .filter(Boolean);
+    .map((term) => {
+      const match = term.match(
+        /^pnpm\s+(?:run\s+)?([^\s;&]+)(?:\s+.*)?$/,
+      );
+      if (!match) {
+        throw new Error(`gate term must be pnpm <script>: ${term}`);
+      }
+      return match[1];
+    });
 }
 
 export function validateGateMembers(actual, expected) {

@@ -156,12 +156,16 @@ export function verifyRepositoryGovernance() {
   if (typeof gateCommand !== "string") {
     errors.push(`package.json missing gate script: ${manifest.gate.script}`);
   } else {
-    errors.push(
-      ...validateGateMembers(
-        parseGateMembers(gateCommand),
-        manifest.gate.members,
-      ),
-    );
+    try {
+      errors.push(
+        ...validateGateMembers(
+          parseGateMembers(gateCommand),
+          manifest.gate.members,
+        ),
+      );
+    } catch (error) {
+      errors.push(error.message);
+    }
   }
 
   return errors;
