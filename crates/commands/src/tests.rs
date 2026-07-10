@@ -16,7 +16,7 @@ mod scanner_regressions;
 #[test]
 fn yaml_contract_preserves_permissions_scalars_sequences_bools_and_nested_mapping() {
     let raw = "name: sample-skill\ndescription: Sample\nallowed-tools:\n  - Read\n  - Search\npermissions:\n  network: none\n  exec: false\n  requires_human: true\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
-    let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+    let value: serde_norway::Value = serde_norway::from_str(raw).expect("yaml parses");
     let permissions = permissions_from_frontmatter(&value);
 
     assert_eq!(permissions["tools"], serde_json::json!(["Read", "Search"]));
@@ -28,10 +28,10 @@ fn yaml_contract_preserves_permissions_scalars_sequences_bools_and_nested_mappin
             .get("metadata")
             .and_then(|item| item.get("openclaw"))
             .and_then(|item| item.get("skillKey"))
-            .and_then(serde_yaml::Value::as_str),
+            .and_then(serde_norway::Value::as_str),
         Some("routed-key")
     );
-    assert!(serde_yaml::from_str::<serde_yaml::Value>("name: [unterminated\n").is_err());
+    assert!(serde_norway::from_str::<serde_norway::Value>("name: [unterminated\n").is_err());
 }
 
 #[test]

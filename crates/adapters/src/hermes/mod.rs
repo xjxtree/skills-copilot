@@ -129,13 +129,13 @@ fn hermes_external_skill_roots(hermes_home: &Path, user_home: &Path) -> Vec<Adap
 }
 
 fn parse_external_dirs(config_text: &str, config_dir: &Path, user_home: &Path) -> Vec<PathBuf> {
-    let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(config_text) else {
+    let Ok(config) = serde_norway::from_str::<serde_norway::Value>(config_text) else {
         return Vec::new();
     };
     let Some(external_dirs) = config
         .get("skills")
         .and_then(|skills| skills.get("external_dirs"))
-        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(serde_norway::Value::as_sequence)
     else {
         return Vec::new();
     };
@@ -156,17 +156,17 @@ fn parse_external_dirs(config_text: &str, config_dir: &Path, user_home: &Path) -
 }
 
 pub fn hermes_disabled_skill_names(config_text: &str) -> Vec<String> {
-    serde_yaml::from_str::<serde_yaml::Value>(config_text)
+    serde_norway::from_str::<serde_norway::Value>(config_text)
         .ok()
         .and_then(|value| {
             value
                 .get("skills")
                 .and_then(|skills| skills.get("disabled"))
-                .and_then(serde_yaml::Value::as_sequence)
+                .and_then(serde_norway::Value::as_sequence)
                 .map(|items| {
                     items
                         .iter()
-                        .filter_map(serde_yaml::Value::as_str)
+                        .filter_map(serde_norway::Value::as_str)
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(ToString::to_string)
@@ -182,9 +182,9 @@ fn patch_hermes_config(
     enabled: bool,
 ) -> Result<String, AdapterError> {
     let mut value = if config_text.trim().is_empty() {
-        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        serde_norway::Value::Mapping(serde_norway::Mapping::new())
     } else {
-        serde_yaml::from_str(config_text)
+        serde_norway::from_str(config_text)
             .map_err(|err| AdapterError::new(format!("invalid Hermes config YAML: {err}")))?
     };
 
@@ -195,10 +195,10 @@ fn patch_hermes_config(
         .iter()
         .any(|value| value.as_str() == Some(skill_name))
     {
-        disabled.push(serde_yaml::Value::String(skill_name.to_string()));
+        disabled.push(serde_norway::Value::String(skill_name.to_string()));
     }
 
-    let mut text = serde_yaml::to_string(&value)
+    let mut text = serde_norway::to_string(&value)
         .map_err(|err| AdapterError::new(format!("failed to serialize Hermes config: {err}")))?;
     if !text.ends_with('\n') {
         text.push('\n');
@@ -207,9 +207,9 @@ fn patch_hermes_config(
 }
 
 fn hermes_disabled_array_mut(
-    value: &mut serde_yaml::Value,
-) -> Result<&mut Vec<serde_yaml::Value>, AdapterError> {
-    use serde_yaml::{Mapping, Value};
+    value: &mut serde_norway::Value,
+) -> Result<&mut Vec<serde_norway::Value>, AdapterError> {
+    use serde_norway::{Mapping, Value};
 
     let Value::Mapping(root) = value else {
         return Err(AdapterError::new(
@@ -301,8 +301,8 @@ fn parse_skill_content(content: &str) -> Result<ParsedSkill, String> {
         .or_else(|| content.strip_prefix("---\r\n"))
         .ok_or_else(|| "missing YAML frontmatter".to_string())?;
     let (frontmatter_raw, body) = split_yaml_frontmatter(rest)?;
-    let frontmatter: serde_yaml::Value =
-        serde_yaml::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
+    let frontmatter: serde_norway::Value =
+        serde_norway::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
     let name = required_frontmatter_string(&frontmatter, "name", "Hermes")?;
     let description = required_frontmatter_string(&frontmatter, "description", "Hermes")?;
     let version = optional_frontmatter_string(&frontmatter, "version");
@@ -331,20 +331,20 @@ mod tests {
     #[test]
     fn yaml_contract_preserves_scalar_sequence_bool_and_nested_mapping() {
         let raw = "name: sample-skill\ndescription: Sample\nenabled: true\nallowed-tools:\n  - Read\n  - Search\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
-        let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+        let value: serde_norway::Value = serde_norway::from_str(raw).expect("yaml parses");
 
         assert_eq!(
-            value.get("name").and_then(serde_yaml::Value::as_str),
+            value.get("name").and_then(serde_norway::Value::as_str),
             Some("sample-skill")
         );
         assert_eq!(
-            value.get("enabled").and_then(serde_yaml::Value::as_bool),
+            value.get("enabled").and_then(serde_norway::Value::as_bool),
             Some(true)
         );
         assert_eq!(
             value
                 .get("allowed-tools")
-                .and_then(serde_yaml::Value::as_sequence)
+                .and_then(serde_norway::Value::as_sequence)
                 .map(Vec::len),
             Some(2)
         );
@@ -353,7 +353,7 @@ mod tests {
                 .get("metadata")
                 .and_then(|item| item.get("openclaw"))
                 .and_then(|item| item.get("skillKey"))
-                .and_then(serde_yaml::Value::as_str),
+                .and_then(serde_norway::Value::as_str),
             Some("routed-key")
         );
 
@@ -536,24 +536,26 @@ mod tests {
         assert!(disabled.contains(&"old-skill".to_string()));
         assert!(disabled.contains(&"new-skill".to_string()));
         assert!(doc.text.contains("external_dirs"));
-        let value: serde_yaml::Value =
-            serde_yaml::from_str(&doc.text).expect("patched yaml parses");
+        let value: serde_norway::Value =
+            serde_norway::from_str(&doc.text).expect("patched yaml parses");
         assert_eq!(
-            value.get("telemetry").and_then(serde_yaml::Value::as_bool),
+            value
+                .get("telemetry")
+                .and_then(serde_norway::Value::as_bool),
             Some(false)
         );
         assert_eq!(
             value
                 .get("ui")
                 .and_then(|ui| ui.get("theme"))
-                .and_then(serde_yaml::Value::as_str),
+                .and_then(serde_norway::Value::as_str),
             Some("dark")
         );
         assert_eq!(
             value
                 .get("ui")
                 .and_then(|ui| ui.get("compact"))
-                .and_then(serde_yaml::Value::as_bool),
+                .and_then(serde_norway::Value::as_bool),
             Some(true)
         );
 
@@ -563,17 +565,19 @@ mod tests {
         let disabled = hermes_disabled_skill_names(&doc.text);
         assert!(disabled.contains(&"old-skill".to_string()));
         assert!(!disabled.contains(&"new-skill".to_string()));
-        let value: serde_yaml::Value =
-            serde_yaml::from_str(&doc.text).expect("re-enabled yaml parses");
+        let value: serde_norway::Value =
+            serde_norway::from_str(&doc.text).expect("re-enabled yaml parses");
         assert_eq!(
-            value.get("telemetry").and_then(serde_yaml::Value::as_bool),
+            value
+                .get("telemetry")
+                .and_then(serde_norway::Value::as_bool),
             Some(false)
         );
         assert_eq!(
             value
                 .get("ui")
                 .and_then(|ui| ui.get("theme"))
-                .and_then(serde_yaml::Value::as_str),
+                .and_then(serde_norway::Value::as_str),
             Some("dark")
         );
     }

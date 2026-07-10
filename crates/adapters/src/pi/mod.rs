@@ -135,8 +135,8 @@ fn parse_skill_content(content: &str) -> Result<ParsedSkill, String> {
         .or_else(|| content.strip_prefix("---\r\n"))
         .ok_or_else(|| "missing YAML frontmatter".to_string())?;
     let (frontmatter_raw, body) = split_yaml_frontmatter(rest)?;
-    let frontmatter: serde_yaml::Value =
-        serde_yaml::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
+    let frontmatter: serde_norway::Value =
+        serde_norway::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
     let name = required_frontmatter_string(&frontmatter, "name", "Pi")?;
     validate_kebab_skill_name(&name, "Pi")?;
     let description = required_frontmatter_string(&frontmatter, "description", "Pi")?;
@@ -300,20 +300,20 @@ mod tests {
     #[test]
     fn yaml_contract_preserves_scalar_sequence_bool_and_nested_mapping() {
         let raw = "name: sample-skill\ndescription: Sample\nenabled: true\nallowed-tools:\n  - Read\n  - Search\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
-        let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+        let value: serde_norway::Value = serde_norway::from_str(raw).expect("yaml parses");
 
         assert_eq!(
-            value.get("name").and_then(serde_yaml::Value::as_str),
+            value.get("name").and_then(serde_norway::Value::as_str),
             Some("sample-skill")
         );
         assert_eq!(
-            value.get("enabled").and_then(serde_yaml::Value::as_bool),
+            value.get("enabled").and_then(serde_norway::Value::as_bool),
             Some(true)
         );
         assert_eq!(
             value
                 .get("allowed-tools")
-                .and_then(serde_yaml::Value::as_sequence)
+                .and_then(serde_norway::Value::as_sequence)
                 .map(Vec::len),
             Some(2)
         );
@@ -322,7 +322,7 @@ mod tests {
                 .get("metadata")
                 .and_then(|item| item.get("openclaw"))
                 .and_then(|item| item.get("skillKey"))
-                .and_then(serde_yaml::Value::as_str),
+                .and_then(serde_norway::Value::as_str),
             Some("routed-key")
         );
 

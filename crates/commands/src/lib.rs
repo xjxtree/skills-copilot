@@ -1273,7 +1273,7 @@ fn parse_export_skill_file(path: &Path) -> Result<ParsedExportSkill, CommandErro
             skill_path.display()
         ))
     })?;
-    let frontmatter: serde_yaml::Value = serde_yaml::from_str(frontmatter_raw)
+    let frontmatter: serde_norway::Value = serde_norway::from_str(frontmatter_raw)
         .map_err(|err| CommandError::InvalidSkillSource(err.to_string()))?;
     let name = yaml_string(&frontmatter, "name")
         .ok_or_else(|| CommandError::InvalidSkillSource("missing skill name".to_string()))?;
@@ -1317,21 +1317,21 @@ fn skill_file_content(frontmatter_raw: &str, body: &str) -> String {
 }
 
 fn version_from_frontmatter(frontmatter_raw: &str) -> Option<String> {
-    serde_yaml::from_str::<serde_yaml::Value>(frontmatter_raw)
+    serde_norway::from_str::<serde_norway::Value>(frontmatter_raw)
         .ok()
         .and_then(|value| yaml_string(&value, "version"))
 }
 
-fn yaml_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
+fn yaml_string(value: &serde_norway::Value, key: &str) -> Option<String> {
     value
         .get(key)
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
 }
 
-fn permissions_from_frontmatter(frontmatter: &serde_yaml::Value) -> serde_json::Value {
+fn permissions_from_frontmatter(frontmatter: &serde_norway::Value) -> serde_json::Value {
     let mut permissions = serde_json::Map::new();
     if let Some(tools) = yaml_string_vec(frontmatter.get("tools"))
         .or_else(|| yaml_string_vec(frontmatter.get("allowed-tools")))
@@ -1359,13 +1359,13 @@ fn permissions_from_frontmatter(frontmatter: &serde_yaml::Value) -> serde_json::
     serde_json::Value::Object(permissions)
 }
 
-fn yaml_string_vec(value: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
+fn yaml_string_vec(value: Option<&serde_norway::Value>) -> Option<Vec<String>> {
     match value? {
-        serde_yaml::Value::Sequence(items) => items
+        serde_norway::Value::Sequence(items) => items
             .iter()
             .map(|item| item.as_str().map(ToString::to_string))
             .collect(),
-        serde_yaml::Value::String(raw) => Some(
+        serde_norway::Value::String(raw) => Some(
             raw.split(',')
                 .map(str::trim)
                 .filter(|item| !item.is_empty())
@@ -1376,11 +1376,11 @@ fn yaml_string_vec(value: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
     }
 }
 
-fn yaml_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
-    value.get(key).and_then(serde_yaml::Value::as_bool)
+fn yaml_bool(value: &serde_norway::Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(serde_norway::Value::as_bool)
 }
 
-fn yaml_nested_string(value: &serde_yaml::Value, path: &[&str]) -> Option<String> {
+fn yaml_nested_string(value: &serde_norway::Value, path: &[&str]) -> Option<String> {
     yaml_nested_value(value, path)?
         .as_str()
         .map(str::trim)
@@ -1388,14 +1388,14 @@ fn yaml_nested_string(value: &serde_yaml::Value, path: &[&str]) -> Option<String
         .map(ToString::to_string)
 }
 
-fn yaml_nested_bool(value: &serde_yaml::Value, path: &[&str]) -> Option<bool> {
+fn yaml_nested_bool(value: &serde_norway::Value, path: &[&str]) -> Option<bool> {
     yaml_nested_value(value, path)?.as_bool()
 }
 
 fn yaml_nested_value<'a>(
-    value: &'a serde_yaml::Value,
+    value: &'a serde_norway::Value,
     path: &[&str],
-) -> Option<&'a serde_yaml::Value> {
+) -> Option<&'a serde_norway::Value> {
     let mut current = value;
     for key in path {
         current = current.get(*key)?;
@@ -1665,25 +1665,25 @@ fn parse_tool_global_skill_content(
         .or_else(|| content.strip_prefix("---\r\n"))
         .ok_or_else(|| "missing YAML frontmatter".to_string())?;
     let (frontmatter_raw, body) = split_import_frontmatter(rest)?;
-    let frontmatter: serde_yaml::Value =
-        serde_yaml::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
+    let frontmatter: serde_norway::Value =
+        serde_norway::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
     let name = frontmatter
         .get("name")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or(fallback_name)
         .to_string();
     let description = frontmatter
         .get("description")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(str::trim)
         .filter(|description| !description.is_empty())
         .map(ToString::to_string)
         .unwrap_or_else(|| first_markdown_paragraph(&body));
     let version = frontmatter
         .get("version")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(str::trim)
         .filter(|version| !version.is_empty())
         .map(ToString::to_string);
@@ -1726,7 +1726,7 @@ fn first_markdown_paragraph(body: &str) -> String {
         .join(" ")
 }
 
-fn import_permissions_from_frontmatter(frontmatter: &serde_yaml::Value) -> PermissionRequest {
+fn import_permissions_from_frontmatter(frontmatter: &serde_norway::Value) -> PermissionRequest {
     let tools = yaml_string_list(frontmatter.get("tools"));
     let files = yaml_string_list(
         frontmatter
@@ -1740,7 +1740,7 @@ fn import_permissions_from_frontmatter(frontmatter: &serde_yaml::Value) -> Permi
         .or_else(|| frontmatter.get("network"));
     let network_declared = network_value.is_some();
     let network = network_value
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(|value| match value.trim().to_ascii_lowercase().as_str() {
             "none" => NetworkAccess::None,
             "read-only" | "readonly" | "read_only" => NetworkAccess::ReadOnly,
@@ -1763,26 +1763,26 @@ fn import_permissions_from_frontmatter(frontmatter: &serde_yaml::Value) -> Permi
         network,
         network_declared,
         exec: exec_value
-            .and_then(serde_yaml::Value::as_bool)
+            .and_then(serde_norway::Value::as_bool)
             .unwrap_or(false),
         exec_declared: exec_value.is_some(),
         requires_human: requires_human_value
-            .and_then(serde_yaml::Value::as_bool)
+            .and_then(serde_norway::Value::as_bool)
             .unwrap_or(true),
         requires_human_declared: requires_human_value.is_some(),
     }
 }
 
-fn yaml_string_list(value: Option<&serde_yaml::Value>) -> Vec<String> {
+fn yaml_string_list(value: Option<&serde_norway::Value>) -> Vec<String> {
     match value {
-        Some(serde_yaml::Value::Sequence(items)) => items
+        Some(serde_norway::Value::Sequence(items)) => items
             .iter()
-            .filter_map(serde_yaml::Value::as_str)
+            .filter_map(serde_norway::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
             .collect(),
-        Some(serde_yaml::Value::String(value)) => value
+        Some(serde_norway::Value::String(value)) => value
             .split([',', '\n', '\r'])
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -2661,11 +2661,11 @@ fn text_has_shebang_line(text: &str) -> bool {
     text.lines().any(|line| line.trim_start().starts_with("#!"))
 }
 
-fn frontmatter_value(inst: &SkillInstance) -> Option<serde_yaml::Value> {
+fn frontmatter_value(inst: &SkillInstance) -> Option<serde_norway::Value> {
     if inst.frontmatter_raw.trim().is_empty() {
         return None;
     }
-    serde_yaml::from_str(&inst.frontmatter_raw).ok()
+    serde_norway::from_str(&inst.frontmatter_raw).ok()
 }
 
 fn frontmatter_has_any_path(inst: &SkillInstance, paths: &[&[&str]]) -> bool {
@@ -2679,14 +2679,14 @@ fn frontmatter_bool(inst: &SkillInstance, paths: &[&[&str]]) -> Option<bool> {
     let value = frontmatter_value(inst)?;
     paths
         .iter()
-        .find_map(|path| yaml_path(&value, path).and_then(serde_yaml::Value::as_bool))
+        .find_map(|path| yaml_path(&value, path).and_then(serde_norway::Value::as_bool))
 }
 
-fn yaml_path<'a>(value: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+fn yaml_path<'a>(value: &'a serde_norway::Value, path: &[&str]) -> Option<&'a serde_norway::Value> {
     let mut current = value;
     for part in path {
         let mapping = current.as_mapping()?;
-        current = mapping.get(serde_yaml::Value::String((*part).to_string()))?;
+        current = mapping.get(serde_norway::Value::String((*part).to_string()))?;
     }
     Some(current)
 }
@@ -2698,13 +2698,13 @@ fn frontmatter_script_value_has_shebang(inst: &SkillInstance) -> bool {
     yaml_script_value_has_shebang(&value, false)
 }
 
-fn yaml_script_value_has_shebang(value: &serde_yaml::Value, in_script_field: bool) -> bool {
+fn yaml_script_value_has_shebang(value: &serde_norway::Value, in_script_field: bool) -> bool {
     match value {
-        serde_yaml::Value::String(raw) => in_script_field && raw.trim_start().starts_with("#!"),
-        serde_yaml::Value::Sequence(items) => items
+        serde_norway::Value::String(raw) => in_script_field && raw.trim_start().starts_with("#!"),
+        serde_norway::Value::Sequence(items) => items
             .iter()
             .any(|item| yaml_script_value_has_shebang(item, in_script_field)),
-        serde_yaml::Value::Mapping(mapping) => mapping.iter().any(|(key, value)| {
+        serde_norway::Value::Mapping(mapping) => mapping.iter().any(|(key, value)| {
             let script_field =
                 in_script_field || key.as_str().is_some_and(matches_script_field_name);
             yaml_script_value_has_shebang(value, script_field)
@@ -2714,16 +2714,16 @@ fn yaml_script_value_has_shebang(value: &serde_yaml::Value, in_script_field: boo
 }
 
 fn frontmatter_tools_present_but_empty(frontmatter_raw: &str) -> bool {
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_raw) else {
+    let Ok(value) = serde_norway::from_str::<serde_norway::Value>(frontmatter_raw) else {
         return false;
     };
-    let Some(tools) = value.get(serde_yaml::Value::String("tools".to_string())) else {
+    let Some(tools) = value.get(serde_norway::Value::String("tools".to_string())) else {
         return false;
     };
     match tools {
-        serde_yaml::Value::Sequence(items) => items.iter().all(yaml_value_is_blank),
-        serde_yaml::Value::String(value) => value.trim().is_empty(),
-        serde_yaml::Value::Null => true,
+        serde_norway::Value::Sequence(items) => items.iter().all(yaml_value_is_blank),
+        serde_norway::Value::String(value) => value.trim().is_empty(),
+        serde_norway::Value::Null => true,
         _ => false,
     }
 }
@@ -2736,30 +2736,30 @@ fn matches_script_field_name(key: &str) -> bool {
     )
 }
 
-fn dependency_declarations(value: &serde_yaml::Value) -> Vec<String> {
+fn dependency_declarations(value: &serde_norway::Value) -> Vec<String> {
     let mut declarations = Vec::new();
     collect_dependency_declarations(value, false, &mut declarations);
     declarations
 }
 
 fn collect_dependency_declarations(
-    value: &serde_yaml::Value,
+    value: &serde_norway::Value,
     in_dependency_field: bool,
     declarations: &mut Vec<String>,
 ) {
     match value {
-        serde_yaml::Value::String(raw) if in_dependency_field => {
+        serde_norway::Value::String(raw) if in_dependency_field => {
             declarations.extend(split_dependency_string(raw));
         }
-        serde_yaml::Value::Number(number) if in_dependency_field => {
+        serde_norway::Value::Number(number) if in_dependency_field => {
             declarations.push(number.to_string());
         }
-        serde_yaml::Value::Sequence(items) => {
+        serde_norway::Value::Sequence(items) => {
             for item in items {
                 collect_dependency_declarations(item, in_dependency_field, declarations);
             }
         }
-        serde_yaml::Value::Mapping(mapping) => {
+        serde_norway::Value::Mapping(mapping) => {
             for (key, value) in mapping {
                 let dependency_field = key.as_str().is_some_and(matches_dependency_field_name);
                 if in_dependency_field {
@@ -2841,10 +2841,10 @@ fn is_known_safe_local_dependency(raw: &str) -> bool {
     )
 }
 
-fn yaml_value_is_blank(value: &serde_yaml::Value) -> bool {
+fn yaml_value_is_blank(value: &serde_norway::Value) -> bool {
     match value {
-        serde_yaml::Value::String(value) => value.trim().is_empty(),
-        serde_yaml::Value::Null => true,
+        serde_norway::Value::String(value) => value.trim().is_empty(),
+        serde_norway::Value::Null => true,
         _ => false,
     }
 }

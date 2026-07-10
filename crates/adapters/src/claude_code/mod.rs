@@ -168,15 +168,15 @@ fn parse_skill_content(content: &str) -> Result<ParsedSkill, String> {
         .or_else(|| content.strip_prefix("---\r\n"))
         .ok_or_else(|| "missing YAML frontmatter".to_string())?;
     let (frontmatter_raw, body) = split_frontmatter(rest)?;
-    let frontmatter: serde_yaml::Value =
-        serde_yaml::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
+    let frontmatter: serde_norway::Value =
+        serde_norway::from_str(frontmatter_raw).map_err(|err| err.to_string())?;
     let name = frontmatter
         .get("name")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(ToString::to_string);
     let description = frontmatter
         .get("description")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(ToString::to_string)
         .unwrap_or_else(|| first_markdown_paragraph(&body));
     let permissions = PermissionRequest {
@@ -212,16 +212,16 @@ fn split_frontmatter(rest: &str) -> Result<(&str, String), String> {
     Err("unterminated YAML frontmatter".to_string())
 }
 
-fn parse_allowed_tools(value: Option<&serde_yaml::Value>) -> Vec<String> {
+fn parse_allowed_tools(value: Option<&serde_norway::Value>) -> Vec<String> {
     match value {
-        Some(serde_yaml::Value::String(raw)) => raw
+        Some(serde_norway::Value::String(raw)) => raw
             .split(|ch: char| ch.is_whitespace() || ch == ',')
             .filter(|part| !part.is_empty())
             .map(ToString::to_string)
             .collect(),
-        Some(serde_yaml::Value::Sequence(items)) => items
+        Some(serde_norway::Value::Sequence(items)) => items
             .iter()
-            .filter_map(serde_yaml::Value::as_str)
+            .filter_map(serde_norway::Value::as_str)
             .map(ToString::to_string)
             .collect(),
         _ => Vec::new(),
@@ -249,20 +249,20 @@ mod tests {
     #[test]
     fn yaml_contract_preserves_scalar_sequence_bool_and_nested_mapping() {
         let raw = "name: sample-skill\ndescription: Sample\nenabled: true\nallowed-tools:\n  - Read\n  - Search\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
-        let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+        let value: serde_norway::Value = serde_norway::from_str(raw).expect("yaml parses");
 
         assert_eq!(
-            value.get("name").and_then(serde_yaml::Value::as_str),
+            value.get("name").and_then(serde_norway::Value::as_str),
             Some("sample-skill")
         );
         assert_eq!(
-            value.get("enabled").and_then(serde_yaml::Value::as_bool),
+            value.get("enabled").and_then(serde_norway::Value::as_bool),
             Some(true)
         );
         assert_eq!(
             value
                 .get("allowed-tools")
-                .and_then(serde_yaml::Value::as_sequence)
+                .and_then(serde_norway::Value::as_sequence)
                 .map(Vec::len),
             Some(2)
         );
@@ -271,7 +271,7 @@ mod tests {
                 .get("metadata")
                 .and_then(|item| item.get("openclaw"))
                 .and_then(|item| item.get("skillKey"))
-                .and_then(serde_yaml::Value::as_str),
+                .and_then(serde_norway::Value::as_str),
             Some("routed-key")
         );
 

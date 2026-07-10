@@ -6,5 +6,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-serde_yaml.workspace = true
+serde_norway.workspace = true
 skills-copilot-core.workspace = true

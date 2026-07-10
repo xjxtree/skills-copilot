@@ -1162,15 +1162,15 @@ fn read_disabled_hermes_skills(settings_path: &Path) -> Option<HashSet<String>> 
     let Ok(content) = fs::read_to_string(settings_path) else {
         return None;
     };
-    let value = serde_yaml::from_str::<serde_yaml::Value>(&content).ok()?;
+    let value = serde_norway::from_str::<serde_norway::Value>(&content).ok()?;
     let disabled = value
         .get("skills")
         .and_then(|skills| skills.get("disabled"))
-        .and_then(serde_yaml::Value::as_sequence)?;
+        .and_then(serde_norway::Value::as_sequence)?;
     Some(
         disabled
             .iter()
-            .filter_map(serde_yaml::Value::as_str)
+            .filter_map(serde_norway::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
@@ -1199,14 +1199,14 @@ fn read_disabled_openclaw_skill_entries(settings_path: &Path) -> Option<HashSet<
 }
 
 fn openclaw_config_key_from_frontmatter(frontmatter_raw: &str, fallback_name: &str) -> String {
-    serde_yaml::from_str::<serde_yaml::Value>(frontmatter_raw)
+    serde_norway::from_str::<serde_norway::Value>(frontmatter_raw)
         .ok()
         .and_then(|frontmatter| {
             frontmatter
                 .get("metadata")
                 .and_then(|metadata| metadata.get("openclaw"))
                 .and_then(|openclaw| openclaw.get("skillKey"))
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(serde_norway::Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string)

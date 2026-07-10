@@ -124,7 +124,7 @@ fn missing_frontmatter_fields(inst: &SkillInstance) -> Vec<&'static str> {
     if inst.frontmatter_raw.trim().is_empty() {
         return vec!["name", "description"];
     }
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&inst.frontmatter_raw) else {
+    let Ok(value) = serde_norway::from_str::<serde_norway::Value>(&inst.frontmatter_raw) else {
         return vec!["name", "description"];
     };
     let mut missing = Vec::new();
@@ -137,10 +137,10 @@ fn missing_frontmatter_fields(inst: &SkillInstance) -> Vec<&'static str> {
     missing
 }
 
-fn yaml_string_field<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
+fn yaml_string_field<'a>(value: &'a serde_norway::Value, key: &str) -> Option<&'a str> {
     value
-        .get(serde_yaml::Value::String(key.to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(serde_norway::Value::String(key.to_string()))
+        .and_then(serde_norway::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
 }

@@ -17,7 +17,7 @@ pub(crate) fn split_yaml_frontmatter(rest: &str) -> Result<(&str, String), Strin
 }
 
 pub(crate) fn required_frontmatter_string(
-    frontmatter: &serde_yaml::Value,
+    frontmatter: &serde_norway::Value,
     key: &str,
     adapter_label: &str,
 ) -> Result<String, String> {
@@ -26,12 +26,12 @@ pub(crate) fn required_frontmatter_string(
 }
 
 pub(crate) fn optional_frontmatter_string(
-    frontmatter: &serde_yaml::Value,
+    frontmatter: &serde_norway::Value,
     key: &str,
 ) -> Option<String> {
     frontmatter
         .get(key)
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(serde_norway::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)

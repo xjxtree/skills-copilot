@@ -64,6 +64,10 @@ jobs:
       - name: Clippy workspace
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      - name: Check adapter fuzz workspace lock
+        if: runner.os != 'Windows'
+        run: cargo check --manifest-path crates/adapters/fuzz/Cargo.toml --locked
+
       - name: Build Rust API docs
         run: cargo doc --workspace --no-deps
 
