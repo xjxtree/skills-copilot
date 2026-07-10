@@ -894,6 +894,10 @@
 "service.message.noAPIKeyStored" = "No API key is stored for this profile.";
 "service.message.connectionTestWithinBudget" = "Connection test is within configured local budget limits.";
 "service.error.sidecarTimedOut" = "Service call timed out before the sidecar returned a complete response.";
+"service.error.invalidOutput" = "Invalid service output:";
+"service.error.invalidOutputMetadata" = "Service response decode failed";
+"service.error.responseTooLarge" = "The service response exceeded the %d MiB limit.";
+"service.error.sidecarDiagnosticUnavailable" = "The service exited without a safe diagnostic.";
 "llm.markdown.table.hiddenRows" = "%d more rows in full details";
 "llm.markdown.table.previewSummary" = "Table content is folded in this preview. Open details to inspect the full Markdown table.";
 "scriptExecution.safety" = "Script Execution Safety";

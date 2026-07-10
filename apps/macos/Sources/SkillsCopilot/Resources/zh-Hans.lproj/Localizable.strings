@@ -894,6 +894,10 @@
 "service.message.noAPIKeyStored" = "此配置尚未保存 API key。";
 "service.message.connectionTestWithinBudget" = "连接测试在当前本地预算限制内。";
 "service.error.sidecarTimedOut" = "服务调用超时：sidecar 未在限定时间内返回完整响应。";
+"service.error.invalidOutput" = "服务输出无效：";
+"service.error.invalidOutputMetadata" = "服务响应解码失败";
+"service.error.responseTooLarge" = "服务响应超过 %d MiB 限制。";
+"service.error.sidecarDiagnosticUnavailable" = "服务退出，且没有可安全显示的诊断信息。";
 "llm.markdown.table.hiddenRows" = "完整详情中还有 %d 行";
 "llm.markdown.table.previewSummary" = "表格内容已在缩略预览中折叠。打开详情查看完整 Markdown 表格。";
 "scriptExecution.safety" = "脚本执行安全";

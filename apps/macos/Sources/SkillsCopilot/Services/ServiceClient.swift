@@ -408,13 +408,14 @@ final class ServiceClient {
         case service(ServiceErrorPayload)
         case processFailed(Int32, String)
         case processTimedOut
+        case responseTooLarge(maxBytes: Int)
 
         var errorDescription: String? {
             switch self {
             case .missingBinary:
                 return "skills-copilot-service was not found in the app bundle."
             case .invalidOutput(let output):
-                return "Invalid service output: \(output)"
+                return "\(UIStrings.text("service.error.invalidOutput", "Invalid service output:")) \(output)"
             case .service(let error):
                 return "\(error.code): \(error.message)"
             case .processFailed(let status, let stderr):
@@ -423,6 +424,15 @@ final class ServiceClient {
                 return UIStrings.text(
                     "service.error.sidecarTimedOut",
                     "Service call timed out before the sidecar returned a complete response."
+                )
+            case .responseTooLarge(let maxBytes):
+                let mebibytes = maxBytes / (1_024 * 1_024)
+                return String(
+                    format: UIStrings.text(
+                        "service.error.responseTooLarge",
+                        "The service response exceeded the %d MiB limit."
+                    ),
+                    mebibytes
                 )
             }
         }

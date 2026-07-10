@@ -60,6 +60,16 @@ struct LocalizationModelTests {
             "服务调用超时：sidecar 未在限定时间内返回完整响应。",
             "Sidecar timeout errors should use the selected app language."
         )
+        try expectEqual(
+            ServiceClient.ClientError.responseTooLarge(maxBytes: 16 * 1_024 * 1_024).localizedDescription,
+            "服务响应超过 16 MiB 限制。",
+            "Oversized sidecar responses should use the selected app language."
+        )
+        try expectEqual(
+            ServiceDiagnosticSanitizer.displayMessage(" \n "),
+            "服务退出，且没有可安全显示的诊断信息。",
+            "Empty sidecar diagnostics should use a localized safe fallback."
+        )
         try skillManagerChineseLocalizationDoesNotFallBackToEnglish()
         try taskCockpitElapsedSecondsHandlesBoundaries()
 
@@ -74,6 +84,11 @@ struct LocalizationModelTests {
             ServiceClient.ClientError.processTimedOut.localizedDescription,
             "Service call timed out before the sidecar returned a complete response.",
             "English sidecar timeout message should stay readable."
+        )
+        try expectEqual(
+            ServiceClient.ClientError.responseTooLarge(maxBytes: 16 * 1_024 * 1_024).localizedDescription,
+            "The service response exceeded the 16 MiB limit.",
+            "English oversized-response errors should stay readable."
         )
     }
 

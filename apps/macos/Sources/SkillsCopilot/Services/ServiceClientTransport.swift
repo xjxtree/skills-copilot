@@ -30,8 +30,12 @@ extension ServiceClient {
         do {
             envelope = try JSONDecoder().decode(ServiceEnvelope<ResultPayload>.self, from: output)
         } catch {
-            let rawOutput = String(data: output, encoding: .utf8) ?? "<binary>"
-            throw ClientError.invalidOutput("decode failed: \(error). output: \(rawOutput)")
+            throw ClientError.invalidOutput(
+                invalidServiceOutputMessage(
+                    byteCount: output.count,
+                    category: serviceOutputDecodeCategory(error)
+                )
+            )
         }
         if envelope.ok, let result = envelope.result {
             return result
@@ -39,7 +43,12 @@ extension ServiceClient {
         if let error = envelope.error {
             throw ClientError.service(error)
         }
-        throw ClientError.invalidOutput(String(data: output, encoding: .utf8) ?? "<binary>")
+        throw ClientError.invalidOutput(
+            invalidServiceOutputMessage(
+                byteCount: output.count,
+                category: "invalid_envelope"
+            )
+        )
     }
 
     private func runService(input: Data, timeoutMS: Int?) async throws -> Data {
@@ -60,4 +69,27 @@ extension ServiceClient {
         }
         throw ClientError.missingBinary
     }
+}
+
+private func serviceOutputDecodeCategory(_ error: Error) -> String {
+    switch error {
+    case DecodingError.typeMismatch:
+        return "type_mismatch"
+    case DecodingError.valueNotFound:
+        return "value_not_found"
+    case DecodingError.keyNotFound:
+        return "key_not_found"
+    case DecodingError.dataCorrupted:
+        return "data_corrupted"
+    default:
+        return "unknown"
+    }
+}
+
+private func invalidServiceOutputMessage(byteCount: Int, category: String) -> String {
+    let message = UIStrings.text(
+        "service.error.invalidOutputMetadata",
+        "Service response decode failed"
+    )
+    return "\(message) (response bytes=\(byteCount), category=\(category))."
 }
