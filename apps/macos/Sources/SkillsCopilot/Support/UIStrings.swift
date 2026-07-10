@@ -582,6 +582,11 @@ enum UIStrings {
     static var taskCockpitDiagnosticsProcess: String { text("taskCockpit.diagnostics.process", "Matching process") }
     static var taskCockpitDiagnosticsTopRoute: String { text("taskCockpit.diagnostics.topRoute", "Top route") }
     static var taskCockpitDiagnosticsScanned: String { text("taskCockpit.diagnostics.scanned", "Scanned") }
+    static var taskCockpitHistorySummary: String { text("taskCockpit.history.summary", "Completed Preflights stay in memory for this app session. Task text and provider results are not saved to disk and disappear when the app quits.") }
+    static var taskCockpitHistoryClear: String { text("taskCockpit.history.clear", "Clear session history") }
+    static var taskCockpitHistoryClearConfirmationTitle: String { text("taskCockpit.history.clearConfirmation.title", "Clear session history?") }
+    static var taskCockpitHistoryClearConfirmationMessage: String { text("taskCockpit.history.clearConfirmation.message", "This clears completed Preflights from this app session and retries removal of prior local history. This cannot be undone.") }
+    static var taskCockpitHistoryCleanupFailed: String { text("taskCockpit.history.cleanupFailed", "Prior local Task Preflight history could not be removed. Clear session history to retry.") }
     static var taskCockpitProgressTitle: String { text("taskCockpit.progress.title", "Progressive feedback") }
     static var taskCockpitProgressActionReview: String { text("taskCockpit.progress.actionReview", "Action review") }
     static var taskCockpitProgressBatchChecks: String { text("taskCockpit.progress.batchChecks", "Batch checks") }

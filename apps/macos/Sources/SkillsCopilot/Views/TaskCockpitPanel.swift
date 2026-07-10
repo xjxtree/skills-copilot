@@ -21,8 +21,12 @@ struct TaskPreflightPreviewSheet: View {
                     TaskPreflightHistoryPanel(
                         records: store.taskCockpitHistory,
                         selectedID: store.selectedTaskCockpitHistoryID,
+                        cleanupMessage: store.taskCockpitHistoryCleanupMessage,
                         onSelect: { record in
                             store.selectTaskCockpitHistoryRecord(record)
+                        },
+                        onClear: {
+                            store.clearTaskCockpitHistory()
                         }
                     )
                 }
@@ -147,27 +151,45 @@ private struct TaskPreflightEditorPane: View {
 }
 
 private struct TaskPreflightHistoryPanel: View {
+    @State private var isConfirmingClear = false
     let records: [TaskCockpitHistoryRecord]
     let selectedID: TaskCockpitHistoryRecord.ID?
+    let cleanupMessage: String?
     let onSelect: (TaskCockpitHistoryRecord) -> Void
+    let onClear: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(UIStrings.text("taskCockpit.history.title", "History"), systemImage: "clock.arrow.circlepath")
-                .font(.headline)
-            Text(UIStrings.text(
-                "taskCockpit.history.summary",
-                "Selecting a history row restores the task text, agent scope, and preflight result."
-            ))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Label(UIStrings.text("taskCockpit.history.title", "History"), systemImage: "clock.arrow.circlepath")
+                    .font(.headline)
+
+                Spacer(minLength: 8)
+
+                Button(role: .destructive) {
+                    isConfirmingClear = true
+                } label: {
+                    Label(UIStrings.taskCockpitHistoryClear, systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(records.isEmpty && cleanupMessage == nil)
+            }
+
+            Text(UIStrings.taskCockpitHistorySummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let cleanupMessage {
+                WorkflowSheetInlineBanner(message: cleanupMessage, style: .warning)
+            }
 
             if records.isEmpty {
                 EmptyState(
                     title: UIStrings.text("taskCockpit.history.emptyTitle", "No History"),
                     systemImage: "clock.badge.questionmark",
-                    message: UIStrings.text("taskCockpit.history.emptyMessage", "Run a task preflight to save a reusable history row.")
+                    message: UIStrings.text("taskCockpit.history.emptyMessage", "Run a Task Preflight to keep a result for this app session.")
                 )
             } else {
                 ScrollView {
@@ -188,6 +210,20 @@ private struct TaskPreflightHistoryPanel: View {
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .nativePanelSurface()
+        .confirmationDialog(
+            UIStrings.taskCockpitHistoryClearConfirmationTitle,
+            isPresented: $isConfirmingClear,
+            titleVisibility: .visible
+        ) {
+            Button(UIStrings.taskCockpitHistoryClear, role: .destructive) {
+                onClear()
+            }
+            Button(UIStrings.cancel, role: .cancel) {
+                isConfirmingClear = false
+            }
+        } message: {
+            Text(UIStrings.taskCockpitHistoryClearConfirmationMessage)
+        }
     }
 }
 

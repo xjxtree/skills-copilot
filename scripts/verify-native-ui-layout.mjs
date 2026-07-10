@@ -947,6 +947,23 @@ const customChecks = [
       && !/Text\(UIStrings\.text\("taskCockpit\.history\.empty"/.test(files.taskCockpit),
   },
   {
+    label: "task preflight history is session-only with redacted cleanup retry",
+    passed: /TaskPreflightHistoryPanel\([\s\S]*?cleanupMessage:\s*store\.taskCockpitHistoryCleanupMessage[\s\S]*?onClear:\s*\{[\s\S]*?store\.clearTaskCockpitHistory\(\)/.test(files.taskCockpit)
+      && /private struct TaskPreflightHistoryPanel:[\s\S]*?@State private var isConfirmingClear = false[\s\S]*?Text\(UIStrings\.taskCockpitHistorySummary\)/.test(files.taskCockpit)
+      && /if let cleanupMessage[\s\S]*?WorkflowSheetInlineBanner\(message:\s*cleanupMessage,\s*style:\s*\.warning\)/.test(files.taskCockpit)
+      && /Label\(UIStrings\.taskCockpitHistoryClear,\s*systemImage:\s*"trash"\)[\s\S]*?\.disabled\(records\.isEmpty && cleanupMessage == nil\)/.test(files.taskCockpit)
+      && /\.confirmationDialog\([\s\S]*?UIStrings\.taskCockpitHistoryClearConfirmationTitle[\s\S]*?Button\(UIStrings\.taskCockpitHistoryClear,\s*role:\s*\.destructive\)[\s\S]*?onClear\(\)[\s\S]*?UIStrings\.taskCockpitHistoryClearConfirmationMessage/.test(files.taskCockpit)
+      && /@Published private\(set\) var taskCockpitHistoryCleanupMessage:\s*String\?/.test(files.store)
+      && /"taskCockpit\.history\.summary" = "Completed Preflights stay in memory for this app session\. Task text and provider results are not saved to disk and disappear when the app quits\."/.test(files.localizable)
+      && /"taskCockpit\.history\.summary" = ".*本次应用会话.*不会保存到磁盘.*退出应用.*"/.test(files.localizableZh)
+      && [
+        "taskCockpit.history.clear",
+        "taskCockpit.history.clearConfirmation.title",
+        "taskCockpit.history.clearConfirmation.message",
+        "taskCockpit.history.cleanupFailed",
+      ].every((key) => files.localizable.includes(`"${key}" =`) && files.localizableZh.includes(`"${key}" =`)),
+  },
+  {
     label: "settings provider status copy uses precise disabled and audit-state labels",
     passed: /static var aiProviderDisabledReason:[\s\S]*?settings\.aiProvider\.disabledReason/.test(files.uiStrings)
       && /static var aiProviderAuditApplied:[\s\S]*?settings\.aiProvider\.audit\.applied/.test(files.uiStrings)

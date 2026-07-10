@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 @testable import SkillsCopilot
 
@@ -150,8 +151,26 @@ struct SkillStoreTests {
         try await runCase("taskCockpitUsesGlobalScopeOutsideSkillDetail") {
             try await taskCockpitUsesGlobalScopeOutsideSkillDetail()
         }
-        try await runCase("taskCockpitHistoryPersistsLocally") {
-            try await taskCockpitHistoryPersistsLocally()
+        try await runCase("taskCockpitHistoryStaysInCurrentSessionOnly") {
+            try await taskCockpitHistoryStaysInCurrentSessionOnly()
+        }
+        try await runCase("taskCockpitHistoryKeepsNewestTwelveRecords") {
+            try await taskCockpitHistoryKeepsNewestTwelveRecords()
+        }
+        try await runCase("newStoreDoesNotRestoreTaskCockpitHistory") {
+            try await newStoreDoesNotRestoreTaskCockpitHistory()
+        }
+        try await runCase("successfulTaskCockpitDoesNotCreateHistoryFile") {
+            try await successfulTaskCockpitDoesNotCreateHistoryFile()
+        }
+        try await runCase("clearTaskCockpitHistoryClearsMemory") {
+            try await clearTaskCockpitHistoryClearsMemory()
+        }
+        try runCase("legacyHistoryCleanupFailureShowsRedactedMessage") {
+            try legacyHistoryCleanupFailureShowsRedactedMessage()
+        }
+        try runCase("legacyHistoryDirectoryShowsRedactedMessageAndRemainsUntouched") {
+            try legacyHistoryDirectoryShowsRedactedMessageAndRemainsUntouched()
         }
         try await runCase("taskCockpitPreservesExactUserInputInServiceContract") {
             try await taskCockpitPreservesExactUserInputInServiceContract()
@@ -1617,7 +1636,7 @@ struct SkillStoreTests {
         try expectFalse(previewCall?.contains("\"selected_skill_id\"") ?? false, "Global Preflight should not inherit a retained selected skill id.")
     }
 
-    private func taskCockpitHistoryPersistsLocally() async throws {
+    private func taskCockpitHistoryStaysInCurrentSessionOnly() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "prompt-ready")
@@ -1625,24 +1644,209 @@ struct SkillStoreTests {
         let historyStore = makeTemporaryTaskCockpitHistoryStore()
         defer { cleanupTaskCockpitHistoryStore(historyStore) }
         let task = "阿里云 ECS 磁盘负载情况分析"
+        let store = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
+        store.taskCockpitText = task
+        await store.reload()
+        try await previewAndConfirmTaskCockpit(store)
+
+        try expectEqual(store.taskCockpitHistory.count, 1, "Successful Preflight should add one current-session history record.")
+        try expectEqual(store.taskCockpitHistory.first?.displayTask, task, "Session history should preserve the visible task text.")
+        try expectEqual(store.taskCockpitHistory.first?.agentIDs, ["claude-code"], "Session history should preserve the full agent scope.")
+        try expectEqual(store.taskCockpitHistory.first?.result.summary.recommendedSkillName, "Beta", "Session history should retain the full recommendation result.")
+        try expectEqual(store.taskCockpitHistory.first?.operationState.phase, .completed, "Session history should retain the completed operation state.")
+        try expectEqual(store.selectedTaskCockpitHistoryID, store.taskCockpitHistory.first?.id, "The latest session record should remain selected.")
+    }
+
+    private func taskCockpitHistoryKeepsNewestTwelveRecords() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "prompt-ready")
+
+        let historyStore = makeTemporaryTaskCockpitHistoryStore()
+        defer { cleanupTaskCockpitHistoryStore(historyStore) }
+        let store = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
+        await store.reload()
+
+        let submittedTasks = (1...13).map { "Session-only Preflight \($0)" }
+        for task in submittedTasks {
+            store.taskCockpitText = task
+            try await previewAndConfirmTaskCockpit(store)
+        }
+
+        let expectedTasks = Array(submittedTasks.dropFirst().reversed())
+        try expectEqual(
+            store.taskCockpitHistory.count,
+            12,
+            "Session history should retain exactly twelve successful results."
+        )
+        try expectEqual(
+            store.taskCockpitHistory.map(\.displayTask),
+            expectedTasks,
+            "Session history should remain newest-first after evicting the oldest result."
+        )
+        try expectFalse(
+            store.taskCockpitHistory.contains { $0.displayTask == submittedTasks[0] },
+            "The thirteenth result should evict the oldest session record."
+        )
+        try expectEqual(
+            store.selectedTaskCockpitHistoryID,
+            store.taskCockpitHistory.first?.id,
+            "The newest retained session record should remain selected."
+        )
+    }
+
+    private func newStoreDoesNotRestoreTaskCockpitHistory() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "prompt-ready")
+
+        let historyStore = makeTemporaryTaskCockpitHistoryStore()
+        defer { cleanupTaskCockpitHistoryStore(historyStore) }
         let firstStore = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
-        firstStore.taskCockpitText = task
+        firstStore.taskCockpitText = "Keep this Preflight in memory only."
         await firstStore.reload()
         try await previewAndConfirmTaskCockpit(firstStore)
-
-        try expectEqual(firstStore.taskCockpitHistory.count, 1, "Successful Preflight should add one local history record.")
-        try expectEqual(firstStore.taskCockpitHistory.first?.displayTask, task, "History should preserve the visible task text.")
-        try expectEqual(FileManager.default.fileExists(atPath: historyStore.fileURL.path), true, "Preflight history should be written to the local app data file.")
-
-        let persisted = try String(contentsOf: historyStore.fileURL, encoding: .utf8)
-        try expectContains(persisted, task, "Persisted history should include the task for later recall.")
-        try expectFalse(persisted.contains("prompt_request"), "Persisted history must not keep provider prompt request metadata.")
-        try expectFalse(persisted.contains("task_cockpit"), "Persisted history must not keep raw prompt request kind metadata.")
+        try expectEqual(firstStore.taskCockpitHistory.count, 1, "The first store should retain its completed session result.")
+        try expectEqual(firstStore.taskCockpitHistory.first?.displayTask, "Keep this Preflight in memory only.", "The current session should retain the complete task text.")
+        try expectEqual(firstStore.taskCockpitHistory.first?.agentIDs, ["claude-code"], "The current session should retain the complete agent scope.")
+        try expectEqual(firstStore.taskCockpitHistory.first?.result.summary.recommendedSkillName, "Beta", "The current session should retain the complete provider result.")
+        try expectEqual(
+            FileManager.default.fileExists(atPath: historyStore.fileURL.path),
+            false,
+            "The provider-confirmed Preflight must remain in memory without creating a history file."
+        )
 
         let secondStore = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
-        try expectEqual(secondStore.taskCockpitHistory.count, 1, "A new store should load persisted Preflight history.")
-        try expectEqual(secondStore.taskCockpitHistory.first?.displayTask, task, "Reloaded history should show the original task.")
-        try expectEqual(secondStore.taskCockpitHistory.first?.result.summary.recommendedSkillName, "Beta", "Reloaded history should retain the recommendation summary.")
+        try expectEqual(secondStore.taskCockpitHistory.count, 0, "A new store must not restore prior Task Preflight history.")
+
+        for fixture in sensitiveLegacyTaskCockpitHistoryFixtures {
+            try writeTaskCockpitHistoryFixture(fixture, to: historyStore)
+            let restartedStore = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
+            try expectEqual(restartedStore.taskCockpitHistory.count, 0, "Legacy disk history must never populate a new session.")
+            try expectEqual(
+                FileManager.default.fileExists(atPath: historyStore.fileURL.path),
+                false,
+                "Store startup should purge every legacy Task Preflight history format."
+            )
+        }
+
+        let siblingNames = try FileManager.default.contentsOfDirectory(
+            atPath: historyStore.fileURL.deletingLastPathComponent().path
+        )
+        try expectFalse(
+            siblingNames.contains { $0.hasPrefix("task-preflight-history") },
+            "Startup cleanup must not leave a history file, rename, or backup."
+        )
+        for siblingName in siblingNames {
+            let siblingURL = historyStore.fileURL.deletingLastPathComponent().appendingPathComponent(siblingName)
+            guard let contents = try? String(contentsOf: siblingURL, encoding: .utf8) else { continue }
+            try expectFalse(
+                contents.contains("SENSITIVE_SENTINEL_42"),
+                "Startup cleanup must not copy sensitive legacy history into another file."
+            )
+        }
+    }
+
+    private func successfulTaskCockpitDoesNotCreateHistoryFile() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "prompt-ready")
+
+        let historyStore = makeTemporaryTaskCockpitHistoryStore()
+        defer { cleanupTaskCockpitHistoryStore(historyStore) }
+        let store = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
+        store.taskCockpitText = "Do not persist this provider-confirmed result."
+        await store.reload()
+        try await previewAndConfirmTaskCockpit(store)
+
+        try expectEqual(store.taskCockpitHistory.count, 1, "The successful result should remain available in memory.")
+        try expectEqual(
+            FileManager.default.fileExists(atPath: historyStore.fileURL.path),
+            false,
+            "A successful Preflight must not create a history file."
+        )
+        try expectEqual(
+            FileManager.default.fileExists(atPath: historyStore.fileURL.deletingLastPathComponent().path),
+            false,
+            "A successful Preflight must not create a history directory."
+        )
+    }
+
+    private func clearTaskCockpitHistoryClearsMemory() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "prompt-ready")
+
+        let historyStore = makeTemporaryTaskCockpitHistoryStore()
+        defer { cleanupTaskCockpitHistoryStore(historyStore) }
+        let store = SkillStore(service: fake.serviceClient(), taskCockpitHistoryStore: historyStore)
+        store.taskCockpitText = "Clear this in-memory result."
+        await store.reload()
+        try await previewAndConfirmTaskCockpit(store)
+        try writeTaskCockpitHistoryFixture(sensitiveLegacyTaskCockpitHistoryFixtures[0], to: historyStore)
+
+        store.clearTaskCockpitHistory()
+
+        try expectEqual(store.taskCockpitHistory.count, 0, "Clear should remove every in-memory Task Preflight record.")
+        try expectNil(store.selectedTaskCockpitHistoryID, "Clear should reset the selected history record.")
+        try expectEqual(
+            FileManager.default.fileExists(atPath: historyStore.fileURL.path),
+            false,
+            "Clear should retry deletion when a legacy file survived or reappeared after startup."
+        )
+        try expectNil(store.taskCockpitHistoryCleanupMessage, "Successful clear cleanup should dismiss the cleanup warning.")
+    }
+
+    private func legacyHistoryCleanupFailureShowsRedactedMessage() throws {
+        let historyStore = makeTemporaryTaskCockpitHistoryStore()
+        defer { cleanupTaskCockpitHistoryStore(historyStore) }
+        try writeTaskCockpitHistoryFixture(sensitiveLegacyTaskCockpitHistoryFixtures[0], to: historyStore)
+        let failingHistoryStore = TaskCockpitHistoryStore(
+            fileURL: historyStore.fileURL,
+            unlinkItem: { _ in .failed(errorNumber: EACCES) }
+        )
+
+        let store = SkillStore(service: unexpectedServiceClient(), taskCockpitHistoryStore: failingHistoryStore)
+
+        try expectEqual(store.taskCockpitHistory.count, 0, "Cleanup failure must not restore legacy records into memory.")
+        try expectEqual(store.taskCockpitHistoryCleanupMessage, UIStrings.taskCockpitHistoryCleanupFailed, "Cleanup failure should show only the localized redacted warning.")
+        try expectFalse(store.taskCockpitHistoryCleanupMessage?.contains("SENSITIVE_SENTINEL_42") ?? true, "Cleanup warning must not expose task text or file bytes.")
+        try expectFalse(store.taskCockpitHistoryCleanupMessage?.contains(historyStore.fileURL.path) ?? true, "Cleanup warning must not expose the legacy history path.")
+        try expectFalse(store.taskCockpitHistoryCleanupMessage?.contains("Cannot remove") ?? true, "Cleanup warning must not expose the raw removal error.")
+        try expectEqual(FileManager.default.fileExists(atPath: historyStore.fileURL.path), true, "Failed cleanup should leave the original file for a visible retry.")
+    }
+
+    private func legacyHistoryDirectoryShowsRedactedMessageAndRemainsUntouched() throws {
+        let historyStore = makeTemporaryTaskCockpitHistoryStore()
+        defer { cleanupTaskCockpitHistoryStore(historyStore) }
+        try FileManager.default.createDirectory(
+            at: historyStore.fileURL,
+            withIntermediateDirectories: true
+        )
+        let nestedSentinelURL = historyStore.fileURL
+            .appendingPathComponent("SENSITIVE_SENTINEL_42.txt", isDirectory: false)
+        try Data("SENSITIVE_SENTINEL_42 directory contents".utf8).write(to: nestedSentinelURL)
+
+        let store = SkillStore(service: unexpectedServiceClient(), taskCockpitHistoryStore: historyStore)
+
+        try expectEqual(
+            store.taskCockpitHistoryCleanupMessage,
+            UIStrings.taskCockpitHistoryCleanupFailed,
+            "An unexpected directory should show the same generic cleanup warning."
+        )
+        try expectFalse(
+            store.taskCockpitHistoryCleanupMessage?.contains(historyStore.fileURL.path) ?? true,
+            "Directory cleanup warnings must not expose the local history path."
+        )
+        try expectFalse(
+            store.taskCockpitHistoryCleanupMessage?.lowercased().contains("directory") ?? true,
+            "Directory cleanup warnings must not expose the unexpected item type."
+        )
+        try expectEqual(
+            try String(contentsOf: nestedSentinelURL, encoding: .utf8),
+            "SENSITIVE_SENTINEL_42 directory contents",
+            "Startup cleanup must not recursively delete or mutate unexpected directory contents."
+        )
     }
 
     private func taskCockpitPreservesExactUserInputInServiceContract() async throws {
@@ -1910,12 +2114,40 @@ struct SkillStoreTests {
     private func makeTemporaryTaskCockpitHistoryStore() -> TaskCockpitHistoryStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("skills-copilot-task-preflight-history-\(UUID().uuidString)", isDirectory: true)
-        return TaskCockpitHistoryStore(fileURL: directory.appendingPathComponent("history.json"))
+        return TaskCockpitHistoryStore(
+            fileURL: directory.appendingPathComponent("task-preflight-history.json", isDirectory: false)
+        )
     }
 
     private func cleanupTaskCockpitHistoryStore(_ store: TaskCockpitHistoryStore) {
         guard ProcessInfo.processInfo.environment["CI"] != "true" else { return }
         try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent())
+    }
+
+    private func writeTaskCockpitHistoryFixture(_ fixture: String, to store: TaskCockpitHistoryStore) throws {
+        try FileManager.default.createDirectory(
+            at: store.fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(fixture.utf8).write(to: store.fileURL)
+    }
+
+    private var sensitiveLegacyTaskCockpitHistoryFixtures: [String] {
+        let record = """
+        {
+          "taskText":"SENSITIVE_SENTINEL_42 task text",
+          "operationState":{"message":"SENSITIVE_SENTINEL_42 operation state"},
+          "filters":{"taskText":"SENSITIVE_SENTINEL_42 filters"},
+          "summary":{"summaryText":"SENSITIVE_SENTINEL_42 summary"},
+          "result":{"resultText":"SENSITIVE_SENTINEL_42 result text"}
+        }
+        """
+        return [
+            "[\(record)]",
+            "{\"version\":1,\"records\":[\(record)]}",
+            "{\"version\":2,\"records\":[\(record)]}",
+            "taskText=SENSITIVE_SENTINEL_42; operationState=SENSITIVE_SENTINEL_42; filters=SENSITIVE_SENTINEL_42; summary=SENSITIVE_SENTINEL_42; resultText=SENSITIVE_SENTINEL_42",
+        ]
     }
 
     private func unexpectedServiceClient() -> ServiceClient {

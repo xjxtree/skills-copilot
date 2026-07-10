@@ -302,8 +302,14 @@
 "taskCockpit.input.ready" = "Ready to build preflight.";
 "taskCockpit.empty.result" = "Ready. Enter a task, then build Preflight.";
 "taskCockpit.history.title" = "History";
-"taskCockpit.history.summary" = "Selecting a history row restores the task text, agent scope, and preflight result.";
+"taskCockpit.history.summary" = "Completed Preflights stay in memory for this app session. Task text and provider results are not saved to disk and disappear when the app quits.";
 "taskCockpit.history.empty" = "No task preflight history yet.";
+"taskCockpit.history.emptyTitle" = "No Session History";
+"taskCockpit.history.emptyMessage" = "Run a Task Preflight to keep a result for this app session.";
+"taskCockpit.history.clear" = "Clear session history";
+"taskCockpit.history.clearConfirmation.title" = "Clear session history?";
+"taskCockpit.history.clearConfirmation.message" = "This clears completed Preflights from this app session and retries removal of prior local history. This cannot be undone.";
+"taskCockpit.history.cleanupFailed" = "Prior local Task Preflight history could not be removed. Clear session history to retry.";
 "taskCockpit.providerRequired" = "Configure an AI provider before generating Task Preflight.";
 "taskCockpit.providerDisabled" = "The configured AI provider is disabled.";
 "taskCockpit.loaded" = "Task preflight loaded from the configured AI provider.";

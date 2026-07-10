@@ -118,6 +118,7 @@ func runNativeModelTestsAsync() async throws {
     try runNamed("RuleTuningModelTests") { try RuleTuningModelTests().run() }
     try runNamed("ProviderObservabilityModelTests") { try ProviderObservabilityModelTests().run() }
     try runNamed("TaskCockpitModelTests") { try TaskCockpitModelTests().run() }
+    try runNamed("TaskCockpitHistoryStoreTests") { try TaskCockpitHistoryStoreTests().run() }
     try runNamed("TaskInputModelTests") { try TaskInputModelTests().run() }
     try runNamed("AIProviderModelTests") { try AIProviderModelTests().run() }
     try runNamed("LLMModelTests") { try LLMModelTests().run() }

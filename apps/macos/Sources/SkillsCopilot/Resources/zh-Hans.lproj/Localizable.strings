@@ -302,8 +302,14 @@
 "taskCockpit.input.ready" = "可生成预检。";
 "taskCockpit.empty.result" = "准备就绪。输入任务后生成 Preflight。";
 "taskCockpit.history.title" = "历史记录";
-"taskCockpit.history.summary" = "选择历史记录会恢复任务文本、目标范围和预检结果。";
+"taskCockpit.history.summary" = "已完成的 Preflight 仅在本次应用会话中保留在内存里。任务文本和提供方结果不会保存到磁盘，并会在退出应用时消失。";
 "taskCockpit.history.empty" = "暂无任务 Preflight 历史。";
+"taskCockpit.history.emptyTitle" = "暂无会话历史";
+"taskCockpit.history.emptyMessage" = "运行任务 Preflight 后，结果将在本次应用会话中保留。";
+"taskCockpit.history.clear" = "清除会话历史";
+"taskCockpit.history.clearConfirmation.title" = "清除会话历史？";
+"taskCockpit.history.clearConfirmation.message" = "此操作会清除本次应用会话中已完成的 Preflight，并重试移除先前的本地历史。此操作无法撤销。";
+"taskCockpit.history.cleanupFailed" = "无法移除先前的本地任务 Preflight 历史。请清除本次会话历史以重试。";
 "taskCockpit.providerRequired" = "生成任务预检前请先配置提供方。";
 "taskCockpit.providerDisabled" = "已配置的提供方当前已禁用。";
 "taskCockpit.loaded" = "已从配置的 AI 提供方生成任务 Preflight。";

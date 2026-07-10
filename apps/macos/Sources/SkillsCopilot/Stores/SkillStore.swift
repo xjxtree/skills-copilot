@@ -135,6 +135,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var taskCockpitResult: TaskCockpitResult?
     @Published private(set) var taskCockpitHistory: [TaskCockpitHistoryRecord] = []
     @Published private(set) var selectedTaskCockpitHistoryID: TaskCockpitHistoryRecord.ID?
+    @Published private(set) var taskCockpitHistoryCleanupMessage: String?
     @Published private(set) var taskCockpitSelectedAgentIDs: Set<String> = [SkillAgentFilter.claudeCode.rawValue]
     @Published private(set) var taskCockpitPromptConfirmation: TaskCockpitPromptConfirmation?
     @Published private(set) var isPreviewingTaskCockpitPrompt = false
@@ -407,7 +408,12 @@ final class SkillStore: ObservableObject {
         self.service = service
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
         self.taskCockpitHistoryStore = taskCockpitHistoryStore
-        taskCockpitHistory = taskCockpitHistoryStore.load()
+        taskCockpitHistory = []
+        do {
+            _ = try taskCockpitHistoryStore.purgeLegacyHistoryIfPresent()
+        } catch {
+            taskCockpitHistoryCleanupMessage = UIStrings.taskCockpitHistoryCleanupFailed
+        }
     }
 
     private func scheduleLastMutationMessageDismissal() {
@@ -778,6 +784,17 @@ final class SkillStore: ObservableObject {
         taskCockpitResult = record.result
         taskCockpitOperationState = record.operationState
         selectedTaskCockpitHistoryID = record.id
+    }
+
+    func clearTaskCockpitHistory() {
+        taskCockpitHistory = []
+        selectedTaskCockpitHistoryID = nil
+        do {
+            _ = try taskCockpitHistoryStore.purgeLegacyHistoryIfPresent()
+            taskCockpitHistoryCleanupMessage = nil
+        } catch {
+            taskCockpitHistoryCleanupMessage = UIStrings.taskCockpitHistoryCleanupFailed
+        }
     }
 
     var taskCockpitAgentOptions: [TaskCockpitAgentOption] {
@@ -2758,7 +2775,6 @@ final class SkillStore: ObservableObject {
         if taskCockpitHistory.count > TaskCockpitHistoryStore.maxRecords {
             taskCockpitHistory.removeLast(taskCockpitHistory.count - TaskCockpitHistoryStore.maxRecords)
         }
-        taskCockpitHistoryStore.save(taskCockpitHistory)
     }
 
     private func resetTaskCockpitAgentSelectionToSidebarDefault(clearResult: Bool) {
