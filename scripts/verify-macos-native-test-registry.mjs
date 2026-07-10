@@ -151,8 +151,8 @@ function main(argv) {
   if (!discoveredTypes.includes(shardedType)) {
     errors.push(`missing sharded native test type: ${shardedType}`);
   }
-  if (mainTypes.length !== 19) {
-    errors.push(`main native test suite count differs: expected 19; actual ${mainTypes.length}`);
+  if (mainTypes.length !== 20) {
+    errors.push(`main native test suite count differs: expected 20; actual ${mainTypes.length}`);
   }
 
   if (logPath) {
