@@ -671,6 +671,69 @@ fn oversized_hidden_record_with_tail_timestamp_stays_hidden() {
 }
 
 #[test]
+fn oversized_hidden_type_in_unread_gap_stays_hidden() {
+    let session = format!(
+        "{{\"text\":\"HIDDEN_GAP_TYPE_MUST_NOT_SURFACE\",\"data\":\"{}\",\"type\":\"file-history-snapshot\",\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        "a".repeat(400 * 1024),
+        "b".repeat(200 * 1024)
+    );
+    let result = preview_codex_session_fixture("hidden-gap-type", &session);
+    let output = serde_json::to_string(&result).expect("serialize hidden preview");
+
+    assert!(
+        !output.contains("HIDDEN_GAP_TYPE_MUST_NOT_SURFACE"),
+        "{output}"
+    );
+    assert_eq!(
+        result.get("count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+}
+
+#[test]
+fn oversized_hidden_type_in_discarded_tail_alignment_prefix_stays_hidden() {
+    let session = format!(
+        "{{\"text\":\"HIDDEN_TAIL_PREFIX_TYPE_MUST_NOT_SURFACE\",\"data\":\"{}\",\"type\":\"file-history-snapshot\",\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        "a".repeat(440 * 1024),
+        "b".repeat(160 * 1024)
+    );
+    let result = preview_codex_session_fixture("hidden-tail-prefix-type", &session);
+    let output = serde_json::to_string(&result).expect("serialize hidden preview");
+
+    assert!(
+        !output.contains("HIDDEN_TAIL_PREFIX_TYPE_MUST_NOT_SURFACE"),
+        "{output}"
+    );
+    assert_eq!(
+        result.get("count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+}
+
+#[test]
+fn later_hidden_duplicate_type_in_unread_gap_overrides_visible_head_type() {
+    let session = format!(
+        "{{\"type\":\"user\",\"role\":\"user\",\"text\":\"HIDDEN_DUPLICATE_GAP_TYPE_MUST_NOT_SURFACE\",\"data\":\"{}\",\"type\":\"file-history-snapshot\",\"blob\":\"{}\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        "a".repeat(400 * 1024),
+        "b".repeat(200 * 1024)
+    );
+    let result = preview_codex_session_fixture("hidden-duplicate-gap-type", &session);
+    let output = serde_json::to_string(&result).expect("serialize hidden preview");
+
+    assert!(
+        !output.contains("HIDDEN_DUPLICATE_GAP_TYPE_MUST_NOT_SURFACE"),
+        "{output}"
+    );
+    assert_eq!(
+        result.get("count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+}
+
+#[test]
 fn oversized_user_tail_text_with_head_timestamp_preserves_supported_scalars() {
     let session = format!(
         "{{\"type\":\"user\",\"role\":\"user\",\"timestamp\":\"2026-07-10T08:09:10Z\",\"data\":\"{}\",\"text\":\"USER_TAIL_WITH_HEAD_TIMESTAMP\"}}\n",

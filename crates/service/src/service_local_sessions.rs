@@ -925,16 +925,19 @@ fn compact_bounded_local_session_content(
     let mut recovered = String::new();
     let consumed_tail_leading =
         !bounded.tail_starts_at_line_boundary && !tail_leading_fragment.is_empty();
+    let recoverable_provenance = bounded.record_provenance.as_ref().filter(|_| {
+        !head_fragment.is_empty()
+            && !head_fragment_is_complete
+            && consumed_tail_leading
+            && bounded.gap_stays_on_same_line
+    });
 
-    if !head_fragment.is_empty()
-        && !head_fragment_is_complete
-        && consumed_tail_leading
-        && bounded.gap_stays_on_same_line
-    {
+    if let Some(provenance) = recoverable_provenance {
         let mut fields = top_level_scalar_fields_from_prefix(head_fragment);
         for (key, value) in top_level_scalar_fields_from_suffix(tail_leading_fragment) {
             fields.insert(key, value);
         }
+        provenance.merge_into(&mut fields);
         append_supported_scalar_fields(&mut recovered, fields, max_line_fragment_bytes);
     } else if !head_fragment.is_empty() && head_fragment_is_complete {
         recovered.push_str(&compact_local_session_records(
@@ -1392,6 +1395,7 @@ mod bounded_content_tests {
             retained_tail_start: 100,
             tail_starts_at_line_boundary: false,
             gap_stays_on_same_line: false,
+            record_provenance: None,
             truncated: true,
             bytes_read: 80,
         };
@@ -1411,6 +1415,7 @@ mod bounded_content_tests {
             retained_tail_start: 128,
             tail_starts_at_line_boundary: false,
             gap_stays_on_same_line: false,
+            record_provenance: None,
             truncated: true,
             bytes_read: 128,
         };
