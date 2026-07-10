@@ -314,7 +314,12 @@ function processExists(pid) {
   }
 }
 
-async function waitForOwnedHeadlessState(ownedTmp, pidFile, child) {
+async function waitForOwnedHeadlessState(
+  ownedTmp,
+  directInfoFile,
+  descendantInfoFile,
+  child,
+) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const entries = readdirSync(ownedTmp);
@@ -324,11 +329,22 @@ async function waitForOwnedHeadlessState(ownedTmp, pidFile, child) {
     const fixtureRoots = entries.filter((name) =>
       name.startsWith("skills-copilot-native-smoke-"),
     );
-    if (existsSync(pidFile) && helperRoots.length === 1 && fixtureRoots.length === 1) {
-      const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
-      assert.equal(Number.isSafeInteger(pid) && pid > 0, true);
-      assert.equal(processExists(pid), true);
-      return pid;
+    if (
+      existsSync(directInfoFile) &&
+      existsSync(descendantInfoFile) &&
+      helperRoots.length === 1 &&
+      fixtureRoots.length === 1
+    ) {
+      const direct = JSON.parse(readFileSync(directInfoFile, "utf8"));
+      const descendant = JSON.parse(readFileSync(descendantInfoFile, "utf8"));
+      assert.equal(Number.isSafeInteger(direct.pid) && direct.pid > 0, true);
+      assert.equal(
+        Number.isSafeInteger(descendant.pid) && descendant.pid > 0,
+        true,
+      );
+      assert.equal(processExists(direct.pid), true);
+      assert.equal(processExists(descendant.pid), true);
+      return { descendant, direct };
     }
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("headless signal child exited before owning all resources");
@@ -336,6 +352,18 @@ async function waitForOwnedHeadlessState(ownedTmp, pidFile, child) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 20));
   }
   throw new Error("timed out waiting for owned headless resources");
+}
+
+function processGroupExists(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function waitForProcessExit(pid, timeoutMs = 1_000) {
@@ -349,23 +377,77 @@ async function waitForProcessExit(pid, timeoutMs = 1_000) {
   return !processExists(pid);
 }
 
-function writeBlockingFakeSwiftc(fakeBin, fakeHelper, pidFile) {
+function writeBlockingFakeSwiftc(
+  fakeBin,
+  fakeHelper,
+  fakeBlocker,
+  fakeDescendant,
+  directInfoFile,
+  descendantInfoFile,
+) {
+  writeFileSync(
+    fakeDescendant,
+    [
+      "#!/usr/bin/env node",
+      'const { execFileSync } = require("node:child_process");',
+      'const { writeFileSync } = require("node:fs");',
+      "const pgid = Number(execFileSync(",
+      '  "/bin/ps",',
+      '  ["-o", "pgid=", "-p", String(process.pid)],',
+      '  { encoding: "utf8" },',
+      ").trim());",
+      "writeFileSync(",
+      "  process.env.SKILLS_COPILOT_FAKE_DESCENDANT_INFO_FILE,",
+      "  JSON.stringify({ pgid, pid: process.pid }),",
+      ");",
+      'for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
+      "  process.on(signal, () => {});",
+      "}",
+      "setInterval(() => {}, 60_000);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeDescendant, 0o755);
+
+  writeFileSync(
+    fakeBlocker,
+    [
+      'const { execFileSync, spawn } = require("node:child_process");',
+      'const { writeFileSync } = require("node:fs");',
+      "module.exports = function blockForever() {",
+      "  const pgid = Number(execFileSync(",
+      '    "/bin/ps",',
+      '    ["-o", "pgid=", "-p", String(process.pid)],',
+      '    { encoding: "utf8" },',
+      "  ).trim());",
+      "  writeFileSync(",
+      "    process.env.SKILLS_COPILOT_FAKE_DIRECT_INFO_FILE,",
+      "    JSON.stringify({ pgid, pid: process.pid }),",
+      "  );",
+      "  const descendant = spawn(",
+      "    process.execPath,",
+      "    [process.env.SKILLS_COPILOT_FAKE_DESCENDANT_SOURCE],",
+      '    { stdio: "ignore" },',
+      "  );",
+      "  descendant.unref();",
+      '  for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
+      "    process.on(signal, () => {});",
+      "  }",
+      "  setInterval(() => {}, 60_000);",
+      "};",
+      "",
+    ].join("\n"),
+  );
+
   const fakeSwiftc = join(fakeBin, "swiftc");
   writeFileSync(
     fakeSwiftc,
     [
       "#!/usr/bin/env node",
-      'const { chmodSync, copyFileSync, writeFileSync } = require("node:fs");',
+      'const { chmodSync, copyFileSync } = require("node:fs");',
+      'const blockForever = require(process.env.SKILLS_COPILOT_FAKE_BLOCKER_SOURCE);',
       'const phase = process.env.SKILLS_COPILOT_FAKE_CHILD_PHASE;',
-      'const pidFile = process.env.SKILLS_COPILOT_FAKE_CHILD_PID_FILE;',
       'const helperSource = process.env.SKILLS_COPILOT_FAKE_HELPER_SOURCE;',
-      "function blockForever() {",
-      '  writeFileSync(pidFile, `${process.pid}\\n`);',
-      '  for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
-      "    process.on(signal, () => {});",
-      "  }",
-      "  setInterval(() => {}, 60_000);",
-      "}",
       'if (phase === "compile") {',
       "  blockForever();",
       "} else {",
@@ -385,17 +467,14 @@ function writeBlockingFakeSwiftc(fakeBin, fakeHelper, pidFile) {
     fakeHelper,
     [
       "#!/usr/bin/env node",
-      'const { writeFileSync } = require("node:fs");',
-      'writeFileSync(process.env.SKILLS_COPILOT_FAKE_CHILD_PID_FILE, `${process.pid}\\n`);',
-      'for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) {',
-      "  process.on(signal, () => {});",
-      "}",
-      "setInterval(() => {}, 60_000);",
+      'const blockForever = require(process.env.SKILLS_COPILOT_FAKE_BLOCKER_SOURCE);',
+      "blockForever();",
       "",
     ].join("\n"),
   );
   chmodSync(fakeHelper, 0o755);
-  assert.equal(existsSync(pidFile), false);
+  assert.equal(existsSync(directInfoFile), false);
+  assert.equal(existsSync(descendantInfoFile), false);
 }
 
 for (const phase of ["compile", "helper"]) {
@@ -409,12 +488,22 @@ for (const phase of ["compile", "helper"]) {
         const ownedTmp = join(root, "owned-tmp");
         const fakeBin = join(root, "fake-bin");
         const fakeHelper = join(root, "fake-helper");
-        const pidFile = join(root, "fake-child.pid");
+        const fakeBlocker = join(root, "fake-blocker.cjs");
+        const fakeDescendant = join(root, "fake-descendant");
+        const directInfoFile = join(root, "fake-direct.json");
+        const descendantInfoFile = join(root, "fake-descendant.json");
         mkdirSync(configRoot);
         mkdirSync(ownedTmp);
         mkdirSync(fakeBin);
         writeFileSync(join(configRoot, "opencode.json"), "{}\n");
-        writeBlockingFakeSwiftc(fakeBin, fakeHelper, pidFile);
+        writeBlockingFakeSwiftc(
+          fakeBin,
+          fakeHelper,
+          fakeBlocker,
+          fakeDescendant,
+          directInfoFile,
+          descendantInfoFile,
+        );
 
         const child = spawn(
           process.execPath,
@@ -427,8 +516,11 @@ for (const phase of ["compile", "helper"]) {
             env: {
               ...process.env,
               PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+              SKILLS_COPILOT_FAKE_BLOCKER_SOURCE: fakeBlocker,
               SKILLS_COPILOT_FAKE_CHILD_PHASE: phase,
-              SKILLS_COPILOT_FAKE_CHILD_PID_FILE: pidFile,
+              SKILLS_COPILOT_FAKE_DESCENDANT_INFO_FILE: descendantInfoFile,
+              SKILLS_COPILOT_FAKE_DESCENDANT_SOURCE: fakeDescendant,
+              SKILLS_COPILOT_FAKE_DIRECT_INFO_FILE: directInfoFile,
               SKILLS_COPILOT_FAKE_HELPER_SOURCE: fakeHelper,
               SKILLS_COPILOT_SIGNAL_TEST_ROOT: configRoot,
               TMPDIR: `${ownedTmp}/`,
@@ -436,7 +528,7 @@ for (const phase of ["compile", "helper"]) {
             stdio: ["ignore", "ignore", "pipe"],
           },
         );
-        let fakePid = null;
+        let fakeProcesses = null;
         let stderr = "";
         child.stderr.setEncoding("utf8");
         child.stderr.on("data", (chunk) => {
@@ -444,28 +536,48 @@ for (const phase of ["compile", "helper"]) {
         });
 
         try {
-          fakePid = await waitForOwnedHeadlessState(ownedTmp, pidFile, child);
+          fakeProcesses = await waitForOwnedHeadlessState(
+            ownedTmp,
+            directInfoFile,
+            descendantInfoFile,
+            child,
+          );
           const exit = once(child, "exit");
           assert.equal(child.kill(signal), true);
           const [code, receivedSignal] = await exit;
           assert.equal(code, null);
           assert.equal(receivedSignal, signal);
-          const fakeExited = await waitForProcessExit(fakePid);
+          const directExited = await waitForProcessExit(
+            fakeProcesses.direct.pid,
+          );
+          const descendantExited = await waitForProcessExit(
+            fakeProcesses.descendant.pid,
+          );
           const entries = readdirSync(ownedTmp);
           assert.deepEqual(
             {
-              fakeChildStillRunning: !fakeExited,
+              descendantGroup: fakeProcesses.descendant.pgid,
+              descendantStillRunning: !descendantExited,
+              directGroup: fakeProcesses.direct.pgid,
+              directStillRunning: !directExited,
               fixtureRoots: entries.filter((name) =>
                 name.startsWith("skills-copilot-native-smoke-"),
               ),
               helperRoots: entries.filter((name) =>
                 name.startsWith("smoke-fixture-identity-helper-"),
               ),
+              ownedGroupStillRunning: processGroupExists(
+                fakeProcesses.direct.pid,
+              ),
             },
             {
-              fakeChildStillRunning: false,
+              descendantGroup: fakeProcesses.direct.pid,
+              descendantStillRunning: false,
+              directGroup: fakeProcesses.direct.pid,
+              directStillRunning: false,
               fixtureRoots: [],
               helperRoots: [],
+              ownedGroupStillRunning: false,
             },
           );
           assert.equal(stderr, "");
@@ -474,9 +586,14 @@ for (const phase of ["compile", "helper"]) {
             child.kill("SIGKILL");
             await once(child, "exit");
           }
-          if (fakePid && processExists(fakePid)) {
-            process.kill(fakePid, "SIGKILL");
-            await waitForProcessExit(fakePid);
+          for (const pid of [
+            fakeProcesses?.direct.pid,
+            fakeProcesses?.descendant.pid,
+          ]) {
+            if (pid && processExists(pid)) {
+              process.kill(pid, "SIGKILL");
+              await waitForProcessExit(pid);
+            }
           }
           rmSync(root, { force: true, recursive: true });
         }
