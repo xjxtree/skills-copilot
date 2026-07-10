@@ -37,6 +37,68 @@ enum AutosaveDraftPresentation {
     }
 }
 
+enum ConfigAutosaveDraftEvent: Equatable {
+    case hydrate(storeDraft: String?, persistedContent: String)
+    case userChanged(
+        storeDraft: String?,
+        persistedContent: String,
+        revealsSensitiveConfig: Bool,
+        hasActiveSave: Bool,
+        validationError: String?
+    )
+}
+
+enum ConfigAutosaveDraftAction: Equatable {
+    case none
+    case cancelPending
+    case submit(content: String, validationError: String?)
+}
+
+struct ConfigAutosaveDraftTransition: Equatable {
+    let content: String
+    let action: ConfigAutosaveDraftAction
+}
+
+enum ConfigAutosaveDraftReducer {
+    static func reduce(
+        content: String,
+        event: ConfigAutosaveDraftEvent
+    ) -> ConfigAutosaveDraftTransition {
+        switch event {
+        case let .hydrate(storeDraft, persistedContent):
+            return ConfigAutosaveDraftTransition(
+                content: AutosaveDraftPresentation.resolve(
+                    storeDraft: storeDraft,
+                    persistedValue: persistedContent
+                ),
+                action: .none
+            )
+
+        case let .userChanged(
+            storeDraft,
+            persistedContent,
+            revealsSensitiveConfig,
+            hasActiveSave,
+            validationError
+        ):
+            guard revealsSensitiveConfig, storeDraft != content else {
+                return ConfigAutosaveDraftTransition(content: content, action: .none)
+            }
+            guard AutosaveDraftSubmissionPolicy.shouldSubmit(
+                hasChangesFromPersistedValue: content != persistedContent,
+                hasActiveSave: hasActiveSave
+            ) else {
+                let action: ConfigAutosaveDraftAction = storeDraft == nil ? .none : .cancelPending
+                return ConfigAutosaveDraftTransition(content: content, action: action)
+            }
+            return ConfigAutosaveDraftTransition(
+                content: content,
+                action: .submit(content: content, validationError: validationError)
+            )
+        }
+    }
+}
+
 @MainActor
 struct AutosaveMutationLaneToken: Hashable {
     enum Family: Hashable {
@@ -67,8 +129,24 @@ final class AutosaveMutationLane {
     private var isOccupied = false
     private var isShutdown = false
     private var waiters: [Waiter] = []
+    private var currentOwnerToken: AutosaveMutationLaneToken?
+    private var registeredTokens: Set<AutosaveMutationLaneToken> = []
+    private var cancelledTokens: Set<AutosaveMutationLaneToken> = []
 
     var queuedCount: Int { waiters.count }
+
+    @discardableResult
+    func register(_ token: AutosaveMutationLaneToken) -> Bool {
+        guard !isShutdown,
+              currentOwnerToken != token,
+              !registeredTokens.contains(token),
+              !cancelledTokens.contains(token),
+              !waiters.contains(where: { $0.token == token }) else {
+            return false
+        }
+        registeredTokens.insert(token)
+        return true
+    }
 
     func perform<Result>(_ operation: Operation<Result>) async -> Result {
         let acquired = await acquire(token: nil)
@@ -81,22 +159,34 @@ final class AutosaveMutationLane {
         token: AutosaveMutationLaneToken,
         _ operation: Operation<Result>
     ) async -> AutosaveMutationLaneResult<Result> {
-        guard await acquire(token: token) else { return .cancelled }
+        guard await acquire(token: token) else {
+            cancelledTokens.remove(token)
+            return .cancelled
+        }
         defer { release() }
         return .completed(await operation())
     }
 
     @discardableResult
     func cancelQueued(_ token: AutosaveMutationLaneToken) -> Bool {
-        guard let index = waiters.firstIndex(where: { $0.token == token }) else { return false }
-        let waiter = waiters.remove(at: index)
-        waiter.continuation.resume(returning: false)
+        guard !isShutdown, currentOwnerToken != token else { return false }
+        guard !cancelledTokens.contains(token) else { return false }
+        if let index = waiters.firstIndex(where: { $0.token == token }) {
+            cancelledTokens.insert(token)
+            let waiter = waiters.remove(at: index)
+            waiter.continuation.resume(returning: false)
+            return true
+        }
+        guard registeredTokens.remove(token) != nil else { return false }
+        cancelledTokens.insert(token)
         return true
     }
 
     @discardableResult
     func shutdown() -> Int {
         isShutdown = true
+        registeredTokens.removeAll()
+        cancelledTokens.removeAll()
         let queued = waiters
         waiters.removeAll()
         for waiter in queued {
@@ -107,9 +197,23 @@ final class AutosaveMutationLane {
 
     private func acquire(token: AutosaveMutationLaneToken?) async -> Bool {
         guard !isShutdown else { return false }
-        if token != nil, Task.isCancelled { return false }
+        if let token {
+            if Task.isCancelled {
+                registeredTokens.remove(token)
+                return false
+            }
+            if cancelledTokens.remove(token) != nil {
+                registeredTokens.remove(token)
+                return false
+            }
+            registeredTokens.insert(token)
+        }
         if !isOccupied {
             isOccupied = true
+            if let token {
+                registeredTokens.remove(token)
+            }
+            currentOwnerToken = token
             return true
         }
         guard let token else {
@@ -130,11 +234,20 @@ final class AutosaveMutationLane {
                 continuation.resume(returning: false)
                 return
             }
+            if let token, cancelledTokens.remove(token) != nil {
+                registeredTokens.remove(token)
+                continuation.resume(returning: false)
+                return
+            }
+            if let token {
+                registeredTokens.remove(token)
+            }
             waiters.append(Waiter(token: token, continuation: continuation))
         }
     }
 
     private func release() {
+        currentOwnerToken = nil
         guard !isShutdown else {
             isOccupied = false
             return
@@ -143,6 +256,7 @@ final class AutosaveMutationLane {
             isOccupied = false
             return
         }
+        currentOwnerToken = waiters.first?.token
         waiters.removeFirst().continuation.resume(returning: true)
     }
 }
@@ -151,11 +265,13 @@ final class AutosaveMutationLane {
 final class RevisionAutosaveCoordinator<Value: Equatable> {
     typealias Sleep = @Sendable (UInt64) async throws -> Void
     typealias Save = @MainActor (Value, UInt64) async -> RevisionAutosaveSaveOutcome
+    typealias WorkerWillStart = @MainActor (UInt64) -> Void
     typealias Completion = @MainActor (RevisionAutosaveCompletion<Value>) -> Void
     typealias PhaseChanged = @MainActor (RevisionAutosavePhase) -> Void
 
     private let delayNanoseconds: UInt64
     private let sleep: Sleep
+    private let workerWillStart: WorkerWillStart
     private let save: Save
     private let completion: Completion
     private let phaseChanged: PhaseChanged
@@ -172,12 +288,14 @@ final class RevisionAutosaveCoordinator<Value: Equatable> {
     init(
         delayNanoseconds: UInt64,
         sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: $0) },
+        workerWillStart: @escaping WorkerWillStart = { _ in },
         save: @escaping Save,
         phaseChanged: @escaping PhaseChanged,
         completion: @escaping Completion
     ) {
         self.delayNanoseconds = delayNanoseconds
         self.sleep = sleep
+        self.workerWillStart = workerWillStart
         self.save = save
         self.phaseChanged = phaseChanged
         self.completion = completion
@@ -253,6 +371,7 @@ final class RevisionAutosaveCoordinator<Value: Equatable> {
 
     private func startWorker(revision: UInt64, value: Value) {
         activeRevision = revision
+        workerWillStart(revision)
         setPhase(.saving(revision: revision))
         let save = save
         workerTask = Task { @MainActor [weak self] in

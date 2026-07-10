@@ -531,6 +531,11 @@ final class SkillStore: ObservableObject {
     private var latestProviderAutosaveRevision: UInt64?
     private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>(
         delayNanoseconds: autosaveDelayNanoseconds,
+        workerWillStart: { [weak self] revision in
+            self?.autosaveMutationLane.register(
+                AutosaveMutationLaneToken(family: .config, revision: revision)
+            )
+        },
         save: { [weak self] content, revision in
             guard let lane = self?.autosaveMutationLane else { return .cancelled }
             let result = await lane.perform(
@@ -559,6 +564,11 @@ final class SkillStore: ObservableObject {
     )
     private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>(
         delayNanoseconds: autosaveDelayNanoseconds,
+        workerWillStart: { [weak self] revision in
+            self?.autosaveMutationLane.register(
+                AutosaveMutationLaneToken(family: .provider, revision: revision)
+            )
+        },
         save: { [weak self] draft, revision in
             guard let lane = self?.autosaveMutationLane else { return .cancelled }
             let result = await lane.perform(
@@ -2867,6 +2877,11 @@ final class SkillStore: ObservableObject {
         configAutosaveDraft = content
         let submittedAgent = agentFilter.rawValue
         let activeRevision = configAutosaveCoordinator.activeSaveRevision
+        if validationError != nil, let activeRevision {
+            autosaveMutationLane.cancelQueued(
+                AutosaveMutationLaneToken(family: .config, revision: activeRevision)
+            )
+        }
         configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
             $0.key == activeRevision
         }
@@ -2881,6 +2896,12 @@ final class SkillStore: ObservableObject {
     @discardableResult
     func submitProviderAutosave(draft: AIProviderSettingsDraft) -> UInt64 {
         providerAutosaveDraft = draft
+        if draft.validationMessage != nil,
+           let activeRevision = providerAutosaveCoordinator.activeSaveRevision {
+            autosaveMutationLane.cancelQueued(
+                AutosaveMutationLaneToken(family: .provider, revision: activeRevision)
+            )
+        }
         let revision = providerAutosaveCoordinator.submit(
             draft,
             validationError: draft.validationMessage

@@ -136,17 +136,10 @@ private struct AgentConfigOverviewDetailPanel: View {
             }
         }
         .onChange(of: store.claudeSettings) { _ in
-            if !revealsSensitiveConfig || store.configAutosaveDraft != nil || !hasDraftChanges {
-                hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
-            }
+            hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
         }
-        .onChange(of: store.configAutosaveDraft) { latestDraft in
-            let resolvedDraft = AutosaveDraftPresentation.resolve(
-                storeDraft: latestDraft,
-                persistedValue: store.claudeSettings?.content ?? ""
-            )
-            guard resolvedDraft != draft else { return }
-            draft = resolvedDraft
+        .onChange(of: store.configAutosaveDraft) { _ in
+            hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
         }
         .onChange(of: draft) { _ in
             handleConfigDraftChange()
@@ -243,10 +236,14 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func hydrateConfigDraftFromStore(revealsSensitive: Bool = false) {
-        draft = AutosaveDraftPresentation.resolve(
-            storeDraft: store.configAutosaveDraft,
-            persistedValue: store.claudeSettings?.content ?? ""
+        let transition = ConfigAutosaveDraftReducer.reduce(
+            content: draft,
+            event: .hydrate(
+                storeDraft: store.configAutosaveDraft,
+                persistedContent: store.claudeSettings?.content ?? ""
+            )
         )
+        draft = transition.content
         revealsSensitiveConfig = revealsSensitive
     }
 
@@ -282,19 +279,27 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func handleConfigDraftChange() {
-        guard store.configAutosaveDraft != draft else { return }
-        guard revealsSensitiveConfig else { return }
-        guard AutosaveDraftSubmissionPolicy.shouldSubmit(
-            hasChangesFromPersistedValue: hasDraftChanges,
-            hasActiveSave: store.configAutosaveHasActiveSave
-        ) else {
-            store.cancelPendingConfigAutosave()
-            return
-        }
-        store.submitConfigAutosave(
+        let transition = ConfigAutosaveDraftReducer.reduce(
             content: draft,
-            validationError: validationMessage
+            event: .userChanged(
+                storeDraft: store.configAutosaveDraft,
+                persistedContent: store.claudeSettings?.content ?? "",
+                revealsSensitiveConfig: revealsSensitiveConfig,
+                hasActiveSave: store.configAutosaveHasActiveSave,
+                validationError: validationMessage
+            )
         )
+        switch transition.action {
+        case .none:
+            return
+        case .cancelPending:
+            store.cancelPendingConfigAutosave()
+        case let .submit(content, validationError):
+            store.submitConfigAutosave(
+                content: content,
+                validationError: validationError
+            )
+        }
     }
 
     private static func formattedJSON(_ content: String) -> String? {

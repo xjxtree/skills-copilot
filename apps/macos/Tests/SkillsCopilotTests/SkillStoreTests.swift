@@ -1,4 +1,5 @@
 import Darwin
+import Combine
 import Foundation
 @testable import SkillsCopilot
 
@@ -97,11 +98,23 @@ struct SkillStoreTests {
         try await runCase("configAndProviderAutosavesShareOneMutationLane") {
             try await configAndProviderAutosavesShareOneMutationLane()
         }
+        try await runCase("cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs") {
+            try await cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs()
+        }
+        try await runCase("cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs") {
+            try await cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs()
+        }
         try await runCase("cancellingQueuedProviderAutosaveMakesZeroRPCs") {
             try await cancellingQueuedProviderAutosaveMakesZeroRPCs()
         }
         try await runCase("cancellingQueuedConfigAutosaveMakesZeroRPCs") {
             try await cancellingQueuedConfigAutosaveMakesZeroRPCs()
+        }
+        try await runCase("invalidConfigDraftCancelsQueuedValidAutosave") {
+            try await invalidConfigDraftCancelsQueuedValidAutosave()
+        }
+        try await runCase("invalidProviderDraftCancelsQueuedValidAutosave") {
+            try await invalidProviderDraftCancelsQueuedValidAutosave()
         }
         try await runCase("releasingStoreCancelsQueuedAutosaveWaiter") {
             try await releasingStoreCancelsQueuedAutosaveWaiter()
@@ -1361,6 +1374,91 @@ struct SkillStoreTests {
         try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after the shared lane drains.")
     }
 
+    private func cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs() async throws {
+        let runner = AutosaveControlServiceRunner()
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+
+        var providerOwner = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerOwner.endpoint = "https://provider-pre-registration-owner.example.com/v1"
+        providerOwner.model = "owner-model"
+        _ = store.submitProviderAutosave(draft: providerOwner)
+        try await waitUntil("Provider should own the lane before pre-registration config cancellation.") {
+            await runner.startedProviderSaveCount == 1
+        }
+
+        var cancellationTriggered = false
+        let phaseObserver = store.$configAutosavePhase.sink { phase in
+            guard case .saving = phase, !cancellationTriggered else { return }
+            cancellationTriggered = true
+            store.cancelPendingConfigAutosave()
+        }
+        _ = store.submitConfigAutosave(
+            content: "config-pre-registration-cancelled",
+            validationError: nil
+        )
+        try await waitUntil("Config cancellation should run synchronously from the saving transition.") {
+            cancellationTriggered
+        }
+        phaseObserver.cancel()
+
+        await runner.releaseNextProviderSave()
+        try await waitUntil("Pre-registration config cancellation should settle after its owner.", timeout: 5) {
+            await runner.startedConfigSaveCount > 0
+                || (store.providerAutosavePhase == .idle && store.configAutosavePhase == .idle)
+        }
+        let unexpectedConfigCalls = await runner.startedConfigSaveCount
+        if unexpectedConfigCalls > 0 {
+            await runner.releaseNextConfigSave()
+        }
+        await store.flushPendingAutosaves()
+
+        try expectEqual(unexpectedConfigCalls, 0, "Cancelling config before waiter registration must make zero config RPCs.")
+        try expectNil(store.configAutosaveDraft, "Explicit pre-registration config cancellation should retire its draft.")
+        try expectEqual(store.configAutosavePhase, .idle, "Pre-registration config cancellation should settle idle.")
+    }
+
+    private func cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs() async throws {
+        let runner = AutosaveControlServiceRunner()
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+
+        _ = store.submitConfigAutosave(content: "config-pre-registration-owner", validationError: nil)
+        try await waitUntil("Config should own the lane before pre-registration provider cancellation.") {
+            await runner.startedConfigSaveCount == 1
+        }
+
+        var cancellationTriggered = false
+        let phaseObserver = store.$providerAutosavePhase.sink { phase in
+            guard case .saving = phase, !cancellationTriggered else { return }
+            cancellationTriggered = true
+            store.cancelPendingProviderAutosave()
+        }
+        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerDraft.endpoint = "https://provider-pre-registration-cancelled.example.com/v1"
+        providerDraft.model = "cancelled-model"
+        _ = store.submitProviderAutosave(draft: providerDraft)
+        try await waitUntil("Provider cancellation should run synchronously from the saving transition.") {
+            cancellationTriggered
+        }
+        phaseObserver.cancel()
+
+        await runner.releaseNextConfigSave()
+        try await waitUntil("Pre-registration provider cancellation should settle after its owner.", timeout: 5) {
+            await runner.startedProviderSaveCount > 0
+                || (store.configAutosavePhase == .idle && store.providerAutosavePhase == .idle)
+        }
+        let unexpectedProviderCalls = await runner.startedProviderSaveCount
+        if unexpectedProviderCalls > 0 {
+            await runner.releaseNextProviderSave()
+        }
+        await store.flushPendingAutosaves()
+
+        try expectEqual(unexpectedProviderCalls, 0, "Cancelling provider before waiter registration must make zero provider RPCs.")
+        try expectNil(store.providerAutosaveDraft, "Explicit pre-registration provider cancellation should retire its draft.")
+        try expectEqual(store.providerAutosavePhase, .idle, "Pre-registration provider cancellation should settle idle.")
+    }
+
     private func cancellingQueuedProviderAutosaveMakesZeroRPCs() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
@@ -1431,6 +1529,83 @@ struct SkillStoreTests {
         try expectEqual(unexpectedConfigCalls, 0, "Cancelling a config waiter before lane ownership must make zero config RPCs.")
         try expectEqual(store.configAutosavePhase, .idle, "A cancelled config waiter should settle idle, not failed.")
         try expectNil(store.settingsErrorMessage, "A cancelled config waiter should not publish a failure.")
+    }
+
+    private func invalidConfigDraftCancelsQueuedValidAutosave() async throws {
+        let runner = AutosaveControlServiceRunner()
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+
+        var providerOwner = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerOwner.endpoint = "https://provider-invalid-config-owner.example.com/v1"
+        providerOwner.model = "owner-model"
+        _ = store.submitProviderAutosave(draft: providerOwner)
+        try await waitUntil("Provider should own the lane before config becomes invalid.") {
+            await runner.startedProviderSaveCount == 1
+        }
+
+        _ = store.submitConfigAutosave(content: "config-valid-a", validationError: nil)
+        try await waitUntil("Valid config A should wait for lane ownership.") {
+            store.configAutosaveHasActiveSave
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        _ = store.submitConfigAutosave(
+            content: "config-invalid-b",
+            validationError: "invalid config B"
+        )
+
+        await runner.releaseNextProviderSave()
+        try await waitUntil("Invalid config B should cancel queued valid A.", timeout: 5) {
+            await runner.startedConfigSaveCount > 0
+                || (store.providerAutosavePhase == .idle && store.configAutosavePhase == .idle)
+        }
+        let unexpectedConfigCalls = await runner.startedConfigSaveCount
+        if unexpectedConfigCalls > 0 {
+            await runner.releaseNextConfigSave()
+        }
+        await store.flushPendingAutosaves()
+
+        try expectEqual(unexpectedConfigCalls, 0, "Invalid config B must cancel pre-owner valid A with zero config RPCs.")
+        try expectEqual(store.configAutosaveDraft, "config-invalid-b", "The current invalid config B should remain available for correction.")
+        try expectEqual(store.configAutosavePhase, .idle, "Cancelling pre-owner valid A for invalid B should settle idle.")
+    }
+
+    private func invalidProviderDraftCancelsQueuedValidAutosave() async throws {
+        let runner = AutosaveControlServiceRunner()
+        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await store.loadAIProviderStatus()
+
+        _ = store.submitConfigAutosave(content: "config-invalid-provider-owner", validationError: nil)
+        try await waitUntil("Config should own the lane before provider becomes invalid.") {
+            await runner.startedConfigSaveCount == 1
+        }
+
+        var validProviderA = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        validProviderA.endpoint = "https://provider-valid-a.example.com/v1"
+        validProviderA.model = "valid-model-a"
+        _ = store.submitProviderAutosave(draft: validProviderA)
+        try await waitUntil("Valid provider A should wait for lane ownership.") {
+            store.providerAutosaveHasActiveSave
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        var invalidProviderB = validProviderA
+        invalidProviderB.endpoint = ""
+        _ = store.submitProviderAutosave(draft: invalidProviderB)
+
+        await runner.releaseNextConfigSave()
+        try await waitUntil("Invalid provider B should cancel queued valid A.", timeout: 5) {
+            await runner.startedProviderSaveCount > 0
+                || (store.configAutosavePhase == .idle && store.providerAutosavePhase == .idle)
+        }
+        let unexpectedProviderCalls = await runner.startedProviderSaveCount
+        if unexpectedProviderCalls > 0 {
+            await runner.releaseNextProviderSave()
+        }
+        await store.flushPendingAutosaves()
+
+        try expectEqual(unexpectedProviderCalls, 0, "Invalid provider B must cancel pre-owner valid A with zero provider RPCs.")
+        try expectEqual(store.providerAutosaveDraft?.endpoint, "", "The current invalid provider B should remain available for correction.")
+        try expectEqual(store.providerAutosavePhase, .idle, "Cancelling pre-owner valid A for invalid B should settle idle.")
     }
 
     private func releasingStoreCancelsQueuedAutosaveWaiter() async throws {

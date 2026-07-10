@@ -18,7 +18,9 @@ struct RevisionAutosaveCoordinatorTests {
         try await editsBAndCDuringSaveRunOnlyLatestC()
         try persistedValueDuringActiveSaveMustSubmit()
         try passiveHydrationUsesPendingDraftOrLatestPersistedValue()
+        try configDraftExternalRefreshHydratesWithoutWrite()
         try await cancelledSaveSettlesIdleWithoutFailure()
+        try await mutationLaneCancellationBeforeRegistrationIsDurable()
         try await mutationLaneCancellationIsIdempotent()
         try await mutationLaneCancellationPreservesFIFO()
         try await mutationLaneShutdownReleasesQueuedWaiters()
@@ -361,6 +363,56 @@ struct RevisionAutosaveCoordinatorTests {
         )
     }
 
+    private func configDraftExternalRefreshHydratesWithoutWrite() throws {
+        let hydration = ConfigAutosaveDraftReducer.reduce(
+            content: "config-a",
+            event: .hydrate(
+                storeDraft: nil,
+                persistedContent: "config-external-y"
+            )
+        )
+        try expectEqual(
+            hydration.content,
+            "config-external-y",
+            "A revealed config editor must adopt external Y after successful draft A retires."
+        )
+        try expectEqual(
+            hydration.action,
+            .none,
+            "Programmatic external hydration must not itself request a write."
+        )
+
+        let resultingChange = ConfigAutosaveDraftReducer.reduce(
+            content: hydration.content,
+            event: .userChanged(
+                storeDraft: nil,
+                persistedContent: "config-external-y",
+                revealsSensitiveConfig: true,
+                hasActiveSave: false,
+                validationError: nil
+            )
+        )
+        try expectEqual(
+            resultingChange.action,
+            .none,
+            "The on-change callback caused by programmatic hydration must issue zero writes."
+        )
+
+        let pendingHydration = ConfigAutosaveDraftReducer.reduce(
+            content: "config-a",
+            event: .hydrate(
+                storeDraft: "config-pending-b",
+                persistedContent: "config-external-y"
+            )
+        )
+        try expectEqual(
+            pendingHydration.content,
+            "config-pending-b",
+            "An external refresh must preserve a genuinely pending Store-owned draft."
+        )
+        try expectEqual(pendingHydration.action, .none, "Passive pending-draft hydration must remain write-free.")
+    }
+
     private func cancelledSaveSettlesIdleWithoutFailure() async throws {
         let clock = ControlledAutosaveClock()
         var completions: [RevisionAutosaveCompletion<String>] = []
@@ -380,6 +432,48 @@ struct RevisionAutosaveCoordinatorTests {
         try expectEqual(completions.first?.revision, revision, "Cancellation should retain exact revision identity.")
         try expectEqual(completions.first?.outcome, .cancelled, "Cancellation should be distinct from failure.")
         try expectFalse(completions.first?.succeeded == true, "A cancelled worker must not report success.")
+    }
+
+    private func mutationLaneCancellationBeforeRegistrationIsDurable() async throws {
+        let lane = AutosaveMutationLane()
+        let ownerRecorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
+        let ownerToken = AutosaveMutationLaneToken(family: .config, revision: 1)
+        let cancelledToken = AutosaveMutationLaneToken(family: .provider, revision: 2)
+        var cancelledOperationCalls = 0
+
+        let owner = Task { @MainActor in
+            await lane.perform(token: ownerToken) {
+                await ownerRecorder.save("owner", revision: 1)
+            }
+        }
+        try await waitUntil("pre-registration lane owner starts") {
+            ownerRecorder.calls.map(\.value) == ["owner"]
+        }
+
+        try expectEqual(
+            lane.register(cancelledToken),
+            true,
+            "The coordinator should register a revision token before creating its worker task."
+        )
+        let waiter = Task { @MainActor in
+            await lane.perform(token: cancelledToken) {
+                cancelledOperationCalls += 1
+                return "unexpected"
+            }
+        }
+        let firstCancellation = lane.cancelQueued(cancelledToken)
+        let repeatedCancellation = lane.cancelQueued(cancelledToken)
+        ownerRecorder.resumeNext(success: true)
+        let ownerResult = await owner.value
+        let waiterResult = await waiter.value
+        let cancellationAfterCompletion = lane.cancelQueued(cancelledToken)
+
+        try expectEqual(firstCancellation, true, "Cancellation must persist before the worker physically registers its waiter.")
+        try expectEqual(repeatedCancellation, false, "Repeated pre-registration cancellation must remain idempotent.")
+        try expectEqual(cancellationAfterCompletion, false, "A completed cancellation token must not be resurrected later.")
+        try expectEqual(cancelledOperationCalls, 0, "A token cancelled before waiter registration must execute zero operations.")
+        try expectEqual(waiterResult, .cancelled, "The later waiter registration must consume its durable cancellation.")
+        try expectEqual(ownerResult, .completed(.succeeded), "Pre-registration cancellation must not interrupt the current owner.")
     }
 
     private func mutationLaneCancellationIsIdempotent() async throws {
