@@ -13,6 +13,11 @@ enum ConfigMutationState: Equatable {
     case failed(String)
 }
 
+struct ConfigSaveBinding: Equatable {
+    let content: String
+    let expectedRevision: String
+}
+
 struct RollbackConfirmation: Identifiable, Hashable {
     let snapshotID: String
     let previewToken: String

@@ -405,6 +405,7 @@ enum UIStrings {
     static var agentConfigHideSensitive: String { text("settings.agentConfig.hideSensitive", "Hide") }
     static var configAutosavePending: String { text("settings.agentConfig.autosavePending", "Valid changes will be saved automatically.") }
     static var configAutosaveSaving: String { text("settings.agentConfig.autosaveSaving", "Saving settings...") }
+    static var configConsistencyProtocolRequired: String { text("settings.agentConfig.protocolV2Required", "Config writes require service protocol v2. Reload after updating the service; settings and rollback remain read-only.") }
     static var configRevisionUnavailable: String { text("settings.agentConfig.revisionUnavailable", "This service did not provide a config revision. Reload with protocol v2; settings remain read-only.") }
     static var configConflict: String { text("settings.agentConfig.conflict", "Settings changed outside Agent Copilot. Your draft was kept; compare it with the latest config before saving again.") }
     static var rollbackPreviewAgain: String { text("snapshot.rollback.previewAgain", "The rollback preview is no longer current. Preview again before applying.") }

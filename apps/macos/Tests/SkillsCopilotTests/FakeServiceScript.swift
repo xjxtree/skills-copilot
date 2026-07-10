@@ -98,6 +98,14 @@ final class FakeServiceScript: ServiceProcessRunning {
         input=$(cat)
         scenario=${SKILLS_COPILOT_FAKE_SERVICE_SCENARIO:-normal}
 
+        protocol_version=2
+        if [ "$scenario" = "protocol-v1-bindings" ]; then
+          protocol_version=1
+        fi
+
+        if [ -n "$SKILLS_COPILOT_FAKE_SERVICE_CALLS" ]; then
+          printf '%s\\n' "$input" >> "$SKILLS_COPILOT_FAKE_SERVICE_CALLS"
+        fi
         respond() {
           printf '%s' "$1"
           exit 0
@@ -118,7 +126,7 @@ final class FakeServiceScript: ServiceProcessRunning {
         }
 
         status_response() {
-          respond '{"id":"test","ok":true,"result":{"protocol_version":2,"version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'}}'
+          respond '{"id":"test","ok":true,"result":{"protocol_version":'"$protocol_version"', "version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'}}'
         }
 
         adapter_capabilities='[{"agent":"claude-code","display_name":"Claude Code","status":"verified","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":true,"status":"verified","reason":null},"config_snapshot":{"supported":true,"status":"verified","reason":null},"install":{"supported":true,"status":"verified","reason":null},"writable":{"supported":true,"status":"verified","reason":null},"blockers":[]},{"agent":"codex","display_name":"Codex","status":"verified","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":true,"status":"verified","reason":null},"config_snapshot":{"supported":true,"status":"verified","reason":null},"install":{"supported":false,"status":"planned","reason":"Install is not part of this slice."},"writable":{"supported":true,"status":"verified","reason":null},"blockers":[]},{"agent":"opencode","display_name":"opencode","status":"verified","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":true,"status":"verified","reason":null},"config_snapshot":{"supported":true,"status":"verified","reason":null},"install":{"supported":true,"status":"verified","reason":null},"writable":{"supported":true,"status":"verified","reason":null},"blockers":[]},{"agent":"pi","display_name":"Pi","status":"read-only","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":false,"status":"read-only","reason":"Pi writable support is blocked pending evidence."},"config_snapshot":{"supported":false,"status":"read-only","reason":"Pi is read-only."},"install":{"supported":false,"status":"read-only","reason":"Pi is read-only."},"writable":{"supported":false,"status":"read-only","reason":"Pi is read-only."},"blockers":["Pi writable support is blocked pending evidence."]},{"agent":"hermes","display_name":"Hermes","status":"read-only","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":false,"status":"read-only","reason":"Hermes project skills are not confirmed."},"config_toggle":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"config_snapshot":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"install":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"writable":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"blockers":["Hermes is read-only."]},{"agent":"openclaw","display_name":"OpenClaw","status":"read-only","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"config_snapshot":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"install":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"writable":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"blockers":["OpenClaw is read-only."]}]'
@@ -211,7 +219,7 @@ final class FakeServiceScript: ServiceProcessRunning {
             state_findings='[]'
             state_conflicts='[]'
           fi
-          respond '{"id":"test","ok":true,"result":{"status":{"protocol_version":2,"version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'},"skills":'"$state_skills"',"findings":'"$state_findings"',"conflicts":'"$state_conflicts"',"snapshots":[]}}'
+          respond '{"id":"test","ok":true,"result":{"status":{"protocol_version":'"$protocol_version"', "version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'},"skills":'"$state_skills"',"findings":'"$state_findings"',"conflicts":'"$state_conflicts"',"snapshots":[]}}'
         }
 
         detail_alpha='{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","description":"Alpha skill","state":"loaded","enabled":true,"frontmatter_raw":"name: Alpha","body":"Alpha body","permissions":{"marker":"alpha"},"fingerprint":"fp-alpha"}'
@@ -486,8 +494,10 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":true,"result":[]}'
             ;;
           *\\"config.readClaudeSettings\\"*)
-            if [ "$scenario" = "config-legacy" ]; then
+            if [ "$scenario" = "config-legacy" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{}\\n","exists":true}}'
+            elif [ "$scenario" = "protocol-v1-bindings" ]; then
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"legacy\\"}\\n","exists":true,"revision":"sha256:malicious-v1-revision"}}'
             elif [ "$scenario" = "config-conflict" ]; then
               read_count=$(grep -c '"method":"config.readClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
               if [ "$read_count" -gt 1 ]; then
@@ -504,6 +514,8 @@ final class FakeServiceScript: ServiceProcessRunning {
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"}}'
             elif [ "$scenario" = "config-conflict" ]; then
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config changed since it was read"}}'
+            elif [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"unsafe-write\\"}\\n","exists":true,"revision":"sha256:unsafe-write"}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings save"}}'
             ;;
@@ -524,11 +536,15 @@ final class FakeServiceScript: ServiceProcessRunning {
             elif [ "$scenario" = "rollback-preview-delay" ]; then
               sleep 1
               respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-delay-current","preview_token":"sha256:rollback-delay-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+            elif [ "$scenario" = "protocol-v1-bindings" ]; then
+              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"legacy\\"}\\n","current_read_error":null,"current_revision":"sha256:malicious-v1-current","preview_token":"sha256:malicious-v1-token","changed":true,"redacted":false,"rollback_supported":true}}'
+            elif [ "$scenario" = "protocol-v2-missing-bindings" ]; then
+              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{}\\n","current_read_error":null,"changed":false,"redacted":false,"rollback_supported":true}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing snapshot preview"}}'
             ;;
           *\\"snapshot.rollback\\"*)
-            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ]; then
+            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               respond '{"id":"test","ok":true,"result":3}'
             elif [ "$scenario" = "rollback-stale" ]; then
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_preview_token","message":"preview no longer matches current state"}}'
@@ -536,7 +552,7 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing snapshot rollback"}}'
             ;;
           *\\"snapshot.listAgentConfig\\"*)
-            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "rollback-stale" ] || [ "$scenario" = "rollback-preview-delay" ]; then
+            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "rollback-stale" ] || [ "$scenario" = "rollback-preview-delay" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               case "$input" in
                 *\\"agent\\":\\"claude-code\\"*)
                   respond '{"id":"test","ok":true,"result":'"$snapshots_claude"'}'

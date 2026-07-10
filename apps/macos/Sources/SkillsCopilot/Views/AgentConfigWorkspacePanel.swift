@@ -100,7 +100,8 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private var hasWritableConfigBinding: Bool {
-        store.claudeSettings?.supportsCompareAndSwap == true
+        store.supportsConfigConsistencyProtocol
+            && store.claudeSettings?.supportsCompareAndSwap == true
     }
 
     private var hasConfigConflict: Bool {
@@ -210,6 +211,8 @@ private struct AgentConfigOverviewDetailPanel: View {
 
             if let validationMessage {
                 ConfigInlineBanner(message: validationMessage, systemImage: "exclamationmark.triangle.fill", color: .red)
+            } else if store.claudeSettings != nil && !store.supportsConfigConsistencyProtocol {
+                ConfigInlineBanner(message: UIStrings.configConsistencyProtocolRequired, systemImage: "lock.fill", color: .orange)
             } else if store.claudeSettings != nil && !hasWritableConfigBinding {
                 ConfigInlineBanner(message: UIStrings.configRevisionUnavailable, systemImage: "lock.fill", color: .orange)
             } else {
@@ -399,7 +402,8 @@ private struct AgentConfigSnapshotDetailPanel: View {
     @State private var confirmationToApply: RollbackConfirmation?
 
     private var confirmedPreview: SnapshotRollbackPreviewRecord? {
-        guard let preview,
+        guard store.supportsConfigConsistencyProtocol,
+              let preview,
               preview.snapshot.id == snapshot.id,
               preview.rollbackSupported,
               let confirmation = store.rollbackConfirmation,
@@ -460,7 +464,9 @@ private struct AgentConfigSnapshotDetailPanel: View {
                         ErrorBanner(message: readError)
                     }
 
-                    if !preview.rollbackSupported {
+                    if !store.supportsConfigConsistencyProtocol {
+                        ErrorBanner(message: UIStrings.configConsistencyProtocolRequired)
+                    } else if !preview.rollbackSupported {
                         ErrorBanner(message: UIStrings.rollbackBindingUnavailable)
                     }
 

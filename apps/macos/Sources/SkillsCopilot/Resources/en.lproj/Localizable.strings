@@ -792,6 +792,7 @@
 "settings.agentConfig.autosavePending" = "Valid changes will be saved automatically.";
 "settings.agentConfig.autosaveSaving" = "Saving settings...";
 "settings.agentConfig.revisionUnavailable" = "This service did not provide a config revision. Reload with protocol v2; settings remain read-only.";
+"settings.agentConfig.protocolV2Required" = "Config writes require service protocol v2. Reload after updating the service; settings and rollback remain read-only.";
 "settings.agentConfig.conflict" = "Settings changed outside Agent Copilot. Your draft was kept; compare it with the latest config before saving again.";
 "snapshot.rollback.previewAgain" = "The rollback preview is no longer current. Preview again before applying.";
 "snapshot.rollback.bindingUnavailable" = "This service did not provide a rollback preview token. Rollback remains read-only until you reconnect with protocol v2.";

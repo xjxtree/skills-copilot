@@ -471,6 +471,10 @@ final class SkillStore: ObservableObject {
         didSet { scheduleErrorMessageDismissal() }
     }
 
+    var supportsConfigConsistencyProtocol: Bool {
+        (status?.protocolVersion ?? 0) >= 2
+    }
+
     private let service: ServiceClient
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
@@ -533,14 +537,14 @@ final class SkillStore: ObservableObject {
     private var configAutosaveAgentByRevision: [UInt64: String] = [:]
     private var latestConfigAutosaveRevision: UInt64?
     private var latestProviderAutosaveRevision: UInt64?
-    private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>(
+    private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<ConfigSaveBinding>(
         delayNanoseconds: autosaveDelayNanoseconds,
         workerWillStart: { [weak self] revision in
             self?.autosaveMutationLane.register(
                 AutosaveMutationLaneToken(family: .config, revision: revision)
             )
         },
-        save: { [weak self] content, revision in
+        save: { [weak self] binding, revision in
             guard let lane = self?.autosaveMutationLane else { return .cancelled }
             let result = await lane.perform(
                 token: AutosaveMutationLaneToken(family: .config, revision: revision)
@@ -549,7 +553,7 @@ final class SkillStore: ObservableObject {
                 let submittedAgent = self.configAutosaveAgentByRevision[revision]
                     ?? SkillAgentFilter.claudeCode.rawValue
                 return await self.saveClaudeSettingsInsideMutationLane(
-                    content: content,
+                    binding: binding,
                     submittedAgent: submittedAgent
                 )
             }
@@ -2739,7 +2743,8 @@ final class SkillStore: ObservableObject {
                 errorMessage = message
                 throw ServiceClient.ClientError.invalidOutput(message)
             }
-            if previewGeneration == rollbackPreviewGeneration {
+            if previewGeneration == rollbackPreviewGeneration,
+               supportsConfigConsistencyProtocol {
                 rollbackConfirmation = RollbackConfirmation(preview: preview)
             }
             return preview
@@ -2760,6 +2765,11 @@ final class SkillStore: ObservableObject {
     func rollbackSnapshot(confirmation: RollbackConfirmation) async -> Bool {
         guard !isRefreshBusy else {
             errorMessage = UIStrings.operationUnavailableBusy
+            return false
+        }
+        guard supportsConfigConsistencyProtocol else {
+            errorMessage = UIStrings.configConsistencyProtocolRequired
+            lastMutationMessage = nil
             return false
         }
         guard agentConfigSnapshots.contains(where: { $0.id == confirmation.snapshotID }) else {
@@ -2929,9 +2939,19 @@ final class SkillStore: ObservableObject {
         configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
             $0.key == activeRevision
         }
-        let revision = configAutosaveCoordinator.submit(content, validationError: validationError)
+        let binding = makeClaudeSettingsSaveBinding(content: content)
+            ?? ConfigSaveBinding(content: content, expectedRevision: "")
+        let bindingError = binding.expectedRevision.isEmpty
+            ? (supportsConfigConsistencyProtocol
+                ? UIStrings.configRevisionUnavailable
+                : UIStrings.configConsistencyProtocolRequired)
+            : nil
+        let revision = configAutosaveCoordinator.submit(
+            binding,
+            validationError: validationError ?? bindingError
+        )
         latestConfigAutosaveRevision = revision
-        if validationError == nil {
+        if validationError == nil, bindingError == nil {
             configAutosaveAgentByRevision[revision] = submittedAgent
         }
         return revision
@@ -2994,7 +3014,7 @@ final class SkillStore: ObservableObject {
     }
 
     private func handleConfigAutosaveCompletion(
-        _ completion: RevisionAutosaveCompletion<String>
+        _ completion: RevisionAutosaveCompletion<ConfigSaveBinding>
     ) {
         configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
         guard completion.revision == latestConfigAutosaveRevision,
@@ -3174,34 +3194,69 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    @discardableResult
-    func saveClaudeSettings(content: String) async -> Bool {
-        await saveClaudeSettings(content: content, submittedAgent: agentFilter.rawValue)
+    func makeClaudeSettingsSaveBinding(content: String) -> ConfigSaveBinding? {
+        guard supportsConfigConsistencyProtocol,
+              let expectedRevision = claudeSettings?.revision,
+              !expectedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return ConfigSaveBinding(content: content, expectedRevision: expectedRevision)
     }
 
-    private func saveClaudeSettings(content: String, submittedAgent: String) async -> Bool {
+    @discardableResult
+    func saveClaudeSettings(content: String) async -> Bool {
+        let binding = makeClaudeSettingsSaveBinding(content: content)
+            ?? ConfigSaveBinding(content: content, expectedRevision: "")
+        return await saveClaudeSettings(binding: binding)
+    }
+
+    func saveClaudeSettings(binding: ConfigSaveBinding) async -> Bool {
+        await saveClaudeSettings(binding: binding, submittedAgent: agentFilter.rawValue)
+    }
+
+    private func saveClaudeSettings(
+        binding: ConfigSaveBinding,
+        submittedAgent: String
+    ) async -> Bool {
         await autosaveMutationLane.perform { [self] in
             await saveClaudeSettingsInsideMutationLane(
-                content: content,
+                binding: binding,
                 submittedAgent: submittedAgent
             )
         }
     }
 
     private func saveClaudeSettingsInsideMutationLane(
-        content: String,
+        binding: ConfigSaveBinding,
         submittedAgent: String
     ) async -> Bool {
         guard !isRefreshBusy else {
             settingsErrorMessage = UIStrings.operationUnavailableBusy
             return false
         }
-        guard let loadedDocument = claudeSettings,
-              let expectedRevision = loadedDocument.revision,
-              !expectedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard supportsConfigConsistencyProtocol else {
+            settingsErrorMessage = UIStrings.configConsistencyProtocolRequired
+            settingsMessage = nil
+            configMutationState = .failed(UIStrings.configConsistencyProtocolRequired)
+            return false
+        }
+        guard let currentRevision = claudeSettings?.revision,
+              !currentRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             settingsErrorMessage = UIStrings.configRevisionUnavailable
             settingsMessage = nil
             configMutationState = .failed(UIStrings.configRevisionUnavailable)
+            return false
+        }
+        guard currentRevision == binding.expectedRevision else {
+            let conflict = ConfigConflictState(
+                attemptedRevision: binding.expectedRevision,
+                latestRevision: currentRevision,
+                displayMessage: UIStrings.configConflict
+            )
+            settingsErrorMessage = conflict.displayMessage
+            settingsMessage = nil
+            lastMutationMessage = nil
+            configMutationState = .conflict(conflict)
             return false
         }
         isSavingSettings = true
@@ -3213,8 +3268,8 @@ final class SkillStore: ObservableObject {
 
         do {
             let savedSettings = try await service.saveClaudeSettings(
-                content: content,
-                expectedRevision: expectedRevision
+                content: binding.content,
+                expectedRevision: binding.expectedRevision
             )
             invalidateConfigReadGenerations()
             claudeSettings = savedSettings
@@ -3230,7 +3285,7 @@ final class SkillStore: ObservableObject {
         } catch ServiceClient.ClientError.service(let error) where error.code == "config_conflict" {
             let latestDocument = try? await service.readClaudeSettings()
             let conflict = ConfigConflictState(
-                attemptedRevision: expectedRevision,
+                attemptedRevision: binding.expectedRevision,
                 latestRevision: latestDocument?.revision,
                 displayMessage: UIStrings.configConflict
             )

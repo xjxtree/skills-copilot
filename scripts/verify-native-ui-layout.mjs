@@ -385,7 +385,7 @@ const checks = [
       && /private func handleConfigDraftChange\(\)[\s\S]*?ConfigAutosaveDraftReducer\.reduce\([\s\S]*?event:\s*\.userChanged[\s\S]*?case let \.submit\(content,\s*validationError\)[\s\S]*?store\.submitConfigAutosave/.test(files.agentConfigWorkspace)
       && !/private func handleConfigDraftChange\(\)[\s\S]*?Task\.sleep|private func handleConfigDraftChange\(\)[\s\S]*?store\.saveClaudeSettings/.test(files.agentConfigWorkspace)
       && /@Published private\(set\) var configAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
-      && /private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<String>/.test(files.store)
+      && /private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<ConfigSaveBinding>/.test(files.store)
       && /private struct JSONSyntaxHighlightedText:[\s\S]*?ForEach\(Array\(Self\.lines\(in:\s*content\)\.enumerated\(\)\)[\s\S]*?Text\(Self\.highlighted[\s\S]*?NSRegularExpression[\s\S]*?AttributedString/.test(files.agentConfigWorkspace)
       && /private struct JSONLineNumberedEditor:[\s\S]*?ConfigLineNumberColumn\(lineCount:\s*lineCount\)[\s\S]*?TextEditor\(text:\s*\$text\)/.test(files.agentConfigWorkspace)
       && /static var agentConfigEditConfirmationTitle/.test(files.uiStrings)

@@ -792,6 +792,7 @@
 "settings.agentConfig.autosavePending" = "有效改动将自动保存。";
 "settings.agentConfig.autosaveSaving" = "正在保存设置...";
 "settings.agentConfig.revisionUnavailable" = "服务未提供配置修订值。请使用协议 v2 重新加载；当前设置保持只读。";
+"settings.agentConfig.protocolV2Required" = "配置写入需要服务协议 v2。请更新服务后重新加载；在此之前设置与回滚保持只读。";
 "settings.agentConfig.conflict" = "设置已在 Agent Copilot 外部发生变化。你的草稿已保留；请与最新配置比较后再保存。";
 "snapshot.rollback.previewAgain" = "回滚预览已不再是最新状态。请重新预览后再应用。";
 "snapshot.rollback.bindingUnavailable" = "服务未提供回滚预览令牌。重新连接协议 v2 前，回滚保持只读。";

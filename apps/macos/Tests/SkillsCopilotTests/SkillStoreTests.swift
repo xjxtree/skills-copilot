@@ -146,6 +146,15 @@ struct SkillStoreTests {
         try await runCase("configConflictPreservesDraftAndReloadsRevision") {
             try await configConflictPreservesDraftAndReloadsRevision()
         }
+        try await runCase("pendingConfigDraftNeverRebindsToReloadedRevision") {
+            try await pendingConfigDraftNeverRebindsToReloadedRevision()
+        }
+        try await runCase("protocolV1BindingsRemainReadOnlyBeforeAndAfterStatusLoad") {
+            try await protocolV1BindingsRemainReadOnlyBeforeAndAfterStatusLoad()
+        }
+        try await runCase("protocolV2MissingBindingsRemainReadOnly") {
+            try await protocolV2MissingBindingsRemainReadOnly()
+        }
         try await runCase("previewRollbackShowsDiffWithoutCallingRollback") {
             try await previewRollbackShowsDiffWithoutCallingRollback()
         }
@@ -1175,7 +1184,10 @@ struct SkillStoreTests {
         fake.activate(scenario: "normal")
 
         let store = SkillStore(service: fake.serviceClient())
-        let saved = await store.saveClaudeSettings(content: "{")
+        await store.reload()
+        let saved = await store.saveClaudeSettings(
+            binding: ConfigSaveBinding(content: "{", expectedRevision: "sha256:not-loaded")
+        )
 
         try expectFalse(saved, "Unsupported fake settings save should fail in this scenario.")
         try expectEqual(
@@ -1840,10 +1852,14 @@ struct SkillStoreTests {
         fake.activate(scenario: "config-cas")
 
         let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
         await store.loadClaudeSettings()
         try expectEqual(store.claudeSettings?.revision, Optional("sha256:settings-revision"), "Config load should retain the exact service revision.")
+        guard let binding = store.makeClaudeSettingsSaveBinding(content: "{\"theme\":\"dark\"}\n") else {
+            throw NativeModelTestFailure(description: "Protocol v2 config load should create an immutable save binding.")
+        }
 
-        let saved = await store.saveClaudeSettings(content: "{\"theme\":\"dark\"}\n")
+        let saved = await store.saveClaudeSettings(binding: binding)
 
         try expectEqual(saved, true, "A revision-bound config save should succeed.")
         try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Config save should call the mutation RPC once.")
@@ -1858,10 +1874,14 @@ struct SkillStoreTests {
         fake.activate(scenario: "config-legacy")
 
         let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
         await store.loadClaudeSettings()
         try expectFalse(store.claudeSettings?.supportsCompareAndSwap ?? true, "Legacy config responses should be read-only.")
+        try expectNil(store.makeClaudeSettingsSaveBinding(content: "{\"theme\":\"dark\"}\n"), "Missing revision must not create a save binding.")
 
-        let saved = await store.saveClaudeSettings(content: "{\"theme\":\"dark\"}\n")
+        let saved = await store.saveClaudeSettings(
+            binding: ConfigSaveBinding(content: "{\"theme\":\"dark\"}\n", expectedRevision: "sha256:not-issued")
+        )
 
         try expectEqual(saved, false, "A config document without a revision must not be saved.")
         try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Missing revision must make no write RPC call.")
@@ -1875,10 +1895,15 @@ struct SkillStoreTests {
         fake.activate(scenario: "config-conflict")
 
         let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
         await store.loadClaudeSettings()
         let draft = "{\"theme\":\"draft\"}\n"
+        guard let binding = store.makeClaudeSettingsSaveBinding(content: draft) else {
+            throw NativeModelTestFailure(description: "Protocol v2 conflict fixture should create a save binding.")
+        }
+        let snapshotsBeforeSave = countMethodCalls("app.stateSnapshot", in: fake.calls())
 
-        let saved = await store.saveClaudeSettings(content: draft)
+        let saved = await store.saveClaudeSettings(binding: binding)
 
         try expectEqual(saved, false, "A stale revision must not be reported as saved.")
         try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "A config conflict must not retry the write.")
@@ -1889,7 +1914,7 @@ struct SkillStoreTests {
         try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configConflict), "Config conflict should use localized recovery guidance.")
         try expectNil(store.settingsMessage, "Config conflict must not publish save success.")
         try expectNil(store.lastMutationMessage, "Config conflict must not publish a success mutation message.")
-        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), 0, "Config conflict must not perform a success-style collections refresh.")
+        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), snapshotsBeforeSave, "Config conflict must not perform a success-style collections refresh.")
 
         guard case let .conflict(conflict) = store.configMutationState else {
             throw NativeModelTestFailure(description: "Config conflict should publish conflict state.")
@@ -1899,13 +1924,127 @@ struct SkillStoreTests {
         try expectEqual(conflict.displayMessage, UIStrings.configConflict, "Conflict state should use localized recovery guidance.")
     }
 
+    private func pendingConfigDraftNeverRebindsToReloadedRevision() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-conflict")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        await store.loadClaudeSettings()
+        try expectEqual(store.claudeSettings?.revision, Optional("sha256:settings-revision"), "Initial editor document should use revision A.")
+
+        let draft = "{\"theme\":\"draft-from-a\"}\n"
+        guard let pendingSave = store.makeClaudeSettingsSaveBinding(content: draft) else {
+            throw NativeModelTestFailure(description: "Protocol v2 editor should capture an immutable pending save binding.")
+        }
+        try expectEqual(pendingSave.expectedRevision, "sha256:settings-revision", "Pending autosave should capture revision A before debounce.")
+
+        await store.loadClaudeSettings()
+        try expectEqual(store.claudeSettings?.content, Optional("{\"theme\":\"external\"}\n"), "Reload should publish external document B.")
+        try expectEqual(store.claudeSettings?.revision, Optional("sha256:external-revision"), "Reload should publish revision B.")
+
+        let saved = await store.saveClaudeSettings(binding: pendingSave)
+
+        try expectEqual(saved, false, "The old pending draft must not overwrite reloaded document B.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Revision drift before the debounce fires should be rejected without a write RPC.")
+        try expectFalse(fake.calls().contains(#""expected_revision":"sha256:external-revision""#), "Draft A must never be rebound to revision B.")
+        try expectEqual(pendingSave.content, draft, "Rejected pending save should retain the exact user draft.")
+        try expectEqual(store.claudeSettings?.content, Optional("{\"theme\":\"external\"}\n"), "Rejected pending save must preserve external document B.")
+        guard case let .conflict(conflict) = store.configMutationState else {
+            throw NativeModelTestFailure(description: "Revision drift should enter explicit conflict state.")
+        }
+        try expectEqual(conflict.attemptedRevision, "sha256:settings-revision", "Conflict should identify pending revision A.")
+        try expectEqual(conflict.latestRevision, Optional("sha256:external-revision"), "Conflict should expose current revision B.")
+    }
+
+    private func protocolV1BindingsRemainReadOnlyBeforeAndAfterStatusLoad() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "protocol-v1-bindings")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.loadClaudeSettings()
+        try expectNil(store.status, "Startup config reads may finish before service status is loaded.")
+        try expectEqual(store.claudeSettings?.revision, Optional("sha256:malicious-v1-revision"), "Protocol v1 fixture intentionally returns a revision-shaped field.")
+        try expectFalse(store.supportsConfigConsistencyProtocol, "Unknown startup protocol must default to read-only.")
+
+        let fabricatedBinding = ConfigSaveBinding(
+            content: "{\"theme\":\"unsafe\"}\n",
+            expectedRevision: "sha256:malicious-v1-revision"
+        )
+        try expectEqual(await store.saveClaudeSettings(binding: fabricatedBinding), false, "Status-not-loaded save must remain read-only.")
+        try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configConsistencyProtocolRequired), "Unknown protocol should explain the protocol v2 requirement.")
+
+        await store.reload()
+        try expectEqual(store.status?.protocolVersion, Optional(1), "Fake service should expose a genuine protocol v1 status.")
+        try expectFalse(store.supportsConfigConsistencyProtocol, "Protocol v1 must remain read-only even when revision-shaped fields exist.")
+        try expectNil(store.makeClaudeSettingsSaveBinding(content: fabricatedBinding.content), "Protocol v1 must not create a save binding.")
+        try expectEqual(await store.saveClaudeSettings(binding: fabricatedBinding), false, "Protocol v1 save must remain read-only after status load.")
+        try expectEqual(store.configMutationState, .failed(UIStrings.configConsistencyProtocolRequired), "Protocol v1 save should publish localized read-only state.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Protocol v1 must make no config write RPC.")
+
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        try await waitUntil("Protocol v1 fixture should expose a snapshot for read-only preview.") {
+            !store.agentConfigSnapshots.isEmpty
+        }
+        guard let snapshot = store.agentConfigSnapshots.first else {
+            throw NativeModelTestFailure(description: "Protocol v1 fixture should expose a snapshot for read-only preview.")
+        }
+        store.selectConfigSnapshot(snapshot)
+        let preview = try await store.previewRollback(snapshotID: snapshot.id)
+        try expectEqual(preview.previewToken, Optional("sha256:malicious-v1-token"), "Protocol v1 fixture intentionally returns a token-shaped field.")
+        try expectNil(store.rollbackConfirmation, "Protocol v1 must not create rollback authorization from token-shaped fields.")
+        let fabricatedConfirmation = RollbackConfirmation(
+            snapshotID: snapshot.id,
+            previewToken: "sha256:malicious-v1-token"
+        )
+        try expectEqual(await store.rollbackSnapshot(confirmation: fabricatedConfirmation), false, "Protocol v1 rollback must remain read-only.")
+        try expectEqual(store.errorMessage, Optional(UIStrings.configConsistencyProtocolRequired), "Protocol v1 rollback should explain the protocol v2 requirement.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "Protocol v1 must make no rollback write RPC.")
+    }
+
+    private func protocolV2MissingBindingsRemainReadOnly() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "protocol-v2-missing-bindings")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        try expectEqual(store.status?.protocolVersion, Optional(2), "Missing-binding fixture should still use protocol v2.")
+        await store.loadClaudeSettings()
+        try expectNil(store.claudeSettings?.revision, "Protocol v2 response intentionally omits config revision.")
+        try expectNil(store.makeClaudeSettingsSaveBinding(content: "{}\n"), "Protocol v2 without revision must not create a save binding.")
+        let fabricatedBinding = ConfigSaveBinding(content: "{}\n", expectedRevision: "sha256:not-issued")
+        try expectEqual(await store.saveClaudeSettings(binding: fabricatedBinding), false, "Protocol v2 without revision must remain read-only.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Missing revision must make no config write RPC.")
+
+        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        try await waitUntil("Missing-binding fixture should expose a snapshot.") {
+            !store.agentConfigSnapshots.isEmpty
+        }
+        guard let snapshot = store.agentConfigSnapshots.first else {
+            throw NativeModelTestFailure(description: "Missing-binding fixture should expose a snapshot.")
+        }
+        store.selectConfigSnapshot(snapshot)
+        let preview = try await store.previewRollback(snapshotID: snapshot.id)
+        try expectFalse(preview.rollbackSupported, "Protocol v2 preview missing token/revision must decode as read-only.")
+        try expectNil(store.rollbackConfirmation, "Protocol v2 preview missing token/revision must not create confirmation.")
+        let fabricatedConfirmation = RollbackConfirmation(snapshotID: snapshot.id, previewToken: "sha256:not-issued")
+        try expectEqual(await store.rollbackSnapshot(confirmation: fabricatedConfirmation), false, "Protocol v2 without rollback binding must remain read-only.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "Missing rollback binding must make no rollback write RPC.")
+    }
+
     private func rollbackUsesImmutablePreviewInputs() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "config-cas")
 
         let store = SkillStore(service: fake.serviceClient())
-        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        await store.reload()
+        try await waitUntil("Config CAS fixture should expose rollback snapshots.") {
+            store.agentConfigSnapshots.count == 2
+        }
         guard let snapshot = store.agentConfigSnapshots.first else {
             throw NativeModelTestFailure(description: "Config CAS fixture should expose a rollback snapshot.")
         }
@@ -1932,7 +2071,10 @@ struct SkillStoreTests {
         fake.activate(scenario: "rollback-stale")
 
         let store = SkillStore(service: fake.serviceClient())
-        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        await store.reload()
+        try await waitUntil("Stale rollback fixture should expose a snapshot.") {
+            !store.agentConfigSnapshots.isEmpty
+        }
         guard let snapshot = store.agentConfigSnapshots.first else {
             throw NativeModelTestFailure(description: "Stale rollback fixture should expose a snapshot.")
         }
@@ -1961,7 +2103,10 @@ struct SkillStoreTests {
         fake.activate(scenario: "config-cas")
 
         let store = SkillStore(service: fake.serviceClient())
-        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        await store.reload()
+        try await waitUntil("Config CAS fixture should expose two snapshots.") {
+            store.agentConfigSnapshots.count == 2
+        }
         guard store.agentConfigSnapshots.count == 2 else {
             throw NativeModelTestFailure(description: "Config CAS fixture should expose two snapshots.")
         }
@@ -2008,7 +2153,10 @@ struct SkillStoreTests {
         fake.activate(scenario: "rollback-preview-delay")
 
         let store = SkillStore(service: fake.serviceClient())
-        await store.loadAgentConfigSnapshots(agent: "claude-code")
+        await store.reload()
+        try await waitUntil("Delayed preview fixture should expose two snapshots.") {
+            store.agentConfigSnapshots.count == 2
+        }
         guard store.agentConfigSnapshots.count == 2 else {
             throw NativeModelTestFailure(description: "Delayed preview fixture should expose two snapshots.")
         }
