@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -134,6 +135,65 @@ test("bounds file reads and does not disclose the path or content", () => {
   });
 });
 
+for (const field of [
+  "maxDepth",
+  "maxEntries",
+  "maxFileBytes",
+  "maxTotalBytes",
+]) {
+  for (const invalid of [
+    -1,
+    Number.POSITIVE_INFINITY,
+    Number.NaN,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    "4",
+  ]) {
+    test(`rejects invalid ${field} bound ${String(invalid)}`, () => {
+      withTemporaryDirectory("smoke-tree-invalid-bound-", (root) => {
+        assert.throws(
+          () => snapshotBoundedPathIdentity(root, { [field]: invalid }),
+          new RegExp(`invalid smoke snapshot bound ${field}`),
+        );
+      });
+    });
+  }
+}
+
+test("copies and freezes validated bounds", () => {
+  withTemporaryDirectory("smoke-tree-frozen-bounds-", (root) => {
+    const customBounds = {
+      maxDepth: 4,
+      maxEntries: 8,
+      maxFileBytes: 16,
+      maxTotalBytes: 32,
+    };
+    const snapshot = snapshotBoundedPathIdentity(root, customBounds);
+    customBounds.maxEntries = Number.MAX_SAFE_INTEGER;
+
+    assert.equal(Object.isFrozen(snapshot.bounds), true);
+    assert.equal(snapshot.bounds.maxEntries, 8);
+    assert.throws(() => {
+      snapshot.bounds.maxEntries = Number.MAX_SAFE_INTEGER;
+    }, TypeError);
+  });
+});
+
+test("zero byte bounds can snapshot an empty regular file", () => {
+  withTemporaryDirectory("smoke-tree-zero-byte-bound-", (root) => {
+    writeFileSync(join(root, "empty"), "");
+
+    const snapshot = snapshotBoundedPathIdentity(root, {
+      maxDepth: 1,
+      maxEntries: 2,
+      maxFileBytes: 0,
+      maxTotalBytes: 0,
+    });
+
+    assert.equal(snapshot.totalFileBytes, 0);
+  });
+});
+
 test("does not follow a symlink outside the explicitly scoped config root", () => {
   withTemporaryDirectory("smoke-tree-symlink-scope-", (root) => {
     const configRoot = join(root, "opencode");
@@ -175,3 +235,47 @@ test("removes an allocated fixture root when initialization throws", () => {
 
   assert.equal(existsSync(allocatedRoot), false);
 });
+
+test(
+  "native descriptor walker fails closed across file, directory, and FIFO swaps",
+  { skip: process.platform !== "darwin" },
+  () => {
+    withTemporaryDirectory("smoke-native-race-test-", (buildRoot) => {
+      const binary = join(buildRoot, "smoke-fixture-identity-race-tests");
+      const compile = spawnSync(
+        "swiftc",
+        [
+          resolve(
+            "scripts/lib/smoke-fixture-identity/Snapshot.swift",
+          ),
+          resolve(
+            "scripts/tests/fixtures/smoke-fixture-identity-races/main.swift",
+          ),
+          "-o",
+          binary,
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      assert.equal(
+        compile.status,
+        0,
+        compile.error?.message || compile.stderr || compile.stdout,
+      );
+
+      const run = spawnSync(binary, [], {
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(
+        run.status,
+        0,
+        run.error?.message || run.stderr || run.stdout,
+      );
+      assert.equal(
+        run.stdout,
+        "native fixture identity race tests passed\n",
+      );
+      assert.equal(run.stderr, "");
+    });
+  },
+);
