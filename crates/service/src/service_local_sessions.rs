@@ -780,7 +780,12 @@ fn local_session_preview_row(
         return Ok(None);
     }
     let accepted_file_content = accepted_local_session_content(&file_content);
-    let enriched_content = enrich_local_session_content(path, root, &accepted_file_content);
+    let enriched_content = enrich_local_session_content(
+        path,
+        root,
+        &accepted_file_content,
+        io.limits.max_line_fragment_bytes,
+    );
     let content = if enriched_content == accepted_file_content {
         accepted_file_content
     } else {
@@ -829,7 +834,7 @@ fn local_session_preview_row(
     ) {
         return Ok(None);
     }
-    let skill_invocations = extract_skill_invocation_names(&content);
+    let skill_invocations = extract_local_session_skill_invocation_names(&content);
     let skill_mentions = detect_local_session_skill_mentions(
         &skill_invocations,
         options.skill_matchers,
@@ -962,10 +967,46 @@ fn compact_bounded_local_session_content(
 }
 
 fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> String {
+    let complete_document = text
+        .trim()
+        .strip_prefix('\u{feff}')
+        .unwrap_or_else(|| text.trim())
+        .trim();
+    if !complete_document.is_empty()
+        && parse_local_session_json_with_raw_classification_bounds(complete_document).is_ok()
+    {
+        if should_skip_local_session_sidecar_line(complete_document) {
+            return String::new();
+        }
+        let mut content = String::new();
+        if complete_document.len().saturating_add(1) <= max_line_fragment_bytes {
+            content.push_str(complete_document);
+            content.push('\n');
+        } else {
+            append_compacted_record(&mut content, complete_document, max_line_fragment_bytes);
+        }
+        return content;
+    }
+    if looks_like_multiline_json_document(text) {
+        return String::new();
+    }
+
+    let lines = text.lines().collect::<Vec<_>>();
     let mut content = String::new();
-    for line in text.lines() {
+    for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || should_skip_local_session_sidecar_line(trimmed) {
+            continue;
+        }
+        let string_is_container_fragment = serde_json::from_str::<Value>(trimmed)
+            .ok()
+            .is_some_and(|value| value.is_string())
+            && lines[index + 1..]
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty())
+                .is_some_and(|next| next.starts_with(']') || next.starts_with('}'));
+        if string_is_container_fragment {
             continue;
         }
         if is_complete_json_record(trimmed)
@@ -980,6 +1021,9 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
             continue;
         }
         if looks_like_incomplete_json_record(trimmed) {
+            continue;
+        }
+        if looks_like_json_member_or_array_fragment(trimmed) {
             continue;
         }
         content.push_str(&truncate_utf8_bytes(
@@ -1621,6 +1665,36 @@ fn looks_like_json_fragment(text: &str) -> bool {
     text.starts_with('{') || text.starts_with('[') || text.ends_with('}') || text.ends_with(']')
 }
 
+fn looks_like_multiline_json_document(text: &str) -> bool {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    if lines.next().is_none() {
+        return false;
+    }
+    matches!(first, "{" | "[")
+        || ((first.starts_with('{') || first.starts_with('['))
+            && !is_complete_json_record(first)
+            && looks_like_incomplete_json_record(first))
+}
+
+fn looks_like_json_member_or_array_fragment(text: &str) -> bool {
+    let text = text.trim();
+    if matches!(text, "{" | "}" | "[" | "]" | "}," | "],") {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'"') {
+        return false;
+    }
+    let Some(end) = json_string_end(bytes, 0) else {
+        return true;
+    };
+    let remainder = text[end + 1..].trim_start();
+    remainder.starts_with(':') || remainder.starts_with(',')
+}
+
 fn looks_like_incomplete_json_record(text: &str) -> bool {
     let text = text.trim_start_matches('\u{feff}').trim_start();
     let Some((opening, remainder)) = text
@@ -1642,6 +1716,40 @@ fn looks_like_incomplete_json_record(text: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn plain_local_session_record_is_denied(text: &str) -> bool {
+    let normalized = text.trim().to_ascii_lowercase();
+    if let Some(delimiter) = normalized
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, ':' | '：').then_some(index))
+    {
+        let label = normalized[..delimiter].trim();
+        if matches!(
+            label,
+            "system"
+                | "developer"
+                | "summary"
+                | "compaction"
+                | "context"
+                | "metadata"
+                | "系统"
+                | "开发者"
+                | "摘要"
+        ) {
+            return true;
+        }
+    }
+    [
+        "[system]",
+        "[developer]",
+        "[summary]",
+        "<system>",
+        "<developer>",
+        "<summary>",
+    ]
+    .iter()
+    .any(|prefix| normalized.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -1819,6 +1927,28 @@ fn strip_internal_local_session_records(content: &str) -> String {
 }
 
 fn accepted_local_session_content(content: &str) -> String {
+    let complete_document = content
+        .trim()
+        .strip_prefix('\u{feff}')
+        .unwrap_or_else(|| content.trim())
+        .trim();
+    if let Ok((mut value, classification_changed)) =
+        parse_local_session_json_with_raw_classification_bounds(complete_document)
+    {
+        let (retained, tree_changed) = retain_accepted_local_session_value(&mut value);
+        if !retained {
+            return String::new();
+        }
+        let mut accepted = String::new();
+        if classification_changed || tree_changed {
+            accepted.push_str(&value.to_string());
+        } else {
+            accepted.push_str(complete_document);
+        }
+        accepted.push('\n');
+        return accepted;
+    }
+
     let mut accepted = String::with_capacity(content.len());
     for line in content.lines() {
         let trimmed = line.trim();
@@ -1838,8 +1968,13 @@ fn accepted_local_session_content(content: &str) -> String {
                 }
             }
             Err(LocalSessionJsonParseError::Invalid) => {
-                accepted.push_str(line);
-                accepted.push('\n');
+                if !plain_local_session_record_is_denied(trimmed)
+                    && !looks_like_incomplete_json_record(trimmed)
+                    && !looks_like_json_member_or_array_fragment(trimmed)
+                {
+                    accepted.push_str(line);
+                    accepted.push('\n');
+                }
             }
             Err(LocalSessionJsonParseError::UnsafeClassification) => {}
         }
@@ -1848,11 +1983,19 @@ fn accepted_local_session_content(content: &str) -> String {
 }
 
 fn retain_accepted_local_session_value(value: &mut Value) -> (bool, bool) {
+    retain_accepted_local_session_value_at_boundary(value, true)
+}
+
+fn retain_accepted_local_session_value_at_boundary(
+    value: &mut Value,
+    plain_string_is_record: bool,
+) -> (bool, bool) {
     match value {
         Value::Array(items) => {
             let mut changed = false;
             items.retain_mut(|nested| {
-                let (retained, nested_changed) = retain_accepted_local_session_value(nested);
+                let (retained, nested_changed) =
+                    retain_accepted_local_session_value_at_boundary(nested, plain_string_is_record);
                 changed |= nested_changed || !retained;
                 retained
             });
@@ -1864,11 +2007,17 @@ fn retain_accepted_local_session_value(value: &mut Value) -> (bool, bool) {
             }
             let mut changed = false;
             map.retain(|_, nested| {
-                let (retained, nested_changed) = retain_accepted_local_session_value(nested);
+                let (retained, nested_changed) =
+                    retain_accepted_local_session_value_at_boundary(nested, false);
                 changed |= nested_changed || !retained;
                 retained
             });
             (true, changed)
+        }
+        Value::String(text)
+            if plain_string_is_record && plain_local_session_record_is_denied(text) =>
+        {
+            (false, true)
         }
         _ => (true, false),
     }
@@ -1883,7 +2032,12 @@ fn local_session_row_id(path: &Path) -> String {
     format!("local-session-{path_hash}")
 }
 
-fn enrich_local_session_content(path: &Path, root: &Path, file_content: &str) -> String {
+fn enrich_local_session_content(
+    path: &Path,
+    root: &Path,
+    file_content: &str,
+    max_line_fragment_bytes: usize,
+) -> String {
     let Some(agent) = infer_local_session_agent(path) else {
         return file_content.to_string();
     };
@@ -1923,10 +2077,23 @@ fn enrich_local_session_content(path: &Path, root: &Path, file_content: &str) ->
                 continue;
             };
             if let Ok(message) = fs::read_to_string(&message_path) {
+                let message = accepted_local_session_content(&compact_local_session_records(
+                    &message,
+                    max_line_fragment_bytes,
+                ));
+                if message.is_empty() {
+                    continue;
+                }
                 chunks.push(message.clone());
-                if let Ok(message_value) = serde_json::from_str::<Value>(&message) {
+                if let Ok(message_value) = serde_json::from_str::<Value>(message.trim()) {
                     if let Some(message_id) = message_value.get("id").and_then(Value::as_str) {
-                        append_opencode_parts(&storage_root, root, message_id, &mut chunks);
+                        append_opencode_parts(
+                            &storage_root,
+                            root,
+                            message_id,
+                            max_line_fragment_bytes,
+                            &mut chunks,
+                        );
                     }
                 }
             }
@@ -1939,6 +2106,7 @@ fn append_opencode_parts(
     storage_root: &Path,
     root: &Path,
     message_id: &str,
+    max_line_fragment_bytes: usize,
     chunks: &mut Vec<String>,
 ) {
     let part_root = storage_root.join("part").join(message_id);
@@ -1964,7 +2132,13 @@ fn append_opencode_parts(
             continue;
         };
         if let Ok(part) = fs::read_to_string(part_path) {
-            chunks.push(part);
+            let part = accepted_local_session_content(&compact_local_session_records(
+                &part,
+                max_line_fragment_bytes,
+            ));
+            if !part.is_empty() {
+                chunks.push(part);
+            }
         }
     }
 }
@@ -2440,6 +2614,30 @@ fn extract_skill_invocation_names(text: &str) -> Vec<String> {
             }
         }
     }
+    names.sort();
+    names
+}
+
+fn extract_local_session_skill_invocation_names(content: &str) -> Vec<String> {
+    let mut drafts = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(trimmed) {
+            Ok(value) => {
+                let timestamp = json_session_timestamp_millis(&value);
+                collect_json_session_content_drafts(&value, timestamp, &mut drafts);
+            }
+            Err(_) => collect_text_session_content_drafts(trimmed, None, &mut drafts),
+        }
+    }
+
+    let mut names = drafts
+        .iter()
+        .flat_map(|draft| extract_skill_invocation_names(&draft.text))
+        .collect::<Vec<_>>();
     names.sort();
     names
 }
