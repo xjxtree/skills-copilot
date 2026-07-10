@@ -582,8 +582,16 @@ fn local_session_preview_keeps_tail_timestamp_after_read_cap() {
 #[test]
 fn local_session_preview_bounds_single_line_json() {
     let filler = "forbidden-session-blob-".repeat(30_000);
+    // Repeating the stable record ID in both retained windows makes the
+    // cross-gap association explicit without reading or allocating the blob.
     let session = format!(
-        "{{\"type\":\"mode\"}}\n{{\"type\":\"user\",\"role\":\"user\",\"data\":{},\"text\":\"single-line-tail-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n",
+        concat!(
+            "{{\"type\":\"mode\"}}\n",
+            "{{\"type\":\"user\",\"role\":\"user\",",
+            "\"id\":\"single-line-user\",\"data\":{},",
+            "\"id\":\"single-line-user\",\"text\":\"single-line-tail-visible\",",
+            "\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n"
+        ),
         serde_json::to_string(&filler).expect("serialize filler")
     );
     let result = preview_codex_session_fixture("single-line-bounded-json", &session);
@@ -607,6 +615,98 @@ fn local_session_preview_bounds_single_line_json() {
     );
     assert!(!serialized.contains("forbidden-session-blob-"));
     assert!(!serialized.contains("\"data\""));
+}
+
+#[test]
+fn local_session_preview_does_not_merge_distinct_oversized_records() {
+    let head_filler = "head-user-data-".repeat(48_000);
+    let tail_filler = "tail-snapshot-data-".repeat(48_000);
+    let session = format!(
+        concat!(
+            "{{\"type\":\"user\",\"role\":\"user\",\"id\":\"head-user\",",
+            "\"text\":\"head-user-visible\",\"data\":{}}}\n",
+            "{{\"type\":\"file-history-snapshot\",\"id\":\"tail-snapshot\",",
+            "\"data\":{},\"role\":\"assistant\",",
+            "\"text\":\"skipped-tail-must-not-surface\"}}\n"
+        ),
+        serde_json::to_string(&head_filler).expect("serialize head filler"),
+        serde_json::to_string(&tail_filler).expect("serialize tail filler"),
+    );
+
+    let result = preview_codex_session_fixture("distinct-oversized-records", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(serialized.contains("head-user-visible"), "{serialized}");
+    assert!(!serialized.contains("skipped-tail-must-not-surface"));
+    assert!(result
+        .pointer("/session_rows/0/content_items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(|item| {
+            item.get("kind").and_then(Value::as_str) == Some("user_message")
+                && item.get("text").and_then(Value::as_str) == Some("head-user-visible")
+        })));
+}
+
+#[test]
+fn local_session_preview_does_not_let_oversized_skipped_head_suppress_tail_user() {
+    let skipped_filler = "skipped-head-data-".repeat(48_000);
+    let user_filler = "tail-user-data-".repeat(48_000);
+    let session = format!(
+        concat!(
+            "{{\"type\":\"file-history-snapshot\",\"id\":\"head-snapshot\",",
+            "\"text\":\"skipped-head-must-not-surface\",\"data\":{}}}\n",
+            "{{\"data\":{},\"type\":\"user\",\"role\":\"user\",\"id\":\"tail-user\",",
+            "\"text\":\"tail-user-visible\",\"timestamp\":\"2026-07-10T08:09:10Z\"}}\n"
+        ),
+        serde_json::to_string(&skipped_filler).expect("serialize skipped filler"),
+        serde_json::to_string(&user_filler).expect("serialize user filler"),
+    );
+
+    let result = preview_codex_session_fixture("skipped-oversized-then-tail-user", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(serialized.contains("tail-user-visible"), "{serialized}");
+    assert!(!serialized.contains("skipped-head-must-not-surface"));
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/title")
+            .and_then(Value::as_str),
+        Some("tail-user-visible")
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message")
+    );
+}
+
+#[test]
+fn local_session_preview_preserves_complete_small_data_wrapped_user_event() {
+    let session = json!({
+        "data": {
+            "type": "user",
+            "text": "hello"
+        }
+    })
+    .to_string();
+
+    let result = preview_codex_session_fixture("small-data-wrapped-user", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize bounded preview");
+
+    assert!(serialized.contains("hello"), "{serialized}");
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message")
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/text")
+            .and_then(Value::as_str),
+        Some("hello")
+    );
 }
 
 #[test]
