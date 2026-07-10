@@ -1056,6 +1056,102 @@ fn local_session_preview_preserves_complete_plaintext_with_json_punctuation() {
 }
 
 #[test]
+fn local_session_preview_drops_bom_prefixed_incomplete_json_head() {
+    let oversized_data = "ignored-incomplete-data-".repeat(30_000);
+
+    for (case, bom) in [("control", ""), ("bom", "\u{feff}")] {
+        let session = format!(
+            "{bom}{{\"type\":\"user\",\"role\":\"user\",\"text\":\"BOM_INCOMPLETE_HEAD_LEAK\",\"data\":\"{oversized_data}\""
+        );
+        let result = preview_codex_session_fixture(case, &session);
+        let serialized = serde_json::to_string(&result).expect("serialize incomplete preview");
+
+        assert_eq!(
+            result.get("count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert!(
+            result
+                .get("session_rows")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "{case}: {result}"
+        );
+        assert!(
+            !serialized.contains("BOM_INCOMPLETE_HEAD_LEAK"),
+            "{case}: {serialized}"
+        );
+    }
+}
+
+#[test]
+fn local_session_preview_parses_complete_json_after_initial_bom() {
+    let session = format!(
+        "\u{feff}{}\n",
+        json!({
+            "role": "user",
+            "content": "BOM_COMPLETE_JSON_VISIBLE"
+        })
+    );
+    let result = preview_codex_session_fixture("bom-complete-json", &session);
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items/0/kind")
+            .and_then(Value::as_str),
+        Some("user_message"),
+        "{result}"
+    );
+    assert!(
+        result
+            .pointer("/session_rows/0/content_items/0/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("BOM_COMPLETE_JSON_VISIBLE")),
+        "{result}"
+    );
+}
+
+#[test]
+fn local_session_preview_only_treats_file_prefix_as_bom() {
+    let session = format!(
+        "{}\n\u{feff}{}\n",
+        json!({
+            "role": "user",
+            "content": "FIRST_RECORD_USER_MESSAGE"
+        }),
+        json!({
+            "role": "user",
+            "content": "LATER_RECORD_FEFF_IS_CONTENT"
+        })
+    );
+    let result = preview_codex_session_fixture("later-record-feff", &session);
+
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/user_message_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{result}"
+    );
+    assert_eq!(
+        result
+            .pointer("/session_rows/0/content_items")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{result}"
+    );
+}
+
+#[test]
 fn local_session_preview_does_not_count_structure_only_tools() {
     let cases = [
         (
@@ -1075,6 +1171,67 @@ fn local_session_preview_does_not_count_structure_only_tools() {
         (
             "nested-tool",
             json!({ "metadata": { "type": "tool_call" } }),
+        ),
+        (
+            "tool-call-content-structure",
+            json!({
+                "type": "tool_call",
+                "role": "assistant",
+                "content": {
+                    "type": "tool_call",
+                    "id": "nested_content_structure",
+                    "name": "NESTED_CONTENT_STRUCTURE_ONLY"
+                }
+            }),
+        ),
+        (
+            "tool-result-content-structure",
+            json!({
+                "type": "tool_result",
+                "role": "assistant",
+                "content": {
+                    "type": "tool_result",
+                    "tool_call_id": "nested_result_structure",
+                    "name": "NESTED_RESULT_STRUCTURE_ONLY"
+                }
+            }),
+        ),
+        (
+            "tool-role-content-structure",
+            json!({
+                "role": "tool",
+                "content": {
+                    "type": "tool_result",
+                    "id": "nested_role_structure",
+                    "name": "NESTED_ROLE_STRUCTURE_ONLY"
+                }
+            }),
+        ),
+        (
+            "nested-wrapped-tool-structure",
+            json!({
+                "metadata": {
+                    "event": {
+                        "type": "tool_call",
+                        "content": {
+                            "type": "tool_call",
+                            "id": "nested_wrapped_structure",
+                            "name": "NESTED_WRAPPED_STRUCTURE_ONLY"
+                        }
+                    }
+                }
+            }),
+        ),
+        (
+            "tool-error-structure",
+            json!({
+                "type": "tool_result",
+                "error": {
+                    "type": "tool_result",
+                    "id": "nested_error_structure",
+                    "name": "NESTED_ERROR_STRUCTURE_ONLY"
+                }
+            }),
         ),
     ];
 
@@ -1128,6 +1285,55 @@ fn local_session_preview_counts_real_tool_payload_once() {
                 "result": { "status": "REAL_TOOL_RESULT" }
             }),
             "REAL_TOOL_RESULT",
+        ),
+        (
+            "real-tool-call-content",
+            json!({
+                "type": "tool_call",
+                "role": "assistant",
+                "content": { "status": "REAL_TOOL_CALL_CONTENT" }
+            }),
+            "REAL_TOOL_CALL_CONTENT",
+        ),
+        (
+            "real-tool-result-content",
+            json!({
+                "type": "tool_result",
+                "role": "assistant",
+                "tool_call_id": "real_content_object",
+                "content": { "status": "REAL_CONTENT_OBJECT_PAYLOAD" }
+            }),
+            "REAL_CONTENT_OBJECT_PAYLOAD",
+        ),
+        (
+            "real-tool-error-object",
+            json!({
+                "type": "tool_result",
+                "role": "assistant",
+                "tool_call_id": "real_error_object",
+                "error": { "code": "REAL_ERROR_OBJECT_PAYLOAD" }
+            }),
+            "REAL_ERROR_OBJECT_PAYLOAD",
+        ),
+        (
+            "real-tool-role-content",
+            json!({
+                "role": "tool",
+                "content": { "status": "REAL_TOOL_ROLE_CONTENT" }
+            }),
+            "REAL_TOOL_ROLE_CONTENT",
+        ),
+        (
+            "real-nested-tool-error",
+            json!({
+                "metadata": {
+                    "event": {
+                        "type": "tool_result",
+                        "error": { "code": "REAL_NESTED_TOOL_ERROR" }
+                    }
+                }
+            }),
+            "REAL_NESTED_TOOL_ERROR",
         ),
     ] {
         let result = preview_codex_session_fixture(case, &value.to_string());

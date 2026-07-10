@@ -903,21 +903,25 @@ fn compact_bounded_local_session_content(
     if bounded.head.is_empty() && bounded.tail.is_empty() {
         return String::new();
     }
+    let head = bounded
+        .head
+        .strip_prefix('\u{feff}')
+        .unwrap_or(bounded.head.as_str());
     if !bounded.truncated && bounded.retained_head_end == bounded.retained_tail_start {
-        let mut contiguous = String::with_capacity(bounded.head.len() + bounded.tail.len());
-        contiguous.push_str(&bounded.head);
+        let mut contiguous = String::with_capacity(head.len() + bounded.tail.len());
+        contiguous.push_str(head);
         contiguous.push_str(&bounded.tail);
         return compact_local_session_records(&contiguous, max_line_fragment_bytes);
     }
 
-    let complete_head_end = bounded.head.rfind('\n').map_or(0, |newline| newline + 1);
-    let head_fragment = bounded.head[complete_head_end..].trim();
+    let complete_head_end = head.rfind('\n').map_or(0, |newline| newline + 1);
+    let head_fragment = head[complete_head_end..].trim();
     let (tail_leading_fragment, tail_remainder) = split_tail_leading_fragment(&bounded.tail);
     let tail_leading_fragment = tail_leading_fragment.trim_end_matches('\r').trim();
     let head_fragment_is_complete = is_complete_json_record(head_fragment);
 
     let mut retained_head =
-        compact_local_session_records(&bounded.head[..complete_head_end], max_line_fragment_bytes);
+        compact_local_session_records(&head[..complete_head_end], max_line_fragment_bytes);
     let mut recovered = String::new();
     let consumed_tail_leading =
         !bounded.tail_starts_at_line_boundary && !tail_leading_fragment.is_empty();
@@ -2466,43 +2470,21 @@ fn collect_json_session_content_drafts(
             }
 
             for (key, nested) in map {
-                if matches!(
-                    key.as_str(),
-                    "author"
-                        | "type"
-                        | "kind"
-                        | "role"
-                        | "sender"
-                        | "id"
-                        | "name"
-                        | "title"
-                        | "tool_name"
-                        | "function_name"
-                        | "tool_use_id"
-                        | "toolUseId"
-                        | "tool_call_id"
-                        | "toolCallId"
-                        | "session_id"
-                        | "sessionId"
-                        | "conversation_id"
-                        | "conversationId"
-                        | "cwd"
-                        | "timestamp"
-                        | "created_at"
-                        | "createdAt"
-                        | "updated_at"
-                        | "updatedAt"
-                        | "content"
-                        | "text"
-                        | "message"
-                        | "delta"
-                        | "tool_calls"
-                        | "toolCalls"
-                        | "tool_use"
-                        | "toolUse"
-                        | "function_call"
-                        | "parts"
-                ) {
+                if is_json_session_structure_key(key)
+                    || matches!(
+                        key.as_str(),
+                        "content"
+                            | "text"
+                            | "message"
+                            | "delta"
+                            | "tool_calls"
+                            | "toolCalls"
+                            | "tool_use"
+                            | "toolUse"
+                            | "function_call"
+                            | "parts"
+                    )
+                {
                     continue;
                 }
                 if direct_tool
@@ -3153,15 +3135,19 @@ fn json_tool_payload_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => (!text.trim().is_empty()).then(|| text.clone()),
         Value::Object(map) => {
-            for key in ["content", "text", "message", "error"] {
-                if let Some(text) = map.get(key).and_then(json_value_text) {
-                    if !text.trim().is_empty() {
-                        return Some(text);
-                    }
-                }
-            }
-            for key in ["result", "output", "input", "arguments", "payload", "data"] {
-                if let Some(text) = map.get(key).and_then(json_explicit_tool_payload_text) {
+            for key in [
+                "content",
+                "text",
+                "message",
+                "result",
+                "error",
+                "output",
+                "input",
+                "arguments",
+                "payload",
+                "data",
+            ] {
+                if let Some(text) = map.get(key).and_then(json_tool_payload_value_text) {
                     return Some(text);
                 }
             }
@@ -3171,14 +3157,59 @@ fn json_tool_payload_text(value: &Value) -> Option<String> {
     }
 }
 
-fn json_explicit_tool_payload_text(value: &Value) -> Option<String> {
+fn json_tool_payload_value_text(value: &Value) -> Option<String> {
+    if !json_tool_payload_value_has_content(value) {
+        return None;
+    }
     match value {
         Value::Null => None,
-        Value::String(text) => (!text.trim().is_empty()).then(|| text.clone()),
-        Value::Array(items) => (!items.is_empty()).then(|| compact_json_session_text(value)),
-        Value::Object(map) => (!map.is_empty()).then(|| compact_json_session_text(value)),
-        Value::Bool(_) | Value::Number(_) => Some(compact_json_session_text(value)),
+        Value::String(text) => Some(text.clone()),
+        Value::Array(_) | Value::Object(_) | Value::Bool(_) | Value::Number(_) => {
+            Some(compact_json_session_text(value))
+        }
     }
+}
+
+fn json_tool_payload_value_has_content(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(json_tool_payload_value_has_content),
+        Value::Object(map) => map.iter().any(|(key, nested)| {
+            !is_json_session_structure_key(key) && json_tool_payload_value_has_content(nested)
+        }),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
+fn is_json_session_structure_key(key: &str) -> bool {
+    matches!(
+        key,
+        "type"
+            | "kind"
+            | "role"
+            | "sender"
+            | "author"
+            | "id"
+            | "name"
+            | "title"
+            | "tool_name"
+            | "function_name"
+            | "tool_use_id"
+            | "toolUseId"
+            | "tool_call_id"
+            | "toolCallId"
+            | "session_id"
+            | "sessionId"
+            | "conversation_id"
+            | "conversationId"
+            | "cwd"
+            | "timestamp"
+            | "created_at"
+            | "createdAt"
+            | "updated_at"
+            | "updatedAt"
+    )
 }
 
 fn json_value_text(value: &Value) -> Option<String> {
