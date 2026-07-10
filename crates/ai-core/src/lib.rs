@@ -354,6 +354,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn yaml_contract_frontmatter_required_fields_handles_nested_values_and_malformed_input() {
+        let valid = skill(
+            "yaml-valid",
+            "yaml-valid",
+            "yaml-valid",
+            "name: yaml-valid\ndescription: Valid\nenabled: true\nallowed-tools:\n  - Read\nmetadata:\n  openclaw:\n    skillKey: routed-key\n",
+            "body",
+        );
+        let valid_report = evaluate_mvp_rules(&[valid], &RuleContext::default());
+        assert!(valid_report
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id != "frontmatter.required-fields"));
+
+        let malformed = skill(
+            "yaml-malformed",
+            "yaml-malformed",
+            "yaml-malformed",
+            "name: [unterminated\n",
+            "body",
+        );
+        let malformed_report = evaluate_mvp_rules(&[malformed], &RuleContext::default());
+        assert!(malformed_report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "frontmatter.required-fields"));
+    }
+
+    #[test]
     fn required_fields_reports_missing_description() {
         let inst = skill("a", "same", "same", "---\nname: same\n---\n", "body");
         let report = evaluate_mvp_rules(&[inst], &RuleContext::default());

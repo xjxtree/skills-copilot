@@ -14,6 +14,27 @@ use super::*;
 mod scanner_regressions;
 
 #[test]
+fn yaml_contract_preserves_permissions_scalars_sequences_bools_and_nested_mapping() {
+    let raw = "name: sample-skill\ndescription: Sample\nallowed-tools:\n  - Read\n  - Search\npermissions:\n  network: none\n  exec: false\n  requires_human: true\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
+    let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+    let permissions = permissions_from_frontmatter(&value);
+
+    assert_eq!(permissions["tools"], serde_json::json!(["Read", "Search"]));
+    assert_eq!(permissions["network"], "none");
+    assert_eq!(permissions["exec"], false);
+    assert_eq!(permissions["requires_human"], true);
+    assert_eq!(
+        value
+            .get("metadata")
+            .and_then(|item| item.get("openclaw"))
+            .and_then(|item| item.get("skillKey"))
+            .and_then(serde_yaml::Value::as_str),
+        Some("routed-key")
+    );
+    assert!(serde_yaml::from_str::<serde_yaml::Value>("name: [unterminated\n").is_err());
+}
+
+#[test]
 fn script_execution_preview_is_disabled_and_redacts_env_values() {
     let root = temp_test_dir("script-preview");
     let ctx = AdapterContext {

@@ -610,6 +610,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn yaml_contract_preserves_scalar_sequence_bool_and_nested_mapping() {
+        let raw = "name: sample-skill\ndescription: Sample\nenabled: true\nallowed-tools:\n  - Read\n  - Search\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
+        let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+
+        assert_eq!(
+            value.get("name").and_then(serde_yaml::Value::as_str),
+            Some("sample-skill")
+        );
+        assert_eq!(
+            value.get("enabled").and_then(serde_yaml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            value
+                .get("allowed-tools")
+                .and_then(serde_yaml::Value::as_sequence)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            value
+                .get("metadata")
+                .and_then(|item| item.get("openclaw"))
+                .and_then(|item| item.get("skillKey"))
+                .and_then(serde_yaml::Value::as_str),
+            Some("routed-key")
+        );
+
+        let parsed = parse_skill_content(&format!("---\n{raw}---\nBody.\n"), "sample-skill")
+            .expect("adapter frontmatter parses");
+        assert_eq!(parsed.name, "sample-skill");
+        assert_eq!(parsed.description, "Sample");
+    }
+
+    #[test]
+    fn yaml_contract_malformed_frontmatter_returns_error() {
+        let result = parse_skill_content(
+            "---\nname: [unterminated\ndescription: Sample\n---\nBody.\n",
+            "sample-skill",
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn exposes_documented_native_and_compatibility_roots() {
         let adapter = OpencodeAdapter;
         let ctx = AdapterContext {

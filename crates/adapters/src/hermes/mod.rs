@@ -329,6 +329,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn yaml_contract_preserves_scalar_sequence_bool_and_nested_mapping() {
+        let raw = "name: sample-skill\ndescription: Sample\nenabled: true\nallowed-tools:\n  - Read\n  - Search\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
+        let value: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml parses");
+
+        assert_eq!(
+            value.get("name").and_then(serde_yaml::Value::as_str),
+            Some("sample-skill")
+        );
+        assert_eq!(
+            value.get("enabled").and_then(serde_yaml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            value
+                .get("allowed-tools")
+                .and_then(serde_yaml::Value::as_sequence)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            value
+                .get("metadata")
+                .and_then(|item| item.get("openclaw"))
+                .and_then(|item| item.get("skillKey"))
+                .and_then(serde_yaml::Value::as_str),
+            Some("routed-key")
+        );
+
+        let parsed = parse_skill_content(&format!("---\n{raw}---\nBody.\n"))
+            .expect("adapter frontmatter parses");
+        assert_eq!(parsed.name, "sample-skill");
+        assert_eq!(parsed.description, "Sample");
+    }
+
+    #[test]
+    fn yaml_contract_malformed_frontmatter_returns_error() {
+        let result =
+            parse_skill_content("---\nname: [unterminated\ndescription: Sample\n---\nBody.\n");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn exposes_active_hermes_home_without_inferred_project_or_extra_roots() {
         let adapter = HermesAdapter;
         let ctx = AdapterContext {
@@ -455,11 +498,11 @@ mod tests {
     }
 
     #[test]
-    fn patch_enabled_updates_global_disabled_list_without_touching_external_dirs() {
+    fn yaml_contract_patch_enabled_preserves_unrelated_mappings_and_scalars() {
         let mut doc = AgentConfigDocument {
             path: PathBuf::from("/tmp/home/.hermes/config.yaml"),
             format: skills_copilot_core::ConfigFormat::Yaml,
-            text: "skills:\n  external_dirs:\n    - ~/team-skills\n  disabled:\n    - old-skill\n"
+            text: "telemetry: false\nui:\n  theme: dark\n  compact: true\nskills:\n  external_dirs:\n    - ~/team-skills\n  disabled:\n    - old-skill\n"
                 .to_string(),
         };
         let skill = SkillInstance {
@@ -493,6 +536,26 @@ mod tests {
         assert!(disabled.contains(&"old-skill".to_string()));
         assert!(disabled.contains(&"new-skill".to_string()));
         assert!(doc.text.contains("external_dirs"));
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&doc.text).expect("patched yaml parses");
+        assert_eq!(
+            value.get("telemetry").and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            value
+                .get("ui")
+                .and_then(|ui| ui.get("theme"))
+                .and_then(serde_yaml::Value::as_str),
+            Some("dark")
+        );
+        assert_eq!(
+            value
+                .get("ui")
+                .and_then(|ui| ui.get("compact"))
+                .and_then(serde_yaml::Value::as_bool),
+            Some(true)
+        );
 
         HermesAdapter
             .patch_enabled(&mut doc, &skill, true)
@@ -500,6 +563,19 @@ mod tests {
         let disabled = hermes_disabled_skill_names(&doc.text);
         assert!(disabled.contains(&"old-skill".to_string()));
         assert!(!disabled.contains(&"new-skill".to_string()));
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&doc.text).expect("re-enabled yaml parses");
+        assert_eq!(
+            value.get("telemetry").and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            value
+                .get("ui")
+                .and_then(|ui| ui.get("theme"))
+                .and_then(serde_yaml::Value::as_str),
+            Some("dark")
+        );
     }
 
     fn fixture_path(relative: &str) -> PathBuf {

@@ -1335,6 +1335,44 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn yaml_contract_scanner_preserves_disabled_sequence_and_nested_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-scanner-yaml-contract-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        let config_path = root.join("config.yaml");
+        std::fs::create_dir_all(&root).expect("create yaml contract root");
+        std::fs::write(
+            &config_path,
+            "skills:\n  disabled:\n    - alpha\n    - beta\n  metadata:\n    source: local\nenabled: true\n",
+        )
+        .expect("write yaml contract config");
+
+        let disabled = read_disabled_hermes_skills(&config_path).expect("disabled skills");
+        assert_eq!(
+            disabled,
+            HashSet::from(["alpha".to_string(), "beta".to_string()])
+        );
+        assert_eq!(
+            openclaw_config_key_from_frontmatter(
+                "name: visible\nmetadata:\n  openclaw:\n    skillKey: routed-key\n",
+                "fallback",
+            ),
+            "routed-key"
+        );
+
+        std::fs::write(&config_path, "skills: [unterminated\n")
+            .expect("write malformed yaml contract config");
+        assert!(read_disabled_hermes_skills(&config_path).is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[derive(Debug)]
     struct TestAdapter {
         roots: Vec<AdapterRoot>,
