@@ -269,9 +269,15 @@ export function collectHeadingSlugs(markdown) {
       .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
       .replace(/\s+/g, "-");
     if (!base) return;
-    const count = occurrences.get(base) ?? 0;
-    occurrences.set(base, count + 1);
-    slugs.add(count === 0 ? base : `${base}-${count}`);
+    let slug = base;
+    let suffix = occurrences.get(base) ?? 0;
+    while (occurrences.has(slug)) {
+      suffix += 1;
+      occurrences.set(base, suffix);
+      slug = `${base}-${suffix}`;
+    }
+    occurrences.set(slug, 0);
+    slugs.add(slug);
   }
 
   for (let index = 0; index < lines.length; index += 1) {

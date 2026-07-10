@@ -170,6 +170,23 @@ test("builds lowercase GitHub-style slugs for ATX, duplicate, and setext heading
   ]);
 });
 
+test("resolves duplicate heading suffix collisions like GitHub", () => {
+  const markdown = [
+    "# Alpha",
+    "# Alpha",
+    "# Alpha-1",
+    "# Alpha",
+    "# Alpha-2",
+  ].join("\n");
+  assert.deepEqual([...collectHeadingSlugs(markdown)], [
+    "alpha",
+    "alpha-1",
+    "alpha-1-1",
+    "alpha-2",
+    "alpha-2-1",
+  ]);
+});
+
 test("create declarations must be exact and outside fences", () => {
   const markdown = [
     "- Create: `scripts/real.mjs`",
