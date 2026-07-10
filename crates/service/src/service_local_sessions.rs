@@ -924,7 +924,10 @@ fn compact_bounded_local_session_content(
         .then(|| top_level_scalar_fields_from_suffix(tail_leading_fragment));
 
     if !head_fragment.is_empty() && head_fragment_is_complete {
-        append_compacted_record(&mut recovered, head_fragment, max_line_fragment_bytes);
+        recovered.push_str(&compact_local_session_records(
+            head_fragment,
+            max_line_fragment_bytes,
+        ));
     } else if !head_fragment.is_empty() {
         if let Some(suffix_fields) = incomplete_tail_fields.as_ref() {
             let prefix_fields = top_level_scalar_fields_from_prefix(head_fragment);
@@ -1388,6 +1391,25 @@ fn looks_like_json_fragment(text: &str) -> bool {
 #[cfg(test)]
 mod bounded_content_tests {
     use super::*;
+
+    #[test]
+    fn complete_small_head_fragment_preserves_data_wrapped_event() {
+        let bounded = BoundedText {
+            head: concat!(
+                "{\"type\":\"mode\"}\n",
+                "{\"data\":{\"type\":\"user\",\"text\":\"head-hello\"}}"
+            )
+            .to_string(),
+            tail: String::new(),
+            truncated: true,
+            bytes_read: 80,
+        };
+
+        let compacted = compact_bounded_local_session_content(&bounded, 1_024);
+
+        assert!(compacted.contains("\"data\""), "{compacted}");
+        assert!(compacted.contains("head-hello"), "{compacted}");
+    }
 
     #[test]
     fn incomplete_tail_without_root_type_is_not_attributed_after_complete_head() {
