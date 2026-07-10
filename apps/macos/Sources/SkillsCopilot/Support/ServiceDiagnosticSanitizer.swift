@@ -6,7 +6,7 @@ enum ServiceDiagnosticSanitizer {
     static func displayMessage(_ raw: String) -> String {
         var sanitized = ConfigContentRedactor.redactedForDisplay(raw)
         sanitized = replacing(
-            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=(?:"[^"]*"|'[^']*'|[^\s]+)"#,
+            pattern: #"(?i)\b(API_KEY|TOKEN|SECRET|PASSWORD)=\s*(?:"[^"]*"|'[^']*'|[^\s]+)"#,
             in: sanitized,
             with: "$1=<redacted>"
         )

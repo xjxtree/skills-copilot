@@ -10,6 +10,7 @@ struct ServiceClientProcessTests {
         try await largeStderrBeforeStdoutDoesNotDeadlock()
         try await concurrentLargeStdoutAndStderrAreDrained()
         try await largeInputAndEarlyOutputDoNotDeadlock()
+        try await earlyExitWithoutReadingLargeInputDoesNotRaiseSIGPIPE()
         try await stdoutBoundaryIsExact()
         try await stdoutAboveSixteenMiBReturnsResponseTooLarge()
         try await oversizedFailingStderrIsBoundedAndRedacted()
@@ -17,6 +18,7 @@ struct ServiceClientProcessTests {
         try await malformedStdoutNeverAppearsInDisplayError()
         try await invalidEnvelopeNeverAppearsInDisplayError()
         try await cancellationWhileDrainingReapsProcess()
+        try await callCancelledBeforeRunnerStartStillCompletes()
         try configuredTimeoutRejectsOverflowAndInvalidValues()
         try await malformedOutputMapsToInvalidOutput()
         try await emptyOutputMapsToInvalidOutput()
@@ -125,6 +127,22 @@ struct ServiceClientProcessTests {
         try expectEqual(envelope.result?.version, "test", "Early stdout must drain while a large request body is written.")
     }
 
+    private func earlyExitWithoutReadingLargeInputDoesNotRaiseSIGPIPE() async throws {
+        let fake = try StaticServiceScript(mode: "early-exit-without-stdin")
+        defer { fake.cleanup() }
+
+        do {
+            _ = try await fake.run(
+                input: Data(repeating: 0x49, count: 2 * 1_024 * 1_024),
+                timeoutNanoseconds: 5_000_000_000
+            )
+            throw NativeModelTestFailure(description: "A sidecar that exits before reading stdin should fail safely.")
+        } catch ServiceClient.ClientError.processFailed(let status, let diagnostic) {
+            try expectEqual(status, 7, "Early sidecar exit should preserve its status instead of raising SIGPIPE.")
+            try expectContains(diagnostic, "early sidecar failure", "Early sidecar exit should preserve its safe diagnostic.")
+        }
+    }
+
     private func stdoutAboveSixteenMiBReturnsResponseTooLarge() async throws {
         let fake = try StaticServiceScript(mode: "stdout-too-large")
         defer { fake.cleanup() }
@@ -192,6 +210,15 @@ struct ServiceClientProcessTests {
         try expectFalse(sanitized.contains("private-user.conf"), "Standalone user paths should be redacted.")
         try expectFalse(sanitized.contains("folders/example"), "Standalone private paths should be redacted.")
         try expectFalse(sanitized.contains("\n"), "Displayed diagnostics should collapse whitespace.")
+        for key in ["API" + "_KEY", "TO" + "KEN"] {
+            for whitespace in [" ", "\t", "\n"] {
+                let prefixed = "error: " + key + "=" + whitespace + sentinel
+                try expectFalse(
+                    ServiceDiagnosticSanitizer.displayMessage(prefixed).contains(sentinel),
+                    "Prefixed credential values should redact optional whitespace after equals."
+                )
+            }
+        }
         try expectFalse(
             ServiceDiagnosticSanitizer.displayMessage(" \n\t ").isEmpty,
             "Empty diagnostics should use a stable fallback."
@@ -251,6 +278,34 @@ struct ServiceClientProcessTests {
         try await waitUntil("Cancelled streaming sidecar should be reaped.", timeout: 4) {
             !processExists(pid)
         }
+    }
+
+    private func callCancelledBeforeRunnerStartStillCompletes() async throws {
+        let gate = ServiceRunnerStartGate()
+        let outcome = ServiceRunnerCancellationOutcome()
+        let fake = try StaticServiceScript(mode: "empty")
+        defer { fake.cleanup() }
+
+        let call = Task {
+            await gate.wait()
+            do {
+                _ = try await fake.run(input: Data(), timeoutNanoseconds: 5_000_000_000)
+                await outcome.record("returned")
+            } catch is CancellationError {
+                await outcome.record("cancelled")
+            } catch {
+                await outcome.record("error")
+            }
+        }
+        try await waitUntil("The pre-cancel gate should be reached.") {
+            await gate.isWaiting
+        }
+        call.cancel()
+        await gate.open()
+        try await waitUntil("An already-cancelled runner call must resume its continuation.", timeout: 1) {
+            await outcome.value != nil
+        }
+        try expectEqual(await outcome.value, "cancelled", "Pre-cancelled runner calls should complete as cancellation.")
     }
 
     private func configuredTimeoutRejectsOverflowAndInvalidValues() throws {
@@ -328,11 +383,48 @@ struct ServiceClientProcessTests {
         }
     }
 
+    private func waitUntil(_ label: String, timeout: TimeInterval = 2, predicate: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await predicate()) {
+            if Date() > deadline {
+                throw NativeModelTestFailure(description: label)
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     private func processExists(_ pid: pid_t) -> Bool {
         if kill(pid, 0) == 0 {
             return true
         }
         return errno == EPERM
+    }
+}
+
+private actor ServiceRunnerStartGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var isWaiting = false
+
+    func wait() async {
+        isWaiting = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func open() {
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume()
+    }
+}
+
+private actor ServiceRunnerCancellationOutcome {
+    private(set) var value: String?
+
+    func record(_ value: String) {
+        guard self.value == nil else { return }
+        self.value = value
     }
 }
 
@@ -436,6 +528,10 @@ private final class StaticServiceScript {
             write_mebibytes 2 O
             printf '"%s' "$status_suffix"
             cat >/dev/null
+            ;;
+          early-exit-without-stdin)
+            printf 'early sidecar failure' >&2
+            exit 7
             ;;
           stdout-too-large)
             cat >/dev/null

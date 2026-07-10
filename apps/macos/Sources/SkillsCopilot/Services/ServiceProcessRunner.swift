@@ -207,9 +207,12 @@ private final class StdioServiceProcessRunCoordinator {
         continuation: CheckedContinuation<Data, Error>
     ) {
         lock.lock()
+        guard !completed else {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
         self.continuation = continuation
-        lock.unlock()
-
         operationTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
@@ -219,7 +222,6 @@ private final class StdioServiceProcessRunCoordinator {
                 self.finish(.failure(error))
             }
         }
-
         timeoutTask = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: timeoutNanoseconds)
@@ -227,16 +229,28 @@ private final class StdioServiceProcessRunCoordinator {
                 return
             }
             guard let self else { return }
-            self.invocation.cancel()
-            self.operationTask?.cancel()
-            self.finish(.failure(ServiceClient.ClientError.processTimedOut))
+            self.timeoutReached()
         }
+        lock.unlock()
     }
 
     func cancel() {
         invocation.cancel()
-        operationTask?.cancel()
+        operationTaskSnapshot()?.cancel()
         finish(.failure(CancellationError()))
+    }
+
+    private func timeoutReached() {
+        invocation.cancel()
+        operationTaskSnapshot()?.cancel()
+        finish(.failure(ServiceClient.ClientError.processTimedOut))
+    }
+
+    private func operationTaskSnapshot() -> Task<Void, Never>? {
+        lock.lock()
+        let task = operationTask
+        lock.unlock()
+        return task
     }
 
     private func finish(_ result: Result<Data, Error>) {
@@ -250,6 +264,7 @@ private final class StdioServiceProcessRunCoordinator {
             completed = true
             continuation = self.continuation
             self.continuation = nil
+            self.operationTask = nil
             timeoutTask = self.timeoutTask
             self.timeoutTask = nil
         }
@@ -309,6 +324,10 @@ private final class StdioServiceProcessInvocation {
             stderrReader: stderr.fileHandleForReading
         )
 
+        guard fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
         register(
             process: process,
             stdinWriter: stdin.fileHandleForWriting,
@@ -320,8 +339,19 @@ private final class StdioServiceProcessInvocation {
             try process.run()
             collector.start()
             try Task.checkCancellation()
-            try stdin.fileHandleForWriting.write(contentsOf: input)
-            try stdin.fileHandleForWriting.close()
+            var stdinWriteError: Error?
+            do {
+                try stdin.fileHandleForWriting.write(contentsOf: input)
+            } catch {
+                stdinWriteError = error
+            }
+            do {
+                try stdin.fileHandleForWriting.close()
+            } catch {
+                if stdinWriteError == nil {
+                    stdinWriteError = error
+                }
+            }
             clearStdinWriter(stdin.fileHandleForWriting)
 
             waitUntilExit(process)
@@ -345,6 +375,9 @@ private final class StdioServiceProcessInvocation {
                     process.terminationStatus,
                     ServiceDiagnosticSanitizer.displayMessage(retainedStderr)
                 )
+            }
+            if let stdinWriteError {
+                throw stdinWriteError
             }
             return outputs.stdout.data
         } catch is CancellationError {
