@@ -67,6 +67,23 @@ function note(message) {
   console.log(`smoke: ${message}`);
 }
 
+function expectedServiceProtocolVersion() {
+  const fixturePath = resolve(
+    "fixtures/service-protocol/service.status.response.json",
+  );
+  let fixture;
+  try {
+    fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  } catch {
+    fail("service status protocol fixture is missing or invalid");
+  }
+  const version = fixture?.result?.protocol_version;
+  if (!Number.isSafeInteger(version) || version < 1) {
+    fail("service status protocol fixture has an invalid protocol version");
+  }
+  return version;
+}
+
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
     encoding: "utf8",
@@ -762,8 +779,11 @@ function callServiceEnvelope(method, params, env) {
 
 function runFixtureServiceSmoke(env) {
   const status = callService("service.status", {}, env);
-  if (status.protocol_version !== 1) {
-    fail(`unexpected protocol version ${status.protocol_version}`);
+  const expectedProtocolVersion = expectedServiceProtocolVersion();
+  if (status.protocol_version !== expectedProtocolVersion) {
+    fail(
+      `unexpected protocol version ${status.protocol_version}; expected ${expectedProtocolVersion}`,
+    );
   }
   const scan = callService("catalog.scanClaude", {}, env);
   if (scan.scanned_count !== 3) {
@@ -791,9 +811,15 @@ function runFixtureServiceSmoke(env) {
     fail("toggle on did not re-enable alpha-review");
   }
   const settings = callService("config.readClaudeSettings", {}, env);
+  if (typeof settings.revision !== "string" || settings.revision.length === 0) {
+    fail("settings read did not return a config revision");
+  }
   const saved = callService(
     "config.saveClaudeSettings",
-    { content: `${settings.content.trim() || "{}"}\n` },
+    {
+      content: `${settings.content.trim() || "{}"}\n`,
+      expected_revision: settings.revision,
+    },
     env,
   );
   if (!saved.exists) {
@@ -811,7 +837,17 @@ function runFixtureServiceSmoke(env) {
   if (!preview.snapshot?.id) {
     fail("snapshot preview did not return snapshot payload");
   }
-  callService("snapshot.rollback", { snapshot_id: snapshots[0].id }, env);
+  if (typeof preview.preview_token !== "string" || preview.preview_token.length === 0) {
+    fail("snapshot preview did not return a rollback token");
+  }
+  callService(
+    "snapshot.rollback",
+    {
+      snapshot_id: snapshots[0].id,
+      preview_token: preview.preview_token,
+    },
+    env,
+  );
   note("fixture service smoke passed: scan, toggle, settings save, preview, rollback");
   return status;
 }
