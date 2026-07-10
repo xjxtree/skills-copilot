@@ -16,6 +16,8 @@ struct ServiceClientProcessTests {
         try await oversizedFailingStderrIsBoundedAndRedacted()
         try diagnosticSanitizerCoversStandalonePatternsAndFallback()
         try diagnosticSanitizerRedactsAdjacentCredentialAssignments()
+        try diagnosticSanitizerKeepsLineBoundaryAfterEscapedUnterminatedQuote()
+        try diagnosticSanitizerRedactsEscapedOuterQuotedValues()
         try await malformedStdoutNeverAppearsInDisplayError()
         try await invalidEnvelopeNeverAppearsInDisplayError()
         try await cancellationWhileDrainingReapsProcess()
@@ -336,6 +338,81 @@ struct ServiceClientProcessTests {
             "error: \(apiKey)\(equals)\(redacted) \(tokenKey)\(equals)\(redacted)",
             "Already-redacted credential assignments should remain safely redacted."
         )
+    }
+
+    private func diagnosticSanitizerRedactsEscapedOuterQuotedValues() throws {
+        let tokenKey = "TO" + "KEN"
+        let realValue = "GAMMA" + "_REAL_VALUE"
+        let ordinaryLine = "ordinary diagnostic context"
+        let redacted = "<redacted>"
+
+        for quote in ["\"", "'"] {
+            for slashCount in 1...4 {
+                let slashRun = String(repeating: "\\", count: slashCount)
+                let input = "error: \(tokenKey)=\(slashRun)\(quote)prefix \(realValue) with spaces\(slashRun)\(quote) \(ordinaryLine)"
+                let output = ServiceDiagnosticSanitizer.displayMessage(input)
+
+                try expectEqual(
+                    output,
+                    "error: \(tokenKey)=\(redacted) \(ordinaryLine)",
+                    "Escaped outer quote parity \(slashCount) for \(quote) should redact exactly the credential value."
+                )
+                try expectFalse(
+                    output.contains(realValue),
+                    "Escaped outer quote parity \(slashCount) for \(quote) must not expose a value after its first space."
+                )
+            }
+        }
+
+        let escapedDoubleQuote = "\\\""
+        let jsonFragment = "{\"message\":\"\(tokenKey)=\(escapedDoubleQuote)prefix \(realValue) with spaces\(escapedDoubleQuote)\"}"
+        let jsonOutput = ServiceDiagnosticSanitizer.displayMessage(jsonFragment)
+        try expectEqual(
+            jsonOutput,
+            "{\"message\":\"\(tokenKey)=\(redacted)\"}",
+            "A JSON message containing an escaped quoted credential should remain useful and fully redacted."
+        )
+        try expectFalse(
+            jsonOutput.contains(realValue),
+            "A JSON message must not expose an escaped quoted credential value."
+        )
+
+        for quote in ["\"", "'"] {
+            let input = "error: \(tokenKey)=\\\(quote)prefix \(realValue) with spaces\n\(ordinaryLine)"
+            let output = ServiceDiagnosticSanitizer.displayMessage(input)
+            try expectEqual(
+                output,
+                "error: \(tokenKey)=\(redacted) \(ordinaryLine)",
+                "A truncated escaped \(quote) wrapper should fail closed at the line boundary."
+            )
+            try expectFalse(
+                output.contains(realValue),
+                "A truncated escaped \(quote) wrapper must not expose its value."
+            )
+        }
+    }
+
+    private func diagnosticSanitizerKeepsLineBoundaryAfterEscapedUnterminatedQuote() throws {
+        let tokenKey = "TO" + "KEN"
+        let realValue = "GAMMA" + "_REAL_VALUE"
+        let ordinaryLine = "ordinary diagnostic context"
+
+        for quote in ["\"", "'"] {
+            for lineEnding in ["\n", "\r\n"] {
+                let input = "error: \(tokenKey)=\(quote)prefix \(realValue)\\\(lineEnding)\(ordinaryLine)"
+                let output = ServiceDiagnosticSanitizer.displayMessage(input)
+
+                try expectEqual(
+                    output,
+                    "error: \(tokenKey)=<redacted> \(ordinaryLine)",
+                    "An escaped unterminated \(quote) value must stop at the diagnostic line boundary."
+                )
+                try expectFalse(
+                    output.contains(realValue),
+                    "An escaped unterminated \(quote) value must remain redacted."
+                )
+            }
+        }
     }
 
     private func malformedStdoutNeverAppearsInDisplayError() async throws {

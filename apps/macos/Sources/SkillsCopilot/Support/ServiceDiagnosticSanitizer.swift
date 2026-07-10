@@ -119,6 +119,12 @@ enum ServiceDiagnosticSanitizer {
             // following assignment independently.
             return afterEquals
         }
+        if let escapedQuotedValueEnd = escapedOuterQuotedValueEnd(
+            in: bytes,
+            tokenStart: tokenStart
+        ) {
+            return escapedQuotedValueEnd
+        }
 
         var cursor = tokenStart
         var activeQuote: UInt8?
@@ -130,7 +136,9 @@ enum ServiceDiagnosticSanitizer {
                 return cursor
             }
             if let quote = activeQuote {
-                if byte == 0x5C, cursor + 1 < bytes.count {
+                if byte == 0x5C,
+                   cursor + 1 < bytes.count,
+                   !isLineBreak(bytes[cursor + 1]) {
                     cursor += 2
                 } else {
                     cursor += 1
@@ -148,12 +156,52 @@ enum ServiceDiagnosticSanitizer {
             } else if byte == 0x22 || byte == 0x27 {
                 activeQuote = byte
                 cursor += 1
-            } else if byte == 0x5C, cursor + 1 < bytes.count {
+            } else if byte == 0x5C,
+                      cursor + 1 < bytes.count,
+                      !isLineBreak(bytes[cursor + 1]) {
                 cursor += 2
             } else {
                 cursor += 1
             }
         }
+        return cursor
+    }
+
+    private static func escapedOuterQuotedValueEnd(
+        in bytes: [UInt8],
+        tokenStart: Int
+    ) -> Int? {
+        var openingQuoteIndex = tokenStart
+        while openingQuoteIndex < bytes.count, bytes[openingQuoteIndex] == 0x5C {
+            openingQuoteIndex += 1
+        }
+        let openingSlashCount = openingQuoteIndex - tokenStart
+        guard openingSlashCount > 0,
+              openingQuoteIndex < bytes.count,
+              bytes[openingQuoteIndex] == 0x22 || bytes[openingQuoteIndex] == 0x27 else {
+            return nil
+        }
+
+        let quote = bytes[openingQuoteIndex]
+        var cursor = openingQuoteIndex + 1
+        while cursor < bytes.count, !isLineBreak(bytes[cursor]) {
+            guard bytes[cursor] == quote else {
+                cursor += 1
+                continue
+            }
+
+            var slashStart = cursor
+            while slashStart > openingQuoteIndex + 1, bytes[slashStart - 1] == 0x5C {
+                slashStart -= 1
+            }
+            if cursor - slashStart == openingSlashCount {
+                return cursor + 1
+            }
+            cursor += 1
+        }
+
+        // The wrapper is malformed or truncated. Treat the rest of this
+        // diagnostic line as untrusted, while preserving following lines.
         return cursor
     }
 
@@ -178,6 +226,10 @@ enum ServiceDiagnosticSanitizer {
             || byte == 0x0D
             || byte == 0x0B
             || byte == 0x0C
+    }
+
+    private static func isLineBreak(_ byte: UInt8) -> Bool {
+        byte == 0x0A || byte == 0x0D
     }
 
     private static func normalizingConfigCredentialPlaceholders(in value: String) -> String {
