@@ -14,6 +14,11 @@ import {
 } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  assertBoundedPathIdentityUnchanged,
+  initializeAllocatedFixture,
+  snapshotBoundedPathIdentity,
+} from "./lib/smoke-fixture-safety.mjs";
 import { runSmokeFlow } from "./lib/smoke-flow.mjs";
 import { parseSmokeOptions } from "./lib/smoke-options.mjs";
 import { sameFilesystemEntry } from "./lib/path-identity.mjs";
@@ -280,7 +285,14 @@ function filesUnder(dir, extensions) {
 }
 
 function createFixtureEnvironment() {
-  const root = mkdtempSync(join(tmpdir(), "skills-copilot-native-smoke-"));
+  return initializeAllocatedFixture({
+    allocateRoot: () =>
+      mkdtempSync(join(tmpdir(), "skills-copilot-native-smoke-")),
+    initializeRoot: initializeFixtureEnvironment,
+  });
+}
+
+function initializeFixtureEnvironment(root) {
   const realOpencodeConfigSnapshot = snapshotRealOpencodeConfig();
   const home = join(root, "home");
   const appData = join(root, "app-data");
@@ -442,40 +454,16 @@ function snapshotRealOpencodeConfig() {
   if (!realHome) {
     fail("HOME is not set; cannot verify real opencode config isolation");
   }
-  return [
+  return snapshotBoundedPathIdentity(
     join(realHome, ".config", "opencode"),
-    join(realHome, ".config", "opencode", "skills"),
-  ].map(snapshotPathState);
-}
-
-function snapshotPathState(path) {
-  if (!existsSync(path)) {
-    return { exists: false, path };
-  }
-  const stat = statSync(path);
-  return {
-    exists: true,
-    isDirectory: stat.isDirectory(),
-    mtimeMs: stat.mtimeMs,
-    path,
-  };
+  );
 }
 
 function assertRealOpencodeConfigUntouched(snapshot) {
-  for (const before of snapshot) {
-    const after = snapshotPathState(before.path);
-    if (before.exists !== after.exists) {
-      fail(
-        `fixture run touched real opencode config path ${before.path}: ` +
-          `exists changed from ${before.exists} to ${after.exists}`,
-      );
-    }
-    if (!before.exists) {
-      continue;
-    }
-    if (before.isDirectory !== after.isDirectory || before.mtimeMs !== after.mtimeMs) {
-      fail(`fixture run modified real opencode config path ${before.path}`);
-    }
+  try {
+    assertBoundedPathIdentityUnchanged(snapshot);
+  } catch {
+    fail("fixture run modified real opencode config");
   }
   note("fixture opencode isolation passed: real HOME config paths unchanged");
 }
