@@ -1463,6 +1463,107 @@ fn malformed_json_shaped_deny_records_fail_closed_without_dropping_plaintext() {
 }
 
 #[test]
+fn malformed_json_shaped_deny_field_matrix_fails_closed() {
+    let skill_name = "malformed-matrix-denied-skill";
+    let session = format!(
+        concat!(
+            "{{role: developer, text: PRIMARY_ROLE_DEVELOPER_MUST_NOT_SURFACE skill:{skill}}}\n",
+            "{{ type : system , text : PRIMARY_TYPE_SYSTEM_MUST_NOT_SURFACE skill:{skill} }}\n",
+            "{{foo: 1, summary: PRIMARY_LATE_SUMMARY_MUST_NOT_SURFACE skill:{skill}}}\n",
+            "{{foo: 1, developer: PRIMARY_LATE_DEVELOPER_MUST_NOT_SURFACE skill:{skill}}}\n",
+            "{{foo: 1, system: PRIMARY_LATE_SYSTEM_MUST_NOT_SURFACE skill:{skill}}}\n",
+            "{{ /* classification */ role : \"developer\", text : PRIMARY_COMMENTED_ROLE_MUST_NOT_SURFACE skill:{skill} }}\n",
+            "{{'role':'developer','text':'PRIMARY_SINGLE_QUOTED_ROLE_MUST_NOT_SURFACE skill:{skill}'}}\n",
+            "{{\"role\": developer, \"text\": \"PRIMARY_UNQUOTED_VALUE_MUST_NOT_SURFACE skill:{skill}\"}}\n",
+            "{{plain CURLY_PLAINTEXT_MUST_REMAIN\n",
+            "[INFO] BRACKET_PLAINTEXT_MUST_REMAIN\n",
+            "user: SAFE_PRIMARY_MATRIX_SIBLING\n",
+        ),
+        skill = skill_name,
+    );
+    let result = preview_codex_session_fixture_with_catalog_skill(
+        "malformed-json-shaped-field-matrix",
+        &session,
+        skill_name,
+    );
+    let serialized = serde_json::to_string(&result).expect("serialize malformed field matrix");
+    let row = result
+        .pointer("/session_rows/0")
+        .expect("safe primary matrix row");
+
+    for hidden in [
+        "PRIMARY_ROLE_DEVELOPER_MUST_NOT_SURFACE",
+        "PRIMARY_TYPE_SYSTEM_MUST_NOT_SURFACE",
+        "PRIMARY_LATE_SUMMARY_MUST_NOT_SURFACE",
+        "PRIMARY_LATE_DEVELOPER_MUST_NOT_SURFACE",
+        "PRIMARY_LATE_SYSTEM_MUST_NOT_SURFACE",
+        "PRIMARY_COMMENTED_ROLE_MUST_NOT_SURFACE",
+        "PRIMARY_SINGLE_QUOTED_ROLE_MUST_NOT_SURFACE",
+        "PRIMARY_UNQUOTED_VALUE_MUST_NOT_SURFACE",
+        skill_name,
+    ] {
+        assert!(
+            !serialized.contains(hidden),
+            "surfaced {hidden}: {serialized}"
+        );
+        assert!(
+            !row.get("title")
+                .and_then(Value::as_str)
+                .is_some_and(|title| title.contains(hidden)),
+            "title surfaced {hidden}: {result}"
+        );
+        assert!(
+            !row.get("excerpt")
+                .and_then(Value::as_str)
+                .is_some_and(|excerpt| excerpt.contains(hidden)),
+            "excerpt surfaced {hidden}: {result}"
+        );
+        assert!(
+            row.get("content_items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().all(|item| {
+                    !item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.contains(hidden))
+                        && !item
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .is_some_and(|title| title.contains(hidden))
+                })),
+            "content item surfaced {hidden}: {result}"
+        );
+    }
+    for visible in [
+        "CURLY_PLAINTEXT_MUST_REMAIN",
+        "BRACKET_PLAINTEXT_MUST_REMAIN",
+        "SAFE_PRIMARY_MATRIX_SIBLING",
+    ] {
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
+    assert_eq!(
+        row.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    assert_eq!(
+        result.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        result
+            .get("skill_usage_rows")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{result}"
+    );
+}
+
+#[test]
 fn pretty_printed_primary_records_preserve_only_accepted_descendants() {
     let session = serde_json::to_string_pretty(&json!([
         {
@@ -1754,6 +1855,201 @@ fn malformed_or_deep_opencode_sidecars_fail_closed() {
     assert!(
         !app_data_dir.exists(),
         "sidecar preview must remain read-only"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+}
+
+#[test]
+fn malformed_opencode_message_and_part_field_matrix_fails_closed() {
+    let unique = unique_suffix();
+    let skill_name = "opencode-malformed-matrix-skill";
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-malformed-matrix-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-malformed-matrix-home-{}-{unique}",
+        std::process::id(),
+    ));
+    let storage_root = user_home.join(".local/share/opencode/storage");
+    let session_root = storage_root.join("session");
+    let message_root = storage_root.join("message/ses_malformed_matrix");
+    let part_root = storage_root.join("part/msg_matrix_visible");
+    fs::create_dir_all(&session_root).expect("create malformed matrix session root");
+    fs::create_dir_all(&message_root).expect("create malformed matrix message root");
+    fs::create_dir_all(&part_root).expect("create malformed matrix part root");
+    fs::write(
+        session_root.join("ses_malformed_matrix.json"),
+        json!({ "id": "ses_malformed_matrix", "title": "safe malformed matrix session" })
+            .to_string(),
+    )
+    .expect("write malformed matrix session");
+    fs::write(
+        message_root.join("01-malformed-matrix.json"),
+        format!(
+            concat!(
+                "{{role: developer, text: MESSAGE_ROLE_DEVELOPER_MUST_NOT_SURFACE skill:{skill}}}\n",
+                "{{ type : system, text: MESSAGE_TYPE_SYSTEM_MUST_NOT_SURFACE skill:{skill} }}\n",
+                "{{safe: 1, summary: MESSAGE_LATE_SUMMARY_MUST_NOT_SURFACE skill:{skill}}}\n",
+                "{{ /* note */ developer : MESSAGE_COMMENTED_DEVELOPER_MUST_NOT_SURFACE skill:{skill} }}\n",
+                "{{'role':'developer','text':'MESSAGE_QUOTED_ROLE_MUST_NOT_SURFACE skill:{skill}'}}\n",
+            ),
+            skill = skill_name,
+        ),
+    )
+    .expect("write malformed matrix message");
+    fs::write(
+        message_root.join("02-visible.json"),
+        json!({
+            "id": "msg_matrix_visible",
+            "role": "assistant",
+            "content": "SAFE_OPENCODE_MATRIX_SIBLING"
+        })
+        .to_string(),
+    )
+    .expect("write safe matrix message");
+    fs::write(
+        part_root.join("01-malformed-matrix.json"),
+        format!(
+            concat!(
+                "{{role: summary, text: PART_ROLE_SUMMARY_MUST_NOT_SURFACE skill:{skill}}}\n",
+                "{{ type : system, text: PART_TYPE_SYSTEM_MUST_NOT_SURFACE skill:{skill} }}\n",
+                "{{safe: 1, developer: PART_LATE_DEVELOPER_MUST_NOT_SURFACE skill:{skill}}}\n",
+                "{{ /* note */ system : PART_COMMENTED_SYSTEM_MUST_NOT_SURFACE skill:{skill} }}\n",
+                "{{'role':'developer','text':'PART_QUOTED_ROLE_MUST_NOT_SURFACE skill:{skill}'}}\n",
+            ),
+            skill = skill_name,
+        ),
+    )
+    .expect("write malformed matrix part");
+
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    fs::create_dir_all(&host.app_data_dir).expect("create malformed matrix catalog directory");
+    let catalog = Catalog::open(&host.catalog_path()).expect("open malformed matrix catalog");
+    catalog.init().expect("initialize malformed matrix catalog");
+    let skill_path = user_home
+        .join(".config/opencode/skills")
+        .join(skill_name)
+        .join("SKILL.md");
+    catalog
+        .upsert_skill_instance(&SkillInstance {
+            id: format!("{skill_name}-id"),
+            agent: AgentId::Opencode,
+            scope: Scope::AgentGlobal,
+            project_root: None,
+            path: skill_path.clone(),
+            display_path: skill_path,
+            definition_id: format!("{skill_name}-definition"),
+            name: skill_name.to_string(),
+            display_name: skill_name.to_string(),
+            description: "Malformed matrix matching fixture.".to_string(),
+            version: None,
+            state: SkillState::Loaded,
+            enabled: true,
+            frontmatter_raw: format!("name: {skill_name}\ndescription: fixture\n"),
+            body: "Fixture body.".to_string(),
+            scripts: Vec::new(),
+            permissions: PermissionRequest::default(),
+            fingerprint: format!("{skill_name}-fingerprint"),
+            mtime: 1,
+            first_seen: 1,
+            last_seen: 1,
+        })
+        .expect("seed malformed matrix skill");
+
+    let response = host.handle(ServiceRequest {
+        id: Some("session-preview-opencode-malformed-matrix".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "opencode",
+            "limit": 10,
+            "max_excerpt_chars": 4_000
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response
+        .result
+        .expect("malformed matrix opencode preview result");
+    let serialized = serde_json::to_string(&result).expect("serialize malformed matrix result");
+    let row = result
+        .pointer("/session_rows/0")
+        .expect("safe malformed matrix row");
+
+    for hidden in [
+        "MESSAGE_ROLE_DEVELOPER_MUST_NOT_SURFACE",
+        "MESSAGE_TYPE_SYSTEM_MUST_NOT_SURFACE",
+        "MESSAGE_LATE_SUMMARY_MUST_NOT_SURFACE",
+        "MESSAGE_COMMENTED_DEVELOPER_MUST_NOT_SURFACE",
+        "MESSAGE_QUOTED_ROLE_MUST_NOT_SURFACE",
+        "PART_ROLE_SUMMARY_MUST_NOT_SURFACE",
+        "PART_TYPE_SYSTEM_MUST_NOT_SURFACE",
+        "PART_LATE_DEVELOPER_MUST_NOT_SURFACE",
+        "PART_COMMENTED_SYSTEM_MUST_NOT_SURFACE",
+        "PART_QUOTED_ROLE_MUST_NOT_SURFACE",
+        skill_name,
+    ] {
+        assert!(
+            !serialized.contains(hidden),
+            "surfaced {hidden}: {serialized}"
+        );
+        assert!(
+            !row.get("title")
+                .and_then(Value::as_str)
+                .is_some_and(|title| title.contains(hidden)),
+            "title surfaced {hidden}: {result}"
+        );
+        assert!(
+            !row.get("excerpt")
+                .and_then(Value::as_str)
+                .is_some_and(|excerpt| excerpt.contains(hidden)),
+            "excerpt surfaced {hidden}: {result}"
+        );
+        assert!(
+            row.get("content_items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().all(|item| {
+                    !item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.contains(hidden))
+                        && !item
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .is_some_and(|title| title.contains(hidden))
+                })),
+            "content item surfaced {hidden}: {result}"
+        );
+    }
+    assert!(
+        serialized.contains("SAFE_OPENCODE_MATRIX_SIBLING"),
+        "{serialized}"
+    );
+    assert_eq!(
+        row.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    assert_eq!(
+        result.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        result
+            .get("skill_usage_rows")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{result}"
     );
 
     let _ = fs::remove_dir_all(app_data_dir);

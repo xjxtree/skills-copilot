@@ -1718,7 +1718,249 @@ fn looks_like_incomplete_json_record(text: &str) -> bool {
     }
 }
 
+const MAX_MALFORMED_JSON_CLASSIFICATION_SCAN_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum MalformedJsonLikeToken {
+    Open,
+    Close,
+    Colon,
+    Comma,
+    Scalar(Option<String>),
+    Other,
+}
+
+struct MalformedJsonLikeTokenScanner<'a> {
+    bytes: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> MalformedJsonLikeTokenScanner<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut end = text.len().min(MAX_MALFORMED_JSON_CLASSIFICATION_SCAN_BYTES);
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Self {
+            bytes: &text.as_bytes()[..end],
+            cursor: 0,
+        }
+    }
+
+    fn next_token(&mut self) -> Option<MalformedJsonLikeToken> {
+        loop {
+            while self
+                .bytes
+                .get(self.cursor)
+                .is_some_and(u8::is_ascii_whitespace)
+            {
+                self.cursor += 1;
+            }
+            match (
+                self.bytes.get(self.cursor),
+                self.bytes.get(self.cursor.saturating_add(1)),
+            ) {
+                (Some(b'/'), Some(b'*')) => {
+                    self.cursor += 2;
+                    while self.cursor < self.bytes.len()
+                        && !matches!(
+                            (
+                                self.bytes.get(self.cursor),
+                                self.bytes.get(self.cursor.saturating_add(1))
+                            ),
+                            (Some(b'*'), Some(b'/'))
+                        )
+                    {
+                        self.cursor += 1;
+                    }
+                    self.cursor = self.cursor.saturating_add(2).min(self.bytes.len());
+                    continue;
+                }
+                (Some(b'/'), Some(b'/')) => {
+                    self.cursor = self.bytes.len();
+                    return None;
+                }
+                _ => {}
+            }
+            break;
+        }
+
+        let byte = *self.bytes.get(self.cursor)?;
+        self.cursor += 1;
+        match byte {
+            b'{' | b'[' => Some(MalformedJsonLikeToken::Open),
+            b'}' | b']' => Some(MalformedJsonLikeToken::Close),
+            b':' => Some(MalformedJsonLikeToken::Colon),
+            b',' => Some(MalformedJsonLikeToken::Comma),
+            b'"' | b'\'' | b'`' => Some(MalformedJsonLikeToken::Scalar(
+                self.scan_quoted_scalar(byte),
+            )),
+            _ if is_malformed_json_like_bare_scalar_byte(byte) => {
+                let start = self.cursor - 1;
+                while self
+                    .bytes
+                    .get(self.cursor)
+                    .is_some_and(|byte| is_malformed_json_like_bare_scalar_byte(*byte))
+                {
+                    self.cursor += 1;
+                }
+                let token = &self.bytes[start..self.cursor];
+                let value = (token.len() <= MAX_PROVENANCE_TOKEN_BYTES)
+                    .then(|| String::from_utf8_lossy(token).into_owned());
+                Some(MalformedJsonLikeToken::Scalar(value))
+            }
+            _ => Some(MalformedJsonLikeToken::Other),
+        }
+    }
+
+    fn scan_quoted_scalar(&mut self, quote: u8) -> Option<String> {
+        let token_start = self.cursor - 1;
+        let content_start = self.cursor;
+        let mut escaped = false;
+        while let Some(byte) = self.bytes.get(self.cursor).copied() {
+            self.cursor += 1;
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if byte != quote {
+                continue;
+            }
+            let token_end = self.cursor;
+            if token_end.saturating_sub(token_start) > MAX_PROVENANCE_TOKEN_BYTES {
+                return None;
+            }
+            if quote == b'"' {
+                return serde_json::from_slice::<String>(&self.bytes[token_start..token_end]).ok();
+            }
+            return decode_relaxed_quoted_scalar(&self.bytes[content_start..token_end - 1]);
+        }
+        None
+    }
+}
+
+fn is_malformed_json_like_bare_scalar_byte(byte: u8) -> bool {
+    !byte.is_ascii_whitespace()
+        && !matches!(
+            byte,
+            b'{' | b'}' | b'[' | b']' | b':' | b',' | b'"' | b'\'' | b'`' | b'/'
+        )
+}
+
+fn decode_relaxed_quoted_scalar(bytes: &[u8]) -> Option<String> {
+    let mut decoded = Vec::with_capacity(bytes.len().min(MAX_PROVENANCE_TOKEN_BYTES));
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if byte == b'\\' && cursor + 1 < bytes.len() {
+            cursor += 1;
+        }
+        if decoded.len() >= MAX_PROVENANCE_TOKEN_BYTES {
+            return None;
+        }
+        decoded.push(bytes[cursor]);
+        cursor += 1;
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn malformed_json_shaped_record_is_denied(text: &str) -> bool {
+    let mut scanner =
+        MalformedJsonLikeTokenScanner::new(text.trim_start_matches('\u{feff}').trim_start());
+    if scanner.next_token() != Some(MalformedJsonLikeToken::Open) {
+        return false;
+    }
+
+    let mut depth = 1usize;
+    let mut last_scalar: Option<String> = None;
+    let mut classification_key: Option<String> = None;
+    while let Some(token) = scanner.next_token() {
+        match token {
+            MalformedJsonLikeToken::Open => {
+                if classification_key.take().is_some() {
+                    return true;
+                }
+                depth = depth.saturating_add(1);
+                last_scalar = None;
+            }
+            MalformedJsonLikeToken::Close => {
+                if classification_key.take().is_some() {
+                    return true;
+                }
+                depth = depth.saturating_sub(1);
+                last_scalar = None;
+                if depth == 0 {
+                    break;
+                }
+            }
+            MalformedJsonLikeToken::Comma => {
+                if classification_key.take().is_some() {
+                    return true;
+                }
+                last_scalar = None;
+            }
+            MalformedJsonLikeToken::Colon => {
+                let Some(key) = last_scalar.take() else {
+                    classification_key = None;
+                    continue;
+                };
+                let normalized_key = normalized_malformed_json_token(&key);
+                if malformed_json_deny_label(&normalized_key) {
+                    return true;
+                }
+                classification_key =
+                    matches!(normalized_key.as_str(), "type" | "role").then_some(normalized_key);
+            }
+            MalformedJsonLikeToken::Scalar(value) => {
+                if let Some(key) = classification_key.take() {
+                    let Some(value) = value.as_deref() else {
+                        return true;
+                    };
+                    if malformed_json_classification_value_is_denied(&key, value) {
+                        return true;
+                    }
+                }
+                last_scalar = value;
+            }
+            MalformedJsonLikeToken::Other => {
+                if classification_key.take().is_some() {
+                    return true;
+                }
+                last_scalar = None;
+            }
+        }
+    }
+    false
+}
+
+fn normalized_malformed_json_token(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(['_', '-'], "")
+}
+
+fn malformed_json_deny_label(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "system" | "developer" | "summary" | "compaction" | "context" | "metadata"
+    )
+}
+
+fn malformed_json_classification_value_is_denied(key: &str, value: &str) -> bool {
+    let normalized = normalized_malformed_json_token(value);
+    match key {
+        "type" => malformed_json_deny_label(&normalized),
+        "role" => matches!(normalized.as_str(), "system" | "developer" | "summary"),
+        _ => false,
+    }
+}
+
 fn plain_local_session_record_is_denied(text: &str) -> bool {
+    if malformed_json_shaped_record_is_denied(text) {
+        return true;
+    }
     let normalized = text.trim().to_ascii_lowercase();
     let label_candidate = normalized.trim_start_matches(['{', '[']).trim_start();
     if let Some(delimiter) = label_candidate
