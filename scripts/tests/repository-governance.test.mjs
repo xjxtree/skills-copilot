@@ -1,5 +1,19 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   collectDeclaredCreatePaths,
@@ -9,6 +23,59 @@ import {
   validateGateMembers,
   validateReferences,
 } from "../lib/repository-governance.mjs";
+import { validateGovernanceManifest } from "../verify-doc-governance.mjs";
+
+const TEST_REPOSITORY_ROOT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const VALID_MANIFEST = {
+  schema_version: 1,
+  policy_documents: ["README.md"],
+  required_text: { "README.md": ["Required marker"] },
+  forbidden_patterns: ["FORBIDDEN"],
+  forbidden_paths: ["blocked"],
+  gate: { script: "verify:gate", members: ["verify:a"] },
+};
+
+function createGovernanceFixture(manifest = VALID_MANIFEST) {
+  const root = mkdtempSync(join(tmpdir(), "agent-copilot-governance-test-"));
+  mkdirSync(join(root, "scripts", "lib"), { recursive: true });
+  copyFileSync(
+    join(TEST_REPOSITORY_ROOT, "scripts", "lib", "repository-governance.mjs"),
+    join(root, "scripts", "lib", "repository-governance.mjs"),
+  );
+  copyFileSync(
+    join(TEST_REPOSITORY_ROOT, "scripts", "verify-doc-governance.mjs"),
+    join(root, "scripts", "verify-doc-governance.mjs"),
+  );
+  writeFileSync(
+    join(root, "scripts", "repository-governance.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  writeFileSync(join(root, "README.md"), "# Fixture\n\nRequired marker\n");
+  writeFileSync(
+    join(root, "package.json"),
+    `${JSON.stringify({ scripts: { "verify:gate": "pnpm verify:a" } }, null, 2)}\n`,
+  );
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "fixture@example.invalid"], {
+    cwd: root,
+  });
+  execFileSync("git", ["config", "user.name", "Governance Fixture"], {
+    cwd: root,
+  });
+  execFileSync("git", ["add", "--all"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+  return root;
+}
+
+function runGovernanceFixture(root) {
+  return spawnSync(process.execPath, ["scripts/verify-doc-governance.mjs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+}
 
 test("finds markdown links and backticked repository paths", () => {
   const refs = collectMarkdownReferences(
@@ -102,6 +169,70 @@ test("ignores fenced examples and external destinations", () => {
       "README.md",
       "docs/sibling.md",
     ],
+  );
+});
+
+test("resolves full collapsed and shortcut reference links", () => {
+  const markdown = [
+    "[full][Run   Book] [collapsed][] [shortcut] ![asset][image]",
+    "",
+    "[run book]: <runbooks/app.md#Launch Check> 'Runbook'",
+    "[collapsed]: missing.md",
+    "[shortcut]: ../README.md",
+    "[image]: data:image/png;base64,AA==",
+    "[undefined]",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectMarkdownReferences(markdown, "docs/index.md").map((reference) => ({
+      target: reference.target,
+      line: reference.line,
+    })),
+    [
+      { target: "docs/runbooks/app.md#Launch Check", line: 1 },
+      { target: "docs/missing.md", line: 1 },
+      { target: "README.md", line: 1 },
+    ],
+  );
+});
+
+test("honors container fences and rejects invalid backtick fence info", () => {
+  const markdown = [
+    "```bad`info",
+    "[visible](visible.md)",
+    "> ```markdown",
+    "> [quoted-hidden](quoted-hidden.md)",
+    "> ```",
+    "- ~~~ markdown",
+    "  [listed-hidden](listed-hidden.md)",
+    "  ~~~",
+    "~~~ title `is allowed for tilde fences`",
+    "[tilde-hidden](tilde-hidden.md)",
+    "~~~",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectMarkdownReferences(markdown, "docs/index.md").map(
+      (reference) => reference.target,
+    ),
+    ["docs/visible.md"],
+  );
+});
+
+test("container fences end when their quote or list container ends", () => {
+  assert.deepEqual(
+    collectMarkdownReferences(
+      "> ```markdown\n> [quoted-hidden](quoted-hidden.md)\n[after-quote](after-quote.md)",
+      "docs/index.md",
+    ).map((reference) => reference.target),
+    ["docs/after-quote.md"],
+  );
+  assert.deepEqual(
+    collectMarkdownReferences(
+      "- ```markdown\n  [listed-hidden](listed-hidden.md)\n[after-list](after-list.md)",
+      "docs/index.md",
+    ).map((reference) => reference.target),
+    ["docs/after-list.md"],
   );
 });
 
@@ -202,6 +333,63 @@ test("create declarations must be exact and outside fences", () => {
   );
 });
 
+test("builds rendered heading slugs with block context and entities", () => {
+  const markdown = [
+    "> Not a heading",
+    "---",
+    "- Also not a heading",
+    "---",
+    "> Quoted heading",
+    "> ===",
+    "> # Quoted ATX",
+    "# Fish &amp; Chips",
+    "# Café &#x26; Tea",
+    "# Cafe\u0301",
+    "## [Save][action] and `Rollback`",
+    "",
+    "[action]: actions/save.md",
+    "# Fish &amp; Chips",
+  ].join("\n");
+
+  assert.deepEqual([...collectHeadingSlugs(markdown)], [
+    "quoted-heading",
+    "quoted-atx",
+    "fish--chips",
+    "café--tea",
+    "cafe\u0301",
+    "save-and-rollback",
+    "fish--chips-1",
+  ]);
+});
+
+test("create declarations reject non-file and non-repository paths", () => {
+  const markdown = [
+    "- Create: `scripts/./nested/../future.mjs`",
+    "- Create: `scripts\\nested\\..\\windows.mjs`",
+    "- Create: `/absolute.mjs`",
+    "- Create: `%2Fencoded-absolute.mjs`",
+    "- Create: `C:\\absolute.mjs`",
+    "- Create: `https://example.com/future.mjs`",
+    "- Create: `file:///tmp/future.mjs`",
+    "- Create: `scripts/../../outside.mjs`",
+    "- Create: `scripts/%2e%2e/%2e%2e/encoded.mjs`",
+    "- Create: `scripts%5c..%5c..%5cencoded-backslash.mjs`",
+    "- Create: `scripts/future-*.mjs`",
+    "- Create: `scripts/future?.mjs`",
+    "- Create: `scripts/future/`",
+    "- Create: `scripts/future/.`",
+    "- Create: `scripts/future/..`",
+    "- Create: `scripts/malformed%2.mjs`",
+    "- Create: `scripts/control\u0001.mjs`",
+    "- Create: `scripts/nul\u0000.mjs`",
+  ].join("\n");
+
+  assert.deepEqual(
+    [...collectDeclaredCreatePaths(markdown, "docs/superpowers/plans/example.md")],
+    ["scripts/future.mjs", "scripts/windows.mjs"],
+  );
+});
+
 test("requires every gate term to be an exact pnpm script invocation", () => {
   assert.deepEqual(
     parseGateMembers("pnpm verify:a && pnpm run verify:b && pnpm verify:c"),
@@ -215,14 +403,35 @@ test("requires every gate term to be an exact pnpm script invocation", () => {
     "pnpm verify:a ; echo skipped",
     "pnpm verify:a > /dev/null",
     "pnpm verify:a --flag",
-    "pnpm verify:a\nnode ignored.mjs",
     "pnpm verify:a | cat",
     "pnpm verify:a & echo skipped",
+    "\u00a0pnpm verify:a",
   ]) {
     assert.throws(
       () => parseGateMembers(command),
       /gate term must be/,
       command,
+    );
+  }
+});
+
+test("rejects gate line terminators before splitting terms", () => {
+  assert.deepEqual(
+    parseGateMembers("\tpnpm verify:a\t && \tpnpm run verify:b\t"),
+    ["verify:a", "verify:b"],
+  );
+  for (const command of [
+    "\npnpm verify:a && pnpm verify:b",
+    "pnpm verify:a\r&& pnpm verify:b",
+    "pnpm verify:a &&\r\npnpm verify:b",
+    "pnpm verify:a && pnpm verify:b\u2028",
+    "pnpm verify:a\u2029&& pnpm verify:b",
+    "pnpm verify:a \\\n&& pnpm verify:b",
+  ]) {
+    assert.throws(
+      () => parseGateMembers(command),
+      /gate command must be a single line/u,
+      JSON.stringify(command),
     );
   }
 });
@@ -235,4 +444,229 @@ test("requires exact gate order and membership", () => {
     ],
   );
   assert.deepEqual(validateGateMembers(["verify:a"], ["verify:a"]), []);
+});
+
+test("manifest shape failures are deterministic and fail closed", async (t) => {
+  const cases = [
+    {
+      name: "null root",
+      manifest: null,
+      message: "scripts/repository-governance.json must be a plain object",
+    },
+    {
+      name: "wrong forbidden_patterns type",
+      mutate(manifest) {
+        manifest.forbidden_patterns = "";
+      },
+      message:
+        "scripts/repository-governance.json.forbidden_patterns must be an array of nonempty strings",
+    },
+    {
+      name: "wrong required_text type",
+      mutate(manifest) {
+        manifest.required_text = [];
+      },
+      message:
+        "scripts/repository-governance.json.required_text must be a plain object",
+    },
+    {
+      name: "missing gate",
+      mutate(manifest) {
+        delete manifest.gate;
+      },
+      message: "scripts/repository-governance.json is missing required key: gate",
+    },
+    {
+      name: "unexpected root key and duplicate member",
+      mutate(manifest) {
+        manifest.extra = true;
+        manifest.gate.members.push("verify:a");
+      },
+      messages: [
+        "scripts/repository-governance.json has unexpected key: extra",
+        "scripts/repository-governance.json.gate.members contains duplicate value: verify:a",
+      ],
+    },
+  ];
+
+  for (const fixtureCase of cases) {
+    await t.test(fixtureCase.name, () => {
+      const manifest = Object.hasOwn(fixtureCase, "manifest")
+        ? fixtureCase.manifest
+        : structuredClone(VALID_MANIFEST);
+      fixtureCase.mutate?.(manifest);
+      const root = createGovernanceFixture(manifest);
+      try {
+        const result = runGovernanceFixture(root);
+        assert.equal(result.status, 1, result.stdout || result.stderr);
+        for (const message of fixtureCase.messages ?? [fixtureCase.message]) {
+          assert.match(result.stderr, new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        }
+        assert.doesNotMatch(result.stderr, /TypeError|\n\s+at /u);
+        assert.doesNotMatch(result.stderr, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("manifest validator reports exact-key type and duplicate errors in order", () => {
+  assert.deepEqual(validateGovernanceManifest(structuredClone(VALID_MANIFEST)), []);
+
+  const manifest = structuredClone(VALID_MANIFEST);
+  manifest.extra = true;
+  manifest.policy_documents.push("README.md");
+  manifest.required_text["README.md"] = [];
+  manifest.forbidden_patterns.push("FORBIDDEN");
+  manifest.forbidden_paths = [42];
+  manifest.gate.extra = true;
+  manifest.gate.script = " ";
+  manifest.gate.members.push("verify:a");
+
+  assert.deepEqual(validateGovernanceManifest(manifest), [
+    "scripts/repository-governance.json has unexpected key: extra",
+    "scripts/repository-governance.json.policy_documents contains duplicate value: README.md",
+    "scripts/repository-governance.json.required_text.README.md must be an array of nonempty strings",
+    "scripts/repository-governance.json.forbidden_patterns contains duplicate value: FORBIDDEN",
+    "scripts/repository-governance.json.forbidden_paths must be an array of nonempty strings",
+    "scripts/repository-governance.json.gate has unexpected key: extra",
+    "scripts/repository-governance.json.gate.script must be a nonempty string",
+    "scripts/repository-governance.json.gate.members contains duplicate value: verify:a",
+  ]);
+});
+
+test("JSON load failures use stable repository-relative diagnostics", async (t) => {
+  const cases = [
+    {
+      name: "missing manifest",
+      prepare(root) {
+        rmSync(join(root, "scripts", "repository-governance.json"));
+      },
+      message: "scripts/repository-governance.json is unreadable",
+    },
+    {
+      name: "invalid manifest JSON",
+      prepare(root) {
+        writeFileSync(join(root, "scripts", "repository-governance.json"), "{\n");
+      },
+      message: "scripts/repository-governance.json is invalid JSON",
+    },
+  ];
+
+  for (const fixtureCase of cases) {
+    await t.test(fixtureCase.name, () => {
+      const root = createGovernanceFixture();
+      try {
+        fixtureCase.prepare(root);
+        const result = runGovernanceFixture(root);
+        assert.equal(result.status, 1, result.stdout || result.stderr);
+        assert.match(result.stderr, new RegExp(`- ${fixtureCase.message}`));
+        assert.doesNotMatch(
+          result.stderr,
+          new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("tracked file type failures are stable and deduplicated", async (t) => {
+  const cases = [
+    {
+      name: "symlink policy",
+      prepare(root) {
+        mkdirSync(join(root, "docs"));
+        writeFileSync(join(root, "docs", "safe.md"), "Required marker\n");
+        rmSync(join(root, "README.md"));
+        symlinkSync("docs/safe.md", join(root, "README.md"));
+        execFileSync("git", ["add", "--all"], { cwd: root });
+      },
+      message: "README.md is not a regular tracked file: index mode 120000",
+    },
+    {
+      name: "gitlink policy",
+      prepare(root) {
+        const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim();
+        execFileSync(
+          "git",
+          ["update-index", "--add", "--cacheinfo", "160000", commit, "README.md"],
+          { cwd: root },
+        );
+      },
+      message: "README.md is not a regular tracked file: index mode 160000",
+    },
+    {
+      name: "deleted regular policy",
+      prepare(root) {
+        rmSync(join(root, "README.md"));
+      },
+      message: "README.md is missing from the working tree",
+    },
+    {
+      name: "unreadable regular policy",
+      prepare(root) {
+        chmodSync(join(root, "README.md"), 0o000);
+      },
+      message: "README.md is unreadable in the working tree",
+    },
+    {
+      name: "directory replaces regular policy",
+      prepare(root) {
+        rmSync(join(root, "README.md"));
+        mkdirSync(join(root, "README.md"));
+      },
+      message: "README.md is not a regular working-tree file",
+    },
+    {
+      name: "symlinked policy parent",
+      manifest: {
+        ...VALID_MANIFEST,
+        policy_documents: ["docs/policy.md"],
+        required_text: { "docs/policy.md": ["Required marker"] },
+      },
+      prepare(root) {
+        mkdirSync(join(root, "docs"));
+        writeFileSync(join(root, "docs", "policy.md"), "Required marker\n");
+        execFileSync("git", ["add", "docs/policy.md"], { cwd: root });
+        execFileSync("git", ["commit", "-qm", "add nested policy"], {
+          cwd: root,
+        });
+        renameSync(join(root, "docs"), join(root, "real-docs"));
+        symlinkSync("real-docs", join(root, "docs"));
+      },
+      message: "docs/policy.md is not a regular working-tree file",
+    },
+  ];
+
+  for (const fixtureCase of cases) {
+    await t.test(fixtureCase.name, () => {
+      const root = createGovernanceFixture(fixtureCase.manifest);
+      try {
+        fixtureCase.prepare(root);
+        const result = runGovernanceFixture(root);
+        assert.equal(result.status, 1, result.stdout || result.stderr);
+        const diagnostics = result.stderr
+          .split("\n")
+          .filter((line) => line === `- ${fixtureCase.message}`);
+        assert.equal(diagnostics.length, 1, result.stderr);
+        assert.doesNotMatch(
+          result.stderr,
+          new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
+      } finally {
+        try {
+          chmodSync(join(root, "README.md"), 0o600);
+        } catch {
+          // Missing/nonregular fixtures do not need permission restoration.
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 });
