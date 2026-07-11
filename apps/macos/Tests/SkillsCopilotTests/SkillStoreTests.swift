@@ -92,6 +92,12 @@ struct SkillStoreTests {
         try await runCase("localHistoryFailureRetryPreservesRows") {
             try await localHistoryFailureRetryPreservesRows()
         }
+        try await runCase("selectedCachedPartialEventHistoryRetriesOnRevisit") {
+            try await selectedCachedPartialEventHistoryRetriesOnRevisit()
+        }
+        try await runCase("invalidatedEventGenerationCannotABAIntoReplacement") {
+            try await invalidatedEventGenerationCannotABAIntoReplacement()
+        }
         try await runCase("cancellingLocalHistoryLoadAllPreservesAcceptedRows") {
             try await cancellingLocalHistoryLoadAllPreservesAcceptedRows()
         }
@@ -1254,6 +1260,43 @@ struct SkillStoreTests {
         try expectEqual(changedStore.agentConfigSnapshots.count, 100, "Source change must retain the accepted first page.")
         try expectEqual(changedStore.agentConfigSnapshotCompleteness.completeness, .incomplete, "Source change should be terminal incomplete.")
         try expectEqual(changedStore.agentConfigSnapshotCompleteness.incompleteReason, .sourceChanged, "Source change reason")
+    }
+
+    private func selectedCachedPartialEventHistoryRetriesOnRevisit() async throws {
+        let runner = LocalHistoryPageRunner(
+            failSecondMethods: ["skill.listEventsPage"],
+            includesSelectedSkillFixture: true
+        )
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.reload()
+        try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "Initial selected history should preserve the first page.")
+        try expectEqual(store.selectedSkillEventCompleteness.completeness, .partial, "The selected cached failure must be visibly partial.")
+
+        await store.loadSelectedDetail()
+
+        try expectEqual(store.skillEventsByID["skill-1"]?.count, 201, "Revisiting a cached partial history should retry its accepted cursor.")
+        try expectEqual(store.selectedSkillEventCompleteness.completeness, .complete, "A successful revisit should finish selected event history.")
+    }
+
+    private func invalidatedEventGenerationCannotABAIntoReplacement() async throws {
+        let runner = EventHistoryABARunner()
+        let store = SkillStore(service: runner.serviceClient())
+
+        let oldTask = Task { await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true) }
+        try await waitUntil("The old event request should be suspended.") {
+            runner.syncCallCount == 1
+        }
+        store.invalidateDetailCaches(for: ["skill-1"])
+
+        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
+        try expectEqual(store.skillEventsByID["skill-1"]?.map(\.id), [2], "The replacement generation should publish only its current response.")
+
+        runner.releaseOldResponse()
+        await oldTask.value
+
+        try expectEqual(store.skillEventsByID["skill-1"]?.map(\.id), [2], "A late pre-invalidation response must never enter the replacement accumulator.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "The stale response must not degrade replacement completeness.")
     }
 
     private func cancellingLocalHistoryLoadAllPreservesAcceptedRows() async throws {
@@ -4355,6 +4398,7 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
     private let failSecondMethods: Set<String>
     private let sourceChangedSecondMethods: Set<String>
     private let delayedThirdMethods: Set<String>
+    private let includesSelectedSkillFixture: Bool
     private var failedMethods = Set<String>()
     private var recordedCursors: [String: [String?]] = [:]
     private var callCounts: [String: Int] = [:]
@@ -4364,11 +4408,13 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
     init(
         failSecondMethods: Set<String> = [],
         sourceChangedSecondMethods: Set<String> = [],
-        delayedThirdMethods: Set<String> = []
+        delayedThirdMethods: Set<String> = [],
+        includesSelectedSkillFixture: Bool = false
     ) {
         self.failSecondMethods = failSecondMethods
         self.sourceChangedSecondMethods = sourceChangedSecondMethods
         self.delayedThirdMethods = delayedThirdMethods
+        self.includesSelectedSkillFixture = includesSelectedSkillFixture
     }
 
     func serviceClient() -> ServiceClient {
@@ -4380,10 +4426,20 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
         guard let request = try JSONSerialization.jsonObject(with: input) as? [String: Any],
-              let method = request["method"] as? String,
-              let params = request["params"] as? [String: Any] else {
+              let method = request["method"] as? String else {
             return Self.error(code: "invalid_request", message: "invalid test request")
         }
+        if includesSelectedSkillFixture {
+            switch method {
+            case "app.stateSnapshot":
+                return Self.selectedSkillStateSnapshot()
+            case "catalog.getSkill":
+                return Self.selectedSkillDetail()
+            default:
+                break
+            }
+        }
+        let params = request["params"] as? [String: Any] ?? [:]
         let cursor = params["cursor"] as? String
         let offset = cursor.flatMap { Int($0.split(separator: "-").last ?? "") } ?? 0
         let behavior = record(method: method, cursor: cursor, offset: offset)
@@ -4483,7 +4539,7 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
             [
                 "id": total - index,
                 "instance_id": "skill-1",
-                "kind": "scan",
+                "kind": "toggle",
                 "payload": ["index": index],
                 "occurred_at": total - index,
             ]
@@ -4527,6 +4583,117 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
 
     private static func response(result: [String: Any]) -> Data {
         let object: [String: Any] = ["id": "test", "ok": true, "result": result]
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    }
+
+    private static func selectedSkillStateSnapshot() -> Data {
+        response(result: [
+            "status": [
+                "protocol_version": 2,
+                "version": "test",
+                "app_data_dir": "/tmp/app-data",
+                "catalog_path": "/tmp/app-data/catalog.sqlite",
+                "user_home": "/tmp/home",
+                "supported_methods": ["app.stateSnapshot", "catalog.getSkill", "skill.listEventsPage"],
+            ],
+            "skills": [[
+                "id": "skill-1",
+                "agent": "claude-code",
+                "scope": "agent-global",
+                "path": "/tmp/skill-1/SKILL.md",
+                "display_path": "/tmp/skill-1/SKILL.md",
+                "definition_id": "fixture:skill-1",
+                "name": "Skill One",
+                "state": "loaded",
+                "enabled": true,
+            ]],
+            "findings": [],
+            "conflicts": [],
+            "snapshots": [],
+        ])
+    }
+
+    private static func selectedSkillDetail() -> Data {
+        response(result: [
+            "id": "skill-1",
+            "agent": "claude-code",
+            "scope": "agent-global",
+            "path": "/tmp/skill-1/SKILL.md",
+            "display_path": "/tmp/skill-1/SKILL.md",
+            "definition_id": "fixture:skill-1",
+            "name": "Skill One",
+            "description": "Fixture",
+            "state": "loaded",
+            "enabled": true,
+            "frontmatter_raw": "",
+            "body": "",
+            "permissions": [:],
+            "fingerprint": "fixture",
+        ])
+    }
+}
+
+private final class EventHistoryABARunner: ServiceProcessRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private var oldContinuation: CheckedContinuation<Void, Never>?
+
+    var syncCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+
+    func serviceClient() -> ServiceClient {
+        ServiceClient(processRunner: self, serviceURL: URL(fileURLWithPath: "/tmp/event-history-aba-service"))
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let call = nextCall()
+        if call == 1 {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                oldContinuation = continuation
+                lock.unlock()
+            }
+        }
+        return Self.eventPage(id: call == 1 ? 1 : 2)
+    }
+
+    private func nextCall() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        return calls
+    }
+
+    func releaseOldResponse() {
+        lock.lock()
+        let continuation = oldContinuation
+        oldContinuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+
+    private static func eventPage(id: Int64) -> Data {
+        let object: [String: Any] = [
+            "id": "test",
+            "ok": true,
+            "result": [
+                "records": [[
+                    "id": id,
+                    "instance_id": "skill-1",
+                    "kind": "toggle",
+                    "payload": [:],
+                    "occurred_at": id,
+                ]],
+                "source_revision": "sha256:generation-\(id)",
+                "returned_count": 1,
+                "total_count": 1,
+                "has_more": false,
+                "source_completeness": "enumerable",
+            ],
+        ]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
     }
 }

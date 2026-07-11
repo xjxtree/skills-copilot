@@ -219,6 +219,10 @@ struct RecentActivityCard: View {
 struct HistorySection: View {
     let events: [SkillEventRecord]
     let isLoading: Bool
+    let completeness: ListCompletenessState
+    let onLoadMore: () -> Void
+    let onLoadAll: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -234,6 +238,15 @@ struct HistorySection: View {
             .nativePanelSurface()
 
             RecentActivityCard(events: events, isLoading: isLoading)
+
+            if completeness.completeness != .complete || completeness.loadingPhase != .idle {
+                ListCompletenessFooter(
+                    state: completeness,
+                    onLoadMore: onLoadMore,
+                    onLoadAll: onLoadAll,
+                    onCancel: onCancel
+                )
+            }
         }
     }
 }

@@ -122,6 +122,13 @@ pub struct SkillEventRecord {
     pub occurred_at: i64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CatalogPageSnapshot<Record> {
+    pub records: Vec<Record>,
+    pub source_revision: String,
+    pub total_count: usize,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct ConflictGroupRecord {
     pub id: String,
@@ -152,6 +159,8 @@ pub enum CatalogError {
     Sqlite(#[from] rusqlite::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("list source changed during pagination")]
+    SourceChanged,
 }
 
 impl Catalog {

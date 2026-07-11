@@ -1,37 +1,32 @@
-use skills_copilot_catalog::{Catalog, ConfigSnapshotRecord, SkillEventRecord};
+use skills_copilot_catalog::{
+    Catalog, CatalogError, CatalogPageSnapshot, ConfigSnapshotRecord, SkillEventRecord,
+};
 
 use crate::CommandError;
 
-pub fn list_agent_config_snapshot_page(
+pub fn list_agent_config_snapshot_page_snapshot(
     catalog: &Catalog,
     agent: &str,
     scope: Option<&str>,
     before: Option<(i64, &str)>,
     limit: usize,
-) -> Result<Vec<ConfigSnapshotRecord>, CommandError> {
-    Ok(catalog.list_agent_config_snapshot_page(agent, scope, before, limit)?)
+    validate_revision: impl FnOnce(&str) -> Result<(), CatalogError>,
+) -> Result<CatalogPageSnapshot<ConfigSnapshotRecord>, CommandError> {
+    Ok(catalog.list_agent_config_snapshot_page_snapshot(
+        agent,
+        scope,
+        before,
+        limit,
+        validate_revision,
+    )?)
 }
 
-pub fn list_agent_config_snapshot_revision_metadata(
-    catalog: &Catalog,
-    agent: &str,
-    scope: Option<&str>,
-) -> Result<Vec<(String, i64)>, CommandError> {
-    Ok(catalog.list_agent_config_snapshot_revision_metadata(agent, scope)?)
-}
-
-pub fn list_skill_event_page(
+pub fn list_skill_event_page_snapshot(
     catalog: &Catalog,
     instance_id: &str,
     before: Option<(i64, i64)>,
     limit: usize,
-) -> Result<Vec<SkillEventRecord>, CommandError> {
-    Ok(catalog.list_skill_event_page(instance_id, before, limit)?)
-}
-
-pub fn list_skill_event_revision_metadata(
-    catalog: &Catalog,
-    instance_id: &str,
-) -> Result<Vec<(i64, i64)>, CommandError> {
-    Ok(catalog.list_skill_event_revision_metadata(instance_id)?)
+    validate_revision: impl FnOnce(&str) -> Result<(), CatalogError>,
+) -> Result<CatalogPageSnapshot<SkillEventRecord>, CommandError> {
+    Ok(catalog.list_skill_event_page_snapshot(instance_id, before, limit, validate_revision)?)
 }

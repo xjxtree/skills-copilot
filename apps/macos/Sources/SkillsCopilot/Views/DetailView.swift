@@ -203,12 +203,23 @@ private struct SkillDetailContentView: View {
                 findings: store.selectedDisplayFindings,
                 conflicts: store.selectedConflicts,
                 selectedSkillID: skill.id,
-                currentAgentSkillIDs: Set(store.skills.filter { $0.agent == skill.agent }.map(\.id))
+                currentAgentSkillIDs: Set(store.skills.filter { $0.agent == skill.agent }.map(\.id)),
+                catalogCompleteness: store.catalogListCompleteness
             )
         case .history:
             HistorySection(
                 events: store.selectedSkillEvents,
-                isLoading: store.isLoadingSelectedSkillEvents
+                isLoading: store.isLoadingSelectedSkillEvents,
+                completeness: store.selectedSkillEventCompleteness,
+                onLoadMore: {
+                    Task { await store.loadMoreSkillEvents(instanceID: skill.id, loadAll: false) }
+                },
+                onLoadAll: {
+                    Task { await store.loadMoreSkillEvents(instanceID: skill.id, loadAll: true) }
+                },
+                onCancel: {
+                    store.cancelSkillEventLoadAll(instanceID: skill.id)
+                }
             )
         case .metadata:
             SkillDetailCard(

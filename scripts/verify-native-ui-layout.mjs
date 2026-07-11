@@ -104,6 +104,21 @@ const checks = [
       && /struct ExpandableSummaryList<[\s\S]*?list-completeness\.show-all/.test(files.listCompletenessControls),
   },
   {
+    label: "detail event history exposes retryable completeness actions",
+    text: files.detail + "\n" + files.detailHeaderOverview,
+    passed: /HistorySection\([\s\S]*?completeness:\s*store\.selectedSkillEventCompleteness[\s\S]*?onLoadMore:[\s\S]*?loadMoreSkillEvents[\s\S]*?onLoadAll:[\s\S]*?loadMoreSkillEvents[\s\S]*?onCancel:[\s\S]*?cancelSkillEventLoadAll/.test(files.detail)
+      && /struct HistorySection:[\s\S]*?let completeness:\s*ListCompletenessState[\s\S]*?ListCompletenessFooter\([\s\S]*?state:\s*completeness/.test(files.detailHeaderOverview),
+  },
+  {
+    label: "findings and conflicts expose catalog scan completeness",
+    text: files.detail + "\n" + files.detailFindingsHistory,
+    passed: /FindingsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogListCompleteness/.test(files.detail)
+      && /struct FindingsSection:[\s\S]*?let catalogCompleteness:\s*ListCompletenessState[\s\S]*?ListCompletenessFooter/.test(files.detailFindingsHistory)
+      && /if findings\.isEmpty && conflicts\.isEmpty\s*\{\s*if catalogCompleteness\.completeness == \.complete\s*\{[\s\S]*?UIStrings\.noFindings/.test(files.detailFindingsHistory)
+      && /catalogCompletenessState\([\s\S]*?loadedCount:\s*findings\.count/.test(files.detailFindingsHistory)
+      && /catalogCompletenessState\([\s\S]*?loadedCount:\s*conflicts\.count/.test(files.detailFindingsHistory),
+  },
+  {
     label: "app window defines stable minimum size and user-selectable appearance",
     text: files.app + "\n" + files.appTheme + "\n" + files.appThemePlatform + "\n" + files.mainWindowCoordinator + "\n" + files.mainWindowModel,
     passed: /static let minimumWidth = 1349/.test(files.mainWindowModel)

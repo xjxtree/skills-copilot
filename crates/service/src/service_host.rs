@@ -1536,23 +1536,30 @@ fn config_snapshot_page_result(
     let scope = params.scope.as_deref().filter(|scope| !scope.is_empty());
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
     let query_digest = tagged_digest(METHOD, &(params.agent.as_str(), scope))?;
-    let metadata = list_agent_config_snapshot_revision_metadata(catalog, &params.agent, scope)?;
-    let source_revision = tagged_digest(METHOD, &metadata)?;
     let cursor = params
         .cursor
         .as_deref()
         .map(|text| decode_cursor(text, METHOD, &query_digest))
         .transpose()?;
-    validate_source_revision(
-        params.source_revision.as_deref(),
-        cursor.as_ref(),
-        &source_revision,
-    )?;
     let before = cursor
         .as_ref()
         .map(|cursor| (cursor.sort_value, cursor.stable_id.as_str()));
-    let mut records =
-        list_agent_config_snapshot_page(catalog, &params.agent, scope, before, limit)?;
+    let requested_revision = params.source_revision.as_deref();
+    let cursor_revision = cursor
+        .as_ref()
+        .map(|cursor| cursor.source_revision.as_str());
+    let snapshot = list_agent_config_snapshot_page_snapshot(
+        catalog,
+        &params.agent,
+        scope,
+        before,
+        limit,
+        |current| validate_catalog_source_revision(requested_revision, cursor_revision, current),
+    )
+    .map_err(map_history_page_error)?;
+    let source_revision = snapshot.source_revision;
+    let total_count = snapshot.total_count;
+    let mut records = snapshot.records;
     let has_more = records.len() > limit;
     if has_more {
         records.truncate(limit);
@@ -1576,7 +1583,7 @@ fn config_snapshot_page_result(
         None
     };
     Ok(ConfigSnapshotPageResult {
-        page: ListPageMetadata::enumerable(records.len(), Some(metadata.len()), next_cursor),
+        page: ListPageMetadata::enumerable(records.len(), Some(total_count), next_cursor),
         records,
         source_revision,
     })
@@ -1589,18 +1596,11 @@ fn skill_event_page_result(
     const METHOD: &str = "skill.listEventsPage";
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
     let query_digest = tagged_digest(METHOD, &params.instance_id)?;
-    let metadata = list_skill_event_revision_metadata(catalog, &params.instance_id)?;
-    let source_revision = tagged_digest(METHOD, &metadata)?;
     let cursor = params
         .cursor
         .as_deref()
         .map(|text| decode_cursor(text, METHOD, &query_digest))
         .transpose()?;
-    validate_source_revision(
-        params.source_revision.as_deref(),
-        cursor.as_ref(),
-        &source_revision,
-    )?;
     let before = cursor
         .as_ref()
         .map(|cursor| {
@@ -1611,7 +1611,18 @@ fn skill_event_page_result(
                 .map_err(|_| ServiceError::InvalidRequest("event cursor id is invalid".to_string()))
         })
         .transpose()?;
-    let mut records = list_skill_event_page(catalog, &params.instance_id, before, limit)?;
+    let requested_revision = params.source_revision.as_deref();
+    let cursor_revision = cursor
+        .as_ref()
+        .map(|cursor| cursor.source_revision.as_str());
+    let snapshot =
+        list_skill_event_page_snapshot(catalog, &params.instance_id, before, limit, |current| {
+            validate_catalog_source_revision(requested_revision, cursor_revision, current)
+        })
+        .map_err(map_history_page_error)?;
+    let source_revision = snapshot.source_revision;
+    let total_count = snapshot.total_count;
+    let mut records = snapshot.records;
     let has_more = records.len() > limit;
     if has_more {
         records.truncate(limit);
@@ -1635,23 +1646,30 @@ fn skill_event_page_result(
         None
     };
     Ok(SkillEventPageResult {
-        page: ListPageMetadata::enumerable(records.len(), Some(metadata.len()), next_cursor),
+        page: ListPageMetadata::enumerable(records.len(), Some(total_count), next_cursor),
         records,
         source_revision,
     })
 }
 
-fn validate_source_revision(
+fn validate_catalog_source_revision(
     requested: Option<&str>,
-    cursor: Option<&KeysetCursor>,
+    cursor_revision: Option<&str>,
     current: &str,
-) -> Result<(), ServiceError> {
+) -> Result<(), CatalogError> {
     if requested.is_some_and(|revision| revision != current)
-        || cursor.is_some_and(|cursor| cursor.source_revision != current)
+        || cursor_revision.is_some_and(|revision| revision != current)
     {
-        return Err(ServiceError::SourceChanged);
+        return Err(CatalogError::SourceChanged);
     }
     Ok(())
+}
+
+fn map_history_page_error(error: CommandError) -> ServiceError {
+    match error {
+        CommandError::Catalog(CatalogError::SourceChanged) => ServiceError::SourceChanged,
+        error => ServiceError::Command(error),
+    }
 }
 
 fn tagged_digest<T: Serialize>(domain: &str, value: &T) -> Result<String, ServiceError> {

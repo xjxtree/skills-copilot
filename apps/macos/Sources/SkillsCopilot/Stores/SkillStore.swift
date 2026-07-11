@@ -154,6 +154,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var detailsByID: [SkillRecord.ID: SkillDetailRecord] = [:]
     @Published private(set) var skillEventsByID: [SkillRecord.ID: [SkillEventRecord]] = [:]
     @Published private(set) var skillEventCompletenessByID: [SkillRecord.ID: ListCompletenessState] = [:]
+    private var skillEventLoadGenerationValue = 0
     private(set) var adoptingAgentSummaryBySkillID: [SkillRecord.ID: String] = [:]
     @Published private(set) var loadingSkillEventIDs: Set<SkillRecord.ID> = []
     @Published private(set) var status: ServiceStatus?
@@ -804,11 +805,12 @@ final class SkillStore: ObservableObject {
 
     func invalidateDetailCaches(for instanceIDs: some Sequence<SkillRecord.ID>) {
         for instanceID in instanceIDs {
+            skillEventLoadGenerationValue &+= 1
+            skillEventLoadGenerations[instanceID] = skillEventLoadGenerationValue
             detailsByID.removeValue(forKey: instanceID)
             skillEventsByID.removeValue(forKey: instanceID)
             skillEventAccumulatorsByID.removeValue(forKey: instanceID)
             skillEventCompletenessByID.removeValue(forKey: instanceID)
-            skillEventLoadGenerations.removeValue(forKey: instanceID)
             loadingSkillEventIDs.remove(instanceID)
         }
     }
@@ -3969,6 +3971,9 @@ final class SkillStore: ObservableObject {
 
     private func loadSkillEventsIfNeeded(instanceID: SkillRecord.ID, force: Bool = false) async {
         if !force, skillEventsByID[instanceID] != nil {
+            if skillEventCompletenessByID[instanceID]?.canLoadAll == true {
+                await loadMoreSkillEvents(instanceID: instanceID, loadAll: true)
+            }
             return
         }
         if force || skillEventAccumulatorsByID[instanceID] == nil {
@@ -3983,7 +3988,8 @@ final class SkillStore: ObservableObject {
     func loadMoreSkillEvents(instanceID: SkillRecord.ID, loadAll: Bool) async {
         guard !loadingSkillEventIDs.contains(instanceID) else { return }
         var accumulator = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
-        let generation = (skillEventLoadGenerations[instanceID] ?? 0) &+ 1
+        skillEventLoadGenerationValue &+= 1
+        let generation = skillEventLoadGenerationValue
         skillEventLoadGenerations[instanceID] = generation
         accumulator.begin(accumulator.items.isEmpty ? .initial : (loadAll ? .all : .more))
         skillEventAccumulatorsByID[instanceID] = accumulator
@@ -4049,7 +4055,8 @@ final class SkillStore: ObservableObject {
     }
 
     func cancelSkillEventLoadAll(instanceID: SkillRecord.ID) {
-        skillEventLoadGenerations[instanceID] = (skillEventLoadGenerations[instanceID] ?? 0) &+ 1
+        skillEventLoadGenerationValue &+= 1
+        skillEventLoadGenerations[instanceID] = skillEventLoadGenerationValue
         skillEventAccumulatorsByID[instanceID]?.cancel()
         loadingSkillEventIDs.remove(instanceID)
         publishSkillEventPaging(instanceID: instanceID)

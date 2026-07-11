@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skills_copilot_catalog::{
-    Catalog, ConfigSnapshotRecord, ConflictGroupRecord, FindingTriageRecord, RuleFindingRecord,
-    RuleTuningRecord, SkillDetailRecord, SkillEventRecord, SkillRecord,
+    Catalog, CatalogError, ConfigSnapshotRecord, ConflictGroupRecord, FindingTriageRecord,
+    RuleFindingRecord, RuleTuningRecord, SkillDetailRecord, SkillEventRecord, SkillRecord,
 };
 use skills_copilot_commands::{
     analyze_catalog, apply_install_with_manager, apply_local_create_with_manager,
@@ -19,11 +19,10 @@ use skills_copilot_commands::{
     commit_prepared_claude_settings_save, delete_local_skill_with_manager, export_skill_bundle,
     export_staging_skill_bundle, get_skill, import_github_skill_to_tool_global_deferred,
     import_local_skill_to_tool_global, install_skill_from_tool_global, list_adapter_capabilities,
-    list_adapter_diagnostics, list_agent_config_snapshot_page,
-    list_agent_config_snapshot_revision_metadata, list_agent_config_snapshots, list_conflicts,
-    list_finding_triage, list_findings, list_installed_skills_with_manager, list_rule_tuning,
-    list_skill_event_page, list_skill_event_revision_metadata, list_skill_events,
-    list_skill_management_tools, list_snapshots, prepare_claude_settings_save,
+    list_adapter_diagnostics, list_agent_config_snapshot_page_snapshot,
+    list_agent_config_snapshots, list_conflicts, list_finding_triage, list_findings,
+    list_installed_skills_with_manager, list_rule_tuning, list_skill_event_page_snapshot,
+    list_skill_events, list_skill_management_tools, list_snapshots, prepare_claude_settings_save,
     preview_install_with_manager, preview_local_create_with_manager, preview_remove_with_manager,
     preview_script_execution, preview_skill_toggles, preview_snapshot_rollback,
     preview_update_with_manager, read_agent_config, read_claude_settings,
@@ -31,13 +30,13 @@ use skills_copilot_commands::{
     scan_claude_catalog_report, search_skills_with_manager, set_finding_triage,
     set_rule_severity_override, set_rule_suppression, skill_health_summary, toggle_skill,
     AdapterCapabilityRecord, AdapterDiagnosticsRecord, AgentCatalogScanPathAlias,
-    AgentCatalogScanReport, BatchToggleApplyRecord, BatchTogglePreviewRecord, ConfigDocumentRecord,
-    CrossAgentAnalysisRecord, ExportedSkillBundle, ScriptExecutionAttemptRecord,
-    ScriptExecutionPreviewRecord, ScriptExecutionRequest, SkillHealthSummary,
-    SkillInstallPreviewRecord, SkillManagerDeleteLocalParams, SkillManagerInstallParams,
-    SkillManagerListInstalledParams, SkillManagerLocalCreateParams, SkillManagerRemoveParams,
-    SkillManagerSearchParams, SkillManagerUpdateParams, SnapshotRollbackPreviewRecord,
-    ToolGlobalImportResult, SCRIPT_EXECUTION_DISABLED_REASON,
+    AgentCatalogScanReport, BatchToggleApplyRecord, BatchTogglePreviewRecord, CommandError,
+    ConfigDocumentRecord, CrossAgentAnalysisRecord, ExportedSkillBundle,
+    ScriptExecutionAttemptRecord, ScriptExecutionPreviewRecord, ScriptExecutionRequest,
+    SkillHealthSummary, SkillInstallPreviewRecord, SkillManagerDeleteLocalParams,
+    SkillManagerInstallParams, SkillManagerListInstalledParams, SkillManagerLocalCreateParams,
+    SkillManagerRemoveParams, SkillManagerSearchParams, SkillManagerUpdateParams,
+    SnapshotRollbackPreviewRecord, ToolGlobalImportResult, SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_core::{
     AdapterContext, AdapterRoot, AgentId, ListPageMetadata, RootSource, Scope,

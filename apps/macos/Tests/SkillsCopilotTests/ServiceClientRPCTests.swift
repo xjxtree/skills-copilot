@@ -78,6 +78,20 @@ struct ServiceClientRPCTests {
         try expectEqual(events.totalCount, Optional(2), "Event page should decode camelCase metadata aliases.")
         try expectEqual(events.sourceRevision, "sha256:event-revision", "Event source revision alias")
 
+        let camelSnapshot = try JSONDecoder().decode(
+            ListPageWireResult<ConfigSnapshotRecord>.self,
+            from: Data(#"{"records":[{"id":"snapshot-camel","agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","content":"{}","reason":"pre-toggle","created_at":1}],"sourceRevision":"sha256:camel-snapshot","returnedCount":1,"totalCount":1,"hasMore":false,"nextCursor":null,"sourceCompleteness":"enumerable","incompleteReason":null}"#.utf8)
+        )
+        let snakeEvent = try JSONDecoder().decode(
+            ListPageWireResult<SkillEventRecord>.self,
+            from: Data(#"{"records":[{"id":9,"instance_id":"skill-1","kind":"toggle","payload":{},"occurred_at":1}],"source_revision":"sha256:snake-event","returned_count":1,"total_count":1,"has_more":false,"next_cursor":null,"source_completeness":"enumerable","incomplete_reason":null}"#.utf8)
+        )
+        try expectEqual(camelSnapshot.records.map(\.id), ["snapshot-camel"], "The shared page wire type should decode camelCase snapshot metadata.")
+        try expectEqual(snakeEvent.records.map(\.id), [Int64(9)], "The shared page wire type should decode snake_case event metadata.")
+        let snapshotWireKeys = try encodedObjectKeys(camelSnapshot)
+        let eventWireKeys = try encodedObjectKeys(snakeEvent)
+        try expectEqual(snapshotWireKeys, eventWireKeys, "Snapshot and event pages must encode the same canonical wire metadata aliases.")
+
         let snapshotParams = try runner.params(for: "snapshot.listAgentConfigPage")
         try expectEqual(snapshotParams["agent"] as? String, Optional("claude-code"), "Snapshot page agent")
         try expectEqual(snapshotParams["limit"] as? Int, Optional(100), "Snapshot page limit")
@@ -86,6 +100,14 @@ struct ServiceClientRPCTests {
         try expectEqual(eventParams["instance_id"] as? String, Optional("skill-1"), "Event page stable instance id")
         try expectEqual(eventParams["cursor"] as? String, Optional("v1:event-page-1"), "Event continuation cursor")
         try expectEqual(eventParams["source_revision"] as? String, Optional("sha256:event-revision"), "Event source revision")
+    }
+
+    private func encodedObjectKeys<T: Encodable>(_ value: T) throws -> Set<String> {
+        let data = try JSONEncoder().encode(value)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NativeModelTestFailure(description: "Encoded page result should be a JSON object.")
+        }
+        return Set(object.keys)
     }
 
     private func configConsistencyRequestsUseExactBindings() async throws {

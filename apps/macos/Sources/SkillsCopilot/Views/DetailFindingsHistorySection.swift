@@ -7,6 +7,7 @@ struct FindingsSection: View {
     let conflicts: [ConflictGroupRecord]
     let selectedSkillID: String
     let currentAgentSkillIDs: Set<String>
+    let catalogCompleteness: ListCompletenessState
     @State private var ruleFilter = FindingDisplayModel.allFilterValue
 
     private var ruleIDOptions: [String] {
@@ -24,11 +25,13 @@ struct FindingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if findings.isEmpty && conflicts.isEmpty {
-                EmptyState(
-                    title: UIStrings.noFindings,
-                    systemImage: "checkmark.seal",
-                    message: UIStrings.noFindingsForSkillMessage(DisplayText.agent(skill.agent))
-                )
+                if catalogCompleteness.completeness == .complete {
+                    EmptyState(
+                        title: UIStrings.noFindings,
+                        systemImage: "checkmark.seal",
+                        message: UIStrings.noFindingsForSkillMessage(DisplayText.agent(skill.agent))
+                    )
+                }
             } else {
                 FindingsControlPanel(
                     showsFilters: !findings.isEmpty,
@@ -64,6 +67,17 @@ struct FindingsSection: View {
                     )
                 }
             }
+
+            if catalogCompleteness.completeness != .complete {
+                catalogCoverageFooter(
+                    label: UIStrings.text("findings.catalogCoverage", "Findings scan coverage"),
+                    state: catalogCompletenessState(loadedCount: findings.count)
+                )
+                catalogCoverageFooter(
+                    label: UIStrings.text("conflicts.catalogCoverage", "Conflict scan coverage"),
+                    state: catalogCompletenessState(loadedCount: conflicts.count)
+                )
+            }
         }
         .onAppear {
             clampFilters()
@@ -77,6 +91,33 @@ struct FindingsSection: View {
         if ruleFilter != FindingDisplayModel.allFilterValue && !ruleIDOptions.contains(ruleFilter) {
             ruleFilter = FindingDisplayModel.allFilterValue
         }
+    }
+
+    private func catalogCompletenessState(loadedCount: Int) -> ListCompletenessState {
+        ListCompletenessState(
+            loadedCount: loadedCount,
+            totalCount: catalogCompleteness.completeness == .complete ? loadedCount : nil,
+            hasMore: false,
+            isComplete: catalogCompleteness.isComplete,
+            completeness: catalogCompleteness.completeness,
+            incompleteReason: catalogCompleteness.incompleteReason,
+            loadingPhase: catalogCompleteness.loadingPhase,
+            canLoadMore: false,
+            canLoadAll: false
+        )
+    }
+
+    @ViewBuilder
+    private func catalogCoverageFooter(label: String, state: ListCompletenessState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            ListCompletenessFooter(state: state, onLoadMore: {}, onLoadAll: {}, onCancel: {})
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .nativePanelSurface()
     }
 }
 

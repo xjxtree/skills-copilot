@@ -239,49 +239,24 @@ impl Catalog {
         }
     }
 
-    pub fn list_skill_event_page(
+    pub fn list_skill_event_page_snapshot(
         &self,
         instance_id: &str,
         before: Option<(i64, i64)>,
         limit: usize,
-    ) -> Result<Vec<SkillEventRecord>, CatalogError> {
-        let (before_occurred_at, before_id) = before.unzip();
-        let limit_i64 = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
-        let mut stmt = self.conn.prepare(
-            "SELECT id, instance_id, kind, payload, occurred_at
-             FROM skill_event
-             WHERE instance_id = ?1
-               AND (?2 IS NULL OR occurred_at < ?2 OR (occurred_at = ?2 AND id < ?3))
-             ORDER BY occurred_at DESC, id DESC
-             LIMIT ?4",
-        )?;
-        let rows = stmt.query_map(
-            params![instance_id, before_occurred_at, before_id, limit_i64],
-            skill_event_from_row,
-        )?;
-        let mut events = Vec::new();
-        for row in rows {
-            events.push(row?);
-        }
-        Ok(events)
-    }
-
-    pub fn list_skill_event_revision_metadata(
-        &self,
-        instance_id: &str,
-    ) -> Result<Vec<(i64, i64)>, CatalogError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, occurred_at
-             FROM skill_event
-             WHERE instance_id = ?1
-             ORDER BY occurred_at DESC, id DESC",
-        )?;
-        let rows = stmt.query_map(params![instance_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let mut metadata = Vec::new();
-        for row in rows {
-            metadata.push(row?);
-        }
-        Ok(metadata)
+        validate_revision: impl FnOnce(&str) -> Result<(), CatalogError>,
+    ) -> Result<CatalogPageSnapshot<SkillEventRecord>, CatalogError> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let metadata = query_skill_event_revision_metadata(&transaction, instance_id)?;
+        let source_revision = history_source_revision("skill.listEventsPage", &metadata)?;
+        validate_revision(&source_revision)?;
+        let records = query_skill_event_page(&transaction, instance_id, before, limit)?;
+        transaction.commit()?;
+        Ok(CatalogPageSnapshot {
+            records,
+            source_revision,
+            total_count: metadata.len(),
+        })
     }
 
     pub fn list_rule_findings(&self) -> Result<Vec<RuleFindingRecord>, CatalogError> {
@@ -660,65 +635,25 @@ impl Catalog {
         }
     }
 
-    pub fn list_agent_config_snapshot_page(
+    pub fn list_agent_config_snapshot_page_snapshot(
         &self,
         agent: &str,
         scope: Option<&str>,
         before: Option<(i64, &str)>,
         limit: usize,
-    ) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
-        let (before_created_at, before_id) = before.unzip();
-        let limit_i64 = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
-        let mut stmt = self.conn.prepare(
-            "SELECT id, agent, scope, target, content, reason, created_at
-             FROM config_snapshot
-             WHERE agent = ?1
-               AND (?2 IS NULL OR scope = ?2)
-               AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
-               AND (?3 IS NULL OR created_at < ?3 OR (created_at = ?3 AND id < ?4))
-             ORDER BY created_at DESC, id DESC
-             LIMIT ?5",
-        )?;
-        let rows = stmt.query_map(
-            params![agent, scope, before_created_at, before_id, limit_i64],
-            |row| {
-                Ok(ConfigSnapshotRecord {
-                    id: row.get(0)?,
-                    agent: row.get(1)?,
-                    scope: row.get(2)?,
-                    target: row.get(3)?,
-                    content: row.get(4)?,
-                    reason: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            },
-        )?;
-        let mut snapshots = Vec::new();
-        for row in rows {
-            snapshots.push(row?);
-        }
-        Ok(snapshots)
-    }
-
-    pub fn list_agent_config_snapshot_revision_metadata(
-        &self,
-        agent: &str,
-        scope: Option<&str>,
-    ) -> Result<Vec<(String, i64)>, CatalogError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, created_at
-             FROM config_snapshot
-             WHERE agent = ?1
-               AND (?2 IS NULL OR scope = ?2)
-               AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
-             ORDER BY created_at DESC, id DESC",
-        )?;
-        let rows = stmt.query_map(params![agent, scope], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let mut metadata = Vec::new();
-        for row in rows {
-            metadata.push(row?);
-        }
-        Ok(metadata)
+        validate_revision: impl FnOnce(&str) -> Result<(), CatalogError>,
+    ) -> Result<CatalogPageSnapshot<ConfigSnapshotRecord>, CatalogError> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let metadata = query_agent_config_snapshot_revision_metadata(&transaction, agent, scope)?;
+        let source_revision = history_source_revision("snapshot.listAgentConfigPage", &metadata)?;
+        validate_revision(&source_revision)?;
+        let records = query_agent_config_snapshot_page(&transaction, agent, scope, before, limit)?;
+        transaction.commit()?;
+        Ok(CatalogPageSnapshot {
+            records,
+            source_revision,
+            total_count: metadata.len(),
+        })
     }
 
     pub fn list_all_config_snapshots(&self) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
@@ -771,6 +706,120 @@ impl Catalog {
             None => Ok(None),
         }
     }
+}
+
+fn query_skill_event_page(
+    connection: &Connection,
+    instance_id: &str,
+    before: Option<(i64, i64)>,
+    limit: usize,
+) -> Result<Vec<SkillEventRecord>, CatalogError> {
+    let (before_occurred_at, before_id) = before.unzip();
+    let limit_i64 = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut stmt = connection.prepare(
+        "SELECT id, instance_id, kind, payload, occurred_at
+         FROM skill_event
+         WHERE instance_id = ?1
+           AND (?2 IS NULL OR occurred_at < ?2 OR (occurred_at = ?2 AND id < ?3))
+         ORDER BY occurred_at DESC, id DESC
+         LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(
+        params![instance_id, before_occurred_at, before_id, limit_i64],
+        skill_event_from_row,
+    )?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn query_skill_event_revision_metadata(
+    connection: &Connection,
+    instance_id: &str,
+) -> Result<Vec<(i64, i64)>, CatalogError> {
+    let mut stmt = connection.prepare(
+        "SELECT id, occurred_at
+         FROM skill_event
+         WHERE instance_id = ?1
+         ORDER BY occurred_at DESC, id DESC",
+    )?;
+    let rows = stmt.query_map(params![instance_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let mut metadata = Vec::new();
+    for row in rows {
+        metadata.push(row?);
+    }
+    Ok(metadata)
+}
+
+fn query_agent_config_snapshot_page(
+    connection: &Connection,
+    agent: &str,
+    scope: Option<&str>,
+    before: Option<(i64, &str)>,
+    limit: usize,
+) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
+    let (before_created_at, before_id) = before.unzip();
+    let limit_i64 = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut stmt = connection.prepare(
+        "SELECT id, agent, scope, target, content, reason, created_at
+         FROM config_snapshot
+         WHERE agent = ?1
+           AND (?2 IS NULL OR scope = ?2)
+           AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
+           AND (?3 IS NULL OR created_at < ?3 OR (created_at = ?3 AND id < ?4))
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?5",
+    )?;
+    let rows = stmt.query_map(
+        params![agent, scope, before_created_at, before_id, limit_i64],
+        |row| {
+            Ok(ConfigSnapshotRecord {
+                id: row.get(0)?,
+                agent: row.get(1)?,
+                scope: row.get(2)?,
+                target: row.get(3)?,
+                content: row.get(4)?,
+                reason: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )?;
+    let mut snapshots = Vec::new();
+    for row in rows {
+        snapshots.push(row?);
+    }
+    Ok(snapshots)
+}
+
+fn query_agent_config_snapshot_revision_metadata(
+    connection: &Connection,
+    agent: &str,
+    scope: Option<&str>,
+) -> Result<Vec<(String, i64)>, CatalogError> {
+    let mut stmt = connection.prepare(
+        "SELECT id, created_at
+         FROM config_snapshot
+         WHERE agent = ?1
+           AND (?2 IS NULL OR scope = ?2)
+           AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
+         ORDER BY created_at DESC, id DESC",
+    )?;
+    let rows = stmt.query_map(params![agent, scope], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let mut metadata = Vec::new();
+    for row in rows {
+        metadata.push(row?);
+    }
+    Ok(metadata)
+}
+
+fn history_source_revision<T: Serialize>(domain: &str, value: &T) -> Result<String, CatalogError> {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(value)?);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 fn skill_detail_record_from_row(row: &Row<'_>) -> rusqlite::Result<SkillDetailRecord> {

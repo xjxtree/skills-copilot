@@ -258,4 +258,11 @@ extension SkillStore {
         guard let id = selectedSkill?.id else { return false }
         return loadingSkillEventIDs.contains(id)
     }
+
+    var selectedSkillEventCompleteness: ListCompletenessState {
+        guard let id = selectedSkill?.id else {
+            return ListPageAccumulator<SkillEventRecord>().state
+        }
+        return skillEventCompletenessByID[id] ?? ListPageAccumulator<SkillEventRecord>().state
+    }
 }

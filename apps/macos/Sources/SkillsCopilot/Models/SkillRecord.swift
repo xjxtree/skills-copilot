@@ -910,8 +910,8 @@ struct SkillEventRecord: Codable, Identifiable, Hashable {
     }
 }
 
-struct ConfigSnapshotPageResult: Codable, Hashable {
-    let records: [ConfigSnapshotRecord]
+struct ListPageWireResult<Record: Codable & Hashable>: Codable, Hashable {
+    let records: [Record]
     let sourceRevision: String
     let returnedCount: Int
     let totalCount: Int?
@@ -920,7 +920,7 @@ struct ConfigSnapshotPageResult: Codable, Hashable {
     let sourceCompleteness: ListSourceCompleteness
     let incompleteReason: ListIncompleteReason?
 
-    var page: ListPage<ConfigSnapshotRecord> {
+    var page: ListPage<Record> {
         ListPage(
             items: records,
             returnedCount: returnedCount,
@@ -953,7 +953,7 @@ struct ConfigSnapshotPageResult: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        records = try container.decode([ConfigSnapshotRecord].self, forKey: .records)
+        records = try container.decode([Record].self, forKey: .records)
         sourceRevision = try Self.decode(String.self, from: container, snake: .sourceRevisionSnake, camel: .sourceRevisionCamel)
         returnedCount = try Self.decode(Int.self, from: container, snake: .returnedCountSnake, camel: .returnedCountCamel)
         totalCount = try Self.decodeOptional(Int.self, from: container, snake: .totalCountSnake, camel: .totalCountCamel)
@@ -996,91 +996,8 @@ struct ConfigSnapshotPageResult: Codable, Hashable {
     }
 }
 
-struct SkillEventPageResult: Codable, Hashable {
-    let records: [SkillEventRecord]
-    let sourceRevision: String
-    let returnedCount: Int
-    let totalCount: Int?
-    let hasMore: Bool
-    let nextCursor: String?
-    let sourceCompleteness: ListSourceCompleteness
-    let incompleteReason: ListIncompleteReason?
-
-    var page: ListPage<SkillEventRecord> {
-        ListPage(
-            items: records,
-            returnedCount: returnedCount,
-            totalCount: totalCount,
-            hasMore: hasMore,
-            nextCursor: nextCursor,
-            sourceRevision: sourceRevision,
-            sourceCompleteness: sourceCompleteness,
-            incompleteReason: incompleteReason
-        )
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case records
-        case sourceRevisionSnake = "source_revision"
-        case sourceRevisionCamel = "sourceRevision"
-        case returnedCountSnake = "returned_count"
-        case returnedCountCamel = "returnedCount"
-        case totalCountSnake = "total_count"
-        case totalCountCamel = "totalCount"
-        case hasMoreSnake = "has_more"
-        case hasMoreCamel = "hasMore"
-        case nextCursorSnake = "next_cursor"
-        case nextCursorCamel = "nextCursor"
-        case sourceCompletenessSnake = "source_completeness"
-        case sourceCompletenessCamel = "sourceCompleteness"
-        case incompleteReasonSnake = "incomplete_reason"
-        case incompleteReasonCamel = "incompleteReason"
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        records = try container.decode([SkillEventRecord].self, forKey: .records)
-        sourceRevision = try Self.decode(String.self, from: container, snake: .sourceRevisionSnake, camel: .sourceRevisionCamel)
-        returnedCount = try Self.decode(Int.self, from: container, snake: .returnedCountSnake, camel: .returnedCountCamel)
-        totalCount = try Self.decodeOptional(Int.self, from: container, snake: .totalCountSnake, camel: .totalCountCamel)
-        hasMore = try Self.decode(Bool.self, from: container, snake: .hasMoreSnake, camel: .hasMoreCamel)
-        nextCursor = try Self.decodeOptional(String.self, from: container, snake: .nextCursorSnake, camel: .nextCursorCamel)
-        sourceCompleteness = try Self.decode(ListSourceCompleteness.self, from: container, snake: .sourceCompletenessSnake, camel: .sourceCompletenessCamel)
-        incompleteReason = try Self.decodeOptional(ListIncompleteReason.self, from: container, snake: .incompleteReasonSnake, camel: .incompleteReasonCamel)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(records, forKey: .records)
-        try container.encode(sourceRevision, forKey: .sourceRevisionSnake)
-        try container.encode(returnedCount, forKey: .returnedCountSnake)
-        try container.encodeIfPresent(totalCount, forKey: .totalCountSnake)
-        try container.encode(hasMore, forKey: .hasMoreSnake)
-        try container.encodeIfPresent(nextCursor, forKey: .nextCursorSnake)
-        try container.encode(sourceCompleteness, forKey: .sourceCompletenessSnake)
-        try container.encodeIfPresent(incompleteReason, forKey: .incompleteReasonSnake)
-    }
-
-    private static func decode<T: Decodable>(
-        _ type: T.Type,
-        from container: KeyedDecodingContainer<CodingKeys>,
-        snake: CodingKeys,
-        camel: CodingKeys
-    ) throws -> T {
-        if let value = try container.decodeIfPresent(T.self, forKey: snake) { return value }
-        return try container.decode(T.self, forKey: camel)
-    }
-
-    private static func decodeOptional<T: Decodable>(
-        _ type: T.Type,
-        from container: KeyedDecodingContainer<CodingKeys>,
-        snake: CodingKeys,
-        camel: CodingKeys
-    ) throws -> T? {
-        if container.contains(snake) { return try container.decodeIfPresent(T.self, forKey: snake) }
-        return try container.decodeIfPresent(T.self, forKey: camel)
-    }
-}
+typealias ConfigSnapshotPageResult = ListPageWireResult<ConfigSnapshotRecord>
+typealias SkillEventPageResult = ListPageWireResult<SkillEventRecord>
 
 struct AdapterCapabilityRecord: Codable, Identifiable, Hashable {
     let agent: String
