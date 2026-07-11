@@ -126,6 +126,8 @@ struct LocalSessionPreviewParams: Encodable {
     let search: String?
     let projectRoot: String?
     let currentCWD: String?
+    let sessionID: String?
+    let includeContentItems: Bool?
     let limit: Int?
     let offset: Int?
     let sort: String?
@@ -141,6 +143,8 @@ struct LocalSessionPreviewParams: Encodable {
         case search
         case projectRoot = "project_root"
         case currentCWD = "current_cwd"
+        case sessionID = "session_id"
+        case includeContentItems = "include_content_items"
         case limit
         case offset
         case sort

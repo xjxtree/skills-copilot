@@ -15,6 +15,7 @@ mod llm_provider;
 mod local_session_inventory;
 mod local_session_preview;
 mod local_session_project_scope;
+mod local_session_summary_detail;
 mod method_effects;
 mod protocol_fixtures;
 mod skill_manager_fixtures;

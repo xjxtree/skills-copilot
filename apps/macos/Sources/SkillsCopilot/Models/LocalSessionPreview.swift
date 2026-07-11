@@ -154,6 +154,7 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
     let skillCallCount: Int
     let contentHash: String
     let evidenceRefs: [String]
+    let contentIncluded: Bool
     let contentItems: [LocalSessionContentItem]
 
     enum CodingKeys: String, CodingKey {
@@ -191,6 +192,8 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
         case evidenceRefs = "evidence_refs"
         case evidenceRefsAlt = "evidenceRefs"
         case evidence
+        case contentIncluded = "content_included"
+        case contentIncludedAlt = "contentIncluded"
         case contentItems = "content_items"
         case contentItemsAlt = "contentItems"
     }
@@ -242,9 +245,81 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
             .evidenceRefsAlt,
             .evidence
         ])
+        contentIncluded = try container.decodeIfPresent(Bool.self, forKey: .contentIncluded)
+            ?? container.decodeIfPresent(Bool.self, forKey: .contentIncludedAlt)
+            ?? true
         contentItems = try container.decodeIfPresent([LocalSessionContentItem].self, forKey: .contentItems)
             ?? container.decodeIfPresent([LocalSessionContentItem].self, forKey: .contentItemsAlt)
             ?? []
+    }
+
+    init(
+        id: String,
+        title: String,
+        sourceKind: String,
+        scope: String,
+        agent: String?,
+        projectRoot: String?,
+        redactedPath: String,
+        modifiedAt: String?,
+        startedAt: Int64?,
+        endedAt: Int64?,
+        excerpt: String,
+        excerptCharCount: Int,
+        userMessageCount: Int,
+        totalMessageCount: Int,
+        toolCallCount: Int,
+        skillCallCount: Int,
+        contentHash: String,
+        evidenceRefs: [String],
+        contentIncluded: Bool,
+        contentItems: [LocalSessionContentItem]
+    ) {
+        self.id = id
+        self.title = title
+        self.sourceKind = sourceKind
+        self.scope = scope
+        self.agent = agent
+        self.projectRoot = projectRoot
+        self.redactedPath = redactedPath
+        self.modifiedAt = modifiedAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.excerpt = excerpt
+        self.excerptCharCount = excerptCharCount
+        self.userMessageCount = userMessageCount
+        self.totalMessageCount = totalMessageCount
+        self.toolCallCount = toolCallCount
+        self.skillCallCount = skillCallCount
+        self.contentHash = contentHash
+        self.evidenceRefs = evidenceRefs
+        self.contentIncluded = contentIncluded
+        self.contentItems = contentItems
+    }
+
+    var summaryOnly: LocalSessionPreviewRow {
+        LocalSessionPreviewRow(
+            id: id,
+            title: title,
+            sourceKind: sourceKind,
+            scope: scope,
+            agent: agent,
+            projectRoot: projectRoot,
+            redactedPath: redactedPath,
+            modifiedAt: modifiedAt,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            excerpt: excerpt,
+            excerptCharCount: excerptCharCount,
+            userMessageCount: userMessageCount,
+            totalMessageCount: totalMessageCount,
+            toolCallCount: toolCallCount,
+            skillCallCount: skillCallCount,
+            contentHash: contentHash,
+            evidenceRefs: evidenceRefs,
+            contentIncluded: false,
+            contentItems: []
+        )
     }
 }
 
@@ -400,6 +475,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
     let limit: Int
     let hasMore: Bool
     let nextOffset: Int?
+    let candidateSetTruncated: Bool
     let userMessageCount: Int
     let totalMessageCount: Int
     let toolCallCount: Int
@@ -437,6 +513,8 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         case hasMoreAlt = "hasMore"
         case nextOffset = "next_offset"
         case nextOffsetAlt = "nextOffset"
+        case candidateSetTruncated = "candidate_set_truncated"
+        case candidateSetTruncatedAlt = "candidateSetTruncated"
         case userMessageCount = "user_message_count"
         case userMessageCountAlt = "userMessageCount"
         case totalMessageCount = "total_message_count"
@@ -471,6 +549,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         limit: Int? = nil,
         hasMore: Bool = false,
         nextOffset: Int? = nil,
+        candidateSetTruncated: Bool = false,
         userMessageCount: Int? = nil,
         totalMessageCount: Int? = nil,
         toolCallCount: Int? = nil,
@@ -494,6 +573,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         self.limit = limit ?? sessionRows.count
         self.hasMore = hasMore
         self.nextOffset = nextOffset
+        self.candidateSetTruncated = candidateSetTruncated
         self.userMessageCount = userMessageCount ?? sessionRows.reduce(0) { $0 + $1.userMessageCount }
         self.totalMessageCount = totalMessageCount ?? sessionRows.reduce(0) { $0 + $1.totalMessageCount }
         self.toolCallCount = toolCallCount ?? sessionRows.reduce(0) { $0 + $1.toolCallCount }
@@ -538,6 +618,9 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
                 ?? false,
             nextOffset: try container.decodeIfPresent(Int.self, forKey: .nextOffset)
                 ?? container.decodeIfPresent(Int.self, forKey: .nextOffsetAlt),
+            candidateSetTruncated: try container.decodeIfPresent(Bool.self, forKey: .candidateSetTruncated)
+                ?? container.decodeIfPresent(Bool.self, forKey: .candidateSetTruncatedAlt)
+                ?? false,
             userMessageCount: try container.decodeIfPresent(Int.self, forKey: .userMessageCount)
                 ?? container.decodeIfPresent(Int.self, forKey: .userMessageCountAlt),
             totalMessageCount: try container.decodeIfPresent(Int.self, forKey: .totalMessageCount)
@@ -584,6 +667,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             limit: page.limit,
             hasMore: page.hasMore,
             nextOffset: page.nextOffset,
+            candidateSetTruncated: candidateSetTruncated || page.candidateSetTruncated,
             gapNotes: page.gapNotes,
             blockerNotes: page.blockerNotes,
             redactionSummary: page.redactionSummary,
@@ -593,9 +677,12 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
     }
 
     func ensuringSession(_ session: LocalSessionPreviewRow) -> LocalSessionPreviewResult {
-        guard !sessionRows.contains(where: { $0.id == session.id }) else { return self }
         var rows = sessionRows
-        rows.insert(session, at: 0)
+        if let index = rows.firstIndex(where: { $0.id == session.id }) {
+            rows[index] = session
+        } else {
+            rows.insert(session, at: 0)
+        }
         return LocalSessionPreviewResult(
             generatedBy: generatedBy,
             authorized: true,
@@ -610,6 +697,7 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             limit: limit,
             hasMore: hasMore,
             nextOffset: nextOffset,
+            candidateSetTruncated: candidateSetTruncated,
             gapNotes: gapNotes,
             blockerNotes: blockerNotes,
             redactionSummary: redactionSummary,

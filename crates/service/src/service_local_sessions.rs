@@ -50,7 +50,8 @@ impl ServiceHost {
         &self,
         params: LocalSessionPreviewParams,
     ) -> Result<LocalSessionPreviewResult, ServiceError> {
-        self.preview_local_sessions_with_read_limits(params, LocalSessionReadLimits::default())
+        let mut io = LocalSessionIoContext::new(LocalSessionReadLimits::default());
+        self.preview_local_sessions_with_io(params, &mut io)
     }
 
     #[cfg(test)]
@@ -59,14 +60,22 @@ impl ServiceHost {
         params: LocalSessionPreviewParams,
         limits: LocalSessionReadLimits,
     ) -> Result<LocalSessionPreviewResult, ServiceError> {
-        self.preview_local_sessions_with_read_limits(params, limits)
+        let mut io = LocalSessionIoContext::new(limits);
+        self.preview_local_sessions_with_io(params, &mut io)
     }
 
-    fn preview_local_sessions_with_read_limits(
+    pub(crate) fn preview_local_sessions_with_io(
         &self,
         params: LocalSessionPreviewParams,
-        limits: LocalSessionReadLimits,
+        io: &mut LocalSessionIoContext,
     ) -> Result<LocalSessionPreviewResult, ServiceError> {
+        let include_content_items = params.include_content_items.unwrap_or(true);
+        let requested_session_id = params
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
         let sort = LocalSessionSort::parse(params.sort.as_deref())?;
         let default_direction = match sort {
             LocalSessionSort::ModifiedAt => SortDirection::Desc,
@@ -145,6 +154,7 @@ impl ServiceHost {
                 limit,
                 has_more: false,
                 next_offset: None,
+                candidate_set_truncated: false,
                 user_message_count: 0,
                 total_message_count: 0,
                 tool_call_count: 0,
@@ -174,8 +184,6 @@ impl ServiceHost {
         let skill_matchers = self.local_session_skill_matchers(requested_agent)?;
         let mut total_candidate_count = 0usize;
         let mut candidate_set_was_truncated = false;
-        let mut io = LocalSessionIoContext::new(limits);
-
         for root_request in root_requests {
             let LocalSessionRootRequest {
                 path: root_path,
@@ -219,9 +227,19 @@ impl ServiceHost {
                 &mut redactor,
             );
             total_candidate_count += inventory.total_candidate_count;
-            let files = select_newest_candidates(inventory.candidates, max_files);
-            candidate_set_was_truncated |=
-                inventory.truncated || inventory.total_candidate_count > files.len();
+            let inventory_truncated = inventory.truncated;
+            let inventory_candidate_count = inventory.total_candidate_count;
+            let files = if let Some(session_id) = requested_session_id.as_deref() {
+                inventory
+                    .candidates
+                    .into_iter()
+                    .filter(|candidate| local_session_row_id(&candidate.path) == session_id)
+                    .collect::<Vec<_>>()
+            } else {
+                select_newest_candidates(inventory.candidates, max_files)
+            };
+            candidate_set_was_truncated |= inventory_truncated
+                || (requested_session_id.is_none() && inventory_candidate_count > files.len());
             let mut root_candidate_count = 0usize;
             for candidate in files {
                 let file = candidate.path;
@@ -233,13 +251,14 @@ impl ServiceHost {
                     scope,
                     project_filter_roots: &project_filter_roots,
                     search: search.as_deref(),
+                    include_content_items,
                 };
                 match local_session_preview_row(
                     &file,
                     &root_path,
                     &guarded_root,
                     options,
-                    &mut io,
+                    io,
                     &mut gap_notes,
                     &mut redactor,
                 ) {
@@ -320,6 +339,7 @@ impl ServiceHost {
             limit,
             has_more,
             next_offset: has_more.then_some(page_end),
+            candidate_set_truncated: candidate_set_was_truncated,
             user_message_count,
             total_message_count,
             tool_call_count,
@@ -458,6 +478,7 @@ struct LocalSessionPreviewRowOptions<'a> {
     scope: LocalSessionScope,
     project_filter_roots: &'a [PathBuf],
     search: Option<&'a str>,
+    include_content_items: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -955,16 +976,20 @@ fn local_session_preview_row(
         options.skill_matchers,
         &format!("session.content_hash:{short_hash}"),
     );
-    let content_items = local_session_content_items(
-        &content,
-        &short_hash,
-        options.max_excerpt_chars,
-        &skill_mentions,
-        &skill_invocations,
-        redactor,
-    );
-    let (started_at, ended_at) = local_session_time_bounds(&content, &content_items, modified_at);
-    let metrics = local_session_metrics(&content_items, skill_invocations.len());
+    let content_drafts =
+        local_session_content_drafts(&content, &short_hash, &skill_mentions, &skill_invocations);
+    let (started_at, ended_at) = local_session_time_bounds(&content, &content_drafts, modified_at);
+    let metrics = local_session_metrics(&content_drafts, skill_invocations.len());
+    let content_items = if options.include_content_items {
+        local_session_content_items(
+            content_drafts,
+            &short_hash,
+            options.max_excerpt_chars,
+            redactor,
+        )
+    } else {
+        Vec::new()
+    };
     let agent = options
         .requested_agent
         .map(str::trim)
@@ -998,6 +1023,7 @@ fn local_session_preview_row(
                 format!("session.path:{redacted_path}"),
                 format!("session.content_hash:{short_hash}"),
             ],
+            content_included: options.include_content_items,
             content_items,
         },
         skill_mentions,
@@ -1009,6 +1035,8 @@ fn read_local_session_file_content(
     root: &GuardedLocalSessionRoot,
     io: &mut LocalSessionIoContext,
 ) -> Result<(String, Option<i64>), ServiceError> {
+    #[cfg(test)]
+    io.primary_paths_read.push(path.to_path_buf());
     let bounded = read_bounded_text(
         root,
         path,
@@ -2665,7 +2693,7 @@ fn is_json_session_scalar_body_key(key: &str) -> bool {
     )
 }
 
-fn local_session_row_id(path: &Path) -> String {
+pub(crate) fn local_session_row_id(path: &Path) -> String {
     let path_key = path.to_string_lossy().replace('\\', "/");
     let path_key = path_key
         .strip_prefix("//?/")
@@ -3550,14 +3578,12 @@ fn local_session_skill_usage_rows(
     rows
 }
 
-fn local_session_content_items(
+fn local_session_content_drafts(
     content: &str,
     short_hash: &str,
-    max_item_chars: usize,
     skill_mentions: &[LocalSessionSkillMention],
     skill_invocations: &[String],
-    redactor: &mut PromptRedactor<'_>,
-) -> Vec<LocalSessionContentItem> {
+) -> Vec<LocalSessionContentDraft> {
     const MAX_SESSION_CONTENT_ITEMS: usize = 240;
     let mut drafts = Vec::new();
 
@@ -3630,9 +3656,17 @@ fn local_session_content_items(
         }
     }
 
+    drafts.into_iter().take(MAX_SESSION_CONTENT_ITEMS).collect()
+}
+
+fn local_session_content_items(
+    drafts: Vec<LocalSessionContentDraft>,
+    short_hash: &str,
+    max_item_chars: usize,
+    redactor: &mut PromptRedactor<'_>,
+) -> Vec<LocalSessionContentItem> {
     drafts
         .into_iter()
-        .take(MAX_SESSION_CONTENT_ITEMS)
         .enumerate()
         .map(|(index, draft)| {
             let redacted = truncate_chars(
@@ -3669,12 +3703,12 @@ fn local_session_plain_text_fallback(content: &str) -> Option<String> {
 
 fn local_session_time_bounds(
     content: &str,
-    content_items: &[LocalSessionContentItem],
+    content_drafts: &[LocalSessionContentDraft],
     fallback_timestamp: Option<i64>,
 ) -> (Option<i64>, Option<i64>) {
     let mut bounds = LocalSessionTimeBounds::default();
-    for item in content_items {
-        bounds.push(item.timestamp);
+    for draft in content_drafts {
+        bounds.push(draft.timestamp);
     }
 
     if bounds.started_at.is_none() || bounds.ended_at.is_none() {
@@ -4795,12 +4829,12 @@ struct LocalSessionMetrics {
 }
 
 fn local_session_metrics(
-    content_items: &[LocalSessionContentItem],
+    content_drafts: &[LocalSessionContentDraft],
     skill_call_count: usize,
 ) -> LocalSessionMetrics {
     let mut metrics = LocalSessionMetrics::default();
-    for item in content_items {
-        match item.kind.as_str() {
+    for draft in content_drafts {
+        match draft.kind.as_str() {
             "user_message" => {
                 metrics.user_message_count += 1;
                 metrics.total_message_count += 1;

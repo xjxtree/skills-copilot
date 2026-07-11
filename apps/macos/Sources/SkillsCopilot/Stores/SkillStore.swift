@@ -130,7 +130,7 @@ struct TaskCockpitPromptConfirmation: Identifiable, Hashable {
 @MainActor
 final class SkillStore: ObservableObject {
     private static let lastMutationMessageDismissDelayNanoseconds: UInt64 = 3_500_000_000
-    private static let localSessionPageLimit = 50
+    private static let localSessionPageLimit = 800
     private static let globalSearchLimitPerKind = 6
     private static let providerObservabilityRowLimit = 100
 
@@ -163,10 +163,11 @@ final class SkillStore: ObservableObject {
     @Published private(set) var localSessionPreviewResult = LocalSessionPreviewResult() {
         didSet { invalidateScopedLocalSessionSummaryCache() }
     }
+    @Published private(set) var localSessionLoadState: LocalSessionLoadState = .empty
+    @Published private(set) var selectedLocalSessionDetailState: LocalSessionDetailState?
     @Published private(set) var appSearchResult = AppSearchResult.empty()
     @Published private(set) var skillListScrollRequest: SkillListScrollRequest?
     @Published private(set) var isPreviewingLocalSessions = false
-    @Published private(set) var isLoadingMoreLocalSessions = false
     @Published private(set) var isSearchingApp = false
     @Published private(set) var llmPromptPreviews: [String: LLMPromptPreview] = [:]
     @Published private(set) var previewingLLMPromptKeys: Set<String> = []
@@ -295,7 +296,10 @@ final class SkillStore: ObservableObject {
         }
     }
     @Published private(set) var projectContextState: ProjectContextState? {
-        didSet { invalidateScopedLocalSessionSummaryCache() }
+        didSet {
+            invalidateScopedLocalSessionSummaryCache()
+            activateLocalSessionSourceCache()
+        }
     }
     @Published private(set) var startupLoadingState: AppStartupLoadingState? = AppStartupLoadingState(
         message: UIStrings.startupPreparingLoading,
@@ -380,13 +384,7 @@ final class SkillStore: ObservableObject {
             handleListCriteriaChanged()
             clearTaskCockpitTransientState()
             resetTaskCockpitAgentSelectionToSidebarDefault(clearResult: false)
-            localSessionPreviewResult = LocalSessionPreviewResult()
-            loadedLocalSessionPreviewRequestKey = nil
-            activeLocalSessionPreviewRequestKey = nil
-            localSessionCriteriaTask?.cancel()
-            localSessionCriteriaTask = nil
-            isLoadingMoreLocalSessions = false
-            selectedLocalSessionID = nil
+            activateLocalSessionSourceCache()
             if sidebarContentMode == .config {
                 selectedSidebarSelection = .configOverview
             }
@@ -435,26 +433,34 @@ final class SkillStore: ObservableObject {
             }
         }
     }
-    @Published var localSessionPreviewRoots = ""
+    @Published var localSessionPreviewRoots = "" {
+        didSet {
+            guard oldValue != localSessionPreviewRoots else { return }
+            activateLocalSessionSourceCache()
+            guard hasCompletedStartupLoad else { return }
+            Task { @MainActor [weak self] in
+                await self?.refreshLocalSessionSnapshot(reason: .sourceChanged)
+            }
+        }
+    }
     @Published var localSessionScopeFilter: LocalSessionScopeFilter = .project {
         didSet {
             guard oldValue != localSessionScopeFilter else { return }
             invalidateScopedLocalSessionSummaryCache()
-            scheduleLocalSessionCriteriaRefresh()
             normalizeSelectedLocalSession()
         }
     }
     @Published var localSessionSortOrder: LocalSessionSortOrder = .recent {
         didSet {
             guard oldValue != localSessionSortOrder else { return }
-            scheduleLocalSessionCriteriaRefresh()
+            invalidateScopedLocalSessionSummaryCache()
             normalizeSelectedLocalSession()
         }
     }
     @Published var localSessionSortDirection: SkillSortDirection = .descending {
         didSet {
             guard oldValue != localSessionSortDirection else { return }
-            scheduleLocalSessionCriteriaRefresh()
+            invalidateScopedLocalSessionSummaryCache()
             normalizeSelectedLocalSession()
         }
     }
@@ -462,7 +468,7 @@ final class SkillStore: ObservableObject {
         didSet {
             guard oldValue != localSessionSearchText else { return }
             guard sidebarContentMode == .sessions else { return }
-            scheduleLocalSessionCriteriaRefresh()
+            invalidateScopedLocalSessionSummaryCache()
             normalizeSelectedLocalSession()
         }
     }
@@ -489,9 +495,6 @@ final class SkillStore: ObservableObject {
     private var activeAgentConfigDocumentRequestKey: String?
     private var loadedClaudeSettingsRequestKey: String?
     private var activeClaudeSettingsRequestKey: String?
-    private var localSessionPreviewGeneration = 0
-    private var loadedLocalSessionPreviewRequestKey: String?
-    private var activeLocalSessionPreviewRequestKey: String?
     private var skillManagerSearchGenerationValue: UInt64 = 0
     private var skillManagerInstalledGenerationValue: UInt64 = 0
     private var skillManagerMutationGenerationValue: UInt64 = 0
@@ -517,7 +520,7 @@ final class SkillStore: ObservableObject {
     private var errorMessageDismissTask: Task<Void, Never>?
     private var agentFilterLoadTask: Task<Void, Never>?
     private var listCriteriaDetailTask: Task<Void, Never>?
-    private var localSessionCriteriaTask: Task<Void, Never>?
+    private var localSessionDetailTask: Task<Void, Never>?
     private var appSearchTask: Task<Void, Never>?
     private var providerObservabilityCriteriaTask: Task<Void, Never>?
     private var postRefreshSupplementalLoadTask: Task<Void, Never>?
@@ -530,6 +533,9 @@ final class SkillStore: ObservableObject {
     var isAdoptingAgentSummaryCacheValid = false
     var scopedLocalSessionSummaryRevision = 0
     var scopedLocalSessionSummaryCache: ScopedLocalSessionSummaryCache?
+    private let localSessionCache = LocalSessionCache()
+    private var activeLocalSessionSnapshotKey: LocalSessionSnapshotKey?
+    private var activeLocalSessionRefreshGeneration: UInt64?
     private let taskCockpitTimeoutSeconds: TimeInterval
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
     private let autosaveDelayNanoseconds: UInt64
@@ -628,6 +634,7 @@ final class SkillStore: ObservableObject {
         skillManagerMutationTask?.cancel()
         skillManagerLocalCreateTask?.cancel()
         skillManagerLocalDeleteTask?.cancel()
+        localSessionDetailTask?.cancel()
         let lane = autosaveMutationLane
         Task { @MainActor in
             lane.shutdown()
@@ -681,16 +688,6 @@ final class SkillStore: ObservableObject {
             guard let self else { return }
             await self.loadAgentConfigSnapshotsIfNeeded()
             guard !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
-        }
-    }
-
-    private func scheduleLocalSessionCriteriaRefresh() {
-        guard hasCompletedStartupLoad, sidebarContentMode == .sessions else { return }
-        localSessionCriteriaTask?.cancel()
-        localSessionCriteriaTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, !Task.isCancelled else { return }
-            await self.previewLocalSessions(allowDuringCatalogRefresh: true, force: true)
         }
     }
 
@@ -807,41 +804,33 @@ final class SkillStore: ObservableObject {
     }
 
     var selectedLocalSession: LocalSessionPreviewRow? {
-        if let selectedLocalSessionID,
-           let row = localSessionPreviewResult.sessionRows.first(where: { $0.id == selectedLocalSessionID }) {
-            return row
+        if case .loaded(let detail) = selectedLocalSessionDetailState,
+           detail.id == selectedLocalSessionID {
+            return detail
         }
-        return nil
+        return selectedLocalSessionSummary
+    }
+
+    var selectedLocalSessionSummary: LocalSessionPreviewRow? {
+        guard let selectedLocalSessionID else { return nil }
+        return activeLocalSessionSnapshot?.result.sessionRows.first { $0.id == selectedLocalSessionID }
+    }
+
+    var hasActiveLocalSessionSnapshot: Bool {
+        activeLocalSessionSnapshot != nil
+    }
+
+    var localSessionSummaryDisplayError: String? {
+        switch localSessionLoadState {
+        case .stale(_, let displayError), .failed(_, let displayError):
+            return displayError
+        case .empty, .loading, .fresh, .refreshing:
+            return nil
+        }
     }
 
     var filteredLocalSessionRows: [LocalSessionPreviewRow] {
-        sortedLocalSessionRows(scopedLocalSessionSummary.rows)
-    }
-
-    private func sortedLocalSessionRows(_ rows: [LocalSessionPreviewRow]) -> [LocalSessionPreviewRow] {
-        rows.enumerated().sorted { lhsPair, rhsPair in
-            let lhs = lhsPair.element
-            let rhs = rhsPair.element
-            switch localSessionSortOrder {
-            case .recent:
-                let result = localSessionSortTimestamp(lhs).compare(localSessionSortTimestamp(rhs))
-                if result != .orderedSame {
-                    return localSessionSortDirection == .ascending ? result == .orderedAscending : result == .orderedDescending
-                }
-            case .title:
-                let result = lhs.title.localizedStandardCompare(rhs.title)
-                if result != .orderedSame {
-                    return localSessionSortDirection == .ascending ? result == .orderedAscending : result == .orderedDescending
-                }
-            }
-
-            return lhsPair.offset < rhsPair.offset
-        }
-        .map(\.element)
-    }
-
-    private func localSessionSortTimestamp(_ row: LocalSessionPreviewRow) -> NSNumber {
-        NSNumber(value: row.endedAt ?? row.startedAt ?? 0)
+        scopedLocalSessionSummary.rows
     }
 
     func configDocumentMatchesSidebarQuery(_ document: ConfigDocumentRecord) -> Bool {
@@ -896,7 +885,22 @@ final class SkillStore: ObservableObject {
         var totalMessageCount = 0
         var toolCallCount = 0
         var skillCallCount = 0
-        for row in localSessionPreviewResult.sessionRows where localSessionMatchesCurrentScope(row) {
+        let projectedRows: [LocalSessionPreviewRow]
+        if let key = activeLocalSessionSnapshotKey {
+            projectedRows = localSessionCache.projectedRows(
+                for: key,
+                criteria: LocalSessionProjectionCriteria(
+                    scope: localSessionScopeFilter,
+                    search: normalizedLocalSessionSearchText,
+                    sort: localSessionSortOrder,
+                    direction: localSessionSortDirection,
+                    projectRoot: activeProjectContext?.rootPath
+                )
+            )
+        } else {
+            projectedRows = []
+        }
+        for row in projectedRows {
             rows.append(row)
             userMessageCount += row.userMessageCount
             totalMessageCount += row.totalMessageCount
@@ -916,25 +920,6 @@ final class SkillStore: ObservableObject {
             summary: summary
         )
         return summary
-    }
-
-    private func localSessionMatchesCurrentScope(_ row: LocalSessionPreviewRow) -> Bool {
-        switch localSessionScopeFilter {
-        case .all:
-            return true
-        case .project:
-            let selectedRoot = activeProjectContext?.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            let rowRoot = row.projectRoot?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let rowRoot, !rowRoot.isEmpty {
-                if rowRoot == "<project-root>" || rowRoot.hasPrefix("<project-root>/") {
-                    return true
-                }
-                guard let selectedRoot, !selectedRoot.isEmpty else { return true }
-                return rowRoot == selectedRoot || rowRoot.hasPrefix(selectedRoot + "/")
-            }
-
-            return row.scope.lowercased().contains("project")
-        }
     }
 
     private func configSidebarQueryMatches(_ values: [String]) -> Bool {
@@ -972,13 +957,19 @@ final class SkillStore: ObservableObject {
             }
     }
 
-    func selectLocalSession(_ session: LocalSessionPreviewRow) {
-        guard selectedLocalSessionID != session.id || selectedSidebarSelection != .session(session.id) else {
-            return
-        }
+    func selectLocalSession(
+        _ session: LocalSessionPreviewRow,
+        origin: LocalSessionSelectionOrigin = .user
+    ) {
         selectedLocalSessionID = session.id
         setSidebarSelection(.session(session.id))
         selectedDetailSection = .overview
+        synchronizeSelectedLocalSessionDetailState()
+        guard origin == .user || origin == .navigation else { return }
+        localSessionDetailTask?.cancel()
+        localSessionDetailTask = Task { @MainActor [weak self, sessionID = session.id] in
+            await self?.loadLocalSessionDetailIfNeeded(sessionID: sessionID)
+        }
     }
 
     func selectConfigDocument(_ document: ConfigDocumentRecord) {
@@ -2490,127 +2481,242 @@ final class SkillStore: ObservableObject {
     }
 
     func refreshSelectedAgentLocalSessions() async {
-        await previewLocalSessions(allowDuringCatalogRefresh: true, force: true)
+        await refreshLocalSessionSnapshot(reason: .manual)
     }
 
     func refreshSelectedAgentLocalSessionsIfNeeded() async {
-        await previewLocalSessions(allowDuringCatalogRefresh: true, force: false)
+        await refreshLocalSessionSnapshot(reason: .sourceChanged)
     }
 
     func previewLocalSessions() async {
-        await previewLocalSessions(allowDuringCatalogRefresh: false, force: true)
+        await refreshLocalSessionSnapshot(reason: .manual)
     }
 
-    var canLoadMoreLocalSessions: Bool {
-        localSessionPreviewResult.hasMore && !isPreviewingLocalSessions && !isLoadingMoreLocalSessions
-    }
-
-    func loadMoreLocalSessions() async {
-        guard canLoadMoreLocalSessions, let offset = localSessionPreviewResult.nextOffset else { return }
-        await previewLocalSessions(
-            allowDuringCatalogRefresh: true,
-            force: true,
-            append: true,
-            offset: offset
-        )
-    }
-
-    private func previewLocalSessions(
-        allowDuringCatalogRefresh: Bool,
-        force: Bool,
-        append: Bool = false,
-        offset: Int = 0
-    ) async {
+    func refreshLocalSessionSnapshot(reason: LocalSessionRefreshReason) async {
         let roots = normalizedLocalSessionPreviewRoots
-        guard allowDuringCatalogRefresh || !isRefreshBusy else {
-            localSessionPreviewResult = .unavailable(reason: UIStrings.operationUnavailableBusy)
+        let key = localSessionSnapshotKey(roots: roots)
+        activeLocalSessionSnapshotKey = key
+        localSessionCache.activateSource(key)
+        if reason != .manual, let snapshot = localSessionCache.successfulSnapshot(for: key) {
+            publishLocalSessionSnapshot(snapshot)
             return
         }
 
-        let requestKey = localSessionPreviewRequestKey(roots: roots)
-        if !force {
-            if loadedLocalSessionPreviewRequestKey == requestKey || activeLocalSessionPreviewRequestKey == requestKey {
-                return
-            }
-        }
-
-        let normalizedOffset = max(0, offset)
-        localSessionPreviewGeneration += 1
-        let generation = localSessionPreviewGeneration
-        let requestedAgentFilter = agentFilter
-        let requestedScopeFilter = localSessionScopeFilter
-        let requestedSortOrder = localSessionSortOrder
-        let requestedSortDirection = localSessionSortDirection
-        let requestedSearch = normalizedLocalSessionSearchText
-        let previousResult = localSessionPreviewResult
-        let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
-        activeLocalSessionPreviewRequestKey = requestKey
-        if append {
-            isLoadingMoreLocalSessions = true
-        } else {
-            isPreviewingLocalSessions = true
-        }
+        guard reason != .manual || !isRefreshBusy else { return }
+        let generation = localSessionCache.beginSummaryRefresh(for: key)
+        activeLocalSessionRefreshGeneration = generation
+        localSessionLoadState = localSessionCache.summaryStates[key] ?? .loading(key: key)
+        let agent = key.agent == SkillAgentFilter.all.rawValue ? nil : key.agent
+        let project = activeProjectContext
+        isPreviewingLocalSessions = true
         defer {
-            if generation == localSessionPreviewGeneration {
-                if append {
-                    isLoadingMoreLocalSessions = false
-                } else {
-                    isPreviewingLocalSessions = false
-                }
-                activeLocalSessionPreviewRequestKey = nil
+            if activeLocalSessionSnapshotKey == key,
+               activeLocalSessionRefreshGeneration == generation {
+                isPreviewingLocalSessions = false
+                activeLocalSessionRefreshGeneration = nil
             }
         }
 
         do {
-            let result = try await service.previewLocalSessions(
-                authorizedRoots: roots,
-                agent: agent,
-                scope: requestedScopeFilter,
-                search: requestedSearch.isEmpty ? nil : requestedSearch,
-                project: activeProjectContext,
-                limit: Self.localSessionPageLimit,
-                offset: normalizedOffset,
-                sort: requestedSortOrder,
-                direction: requestedSortDirection
-            )
-            guard generation == localSessionPreviewGeneration,
-                  agentFilter == requestedAgentFilter,
-                  localSessionScopeFilter == requestedScopeFilter,
-                  localSessionSortOrder == requestedSortOrder,
-                  localSessionSortDirection == requestedSortDirection,
-                  normalizedLocalSessionSearchText == requestedSearch else { return }
-            localSessionPreviewResult = append ? localSessionPreviewResult.mergingPage(result) : result
-            loadedLocalSessionPreviewRequestKey = requestKey
-            normalizeSelectedLocalSession()
-        } catch {
-            guard generation == localSessionPreviewGeneration, agentFilter == requestedAgentFilter else { return }
-            loadedLocalSessionPreviewRequestKey = requestKey
-            if previousResult.sessionRows.isEmpty {
-                localSessionPreviewResult = .unavailable(reason: error.localizedDescription)
-                selectedLocalSessionID = nil
-                if selectedSidebarSelection?.isSession == true {
-                    setSidebarSelection(nil)
-                    selectedDetailSection = .overview
+            var offset = 0
+            var mergedResult: LocalSessionPreviewResult?
+            var seenIDs = Set<String>()
+            var isComplete = true
+            while true {
+                let page = try await service.previewLocalSessions(
+                    authorizedRoots: key.authorizedRoots,
+                    agent: agent,
+                    scope: .all,
+                    search: nil,
+                    project: project,
+                    sessionID: nil,
+                    includeContentItems: false,
+                    limit: Self.localSessionPageLimit,
+                    offset: offset,
+                    sort: .recent,
+                    direction: .descending
+                )
+                if page.isUnavailable {
+                    throw ServiceClient.ClientError.invalidOutput(
+                        page.fallbackReason ?? "local session preview unavailable"
+                    )
                 }
+                guard activeLocalSessionSnapshotKey == key else { return }
+                let newRows = page.sessionRows.filter { seenIDs.insert($0.id).inserted }
+                mergedResult = mergeLocalSessionSummaryPage(
+                    accumulated: mergedResult,
+                    page: page,
+                    newRows: newRows
+                )
+                guard page.hasMore else { break }
+                guard !newRows.isEmpty,
+                      let nextOffset = page.nextOffset,
+                      nextOffset > offset else {
+                    isComplete = false
+                    break
+                }
+                offset = nextOffset
+            }
+            guard let mergedResult else {
+                throw ServiceClient.ClientError.invalidOutput("missing local session summary page")
+            }
+            let snapshot = LocalSessionSnapshot(
+                key: key,
+                generation: generation,
+                result: mergedResult,
+                refreshedAt: Date(),
+                isComplete: isComplete && !mergedResult.candidateSetTruncated
+            )
+            localSessionCache.publishSummary(snapshot)
+            guard let published = localSessionCache.successfulSnapshot(for: key),
+                  published.generation == generation,
+                  activeLocalSessionSnapshotKey == key else { return }
+            publishLocalSessionSnapshot(published)
+        } catch {
+            localSessionCache.failSummary(
+                key: key,
+                generation: generation,
+                displayError: error.localizedDescription
+            )
+            guard activeLocalSessionSnapshotKey == key else { return }
+            localSessionLoadState = localSessionCache.summaryStates[key]
+                ?? .failed(key: key, displayError: error.localizedDescription)
+            if let previous = localSessionCache.successfulSnapshot(for: key) {
+                localSessionPreviewResult = previous.result
+            } else {
+                localSessionPreviewResult = .unavailable(reason: error.localizedDescription)
             }
         }
     }
 
-    private func localSessionPreviewRequestKey(roots: [String]) -> String {
+    private func localSessionSnapshotKey(roots: [String]) -> LocalSessionSnapshotKey {
         let agent = agentFilter == .all ? SkillAgentFilter.all.rawValue : agentFilter.rawValue
-        let rootKey = roots.joined(separator: "\u{1f}")
-        let projectRoot = activeProjectContext?.rootPath ?? ""
-        let projectCWD = activeProjectContext?.currentCWD ?? ""
-        return [
-            agent,
-            projectRoot,
-            projectCWD,
-            rootKey,
-            localSessionScopeFilter.rawValue,
-            localSessionSortOrder.rawValue,
-            localSessionSortDirection.rawValue,
-            normalizedLocalSessionSearchText
-        ].joined(separator: "\u{1e}")
+        return LocalSessionSnapshotKey(
+            agent: agent,
+            projectRoot: activeProjectContext?.rootPath,
+            currentCWD: activeProjectContext?.currentCWD,
+            authorizedRoots: roots
+        )
+    }
+
+    private var activeLocalSessionSnapshot: LocalSessionSnapshot? {
+        guard let key = activeLocalSessionSnapshotKey else { return nil }
+        return localSessionCache.successfulSnapshot(for: key)
+    }
+
+    private func activateLocalSessionSourceCache() {
+        let key = localSessionSnapshotKey(roots: normalizedLocalSessionPreviewRoots)
+        activeLocalSessionSnapshotKey = key
+        activeLocalSessionRefreshGeneration = nil
+        isPreviewingLocalSessions = false
+        localSessionCache.activateSource(key)
+        selectedLocalSessionDetailState = nil
+        if let snapshot = localSessionCache.successfulSnapshot(for: key) {
+            publishLocalSessionSnapshot(snapshot)
+        } else {
+            localSessionLoadState = .empty
+            localSessionPreviewResult = LocalSessionPreviewResult()
+            selectedLocalSessionID = nil
+            if selectedSidebarSelection?.isSession == true {
+                setSidebarSelection(nil)
+            }
+        }
+    }
+
+    private func publishLocalSessionSnapshot(_ snapshot: LocalSessionSnapshot) {
+        guard activeLocalSessionSnapshotKey == snapshot.key else { return }
+        localSessionLoadState = localSessionCache.summaryStates[snapshot.key] ?? .fresh(snapshot)
+        localSessionPreviewResult = snapshot.result
+        normalizeSelectedLocalSession()
+        synchronizeSelectedLocalSessionDetailState()
+    }
+
+    private func mergeLocalSessionSummaryPage(
+        accumulated: LocalSessionPreviewResult?,
+        page: LocalSessionPreviewResult,
+        newRows: [LocalSessionPreviewRow]
+    ) -> LocalSessionPreviewResult {
+        let rows = (accumulated?.sessionRows ?? []) + newRows.map(\.summaryOnly)
+        return LocalSessionPreviewResult(
+            generatedBy: page.generatedBy,
+            authorized: page.authorized || (accumulated?.authorized ?? false),
+            authorizationRequired: page.authorizationRequired,
+            roots: page.roots.isEmpty ? (accumulated?.roots ?? []) : page.roots,
+            sessionRows: rows,
+            skillUsageRows: page.skillUsageRows.isEmpty
+                ? (accumulated?.skillUsageRows ?? [])
+                : page.skillUsageRows,
+            count: rows.count,
+            totalCandidateCount: max(page.totalCandidateCount, accumulated?.totalCandidateCount ?? 0),
+            totalMatchedCount: max(page.totalMatchedCount, accumulated?.totalMatchedCount ?? 0),
+            offset: 0,
+            limit: page.limit,
+            hasMore: page.hasMore,
+            nextOffset: page.nextOffset,
+            candidateSetTruncated: page.candidateSetTruncated
+                || (accumulated?.candidateSetTruncated ?? false),
+            gapNotes: Array(Set((accumulated?.gapNotes ?? []) + page.gapNotes)).sorted(),
+            blockerNotes: Array(Set((accumulated?.blockerNotes ?? []) + page.blockerNotes)).sorted(),
+            redactionSummary: page.redactionSummary,
+            safetyFlags: page.safetyFlags,
+            fallbackReason: page.fallbackReason
+        )
+    }
+
+    func loadLocalSessionDetailIfNeeded(sessionID: String) async {
+        guard let source = activeLocalSessionSnapshotKey,
+              let snapshot = localSessionCache.successfulSnapshot(for: source),
+              snapshot.result.sessionRows.contains(where: { $0.id == sessionID }) else { return }
+        let key = LocalSessionDetailKey(source: source, sessionID: sessionID)
+        guard let generation = localSessionCache.beginDetailLoad(for: key) else {
+            synchronizeSelectedLocalSessionDetailState()
+            return
+        }
+        synchronizeSelectedLocalSessionDetailState()
+        let agent = source.agent == SkillAgentFilter.all.rawValue ? nil : source.agent
+        let project = activeProjectContext
+        do {
+            let result = try await service.previewLocalSessions(
+                authorizedRoots: source.authorizedRoots,
+                agent: agent,
+                scope: .all,
+                search: nil,
+                project: project,
+                sessionID: sessionID,
+                includeContentItems: true,
+                limit: 1,
+                offset: 0,
+                sort: .recent,
+                direction: .descending
+            )
+            guard activeLocalSessionSnapshotKey == source,
+                  let detail = result.sessionRows.first(where: { $0.id == sessionID }) else { return }
+            localSessionCache.publishDetail(detail, key: key, generation: generation)
+            if selectedLocalSessionID == sessionID {
+                localSessionPreviewResult = localSessionPreviewResult.ensuringSession(detail)
+                synchronizeSelectedLocalSessionDetailState()
+            }
+        } catch {
+            localSessionCache.failDetail(
+                key: key,
+                generation: generation,
+                displayError: error.localizedDescription
+            )
+            if activeLocalSessionSnapshotKey == source, selectedLocalSessionID == sessionID {
+                synchronizeSelectedLocalSessionDetailState()
+            }
+        }
+    }
+
+    private func synchronizeSelectedLocalSessionDetailState() {
+        guard let source = activeLocalSessionSnapshotKey,
+              let selectedLocalSessionID else {
+            selectedLocalSessionDetailState = nil
+            return
+        }
+        selectedLocalSessionDetailState = localSessionCache.detailStates[
+            LocalSessionDetailKey(source: source, sessionID: selectedLocalSessionID)
+        ]
     }
 
     func updateAppSearch(query: String) {
@@ -2635,21 +2741,16 @@ final class SkillStore: ObservableObject {
     private func performAppSearch(query: String) async {
         let requestedAgentFilter = agentFilter
         let agent = requestedAgentFilter == .all ? nil : requestedAgentFilter.rawValue
-        do {
-            let result = try await service.searchApp(
-                query: query,
-                agent: agent,
-                limitPerKind: Self.globalSearchLimitPerKind,
-                authorizedRoots: normalizedLocalSessionPreviewRoots,
-                autoDiscover: normalizedLocalSessionPreviewRoots.isEmpty,
-                project: activeProjectContext
-            )
-            guard appSearchQuery == query, agentFilter == requestedAgentFilter else { return }
-            appSearchResult = result
-        } catch {
-            guard appSearchQuery == query, agentFilter == requestedAgentFilter else { return }
-            appSearchResult = .unavailable(query: query, reason: error.localizedDescription)
-        }
+        let indexedSkills = skills.filter { agent == nil || $0.agent == agent }
+        let indexedSnapshots = agentConfigSnapshots.filter { agent == nil || $0.agent == agent }
+        let summaries = activeLocalSessionSnapshot?.result.sessionRows ?? []
+        let result = AppSearchIndex(
+            skills: indexedSkills,
+            sessionSummaries: summaries,
+            configSnapshots: indexedSnapshots
+        ).search(query: query, limitPerKind: Self.globalSearchLimitPerKind)
+        guard appSearchQuery == query, agentFilter == requestedAgentFilter else { return }
+        appSearchResult = result
 
         if appSearchQuery == query {
             isSearchingApp = false
@@ -2676,14 +2777,14 @@ final class SkillStore: ObservableObject {
             guard let session = item.session
                 ?? localSessionPreviewResult.sessionRows.first(where: { $0.id == item.targetID })
             else { return }
-            if let filter = agentFilter(for: session.agent) {
+            if agentFilter != .all, let filter = agentFilter(for: session.agent) {
                 agentFilter = filter
             }
             localSessionScopeFilter = .all
             localSessionSearchText = ""
             sidebarContentMode = .sessions
             localSessionPreviewResult = localSessionPreviewResult.ensuringSession(session)
-            selectLocalSession(session)
+            selectLocalSession(session, origin: .navigation)
 
         case .configHistory:
             guard let snapshot = item.configSnapshot
@@ -3903,17 +4004,6 @@ final class SkillStore: ObservableObject {
         pruneBatchToggleSelectionToVisibleSkills()
         normalizeSelectionToVisibleSkills()
         guard previousID != selectedSkillID else { return }
-        localSessionPreviewResult = LocalSessionPreviewResult()
-        loadedLocalSessionPreviewRequestKey = nil
-        activeLocalSessionPreviewRequestKey = nil
-        localSessionCriteriaTask?.cancel()
-        localSessionCriteriaTask = nil
-        isLoadingMoreLocalSessions = false
-        selectedLocalSessionID = nil
-        if selectedSidebarSelection?.isSession == true {
-            setSidebarSelection(nil)
-            selectedDetailSection = .overview
-        }
         listCriteriaDetailTask?.cancel()
         listCriteriaDetailTask = Task { @MainActor [weak self] in
             guard !Task.isCancelled else { return }
@@ -3925,6 +4015,7 @@ final class SkillStore: ObservableObject {
         let rows = sidebarContentMode == .sessions ? filteredLocalSessionRows : localSessionPreviewResult.sessionRows
         guard !rows.isEmpty else {
             selectedLocalSessionID = nil
+            selectedLocalSessionDetailState = nil
             if selectedSidebarSelection?.isSession == true {
                 setSidebarSelection(nil)
                 selectedDetailSection = .overview
@@ -3932,10 +4023,12 @@ final class SkillStore: ObservableObject {
             return
         }
         if let selectedLocalSessionID, rows.contains(where: { $0.id == selectedLocalSessionID }) {
+            synchronizeSelectedLocalSessionDetailState()
             return
         }
         let firstSessionID = rows[0].id
         selectedLocalSessionID = firstSessionID
+        synchronizeSelectedLocalSessionDetailState()
         if sidebarContentMode == .sessions,
            selectedSidebarSelection == nil || selectedSidebarSelection?.isSession == true {
             setSidebarSelection(.session(firstSessionID))

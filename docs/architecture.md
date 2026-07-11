@@ -59,6 +59,8 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 - A scan follows only explicit canonical adapter roots and explicitly declared
   same-scope link-target roots. It does not treat the whole home or project
   directory as an implicit symlink allowlist.
+- Scanner links may resolve only beneath those explicit roots with the same
+  scope; link discovery never expands authorization to a neighboring scope.
 - Production scans are bounded to depth 64, 50,000 directories, 200,000
   entries, 25,000 skill files, 2 MiB per `SKILL.md`, and 256 MiB of aggregate
   skill content. Skill content is read through the bounded scanner reader
@@ -72,6 +74,10 @@ belongs in Rust crates; the UI presents state and sends typed requests.
   same path. Partial and skipped roots never mark unseen rows missing. A first
   transition to missing and its compact `missing` event are committed
   atomically; repeated complete scans do not duplicate the event.
+- Local-session UI state follows the same bounded-read posture: startup/manual
+  refresh stores source-scoped summaries in memory, local criteria project that
+  snapshot, and one selected stable ID may load a bounded in-memory detail.
+  Session summary/detail content is not persisted.
 - Aggregate skill-byte accounting is based on bytes actually read. The bounded
   reader never retains more than the remaining aggregate allowance, including
   its limit-detection byte; stale file metadata cannot enlarge the read or

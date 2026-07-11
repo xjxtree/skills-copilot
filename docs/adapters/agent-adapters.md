@@ -10,9 +10,13 @@ blocked operations. It is a current contract, not a version history.
 - Scan roots and symlink-target roots are explicit. A symlink target is readable
   only when its canonical path is under a declared root with the same scope;
   the rest of the user home or project tree does not authorize traversal.
+- Scanner link resolution must retain that same-scope root provenance; a link
+  cannot promote a project root into a global root or vice versa.
 - Unavailable roots are skipped with typed issues, while directory and entry
   failures mark a root partial and allow other roots to continue. Only fully
   enumerated roots are eligible for missing-record cleanup.
+- Partial roots never participate in missing-sweep, including when another
+  complete root resolves to the same physical location under a different scope.
 - Writes must go through the service layer with preview, snapshot/read-back
   where applicable, atomic write, rollback, and rescan.
 - Network fetch, package manager calls, script execution, credentials, cloud

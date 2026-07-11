@@ -111,7 +111,10 @@ fn dispatch_coverage_params(method: &str) -> Value {
         }),
         "session.previewLocalSessions" => json!({
             "authorized_roots": ["/tmp/skills-copilot-fixture-sessions"],
+            "include_content_items": false,
             "limit": 4,
+            "sort": "modified_at",
+            "direction": "desc",
             "max_excerpt_chars": 800
         }),
         "script.previewExecution" => json!({
@@ -377,7 +380,8 @@ pub(super) struct WireLocalSessionPreviewRow {
     pub(super) excerpt_char_count: usize, pub(super) user_message_count: usize,
     pub(super) total_message_count: usize, pub(super) tool_call_count: usize,
     pub(super) skill_call_count: usize, pub(super) content_hash: String,
-    pub(super) evidence_refs: Vec<String>, pub(super) content_items: Vec<WireLocalSessionContentItem>,
+    pub(super) evidence_refs: Vec<String>, pub(super) content_included: bool,
+    pub(super) content_items: Vec<WireLocalSessionContentItem>,
 }
 
 #[allow(dead_code)]
@@ -402,6 +406,7 @@ pub(super) struct WireLocalSessionPreviewResult {
     pub(super) total_matched_count: usize, pub(super) offset: usize,
     pub(super) limit: usize, pub(super) has_more: bool,
     pub(super) next_offset: Option<usize>,
+    pub(super) candidate_set_truncated: bool,
     pub(super) user_message_count: usize, pub(super) total_message_count: usize,
     pub(super) tool_call_count: usize, pub(super) skill_call_count: usize,
     pub(super) skill_usage_rows: Vec<WireLocalSessionSkillUsageRow>,

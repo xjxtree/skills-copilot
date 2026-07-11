@@ -26,6 +26,18 @@ struct SkillStoreTests {
         try await runCase("localSessionRefreshIfNeededSkipsLoadedRequest") {
             try await localSessionRefreshIfNeededSkipsLoadedRequest()
         }
+        try await runCase("startupPreviewRequestsSummaryRows") {
+            try await startupPreviewRequestsSummaryRows()
+        }
+        try await runCase("selectingSummaryRequestsOnlySelectedDetail") {
+            try await selectingSummaryRequestsOnlySelectedDetail()
+        }
+        try await runCase("sessionCriteriaChangesAndGlobalSearchUseNoRPC") {
+            try await sessionCriteriaChangesAndGlobalSearchUseNoRPC()
+        }
+        try await runCase("failedSummaryAndDetailKeepSummaryStateIsolated") {
+            try await failedSummaryAndDetailKeepSummaryStateIsolated()
+        }
         try await runCase("localSessionScopeChangeRequestsServerPage") {
             try await localSessionScopeChangeRequestsServerPage()
         }
@@ -397,28 +409,27 @@ struct SkillStoreTests {
         try expectEqual(store.filteredLocalSessionRows.map(\.id), ["session-alpha", "session-develop"], "Session preview should load the fake rows.")
         try expectEqual(store.selectedLocalSessionID, "session-alpha", "Initial session selection should use the first visible row.")
         try expectEqual(store.selectedSidebarSelection, .session("session-alpha"), "Initial detail selection should point at the first session.")
+        let callsBeforeCriteriaChanges = countMethodCalls("session.previewLocalSessions", in: fake.calls())
 
         store.localSessionSearchText = "develop"
-        await store.previewLocalSessions()
 
         try expectEqual(store.filteredLocalSessionRows.map(\.id), ["session-develop"], "Session search should narrow visible rows.")
         try expectEqual(store.selectedLocalSessionID, "session-develop", "Search should move selection to the visible session.")
         try expectEqual(store.selectedSidebarSelection, .session("session-develop"), "Detail selection should follow the searched session.")
         try expectEqual(store.selectedLocalSession?.title, "Switch to develop branch", "Detail model should expose the searched session.")
-        try expectContains(fake.calls(), "\"search\":\"develop\"", "Session search should be sent to the service.")
+        try expectFalse(fake.calls().contains("\"search\":\"develop\""), "Session search should stay within the summary cache.")
 
         store.localSessionSearchText = "missing"
-        await store.previewLocalSessions()
 
         try expectEqual(store.filteredLocalSessionRows.count, 0, "No-match search should show an empty session list.")
         try expectNil(store.selectedLocalSessionID, "No-match search should clear stale session selection.")
         try expectNil(store.selectedSidebarSelection, "No-match search should clear stale session detail.")
 
         store.localSessionSearchText = ""
-        await store.previewLocalSessions()
 
         try expectEqual(store.selectedLocalSessionID, "session-alpha", "Clearing search should restore the first visible session.")
         try expectEqual(store.selectedSidebarSelection, .session("session-alpha"), "Clearing search should restore session detail.")
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), callsBeforeCriteriaChanges, "Search criteria changes should issue no summary or detail reads.")
     }
 
     private func localSessionRefreshIfNeededSkipsLoadedRequest() async throws {
@@ -452,6 +463,106 @@ struct SkillStoreTests {
         )
     }
 
+    private func startupPreviewRequestsSummaryRows() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "sessions")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+
+        let calls = fake.calls()
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: calls), 1, "Startup/source prewarm should issue one summary request.")
+        try expectContains(calls, #""include_content_items":false"#, "Summary request should explicitly omit content items.")
+        try expectFalse(calls.contains(#""session_id""#), "Summary request should not send a session id.")
+        try expectFalse(store.localSessionPreviewResult.sessionRows.contains { !$0.contentItems.isEmpty || $0.contentIncluded }, "Store summaries must retain no raw content items.")
+    }
+
+    private func selectingSummaryRequestsOnlySelectedDetail() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "sessions")
+
+        let store = SkillStore(service: fake.serviceClient())
+        store.sidebarContentMode = .sessions
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        guard let summary = store.filteredLocalSessionRows.first(where: { $0.id == "session-alpha" }) else {
+            throw NativeModelTestFailure(description: "Summary fixture should contain session-alpha.")
+        }
+
+        store.selectLocalSession(summary)
+        try await waitUntil("Selecting a summary should request exactly one detail.") {
+            countMethodCalls("session.previewLocalSessions", in: fake.calls()) == 2
+                && store.selectedLocalSessionDetailState != nil
+        }
+        let callsAfterDetail = fake.calls()
+        try expectContains(callsAfterDetail, #""include_content_items":true"#, "Detail request should explicitly include content items.")
+        try expectContains(callsAfterDetail, #""session_id":"session-alpha""#, "Detail request should target only the selected stable id.")
+        try expectContains(callsAfterDetail, #""limit":1"#, "Detail request should request one row.")
+
+        store.selectLocalSession(summary)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), 2, "Re-selecting a cached detail should not issue another RPC.")
+    }
+
+    private func sessionCriteriaChangesAndGlobalSearchUseNoRPC() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "sessions-mixed")
+
+        let store = SkillStore(service: fake.serviceClient())
+        store.sidebarContentMode = .sessions
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        let initialCalls = countMethodCalls("session.previewLocalSessions", in: fake.calls())
+        for index in 0..<20 {
+            store.localSessionScopeFilter = index.isMultiple(of: 2) ? .all : .project
+            store.localSessionSortOrder = index.isMultiple(of: 3) ? .title : .recent
+            store.localSessionSortDirection = index.isMultiple(of: 2) ? .ascending : .descending
+            store.localSessionSearchText = index.isMultiple(of: 4) ? "Analyze" : ""
+        }
+        store.searchText = "no-such-skill"
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), initialCalls, "Twenty criteria and skill-filter changes should issue no session RPCs.")
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 3, "Skill criteria should not clear session summaries.")
+
+        store.updateAppSearch(query: "Analyze")
+        try await waitUntil("Global search should read the summary index.") {
+            store.appSearchResult.items.contains { $0.targetID == "session-alpha" }
+        }
+        let calls = fake.calls()
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: calls), initialCalls, "Global search should not request session data.")
+        try expectFalse(calls.contains("app.search"), "Global search should not call the service search method.")
+        try expectFalse(store.appSearchResult.items.contains { !($0.session?.contentItems.isEmpty ?? true) }, "Global search should expose summary-only session records.")
+    }
+
+    private func failedSummaryAndDetailKeepSummaryStateIsolated() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "sessions")
+        let store = SkillStore(service: fake.serviceClient())
+        store.sidebarContentMode = .sessions
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        let summaryIDs = store.localSessionPreviewResult.sessionRows.map(\.id)
+
+        fake.setScenario("normal")
+        await store.previewLocalSessions()
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), summaryIDs, "Failed explicit summary refresh should preserve stale summaries.")
+        guard case .stale = store.localSessionLoadState else {
+            throw NativeModelTestFailure(description: "Failed explicit summary refresh should publish stale state.")
+        }
+
+        fake.setScenario("sessions-detail-failure")
+        guard let summary = store.filteredLocalSessionRows.first else {
+            throw NativeModelTestFailure(description: "A stale snapshot should remain selectable.")
+        }
+        store.selectLocalSession(summary)
+        try await waitUntil("Detail failure should stay in the detail state.") {
+            if case .failed = store.selectedLocalSessionDetailState { return true }
+            return false
+        }
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), summaryIDs, "Detail failure should not mutate the summary list.")
+        try expectNil(store.errorMessage, "Detail failure should not publish to the global error banner.")
+    }
+
     private func localSessionScopeChangeRequestsServerPage() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -461,15 +572,14 @@ struct SkillStoreTests {
         store.sidebarContentMode = .sessions
         await store.previewLocalSessions()
 
-        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["session-alpha", "session-develop"], "Default project scope should request project rows from the service.")
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["session-alpha", "session-develop", "session-global"], "Source snapshot should retain all summary rows.")
         try expectEqual(store.filteredLocalSessionRows.map(\.id), ["session-alpha", "session-develop"], "Project scope should show the server-filtered project rows.")
         try expectEqual(store.scopedLocalSessionUserMessageCount, 2, "Project scope metrics should be derived from project rows only.")
         try expectEqual(store.scopedLocalSessionTotalMessageCount, 4, "Project scope message totals should be derived from project rows only.")
         let callsBeforeScopeChange = countMethodCalls("session.previewLocalSessions", in: fake.calls())
-        try expectContains(fake.calls(), "\"scope\":\"project\"", "Session preview should send the selected project scope.")
+        try expectContains(fake.calls(), "\"scope\":\"all\"", "Summary snapshot should load all scopes once.")
 
         store.localSessionScopeFilter = .all
-        await store.previewLocalSessions()
 
         guard let globalSession = store.localSessionPreviewResult.sessionRows.first(where: { $0.id == "session-global" }) else {
             throw NativeModelTestFailure(description: "Fake session fixture should include the global session after all-scope refresh.")
@@ -480,21 +590,20 @@ struct SkillStoreTests {
         try expectEqual(store.scopedLocalSessionSkillCallCount, 1, "All-scope skill metrics should include global rows.")
         try expectEqual(
             countMethodCalls("session.previewLocalSessions", in: fake.calls()),
-            callsBeforeScopeChange + 1,
-            "Scope changes should fetch a service page for the new scope."
+            callsBeforeScopeChange,
+            "Scope changes should project the cached summary without a service read."
         )
 
-        store.selectLocalSession(globalSession)
+        store.selectLocalSession(globalSession, origin: .criteriaNormalization)
         store.localSessionScopeFilter = .project
-        await store.previewLocalSessions()
 
         try expectEqual(store.filteredLocalSessionRows.map(\.id), ["session-alpha", "session-develop"], "Returning to project scope should hide global rows from the cached list.")
         try expectEqual(store.selectedLocalSessionID, "session-alpha", "Scope filtering should normalize a hidden global selection to the first visible project session.")
         try expectEqual(store.selectedSidebarSelection, .session("session-alpha"), "Detail selection should follow the locally visible session after scope filtering.")
         try expectEqual(
             countMethodCalls("session.previewLocalSessions", in: fake.calls()),
-            callsBeforeScopeChange + 2,
-            "Returning to project scope should request a fresh service page."
+            callsBeforeScopeChange,
+            "Returning to project scope should not request a service page."
         )
     }
 
@@ -510,11 +619,11 @@ struct SkillStoreTests {
         await store.previewLocalSessions()
 
         try expectEqual(store.activeProjectContext?.rootPath, "/tmp/project", "Fixture should expose an active project context.")
-        try expectContains(fake.calls(), "\"scope\":\"project\"", "Session preview should send the selected project scope.")
+        try expectContains(fake.calls(), "\"scope\":\"all\"", "Summary preview should load all scopes for local projection.")
         try expectEqual(
             store.localSessionPreviewResult.sessionRows.map(\.id),
-            ["session-project-from-all"],
-            "Project-scope service page should include the project session."
+            ["session-project-from-all", "session-global"],
+            "Source snapshot should retain project and global summaries."
         )
         try expectEqual(
             store.filteredLocalSessionRows.map(\.id),
@@ -524,7 +633,6 @@ struct SkillStoreTests {
         try expectEqual(store.scopedLocalSessionToolCallCount, 24, "Project scope metrics should include the project-root session.")
 
         store.localSessionScopeFilter = .all
-        await store.previewLocalSessions()
 
         try expectEqual(
             store.filteredLocalSessionRows.map(\.id),
@@ -560,7 +668,6 @@ struct SkillStoreTests {
 
         store.localSessionSortOrder = .title
         store.localSessionSortDirection = .descending
-        await store.previewLocalSessions()
 
         try expectEqual(
             store.filteredLocalSessionRows.map(\.id),
@@ -569,11 +676,10 @@ struct SkillStoreTests {
         )
         try expectEqual(
             countMethodCalls("session.previewLocalSessions", in: fake.calls()),
-            callsBeforeSortChange + 1,
-            "Changing local session sort should trigger a service refresh when explicitly previewed."
+            callsBeforeSortChange,
+            "Changing local session sort should not trigger a service refresh."
         )
-        try expectContains(fake.calls(), "\"sort\":\"title\"", "Session sort order should be sent to the service.")
-        try expectContains(fake.calls(), "\"direction\":\"descending\"", "Session sort direction should be sent to the service.")
+        try expectFalse(fake.calls().contains("\"sort\":\"title\""), "Session sort order should stay local.")
     }
 
     private func reloadKeepsSelectedSkillWhenItStillExists() async throws {

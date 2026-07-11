@@ -18,9 +18,21 @@ struct ServiceClientRPCTests {
             scope: .all,
             search: "release",
             project: nil,
+            sessionID: nil,
+            includeContentItems: false,
             limit: 3
         )
         try expectEqual(sessions.isUnavailable, true, "Session RPC wrapper should map unknown methods to unavailable.")
+
+        _ = try await client.previewLocalSessions(
+            authorizedRoots: [],
+            agent: "codex",
+            scope: .all,
+            project: nil,
+            sessionID: "session-alpha",
+            includeContentItems: true,
+            limit: 1
+        )
 
         let observability = try await client.providerObservability()
         try expectEqual(observability.generatedBy, "local-v2.64", "LLM RPC wrapper should decode provider observability.")
@@ -29,6 +41,9 @@ struct ServiceClientRPCTests {
         try expectContains(calls, "catalog.listFindings", "Catalog/config wrapper should call the catalog method.")
         try expectContains(calls, "session.previewLocalSessions", "Session wrapper should call the session method.")
         try expectContains(calls, #""auto_discover":true"#, "Session preview should request auto-discovery when no roots are supplied.")
+        try expectContains(calls, #""include_content_items":false"#, "Summary RPC should explicitly omit content items.")
+        try expectContains(calls, #""include_content_items":true"#, "Detail RPC should explicitly include content items.")
+        try expectContains(calls, #""session_id":"session-alpha""#, "Detail RPC should send exactly one stable session id.")
         try expectContains(calls, "llm.providerObservability", "LLM wrapper should call the observability method.")
 
         try await configConsistencyRequestsUseExactBindings()

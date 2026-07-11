@@ -7,6 +7,8 @@ extension ServiceClient {
         scope: LocalSessionScopeFilter = .project,
         search: String? = nil,
         project: ProjectContext? = nil,
+        sessionID: String? = nil,
+        includeContentItems: Bool? = nil,
         limit: Int = 20,
         offset: Int = 0,
         sort: LocalSessionSortOrder = .recent,
@@ -21,10 +23,12 @@ extension ServiceClient {
             search: normalizedSearch?.isEmpty == true ? nil : normalizedSearch,
             projectRoot: project?.rootPath,
             currentCWD: project?.currentCWD,
+            sessionID: sessionID,
+            includeContentItems: includeContentItems,
             limit: limit,
             offset: offset,
             sort: sort.rawValue,
-            direction: direction.rawValue,
+            direction: direction == .ascending ? "asc" : "desc",
             maxFiles: 800,
             maxExcerptChars: 1000
         )

@@ -7,12 +7,17 @@ struct AgentSessionDetailPanel: View {
     var body: some View {
         AgentSessionContentPanel(
             session: store.selectedLocalSession,
+            detailState: store.selectedLocalSessionDetailState,
             gapNotes: store.selectedLocalSession == nil ? store.localSessionPreviewResult.gapNotes : [],
             isRefreshing: store.isPreviewingLocalSessions,
             onRefresh: {
                 Task {
                     await store.previewLocalSessions()
                 }
+            },
+            onLoadDetail: {
+                guard let sessionID = store.selectedLocalSessionID else { return }
+                Task { await store.loadLocalSessionDetailIfNeeded(sessionID: sessionID) }
             }
         )
     }
@@ -20,9 +25,11 @@ struct AgentSessionDetailPanel: View {
 
 private struct AgentSessionContentPanel: View {
     let session: LocalSessionPreviewRow?
+    let detailState: LocalSessionDetailState?
     let gapNotes: [String]
     let isRefreshing: Bool
     let onRefresh: () -> Void
+    let onLoadDetail: () -> Void
 
     @State private var selectedKinds = Set(LocalSessionContentKind.allCases)
 
@@ -64,19 +71,38 @@ private struct AgentSessionContentPanel: View {
                         }
                     }
 
-                    LocalSessionContentFilterBar(items: session.contentItems, selectedKinds: $selectedKinds)
-
-                    let visibleItems = session.contentItems.filter { selectedKinds.contains($0.kind) }
-                    if visibleItems.isEmpty {
-                        Text(emptyFilteredContentMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
+                    if case .loading = detailState {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(UIStrings.text("agentCopilot.sessions.loadingDetail", "Loading selected session detail..."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if case .failed(let displayError) = detailState {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(visibleItems) { item in
-                                LocalSessionContentItemRow(item: item)
+                            Text(displayError)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button(UIStrings.text("agentCopilot.sessions.retryDetail", "Retry Detail"), action: onLoadDetail)
+                                .controlSize(.small)
+                        }
+                    } else if session.contentIncluded {
+                        LocalSessionContentFilterBar(items: session.contentItems, selectedKinds: $selectedKinds)
+                        let visibleItems = session.contentItems.filter { selectedKinds.contains($0.kind) }
+                        if visibleItems.isEmpty {
+                            Text(emptyFilteredContentMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(visibleItems) { item in
+                                    LocalSessionContentItemRow(item: item)
+                                }
                             }
                         }
+                    } else {
+                        Button(UIStrings.text("agentCopilot.sessions.loadDetail", "Load Session Detail"), action: onLoadDetail)
+                            .controlSize(.small)
                     }
                 }
             } else {

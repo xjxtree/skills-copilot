@@ -171,6 +171,28 @@ struct AppSearchItem: Decodable, Identifiable, Hashable {
         case configSnapshotAlt = "configSnapshot"
     }
 
+    init(
+        id: String,
+        kind: AppSearchItemKind,
+        targetID: String,
+        title: String,
+        subtitle: String,
+        agent: String?,
+        skill: SkillRecord? = nil,
+        session: LocalSessionPreviewRow? = nil,
+        configSnapshot: ConfigSnapshotRecord? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.targetID = targetID
+        self.title = title
+        self.subtitle = subtitle
+        self.agent = agent
+        self.skill = skill
+        self.session = session
+        self.configSnapshot = configSnapshot
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)

@@ -943,6 +943,8 @@ pub(crate) struct LocalSessionIoContext {
     pub(crate) budget: LocalSessionReadBudget,
     pub(crate) inventory_budget: LocalSessionInventoryBudget,
     pub(crate) cache: LocalSessionRequestCache,
+    #[cfg(test)]
+    pub(crate) primary_paths_read: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -1353,6 +1355,8 @@ impl LocalSessionIoContext {
                 limits.max_inventory_entries,
             ),
             cache: LocalSessionRequestCache::default(),
+            #[cfg(test)]
+            primary_paths_read: Vec::new(),
             limits,
         }
     }

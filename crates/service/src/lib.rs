@@ -306,6 +306,10 @@ pub struct LocalSessionPreviewParams {
     #[serde(default)]
     pub current_cwd: Option<String>,
     #[serde(default)]
+    pub include_content_items: Option<bool>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: Option<usize>,
@@ -349,6 +353,7 @@ pub struct LocalSessionPreviewRow {
     pub skill_call_count: usize,
     pub content_hash: String,
     pub evidence_refs: Vec<String>,
+    pub content_included: bool,
     pub content_items: Vec<LocalSessionContentItem>,
 }
 
@@ -388,6 +393,7 @@ pub struct LocalSessionPreviewResult {
     pub has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
+    pub candidate_set_truncated: bool,
     pub user_message_count: usize,
     pub total_message_count: usize,
     pub tool_call_count: usize,

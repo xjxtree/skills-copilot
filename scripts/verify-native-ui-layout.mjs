@@ -40,6 +40,7 @@ const files = {
   sidebarSelection: await read("apps/macos/Sources/SkillsCopilot/Models/SidebarSelection.swift"),
   uiOptimization: await read("apps/macos/Sources/SkillsCopilot/Models/UIOptimizationPresentation.swift"),
   revisionAutosave: await read("apps/macos/Sources/SkillsCopilot/Models/RevisionAutosaveCoordinator.swift"),
+  localSessionCache: await read("apps/macos/Sources/SkillsCopilot/Models/LocalSessionCache.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
@@ -208,7 +209,8 @@ const checks = [
       && !/ToolbarContextSummary/.test(files.content)
       && /private var globalSearchResults:\s*\[AppSearchItem\][\s\S]*?store\.appSearchResult\.query == trimmedGlobalSearchText[\s\S]*?return store\.appSearchResult\.items/.test(files.content)
       && /\.onChange\(of:\s*trimmedGlobalSearchText\)[\s\S]*?store\.updateAppSearch\(query:\s*query\)/.test(files.content)
-      && /func updateAppSearch\(query:[\s\S]*?service\.searchApp\([\s\S]*?limitPerKind:\s*Self\.globalSearchLimitPerKind[\s\S]*?func selectAppSearchItem\(_ item:\s*AppSearchItem\) async[\s\S]*?case \.skill:[\s\S]*?setSidebarSelection\(\.skill\(skill\.id\)\)[\s\S]*?case \.session:[\s\S]*?localSessionPreviewResult = localSessionPreviewResult\.ensuringSession\(session\)[\s\S]*?selectLocalSession\(session\)[\s\S]*?case \.configHistory:[\s\S]*?ensureConfigSnapshot\(snapshot\)[\s\S]*?selectConfigSnapshot\(snapshot\)/.test(files.store)
+      && /func updateAppSearch\(query:[\s\S]*?AppSearchIndex\([\s\S]*?sessionSummaries:\s*summaries[\s\S]*?\.search\(query:\s*query,\s*limitPerKind:\s*Self\.globalSearchLimitPerKind\)[\s\S]*?func selectAppSearchItem\(_ item:\s*AppSearchItem\) async[\s\S]*?case \.skill:[\s\S]*?setSidebarSelection\(\.skill\(skill\.id\)\)[\s\S]*?case \.session:[\s\S]*?localSessionPreviewResult = localSessionPreviewResult\.ensuringSession\(session\)[\s\S]*?selectLocalSession\(session,\s*origin:\s*\.navigation\)[\s\S]*?case \.configHistory:[\s\S]*?ensureConfigSnapshot\(snapshot\)[\s\S]*?selectConfigSnapshot\(snapshot\)/.test(files.store)
+      && !/private func performAppSearch\(query:[\s\S]*?service\.searchApp\(/.test(files.store)
       && /private func selectGlobalSearchResult\(_ result:\s*AppSearchItem\)[\s\S]*?await store\.selectAppSearchItem\(result\)[\s\S]*?globalSearchText = ""/.test(files.content)
       && !/private func applyGlobalSearch/.test(files.content),
   },
@@ -244,7 +246,7 @@ const checks = [
   {
     label: "selected agent session metrics refresh from the root view uses need-based prewarm",
     text: files.content + "\n" + files.storeSurface,
-    pattern: /(?=[\s\S]*?\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?await store\.refreshSelectedAgentLocalSessionsIfNeeded\(\))(?=[\s\S]*?var selectedAgentLocalSessionRefreshKey:[\s\S]*?agentFilter\.rawValue[\s\S]*?activeProjectContext\?\.rootPath)(?=[\s\S]*?func refreshSelectedAgentLocalSessionsIfNeeded\(\)\s*async[\s\S]*?previewLocalSessions\(allowDuringCatalogRefresh:\s*true,\s*force:\s*false\))/,
+    pattern: /(?=[\s\S]*?\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?await store\.refreshSelectedAgentLocalSessionsIfNeeded\(\))(?=[\s\S]*?var selectedAgentLocalSessionRefreshKey:[\s\S]*?agentFilter\.rawValue[\s\S]*?activeProjectContext\?\.rootPath)(?=[\s\S]*?func refreshSelectedAgentLocalSessionsIfNeeded\(\)\s*async[\s\S]*?refreshLocalSessionSnapshot\(reason:\s*\.sourceChanged\))/,
   },
   {
     label: "primary sidebar exposes agent cards plus global skill manager and preflight footer tools",
@@ -293,13 +295,13 @@ const checks = [
       && /private var sessionStatusMessage:[\s\S]*?fallbackReason[\s\S]*?authorizationRequired[\s\S]*?return nil/.test(files.sidebar)
       && !/private var sessionStatusMessage:[\s\S]*?UIStrings\.loading[\s\S]*?return nil/.test(files.sidebar)
       && /@Published var localSessionScopeFilter:[\s\S]*?guard oldValue != localSessionScopeFilter else \{ return \}[\s\S]*?normalizeSelectedLocalSession\(\)/.test(files.store)
-      && /func previewLocalSessions\([\s\S]*?service\.previewLocalSessions\([\s\S]*?scope:\s*requestedScopeFilter[\s\S]*?search:\s*requestedSearch\.isEmpty \? nil : requestedSearch[\s\S]*?offset:\s*normalizedOffset[\s\S]*?sort:\s*requestedSortOrder[\s\S]*?direction:\s*requestedSortDirection/.test(files.store)
-      && /private func localSessionPreviewRequestKey[\s\S]*?localSessionScopeFilter\.rawValue[\s\S]*?localSessionSortOrder\.rawValue[\s\S]*?localSessionSortDirection\.rawValue[\s\S]*?normalizedLocalSessionSearchText/.test(files.store)
-      && /var canLoadMoreLocalSessions:[\s\S]*?localSessionPreviewResult\.hasMore[\s\S]*?func loadMoreLocalSessions\(\) async[\s\S]*?nextOffset[\s\S]*?append:\s*true/.test(files.store)
-      && /private var loadMoreSessionsButton:[\s\S]*?await store\.loadMoreLocalSessions\(\)[\s\S]*?store\.canLoadMoreLocalSessions/.test(files.sidebar)
-      && /func refreshSelectedAgentLocalSessionsIfNeeded\(\) async[\s\S]*?force:\s*false/.test(files.store)
+      && /func refreshLocalSessionSnapshot\(reason:\s*LocalSessionRefreshReason\) async[\s\S]*?service\.previewLocalSessions\([\s\S]*?scope:\s*\.all[\s\S]*?search:\s*nil[\s\S]*?sessionID:\s*nil[\s\S]*?includeContentItems:\s*false[\s\S]*?offset:\s*offset[\s\S]*?sort:\s*\.recent[\s\S]*?direction:\s*\.descending/.test(files.store)
+      && /private func localSessionSnapshotKey\(roots:[\s\S]*?LocalSessionSnapshotKey\([\s\S]*?projectRoot:\s*activeProjectContext\?\.rootPath[\s\S]*?authorizedRoots:\s*roots/.test(files.store)
+      && !/private func localSessionSnapshotKey\(roots:[\s\S]*?localSessionScopeFilter\.rawValue/.test(files.store)
+      && /func refreshSelectedAgentLocalSessionsIfNeeded\(\) async[\s\S]*?refreshLocalSessionSnapshot\(reason:\s*\.sourceChanged\)/.test(files.store)
       && /\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?refreshSelectedAgentLocalSessionsIfNeeded\(\)/.test(files.content)
-      && /func selectLocalSession\(_ session:[\s\S]*?guard selectedLocalSessionID != session\.id \|\| selectedSidebarSelection != \.session\(session\.id\)[\s\S]*?setSidebarSelection\(\.session\(session\.id\)\)/.test(files.store)
+      && /func selectLocalSession\([\s\S]*?_ session:\s*LocalSessionPreviewRow,[\s\S]*?origin:\s*LocalSessionSelectionOrigin = \.user[\s\S]*?setSidebarSelection\(\.session\(session\.id\)\)[\s\S]*?loadLocalSessionDetailIfNeeded\(sessionID:\s*sessionID\)/.test(files.store)
+      && /func loadLocalSessionDetailIfNeeded\(sessionID:\s*String\) async[\s\S]*?sessionID:\s*sessionID[\s\S]*?includeContentItems:\s*true[\s\S]*?limit:\s*1[\s\S]*?localSessionCache\.publishDetail/.test(files.store)
       && !/sessionTimeRangeSummary/.test(files.sidebar),
   },
   {
@@ -900,7 +902,7 @@ const customChecks = [
       && /enum LocalSessionSortOrder:[\s\S]*?case recent[\s\S]*?case title/.test(files.storeList)
       && /@Published var localSessionSortOrder:\s*LocalSessionSortOrder = \.recent/.test(files.store)
       && /@Published var localSessionSortDirection:\s*SkillSortDirection = \.descending/.test(files.store)
-      && /private func sortedLocalSessionRows\(_ rows:[\s\S]*?case \.recent:[\s\S]*?localSessionSortTimestamp[\s\S]*?case \.title:[\s\S]*?localizedStandardCompare/.test(files.store)
+      && /func projectedRows\([\s\S]*?criteria:\s*LocalSessionProjectionCriteria[\s\S]*?case \.recent:[\s\S]*?endedAt[\s\S]*?case \.title:[\s\S]*?localizedCaseInsensitiveCompare/.test(files.localSessionCache)
       && !/SessionScopeToggle/.test(files.sidebar)
       && /private var sessionRefreshButton:[\s\S]*?Image\(systemName:\s*"arrow\.clockwise"\)[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("sidebar\.sessions\.preview"/.test(files.sidebar)
       && /private var configToolbar:[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*8\)[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*CGFloat\(layout\.filterControlSpacing\)\)[\s\S]*?configScopePicker[\s\S]*?configRefreshButton\([\s\S]*?configSearchField/.test(files.sidebar)

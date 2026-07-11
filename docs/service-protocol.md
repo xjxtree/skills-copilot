@@ -244,6 +244,30 @@ date/filter range before evidence rows are limited.
   `total_matched_count`, `has_more`, and `next_offset`; UI shells should request
   additional pages instead of treating the first page as the full local session
   list.
+- `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
+  `asc` and `desc`; recent/modified time defaults descending and title defaults
+  ascending.
+- `max_files` selects the newest metadata candidates before any primary session
+  content read. `total_candidate_count` is the number discovered within the
+  bounded inventory, while `total_matched_count`, `has_more`, and `next_offset`
+  describe the selected, filtered candidate set after sorting.
+- `candidate_set_truncated=true` means additional disk candidates were omitted
+  by `max_files` or the request-owned inventory limits. A false value does not
+  weaken per-file, sidecar, or aggregate read bounds.
+- `include_content_items` defaults to `true` when omitted for compatibility.
+  Summary/list clients send `false`; every returned row then has
+  `content_included=false` and `content_items=[]` while retaining bounded title,
+  excerpt, timing, and aggregate counts. Detail clients send `true` and receive
+  `content_included=true`.
+- `session_id` is the stable service row ID derived from the candidate path,
+  not an agent-native transcript ID. The service applies this filter immediately
+  after metadata inventory, before newest-candidate selection and before opening
+  any primary session file. A detail request sends one `session_id`,
+  `include_content_items=true`, `limit=1`, and `offset=0`.
+- The native app prewarms and manually refreshes source-scoped summary snapshots
+  only. Scope, search, sort, and global search project those summaries in memory.
+  At most a selected row's bounded detail is held in the in-memory detail cache;
+  neither summaries nor details persist raw session content.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
 

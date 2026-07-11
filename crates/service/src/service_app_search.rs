@@ -118,6 +118,8 @@ impl ServiceHost {
             search: Some(query.to_string()),
             project_root: params.project_root,
             current_cwd: params.current_cwd,
+            include_content_items: None,
+            session_id: None,
             limit: Some(limit_per_kind),
             offset: Some(0),
             sort: Some("recent".to_string()),

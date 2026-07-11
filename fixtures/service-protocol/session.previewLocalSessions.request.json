@@ -5,7 +5,11 @@
     "authorized_roots": [
       "$HOME/.codex/sessions"
     ],
+    "session_id": null,
+    "include_content_items": false,
     "limit": 20,
+    "sort": "modified_at",
+    "direction": "desc",
     "max_excerpt_chars": 1000
   }
 }

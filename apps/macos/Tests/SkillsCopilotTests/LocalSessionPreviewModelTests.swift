@@ -4,6 +4,7 @@ import Foundation
 struct LocalSessionPreviewModelTests {
     func run() throws {
         try previewDecodesRedactedRowsAndSafety()
+        try previewDecodesCandidateAndContentCompatibility()
         try previewMergesPaginatedRows()
         try unavailableKeepsAuthorizationRequired()
         try filteredEmptyCopyExplainsHiddenLocalSessionCount()
@@ -142,6 +143,34 @@ struct LocalSessionPreviewModelTests {
         try expectEqual(result.sessionRows.count, 0, "Unavailable preview should not synthesize rows.")
     }
 
+    private func previewDecodesCandidateAndContentCompatibility() throws {
+        let explicit = try decodePreview("""
+        {
+          "candidate_set_truncated": true,
+          "session_rows": [{
+            "id": "summary",
+            "title": "Summary",
+            "content_included": false
+          }]
+        }
+        """)
+        try expectFalse(!explicit.candidateSetTruncated, "Explicit candidate truncation should decode.")
+        try expectEqual(explicit.sessionRows.first?.contentIncluded, false, "Summary content flag should decode false.")
+        try expectEqual(explicit.sessionRows.first?.contentItems, [], "A summary row may omit content_items.")
+
+        let legacy = try decodePreview("""
+        {
+          "session_rows": [{
+            "id": "legacy",
+            "title": "Legacy"
+          }]
+        }
+        """)
+        try expectFalse(legacy.candidateSetTruncated, "Missing candidate truncation should default false.")
+        try expectEqual(legacy.sessionRows.first?.contentIncluded, true, "Missing content flag should preserve legacy detail semantics.")
+        try expectEqual(legacy.sessionRows.first?.contentItems, [], "An old response may omit content_items.")
+    }
+
     private func previewMergesPaginatedRows() throws {
         let first = try decodePreview("""
         {
@@ -154,6 +183,7 @@ struct LocalSessionPreviewModelTests {
           "limit": 1,
           "has_more": true,
           "next_offset": 1,
+          "candidate_set_truncated": true,
           "session_rows": [
             {
               "id": "session-a",
@@ -217,6 +247,7 @@ struct LocalSessionPreviewModelTests {
         try expectEqual(merged.totalMatchedCount, 3, "Paginated merge should keep server total matched count.")
         try expectEqual(merged.hasMore, false, "Paginated merge should expose the latest page continuation state.")
         try expectNil(merged.nextOffset, "Final page should clear next offset.")
+        try expectFalse(!merged.candidateSetTruncated, "Paginated merge should retain truncation from either page.")
     }
 
     private func decodePreview(_ payload: String) throws -> LocalSessionPreviewResult {

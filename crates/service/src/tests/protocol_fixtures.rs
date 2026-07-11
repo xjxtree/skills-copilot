@@ -291,6 +291,7 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(!preview.raw_response_persisted);
             assert!(!preview.raw_trace_persisted);
             assert_eq!(preview.count, preview.session_rows.len());
+            assert!(!preview.candidate_set_truncated);
             assert_eq!(
                 preview.user_message_count,
                 preview
@@ -334,11 +335,8 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert_eq!(row.source_kind, "authorized-local-session");
                 assert!(!row.excerpt.is_empty());
                 assert!(!row.evidence_refs.is_empty());
-                assert!(!row.content_items.is_empty());
-                assert!(row
-                    .content_items
-                    .iter()
-                    .any(|item| item.kind == "skill_call"));
+                assert!(!row.content_included);
+                assert!(row.content_items.is_empty());
             }
         }
         "llm.status" => {

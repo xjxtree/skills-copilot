@@ -1224,11 +1224,6 @@ private struct SessionSidebarPanel: View {
                         }
                         .listPageCardRow()
                     }
-
-                    if preview.hasMore {
-                        loadMoreSessionsButton
-                            .listPageCardRow()
-                    }
                 }
             }
 
@@ -1247,6 +1242,9 @@ private struct SessionSidebarPanel: View {
     }
 
     private var sessionStatusMessage: String? {
+        if let displayError = store.localSessionSummaryDisplayError, !displayError.isEmpty {
+            return displayError
+        }
         if let fallback = store.localSessionPreviewResult.fallbackReason, !fallback.isEmpty {
             return fallback
         }
@@ -1366,37 +1364,9 @@ private struct SessionSidebarPanel: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(store.isRefreshBusy || store.isPreviewingLocalSessions || store.isLoadingMoreLocalSessions)
+        .disabled(store.isRefreshBusy || store.isPreviewingLocalSessions)
         .help(UIStrings.text("sidebar.sessions.preview", "Refresh Sessions"))
         .accessibilityLabel(UIStrings.text("sidebar.sessions.preview", "Refresh Sessions"))
-    }
-
-    private var loadMoreSessionsButton: some View {
-        Button {
-            Task { await store.loadMoreLocalSessions() }
-        } label: {
-            HStack(spacing: 8) {
-                if store.isLoadingMoreLocalSessions {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                } else {
-                    Image(systemName: "chevron.down.circle")
-                        .font(.caption.weight(.semibold))
-                }
-
-                Text(UIStrings.text("sidebar.sessions.loadMore", "Load more"))
-                    .font(.caption.weight(.semibold))
-
-                Spacer()
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-        .buttonStyle(.plain)
-        .disabled(!store.canLoadMoreLocalSessions)
-        .accessibilityLabel(UIStrings.text("sidebar.sessions.loadMore", "Load more"))
     }
 
 }

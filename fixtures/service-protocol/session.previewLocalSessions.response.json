@@ -19,6 +19,7 @@
     "limit": 20,
     "has_more": false,
     "next_offset": null,
+    "candidate_set_truncated": false,
     "user_message_count": 1,
     "total_message_count": 2,
     "tool_call_count": 1,
@@ -57,46 +58,8 @@
           "session.path:$HOME/.codex/sessions/fixture-session.jsonl",
           "session.content_hash:fixturehash"
         ],
-        "content_items": [
-          {
-            "id": "session-item-fixturehash-0",
-            "kind": "user_message",
-            "title": "User",
-            "text": "Run skill:fixture-skill for local task.",
-            "char_count": 39,
-            "timestamp": 1781599800000,
-            "evidence_refs": []
-          },
-          {
-            "id": "session-item-fixturehash-1",
-            "kind": "agent_reply",
-            "title": "Agent",
-            "text": "Used skill:fixture-skill for local task with <redacted>.",
-            "char_count": 56,
-            "timestamp": 1781600000000,
-            "evidence_refs": []
-          },
-          {
-            "id": "session-item-fixturehash-2",
-            "kind": "tool_call",
-            "title": "Tool",
-            "text": "fixture tool call",
-            "char_count": 17,
-            "timestamp": 1781600000000,
-            "evidence_refs": []
-          },
-          {
-            "id": "session-item-fixturehash-3",
-            "kind": "skill_call",
-            "title": "Skill: fixture-skill",
-            "text": "fixture-skill (2 calls)",
-            "char_count": 23,
-            "timestamp": null,
-            "evidence_refs": [
-              "session.content_hash:fixturehash"
-            ]
-          }
-        ]
+        "content_included": false,
+        "content_items": []
       }
     ],
     "gap_notes": [],

@@ -295,6 +295,23 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.saveProviderProfile"}}'
             ;;
           *\\"session.previewLocalSessions\\"*)
+            case "$input" in
+              *\\"session_id\\":\\"session-alpha\\"*)
+                if [ "$scenario" = "sessions-detail-failure" ]; then
+                  respond '{"id":"test","ok":false,"result":null,"error":{"code":"detail_failed","message":"detail failed"}}'
+                fi
+                if [ "$scenario" = "sessions-delayed-detail" ]; then
+                  wait_for_release "$SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE" || service_error
+                fi
+                respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-alpha","title":"Analyze repository CI","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/alpha.jsonl","excerpt":"Audit the current repository CI pipeline.","user_message_count":1,"total_message_count":2,"tool_call_count":1,"skill_call_count":0,"content_hash":"alpha","content_included":true,"content_items":[{"id":"alpha-item","kind":"agent_reply","title":"Agent","text":"Bounded alpha detail","char_count":20,"evidence_refs":[]}]}]}}'
+                ;;
+              *\\"session_id\\":\\"session-develop\\"*)
+                respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-develop","title":"Switch to develop branch","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/develop.jsonl","excerpt":"Switch branch to develop and inspect status.","user_message_count":1,"total_message_count":2,"tool_call_count":1,"skill_call_count":0,"content_hash":"develop","content_included":true,"content_items":[{"id":"develop-item","kind":"agent_reply","title":"Agent","text":"Bounded develop detail","char_count":22,"evidence_refs":[]}]}]}}'
+                ;;
+              *\\"session_id\\":\\"session-global\\"*)
+                respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":3,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-global","title":"Review global setup","source_kind":"authorized-local-session","agent":"claude-code","scope":"agent-global","redacted_path":"$HOME/.codex/sessions/global.jsonl","excerpt":"Review global agent setup.","user_message_count":2,"total_message_count":4,"tool_call_count":0,"skill_call_count":1,"content_hash":"global","content_included":true,"content_items":[{"id":"global-item","kind":"agent_reply","title":"Agent","text":"Bounded global detail","char_count":21,"evidence_refs":[]}]}]}}'
+                ;;
+            esac
             if [ "$scenario" = "sessions-mixed" ]; then
               case "$input" in
                 *\\"scope\\":\\"all\\"*)
@@ -314,7 +331,10 @@ final class FakeServiceScript: ServiceProcessRunning {
               esac
               respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":50,"has_more":false,"session_rows":[{"id":"session-project-from-all","title":"Open latest app","source_kind":"authorized-local-session","agent":"claude-code","scope":"all","project_root":"<project-root>","redacted_path":"$HOME/.claude/projects/project/session.jsonl","excerpt":"Open latest app.","user_message_count":2,"total_message_count":24,"tool_call_count":24,"skill_call_count":1,"content_hash":"project-all"}]}}'
             fi
-            if [ "$scenario" = "sessions" ]; then
+            if [ "$scenario" = "sessions-delayed-summary" ]; then
+              wait_for_release "$SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE" || service_error
+            fi
+            if [ "$scenario" = "sessions" ] || [ "$scenario" = "sessions-detail-failure" ] || [ "$scenario" = "sessions-delayed-summary" ] || [ "$scenario" = "sessions-delayed-detail" ]; then
               case "$input" in
                 *\\"search\\":\\"develop\\"*)
                   respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":50,"has_more":false,"session_rows":[{"id":"session-develop","title":"Switch to develop branch","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/develop.jsonl","excerpt":"Switch branch to develop and inspect status.","user_message_count":1,"total_message_count":2,"tool_call_count":1,"skill_call_count":0,"content_hash":"develop"}]}}'
