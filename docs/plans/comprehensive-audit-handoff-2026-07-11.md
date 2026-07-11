@@ -162,9 +162,13 @@ descriptor-bound primary reader required by Scanner Task 5.
 
 ### Task 2: Finish, review, and integrate the privacy history gate
 
-**Files:** `script/check_privacy.sh`, `scripts/privacy-content-matcher.pl`,
-`scripts/test-privacy-check.mjs`, `docs/security-model.md`, plus any already
-committed Task 4 workflow/package wiring.
+**Files:**
+
+- Modify: `script/check_privacy.sh`
+- Modify: `docs/security-model.md`
+- Create the matcher and regression files declared by Task 4 in the
+  [service/privacy plan](../superpowers/plans/2026-07-10-service-consistency-privacy.md).
+- Modify the Task 4 workflow/package wiring introduced by the privacy branch.
 
 **Interfaces:** Produces a fail-closed, bounded current/index/history gate that
 leaves no process, FIFO, or temporary artifact.
