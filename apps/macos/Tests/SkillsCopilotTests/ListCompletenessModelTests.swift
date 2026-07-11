@@ -14,6 +14,7 @@ struct ListCompletenessModelTests {
         try rejectsTerminalKnownTotalMismatchWithoutMutation()
         try terminalLimitationsDisableContinuation()
         try pageFailureKeepsRetryContinuation()
+        try initialPageFailureAllowsRetryAllOnly()
         try terminalFailureNeverCompletesUnknownTotal()
     }
 
@@ -134,6 +135,22 @@ struct ListCompletenessModelTests {
         value.fail(reason: .pageFailed)
         try expectEqual(value.state.canLoadMore, true, "Page failure should keep retry continuation")
         try expectEqual(value.state.canLoadAll, true, "Page failure should keep retry-all continuation")
+    }
+
+    private func initialPageFailureAllowsRetryAllOnly() throws {
+        var value = ListPageAccumulator<Row>()
+        value.begin(.initial)
+        value.fail(reason: .pageFailed)
+        try expectEqual(value.state.completeness, .incomplete, "An initial page failure should remain visibly incomplete")
+        try expectEqual(value.state.incompleteReason, .pageFailed, "Initial failure reason")
+        try expectEqual(value.state.canLoadMore, false, "An initial failure has no accepted cursor for Load More")
+        try expectEqual(value.state.canLoadAll, true, "An initial failure should offer retry-all from the nil cursor")
+
+        for reason in [ListIncompleteReason.sourceChanged, .sourceLimited, .unreadableSource, .safetyBudget, .unsupportedProtocol] {
+            var terminal = ListPageAccumulator<Row>()
+            terminal.fail(reason: reason)
+            try expectEqual(terminal.state.canLoadAll, false, "\(reason) must not make an empty list retryable")
+        }
     }
 
     private func terminalFailureNeverCompletesUnknownTotal() throws {

@@ -92,6 +92,9 @@ struct SkillStoreTests {
         try await runCase("localHistoryFailureRetryPreservesRows") {
             try await localHistoryFailureRetryPreservesRows()
         }
+        try await runCase("initialEventPageFailureRetriesFromNilCursor") {
+            try await initialEventPageFailureRetriesFromNilCursor()
+        }
         try await runCase("selectedCachedPartialEventHistoryRetriesOnRevisit") {
             try await selectedCachedPartialEventHistoryRetriesOnRevisit()
         }
@@ -1260,6 +1263,26 @@ struct SkillStoreTests {
         try expectEqual(changedStore.agentConfigSnapshots.count, 100, "Source change must retain the accepted first page.")
         try expectEqual(changedStore.agentConfigSnapshotCompleteness.completeness, .incomplete, "Source change should be terminal incomplete.")
         try expectEqual(changedStore.agentConfigSnapshotCompleteness.incompleteReason, .sourceChanged, "Source change reason")
+    }
+
+    private func initialEventPageFailureRetriesFromNilCursor() async throws {
+        let runner = LocalHistoryPageRunner(failFirstMethods: ["skill.listEventsPage"])
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
+
+        try expectEqual(store.skillEventsByID["skill-1"]?.count, 0, "An initial page failure should cache a visible empty history.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .incomplete, "Initial failure completeness")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.incompleteReason, .pageFailed, "Initial failure reason")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.canLoadAll, true, "The footer should offer retry-all after an initial failure.")
+
+        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
+
+        let events = store.skillEventsByID["skill-1"] ?? []
+        try expectEqual(events.count, 201, "Retry from the nil cursor should enumerate every event.")
+        try expectEqual(Set(events.map(\.id)).count, 201, "Initial retry must not duplicate stable IDs.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "Initial retry completeness")
+        try expectEqual(runner.cursors(for: "skill.listEventsPage"), [nil, nil, "event-100", "event-200"], "Initial retry must restart at the nil cursor before continuing.")
     }
 
     private func selectedCachedPartialEventHistoryRetriesOnRevisit() async throws {
@@ -4395,6 +4418,7 @@ private actor AutosaveControlServiceState {
 
 private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Sendable {
     private let lock = NSLock()
+    private let failFirstMethods: Set<String>
     private let failSecondMethods: Set<String>
     private let sourceChangedSecondMethods: Set<String>
     private let delayedThirdMethods: Set<String>
@@ -4406,11 +4430,13 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
     private var releasedMethods = Set<String>()
 
     init(
+        failFirstMethods: Set<String> = [],
         failSecondMethods: Set<String> = [],
         sourceChangedSecondMethods: Set<String> = [],
         delayedThirdMethods: Set<String> = [],
         includesSelectedSkillFixture: Bool = false
     ) {
+        self.failFirstMethods = failFirstMethods
         self.failSecondMethods = failSecondMethods
         self.sourceChangedSecondMethods = sourceChangedSecondMethods
         self.delayedThirdMethods = delayedThirdMethods
@@ -4488,12 +4514,18 @@ private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Se
         defer { lock.unlock() }
         recordedCursors[method, default: []].append(cursor)
         callCounts[method, default: 0] += 1
+        let initialFailure = offset == 0
+            && failFirstMethods.contains(method)
+            && failedMethods.insert("initial:\(method)").inserted
         let pageFailure = offset == 100
             && failSecondMethods.contains(method)
             && failedMethods.insert(method).inserted
         let sourceChanged = offset == 100 && sourceChangedSecondMethods.contains(method)
         let delay = offset == 200 && delayedThirdMethods.contains(method)
-        return (sourceChanged ? "source_changed" : (pageFailure ? "page_failed" : nil), delay)
+        return (
+            sourceChanged ? "source_changed" : ((initialFailure || pageFailure) ? "page_failed" : nil),
+            delay
+        )
     }
 
     private func waitForRelease(method: String) async {

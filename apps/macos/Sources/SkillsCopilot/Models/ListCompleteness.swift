@@ -149,6 +149,12 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
             && nextCursor != nil
             && loadingPhase == .idle
             && failureAllowsRetry
+        let canRetryInitialPage = incompleteReason == .pageFailed
+            && items.isEmpty
+            && sourceRevision == nil
+            && totalCount == nil
+            && sourceCompleteness == .unknown
+            && loadingPhase == .idle
         return ListCompletenessState(
             loadedCount: items.count,
             totalCount: totalCount,
@@ -158,7 +164,7 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
             incompleteReason: incompleteReason,
             loadingPhase: loadingPhase,
             canLoadMore: canContinue,
-            canLoadAll: canContinue
+            canLoadAll: canContinue || canRetryInitialPage
         )
     }
 }
