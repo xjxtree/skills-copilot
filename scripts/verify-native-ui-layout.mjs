@@ -1162,6 +1162,15 @@ const customChecks = [
       && !/TextField\([\s\S]*?\$store\.skillManagerSkillName/.test(files.skillManager),
   },
   {
+    label: "Skill Manager empty and blocked searches keep non-actionable completeness visible",
+    passed: /search\.isBlockedByNetwork[\s\S]*?skillManager\.search\.networkBlocked[\s\S]*?else if search\.results\.isEmpty[\s\S]*?skillManager\.search\.noResults/.test(files.skillManager)
+      && /\n {16}if let status = store\.skillManagerSearchStatus \{[\s\S]*?skillManagerSearchFooter\(status,\s*sourceCompleteness:\s*search\.sourceCompleteness\)/.test(files.skillManager)
+      && /private func skillManagerSearchFooter[\s\S]*?if status\.canLoadMore[\s\S]*?loadMoreSkillManagerSearchResults[\s\S]*?showAllReturnedSkillManagerSearchResults/.test(files.skillManager)
+      && /private func skillManagerSearchFooter[\s\S]*?status\.incompleteReason[\s\S]*?UIStrings\.listIncompleteReason[\s\S]*?skillManager\.search\.completenessRecovery/.test(files.skillManager)
+      && /"skillManager\.search\.completenessRecovery"/.test(files.localizable)
+      && /"skillManager\.search\.completenessRecovery"/.test(files.localizableZh),
+  },
+  {
     label: "Skill Manager target controls collapse to an icon summary bar",
     passed: /@State private var isShowingSkillManagerTargets = false/.test(files.skillManager)
       && /private var selectedTargetAgents:\s*\[SkillManagerAgent\][\s\S]*?SkillManagerAgent\.defaultTargets\.filter[\s\S]*?store\.skillManagerSelectedAgentIDs\.contains/.test(files.skillManager)

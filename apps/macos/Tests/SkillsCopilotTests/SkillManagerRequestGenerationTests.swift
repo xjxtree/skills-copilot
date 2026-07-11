@@ -10,6 +10,7 @@ struct SkillManagerRequestGenerationTests {
         try await staleSearchErrorDoesNotReplaceNewSuccess()
         try await installedListIsScopedToCapturedAgentsAndScope()
         try await installedAndLocalLibraryExposeEveryVisibleID()
+        try await invalidMethodMetadataPreservesCurrentRecords()
         try await inputChangeInvalidatesMutationPreview()
         try await localCreateInputChangeIgnoresOldPreview()
         try await localDeleteSelectionChangeIgnoresOldPreview()
@@ -75,6 +76,36 @@ struct SkillManagerRequestGenerationTests {
 
         await store.loadAppStartupDataIfNeeded()
         try expectEqual(store.localSkillLibrarySkills.map(\.id).count, 31, "App-owned local library should expose all 31 rows.")
+    }
+
+    private func invalidMethodMetadataPreservesCurrentRecords() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerSearchQuery = "retain-search"
+
+        await store.searchSkillManager()
+        guard let validSearch = store.skillManagerSearchResult else {
+            throw NativeModelTestFailure(description: "Initial valid search record should load.")
+        }
+        await store.searchSkillManager()
+        try expectEqual(
+            store.skillManagerSearchResult,
+            validSearch,
+            "Search metadata missing source_limited must not replace the current valid record."
+        )
+
+        store.skillManagerSelectedAgentIDs = ["codex"]
+        store.skillManagerScope = .project
+        await store.listSkillManagerInstalled()
+        guard let validInstalled = store.skillManagerInstalled else {
+            throw NativeModelTestFailure(description: "Initial valid installed record should load.")
+        }
+        await store.listSkillManagerInstalled()
+        try expectEqual(
+            store.skillManagerInstalled,
+            validInstalled,
+            "Installed metadata carrying an incomplete reason must not replace the current exact record."
+        )
     }
 
     private func canonicalInputsNormalizeIdentity() throws {
@@ -1017,7 +1048,13 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                 pending[label] = PendingRequest(call: call, continuation: continuation)
             }
         }
-        return Self.response(for: call)
+        let repeatedSameRead = calls.filter { Self.label(for: $0) == label }.count > 1
+        let injectInvalidMetadata = repeatedSameRead
+            && ((call.method == "skillManager.search" && call.query == "retain-search")
+                || (call.method == "skillManager.listInstalled"
+                    && call.scope == "project"
+                    && call.agents == ["codex"]))
+        return Self.response(for: call, injectInvalidMetadata: injectInvalidMetadata)
     }
 
     private func cancelPending(_ label: String) {
@@ -1068,7 +1105,10 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         }
     }
 
-    private static func response(for call: RecordedSkillManagerCall) -> Data {
+    private static func response(
+        for call: RecordedSkillManagerCall,
+        injectInvalidMetadata: Bool = false
+    ) -> Data {
         let result: Any
         switch call.method {
         case "skillManager.search":
@@ -1082,16 +1122,19 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                     "raw": [:],
                 ] as [String: Any]
             }
-            result = [
+            var searchResult: [String: Any] = [
                 "preview": preview(operation: "search", token: "search:\(query)", source: nil, skills: []),
                 "output": NSNull(),
                 "results": results,
                 "returned_count": results.count,
                 "total_count": NSNull(),
                 "has_more": false,
-                "source_completeness": "unknown",
-                "incomplete_reason": "source_limited",
+                "source_completeness": "unknown"
             ]
+            if !injectInvalidMetadata {
+                searchResult["incomplete_reason"] = "source_limited"
+            }
+            result = searchResult
         case "skillManager.listInstalled":
             let name = "\(call.scope ?? "none"):\(call.agents.joined(separator: ","))"
             let installed = (0..<27).map { index in
@@ -1104,7 +1147,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                     "raw": [:],
                 ] as [String: Any]
             }
-            result = [
+            var installedResult: [String: Any] = [
                 "preview": preview(operation: "listInstalled", token: "installed:\(name)", source: nil, skills: []),
                 "output": output,
                 "installed": installed,
@@ -1113,6 +1156,10 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                 "has_more": false,
                 "source_completeness": "enumerable",
             ]
+            if injectInvalidMetadata {
+                installedResult["incomplete_reason"] = "source_limited"
+            }
+            result = installedResult
         case "skillManager.previewInstall", "skillManager.applyInstall":
             result = mutationResponse(call: call, operation: "install")
         case "skillManager.previewRemove", "skillManager.applyRemove":

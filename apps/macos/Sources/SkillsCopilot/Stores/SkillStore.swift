@@ -230,7 +230,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var skillManagerSearchResult: SkillManagerSearchRecord?
     @Published private(set) var skillManagerInstalled: SkillManagerInstalledListRecord?
     @Published private(set) var skillManagerSearchVisibility = SkillManagerVisibleResults<String>()
-    @Published private(set) var skillManagerInstalledVisibility = SkillManagerVisibleResults<String>()
     @Published private(set) var skillManagerMutationConfirmation: SkillManagerMutationConfirmation?
     @Published private(set) var skillManagerLocalCreateConfirmation: SkillManagerLocalCreateConfirmation?
     @Published private(set) var skillManagerLocalDeleteConfirmation: SkillManagerLocalDeleteConfirmation?
@@ -1491,7 +1490,6 @@ final class SkillStore: ObservableObject {
                 guard self.currentSkillManagerSearchGeneration == generation else { return }
                 guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
-                self.skillManagerSearchResult = nil
             }
         }
         let handle = SkillManagerRequestTaskHandle(task: task)
@@ -1519,8 +1517,6 @@ final class SkillStore: ObservableObject {
                 guard let self else { return }
                 defer { self.finishSkillManagerInstalledList(generation) }
                 guard self.currentSkillManagerInstalledGeneration == generation else { return }
-                self.skillManagerInstalledVisibility.reset()
-                self.skillManagerInstalledVisibility.loadAll(totalReturned: result.installed.count)
                 self.skillManagerInstalled = result
             } catch {
                 guard let self else { return }
@@ -1528,7 +1524,6 @@ final class SkillStore: ObservableObject {
                 guard self.currentSkillManagerInstalledGeneration == generation else { return }
                 guard !(error is CancellationError), !Task.isCancelled else { return }
                 self.setSkillManagerError(error.localizedDescription)
-                self.skillManagerInstalled = nil
             }
         }
         let handle = SkillManagerRequestTaskHandle(task: task)
@@ -1557,15 +1552,9 @@ final class SkillStore: ObservableObject {
         skillManagerSelectedAgentIDs = []
     }
 
-    func loadMoreSkillManagerSearchResults() {
-        guard let result = skillManagerSearchResult else { return }
-        skillManagerSearchVisibility.loadMore(totalReturned: result.results.count)
-    }
+    func loadMoreSkillManagerSearchResults() { if let result = skillManagerSearchResult { skillManagerSearchVisibility.loadMore(totalReturned: result.results.count) } }
 
-    func showAllReturnedSkillManagerSearchResults() {
-        guard let result = skillManagerSearchResult else { return }
-        skillManagerSearchVisibility.loadAll(totalReturned: result.results.count)
-    }
+    func showAllReturnedSkillManagerSearchResults() { if let result = skillManagerSearchResult { skillManagerSearchVisibility.loadAll(totalReturned: result.results.count) } }
 
     func previewSkillManagerInstall(source: String? = nil, skillName: String? = nil) async {
         if let source {
@@ -1989,8 +1978,6 @@ final class SkillStore: ObservableObject {
         skillManagerSearchGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerSearchGenerationValue, key: key)
         currentSkillManagerSearchGeneration = generation
-        skillManagerSearchVisibility.reset()
-        skillManagerSearchResult = nil
         isSearchingSkillManager = true
         return generation
     }
@@ -2017,8 +2004,6 @@ final class SkillStore: ObservableObject {
         skillManagerInstalledGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerInstalledGenerationValue, key: key)
         currentSkillManagerInstalledGeneration = generation
-        skillManagerInstalledVisibility.reset()
-        skillManagerInstalled = nil
         isListingSkillManagerInstalled = true
         return generation
     }
@@ -2034,7 +2019,6 @@ final class SkillStore: ObservableObject {
         skillManagerInstalledTask = nil
         skillManagerInstalledGenerationValue &+= 1
         currentSkillManagerInstalledGeneration = nil
-        skillManagerInstalledVisibility.reset()
         skillManagerInstalled = nil
         isListingSkillManagerInstalled = false
     }

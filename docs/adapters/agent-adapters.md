@@ -65,7 +65,10 @@ blocked operations. It is a current contract, not a version history.
   therefore distinguish returned rows from an unknown, source-limited total;
   clients may reveal the in-memory returned collection progressively but must
   not label its count as complete or make a hidden follow-up network request.
-  Installed JSON and the app-owned local library are enumerable exact lists.
+  Installed JSON and the app-owned local library are enumerable exact lists;
+  a bounded capture that is truncated, malformed, or not a recognized list
+  shape fails closed and must never become an exact empty list or expose raw
+  manager output in an error.
   Do not add page flags or alter the manager command shape without a parsed
   token fixture that proves the external manager contract.
 - Install uses the manager default symlink flow. `--copy` is sent only for an

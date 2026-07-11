@@ -96,7 +96,7 @@ fn installed_record_reports_exact_enumerable_total() {
             stdout: stdout.clone(),
             stderr: String::new(),
         },
-        parse_installed_records(&stdout),
+        parse_installed_records(&stdout).expect("valid installed JSON"),
     );
 
     assert_eq!(installed.installed.len(), 27);
@@ -107,6 +107,51 @@ fn installed_record_reports_exact_enumerable_total() {
         ListSourceCompleteness::Enumerable
     );
     assert_eq!(installed.page.incomplete_reason, None);
+}
+
+#[test]
+fn installed_parser_rejects_truncated_json_instead_of_claiming_exact_empty() {
+    let stdout = serde_json::to_string(&serde_json::json!({
+        "skills": (0..400)
+            .map(|index| serde_json::json!({
+                "name": format!("installed-{index}"),
+                "source": format!("owner/repository-with-a-long-name-{index}"),
+                "path": format!("/tmp/installed/{index}/SKILL.md")
+            }))
+            .collect::<Vec<_>>()
+    }))
+    .expect("large installed JSON");
+    assert!(stdout.len() > MAX_CAPTURE_BYTES);
+    let truncated = truncate_capture(&stdout);
+
+    let result = parse_installed_records(&truncated);
+
+    assert!(matches!(
+        result,
+        Err(CommandError::SkillManagerCommandFailed(detail))
+            if detail == "listInstalled returned invalid or truncated JSON"
+    ));
+}
+
+#[test]
+fn installed_parser_rejects_malformed_or_unrecognized_json_instead_of_exact_empty() {
+    for stdout in ["{not-json", r#"{"unexpected":[]}"#] {
+        let result = parse_installed_records(stdout);
+
+        assert!(matches!(
+            result,
+            Err(CommandError::SkillManagerCommandFailed(detail))
+                if detail == "listInstalled returned invalid or truncated JSON"
+        ));
+    }
+}
+
+#[test]
+fn installed_parser_accepts_a_recognized_exact_empty_list() {
+    let installed =
+        parse_installed_records(r#"{"skills":[]}"#).expect("recognized empty installed list");
+
+    assert!(installed.is_empty());
 }
 
 #[test]

@@ -370,7 +370,7 @@ pub fn list_installed_skills_with_manager(
         },
     )?;
     let output = run_previewed_command(ctx, &preview)?;
-    let installed = parse_installed_records(&output.stdout);
+    let installed = parse_installed_records(&output.stdout)?;
     Ok(skill_manager_installed_record(preview, output, installed))
 }
 
@@ -1283,11 +1283,22 @@ fn strip_ansi_codes(value: &str) -> String {
     stripped
 }
 
-fn parse_installed_records(stdout: &str) -> Vec<SkillManagerInstalledRecord> {
-    let Ok(value) = serde_json::from_str::<Value>(stdout) else {
-        return Vec::new();
-    };
-    records_from_json_value(&value)
+fn parse_installed_records(stdout: &str) -> Result<Vec<SkillManagerInstalledRecord>, CommandError> {
+    let value = serde_json::from_str::<Value>(stdout).map_err(|_| {
+        CommandError::SkillManagerCommandFailed(
+            "listInstalled returned invalid or truncated JSON".to_string(),
+        )
+    })?;
+    let recognized = value.is_array()
+        || ["skills", "installed", "results"]
+            .iter()
+            .any(|key| value.get(*key).is_some_and(Value::is_array));
+    if !recognized {
+        return Err(CommandError::SkillManagerCommandFailed(
+            "listInstalled returned invalid or truncated JSON".to_string(),
+        ));
+    }
+    Ok(records_from_json_value(&value))
 }
 
 fn records_from_json_value(value: &Value) -> Vec<SkillManagerInstalledRecord> {

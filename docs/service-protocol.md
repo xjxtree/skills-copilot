@@ -247,10 +247,20 @@ date/filter range before evidence rows are limited.
   network-blocked preview uses the same source semantics with zero rows.
 - `skillManager.listInstalled` consumes the manager's complete JSON list and
   reports `returned_count=total_count`, `source_completeness=enumerable`, and
-  no incomplete reason. No pagination flags or tokens are invented for either
-  command. The native client may reveal an already-returned search collection
-  in 20-row steps without issuing another manager or network request, while
-  installed JSON and the app-owned local library remain fully accessible.
+  no incomplete reason. The bounded, redacted command capture must decode as a
+  recognized JSON list shape; truncated, malformed, or unrecognized output
+  fails closed with a stable error instead of becoming an exact empty list.
+  No raw manager payload is included in that error. No pagination flags or
+  tokens are invented for either command. The native client may reveal an
+  already-returned search collection in 20-row steps without issuing another
+  manager or network request, while installed JSON and the app-owned local
+  library remain fully accessible.
+- Native clients validate method-specific metadata, not only generic page
+  invariants. Search accepts only terminal unknown/source-limited metadata;
+  installed accepts only terminal exact enumerable metadata. Invalid refresh
+  metadata is rejected without replacing a current record for the same inputs.
+  Empty and network-blocked searches still display zero loaded rows, unknown
+  total, the typed source limitation and recovery guidance, with no load action.
 - The Skill Manager UI does not expose agent-layer enable/disable controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.

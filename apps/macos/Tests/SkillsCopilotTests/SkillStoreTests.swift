@@ -453,6 +453,12 @@ struct SkillStoreTests {
 
         let localLibraryIDs = Array(0..<31).map(String.init)
         try expectEqual(localLibraryIDs.count, 31, "The complete local library should not retain the old 12-row display cap.")
+        let status = emptySkillManagerSearchRecord().listStatus(visibleCount: 0)
+        try expectEqual(status.loadedCount, 0, "Empty or blocked search should show zero loaded rows.")
+        try expectEqual(status.totalCount, nil, "Empty or blocked remote search total should remain unknown.")
+        try expectEqual(status.incompleteReason, .sourceLimited, "Empty or blocked search should expose its typed limitation.")
+        try expectEqual(status.canLoadMore, false, "Empty returned search must not offer Load More.")
+        try expectEqual(status.canLoadAll, false, "Empty returned search must not offer Load All.")
     }
 
     private func localSessionSearchNormalizesSelectionAndDetail() async throws {

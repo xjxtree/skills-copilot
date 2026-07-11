@@ -71,69 +71,17 @@ extension SkillStore {
     }
 
     var skillManagerVisibleInstalledRecords: [SkillManagerInstalledRecord] {
-        guard let result = skillManagerInstalled else { return [] }
-        return skillManagerInstalledVisibility.visibleItems(in: result.installed)
+        skillManagerInstalled?.installed ?? []
     }
 
     var skillManagerSearchStatus: ListCompletenessState? {
         guard let result = skillManagerSearchResult else { return nil }
-        return skillManagerStatus(
-            visibleCount: skillManagerVisibleSearchResults.count,
-            returnedCount: result.results.count,
-            totalCount: result.totalCount,
-            serviceHasMore: result.hasMore,
-            sourceCompleteness: result.sourceCompleteness,
-            incompleteReason: result.incompleteReason
-        )
+        return result.listStatus(visibleCount: skillManagerVisibleSearchResults.count)
     }
 
     var skillManagerInstalledStatus: ListCompletenessState? {
         guard let result = skillManagerInstalled else { return nil }
-        return skillManagerStatus(
-            visibleCount: skillManagerVisibleInstalledRecords.count,
-            returnedCount: result.installed.count,
-            totalCount: result.totalCount,
-            serviceHasMore: result.hasMore,
-            sourceCompleteness: result.sourceCompleteness,
-            incompleteReason: result.incompleteReason
-        )
-    }
-
-    private func skillManagerStatus(
-        visibleCount: Int,
-        returnedCount: Int,
-        totalCount: Int?,
-        serviceHasMore: Bool,
-        sourceCompleteness: ListSourceCompleteness,
-        incompleteReason: ListIncompleteReason?
-    ) -> ListCompletenessState {
-        let hasHiddenReturnedRows = visibleCount < returnedCount
-        let isComplete = !hasHiddenReturnedRows
-            && !serviceHasMore
-            && sourceCompleteness == .enumerable
-            && incompleteReason == nil
-            && (totalCount == nil || totalCount == returnedCount)
-        let completeness: ListCompleteness
-        if isComplete {
-            completeness = .complete
-        } else if sourceCompleteness == .limited || incompleteReason != nil {
-            completeness = .incomplete
-        } else if sourceCompleteness == .unknown {
-            completeness = .unknown
-        } else {
-            completeness = .partial
-        }
-        return ListCompletenessState(
-            loadedCount: visibleCount,
-            totalCount: totalCount,
-            hasMore: hasHiddenReturnedRows || serviceHasMore,
-            isComplete: isComplete,
-            completeness: completeness,
-            incompleteReason: incompleteReason,
-            loadingPhase: .idle,
-            canLoadMore: hasHiddenReturnedRows,
-            canLoadAll: hasHiddenReturnedRows
-        )
+        return result.listStatus(visibleCount: skillManagerVisibleInstalledRecords.count)
     }
 
     var skillManagerSelectedAgents: [String] {

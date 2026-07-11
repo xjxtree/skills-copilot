@@ -323,13 +323,22 @@ struct SkillManagerSearchRecord: Codable, Hashable {
     }
 
     var hasValidPageMetadata: Bool {
-        skillManagerPageMetadataIsValid(
-            returnedCount: returnedCount,
-            rowCount: results.count,
+        returnedCount == results.count
+            && totalCount == nil
+            && !hasMore
+            && nextCursor == nil
+            && sourceCompleteness == .unknown
+            && incompleteReason == .sourceLimited
+    }
+
+    func listStatus(visibleCount: Int) -> ListCompletenessState {
+        skillManagerListStatus(
+            visibleCount: visibleCount,
+            returnedCount: results.count,
             totalCount: totalCount,
-            hasMore: hasMore,
-            nextCursor: nextCursor,
-            sourceCompleteness: sourceCompleteness
+            serviceHasMore: hasMore,
+            sourceCompleteness: sourceCompleteness,
+            incompleteReason: incompleteReason
         )
     }
 }
@@ -376,33 +385,61 @@ struct SkillManagerInstalledListRecord: Codable, Hashable {
     }
 
     var hasValidPageMetadata: Bool {
-        skillManagerPageMetadataIsValid(
-            returnedCount: returnedCount,
-            rowCount: installed.count,
+        returnedCount == installed.count
+            && totalCount == installed.count
+            && !hasMore
+            && nextCursor == nil
+            && sourceCompleteness == .enumerable
+            && incompleteReason == nil
+    }
+
+    func listStatus(visibleCount: Int) -> ListCompletenessState {
+        skillManagerListStatus(
+            visibleCount: visibleCount,
+            returnedCount: installed.count,
             totalCount: totalCount,
-            hasMore: hasMore,
-            nextCursor: nextCursor,
-            sourceCompleteness: sourceCompleteness
+            serviceHasMore: hasMore,
+            sourceCompleteness: sourceCompleteness,
+            incompleteReason: incompleteReason
         )
     }
 }
 
-private func skillManagerPageMetadataIsValid(
+private func skillManagerListStatus(
+    visibleCount: Int,
     returnedCount: Int,
-    rowCount: Int,
     totalCount: Int?,
-    hasMore: Bool,
-    nextCursor: String?,
-    sourceCompleteness: ListSourceCompleteness
-) -> Bool {
-    guard returnedCount == rowCount else { return false }
-    guard totalCount.map({ $0 >= rowCount }) ?? true else { return false }
-    guard hasMore || nextCursor == nil else { return false }
-    guard !(hasMore && sourceCompleteness == .enumerable && nextCursor == nil) else { return false }
-    if !hasMore, sourceCompleteness == .enumerable, let totalCount {
-        return totalCount == rowCount
+    serviceHasMore: Bool,
+    sourceCompleteness: ListSourceCompleteness,
+    incompleteReason: ListIncompleteReason?
+) -> ListCompletenessState {
+    let hasHiddenReturnedRows = visibleCount < returnedCount
+    let isComplete = !hasHiddenReturnedRows
+        && !serviceHasMore
+        && sourceCompleteness == .enumerable
+        && incompleteReason == nil
+        && (totalCount == nil || totalCount == returnedCount)
+    let completeness: ListCompleteness
+    if isComplete {
+        completeness = .complete
+    } else if sourceCompleteness == .limited || incompleteReason != nil {
+        completeness = .incomplete
+    } else if sourceCompleteness == .unknown {
+        completeness = .unknown
+    } else {
+        completeness = .partial
     }
-    return true
+    return ListCompletenessState(
+        loadedCount: visibleCount,
+        totalCount: totalCount,
+        hasMore: hasHiddenReturnedRows || serviceHasMore,
+        isComplete: isComplete,
+        completeness: completeness,
+        incompleteReason: incompleteReason,
+        loadingPhase: .idle,
+        canLoadMore: hasHiddenReturnedRows,
+        canLoadAll: hasHiddenReturnedRows
+    )
 }
 
 struct SkillManagerInstallParams: Encodable {

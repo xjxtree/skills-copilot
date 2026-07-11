@@ -188,6 +188,7 @@
 "skillManager.local.empty" = "本地库中没有应用自有技能。";
 "skillManager.search.noResults" = "未返回搜索结果。";
 "skillManager.search.networkBlocked" = "网络开关已关闭，因此这次远程搜索只生成了预览，未实际联网执行。";
+"skillManager.search.completenessRecovery" = "请检查网络访问设置或优化查询后重新搜索；外部管理器不会提供权威的远程总数。";
 "skillManager.results.showAllReturned" = "显示全部已返回结果";
 "skillManager.search.required" = "请输入技能搜索内容。";
 "skillManager.previewSummary.search" = "通过外部技能管理器搜索远程技能索引。";

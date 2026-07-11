@@ -367,9 +367,9 @@ struct SkillManagerPanel: View {
                             .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
                         }
                     }
-                    if let status = store.skillManagerSearchStatus {
-                        skillManagerSearchFooter(status, sourceCompleteness: search.sourceCompleteness)
-                    }
+                }
+                if let status = store.skillManagerSearchStatus {
+                    skillManagerSearchFooter(status, sourceCompleteness: search.sourceCompleteness)
                 }
             } else {
                 Text(UIStrings.text("skillManager.results.empty", "Run a search or preview an install to populate this side of the workflow."))
@@ -596,6 +596,12 @@ struct SkillManagerPanel: View {
                 Text(UIStrings.listIncompleteReason(reason.rawValue))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(UIStrings.text(
+                    "skillManager.search.completenessRecovery",
+                    "Review network access or refine the query, then run the search again; the manager does not provide an authoritative remote total."
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .controlSize(.small)

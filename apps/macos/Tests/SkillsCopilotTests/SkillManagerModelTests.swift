@@ -7,6 +7,7 @@ struct SkillManagerModelTests {
         try workflowsSeparatePackageOperations()
         try visibleResultsRevealReturnedRowsInTwentyRowSteps()
         try searchRecordSeparatesNetworkBlockedFromEmptyResults()
+        try methodSpecificPageMetadataRejectsCrossMethodSemantics()
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
     }
@@ -105,6 +106,85 @@ struct SkillManagerModelTests {
             .data(using: .utf8)!
         let mismatched = try JSONDecoder().decode(SkillManagerSearchRecord.self, from: mismatchedPayload)
         try expectEqual(mismatched.hasValidPageMetadata, false, "Returned count must match decoded rows.")
+
+        let invalidSearchPayloads = try [
+            mutatingPayload(payload) { $0.removeValue(forKey: "incomplete_reason") },
+            mutatingPayload(payload) { $0["incomplete_reason"] = "page_failed" },
+            mutatingPayload(payload) { $0["source_completeness"] = "enumerable" },
+            mutatingPayload(payload) { $0["total_count"] = 0 },
+            mutatingPayload(payload) { $0["has_more"] = true }
+        ]
+        for (index, invalidPayload) in invalidSearchPayloads.enumerated() {
+            let invalid = try JSONDecoder().decode(
+                SkillManagerSearchRecord.self,
+                from: invalidPayload
+            )
+            try expectEqual(invalid.hasValidPageMetadata, false, "Search invalid metadata case \(index) must be rejected.")
+        }
+    }
+
+    private func methodSpecificPageMetadataRejectsCrossMethodSemantics() throws {
+        let payload = """
+        {
+          "preview": {
+            "tool_id": "npx-skills",
+            "operation": "listInstalled",
+            "command": ["/usr/local/bin/npx", "skills", "list", "--json"],
+            "cwd": "/tmp/project",
+            "env": [],
+            "requires_confirmation": false,
+            "confirmed": false,
+            "network_required": false,
+            "network_allowed": true,
+            "will_run": false,
+            "preview_token": "skill-manager:installed",
+            "summary": "List installed skills.",
+            "risks": []
+          },
+          "output": {"status":"completed","exit_code":0,"stdout":"","stderr":""},
+          "installed": [
+            {"name":"alpha","source":"owner/repo","agents":["codex"],"scope":"project","path":"/tmp/alpha","raw":{}}
+          ],
+          "returned_count": 1,
+          "total_count": 1,
+          "has_more": false,
+          "source_completeness": "enumerable"
+        }
+        """
+        let valid = try JSONDecoder().decode(
+            SkillManagerInstalledListRecord.self,
+            from: payload.data(using: .utf8)!
+        )
+        try expectEqual(valid.hasValidPageMetadata, true, "Installed exact metadata should validate.")
+
+        let installedData = payload.data(using: .utf8)!
+        let invalidInstalledPayloads = try [
+            mutatingPayload(installedData) { $0["incomplete_reason"] = "source_limited" },
+            mutatingPayload(installedData) { $0["source_completeness"] = "unknown" },
+            mutatingPayload(installedData) { $0["total_count"] = 2 },
+            mutatingPayload(installedData) {
+                $0["has_more"] = true
+                $0["next_cursor"] = "unexpected"
+            }
+        ]
+        for (index, invalidPayload) in invalidInstalledPayloads.enumerated() {
+            let invalid = try JSONDecoder().decode(
+                SkillManagerInstalledListRecord.self,
+                from: invalidPayload
+            )
+            try expectEqual(invalid.hasValidPageMetadata, false, "Installed invalid metadata case \(index) must be rejected.")
+        }
+    }
+
+    private func mutatingPayload(
+        _ data: Data,
+        _ mutation: (inout [String: Any]) -> Void
+    ) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NativeModelTestFailure(description: "Expected a JSON object fixture.")
+        }
+        mutation(&object)
+        return try JSONSerialization.data(withJSONObject: object)
     }
 
     private func previewSummaryLocalizesKnownOperations() throws {

@@ -23,3 +23,33 @@ func skill(
         enabled: enabled
     )
 }
+
+func emptySkillManagerSearchRecord() -> SkillManagerSearchRecord {
+    SkillManagerSearchRecord(
+        preview: SkillManagerCommandPreview(
+            toolId: "npx-skills",
+            operation: "search",
+            command: ["npx", "skills", "find", "missing"],
+            cwd: "/tmp",
+            env: [],
+            requiresConfirmation: false,
+            confirmed: false,
+            networkRequired: true,
+            networkAllowed: false,
+            willRun: false,
+            previewToken: "search:missing",
+            summary: "Search",
+            risks: [],
+            source: nil,
+            skills: []
+        ),
+        output: nil,
+        results: [],
+        returnedCount: 0,
+        totalCount: nil,
+        hasMore: false,
+        nextCursor: nil,
+        sourceCompleteness: .unknown,
+        incompleteReason: .sourceLimited
+    )
+}
