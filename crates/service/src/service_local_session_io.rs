@@ -839,6 +839,33 @@ pub(crate) struct LocalSessionInventoryBudget {
     remaining_entries: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct LocalSessionFileCandidate {
+    pub(crate) path: PathBuf,
+    pub(crate) modified_at: i64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct LocalSessionInventory {
+    pub(crate) candidates: Vec<LocalSessionFileCandidate>,
+    pub(crate) total_candidate_count: usize,
+    pub(crate) truncated: bool,
+}
+
+pub(crate) fn select_newest_candidates(
+    mut candidates: Vec<LocalSessionFileCandidate>,
+    max_files: usize,
+) -> Vec<LocalSessionFileCandidate> {
+    candidates.sort_by(|left, right| {
+        right
+            .modified_at
+            .cmp(&left.modified_at)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    candidates.truncate(max_files);
+    candidates
+}
+
 impl LocalSessionInventoryBudget {
     fn new(remaining_directories: usize, remaining_entries: usize) -> Self {
         Self {
@@ -945,8 +972,12 @@ pub(crate) struct GuardedLocalSessionRoot {
 
 pub(crate) struct GuardedLocalSessionInventory {
     pub(crate) files: Vec<PathBuf>,
-    pub(crate) directory_errors: Vec<(PathBuf, io::Error)>,
     pub(crate) truncated: bool,
+}
+
+pub(crate) struct GuardedLocalSessionMetadataInventory {
+    pub(crate) inventory: LocalSessionInventory,
+    pub(crate) directory_errors: Vec<(PathBuf, io::Error)>,
 }
 
 impl GuardedLocalSessionRoot {
@@ -1052,43 +1083,42 @@ impl GuardedLocalSessionRoot {
 
     pub(crate) fn collect_regular_files(
         &self,
-        max_files: usize,
+        budget: &mut LocalSessionInventoryBudget,
         mut is_candidate: impl FnMut(&Path) -> bool,
-    ) -> io::Result<GuardedLocalSessionInventory> {
+    ) -> io::Result<GuardedLocalSessionMetadataInventory> {
         #[cfg(unix)]
         {
             use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
 
+            let mut collected = GuardedLocalSessionMetadataInventory {
+                inventory: LocalSessionInventory::default(),
+                directory_errors: Vec::new(),
+            };
+            if !budget.claim_directory() {
+                collected.inventory.truncated = true;
+                return Ok(collected);
+            }
             let directory_flags =
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
             let root_directory = openat(&self.directory, ".", directory_flags, Mode::empty())
                 .map_err(io::Error::from)?;
             let mut directories = vec![(PathBuf::new(), root_directory)];
-            let mut inventory = GuardedLocalSessionInventory {
-                files: Vec::new(),
-                directory_errors: Vec::new(),
-                truncated: false,
-            };
 
             while let Some((relative_directory, directory)) = directories.pop() {
                 let mut entries = match Dir::read_from(&directory) {
                     Ok(entries) => entries,
                     Err(error) => {
-                        inventory
+                        collected
                             .directory_errors
                             .push((self.path.join(&relative_directory), io::Error::from(error)));
                         continue;
                     }
                 };
                 for entry in &mut entries {
-                    if inventory.files.len() >= max_files {
-                        inventory.truncated = true;
-                        return Ok(inventory);
-                    }
                     let entry = match entry {
                         Ok(entry) => entry,
                         Err(error) => {
-                            inventory.directory_errors.push((
+                            collected.directory_errors.push((
                                 self.path.join(&relative_directory),
                                 io::Error::from(error),
                             ));
@@ -1099,6 +1129,10 @@ impl GuardedLocalSessionRoot {
                     if matches!(name_bytes, b"." | b"..") {
                         continue;
                     }
+                    if !budget.claim_entry() {
+                        collected.inventory.truncated = true;
+                        return Ok(collected);
+                    }
                     let name = std::ffi::OsStr::from_bytes(name_bytes);
                     let relative_path = relative_directory.join(name);
                     let metadata = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
@@ -1107,9 +1141,13 @@ impl GuardedLocalSessionRoot {
                     };
                     match FileType::from_raw_mode(metadata.st_mode) {
                         FileType::Directory => {
+                            if !budget.claim_directory() {
+                                collected.inventory.truncated = true;
+                                return Ok(collected);
+                            }
                             match openat(&directory, name, directory_flags, Mode::empty()) {
                                 Ok(child) => directories.push((relative_path, child)),
-                                Err(error) => inventory
+                                Err(error) => collected
                                     .directory_errors
                                     .push((self.path.join(relative_path), io::Error::from(error))),
                             }
@@ -1117,7 +1155,17 @@ impl GuardedLocalSessionRoot {
                         FileType::RegularFile => {
                             let path = self.path.join(relative_path);
                             if is_candidate(&path) {
-                                inventory.files.push(path);
+                                collected.inventory.total_candidate_count += 1;
+                                collected
+                                    .inventory
+                                    .candidates
+                                    .push(LocalSessionFileCandidate {
+                                        path,
+                                        modified_at: metadata
+                                            .st_mtime
+                                            .saturating_mul(1_000)
+                                            .saturating_add(metadata.st_mtime_nsec / 1_000_000),
+                                    });
                             }
                         }
                         _ => {}
@@ -1125,12 +1173,12 @@ impl GuardedLocalSessionRoot {
                 }
             }
 
-            Ok(inventory)
+            Ok(collected)
         }
 
         #[cfg(not(unix))]
         {
-            let _ = (max_files, &mut is_candidate);
+            let _ = (budget, &mut is_candidate);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "guarded local session inventory requires descriptor-relative directory access",
@@ -1150,7 +1198,6 @@ impl GuardedLocalSessionRoot {
 
             let mut inventory = GuardedLocalSessionInventory {
                 files: Vec::new(),
-                directory_errors: Vec::new(),
                 truncated: false,
             };
             if max_files == 0 || !budget.claim_directory() {
@@ -1663,6 +1710,48 @@ mod tests {
         io::{self, Cursor, Read, Seek, SeekFrom},
     };
 
+    fn candidate(path: &str, modified_at: i64) -> LocalSessionFileCandidate {
+        LocalSessionFileCandidate {
+            path: PathBuf::from(path),
+            modified_at,
+        }
+    }
+
+    fn candidate_paths(candidates: Vec<LocalSessionFileCandidate>) -> Vec<PathBuf> {
+        candidates
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect()
+    }
+
+    #[test]
+    fn inventory_selects_newest_candidates_independent_of_input_order() {
+        let candidates = vec![
+            candidate("old.jsonl", 100),
+            candidate("new.jsonl", 300),
+            candidate("middle.jsonl", 200),
+        ];
+
+        assert_eq!(
+            candidate_paths(select_newest_candidates(candidates, 2)),
+            vec![PathBuf::from("new.jsonl"), PathBuf::from("middle.jsonl")]
+        );
+    }
+
+    #[test]
+    fn inventory_uses_lexical_path_order_to_break_modified_time_ties() {
+        let candidates = vec![
+            candidate("zeta.jsonl", 300),
+            candidate("alpha.jsonl", 300),
+            candidate("middle.jsonl", 300),
+        ];
+
+        assert_eq!(
+            candidate_paths(select_newest_candidates(candidates, 2)),
+            vec![PathBuf::from("alpha.jsonl"), PathBuf::from("middle.jsonl")]
+        );
+    }
+
     #[test]
     fn codex_index_cache_loads_once_per_store() {
         let loads = Cell::new(0usize);
@@ -1704,6 +1793,53 @@ mod tests {
         static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
         let unique = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
         PathBuf::from("/tmp").join(format!("sc-guard-{case}-{}-{unique}", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_counts_all_candidates_before_newest_selection() {
+        let fixture = guarded_reader_fixture_root("inventory-count");
+        let root = fixture.join("authorized");
+        fs::create_dir_all(&root).expect("create inventory root");
+        for index in 0..5 {
+            fs::write(root.join(format!("record-{index}.jsonl")), b"{}")
+                .expect("write inventory candidate");
+        }
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+        let mut budget = LocalSessionInventoryBudget::new(1, 5);
+
+        let collected = guarded_root
+            .collect_regular_files(&mut budget, |_| true)
+            .expect("collect inventory");
+
+        assert_eq!(collected.inventory.total_candidate_count, 5);
+        assert_eq!(collected.inventory.candidates.len(), 5);
+        assert!(!collected.inventory.truncated);
+        assert_eq!(budget.remaining_directories(), 0);
+        fs::remove_dir_all(fixture).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_marks_entry_budget_exhaustion_as_truncated() {
+        let fixture = guarded_reader_fixture_root("inventory-entry-budget");
+        let root = fixture.join("authorized");
+        fs::create_dir_all(&root).expect("create inventory root");
+        for index in 0..5 {
+            fs::write(root.join(format!("record-{index}.jsonl")), b"{}")
+                .expect("write inventory candidate");
+        }
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+        let mut budget = LocalSessionInventoryBudget::new(1, 3);
+
+        let collected = guarded_root
+            .collect_regular_files(&mut budget, |_| true)
+            .expect("collect bounded inventory");
+
+        assert_eq!(collected.inventory.total_candidate_count, 3);
+        assert!(collected.inventory.truncated);
+        assert_eq!(budget.remaining_entries(), 0);
+        fs::remove_dir_all(fixture).expect("remove fixture");
     }
 
     #[cfg(unix)]

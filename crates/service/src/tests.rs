@@ -12,6 +12,7 @@ mod app_wire_fixtures;
 mod config_consistency;
 mod dispatch_fixtures;
 mod llm_provider;
+mod local_session_inventory;
 mod local_session_preview;
 mod local_session_project_scope;
 mod method_effects;

@@ -1,11 +1,49 @@
 use super::service_local_session_io::{
-    read_bounded_sidecar_text, read_bounded_text, BoundedReadSpec, BoundedText,
-    GuardedLocalSessionRoot, LocalSessionIoContext, LocalSessionReadBudget, LocalSessionReadLimits,
-    SessionSidecarBudget, MAX_PROVENANCE_TOKEN_BYTES,
+    read_bounded_sidecar_text, read_bounded_text, select_newest_candidates, BoundedReadSpec,
+    BoundedText, GuardedLocalSessionRoot, LocalSessionInventory, LocalSessionInventoryBudget,
+    LocalSessionIoContext, LocalSessionReadBudget, LocalSessionReadLimits, SessionSidecarBudget,
+    MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LocalSessionSort {
+    ModifiedAt,
+    Title,
+}
+
+impl LocalSessionSort {
+    fn parse(value: Option<&str>) -> Result<Self, ServiceError> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("recent") | Some("modified_at") => Ok(Self::ModifiedAt),
+            Some("title") => Ok(Self::Title),
+            Some(value) => Err(ServiceError::InvalidRequest(format!(
+                "unsupported local session sort '{value}'"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SortDirection {
+    Asc,
+    Desc,
+}
+
+impl SortDirection {
+    fn parse(value: Option<&str>, default: Self) -> Result<Self, ServiceError> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None => Ok(default),
+            Some("asc") => Ok(Self::Asc),
+            Some("desc") => Ok(Self::Desc),
+            Some(value) => Err(ServiceError::InvalidRequest(format!(
+                "unsupported local session direction '{value}'"
+            ))),
+        }
+    }
+}
 
 impl ServiceHost {
     pub fn preview_local_sessions(
@@ -29,6 +67,12 @@ impl ServiceHost {
         params: LocalSessionPreviewParams,
         limits: LocalSessionReadLimits,
     ) -> Result<LocalSessionPreviewResult, ServiceError> {
+        let sort = LocalSessionSort::parse(params.sort.as_deref())?;
+        let default_direction = match sort {
+            LocalSessionSort::ModifiedAt => SortDirection::Desc,
+            LocalSessionSort::Title => SortDirection::Asc,
+        };
+        let direction = SortDirection::parse(params.direction.as_deref(), default_direction)?;
         let limit = params.limit.unwrap_or(20).clamp(1, 100);
         let max_files = params.max_files.unwrap_or(200).clamp(1, 1_000);
         let max_excerpt_chars = params.max_excerpt_chars.unwrap_or(1_000).clamp(120, 4_000);
@@ -129,6 +173,7 @@ impl ServiceHost {
         let mut skill_usage = BTreeMap::<String, LocalSessionSkillUsageAccumulator>::new();
         let skill_matchers = self.local_session_skill_matchers(requested_agent)?;
         let mut total_candidate_count = 0usize;
+        let mut candidate_set_was_truncated = false;
         let mut io = LocalSessionIoContext::new(limits);
 
         for root_request in root_requests {
@@ -167,15 +212,19 @@ impl ServiceHost {
                 }
             };
 
-            let files = collect_local_session_files(
+            let inventory = collect_local_session_inventory(
                 &guarded_root,
-                max_files,
+                &mut io.inventory_budget,
                 &mut gap_notes,
                 &mut redactor,
             );
-            total_candidate_count += files.len();
+            total_candidate_count += inventory.total_candidate_count;
+            let files = select_newest_candidates(inventory.candidates, max_files);
+            candidate_set_was_truncated |=
+                inventory.truncated || inventory.total_candidate_count > files.len();
             let mut root_candidate_count = 0usize;
-            for file in files {
+            for candidate in files {
+                let file = candidate.path;
                 let options = LocalSessionPreviewRowOptions {
                     requested_agent,
                     max_excerpt_chars,
@@ -220,13 +269,7 @@ impl ServiceHost {
             });
         }
 
-        session_rows.sort_by(|left, right| {
-            right
-                .modified_at
-                .cmp(&left.modified_at)
-                .then_with(|| left.title.cmp(&right.title))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        sort_local_session_rows(&mut session_rows, sort, direction);
         let total_matched_count = session_rows.len();
         let offset = params.offset.unwrap_or(0).min(total_matched_count);
         let page_end = offset.saturating_add(limit).min(total_matched_count);
@@ -249,6 +292,12 @@ impl ServiceHost {
             .iter()
             .map(|row| row.skill_call_count)
             .sum::<usize>();
+        if candidate_set_was_truncated {
+            gap_notes.push(
+                "Local session candidate set was truncated by bounded inventory or max-files limits."
+                    .to_string(),
+            );
+        }
         if total_matched_count == 0 && blocker_notes.is_empty() {
             gap_notes.push(
                 "Discovered local session stores did not contain supported session files (.jsonl, .json, .txt, .log)."
@@ -315,6 +364,27 @@ impl ServiceHost {
             .map(LocalSessionSkillMatcher::from)
             .collect())
     }
+}
+
+fn sort_local_session_rows(
+    rows: &mut [LocalSessionPreviewRow],
+    sort: LocalSessionSort,
+    direction: SortDirection,
+) {
+    rows.sort_by(|left, right| {
+        let primary = match sort {
+            LocalSessionSort::ModifiedAt => left.modified_at.cmp(&right.modified_at),
+            LocalSessionSort::Title => left.title.to_lowercase().cmp(&right.title.to_lowercase()),
+        };
+        let primary = match direction {
+            SortDirection::Asc => primary,
+            SortDirection::Desc => primary.reverse(),
+        };
+        primary
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| right.modified_at.cmp(&left.modified_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
 }
 
 struct LocalSessionRootRequest {
@@ -741,13 +811,13 @@ fn encode_project_path_session_component(project: &Path) -> String {
         .collect()
 }
 
-fn collect_local_session_files(
+fn collect_local_session_inventory(
     root: &GuardedLocalSessionRoot,
-    max_files: usize,
+    budget: &mut LocalSessionInventoryBudget,
     gap_notes: &mut Vec<String>,
     redactor: &mut PromptRedactor<'_>,
-) -> Vec<PathBuf> {
-    let inventory = match root.collect_regular_files(max_files, |path| {
+) -> LocalSessionInventory {
+    let collected = match root.collect_regular_files(budget, |path| {
         is_supported_local_session_file(path) && !is_ignored_local_session_file(path)
     }) {
         Ok(inventory) => inventory,
@@ -757,23 +827,17 @@ fn collect_local_session_files(
                 redactor.redact(&root.path().to_string_lossy()),
                 redactor.redact(&error.to_string())
             ));
-            return Vec::new();
+            return LocalSessionInventory::default();
         }
     };
-    for (directory, error) in inventory.directory_errors {
+    for (directory, error) in collected.directory_errors {
         gap_notes.push(format!(
             "{}: {}",
             redactor.redact(&directory.to_string_lossy()),
             redactor.redact(&error.to_string())
         ));
     }
-    if inventory.truncated {
-        gap_notes.push(format!(
-            "Local session preview stopped after {} candidate file(s) for bounded read latency.",
-            max_files
-        ));
-    }
-    inventory.files
+    collected.inventory
 }
 
 fn is_supported_local_session_file(path: &Path) -> bool {
