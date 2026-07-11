@@ -263,8 +263,11 @@ date/filter range before evidence rows are limited.
   inventory returns `source_changed` before continuation rows are returned.
 - Cursors are opaque `v1:` values containing only stable metadata and digests;
   they never contain a raw path. Cursor pages read primary content only for the
-  selected page rows. No cursor, inventory, summary, detail, or raw session
-  content is written to app data, SQLite, or another persistent cache.
+  first `limit` candidates after the cursor boundary; rejected or empty
+  candidates still consume that page's candidate window. Determining whether
+  later candidates remain is metadata-only and does not open or read the next
+  primary file. No cursor, inventory, summary, detail, or raw session content is
+  written to app data, SQLite, or another persistent cache.
 - Keyset requests reject `session_id`, `offset`, `max_files`, and
   `include_content_items=true` instead of silently ignoring them. They require
   all-scope recent descending summaries without server search, and bind the
@@ -291,9 +294,14 @@ date/filter range before evidence rows are limited.
 - Any keyset inventory or read-budget stop retains accepted rows and reports
   `candidate_set_truncated=true`, `source_completeness=limited`, and
   `incomplete_reason=safety_budget`; it is terminal and does not offer an unsafe
-  continuation. A page reader continues past rejected candidates until it has
-  accepted the requested row count, reaches EOF, or exhausts a budget, so it
-  never reports an enumerable continuation with zero progress.
+  continuation. An enumerable page processes at most `limit` candidates. If all
+  candidates in that window are rejected or empty but metadata shows later
+  candidates, the page may contain zero accepted rows and still return
+  `has_more=true`; its cursor advances to the last processed candidate. Clients
+  accept that zero-row continuation only when the cursor advances and reject a
+  repeated cursor as no progress. While rejected candidates are being excluded,
+  `total_matched_count` may decrease from an earlier candidate upper bound; at
+  EOF it is the exact accepted total.
 - `include_content_items` defaults to `true` when omitted for compatibility.
   Summary/list clients send `false`; every returned row then has
   `content_included=false` and `content_items=[]` while retaining bounded title,
@@ -310,6 +318,10 @@ date/filter range before evidence rows are limited.
   in-memory cursor/revision. Every accepted prewarm page is published before
   the next request; a later page failure retains those rows and retries from the
   last accepted cursor, while an initial failure retries from a nil cursor.
+  A zero-row nonterminal page may continue when its cursor advances; a repeated
+  cursor is rejected before another request. Session accumulation adopts each
+  page's current matched total, clamped to the unique rows already loaded, so a
+  decreasing total reaches exact `loaded == total` completeness at EOF.
   Cancellation or a source-key/generation change retains accepted rows and
   rejects late successes and errors. Scope, search, sort, and
   global search project all loaded summaries in memory. At most a selected
