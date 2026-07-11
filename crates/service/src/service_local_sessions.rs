@@ -1073,7 +1073,9 @@ fn append_supported_scalar_fields(
 fn supported_scalar_fields_are_non_message(fields: &serde_json::Map<String, Value>) -> bool {
     matches!(
         local_session_record_classification(fields, None),
-        LocalSessionRecordClassification::Deny | LocalSessionRecordClassification::Tool
+        LocalSessionRecordClassification::Deny
+            | LocalSessionRecordClassification::Tool
+            | LocalSessionRecordClassification::Unproven
     )
 }
 
@@ -1083,14 +1085,18 @@ enum LocalSessionRecordClassification {
     Assistant,
     Thinking,
     Tool,
+    KnownStructure,
     Deny,
-    Unknown,
+    Missing,
+    Unproven,
 }
 
 fn local_session_object_is_denied(fields: &serde_json::Map<String, Value>) -> bool {
     let fallback_role = json_session_role(fields).map(str::to_string);
-    local_session_record_classification(fields, fallback_role.as_deref())
-        == LocalSessionRecordClassification::Deny
+    local_session_classification_is_rejected(local_session_record_classification(
+        fields,
+        fallback_role.as_deref(),
+    ))
 }
 
 fn local_session_value_is_denied(value: &Value) -> bool {
@@ -1106,41 +1112,56 @@ fn local_session_record_classification(
     let type_classification = local_session_type_classification(fields.get("type"));
     let role_classification = fields.get("role").map_or_else(
         || {
-            fallback_role.map_or(LocalSessionRecordClassification::Unknown, |role| {
+            fallback_role.map_or(LocalSessionRecordClassification::Missing, |role| {
                 local_session_role_classification(role)
             })
         },
         |role| {
             role.as_str().map_or(
-                LocalSessionRecordClassification::Deny,
+                LocalSessionRecordClassification::Unproven,
                 local_session_role_classification,
             )
         },
     );
 
-    if matches!(type_classification, LocalSessionRecordClassification::Deny)
-        || matches!(role_classification, LocalSessionRecordClassification::Deny)
-    {
-        return LocalSessionRecordClassification::Deny;
+    for classification in [type_classification, role_classification] {
+        if local_session_classification_is_rejected(classification) {
+            return classification;
+        }
     }
     if matches!(type_classification, LocalSessionRecordClassification::Tool)
         || matches!(role_classification, LocalSessionRecordClassification::Tool)
     {
         return LocalSessionRecordClassification::Tool;
     }
-    if type_classification != LocalSessionRecordClassification::Unknown {
+    if matches!(
+        type_classification,
+        LocalSessionRecordClassification::User
+            | LocalSessionRecordClassification::Assistant
+            | LocalSessionRecordClassification::Thinking
+    ) {
         return type_classification;
     }
-    role_classification
+    if role_classification != LocalSessionRecordClassification::Missing {
+        return role_classification;
+    }
+    if type_classification == LocalSessionRecordClassification::KnownStructure {
+        return LocalSessionRecordClassification::KnownStructure;
+    }
+    LocalSessionRecordClassification::Missing
 }
 
 fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecordClassification {
     let Some(value) = value else {
-        return LocalSessionRecordClassification::Unknown;
+        return LocalSessionRecordClassification::Missing;
     };
     let Some(record_type) = value.as_str() else {
-        return LocalSessionRecordClassification::Deny;
+        return LocalSessionRecordClassification::Unproven;
     };
+    local_session_type_name_classification(record_type)
+}
+
+fn local_session_type_name_classification(record_type: &str) -> LocalSessionRecordClassification {
     let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
     if is_hidden_local_session_record_type(record_type) || is_json_non_message_type(&normalized) {
         LocalSessionRecordClassification::Deny
@@ -1152,7 +1173,9 @@ fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecor
         match normalized.as_str() {
             "user" | "human" => LocalSessionRecordClassification::User,
             "assistant" | "agent" | "model" => LocalSessionRecordClassification::Assistant,
-            _ => LocalSessionRecordClassification::Unknown,
+            "session" | "sessionmeta" | "responseitem" | "message" | "inputtext" | "outputtext"
+            | "text" => LocalSessionRecordClassification::KnownStructure,
+            _ => LocalSessionRecordClassification::Unproven,
         }
     }
 }
@@ -1164,8 +1187,17 @@ fn local_session_role_classification(role: &str) -> LocalSessionRecordClassifica
         "assistant" | "agent" | "model" => LocalSessionRecordClassification::Assistant,
         "tool" | "function" | "toolresult" => LocalSessionRecordClassification::Tool,
         "system" | "developer" | "summary" => LocalSessionRecordClassification::Deny,
-        _ => LocalSessionRecordClassification::Unknown,
+        _ => LocalSessionRecordClassification::Unproven,
     }
+}
+
+fn local_session_classification_is_rejected(
+    classification: LocalSessionRecordClassification,
+) -> bool {
+    matches!(
+        classification,
+        LocalSessionRecordClassification::Deny | LocalSessionRecordClassification::Unproven
+    )
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1964,12 +1996,12 @@ fn malformed_json_deny_label(normalized: &str) -> bool {
 }
 
 fn malformed_json_classification_value_is_denied(key: &str, value: &str) -> bool {
-    let normalized = normalized_malformed_json_token(value);
-    match key {
-        "type" => malformed_json_deny_label(&normalized),
-        "role" => matches!(normalized.as_str(), "system" | "developer" | "summary"),
-        _ => false,
-    }
+    let classification = match key {
+        "type" => local_session_type_name_classification(value),
+        "role" => local_session_role_classification(value),
+        _ => return false,
+    };
+    local_session_classification_is_rejected(classification)
 }
 
 fn plain_local_session_record_is_denied(text: &str) -> bool {
@@ -3674,8 +3706,11 @@ fn json_session_content_kind(
         LocalSessionRecordClassification::Assistant => return Some("agent_reply"),
         LocalSessionRecordClassification::Thinking => return Some("thinking"),
         LocalSessionRecordClassification::Tool => return Some("tool_call"),
-        LocalSessionRecordClassification::Deny => return None,
-        LocalSessionRecordClassification::Unknown => {}
+        LocalSessionRecordClassification::Deny | LocalSessionRecordClassification::Unproven => {
+            return None
+        }
+        LocalSessionRecordClassification::KnownStructure
+        | LocalSessionRecordClassification::Missing => {}
     }
     if json_thinking_payload_text(&Value::Object(map.clone())).is_some() {
         return Some("thinking");
@@ -3988,7 +4023,9 @@ fn json_non_tool_message_text(value: &Value) -> Option<String> {
 fn json_session_blocks_plain_text_fallback(map: &serde_json::Map<String, Value>) -> bool {
     matches!(
         local_session_record_classification(map, json_session_role(map)),
-        LocalSessionRecordClassification::Deny | LocalSessionRecordClassification::Tool
+        LocalSessionRecordClassification::Deny
+            | LocalSessionRecordClassification::Tool
+            | LocalSessionRecordClassification::Unproven
     )
 }
 

@@ -1600,6 +1600,345 @@ fn assert_malformed_classification_markers_absent(
     );
 }
 
+fn structured_unknown_classification_records(
+    path_label: &str,
+    skill_name: &str,
+) -> (Vec<Value>, Vec<String>) {
+    let cases = [
+        ("UNKNOWN_ROLE", json!({ "role": "root" })),
+        ("UNKNOWN_TYPE", json!({ "type": "mystery" })),
+        (
+            "KNOWN_TYPE_UNKNOWN_ROLE",
+            json!({ "type": "user", "role": "root" }),
+        ),
+        (
+            "UNKNOWN_TYPE_KNOWN_ROLE",
+            json!({ "type": "mystery", "role": "assistant" }),
+        ),
+    ];
+    let mut records = Vec::new();
+    let mut markers = Vec::new();
+
+    for (case, classification) in cases {
+        let marker = format!("{path_label}_STRUCTURED_{case}_MUST_NOT_SURFACE");
+        let mut record = classification
+            .as_object()
+            .expect("classification fixture object")
+            .clone();
+        record.insert("title".to_string(), json!(format!("{marker}_TITLE")));
+        record.insert(
+            "text".to_string(),
+            json!(format!("{marker} skill:{skill_name}")),
+        );
+        records.push(Value::Object(record));
+        markers.push(marker);
+    }
+
+    (records, markers)
+}
+
+fn malformed_unknown_classification_records(
+    path_label: &str,
+    skill_name: &str,
+) -> (String, Vec<String>) {
+    let cases = [
+        ("UNKNOWN_ROLE", "role: root"),
+        ("UNKNOWN_TYPE", "type: mystery"),
+        ("KNOWN_TYPE_UNKNOWN_ROLE", "type: user, role: root"),
+        ("UNKNOWN_TYPE_KNOWN_ROLE", "type: mystery, role: assistant"),
+    ];
+    let mut content = String::new();
+    let mut markers = Vec::new();
+
+    for (case, classification) in cases {
+        let marker = format!("{path_label}_MALFORMED_{case}_MUST_NOT_SURFACE");
+        content.push_str(&format!(
+            r#"{{{classification}, title: "{marker}_TITLE", text: "{marker} skill:{skill_name}"}}"#
+        ));
+        content.push('\n');
+        markers.push(marker);
+    }
+
+    (content, markers)
+}
+
+fn assert_explicit_unknown_classification_rejected(
+    result: &Value,
+    hidden_markers: &[String],
+    skill_name: &str,
+    expected_user_messages: u64,
+    expected_total_messages: u64,
+    expected_tool_calls: u64,
+) {
+    assert_malformed_classification_markers_absent(result, hidden_markers, skill_name);
+    let row = result
+        .pointer("/session_rows/0")
+        .expect("safe explicit-unknown classification row");
+
+    for (field, expected) in [
+        ("user_message_count", expected_user_messages),
+        ("total_message_count", expected_total_messages),
+        ("tool_call_count", expected_tool_calls),
+    ] {
+        assert_eq!(
+            row.get(field).and_then(Value::as_u64),
+            Some(expected),
+            "row {field}: {result}"
+        );
+        assert_eq!(
+            result.get(field).and_then(Value::as_u64),
+            Some(expected),
+            "global {field}: {result}"
+        );
+    }
+}
+
+fn preview_opencode_unknown_classification_fixture(
+    test_name: &str,
+    message_content: &str,
+    part_content: &str,
+    skill_name: &str,
+) -> Value {
+    let unique = unique_suffix();
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-{test_name}-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-{test_name}-home-{}-{unique}",
+        std::process::id(),
+    ));
+    let storage_root = user_home.join(".local/share/opencode/storage");
+    let session_id = format!("ses_{unique}");
+    let message_id = format!("msg_{unique}");
+    let session_root = storage_root.join("session");
+    let message_root = storage_root.join("message").join(&session_id);
+    let part_root = storage_root.join("part").join(&message_id);
+    fs::create_dir_all(&session_root).expect("create explicit-unknown session root");
+    fs::create_dir_all(&message_root).expect("create explicit-unknown message root");
+    fs::create_dir_all(&part_root).expect("create explicit-unknown part root");
+    fs::write(
+        session_root.join(format!("{session_id}.json")),
+        json!({ "id": session_id, "title": "SAFE_EXPLICIT_UNKNOWN_OPENCODE_SESSION" }).to_string(),
+    )
+    .expect("write explicit-unknown session");
+    fs::write(message_root.join("01-unknown.json"), message_content)
+        .expect("write explicit-unknown message records");
+    fs::write(
+        message_root.join("02-safe.json"),
+        json!({
+            "id": message_id,
+            "role": "assistant",
+            "content": "SAFE_EXPLICIT_UNKNOWN_OPENCODE_MESSAGE_SIBLING"
+        })
+        .to_string(),
+    )
+    .expect("write safe explicit-unknown message sibling");
+    fs::write(part_root.join("01-unknown.json"), part_content)
+        .expect("write explicit-unknown part records");
+    fs::write(
+        part_root.join("02-safe.json"),
+        json!({
+            "role": "tool",
+            "content": "SAFE_EXPLICIT_UNKNOWN_OPENCODE_PART_SIBLING"
+        })
+        .to_string(),
+    )
+    .expect("write safe explicit-unknown part sibling");
+
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    fs::create_dir_all(&host.app_data_dir).expect("create explicit-unknown catalog directory");
+    let catalog = Catalog::open(&host.catalog_path()).expect("open explicit-unknown catalog");
+    catalog.init().expect("initialize explicit-unknown catalog");
+    let skill_path = user_home
+        .join(".config/opencode/skills")
+        .join(skill_name)
+        .join("SKILL.md");
+    catalog
+        .upsert_skill_instance(&SkillInstance {
+            id: format!("{skill_name}-id"),
+            agent: AgentId::Opencode,
+            scope: Scope::AgentGlobal,
+            project_root: None,
+            path: skill_path.clone(),
+            display_path: skill_path,
+            definition_id: format!("{skill_name}-definition"),
+            name: skill_name.to_string(),
+            display_name: skill_name.to_string(),
+            description: "Explicit-unknown classification fixture.".to_string(),
+            version: None,
+            state: SkillState::Loaded,
+            enabled: true,
+            frontmatter_raw: format!("name: {skill_name}\ndescription: fixture\n"),
+            body: "Fixture body.".to_string(),
+            scripts: Vec::new(),
+            permissions: PermissionRequest::default(),
+            fingerprint: format!("{skill_name}-fingerprint"),
+            mtime: 1,
+            first_seen: 1,
+            last_seen: 1,
+        })
+        .expect("seed explicit-unknown skill");
+
+    let response = host.handle(ServiceRequest {
+        id: Some(format!("session-preview-{test_name}")),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "opencode",
+            "limit": 10,
+            "max_excerpt_chars": 16_000
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response
+        .result
+        .expect("explicit-unknown opencode preview result");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+    result
+}
+
+#[test]
+fn structured_explicit_unknown_classifications_fail_closed_at_all_entry_points() {
+    let skill_name = "final18-structured-unknown-skill";
+    let (primary_unknown, primary_markers) =
+        structured_unknown_classification_records("PRIMARY", skill_name);
+    let mut primary_records = vec![json!({
+        "items": [{
+            "role": "user",
+            "content": "SAFE_EXPLICIT_UNKNOWN_PRIMARY_WRAPPER_SIBLING"
+        }]
+    })];
+    primary_records.extend(primary_unknown);
+    let primary = preview_codex_session_fixture_with_catalog_skill(
+        "structured-explicit-unknown-primary",
+        &Value::Array(primary_records).to_string(),
+        skill_name,
+    );
+
+    assert_explicit_unknown_classification_rejected(
+        &primary,
+        &primary_markers,
+        skill_name,
+        1,
+        1,
+        0,
+    );
+    assert!(
+        serde_json::to_string(&primary)
+            .expect("serialize structured primary result")
+            .contains("SAFE_EXPLICIT_UNKNOWN_PRIMARY_WRAPPER_SIBLING"),
+        "{primary}"
+    );
+
+    let (message_unknown, mut sidecar_markers) =
+        structured_unknown_classification_records("MESSAGE", skill_name);
+    let (part_unknown, part_markers) =
+        structured_unknown_classification_records("PART", skill_name);
+    sidecar_markers.extend(part_markers);
+    let opencode = preview_opencode_unknown_classification_fixture(
+        "structured-explicit-unknown",
+        &Value::Array(message_unknown).to_string(),
+        &Value::Array(part_unknown).to_string(),
+        skill_name,
+    );
+
+    assert_explicit_unknown_classification_rejected(
+        &opencode,
+        &sidecar_markers,
+        skill_name,
+        0,
+        1,
+        1,
+    );
+    let serialized =
+        serde_json::to_string(&opencode).expect("serialize structured opencode result");
+    for visible in [
+        "SAFE_EXPLICIT_UNKNOWN_OPENCODE_MESSAGE_SIBLING",
+        "SAFE_EXPLICIT_UNKNOWN_OPENCODE_PART_SIBLING",
+    ] {
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
+}
+
+#[test]
+fn malformed_explicit_unknown_classifications_fail_closed_at_all_entry_points() {
+    let skill_name = "final18-malformed-unknown-skill";
+    let (primary_unknown, primary_markers) =
+        malformed_unknown_classification_records("PRIMARY", skill_name);
+    let primary_content = format!(
+        "{}\n{primary_unknown}",
+        json!({
+            "items": [{
+                "role": "user",
+                "content": "SAFE_MALFORMED_UNKNOWN_PRIMARY_WRAPPER_SIBLING"
+            }]
+        })
+    );
+    let primary = preview_codex_session_fixture_with_catalog_skill(
+        "malformed-explicit-unknown-primary",
+        &primary_content,
+        skill_name,
+    );
+
+    assert_explicit_unknown_classification_rejected(
+        &primary,
+        &primary_markers,
+        skill_name,
+        1,
+        1,
+        0,
+    );
+    assert!(
+        serde_json::to_string(&primary)
+            .expect("serialize malformed primary result")
+            .contains("SAFE_MALFORMED_UNKNOWN_PRIMARY_WRAPPER_SIBLING"),
+        "{primary}"
+    );
+
+    let (message_unknown, mut sidecar_markers) =
+        malformed_unknown_classification_records("MESSAGE", skill_name);
+    let (part_unknown, part_markers) = malformed_unknown_classification_records("PART", skill_name);
+    sidecar_markers.extend(part_markers);
+    let opencode = preview_opencode_unknown_classification_fixture(
+        "malformed-explicit-unknown",
+        &message_unknown,
+        &part_unknown,
+        skill_name,
+    );
+
+    assert_explicit_unknown_classification_rejected(
+        &opencode,
+        &sidecar_markers,
+        skill_name,
+        0,
+        1,
+        1,
+    );
+    let serialized = serde_json::to_string(&opencode).expect("serialize malformed opencode result");
+    for visible in [
+        "SAFE_EXPLICIT_UNKNOWN_OPENCODE_MESSAGE_SIBLING",
+        "SAFE_EXPLICIT_UNKNOWN_OPENCODE_PART_SIBLING",
+    ] {
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
+}
+
 #[test]
 fn pending_and_escaped_primary_classifications_fail_closed() {
     const CLASSIFICATION_SCAN_BYTES: usize = 64 * 1024;
@@ -2604,22 +2943,16 @@ fn invalid_or_denying_classification_blocks_entire_nested_record() {
 
 #[test]
 fn encoded_classification_tokens_over_limit_deny_complete_records() {
-    let escaped_value = "\\".repeat(3_000);
-    let encoded_value = serde_json::to_string(&escaped_value).expect("serialize classification");
-    assert!(escaped_value.len().saturating_add(2) <= 4 * 1024);
-    assert!(encoded_value.len() > 4 * 1024);
+    let encoded_value = format!(r#""{}_____user""#, r"\u005f".repeat(681));
+    assert_eq!(encoded_value.len(), 4 * 1024 + 1);
 
-    for (case, record_type, role) in [
-        ("role", json!("user"), json!(&escaped_value)),
-        ("type", json!(&escaped_value), json!("user")),
-    ] {
+    for case in ["role", "type"] {
         let marker = format!("ENCODED_{case}_OVER_LIMIT_MUST_NOT_SURFACE");
-        let session = json!({
-            "type": record_type,
-            "role": role,
-            "text": marker
-        })
-        .to_string();
+        let session = if case == "role" {
+            format!(r#"{{"type":"user","role":{encoded_value},"text":"{marker}"}}"#)
+        } else {
+            format!(r#"{{"type":{encoded_value},"role":"user","text":"{marker}"}}"#)
+        };
 
         let result = preview_codex_session_fixture(&format!("encoded-{case}-over-limit"), &session);
 
@@ -2642,21 +2975,16 @@ fn encoded_classification_tokens_over_limit_deny_complete_records() {
 
 #[test]
 fn classification_tokens_at_encoded_limit_remain_usable() {
-    let boundary_value = "\\".repeat(2_047);
-    let encoded_value = serde_json::to_string(&boundary_value).expect("serialize classification");
+    let encoded_value = format!(r#""{}____user""#, r"\u005f".repeat(681));
     assert_eq!(encoded_value.len(), 4 * 1024);
 
-    for (case, record_type, role) in [
-        ("role", json!("user"), json!(&boundary_value)),
-        ("type", json!(&boundary_value), json!("user")),
-    ] {
+    for case in ["role", "type"] {
         let marker = format!("ENCODED_{case}_AT_LIMIT_REMAINS_VISIBLE");
-        let session = json!({
-            "type": record_type,
-            "role": role,
-            "text": marker
-        })
-        .to_string();
+        let session = if case == "role" {
+            format!(r#"{{"type":"user","role":{encoded_value},"text":"{marker}"}}"#)
+        } else {
+            format!(r#"{{"type":{encoded_value},"role":"user","text":"{marker}"}}"#)
+        };
 
         let result = preview_codex_session_fixture(&format!("encoded-{case}-at-limit"), &session);
 
