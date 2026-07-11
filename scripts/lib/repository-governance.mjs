@@ -60,9 +60,14 @@ function normalizeTarget(
     normalizedPath = path.normalize(path.join(path.dirname(sourcePath), decodedPath));
   }
   if (normalizedPath === ".") normalizedPath = sourcePath;
-  return fragment
-    ? `${normalizedPath}#${safelyDecode(fragment)}`
-    : normalizedPath;
+  const decodedFragment = fragment ? safelyDecode(fragment) : "";
+  return {
+    target: decodedFragment
+      ? `${normalizedPath}#${decodedFragment}`
+      : normalizedPath,
+    pathname: normalizedPath,
+    fragment: decodedFragment,
+  };
 }
 
 function repositoryCodeTarget(token, sourcePath) {
@@ -88,13 +93,13 @@ export function collectMarkdownReferences(markdown, sourcePath) {
   const source = path.normalize(sourcePath.replaceAll("\\", "/"));
   const references = [];
   for (const reference of parseGovernanceMarkdown(markdown).references) {
-    const target = reference.kind === "backtick"
+    const normalizedTarget = reference.kind === "backtick"
       ? repositoryCodeTarget(reference.value, source)
       : normalizeTarget(reference.value, source, false, { markdownUrl: true });
-    if (target) {
+    if (normalizedTarget) {
       references.push({
         source,
-        target,
+        ...normalizedTarget,
         line: reference.line,
         kind: reference.kind,
         order: reference.order,
@@ -159,6 +164,19 @@ function targetParts(target) {
   };
 }
 
+function referenceTargetParts(reference) {
+  if (
+    typeof reference.pathname === "string" &&
+    typeof reference.fragment === "string"
+  ) {
+    return {
+      pathname: reference.pathname,
+      anchor: safelyDecode(reference.fragment).toLocaleLowerCase("en-US"),
+    };
+  }
+  return targetParts(reference.target);
+}
+
 function trackedPathExists(pathname, trackedFiles, allowGlob) {
   if (trackedFiles.has(pathname)) return true;
   if (allowGlob && /[*?]/.test(pathname)) {
@@ -197,7 +215,7 @@ export function validateReferences({
 }) {
   const errors = [];
   for (const reference of references) {
-    const { pathname, anchor } = targetParts(reference.target);
+    const { pathname, anchor } = referenceTargetParts(reference);
     if (
       !trackedPathExists(
         pathname,

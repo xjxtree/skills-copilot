@@ -132,7 +132,14 @@ function assertMissingMarkdownTarget(markdown, target, line) {
   const source = "docs/index.md";
   const references = collectMarkdownReferences(markdown, source);
   assert.deepEqual(references, [
-    { source, target: `docs/${target}`, line, kind: "markdown" },
+    {
+      source,
+      target: `docs/${target}`,
+      pathname: `docs/${target}`,
+      fragment: "",
+      line,
+      kind: "markdown",
+    },
   ]);
   assert.deepEqual(
     validateReferences({
@@ -482,6 +489,59 @@ test("normalizes dot segments and same-document anchors", () => {
   ]);
 });
 
+test("keeps encoded hashes in markdown pathnames separate from anchors", () => {
+  const source = "docs/index.md";
+  const references = collectMarkdownReferences(
+    [
+      "[literal hash](tracked.md%23details)",
+      "[missing literal hash](missing.md%23details)",
+      "[raw anchor](prefix.md#details)",
+    ].join("\n"),
+    source,
+  );
+
+  assert.deepEqual(
+    references.map(({ target, pathname, fragment }) => ({
+      target,
+      pathname,
+      fragment,
+    })),
+    [
+      {
+        target: "docs/tracked.md#details",
+        pathname: "docs/tracked.md#details",
+        fragment: "",
+      },
+      {
+        target: "docs/missing.md#details",
+        pathname: "docs/missing.md#details",
+        fragment: "",
+      },
+      {
+        target: "docs/prefix.md#details",
+        pathname: "docs/prefix.md",
+        fragment: "details",
+      },
+    ],
+  );
+  assert.deepEqual(
+    validateReferences({
+      references,
+      trackedFiles: new Set([
+        source,
+        "docs/tracked.md#details",
+        "docs/missing.md",
+        "docs/prefix.md",
+      ]),
+      headingsByFile: new Map([
+        ["docs/missing.md", new Set(["details"])],
+        ["docs/prefix.md", new Set(["details"])],
+      ]),
+    }),
+    ["docs/index.md:2 -> docs/missing.md#details is missing"],
+  );
+});
+
 test("markdown links use literal paths while backticks retain repository globs", () => {
   const source = "docs/index.md";
   const markdown = [
@@ -704,6 +764,8 @@ test("handles deeply nested CommonMark blocks without call-stack overflow", () =
     {
       source: "docs/index.md",
       target: "docs/missing.md",
+      pathname: "docs/missing.md",
+      fragment: "",
       line: 1,
       kind: "markdown",
     },
