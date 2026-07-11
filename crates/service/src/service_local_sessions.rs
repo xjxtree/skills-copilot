@@ -1,7 +1,7 @@
 use super::service_local_session_io::{
-    read_bounded_text, BoundedReadSpec, BoundedText, GuardedLocalSessionRoot,
-    LocalSessionIoContext, LocalSessionReadBudget, LocalSessionReadLimits, SessionSidecarBudget,
-    MAX_PROVENANCE_TOKEN_BYTES,
+    read_bounded_sidecar_text, read_bounded_text, BoundedReadSpec, BoundedText,
+    GuardedLocalSessionRoot, LocalSessionIoContext, LocalSessionReadBudget, LocalSessionReadLimits,
+    SessionSidecarBudget, MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
 use std::collections::HashMap;
@@ -2564,15 +2564,18 @@ fn enrich_local_session_content(
     };
     let message_root = storage_root.join("message").join(session_id);
     {
-        let Ok(mut message_paths) = guarded_root.collect_regular_files_in_directory(&message_root)
-        else {
+        let Ok(message_inventory) = guarded_root.collect_regular_files_in_directory(
+            &message_root,
+            sidecar_state.budget.remaining_files(),
+            &mut sidecar_state.io.inventory_budget,
+        ) else {
             return LocalSessionEnrichment {
                 content: chunks.join("\n"),
                 sidecars_truncated: sidecar_state.truncated,
             };
         };
-        message_paths.sort();
-        for message_path in message_paths {
+        sidecar_state.truncated |= message_inventory.truncated;
+        for message_path in message_inventory.files {
             let Some(message) =
                 read_opencode_sidecar(guarded_root, &message_path, &mut sidecar_state)
             else {
@@ -2641,11 +2644,15 @@ fn append_opencode_parts(
     chunks: &mut Vec<String>,
 ) {
     let part_root = storage_root.join("part").join(message_id);
-    let Ok(mut part_paths) = guarded_root.collect_regular_files_in_directory(&part_root) else {
+    let Ok(part_inventory) = guarded_root.collect_regular_files_in_directory(
+        &part_root,
+        state.budget.remaining_files(),
+        &mut state.io.inventory_budget,
+    ) else {
         return;
     };
-    part_paths.sort();
-    for part_path in part_paths {
+    state.truncated |= part_inventory.truncated;
+    for part_path in part_inventory.files {
         let Some(part) = read_opencode_sidecar(guarded_root, &part_path, state) else {
             if state.budget.remaining_files() == 0 || state.budget.remaining_bytes() == 0 {
                 state.truncated = true;
@@ -2672,17 +2679,8 @@ fn read_opencode_sidecar(
         state.truncated = true;
         return None;
     }
-    let allowance = state
-        .budget
-        .remaining_bytes()
-        .min(state.io.budget.remaining_bytes());
-    if allowance == 0 {
-        state.truncated = true;
-        return None;
-    }
     let half_file_limit = state.io.limits.max_sidecar_file_bytes / 2;
-    let mut read_budget = LocalSessionReadBudget::new(allowance);
-    let bounded = read_bounded_text(
+    let bounded = read_bounded_sidecar_text(
         guarded_root,
         path,
         BoundedReadSpec {
@@ -2690,11 +2688,10 @@ fn read_opencode_sidecar(
             tail_bytes: half_file_limit,
             line_fragment_bytes: state.io.limits.max_line_fragment_bytes,
         },
-        &mut read_budget,
+        &mut state.budget,
+        &mut state.io.budget,
     )
     .ok()?;
-    state.budget.consume_bytes(bounded.bytes_read);
-    state.io.budget.consume(bounded.bytes_read);
     state.truncated |= bounded.truncated;
     Some(compact_bounded_local_session_content(
         &bounded,

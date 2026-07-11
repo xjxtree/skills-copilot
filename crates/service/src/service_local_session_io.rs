@@ -1,7 +1,7 @@
 use super::ServiceError;
 use serde_json::{Map, Value};
 use std::{
-    collections::HashMap,
+    collections::{BinaryHeap, HashMap},
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -772,15 +772,54 @@ impl LocalSessionReadBudget {
         self.remaining_bytes
     }
 
-    pub(crate) fn consume(&mut self, consumed: usize) {
-        debug_assert!(consumed <= self.remaining_bytes);
-        self.remaining_bytes = self.remaining_bytes.saturating_sub(consumed);
+    fn refund(&mut self, unused: usize) {
+        self.remaining_bytes = self.remaining_bytes.saturating_add(unused);
     }
 }
 
 pub(crate) struct SessionSidecarBudget {
     remaining_files: usize,
     remaining_bytes: usize,
+}
+
+pub(crate) struct LocalSessionInventoryBudget {
+    remaining_directories: usize,
+    remaining_entries: usize,
+}
+
+impl LocalSessionInventoryBudget {
+    fn new(remaining_directories: usize, remaining_entries: usize) -> Self {
+        Self {
+            remaining_directories,
+            remaining_entries,
+        }
+    }
+
+    fn claim_directory(&mut self) -> bool {
+        if self.remaining_directories == 0 {
+            return false;
+        }
+        self.remaining_directories -= 1;
+        true
+    }
+
+    fn claim_entry(&mut self) -> bool {
+        if self.remaining_entries == 0 {
+            return false;
+        }
+        self.remaining_entries -= 1;
+        true
+    }
+
+    #[cfg(test)]
+    fn remaining_entries(&self) -> usize {
+        self.remaining_entries
+    }
+
+    #[cfg(test)]
+    fn remaining_directories(&self) -> usize {
+        self.remaining_directories
+    }
 }
 
 impl SessionSidecarBudget {
@@ -807,15 +846,23 @@ impl SessionSidecarBudget {
         self.remaining_bytes
     }
 
-    pub(crate) fn consume_bytes(&mut self, consumed: usize) {
-        debug_assert!(consumed <= self.remaining_bytes);
-        self.remaining_bytes = self.remaining_bytes.saturating_sub(consumed);
+    fn claim_bytes_exact(&mut self, requested: usize) -> bool {
+        if requested > self.remaining_bytes {
+            return false;
+        }
+        self.remaining_bytes -= requested;
+        true
+    }
+
+    fn refund_bytes(&mut self, unused: usize) {
+        self.remaining_bytes = self.remaining_bytes.saturating_add(unused);
     }
 }
 
 pub(crate) struct LocalSessionIoContext {
     pub(crate) limits: LocalSessionReadLimits,
     pub(crate) budget: LocalSessionReadBudget,
+    pub(crate) inventory_budget: LocalSessionInventoryBudget,
     pub(crate) cache: LocalSessionRequestCache,
 }
 
@@ -1042,10 +1089,22 @@ impl GuardedLocalSessionRoot {
     pub(crate) fn collect_regular_files_in_directory(
         &self,
         directory_path: &Path,
-    ) -> io::Result<Vec<PathBuf>> {
+        max_files: usize,
+        budget: &mut LocalSessionInventoryBudget,
+    ) -> io::Result<GuardedLocalSessionInventory> {
         #[cfg(unix)]
         {
             use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
+
+            let mut inventory = GuardedLocalSessionInventory {
+                files: Vec::new(),
+                directory_errors: Vec::new(),
+                truncated: false,
+            };
+            if max_files == 0 || !budget.claim_directory() {
+                inventory.truncated = true;
+                return Ok(inventory);
+            }
 
             let relative = directory_path.strip_prefix(&self.path).map_err(|_| {
                 io::Error::new(
@@ -1073,7 +1132,7 @@ impl GuardedLocalSessionRoot {
                 }
             }
 
-            let mut files = Vec::new();
+            let mut selected = BinaryHeap::with_capacity(max_files);
             let mut entries = Dir::read_from(&directory).map_err(io::Error::from)?;
             for entry in &mut entries {
                 let entry = entry.map_err(io::Error::from)?;
@@ -1081,21 +1140,36 @@ impl GuardedLocalSessionRoot {
                 if matches!(name_bytes, b"." | b"..") {
                     continue;
                 }
+                if !budget.claim_entry() {
+                    inventory.truncated = true;
+                    break;
+                }
                 let name = std::ffi::OsStr::from_bytes(name_bytes);
                 let metadata = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
                     Ok(metadata) => metadata,
                     Err(_) => continue,
                 };
                 if FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile {
-                    files.push(directory_path.join(name));
+                    let path = directory_path.join(name);
+                    if selected.len() < max_files {
+                        selected.push(path);
+                    } else {
+                        inventory.truncated = true;
+                        if selected.peek().is_some_and(|largest| path < *largest) {
+                            selected.pop();
+                            selected.push(path);
+                        }
+                    }
                 }
             }
-            Ok(files)
+            inventory.files = selected.into_vec();
+            inventory.files.sort();
+            Ok(inventory)
         }
 
         #[cfg(not(unix))]
         {
-            let _ = directory_path;
+            let _ = (directory_path, max_files, budget);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "guarded local session sidecar reads require descriptor-relative access",
@@ -1175,6 +1249,10 @@ impl LocalSessionIoContext {
     pub(crate) fn new(limits: LocalSessionReadLimits) -> Self {
         Self {
             budget: LocalSessionReadBudget::new(limits.max_preview_read_bytes),
+            inventory_budget: LocalSessionInventoryBudget::new(
+                limits.max_inventory_directories,
+                limits.max_inventory_entries,
+            ),
             cache: LocalSessionRequestCache::default(),
             limits,
         }
@@ -1195,6 +1273,66 @@ pub(crate) fn read_bounded_text(
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(|duration| i64::try_from(duration.as_millis()).ok());
     Ok(bounded)
+}
+
+pub(crate) fn read_bounded_sidecar_text(
+    root: &GuardedLocalSessionRoot,
+    path: &Path,
+    spec: BoundedReadSpec,
+    session_budget: &mut SessionSidecarBudget,
+    request_budget: &mut LocalSessionReadBudget,
+) -> Result<BoundedText, ServiceError> {
+    let (mut file, metadata) = root.open_regular_file(path)?;
+    let mut bounded = read_bounded_sidecar_from(
+        &mut file,
+        metadata.len(),
+        spec,
+        session_budget,
+        request_budget,
+    )?;
+    bounded.modified_at_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+    Ok(bounded)
+}
+
+fn read_bounded_sidecar_from<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+    spec: BoundedReadSpec,
+    session_budget: &mut SessionSidecarBudget,
+    request_budget: &mut LocalSessionReadBudget,
+) -> io::Result<BoundedText> {
+    let allowance = session_budget
+        .remaining_bytes()
+        .min(request_budget.remaining_bytes());
+    if allowance == 0 {
+        return Err(io::Error::other(
+            "local session sidecar byte budget exhausted",
+        ));
+    }
+    if !session_budget.claim_bytes_exact(allowance) {
+        return Err(io::Error::other(
+            "local session sidecar session budget reservation failed",
+        ));
+    }
+    if !request_budget.claim_exact(allowance) {
+        session_budget.refund_bytes(allowance);
+        return Err(io::Error::other(
+            "local session sidecar request budget reservation failed",
+        ));
+    }
+
+    let mut reserved_budget = LocalSessionReadBudget::new(allowance);
+    let result = read_bounded_from(reader, file_len, spec, &mut reserved_budget);
+    if let Ok(bounded) = &result {
+        let unused = allowance.saturating_sub(bounded.bytes_read);
+        session_budget.refund_bytes(unused);
+        request_budget.refund(unused);
+    }
+    result
 }
 
 fn read_bounded_from<R: Read + Seek>(
@@ -1485,6 +1623,84 @@ mod tests {
         static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
         let unique = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
         PathBuf::from("/tmp").join(format!("sc-guard-{case}-{}-{unique}", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_directory_materialization_stops_at_request_entry_budget() {
+        let fixture = guarded_reader_fixture_root("sidecar-entry-budget");
+        let root = fixture.join("authorized");
+        let sidecar_directory = root.join("message/session-1");
+        fs::create_dir_all(&sidecar_directory).expect("create sidecar directory");
+        for index in (0..16).rev() {
+            fs::write(
+                sidecar_directory.join(format!("message-{index:02}.json")),
+                b"{}",
+            )
+            .expect("write sidecar fixture");
+        }
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+        let sidecar_directory = guarded_root.path().join("message/session-1");
+        let limits = LocalSessionReadLimits {
+            max_inventory_directories: 1,
+            max_inventory_entries: 3,
+            ..LocalSessionReadLimits::default()
+        };
+        let mut io = LocalSessionIoContext::new(limits);
+
+        let inventory = guarded_root
+            .collect_regular_files_in_directory(
+                &sidecar_directory,
+                limits.max_sidecar_files,
+                &mut io.inventory_budget,
+            )
+            .expect("collect bounded sidecars");
+
+        assert!(inventory.truncated);
+        assert!(inventory.files.len() <= 3, "{:#?}", inventory.files);
+        assert_eq!(io.inventory_budget.remaining_entries(), 0);
+
+        fs::remove_dir_all(fixture).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_directory_traversal_stops_at_request_directory_budget() {
+        let fixture = guarded_reader_fixture_root("sidecar-directory-budget");
+        let root = fixture.join("authorized");
+        fs::create_dir_all(root.join("message/session-1")).expect("create first directory");
+        fs::create_dir_all(root.join("message/session-2")).expect("create second directory");
+        fs::write(root.join("message/session-2/message.json"), b"{}")
+            .expect("write second-directory sidecar");
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+        let limits = LocalSessionReadLimits {
+            max_inventory_directories: 1,
+            max_inventory_entries: 100,
+            ..LocalSessionReadLimits::default()
+        };
+        let mut io = LocalSessionIoContext::new(limits);
+
+        let first = guarded_root
+            .collect_regular_files_in_directory(
+                &guarded_root.path().join("message/session-1"),
+                limits.max_sidecar_files,
+                &mut io.inventory_budget,
+            )
+            .expect("collect first directory");
+        let second = guarded_root
+            .collect_regular_files_in_directory(
+                &guarded_root.path().join("message/session-2"),
+                limits.max_sidecar_files,
+                &mut io.inventory_budget,
+            )
+            .expect("bound second directory");
+
+        assert!(!first.truncated);
+        assert!(second.truncated);
+        assert!(second.files.is_empty());
+        assert_eq!(io.inventory_budget.remaining_directories(), 0);
+
+        fs::remove_dir_all(fixture).expect("remove fixture");
     }
 
     #[cfg(unix)]
@@ -2035,6 +2251,43 @@ mod tests {
     }
 
     #[test]
+    fn failed_sidecar_read_does_not_release_session_or_request_allowance() {
+        let spec = BoundedReadSpec {
+            head_bytes: 8,
+            tail_bytes: 0,
+            line_fragment_bytes: 0,
+        };
+        let mut session_budget = SessionSidecarBudget::new(2, 8);
+        let mut request_budget = LocalSessionReadBudget::new(8);
+        let mut fault = BytesThenErrorReadSeek::new(3);
+
+        let error = read_bounded_sidecar_from(
+            &mut fault,
+            8,
+            spec,
+            &mut session_budget,
+            &mut request_budget,
+        )
+        .expect_err("the injected read fault must propagate");
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(fault.bytes_returned, 3);
+        assert_eq!(session_budget.remaining_bytes(), 0);
+        assert_eq!(request_budget.remaining_bytes(), 0);
+
+        let mut later = RecordingReadSeek::new(8);
+        assert!(read_bounded_sidecar_from(
+            &mut later,
+            8,
+            spec,
+            &mut session_budget,
+            &mut request_budget,
+        )
+        .is_err());
+        assert_eq!(later.max_requested, 0);
+    }
+
+    #[test]
     fn bounded_reader_keeps_utf8_boundaries_valid() {
         let input = format!("开始{}结束", "x".repeat(128)).into_bytes();
         let mut reader = Cursor::new(input.clone());
@@ -2135,6 +2388,53 @@ mod tests {
         len: u64,
         position: u64,
         max_requested: usize,
+    }
+
+    struct BytesThenErrorReadSeek {
+        bytes_before_error: usize,
+        bytes_returned: usize,
+        position: u64,
+    }
+
+    impl BytesThenErrorReadSeek {
+        fn new(bytes_before_error: usize) -> Self {
+            Self {
+                bytes_before_error,
+                bytes_returned: 0,
+                position: 0,
+            }
+        }
+    }
+
+    impl Read for BytesThenErrorReadSeek {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.bytes_returned >= self.bytes_before_error {
+                return Err(io::Error::other("injected sidecar read fault"));
+            }
+            let count = (self.bytes_before_error - self.bytes_returned).min(buffer.len());
+            buffer[..count].fill(b'x');
+            self.bytes_returned += count;
+            self.position += count as u64;
+            Ok(count)
+        }
+    }
+
+    impl Seek for BytesThenErrorReadSeek {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            let next = match position {
+                SeekFrom::Start(offset) => i128::from(offset),
+                SeekFrom::End(offset) => 8_i128 + i128::from(offset),
+                SeekFrom::Current(offset) => i128::from(self.position) + i128::from(offset),
+            };
+            if !(0..=8).contains(&next) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "seek outside injected reader",
+                ));
+            }
+            self.position = next as u64;
+            Ok(self.position)
+        }
     }
 
     impl RecordingReadSeek {
