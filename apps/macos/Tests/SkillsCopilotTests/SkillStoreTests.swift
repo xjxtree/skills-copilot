@@ -254,8 +254,8 @@ struct SkillStoreTests {
         try await runCase("agentFilterLimitsVisibleSkillsAndSelection") {
             try await agentFilterLimitsVisibleSkillsAndSelection()
         }
-        try await runCase("allAgentFilterDoesNotFetchMixedConfigHistory") {
-            try await allAgentFilterDoesNotFetchMixedConfigHistory()
+        try await runCase("allAgentConfigHistoryPageTaskPreservesCachedRowsWithoutRPC") {
+            try await allAgentConfigHistoryPageTaskPreservesCachedRowsWithoutRPC()
         }
         try await runCase("toggleSelectedSkillExposesWritingStateAndRefreshesSelection") {
             try await toggleSelectedSkillExposesWritingStateAndRefreshesSelection()
@@ -1269,10 +1269,9 @@ struct SkillStoreTests {
         try expectContains(fake.calls(), "\"agent\":\"codex\"", "Timeline fetch should request the selected Codex agent.")
 
         store.agentFilter = .all
-        try await waitUntil("All filter should not merge every agent config timeline.") {
-            store.agentConfigSnapshots.isEmpty
-        }
+        await store.loadSelectedAgentConfigDataIfNeeded()
         try expectNil(store.selectedAgentConfigTimelineAgent, "All filter has no single selected agent timeline.")
+        try expectEqual(store.agentConfigSnapshots.map(\.id), ["snap-codex"], "All filter should preserve the current cached timeline without fetching or merging agent histories.")
     }
 
     private func localHistoriesAutoLoadEveryPage() async throws {
@@ -2977,16 +2976,6 @@ struct SkillStoreTests {
         try expectEqual(store.filteredSkillGroups.map(\.title), [UIStrings.codex], "Codex filter should group under the Codex display name.")
         try expectEqual(store.selectedSkillID, "gamma", "Agent filter should move selection to a visible skill.")
         try expectEqual(store.selectedSkill?.agent, "codex", "Selected skill should respect the active agent filter.")
-    }
-
-    private func allAgentFilterDoesNotFetchMixedConfigHistory() async throws {
-        let runner = CatalogRefreshServiceRunner()
-
-        let store = SkillStore(service: runner.serviceClient())
-        store.agentFilter = .all
-        await store.reload()
-
-        try expectEqual(store.agentConfigSnapshots.count, 0, "All Agents should not expose a mixed agent-config history.")
     }
 
     private func toggleSelectedSkillExposesWritingStateAndRefreshesSelection() async throws {

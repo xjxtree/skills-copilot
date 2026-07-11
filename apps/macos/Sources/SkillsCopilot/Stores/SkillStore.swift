@@ -3230,21 +3230,21 @@ final class SkillStore: ObservableObject {
     }
 
     func loadSelectedAgentConfigDataIfNeeded() async {
+        guard agentFilter != .all else { return }
         await loadAgentConfigSnapshotsIfNeeded(agent: agentFilter.rawValue)
         await loadCurrentAgentConfigDocumentsIfNeeded(agent: agentFilter.rawValue)
         if agentFilter == .claudeCode {
             await loadClaudeSettingsIfNeeded()
         }
     }
-
     func refreshSelectedAgentConfigData() async {
+        guard agentFilter != .all else { return }
         await loadAgentConfigSnapshots(agent: agentFilter.rawValue)
         await loadCurrentAgentConfigDocuments(agent: agentFilter.rawValue)
         if agentFilter == .claudeCode {
             await loadClaudeSettings()
         }
     }
-
     func loadClaudeSettingsIfNeeded() async {
         await loadClaudeSettings(force: false)
     }
@@ -3926,8 +3926,10 @@ final class SkillStore: ObservableObject {
 
     private func loadAgentConfigSnapshots(agent requestedAgent: String? = nil, force: Bool) async {
         guard let agent = normalizedConfigAgent(requestedAgent) else {
-            cancelAgentConfigSnapshotLoadAll()
-            resetAgentConfigSnapshotPaging(clearRows: true)
+            agentConfigSnapshotLoadGeneration &+= 1
+            agentConfigSnapshotAccumulator.cancel()
+            agentConfigSnapshotCompleteness = agentConfigSnapshotAccumulator.state
+            isLoadingAgentConfigSnapshots = false
             normalizeConfigSelection()
             return
         }
@@ -4025,7 +4027,6 @@ final class SkillStore: ObservableObject {
         agentConfigSnapshotAccumulator.cancel()
         publishAgentConfigSnapshotPaging()
     }
-
     private func resetAgentConfigSnapshotPaging(clearRows: Bool) {
         agentConfigSnapshotAccumulator = ListPageAccumulator()
         if clearRows {
