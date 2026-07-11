@@ -118,11 +118,26 @@ struct ServiceClientRPCTests {
         let params = try runner.params(for: "session.previewLocalSessions")
         try expectEqual(params["cursor"] as? String, "v1:cursor-100", "Session cursor request")
         try expectEqual(params["source_revision"] as? String, "sha256:sessions", "Session source revision request")
+        try expectEqual(params["paging_mode"] as? String, "keyset", "Session cursor requests should explicitly select keyset paging.")
         try expectNil(params["offset"], "Cursor requests must not send legacy offset.")
         try expectNil(params["max_files"], "Cursor requests must not send legacy max-files.")
         try expectEqual(page.nextCursor, "v1:cursor-200", "Session next cursor")
         try expectEqual(page.sourceCompleteness, .enumerable, "Session source completeness")
         try expectNil(page.incompleteReason, "Enumerable session page should not report incompleteness.")
+
+        let legacyRunner = RecordingServiceProcessRunner()
+        let legacyClient = ServiceClient(processRunner: legacyRunner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+        _ = try await legacyClient.previewLocalSessions(
+            authorizedRoots: ["/tmp/sessions"],
+            agent: "codex",
+            scope: .all,
+            includeContentItems: false,
+            limit: 20
+        )
+        let legacyParams = try legacyRunner.params(for: "session.previewLocalSessions")
+        try expectEqual(legacyParams["offset"] as? Int, 0, "Legacy session wrapper should retain offset zero.")
+        try expectEqual(legacyParams["max_files"] as? Int, 800, "Legacy session wrapper should retain the 800-file default.")
+        try expectNil(legacyParams["paging_mode"], "Legacy session requests must not opt into keyset paging.")
     }
 
     private func encodedObjectKeys<T: Encodable>(_ value: T) throws -> Set<String> {
@@ -255,6 +270,8 @@ extension SkillStoreTests {
         try expectEqual(Set(store.localSessionPreviewResult.sessionRows.map(\.id)).count, 1_205, "No duplicates")
         let requests = await runner.recordedRequests()
         try expectFalse(!requests.allSatisfy { $0.limit == 100 }, "Every summary page must request at most 100 rows.")
+        try expectFalse(!requests.allSatisfy { $0.pagingMode == "keyset" }, "Every summary page must explicitly opt into keyset paging.")
+        try expectFalse(!requests.allSatisfy { $0.offset == nil && $0.maxFiles == nil }, "Keyset pages must omit legacy paging fields.")
         try expectFalse(!requests.dropFirst().allSatisfy { $0.cursor != nil && $0.sourceRevision != nil }, "Every continuation must bind cursor and source revision.")
     }
 
@@ -286,12 +303,76 @@ extension SkillStoreTests {
         await staleLoad.value
         try expectFalse(staleStore.localSessionPreviewResult.sessionRows.contains { $0.id.hasPrefix("claude-code-session-8") }, "A page released after changing agentFilter must never enter the active source.")
     }
+
+    func failedInitialLocalSessionPageRetriesFromNilCursor() async throws {
+        let runner = PagedLocalSessionRunner(totalCount: 205, failuresByPage: [0: 1])
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/first-page-retry-service")))
+
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 0, "A failed first page has no accepted rows.")
+        try expectEqual(store.localSessionCompleteness.incompleteReason, .pageFailed, "A failed first page should expose pageFailed.")
+        try expectEqual(store.localSessionCompleteness.canLoadAll, true, "Load All must offer a real nil-cursor retry.")
+
+        await store.loadAllLocalSessions()
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 205, "Load All should retry from nil and reach EOF.")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "The nil-cursor retry should complete.")
+        let requests = await runner.recordedRequests()
+        try expectNil(requests[0].cursor, "Initial failure starts at nil cursor.")
+        try expectNil(requests[1].cursor, "Retry after initial failure must also start at nil cursor.")
+    }
+
+    func failedLocalSessionPrewarmRetainsPagesAndRetriesCursor() async throws {
+        let runner = PagedLocalSessionRunner(totalCount: 405, failuresByPage: [2: 1])
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/prewarm-retry-service")))
+
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 200, "A failed third prewarm page must retain two accepted pages.")
+        try expectEqual(store.localSessionCompleteness.incompleteReason, .pageFailed, "Prewarm failure should be retryable.")
+        try expectEqual(store.localSessionCompleteness.canLoadAll, true, "Retained cursor should enable Load All retry.")
+
+        await store.loadAllLocalSessions()
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 405, "Retry should continue from the accepted cursor.")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "Cursor retry should reach EOF.")
+        let requests = await runner.recordedRequests()
+        try expectEqual(requests[3].cursor, "cursor-200", "Retry must resume from the last accepted cursor.")
+    }
+
+    func oldLocalSessionGenerationErrorCannotOverwriteReactivatedSource() async throws {
+        let runner = ABALocalSessionErrorRunner()
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/aba-session-service")))
+        store.agentFilter = .all
+
+        let old = Task { @MainActor in await store.refreshLocalSessionSnapshot(reason: .manual) }
+        try await waitUntil("Old local-session generation should be in flight.") {
+            await runner.requestCount() == 1
+        }
+        store.agentFilter = .codex
+        store.agentFilter = .all
+        await store.refreshLocalSessionSnapshot(reason: .manual)
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["all-session-current"], "Reactivated source should publish its new generation.")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "New generation should be complete before the old error.")
+
+        await runner.releaseOldFailure()
+        await old.value
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["all-session-current"], "Late old error must not replace the new snapshot.")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "Late old error must not overwrite completeness.")
+        try expectNil(store.localSessionCompleteness.incompleteReason, "Late old error must not publish pageFailed.")
+    }
 }
 
 struct RecordedPagedSessionRequest: Sendable {
     let limit: Int?
     let cursor: String?
     let sourceRevision: String?
+    let pagingMode: String?
+    let offset: Int?
+    let maxFiles: Int?
+}
+
+private enum PagedSessionRunnerError: LocalizedError {
+    case injected
+
+    var errorDescription: String? { "injected local-session page failure" }
 }
 
 actor PagedLocalSessionRunner: ServiceProcessRunning {
@@ -299,10 +380,16 @@ actor PagedLocalSessionRunner: ServiceProcessRunning {
     private var releasedThroughPage: Int
     private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
     private var requests: [RecordedPagedSessionRequest] = []
+    private var failuresByPage: [Int: Int]
 
-    init(totalCount: Int, initiallyReleasedThroughPage: Int = .max) {
+    init(
+        totalCount: Int,
+        initiallyReleasedThroughPage: Int = .max,
+        failuresByPage: [Int: Int] = [:]
+    ) {
         self.totalCount = totalCount
         releasedThroughPage = initiallyReleasedThroughPage
+        self.failuresByPage = failuresByPage
     }
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
@@ -312,10 +399,17 @@ actor PagedLocalSessionRunner: ServiceProcessRunning {
         requests.append(RecordedPagedSessionRequest(
             limit: params["limit"] as? Int,
             cursor: cursor,
-            sourceRevision: params["source_revision"] as? String
+            sourceRevision: params["source_revision"] as? String,
+            pagingMode: params["paging_mode"] as? String,
+            offset: params["offset"] as? Int,
+            maxFiles: params["max_files"] as? Int
         ))
         let start = cursor.flatMap { Int($0.replacingOccurrences(of: "cursor-", with: "")) } ?? 0
         let pageIndex = start / 100
+        if let remaining = failuresByPage[pageIndex], remaining > 0 {
+            failuresByPage[pageIndex] = remaining - 1
+            throw PagedSessionRunnerError.injected
+        }
         if pageIndex > releasedThroughPage {
             await withCheckedContinuation { waiters[pageIndex, default: []].append($0) }
         }
@@ -351,6 +445,47 @@ actor PagedLocalSessionRunner: ServiceProcessRunning {
 
     func requestCount() -> Int { requests.count }
     func recordedRequests() -> [RecordedPagedSessionRequest] { requests }
+}
+
+actor ABALocalSessionErrorRunner: ServiceProcessRunning {
+    private var requests = 0
+    private var oldFailureWaiter: CheckedContinuation<Void, Never>?
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        requests += 1
+        let requestNumber = requests
+        let request = try JSONSerialization.jsonObject(with: input) as? [String: Any] ?? [:]
+        let params = request["params"] as? [String: Any] ?? [:]
+        if requestNumber == 1 {
+            await withCheckedContinuation { oldFailureWaiter = $0 }
+            throw PagedSessionRunnerError.injected
+        }
+        let agent = (params["agent"] as? String) ?? "all"
+        let result: [String: Any] = [
+            "generated_by": "local-v2.98", "authorized": true, "count": 1,
+            "total_candidate_count": 1, "total_matched_count": 1,
+            "offset": 0, "limit": 100, "has_more": false,
+            "next_cursor": NSNull(), "source_revision": "sha256:\(agent)-sessions",
+            "source_completeness": "enumerable", "incomplete_reason": NSNull(),
+            "candidate_set_truncated": false,
+            "session_rows": [[
+                "id": "\(agent)-session-current", "title": "Current Session",
+                "source_kind": "authorized-local-session", "scope": "all",
+                "redacted_path": "$HOME/.sessions/current.jsonl", "modified_at": 1,
+                "excerpt": "Current summary", "content_included": false, "content_items": []
+            ]]
+        ]
+        return try JSONSerialization.data(withJSONObject: [
+            "id": request["id"] ?? "test", "ok": true, "result": result
+        ])
+    }
+
+    func requestCount() -> Int { requests }
+
+    func releaseOldFailure() {
+        oldFailureWaiter?.resume()
+        oldFailureWaiter = nil
+    }
 }
 
 private final class RecordingServiceProcessRunner: ServiceProcessRunning {

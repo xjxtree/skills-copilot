@@ -112,6 +112,7 @@ fn dispatch_coverage_params(method: &str) -> Value {
         "session.previewLocalSessions" => json!({
             "authorized_roots": ["/tmp/skills-copilot-fixture-sessions"],
             "include_content_items": false,
+            "paging_mode": "keyset",
             "limit": 4,
             "sort": "modified_at",
             "direction": "desc",

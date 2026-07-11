@@ -130,6 +130,7 @@ struct LocalSessionPreviewParams: Encodable {
     let includeContentItems: Bool?
     let limit: Int?
     let offset: Int?
+    let pagingMode: String?
     let cursor: String?
     let sourceRevision: String?
     let sort: String?
@@ -149,6 +150,7 @@ struct LocalSessionPreviewParams: Encodable {
         case includeContentItems = "include_content_items"
         case limit
         case offset
+        case pagingMode = "paging_mode"
         case cursor
         case sourceRevision = "source_revision"
         case sort

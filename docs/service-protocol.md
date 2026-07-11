@@ -252,8 +252,10 @@ date/filter range before evidence rows are limited.
   `ended_at` in Unix epoch milliseconds, with `ended_at` representing the last
   parsed session message/content event. Each `content_items[]` item includes
   `timestamp` when its source event has a timestamp.
-- `session.previewLocalSessions` supports complete, stateless summary paging with
-  optional `cursor` and `source_revision`. Cursor pages are limited to 100 rows,
+- `session.previewLocalSessions` supports complete, stateless summary paging.
+  A first page explicitly sends `paging_mode="keyset"`; a continuation sends
+  the opaque `cursor` and matching `source_revision` (and may repeat the mode).
+  Cursor pages are limited to 100 rows,
   inventory every authorized root within the existing request budgets, and use
   canonical `(modified_at DESC, stable row id ASC, normalized path digest ASC)`
   order. Responses include `next_cursor`, `source_revision`,
@@ -263,9 +265,16 @@ date/filter range before evidence rows are limited.
   they never contain a raw path. Cursor pages read primary content only for the
   selected page rows. No cursor, inventory, summary, detail, or raw session
   content is written to app data, SQLite, or another persistent cache.
+- Keyset requests reject `session_id`, `offset`, `max_files`, and
+  `include_content_items=true` instead of silently ignoring them. They require
+  all-scope recent descending summaries without server search, and bind the
+  normalized agent, roots, project context, scope, sort, direction, search
+  shape, excerpt bound, and content shape into the cursor query digest.
 - Legacy `scope`, `search`, `sort`, `direction`, `offset`, and `max_files`
-  behavior remains available when no cursor flow is requested. New summary
-  clients omit `offset` and `max_files`, request all-scope recent pages, and
+  behavior remains available when neither `paging_mode="keyset"` nor a cursor
+  is sent. An unmarked summary request does not silently enter keyset mode; the
+  native legacy wrapper retains `offset=0` and `max_files=800`. New paged summary
+  clients explicitly select keyset, omit `offset` and `max_files`, and
   apply scope, search, and sort locally over accepted summaries.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
@@ -274,12 +283,17 @@ date/filter range before evidence rows are limited.
   content read. `total_candidate_count` is the number discovered within the
   bounded inventory, while `total_matched_count`, `has_more`, and `next_offset`
   describe the selected, filtered candidate set after sorting.
-- `candidate_set_truncated=true` means additional disk candidates were omitted
-  by `max_files` or the request-owned inventory limits. A false value does not
-  weaken per-file, sidecar, or aggregate read bounds.
-- An inventory directory/entry budget stop retains accepted rows and reports
+- `candidate_set_truncated=true` means additional disk candidates or bounded
+  content were omitted by `max_files`, inventory directory/entry limits,
+  primary-file bounds, sidecar file/count/byte bounds, or aggregate request
+  bytes. Keyset inventory de-duplicates overlapping roots by stable row identity
+  before revision, total, order, and continuation metadata are calculated.
+- Any keyset inventory or read-budget stop retains accepted rows and reports
   `candidate_set_truncated=true`, `source_completeness=limited`, and
-  `incomplete_reason=safety_budget`; it does not offer an unsafe continuation.
+  `incomplete_reason=safety_budget`; it is terminal and does not offer an unsafe
+  continuation. A page reader continues past rejected candidates until it has
+  accepted the requested row count, reaches EOF, or exhausts a budget, so it
+  never reports an enumerable continuation with zero progress.
 - `include_content_items` defaults to `true` when omitted for compatibility.
   Summary/list clients send `false`; every returned row then has
   `content_included=false` and `content_items=[]` while retaining bounded title,
@@ -293,8 +307,11 @@ date/filter range before evidence rows are limited.
 - The native app requests 100 summaries at a time and prewarms serially to at
   most 800 accepted summaries. The 800-row mark is only the automatic startup
   boundary: explicit Load More and Load All continue with the snapshot's
-  in-memory cursor/revision. Cancellation or a source-key/generation change
-  retains accepted rows and rejects late responses. Scope, search, sort, and
+  in-memory cursor/revision. Every accepted prewarm page is published before
+  the next request; a later page failure retains those rows and retries from the
+  last accepted cursor, while an initial failure retries from a nil cursor.
+  Cancellation or a source-key/generation change retains accepted rows and
+  rejects late successes and errors. Scope, search, sort, and
   global search project all loaded summaries in memory. At most a selected
   row's bounded detail is held in the in-memory detail cache; neither summaries
   nor details persist raw session content.

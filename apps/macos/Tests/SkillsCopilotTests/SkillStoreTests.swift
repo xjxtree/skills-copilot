@@ -35,6 +35,15 @@ struct SkillStoreTests {
         try await runCase("cancelledAndStaleLocalSessionPagesCannotPublish") {
             try await cancelledAndStaleLocalSessionPagesCannotPublish()
         }
+        try await runCase("failedInitialLocalSessionPageRetriesFromNilCursor") {
+            try await failedInitialLocalSessionPageRetriesFromNilCursor()
+        }
+        try await runCase("failedLocalSessionPrewarmRetainsPagesAndRetriesCursor") {
+            try await failedLocalSessionPrewarmRetainsPagesAndRetriesCursor()
+        }
+        try await runCase("oldLocalSessionGenerationErrorCannotOverwriteReactivatedSource") {
+            try await oldLocalSessionGenerationErrorCannotOverwriteReactivatedSource()
+        }
         try await runCase("selectingSummaryRequestsOnlySelectedDetail") {
             try await selectingSummaryRequestsOnlySelectedDetail()
         }

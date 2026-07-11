@@ -20,6 +20,14 @@ pub(super) fn service_protocol_fixtures_decode() {
                 serde_json::from_str::<ServiceRequest>(&content).unwrap_or_else(|error| {
                     panic!("request fixture {} failed: {error}", path.display())
                 });
+            if request.method == "session.previewLocalSessions" {
+                let params =
+                    serde_json::from_value::<WireLocalSessionPreviewParams>(request.params.clone())
+                        .unwrap_or_else(|error| {
+                            panic!("request fixture {} params failed: {error}", path.display())
+                        });
+                assert_eq!(params.paging_mode.as_deref(), Some("keyset"));
+            }
             request_methods.push(request.method);
         }
         if name.ends_with(".response.json") {
@@ -90,6 +98,30 @@ pub(super) fn service_protocol_fixtures_decode() {
 
 pub(super) fn inline_service_protocol_fixtures() -> Vec<(Value, Value)> {
     Vec::new()
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLocalSessionPreviewParams {
+    authorized_roots: Vec<String>,
+    auto_discover: Option<bool>,
+    agent: Option<String>,
+    scope: Option<String>,
+    search: Option<String>,
+    project_root: Option<String>,
+    current_cwd: Option<String>,
+    session_id: Option<String>,
+    include_content_items: Option<bool>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    paging_mode: Option<String>,
+    cursor: Option<String>,
+    source_revision: Option<String>,
+    sort: Option<String>,
+    direction: Option<String>,
+    max_files: Option<usize>,
+    max_excerpt_chars: Option<usize>,
 }
 
 #[allow(dead_code)]

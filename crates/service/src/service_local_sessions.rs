@@ -78,6 +78,16 @@ impl ServiceHost {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
+        let paging_mode = params
+            .paging_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if paging_mode.is_some_and(|mode| mode != "keyset") {
+            return Err(ServiceError::InvalidRequest(
+                "unsupported local session paging_mode".to_string(),
+            ));
+        }
         let sort = LocalSessionSort::parse(params.sort.as_deref())?;
         let default_direction = match sort {
             LocalSessionSort::ModifiedAt => SortDirection::Desc,
@@ -105,6 +115,14 @@ impl ServiceHost {
         let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&redaction_roots);
         let requested_agent = params.agent.as_deref();
+        let uses_keyset_paging = paging_mode == Some("keyset") || params.cursor.is_some();
+        if uses_keyset_paging {
+            paging::validate_local_session_keyset_shape(&params)?;
+        } else if params.source_revision.is_some() {
+            return Err(ServiceError::InvalidRequest(
+                "source_revision requires keyset paging".to_string(),
+            ));
+        }
 
         let mut root_requests = requested_roots
             .iter()
@@ -183,15 +201,6 @@ impl ServiceHost {
             });
         }
 
-        let uses_keyset_paging = params.cursor.is_some()
-            || (params.offset.is_none()
-                && params.max_files.is_none()
-                && requested_session_id.is_none()
-                && params.include_content_items == Some(false)
-                && sort == LocalSessionSort::ModifiedAt
-                && direction == SortDirection::Desc
-                && search.is_none()
-                && scope == LocalSessionScope::All);
         if uses_keyset_paging {
             return self.preview_local_sessions_keyset(
                 &params,
@@ -297,14 +306,16 @@ impl ServiceHost {
                     &mut gap_notes,
                     &mut redactor,
                 ) {
-                    Ok(Some(entry)) => {
-                        if seen_session_row_ids.insert(entry.row.id.clone()) {
-                            root_candidate_count += 1;
-                            update_local_session_skill_usage(&mut skill_usage, &entry);
-                            session_rows.push(entry.row);
+                    Ok(outcome) => {
+                        candidate_set_was_truncated |= outcome.budget_exhausted;
+                        if let Some(entry) = outcome.entry {
+                            if seen_session_row_ids.insert(entry.row.id.clone()) {
+                                root_candidate_count += 1;
+                                update_local_session_skill_usage(&mut skill_usage, &entry);
+                                session_rows.push(entry.row);
+                            }
                         }
                     }
-                    Ok(None) => {}
                     Err(error) => {
                         gap_notes.push(format!(
                             "{}: {}",
@@ -935,6 +946,17 @@ fn is_ignored_local_session_file(path: &Path) -> bool {
     })
 }
 
+#[rustfmt::skip]
+struct LocalSessionPreviewReadOutcome { entry: Option<LocalSessionPreviewEntry>, budget_exhausted: bool }
+impl LocalSessionPreviewReadOutcome {
+    #[rustfmt::skip]
+    fn rejected(budget_exhausted: bool) -> Self {
+        Self { entry: None, budget_exhausted }
+    }
+}
+#[rustfmt::skip]
+struct LocalSessionPrimaryRead { content: String, modified_at: Option<i64>, budget_exhausted: bool }
+
 fn local_session_preview_row(
     path: &Path,
     root: &Path,
@@ -943,20 +965,21 @@ fn local_session_preview_row(
     io: &mut LocalSessionIoContext,
     gap_notes: &mut Vec<String>,
     redactor: &mut PromptRedactor<'_>,
-) -> Result<Option<LocalSessionPreviewEntry>, ServiceError> {
+) -> Result<LocalSessionPreviewReadOutcome, ServiceError> {
     if !path.starts_with(root) {
-        return Ok(None);
+        return Ok(LocalSessionPreviewReadOutcome::rejected(false));
     }
-    let (compacted_file_content, modified_at) =
-        read_local_session_file_content(path, guarded_root, io)?;
-    let file_content = strip_internal_local_session_records(&compacted_file_content);
+    let primary_read = read_local_session_file_content(path, guarded_root, io)?;
+    let mut budget_exhausted = primary_read.budget_exhausted;
+    let file_content = strip_internal_local_session_records(&primary_read.content);
     if file_content.is_empty() {
-        return Ok(None);
+        return Ok(LocalSessionPreviewReadOutcome::rejected(budget_exhausted));
     }
     let accepted_file_content = accepted_local_session_content(&file_content);
     let enriched_content =
         enrich_local_session_content(path, guarded_root, &accepted_file_content, io);
     if enriched_content.sidecars_truncated {
+        budget_exhausted = true;
         gap_notes.push(
             "OpenCode sidecar enrichment was truncated by bounded file, session-byte, or session-file limits."
                 .to_string(),
@@ -969,7 +992,7 @@ fn local_session_preview_row(
         accepted_local_session_content(&enriched_content)
     };
     if content.trim().is_empty() {
-        return Ok(None);
+        return Ok(LocalSessionPreviewReadOutcome::rejected(budget_exhausted));
     }
     let mut metadata = local_session_parsed_metadata(path, &content);
     if let Some(project_root) =
@@ -988,7 +1011,7 @@ fn local_session_preview_row(
         options.project_filter_roots,
         metadata.project_root.as_deref(),
     ) {
-        return Ok(None);
+        return Ok(LocalSessionPreviewReadOutcome::rejected(budget_exhausted));
     }
     let excerpt = truncate_chars(
         &redact_local_session_content(redactor, &content),
@@ -1012,7 +1035,7 @@ fn local_session_preview_row(
         &redacted_path,
         &excerpt,
     ) {
-        return Ok(None);
+        return Ok(LocalSessionPreviewReadOutcome::rejected(budget_exhausted));
     }
     let skill_invocations = extract_local_session_skill_invocation_names(&content);
     let skill_mentions = detect_local_session_skill_mentions(
@@ -1022,7 +1045,8 @@ fn local_session_preview_row(
     );
     let content_drafts =
         local_session_content_drafts(&content, &short_hash, &skill_mentions, &skill_invocations);
-    let (started_at, ended_at) = local_session_time_bounds(&content, &content_drafts, modified_at);
+    let (started_at, ended_at) =
+        local_session_time_bounds(&content, &content_drafts, primary_read.modified_at);
     let metrics = local_session_metrics(&content_drafts, skill_invocations.len());
     let content_items = if options.include_content_items {
         local_session_content_items(
@@ -1044,41 +1068,44 @@ fn local_session_preview_row(
         .project_root
         .as_deref()
         .map(|project| truncate_chars(&redactor.redact(project), 180));
-    Ok(Some(LocalSessionPreviewEntry {
-        row: LocalSessionPreviewRow {
-            id: row_id,
-            title,
-            source_kind: options.source_kind.to_string(),
-            scope: options.scope.as_str().to_string(),
-            agent,
-            project_root: redacted_project_root,
-            redacted_path: redacted_path.clone(),
-            modified_at,
-            started_at,
-            ended_at,
-            excerpt,
-            excerpt_char_count,
-            user_message_count: metrics.user_message_count,
-            total_message_count: metrics.total_message_count,
-            tool_call_count: metrics.tool_call_count,
-            skill_call_count: metrics.skill_call_count,
-            content_hash,
-            evidence_refs: vec![
-                format!("session.path:{redacted_path}"),
-                format!("session.content_hash:{short_hash}"),
-            ],
-            content_included: options.include_content_items,
-            content_items,
-        },
-        skill_mentions,
-    }))
+    Ok(LocalSessionPreviewReadOutcome {
+        entry: Some(LocalSessionPreviewEntry {
+            row: LocalSessionPreviewRow {
+                id: row_id,
+                title,
+                source_kind: options.source_kind.to_string(),
+                scope: options.scope.as_str().to_string(),
+                agent,
+                project_root: redacted_project_root,
+                redacted_path: redacted_path.clone(),
+                modified_at: primary_read.modified_at,
+                started_at,
+                ended_at,
+                excerpt,
+                excerpt_char_count,
+                user_message_count: metrics.user_message_count,
+                total_message_count: metrics.total_message_count,
+                tool_call_count: metrics.tool_call_count,
+                skill_call_count: metrics.skill_call_count,
+                content_hash,
+                evidence_refs: vec![
+                    format!("session.path:{redacted_path}"),
+                    format!("session.content_hash:{short_hash}"),
+                ],
+                content_included: options.include_content_items,
+                content_items,
+            },
+            skill_mentions,
+        }),
+        budget_exhausted,
+    })
 }
 
 fn read_local_session_file_content(
     path: &Path,
     root: &GuardedLocalSessionRoot,
     io: &mut LocalSessionIoContext,
-) -> Result<(String, Option<i64>), ServiceError> {
+) -> Result<LocalSessionPrimaryRead, ServiceError> {
     #[cfg(test)]
     io.primary_paths_read.push(path.to_path_buf());
     let bounded = read_bounded_text(
@@ -1092,11 +1119,11 @@ fn read_local_session_file_content(
         &mut io.budget,
     )?;
     debug_assert!(bounded.bytes_read <= io.limits.max_preview_read_bytes);
-    let modified_at = bounded.modified_at_millis;
-    Ok((
-        compact_bounded_local_session_content(&bounded, io.limits.max_line_fragment_bytes),
-        modified_at,
-    ))
+    Ok(LocalSessionPrimaryRead {
+        content: compact_bounded_local_session_content(&bounded, io.limits.max_line_fragment_bytes),
+        modified_at: bounded.modified_at_millis,
+        budget_exhausted: bounded.truncated,
+    })
 }
 
 fn compact_bounded_local_session_content(

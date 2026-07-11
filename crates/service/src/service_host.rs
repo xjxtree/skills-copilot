@@ -1576,6 +1576,7 @@ fn config_snapshot_page_result(
                     sort_value: record.created_at,
                     stable_id: record.id.clone(),
                     tie_breaker_digest: None,
+                    accepted_count: None,
                 })
             })
             .transpose()?
@@ -1639,6 +1640,7 @@ fn skill_event_page_result(
                     sort_value: record.occurred_at,
                     stable_id: record.id.to_string(),
                     tie_breaker_digest: None,
+                    accepted_count: None,
                 })
             })
             .transpose()?

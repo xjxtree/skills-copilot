@@ -265,6 +265,7 @@ fn session_keyset_continuation_is_stateless_and_does_not_persist_paths() {
             "auto_discover": false,
             "scope": "all",
             "include_content_items": false,
+            "paging_mode": "keyset",
             "limit": 1
         }),
     });
@@ -273,6 +274,18 @@ fn session_keyset_continuation_is_stateless_and_does_not_persist_paths() {
     let cursor = page["next_cursor"].as_str().expect("session cursor");
     let revision = page["source_revision"].as_str().expect("session revision");
     assert!(!cursor.contains(&sessions.to_string_lossy().to_string()));
+    let encoded = cursor.strip_prefix("v1:").expect("v1 cursor");
+    let decoded = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).expect("cursor hex pair"), 16)
+                .expect("cursor hex byte")
+        })
+        .collect::<Vec<_>>();
+    let decoded = String::from_utf8(decoded).expect("cursor JSON text");
+    assert!(!decoded.contains(&sessions.to_string_lossy().to_string()));
+    assert!(!decoded.contains("path"));
     let second = host.handle(ServiceRequest {
         id: Some("effects-session-second".to_string()),
         method: "session.previewLocalSessions".to_string(),
@@ -282,6 +295,7 @@ fn session_keyset_continuation_is_stateless_and_does_not_persist_paths() {
             "auto_discover": false,
             "scope": "all",
             "include_content_items": false,
+            "paging_mode": "keyset",
             "limit": 1,
             "cursor": cursor,
             "source_revision": revision

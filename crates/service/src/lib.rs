@@ -319,6 +319,8 @@ pub struct LocalSessionPreviewParams {
     #[serde(default)]
     pub offset: Option<usize>,
     #[serde(default)]
+    pub paging_mode: Option<String>,
+    #[serde(default)]
     pub cursor: Option<String>,
     #[serde(default)]
     pub source_revision: Option<String>,

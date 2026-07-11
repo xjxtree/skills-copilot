@@ -17,6 +17,47 @@ struct KeysetLocalSessionCandidate {
     path_digest: String,
 }
 
+struct KeysetLocalSessionPageRead {
+    session_rows: Vec<LocalSessionPreviewRow>,
+    skill_usage: BTreeMap<String, LocalSessionSkillUsageAccumulator>,
+    last_processed_index: Option<usize>,
+    next_index: usize,
+    budget_exhausted: bool,
+}
+
+struct LocalSessionKeysetQuery<'a> {
+    requested_agent: Option<&'a str>,
+    roots: &'a [LocalSessionRootRequest],
+    project_filter_roots: &'a [PathBuf],
+    scope: LocalSessionScope,
+    sort: LocalSessionSort,
+    direction: SortDirection,
+    has_search: bool,
+    include_content_items: bool,
+    max_excerpt_chars: usize,
+}
+
+pub(super) fn validate_local_session_keyset_shape(
+    params: &LocalSessionPreviewParams,
+) -> Result<(), ServiceError> {
+    if params.session_id.is_some()
+        || params.offset.is_some()
+        || params.max_files.is_some()
+        || params.include_content_items != Some(false)
+    {
+        return Err(ServiceError::InvalidRequest(
+            "keyset session pages reject session_id, offset, max_files, and content detail fields"
+                .to_string(),
+        ));
+    }
+    if params.cursor.is_some() != params.source_revision.is_some() {
+        return Err(ServiceError::InvalidRequest(
+            "keyset continuation requires both cursor and source_revision".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl ServiceHost {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preview_local_sessions_keyset(
@@ -48,14 +89,17 @@ impl ServiceHost {
             ));
         }
         const METHOD: &str = "session.previewLocalSessions";
-        let query_digest = local_session_keyset_query_digest(
+        let query_digest = local_session_keyset_query_digest(LocalSessionKeysetQuery {
             requested_agent,
-            &root_requests,
+            roots: &root_requests,
             project_filter_roots,
             scope,
+            sort,
+            direction,
+            has_search,
             include_content_items,
             max_excerpt_chars,
-        );
+        });
         let cursor = params
             .cursor
             .as_deref()
@@ -63,7 +107,6 @@ impl ServiceHost {
             .transpose()?;
         let mut roots = Vec::<KeysetLocalSessionRoot>::new();
         let mut candidates = Vec::<KeysetLocalSessionCandidate>::new();
-        let mut total_candidate_count = 0usize;
         let mut candidate_set_was_truncated = false;
         for root_request in root_requests {
             let LocalSessionRootRequest {
@@ -97,7 +140,6 @@ impl ServiceHost {
                 &mut gap_notes,
                 &mut redactor,
             );
-            total_candidate_count += inventory.total_candidate_count;
             candidate_set_was_truncated |= inventory.truncated;
             let root_index = roots.len();
             roots.push(KeysetLocalSessionRoot {
@@ -127,6 +169,9 @@ impl ServiceHost {
                 .then_with(|| left.row_id.cmp(&right.row_id))
                 .then_with(|| left.path_digest.cmp(&right.path_digest))
         });
+        let mut seen_candidate_ids = BTreeSet::new();
+        candidates.retain(|candidate| seen_candidate_ids.insert(candidate.row_id.clone()));
+        let total_candidate_count = candidates.len();
         let source_revision = local_session_source_revision(&candidates, scope);
         let cursor_revision = cursor
             .as_ref()
@@ -144,39 +189,18 @@ impl ServiceHost {
                 !local_session_candidate_is_after_cursor(candidate, cursor)
             })
         });
-        let mut selected = candidates
-            .into_iter()
-            .skip(start)
-            .take(limit + 1)
-            .collect::<Vec<_>>();
-        let has_more = !candidate_set_was_truncated && selected.len() > limit;
-        if selected.len() > limit {
-            selected.truncate(limit);
-        }
-        let next_cursor = if has_more {
-            selected
-                .last()
-                .map(|candidate| {
-                    encode_cursor(&KeysetCursor {
-                        version: 1,
-                        method: METHOD.to_string(),
-                        query_digest: query_digest.clone(),
-                        source_revision: source_revision.clone(),
-                        sort_value: candidate.file.modified_at,
-                        stable_id: candidate.row_id.clone(),
-                        tie_breaker_digest: Some(candidate.path_digest.clone()),
-                    })
-                })
-                .transpose()?
-        } else {
-            None
-        };
-
+        let accepted_before = cursor
+            .as_ref()
+            .and_then(|cursor| cursor.accepted_count)
+            .unwrap_or(0);
         let skill_matchers = self.local_session_skill_matchers(requested_agent)?;
         let mut session_rows = Vec::new();
         let mut seen_session_row_ids = BTreeSet::new();
         let mut skill_usage = BTreeMap::<String, LocalSessionSkillUsageAccumulator>::new();
-        for candidate in selected {
+        let mut last_processed_index = None;
+        let mut next_index = start;
+        let mut page_budget_exhausted = false;
+        for (candidate_index, candidate) in candidates.iter().enumerate().skip(start) {
             let root = &roots[candidate.root_index];
             let options = LocalSessionPreviewRowOptions {
                 requested_agent,
@@ -197,20 +221,70 @@ impl ServiceHost {
                 &mut gap_notes,
                 &mut redactor,
             ) {
-                Ok(Some(entry)) if seen_session_row_ids.insert(entry.row.id.clone()) => {
-                    roots[candidate.root_index].accepted_count += 1;
-                    update_local_session_skill_usage(&mut skill_usage, &entry);
-                    session_rows.push(entry.row);
+                Ok(outcome) => {
+                    page_budget_exhausted |= outcome.budget_exhausted;
+                    if let Some(entry) = outcome.entry {
+                        if seen_session_row_ids.insert(entry.row.id.clone()) {
+                            roots[candidate.root_index].accepted_count += 1;
+                            update_local_session_skill_usage(&mut skill_usage, &entry);
+                            session_rows.push(entry.row);
+                        }
+                    }
                 }
-                Ok(Some(_)) | Ok(None) => {}
                 Err(error) => gap_notes.push(format!(
                     "{}: {}",
                     redactor.redact(&candidate.file.path.to_string_lossy()),
                     redactor.redact(&error.to_string())
                 )),
             }
+            last_processed_index = Some(candidate_index);
+            next_index = candidate_index.saturating_add(1);
+            if page_budget_exhausted || session_rows.len() == limit {
+                break;
+            }
         }
+        let page_read = KeysetLocalSessionPageRead {
+            session_rows,
+            skill_usage,
+            last_processed_index,
+            next_index,
+            budget_exhausted: page_budget_exhausted,
+        };
+        let KeysetLocalSessionPageRead {
+            session_rows,
+            skill_usage,
+            last_processed_index,
+            next_index,
+            budget_exhausted,
+        } = page_read;
+        candidate_set_was_truncated |= budget_exhausted;
+        let has_more = !candidate_set_was_truncated && next_index < candidates.len();
+        let accepted_through = accepted_before.saturating_add(session_rows.len());
+        let next_cursor = if has_more {
+            last_processed_index
+                .and_then(|index| candidates.get(index))
+                .map(|candidate| {
+                    encode_cursor(&KeysetCursor {
+                        version: 1,
+                        method: METHOD.to_string(),
+                        query_digest: query_digest.clone(),
+                        source_revision: source_revision.clone(),
+                        sort_value: candidate.file.modified_at,
+                        stable_id: candidate.row_id.clone(),
+                        tie_breaker_digest: Some(candidate.path_digest.clone()),
+                        accepted_count: Some(accepted_through),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let count = session_rows.len();
+        let total_matched_count = if has_more {
+            accepted_through.saturating_add(candidates.len().saturating_sub(next_index))
+        } else {
+            accepted_through
+        };
         let user_message_count = session_rows.iter().map(|row| row.user_message_count).sum();
         let total_message_count = session_rows.iter().map(|row| row.total_message_count).sum();
         let tool_call_count = session_rows.iter().map(|row| row.tool_call_count).sum();
@@ -244,7 +318,7 @@ impl ServiceHost {
             roots: root_rows,
             count,
             total_candidate_count,
-            total_matched_count: total_candidate_count,
+            total_matched_count,
             offset: 0,
             limit,
             has_more,
@@ -281,27 +355,31 @@ fn local_session_path_digest(path: &Path) -> String {
     trace_content_hash(&local_session_normalized_path(path))
 }
 
-fn local_session_keyset_query_digest(
-    requested_agent: Option<&str>,
-    roots: &[LocalSessionRootRequest],
-    project_filter_roots: &[PathBuf],
-    scope: LocalSessionScope,
-    include_content_items: bool,
-    max_excerpt_chars: usize,
-) -> String {
-    let root_digests = roots
+fn local_session_keyset_query_digest(query: LocalSessionKeysetQuery<'_>) -> String {
+    let root_digests = query
+        .roots
         .iter()
         .map(|root| local_session_path_digest(&root.path));
-    let project_digests = project_filter_roots
+    let project_digests = query
+        .project_filter_roots
         .iter()
         .map(|root| local_session_path_digest(root));
     let mut hasher = Sha256::new();
     hasher.update(b"session.previewLocalSessions.query.v1\0");
-    hasher.update(requested_agent.unwrap_or_default().trim().as_bytes());
+    hasher.update(query.requested_agent.unwrap_or_default().trim().as_bytes());
     hasher.update([0]);
-    hasher.update(scope.as_str().as_bytes());
-    hasher.update([u8::from(include_content_items)]);
-    hasher.update(max_excerpt_chars.to_le_bytes());
+    hasher.update(query.scope.as_str().as_bytes());
+    hasher.update(match query.sort {
+        LocalSessionSort::ModifiedAt => b"modified_at".as_slice(),
+        LocalSessionSort::Title => b"title".as_slice(),
+    });
+    hasher.update(match query.direction {
+        SortDirection::Asc => b"asc".as_slice(),
+        SortDirection::Desc => b"desc".as_slice(),
+    });
+    hasher.update([u8::from(query.has_search)]);
+    hasher.update([u8::from(query.include_content_items)]);
+    hasher.update(query.max_excerpt_chars.to_le_bytes());
     for digest in root_digests.chain(project_digests) {
         hasher.update([0]);
         hasher.update(digest.as_bytes());

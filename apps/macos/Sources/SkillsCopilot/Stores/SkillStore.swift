@@ -2571,10 +2571,12 @@ final class SkillStore: ObservableObject {
                     includeContentItems: false,
                     limit: Self.localSessionPageLimit,
                     offset: nil,
+                    pagingMode: "keyset",
                     cursor: cursor,
                     sourceRevision: sourceRevision,
                     sort: .recent,
-                    direction: .descending
+                    direction: .descending,
+                    maxFiles: nil
                 )
                 if page.isUnavailable {
                     throw ServiceClient.ClientError.invalidOutput(
@@ -2595,43 +2597,45 @@ final class SkillStore: ObservableObject {
                     page: page,
                     newRows: newRows
                 )
+                guard let mergedResult else {
+                    throw ServiceClient.ClientError.invalidOutput("missing local session summary page")
+                }
+                let snapshot = LocalSessionSnapshot(
+                    key: key,
+                    generation: generation,
+                    result: mergedResult,
+                    refreshedAt: Date(),
+                    isComplete: !mergedResult.hasMore
+                        && mergedResult.sourceCompleteness == .enumerable
+                        && mergedResult.incompleteReason == nil
+                        && mergedResult.sessionRows.count == mergedResult.totalMatchedCount,
+                    nextCursor: mergedResult.nextCursor,
+                    sourceRevision: mergedResult.sourceRevision,
+                    sourceCompleteness: mergedResult.sourceCompleteness,
+                    incompleteReason: mergedResult.incompleteReason
+                )
+                localSessionCache.publishSummary(snapshot)
+                guard let published = localSessionCache.successfulSnapshot(for: key),
+                      published.generation == generation,
+                      activeLocalSessionSnapshotKey == key,
+                      activeLocalSessionRefreshGeneration == generation else { return }
+                publishLocalSessionSnapshot(published)
                 sourceRevision = page.sourceRevision ?? sourceRevision
                 cursor = page.nextCursor
                 guard page.hasMore,
-                      (mergedResult?.sessionRows.count ?? 0) < Self.localSessionPrewarmLimit else { break }
+                      mergedResult.sessionRows.count < Self.localSessionPrewarmLimit else { break }
                 guard !newRows.isEmpty, cursor != nil, sourceRevision != nil else {
                     throw ServiceClient.ClientError.invalidOutput("invalid local session continuation page")
                 }
             }
-            guard let mergedResult else {
-                throw ServiceClient.ClientError.invalidOutput("missing local session summary page")
-            }
-            let snapshot = LocalSessionSnapshot(
-                key: key,
-                generation: generation,
-                result: mergedResult,
-                refreshedAt: Date(),
-                isComplete: !mergedResult.hasMore
-                    && mergedResult.sourceCompleteness == .enumerable
-                    && mergedResult.incompleteReason == nil
-                    && mergedResult.sessionRows.count == mergedResult.totalMatchedCount,
-                nextCursor: mergedResult.nextCursor,
-                sourceRevision: mergedResult.sourceRevision,
-                sourceCompleteness: mergedResult.sourceCompleteness,
-                incompleteReason: mergedResult.incompleteReason
-            )
-            localSessionCache.publishSummary(snapshot)
-            guard let published = localSessionCache.successfulSnapshot(for: key),
-                  published.generation == generation,
-                  activeLocalSessionSnapshotKey == key else { return }
-            publishLocalSessionSnapshot(published)
         } catch {
+            guard activeLocalSessionSnapshotKey == key,
+                  activeLocalSessionRefreshGeneration == generation else { return }
             localSessionCache.failSummary(
                 key: key,
                 generation: generation,
                 displayError: error.localizedDescription
             )
-            guard activeLocalSessionSnapshotKey == key else { return }
             localSessionLoadState = localSessionCache.summaryStates[key]
                 ?? .failed(key: key, displayError: error.localizedDescription)
             if let previous = localSessionCache.successfulSnapshot(for: key) {
@@ -2659,7 +2663,12 @@ final class SkillStore: ObservableObject {
         let loadID = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.continueLocalSessionPages(loadAll: true)
+            if self.activeLocalSessionSnapshot == nil {
+                await self.refreshLocalSessionSnapshot(reason: .manual)
+            }
+            if self.activeLocalSessionSnapshot?.nextCursor != nil {
+                await self.continueLocalSessionPages(loadAll: true)
+            }
         }
         localSessionLoadAllID = loadID
         localSessionLoadAllTask = task
@@ -2725,10 +2734,12 @@ final class SkillStore: ObservableObject {
                     includeContentItems: false,
                     limit: Self.localSessionPageLimit,
                     offset: nil,
+                    pagingMode: "keyset",
                     cursor: cursor,
                     sourceRevision: sourceRevision,
                     sort: .recent,
-                    direction: .descending
+                    direction: .descending,
+                    maxFiles: nil
                 )
                 guard !Task.isCancelled,
                       activeLocalSessionSnapshotKey == key,

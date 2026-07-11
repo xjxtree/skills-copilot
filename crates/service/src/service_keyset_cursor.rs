@@ -9,6 +9,8 @@ pub(crate) struct KeysetCursor {
     pub(crate) sort_value: i64,
     pub(crate) stable_id: String,
     pub(crate) tie_breaker_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) accepted_count: Option<usize>,
 }
 
 pub(crate) fn encode_cursor(value: &KeysetCursor) -> Result<String, ServiceError> {

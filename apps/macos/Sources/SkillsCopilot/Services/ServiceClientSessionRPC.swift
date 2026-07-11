@@ -10,13 +10,17 @@ extension ServiceClient {
         sessionID: String? = nil,
         includeContentItems: Bool? = nil,
         limit: Int = 20,
-        offset: Int? = nil,
+        offset: Int? = 0,
+        pagingMode: String? = nil,
         cursor: String? = nil,
         sourceRevision: String? = nil,
         sort: LocalSessionSortOrder = .recent,
-        direction: SkillSortDirection = .descending
+        direction: SkillSortDirection = .descending,
+        maxFiles: Int? = 800
     ) async throws -> LocalSessionPreviewResult {
         let normalizedSearch = search?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectivePagingMode = pagingMode ?? (cursor == nil ? nil : "keyset")
+        let usesKeysetPaging = effectivePagingMode == "keyset"
         let params = LocalSessionPreviewParams(
             authorizedRoots: authorizedRoots,
             autoDiscover: authorizedRoots.isEmpty,
@@ -28,12 +32,13 @@ extension ServiceClient {
             sessionID: sessionID,
             includeContentItems: includeContentItems,
             limit: limit,
-            offset: offset,
+            offset: usesKeysetPaging ? nil : offset,
+            pagingMode: effectivePagingMode,
             cursor: cursor,
             sourceRevision: sourceRevision,
             sort: sort.rawValue,
             direction: direction == .ascending ? "asc" : "desc",
-            maxFiles: nil,
+            maxFiles: usesKeysetPaging ? nil : maxFiles,
             maxExcerptChars: 1000
         )
         do {

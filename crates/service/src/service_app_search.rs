@@ -122,6 +122,7 @@ impl ServiceHost {
             session_id: None,
             limit: Some(limit_per_kind),
             offset: Some(0),
+            paging_mode: None,
             cursor: None,
             source_revision: None,
             sort: Some("recent".to_string()),

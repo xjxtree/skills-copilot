@@ -203,6 +203,47 @@ fn invalid_sort_or_direction_is_rejected() {
 }
 
 #[test]
+fn keyset_paging_requires_explicit_opt_in_on_the_first_page() {
+    let fixture = OrderedSessionFixture::new("keyset-opt-in", &[("Alpha", 100), ("Bravo", 200)]);
+    let legacy = fixture.host.handle(ServiceRequest {
+        id: Some("legacy-summary".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": [fixture.root.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "limit": 1
+        }),
+    });
+    assert!(legacy.ok, "{:?}", legacy.error);
+    let legacy = legacy.result.expect("legacy summary result");
+    assert_eq!(legacy["next_cursor"], Value::Null);
+    assert_eq!(legacy["source_revision"], Value::Null);
+    assert_eq!(legacy["next_offset"], json!(1));
+
+    let keyset = fixture.host.handle(ServiceRequest {
+        id: Some("keyset-summary".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": [fixture.root.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 1
+        }),
+    });
+    assert!(keyset.ok, "{:?}", keyset.error);
+    let keyset = keyset.result.expect("keyset summary result");
+    assert!(keyset["next_cursor"].as_str().is_some());
+    assert!(keyset["source_revision"].as_str().is_some());
+    assert_eq!(keyset["next_offset"], Value::Null);
+}
+
+#[test]
 fn keyset_pages_continue_past_legacy_max_files_without_duplicates() {
     let rows = (0..1_205)
         .map(|index| (format!("Session {index:04}"), 10_000 + index as i64))
@@ -245,6 +286,7 @@ fn keyset_pages_continue_past_legacy_max_files_without_duplicates() {
                 "limit": 100,
                 "max_files": null,
                 "include_content_items": false,
+                "paging_mode": "keyset",
                 "cursor": cursor,
                 "source_revision": source_revision,
             }),
@@ -291,7 +333,7 @@ fn keyset_continuation_rejects_source_change() {
     );
     let first = ordered_result(
         &fixture,
-        json!({"limit": 1, "max_files": null, "include_content_items": false}),
+        json!({"limit": 1, "max_files": null, "include_content_items": false, "paging_mode": "keyset"}),
     );
     fs::write(
         fixture.root.join("alpha.jsonl"),
@@ -303,6 +345,7 @@ fn keyset_continuation_rejects_source_change() {
         "limit": 1,
         "max_files": null,
         "include_content_items": false,
+        "paging_mode": "keyset",
         "cursor": first["next_cursor"],
         "source_revision": first["source_revision"],
     }));
@@ -310,6 +353,396 @@ fn keyset_continuation_rejects_source_change() {
         response.error.map(|error| error.code),
         Some("source_changed".to_string())
     );
+}
+
+#[test]
+fn keyset_continuations_reject_legacy_and_detail_fields() {
+    let fixture = OrderedSessionFixture::new(
+        "keyset-field-rejection",
+        &[("Alpha", 100), ("Bravo", 200), ("Charlie", 300)],
+    );
+    let first = ordered_result(
+        &fixture,
+        json!({
+            "limit": 1,
+            "max_files": null,
+            "include_content_items": false,
+            "paging_mode": "keyset"
+        }),
+    );
+    let cursor = first["next_cursor"].clone();
+    let revision = first["source_revision"].clone();
+    for incompatible in [
+        json!({"session_id": "local-session-forbidden"}),
+        json!({"offset": 1}),
+        json!({"max_files": 3}),
+        json!({"include_content_items": true}),
+    ] {
+        let mut params = json!({
+            "limit": 1,
+            "max_files": null,
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "cursor": cursor,
+            "source_revision": revision,
+        });
+        params
+            .as_object_mut()
+            .expect("keyset request object")
+            .extend(
+                incompatible
+                    .as_object()
+                    .expect("incompatible object")
+                    .clone(),
+            );
+        let response = fixture.request(params);
+        assert_eq!(
+            response.error.map(|error| error.code),
+            Some("invalid_request".to_string())
+        );
+    }
+    for changed_query in [
+        json!({"agent": "pi"}),
+        json!({"authorized_roots": [fixture.fixture.to_string_lossy()]}),
+        json!({"scope": "project"}),
+        json!({"search": "alpha"}),
+        json!({"sort": "title"}),
+        json!({"direction": "asc"}),
+    ] {
+        let mut params = json!({
+            "limit": 1,
+            "max_files": null,
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "cursor": cursor,
+            "source_revision": revision,
+        });
+        params.as_object_mut().expect("keyset query object").extend(
+            changed_query
+                .as_object()
+                .expect("changed query object")
+                .clone(),
+        );
+        let response = fixture.request(params);
+        assert_eq!(
+            response.error.map(|error| error.code),
+            Some("invalid_request".to_string())
+        );
+    }
+}
+
+#[test]
+fn keyset_rejects_legacy_fields_before_an_empty_inventory_return() {
+    let fixture = OrderedSessionFixture::new("empty-keyset-validation", &[]);
+    let response = fixture.host.handle(ServiceRequest {
+        id: Some("empty-keyset-validation".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "authorized_roots": [],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "offset": 0,
+            "limit": 1
+        }),
+    });
+    assert_eq!(
+        response.error.map(|error| error.code),
+        Some("invalid_request".to_string())
+    );
+}
+
+#[test]
+fn overlapping_roots_contribute_one_unique_keyset_row() {
+    let fixture = OrderedSessionFixture::new("overlapping-roots", &[("Only", 100)]);
+    let response = fixture.host.handle(ServiceRequest {
+        id: Some("overlapping-roots".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": [fixture.fixture.to_string_lossy(), fixture.root.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 100
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let page = response.result.expect("overlapping root page");
+    assert_eq!(page["session_rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(page["total_candidate_count"], json!(1));
+    assert_eq!(page["total_matched_count"], json!(1));
+    assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn request_byte_exhaustion_is_terminal_and_keeps_accepted_rows() {
+    let fixture = OrderedSessionFixture::new(
+        "request-byte-budget",
+        &[("Alpha", 300), ("Bravo", 200), ("Charlie", 100)],
+    );
+    let first_file_bytes = fs::metadata(fixture.root.join("alpha.jsonl"))
+        .expect("first file metadata")
+        .len() as usize;
+    let params = serde_json::from_value(json!({
+        "agent": "codex",
+        "authorized_roots": [fixture.root.to_string_lossy()],
+        "auto_discover": false,
+        "scope": "all",
+        "include_content_items": false,
+        "paging_mode": "keyset",
+        "limit": 100
+    }))
+    .expect("decode request-byte request");
+    let result = fixture
+        .host
+        .preview_local_sessions_with_test_limits(
+            params,
+            LocalSessionReadLimits {
+                max_preview_read_bytes: first_file_bytes,
+                ..LocalSessionReadLimits::default()
+            },
+        )
+        .expect("request-byte limited preview");
+    assert_eq!(result.session_rows.len(), 1);
+    assert!(result.candidate_set_truncated);
+    assert_eq!(result.source_completeness, ListSourceCompleteness::Limited);
+    assert_eq!(
+        result.incomplete_reason,
+        Some(ListIncompleteReason::SafetyBudget)
+    );
+    assert!(!result.has_more);
+    assert!(result.next_cursor.is_none());
+    assert_eq!(result.total_matched_count, result.session_rows.len());
+}
+
+#[test]
+fn rejected_candidates_do_not_inflate_terminal_accepted_total() {
+    let fixture = OrderedSessionFixture::new(
+        "accepted-total",
+        &[("Alpha", 300), ("Bravo", 200), ("Charlie", 100)],
+    );
+    fs::write(fixture.root.join("bravo.jsonl"), "").expect("empty rejected candidate");
+    let page = ordered_result(
+        &fixture,
+        json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 100
+        }),
+    );
+    assert_eq!(page["session_rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(page["total_candidate_count"], json!(3));
+    assert_eq!(page["total_matched_count"], json!(2));
+    assert_eq!(page["has_more"], false);
+
+    let first = ordered_result(
+        &fixture,
+        json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 1
+        }),
+    );
+    let second = ordered_result(
+        &fixture,
+        json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 1,
+            "cursor": first["next_cursor"],
+            "source_revision": first["source_revision"]
+        }),
+    );
+    assert_eq!(second["session_rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(second["total_matched_count"], json!(2));
+    assert_eq!(second["has_more"], false);
+}
+
+#[test]
+fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
+    let fixture = env::temp_dir().join(format!(
+        "skills-copilot-session-budget-matrix-{}-{}",
+        std::process::id(),
+        NEXT_ORDERED_SESSION_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let storage = fixture.join("home/.local/share/opencode/storage");
+    let session_root = storage.join("session");
+    let message_root = storage.join("message/ses_budget");
+    fs::create_dir_all(&session_root).expect("create opencode session root");
+    fs::create_dir_all(&message_root).expect("create opencode message root");
+    let first_line = format!(
+        "{}\n",
+        json!({"id": "ses_budget", "title": "Budget primary"})
+    );
+    let primary_path = session_root.join("ses_budget.json");
+    fs::write(
+        message_root.join("000-message.json"),
+        json!({"id": "msg_budget", "role": "assistant", "content": "sidecar content that exceeds tiny file budgets"}).to_string(),
+    )
+    .expect("write opencode sidecar");
+    let host = ServiceHost {
+        app_data_dir: fixture.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: fixture.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let params = || {
+        serde_json::from_value(json!({
+            "agent": "opencode",
+            "authorized_roots": [storage.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 100
+        }))
+        .expect("decode budget matrix params")
+    };
+    for (name, limits) in [
+        (
+            "primary-byte",
+            LocalSessionReadLimits {
+                primary_head_bytes: first_line.len(),
+                primary_tail_bytes: 0,
+                ..LocalSessionReadLimits::default()
+            },
+        ),
+        (
+            "sidecar-file-count",
+            LocalSessionReadLimits {
+                max_sidecar_files: 0,
+                ..LocalSessionReadLimits::default()
+            },
+        ),
+        (
+            "sidecar-session-bytes",
+            LocalSessionReadLimits {
+                max_sidecar_session_bytes: 0,
+                ..LocalSessionReadLimits::default()
+            },
+        ),
+        (
+            "sidecar-file-bytes",
+            LocalSessionReadLimits {
+                max_sidecar_file_bytes: 8,
+                ..LocalSessionReadLimits::default()
+            },
+        ),
+    ] {
+        let primary_content = if name == "primary-byte" {
+            format!(
+                "{first_line}{}\n",
+                json!({"type": "user", "role": "user", "text": "primary tail"})
+            )
+        } else {
+            first_line.clone()
+        };
+        fs::write(&primary_path, primary_content).expect("write opencode primary scenario");
+        let result = host
+            .preview_local_sessions_with_test_limits(params(), limits)
+            .unwrap_or_else(|error| panic!("{name} preview failed: {error}"));
+        assert_eq!(result.session_rows.len(), 1, "{name} retains primary row");
+        assert!(result.candidate_set_truncated, "{name} marks limitation");
+        assert_eq!(
+            result.source_completeness,
+            ListSourceCompleteness::Limited,
+            "{name} completeness"
+        );
+        assert_eq!(
+            result.incomplete_reason,
+            Some(ListIncompleteReason::SafetyBudget),
+            "{name} reason"
+        );
+        assert!(!result.has_more, "{name} must be terminal");
+        assert!(
+            result.next_cursor.is_none(),
+            "{name} must not expose cursor"
+        );
+    }
+    let _ = fs::remove_dir_all(fixture);
+}
+
+#[test]
+fn entry_budget_exhaustion_keeps_rows_and_is_terminal() {
+    let fixture = OrderedSessionFixture::new("entry-budget", &[("Accepted", 100)]);
+    fs::write(
+        fixture.root.join("omitted.jsonl"),
+        json!({"type": "session", "title": "Omitted"}).to_string(),
+    )
+    .expect("write omitted candidate");
+    let params = serde_json::from_value(json!({
+        "agent": "codex",
+        "authorized_roots": [fixture.root.to_string_lossy()],
+        "auto_discover": false,
+        "scope": "all",
+        "include_content_items": false,
+        "paging_mode": "keyset",
+        "limit": 100
+    }))
+    .expect("decode entry-budget params");
+    let result = fixture
+        .host
+        .preview_local_sessions_with_test_limits(
+            params,
+            LocalSessionReadLimits {
+                max_inventory_entries: 1,
+                ..LocalSessionReadLimits::default()
+            },
+        )
+        .expect("entry-budget preview");
+    assert_eq!(result.session_rows.len(), 1);
+    assert!(result.candidate_set_truncated);
+    assert_eq!(
+        result.incomplete_reason,
+        Some(ListIncompleteReason::SafetyBudget)
+    );
+    assert!(!result.has_more);
+    assert!(result.next_cursor.is_none());
+}
+
+#[test]
+fn equal_modified_times_continue_by_stable_identity_without_duplicates() {
+    let fixture = OrderedSessionFixture::new(
+        "equal-mtime",
+        &[("Alpha", 100), ("Bravo", 100), ("Charlie", 100)],
+    );
+    let mut ids = Vec::new();
+    let mut cursor = None;
+    let mut revision = None;
+    loop {
+        let page = ordered_result(
+            &fixture,
+            json!({
+                "paging_mode": "keyset",
+                "max_files": null,
+                "include_content_items": false,
+                "limit": 1,
+                "cursor": cursor,
+                "source_revision": revision
+            }),
+        );
+        ids.extend(
+            ordered_values(&page, "id")
+                .into_iter()
+                .map(|id| id.as_str().expect("equal-mtime id").to_string()),
+        );
+        if !page["has_more"].as_bool().expect("equal-mtime has_more") {
+            break;
+        }
+        cursor = page["next_cursor"].as_str().map(str::to_string);
+        revision = page["source_revision"].as_str().map(str::to_string);
+    }
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 3);
 }
 
 #[test]
@@ -325,6 +758,9 @@ fn inventory_budget_truncation_keeps_rows_and_reports_typed_incompleteness() {
         "agent": "codex",
         "authorized_roots": [fixture.root.to_string_lossy()],
         "auto_discover": false,
+        "scope": "all",
+        "include_content_items": false,
+        "paging_mode": "keyset",
         "limit": 100,
     }))
     .expect("decode budget request");
