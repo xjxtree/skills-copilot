@@ -548,6 +548,8 @@ fn rejected_candidates_do_not_inflate_terminal_accepted_total() {
             "limit": 1
         }),
     );
+    assert_eq!(first["session_rows"].as_array().map(Vec::len), Some(0));
+    assert_eq!(first["has_more"], true);
     let second = ordered_result(
         &fixture,
         json!({
@@ -561,7 +563,117 @@ fn rejected_candidates_do_not_inflate_terminal_accepted_total() {
     );
     assert_eq!(second["session_rows"].as_array().map(Vec::len), Some(1));
     assert_eq!(second["total_matched_count"], json!(2));
-    assert_eq!(second["has_more"], false);
+    assert_eq!(second["has_more"], true);
+    let third = ordered_result(
+        &fixture,
+        json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 1,
+            "cursor": second["next_cursor"],
+            "source_revision": second["source_revision"]
+        }),
+    );
+    assert_eq!(third["session_rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(third["total_matched_count"], json!(2));
+    assert_eq!(third["has_more"], false);
+}
+
+#[test]
+fn keyset_pages_bound_processed_candidates_and_advance_across_empty_rows() {
+    let fixture = OrderedSessionFixture::new(
+        "candidate-page-bound",
+        &[
+            ("EmptyOne", 600),
+            ("EmptyTwo", 500),
+            ("EmptyThree", 400),
+            ("EmptyFour", 300),
+            ("ValidOne", 200),
+            ("ValidTwo", 100),
+        ],
+    );
+    for name in ["emptyone", "emptytwo", "emptythree", "emptyfour"] {
+        fs::write(fixture.root.join(format!("{name}.jsonl")), "")
+            .expect("write empty rejected candidate");
+    }
+    let request = |cursor: Option<String>, source_revision: Option<String>| {
+        serde_json::from_value(json!({
+            "agent": "codex",
+            "authorized_roots": [fixture.root.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 2,
+            "cursor": cursor,
+            "source_revision": source_revision
+        }))
+        .expect("decode candidate-bound request")
+    };
+    let no_primary_lookahead = LocalSessionReadLimits {
+        max_preview_read_bytes: 0,
+        ..LocalSessionReadLimits::default()
+    };
+
+    let first = fixture
+        .host
+        .preview_local_sessions_with_test_limits(request(None, None), no_primary_lookahead)
+        .expect("first bounded candidate page");
+    assert!(first.session_rows.is_empty());
+    assert!(
+        first.has_more,
+        "two processed empties must leave later candidates"
+    );
+    assert!(
+        first.next_cursor.is_some(),
+        "an empty page must still advance its cursor"
+    );
+    assert!(
+        !first.candidate_set_truncated,
+        "lookahead must not read the third primary file"
+    );
+
+    let second = fixture
+        .host
+        .preview_local_sessions_with_test_limits(
+            request(first.next_cursor.clone(), first.source_revision.clone()),
+            no_primary_lookahead,
+        )
+        .expect("second bounded candidate page");
+    assert!(second.session_rows.is_empty());
+    assert!(
+        second.has_more,
+        "the second pair of empties must leave valid candidates"
+    );
+    assert_ne!(
+        second.next_cursor, first.next_cursor,
+        "an empty page cursor must progress"
+    );
+    assert!(
+        !second.candidate_set_truncated,
+        "lookahead must not read the first valid primary file"
+    );
+
+    let third = fixture
+        .host
+        .preview_local_sessions_with_test_limits(
+            request(second.next_cursor.clone(), second.source_revision.clone()),
+            LocalSessionReadLimits::default(),
+        )
+        .expect("third bounded candidate page");
+    assert_eq!(third.session_rows.len(), 2);
+    assert_eq!(
+        third
+            .session_rows
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<HashSet<_>>()
+            .len(),
+        2
+    );
+    assert!(!third.has_more);
+    assert_eq!(third.total_matched_count, 2);
 }
 
 #[test]

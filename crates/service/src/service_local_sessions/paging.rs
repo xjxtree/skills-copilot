@@ -239,7 +239,7 @@ impl ServiceHost {
             }
             last_processed_index = Some(candidate_index);
             next_index = candidate_index.saturating_add(1);
-            if page_budget_exhausted || session_rows.len() == limit {
+            if page_budget_exhausted || next_index.saturating_sub(start) == limit {
                 break;
             }
         }

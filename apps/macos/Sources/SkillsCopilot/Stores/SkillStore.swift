@@ -2561,6 +2561,7 @@ final class SkillStore: ObservableObject {
             var cursor: String?
             var sourceRevision: String?
             while true {
+                let requestedCursor = cursor
                 let page = try await service.previewLocalSessions(
                     authorizedRoots: key.authorizedRoots,
                     agent: agent,
@@ -2621,12 +2622,14 @@ final class SkillStore: ObservableObject {
                       activeLocalSessionRefreshGeneration == generation else { return }
                 publishLocalSessionSnapshot(published)
                 sourceRevision = page.sourceRevision ?? sourceRevision
-                cursor = page.nextCursor
                 guard page.hasMore,
                       mergedResult.sessionRows.count < Self.localSessionPrewarmLimit else { break }
-                guard !newRows.isEmpty, cursor != nil, sourceRevision != nil else {
+                guard let nextCursor = page.nextCursor,
+                      nextCursor != requestedCursor,
+                      sourceRevision != nil else {
                     throw ServiceClient.ClientError.invalidOutput("invalid local session continuation page")
                 }
+                cursor = nextCursor
             }
         } catch {
             guard activeLocalSessionSnapshotKey == key,
@@ -2750,14 +2753,16 @@ final class SkillStore: ObservableObject {
                         message: "local session source changed during pagination"
                     ))
                 }
-                let previousCount = snapshot.result.sessionRows.count
                 let merged = mergeLocalSessionSummaryPage(
                     accumulated: snapshot.result,
                     page: page,
                     newRows: page.sessionRows
                 )
-                guard merged.sessionRows.count > previousCount || !page.hasMore else {
-                    throw ServiceClient.ClientError.invalidOutput("local session page made no progress")
+                if page.hasMore {
+                    guard let nextCursor = page.nextCursor,
+                          nextCursor != cursor else {
+                        throw ServiceClient.ClientError.invalidOutput("local session page made no cursor progress")
+                    }
                 }
                 if !page.hasMore,
                    page.sourceCompleteness == .enumerable,
@@ -2882,7 +2887,7 @@ final class SkillStore: ObservableObject {
                 : page.skillUsageRows,
             count: rows.count,
             totalCandidateCount: max(page.totalCandidateCount, accumulated?.totalCandidateCount ?? 0),
-            totalMatchedCount: max(page.totalMatchedCount, accumulated?.totalMatchedCount ?? 0),
+            totalMatchedCount: max(page.totalMatchedCount, rows.count),
             offset: 0,
             limit: page.limit,
             hasMore: page.hasMore,

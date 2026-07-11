@@ -44,6 +44,15 @@ struct SkillStoreTests {
         try await runCase("oldLocalSessionGenerationErrorCannotOverwriteReactivatedSource") {
             try await oldLocalSessionGenerationErrorCannotOverwriteReactivatedSource()
         }
+        try await runCase("localSessionTerminalPageUsesDecreasingExactTotal") {
+            try await localSessionTerminalPageUsesDecreasingExactTotal()
+        }
+        try await runCase("localSessionZeroRowPageContinuesWhenCursorProgresses") {
+            try await localSessionZeroRowPageContinuesWhenCursorProgresses()
+        }
+        try await runCase("localSessionZeroRowPageRejectsRepeatedCursor") {
+            try await localSessionZeroRowPageRejectsRepeatedCursor()
+        }
         try await runCase("selectingSummaryRequestsOnlySelectedDetail") {
             try await selectingSummaryRequestsOnlySelectedDetail()
         }

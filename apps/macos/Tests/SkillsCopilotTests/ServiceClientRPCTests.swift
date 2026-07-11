@@ -358,6 +358,50 @@ extension SkillStoreTests {
         try expectEqual(store.localSessionCompleteness.completeness, .complete, "Late old error must not overwrite completeness.")
         try expectNil(store.localSessionCompleteness.incompleteReason, "Late old error must not publish pageFailed.")
     }
+
+    func localSessionTerminalPageUsesDecreasingExactTotal() async throws {
+        let runner = ScriptedLocalSessionPageRunner(pages: [
+            ScriptedLocalSessionPage(rowIDs: ["session-a", "session-b"], totalMatchedCount: 5, hasMore: true, nextCursor: "cursor-after-two"),
+            ScriptedLocalSessionPage(rowIDs: ["session-c"], totalMatchedCount: 3, hasMore: false, nextCursor: nil),
+        ])
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/decreasing-session-total-service")))
+
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["session-a", "session-b", "session-c"], "Both pages should merge unique rows.")
+        try expectEqual(store.localSessionPreviewResult.totalMatchedCount, 3, "The terminal exact total must replace the earlier candidate upper bound.")
+        try expectEqual(store.localSessionCompleteness.loadedCount, 3, "All exact rows should be loaded.")
+        try expectEqual(store.localSessionCompleteness.totalCount, Optional(3), "Completeness should expose the terminal exact total.")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "EOF with loaded equal to total must be complete.")
+    }
+
+    func localSessionZeroRowPageContinuesWhenCursorProgresses() async throws {
+        let runner = ScriptedLocalSessionPageRunner(pages: [
+            ScriptedLocalSessionPage(rowIDs: [], totalMatchedCount: 1, hasMore: true, nextCursor: "cursor-after-empty"),
+            ScriptedLocalSessionPage(rowIDs: ["session-valid"], totalMatchedCount: 1, hasMore: false, nextCursor: nil),
+        ])
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/empty-progress-session-service")))
+
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["session-valid"], "A cursor-advancing empty page must continue to the valid row.")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "The continuation should reach complete EOF.")
+        try expectEqual(await runner.recordedCursors(), [nil, "cursor-after-empty"], "The second request must use the empty page's advanced cursor.")
+    }
+
+    func localSessionZeroRowPageRejectsRepeatedCursor() async throws {
+        let runner = ScriptedLocalSessionPageRunner(pages: [
+            ScriptedLocalSessionPage(rowIDs: ["session-a"], totalMatchedCount: 2, hasMore: true, nextCursor: "cursor-repeat"),
+            ScriptedLocalSessionPage(rowIDs: [], totalMatchedCount: 1, hasMore: true, nextCursor: "cursor-repeat"),
+        ])
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/repeated-session-cursor-service")))
+
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+
+        try expectEqual(await runner.requestCount(), 2, "A repeated continuation cursor must stop before a third request.")
+        try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["session-a"], "Rejecting a cursor loop must retain accepted rows.")
+        try expectEqual(store.localSessionCompleteness.incompleteReason, .pageFailed, "A repeated cursor must surface a retryable page failure.")
+    }
 }
 
 struct RecordedPagedSessionRequest: Sendable {
@@ -445,6 +489,69 @@ actor PagedLocalSessionRunner: ServiceProcessRunning {
 
     func requestCount() -> Int { requests.count }
     func recordedRequests() -> [RecordedPagedSessionRequest] { requests }
+}
+
+struct ScriptedLocalSessionPage: Sendable {
+    let rowIDs: [String]
+    let totalMatchedCount: Int
+    let hasMore: Bool
+    let nextCursor: String?
+}
+
+actor ScriptedLocalSessionPageRunner: ServiceProcessRunning {
+    private let pages: [ScriptedLocalSessionPage]
+    private var cursors: [String?] = []
+
+    init(pages: [ScriptedLocalSessionPage]) {
+        self.pages = pages
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let request = try JSONSerialization.jsonObject(with: input) as? [String: Any] ?? [:]
+        let params = request["params"] as? [String: Any] ?? [:]
+        cursors.append(params["cursor"] as? String)
+        guard pages.indices.contains(cursors.count - 1) else {
+            throw PagedSessionRunnerError.injected
+        }
+        let page = pages[cursors.count - 1]
+        let rows = page.rowIDs.enumerated().map { index, id -> [String: Any] in
+            [
+                "id": id,
+                "title": id,
+                "source_kind": "authorized-local-session",
+                "scope": "all",
+                "redacted_path": "$HOME/.sessions/\(id).jsonl",
+                "modified_at": 1_000 - index,
+                "excerpt": "Summary \(id)",
+                "content_included": false,
+                "content_items": [],
+            ]
+        }
+        let result: [String: Any] = [
+            "generated_by": "local-v2.98",
+            "authorized": true,
+            "count": rows.count,
+            "total_candidate_count": max(page.totalMatchedCount, rows.count),
+            "total_matched_count": page.totalMatchedCount,
+            "offset": 0,
+            "limit": 100,
+            "has_more": page.hasMore,
+            "next_cursor": page.nextCursor ?? NSNull(),
+            "source_revision": "sha256:scripted-sessions",
+            "source_completeness": "enumerable",
+            "incomplete_reason": NSNull(),
+            "candidate_set_truncated": false,
+            "session_rows": rows,
+        ]
+        return try JSONSerialization.data(withJSONObject: [
+            "id": request["id"] ?? "test",
+            "ok": true,
+            "result": result,
+        ])
+    }
+
+    func requestCount() -> Int { cursors.count }
+    func recordedCursors() -> [String?] { cursors }
 }
 
 actor ABALocalSessionErrorRunner: ServiceProcessRunning {
