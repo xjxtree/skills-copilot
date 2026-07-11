@@ -441,6 +441,10 @@
 "providerObservability.threshold" = "Threshold";
 "providerObservability.charts.title" = "Charts";
 "providerObservability.charts.mode" = "Redacted metadata";
+"providerObservability.charts.topFiveSummary" = "Top 5 summary";
+"providerObservability.activity.title" = "Activity details";
+"providerObservability.activity.redacted" = "Redacted metadata";
+"providerObservability.activity.empty" = "No redacted activity rows matched this range.";
 "providerObservability.charts.summary" = "Charts summarize redacted local metadata only.";
 "providerObservability.dateRange" = "Range";
 "providerObservability.dateRange.last7Days" = "7 days";

@@ -8,6 +8,7 @@ struct ProviderObservabilityModelTests {
         try normalizesSummaryCallCountAcrossPromptRunsAndCallRows()
         try decodesGroupingRowsIntoDimensionLists()
         try decodesServiceProtocolFixture()
+        try decodesProviderActivityPageFixtureAndAliases()
         try emptyServiceFixtureUsesDashboardEmptyState()
     }
 
@@ -449,6 +450,61 @@ struct ProviderObservabilityModelTests {
         }
 
         try expectEqual(result.isDashboardEmpty, true, "Zero-count explanatory status rows should render one empty dashboard card.")
+    }
+
+    private func decodesProviderActivityPageFixtureAndAliases() throws {
+        let fixtureURL = try repositoryRoot()
+            .appendingPathComponent("fixtures/service-protocol/llm.listProviderActivity.response.json")
+        let data = try Data(contentsOf: fixtureURL)
+        let envelope = try JSONDecoder().decode(ServiceEnvelope<ProviderActivityPageResult>.self, from: data)
+        guard let page = envelope.result else {
+            throw NativeModelTestFailure(description: "Provider activity fixture should include a result.")
+        }
+
+        try expectEqual(page.rows.count, 2, "Provider activity fixture should decode both activity kinds.")
+        try expectEqual(page.rows.map(\.kind), ["provider_call", "prompt_run"], "Provider activity should preserve unified row kinds.")
+        try expectEqual(page.rows.first?.title, "analyze", "Provider activity should decode redacted titles.")
+        try expectEqual(page.sourceRevision, "sha256:fixture-provider-activity", "Provider activity should decode source revision.")
+        try expectEqual(page.returnedCount, 2, "Provider activity should decode returned count.")
+        try expectEqual(page.totalCount, 2, "Provider activity should decode total count.")
+        try expectFalse(page.hasMore, "Provider activity fixture should be terminal.")
+        try expectEqual(page.sourceCompleteness, .enumerable, "Provider activity should decode source completeness.")
+        try expectFalse(page.safetyFlags.providerRequestSent, "Listing activity must not send provider requests.")
+        try expectFalse(page.safetyFlags.rawPromptPersisted, "Listing activity must not persist raw prompts.")
+        try expectFalse(page.safetyFlags.rawResponsePersisted, "Listing activity must not persist raw responses.")
+        try expectFalse(page.safetyFlags.rawTracePersisted, "Listing activity must not persist raw traces.")
+
+        let camelJSON = """
+        {
+          "generatedBy": "local-v2.64",
+          "rows": [{
+            "id": "activity-camel",
+            "kind": "prompt_run",
+            "timestamp": 42,
+            "title": "Camel activity",
+            "subtitle": "redacted metadata",
+            "status": "succeeded",
+            "evidenceRefs": ["prompt-run:camel"]
+          }],
+          "sourceRevision": "sha256:camel",
+          "returnedCount": 1,
+          "totalCount": 2,
+          "hasMore": true,
+          "nextCursor": "v1:camel",
+          "sourceCompleteness": "enumerable",
+          "incompleteReason": null,
+          "safetyFlags": {
+            "providerRequestSent": false,
+            "rawPromptPersisted": false,
+            "rawResponsePersisted": false,
+            "rawTracePersisted": false
+          }
+        }
+        """
+        let camel = try JSONDecoder().decode(ProviderActivityPageResult.self, from: Data(camelJSON.utf8))
+        try expectEqual(camel.rows.first?.evidenceRefs, ["prompt-run:camel"], "Provider activity row should decode camelCase evidence aliases.")
+        try expectEqual(camel.nextCursor, "v1:camel", "Provider activity should decode camelCase cursor aliases.")
+        try expectEqual(camel.totalCount, 2, "Provider activity should decode camelCase total aliases.")
     }
 
     private func repositoryRoot() throws -> URL {

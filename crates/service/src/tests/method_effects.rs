@@ -386,6 +386,7 @@ fn catalog_backed_read_handlers_leave_seeded_database_and_sidecars_unchanged() {
         ("catalog.listFindings", json!({})),
         ("catalog.listFindingTriage", json!({})),
         ("catalog.listConflicts", json!({})),
+        ("llm.listProviderActivity", json!({ "limit": 12 })),
         (
             "skill.listEvents",
             json!({ "instance_id": "llm-skill-id", "limit": 12 }),

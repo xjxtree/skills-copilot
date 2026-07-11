@@ -512,6 +512,25 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert_model_task_match_safety(&row.safety_flags);
             }
         }
+        "llm.listProviderActivity" => {
+            let activity: WireProviderActivityPageResult =
+                decode_fixture_result(method, result, path);
+            assert_eq!(activity.generated_by, "local-v2.64");
+            assert_eq!(activity.returned_count, activity.rows.len());
+            assert!(activity
+                .total_count
+                .is_some_and(|total| total >= activity.returned_count));
+            assert_eq!(activity.has_more, activity.next_cursor.is_some());
+            assert_eq!(activity.source_completeness, "enumerable");
+            assert!(activity.incomplete_reason.is_none());
+            assert!(!activity.source_revision.is_empty());
+            assert_provider_observability_safety(&activity.safety_flags);
+            for row in &activity.rows {
+                assert!(matches!(row.kind.as_str(), "provider_call" | "prompt_run"));
+                assert!(!row.id.is_empty());
+                assert!(!row.evidence_refs.is_empty());
+            }
+        }
         "llm.listModelTaskMatches" => {
             let history: WireModelTaskMatchListResult = decode_fixture_result(method, result, path);
             assert_eq!(history.generated_by, "local-v2.91");

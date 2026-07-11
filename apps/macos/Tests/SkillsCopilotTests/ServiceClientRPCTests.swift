@@ -48,6 +48,7 @@ struct ServiceClientRPCTests {
 
         try await configConsistencyRequestsUseExactBindings()
         try await localHistoryPageRequestsDecodeAliases()
+        try await providerActivityPageRequestUsesExactBindings()
         try await localSessionCursorRequestDecodesCompleteness()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
@@ -101,6 +102,37 @@ struct ServiceClientRPCTests {
         try expectEqual(eventParams["instance_id"] as? String, Optional("skill-1"), "Event page stable instance id")
         try expectEqual(eventParams["cursor"] as? String, Optional("v1:event-page-1"), "Event continuation cursor")
         try expectEqual(eventParams["source_revision"] as? String, Optional("sha256:event-revision"), "Event source revision")
+    }
+
+    private func providerActivityPageRequestUsesExactBindings() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+
+        let page = try await client.listProviderActivity(
+            provider: "openai-compatible",
+            model: "fixture-model",
+            action: "analyze",
+            windowDays: 30,
+            startAt: 100,
+            endAt: 200,
+            limit: 50,
+            cursor: "v1:activity-page-2",
+            sourceRevision: "sha256:activity-revision"
+        )
+
+        try expectEqual(page.rows.map(\.id), ["activity-1"], "Provider activity RPC should decode rows.")
+        try expectEqual(page.totalCount, 130, "Provider activity RPC should decode page totals.")
+        try expectEqual(page.nextCursor, "v1:activity-page-3", "Provider activity RPC should decode cursor.")
+        let params = try runner.params(for: "llm.listProviderActivity")
+        try expectEqual(params["provider"] as? String, Optional("openai-compatible"), "Provider activity provider filter")
+        try expectEqual(params["model"] as? String, Optional("fixture-model"), "Provider activity model filter")
+        try expectEqual(params["action"] as? String, Optional("analyze"), "Provider activity action filter")
+        try expectEqual(params["window_days"] as? Int, Optional(30), "Provider activity window filter")
+        try expectEqual(params["start_at"] as? Int, Optional(100), "Provider activity start filter")
+        try expectEqual(params["end_at"] as? Int, Optional(200), "Provider activity end filter")
+        try expectEqual(params["limit"] as? Int, Optional(50), "Provider activity page limit")
+        try expectEqual(params["cursor"] as? String, Optional("v1:activity-page-2"), "Provider activity cursor")
+        try expectEqual(params["source_revision"] as? String, Optional("sha256:activity-revision"), "Provider activity source revision")
     }
 
     private func localSessionCursorRequestDecodesCompleteness() async throws {
@@ -631,6 +663,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.skillEventPageResponse.utf8)
         case "session.previewLocalSessions":
             return Data(Self.localSessionPageResponse.utf8)
+        case "llm.listProviderActivity":
+            return Data(Self.providerActivityPageResponse.utf8)
         case "llm.previewPrompt":
             return Data(Self.previewResponse.utf8)
         case "llm.confirmPromptAndSend":
@@ -666,6 +700,10 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
 
     private static let localSessionPageResponse = """
     {"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":205,"total_matched_count":205,"offset":0,"limit":100,"has_more":true,"next_cursor":"v1:cursor-200","source_revision":"sha256:sessions","source_completeness":"enumerable","candidate_set_truncated":false,"session_rows":[{"id":"session-100","title":"Session 100","source_kind":"authorized-local-session","scope":"all","redacted_path":"$HOME/.sessions/100.jsonl","excerpt":"Summary","content_included":false,"content_items":[]}]}}
+    """
+
+    private static let providerActivityPageResponse = """
+    {"id":"test","ok":true,"result":{"generated_by":"local-v2.64","rows":[{"id":"activity-1","kind":"provider_call","timestamp":42,"title":"analyze","subtitle":"redacted metadata","status":"succeeded","evidence_refs":["provider-call:activity-1"]}],"source_revision":"sha256:activity-revision","returned_count":1,"total_count":130,"has_more":true,"next_cursor":"v1:activity-page-3","source_completeness":"enumerable","incomplete_reason":null,"safety_flags":{"provider_request_sent":false,"raw_prompt_persisted":false,"raw_response_persisted":false,"raw_trace_persisted":false}}}
     """
 
     private static let sendResponse = """

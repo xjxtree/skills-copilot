@@ -1,0 +1,15 @@
+{
+  "id": "fixture-llm-list-provider-activity",
+  "method": "llm.listProviderActivity",
+  "params": {
+    "provider": "openai-compatible",
+    "model": "fixture-model",
+    "action": "analyze",
+    "window_days": 30,
+    "start_at": 1780272000000,
+    "end_at": 1782863999999,
+    "limit": 50,
+    "cursor": null,
+    "source_revision": null
+  }
+}

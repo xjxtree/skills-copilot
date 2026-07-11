@@ -248,6 +248,18 @@ impl ProviderObservabilityFilters {
         }
     }
 
+    pub(crate) fn from_activity_params(params: &ListProviderActivityParams) -> Self {
+        Self::from_params(&LlmProviderObservabilityParams {
+            provider: params.provider.clone(),
+            model: params.model.clone(),
+            action: params.action.clone(),
+            window_days: params.window_days,
+            start_at: params.start_at,
+            end_at: params.end_at,
+            ..LlmProviderObservabilityParams::default()
+        })
+    }
+
     pub(crate) fn matches_prompt_run(&self, run: &LlmPromptRunRecord) -> bool {
         self.profile_id
             .as_deref()
@@ -491,6 +503,41 @@ pub(crate) fn provider_observability_history_row(
         raw_response_persisted: run.raw_response_persisted,
         redaction_status: observability_redact(&run.redaction_summary.status, redaction_roots, 160),
         evidence_refs: vec![evidence_id],
+    }
+}
+
+pub(crate) fn provider_activity_call_row(
+    row: LlmProviderObservabilityCallRow,
+) -> ProviderActivityRow {
+    ProviderActivityRow {
+        id: row.id,
+        kind: "provider_call".to_string(),
+        timestamp: row.timestamp,
+        title: row.action_type,
+        subtitle: format!(
+            "{} · {} · {}",
+            row.provider, row.model, row.destination_host
+        ),
+        status: row.status,
+        evidence_refs: row.evidence_refs,
+    }
+}
+
+pub(crate) fn provider_activity_history_row(
+    row: LlmProviderObservabilityHistoryRow,
+) -> ProviderActivityRow {
+    let title = row
+        .task
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| row.action.clone());
+    ProviderActivityRow {
+        id: row.id,
+        kind: "prompt_run".to_string(),
+        timestamp: row.completed_at,
+        title,
+        subtitle: format!("{} · {} · {}", row.provider, row.model, row.action),
+        status: row.status,
+        evidence_refs: row.evidence_refs,
     }
 }
 

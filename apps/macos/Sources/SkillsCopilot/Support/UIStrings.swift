@@ -554,6 +554,10 @@ enum UIStrings {
     static var providerObservabilityThreshold: String { text("providerObservability.threshold", "Threshold") }
     static var providerObservabilityChartsTitle: String { text("providerObservability.charts.title", "Charts") }
     static var providerObservabilityChartsMode: String { text("providerObservability.charts.mode", "Redacted metadata") }
+    static var providerObservabilityTopFiveSummary: String { text("providerObservability.charts.topFiveSummary", "Top 5 summary") }
+    static var providerActivityTitle: String { text("providerObservability.activity.title", "Activity details") }
+    static var providerActivityRedactedDetail: String { text("providerObservability.activity.redacted", "Redacted metadata") }
+    static var providerActivityEmpty: String { text("providerObservability.activity.empty", "No redacted activity rows matched this range.") }
     static var providerObservabilityChartsSummary: String { text("providerObservability.charts.summary", "Charts summarize redacted local metadata only; detailed rows below remain the evidence trail.") }
     static var providerObservabilityDateRange: String { text("providerObservability.dateRange", "Range") }
     static var providerObservabilityLast7Days: String { text("providerObservability.dateRange.last7Days", "7 days") }

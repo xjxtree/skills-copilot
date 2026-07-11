@@ -256,6 +256,30 @@ struct ProviderObservabilityParams: Encodable {
     }
 }
 
+struct ListProviderActivityParams: Encodable {
+    let provider: String?
+    let model: String?
+    let action: String?
+    let windowDays: Int?
+    let startAt: Int?
+    let endAt: Int?
+    let limit: Int
+    let cursor: String?
+    let sourceRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case model
+        case action
+        case windowDays = "window_days"
+        case startAt = "start_at"
+        case endAt = "end_at"
+        case limit
+        case cursor
+        case sourceRevision = "source_revision"
+    }
+}
+
 struct ScriptExecutionParams: Encodable {
     let instanceId: String
     let definitionId: String

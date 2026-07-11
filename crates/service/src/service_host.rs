@@ -121,6 +121,14 @@ impl ServiceHost {
                 };
                 serde_json::to_value(self.llm_provider_observability(params)?).map_err(Into::into)
             }
+            "llm.listProviderActivity" => {
+                let params: ListProviderActivityParams = if request.params.is_null() {
+                    ListProviderActivityParams::default()
+                } else {
+                    serde_json::from_value(request.params)?
+                };
+                serde_json::to_value(self.list_provider_activity(params)?).map_err(Into::into)
+            }
             "llm.listModelTaskMatches" => {
                 let params: ModelTaskMatchListParams = if request.params.is_null() {
                     ModelTaskMatchListParams::default()

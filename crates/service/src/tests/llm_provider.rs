@@ -1144,6 +1144,295 @@ fn llm_provider_observability_aggregates_full_date_range_before_row_limit() {
 }
 
 #[test]
+fn provider_activity_pages_unified_redacted_metadata_in_stable_order() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-paged-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+    let private_path = host
+        .adapter_ctx
+        .user_home
+        .join("private-project")
+        .join("SKILL.md");
+
+    let prompt_runs = (0..55)
+        .map(|index| {
+            let completed_at = 20_000 - i64::from(index / 2);
+            LlmPromptRunRecord {
+                id: format!("activity-prompt-run-{index:03}"),
+                preview_id: format!("activity-preview-{index:03}"),
+                confirmation_id: format!("activity-confirm-{index:03}"),
+                action: "analyze".to_string(),
+                request_kind: "analyze".to_string(),
+                analysis_kind: None,
+                scope: Some("selected".to_string()),
+                instance_id: Some(format!("activity-skill-{index:03}")),
+                instance_ids: vec![format!("activity-skill-{index:03}")],
+                definition_id: Some("activity-definition".to_string()),
+                agent: Some("codex".to_string()),
+                task: Some(format!(
+                    "Review activity {index:03} at {}",
+                    private_path.display()
+                )),
+                profile_id: "fixture-openai".to_string(),
+                provider: "openai-compatible".to_string(),
+                model: "fixture-model".to_string(),
+                destination_host: "api.fixture.invalid".to_string(),
+                status: "succeeded".to_string(),
+                error_code: None,
+                error_message: None,
+                duration_ms: 10,
+                estimated_input_tokens: 6,
+                estimated_output_tokens: 4,
+                estimated_total_tokens: 10,
+                estimated_cost_usd: 0.01,
+                draft_output: None,
+                draft_requires_user_copy: true,
+                provider_request_sent: true,
+                credential_accessed: true,
+                raw_secret_returned: false,
+                raw_prompt_persisted: false,
+                raw_response_persisted: false,
+                redaction_summary: LlmPromptRunRedactionSummary {
+                    status: "redacted-local-only".to_string(),
+                    redacted_value_count: 1,
+                    redacted_fields: vec!["local paths".to_string()],
+                    placeholders: vec!["$HOME".to_string()],
+                    raw_prompt_persisted: false,
+                    raw_response_persisted: false,
+                    raw_trace_persisted: false,
+                    raw_secret_returned: false,
+                },
+                created_at: completed_at - 10,
+                completed_at,
+                safety_flags: llm_prompt_run_safety_flags(true, true),
+            }
+        })
+        .collect::<Vec<_>>();
+    host.save_llm_prompt_runs(&prompt_runs)
+        .expect("save activity prompt runs");
+
+    let provider_calls = (0..75)
+        .map(|index| ProviderCallMetadata {
+            timestamp: 20_000 - i64::from(index / 2),
+            action_type: "analyze".to_string(),
+            profile_id: "fixture-openai".to_string(),
+            provider_type: provider::ProviderType::OpenAiCompatible,
+            model: "fixture-model".to_string(),
+            destination_host: "api.fixture.invalid".to_string(),
+            status: "succeeded".to_string(),
+            error_code: None,
+            error_message: Some(format!(
+                "Metadata {index:03} from {}",
+                private_path.display()
+            )),
+            duration_ms: 8,
+            estimated_input_tokens: 5,
+            estimated_output_tokens: 3,
+            estimated_cost_usd: 0.01,
+            confirmation_id: format!("activity-call-confirm-{index:03}"),
+            redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+            provider_request_sent: true,
+            credential_accessed: true,
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+        })
+        .map(|row| serde_json::to_string(&row).expect("serialize activity metadata"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        provider_call_metadata_path(&app_data_dir),
+        format!("{provider_calls}\n"),
+    )
+    .expect("write activity metadata");
+
+    let mut rows = Vec::new();
+    let mut cursor = None;
+    let mut source_revision = None;
+    let final_page = loop {
+        let response = host.handle(ServiceRequest {
+            id: Some("provider-activity-page".to_string()),
+            method: "llm.listProviderActivity".to_string(),
+            params: json!({
+                "provider": "openai-compatible",
+                "model": "fixture-model",
+                "action": "analyze",
+                "start_at": 19_000,
+                "end_at": 21_000,
+                "limit": 50,
+                "cursor": cursor,
+                "source_revision": source_revision,
+            }),
+        });
+        assert!(response.ok, "{:?}", response.error);
+        let page = response.result.expect("provider activity page");
+        rows.extend(
+            page.get("rows")
+                .and_then(Value::as_array)
+                .expect("activity rows")
+                .iter()
+                .cloned(),
+        );
+        cursor = page
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        source_revision = page
+            .get("source_revision")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if cursor.is_none() {
+            break page;
+        }
+    };
+
+    assert_eq!(rows.len(), 130);
+    assert_eq!(
+        rows.iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str))
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        130
+    );
+    assert!(rows.windows(2).all(|pair| {
+        let left_timestamp = pair[0]["timestamp"].as_i64().expect("left timestamp");
+        let right_timestamp = pair[1]["timestamp"].as_i64().expect("right timestamp");
+        let left_id = pair[0]["id"].as_str().expect("left id");
+        let right_id = pair[1]["id"].as_str().expect("right id");
+        left_timestamp > right_timestamp
+            || (left_timestamp == right_timestamp && left_id <= right_id)
+    }));
+    let serialized = serde_json::to_string(&rows).expect("serialize activity rows");
+    assert!(!serialized.contains(private_path.to_string_lossy().as_ref()));
+    assert!(!serialized.contains("Authorization: Bearer"));
+    assert_eq!(
+        final_page
+            .pointer("/safety_flags/provider_request_sent")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        final_page
+            .pointer("/safety_flags/raw_prompt_persisted")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        final_page
+            .pointer("/safety_flags/raw_response_persisted")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        final_page
+            .pointer("/safety_flags/raw_trace_persisted")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_cursor_binds_filters_and_rejects_source_mutation() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-source-change-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+    let metadata = |timestamp: i64, confirmation_id: &str| ProviderCallMetadata {
+        timestamp,
+        action_type: "analyze".to_string(),
+        profile_id: "fixture-openai".to_string(),
+        provider_type: provider::ProviderType::OpenAiCompatible,
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 8,
+        estimated_input_tokens: 5,
+        estimated_output_tokens: 3,
+        estimated_cost_usd: 0.01,
+        confirmation_id: confirmation_id.to_string(),
+        redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+        provider_request_sent: true,
+        credential_accessed: true,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+    };
+    let initial_lines = (0..3)
+        .map(|index| metadata(2_000 - index, &format!("confirm-{index}")))
+        .map(|row| serde_json::to_string(&row).expect("serialize metadata"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata_path = provider_call_metadata_path(&app_data_dir);
+    fs::write(&metadata_path, format!("{initial_lines}\n")).expect("write metadata");
+
+    let first = host.handle(ServiceRequest {
+        id: Some("provider-activity-first".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({
+            "provider": "openai-compatible",
+            "model": "fixture-model",
+            "action": "analyze",
+            "limit": 1
+        }),
+    });
+    assert!(first.ok, "{:?}", first.error);
+    let first = first.result.expect("first activity page");
+    let cursor = first["next_cursor"].as_str().expect("next cursor");
+    let source_revision = first["source_revision"].as_str().expect("source revision");
+
+    let mismatched_filter = host.handle(ServiceRequest {
+        id: Some("provider-activity-filter-mismatch".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({
+            "provider": "openai-compatible",
+            "model": "other-model",
+            "action": "analyze",
+            "limit": 1,
+            "cursor": cursor,
+            "source_revision": source_revision
+        }),
+    });
+    assert!(!mismatched_filter.ok);
+    assert_eq!(
+        mismatched_filter.error.expect("filter mismatch error").code,
+        "invalid_request"
+    );
+
+    let mut content = fs::read_to_string(&metadata_path).expect("read metadata");
+    content = content.replacen("confirm-0", "confirm-mutated", 1);
+    fs::write(&metadata_path, content).expect("mutate non-visible metadata");
+
+    let changed = host.handle(ServiceRequest {
+        id: Some("provider-activity-source-changed".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({
+            "provider": "openai-compatible",
+            "model": "fixture-model",
+            "action": "analyze",
+            "limit": 1000,
+            "cursor": cursor,
+            "source_revision": source_revision
+        }),
+    });
+    assert!(!changed.ok);
+    assert_eq!(
+        changed.error.expect("source changed error").code,
+        "source_changed"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn model_task_matches_empty_list_is_safe_and_does_not_initialize_app_data() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-model-task-empty-{}-{}",

@@ -17,6 +17,7 @@
     "llm.confirmPromptAndSend": { "writes": ["app_data"], "process": "never", "network": "always", "confirmation": "required" },
     "llm.listPromptRuns": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "llm.providerObservability": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
+    "llm.listProviderActivity": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "llm.listModelTaskMatches": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "llm.recordModelTaskMatch": { "writes": ["app_data"], "process": "never", "network": "never", "confirmation": "none" },
     "llm.deleteModelTaskMatch": { "writes": ["app_data"], "process": "never", "network": "never", "confirmation": "none" },

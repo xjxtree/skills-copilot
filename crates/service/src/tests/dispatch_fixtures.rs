@@ -833,6 +833,35 @@ pub(super) struct WireLlmProviderObservabilityResult {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct WireProviderActivityPageResult {
+    pub(super) generated_by: String,
+    pub(super) rows: Vec<WireProviderActivityRow>,
+    pub(super) source_revision: String,
+    pub(super) returned_count: usize,
+    pub(super) total_count: Option<usize>,
+    pub(super) has_more: bool,
+    pub(super) next_cursor: Option<String>,
+    pub(super) source_completeness: String,
+    pub(super) incomplete_reason: Option<String>,
+    pub(super) safety_flags: WireLlmProviderObservabilitySafetyFlags,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireProviderActivityRow {
+    pub(super) id: String,
+    pub(super) kind: String,
+    pub(super) timestamp: i64,
+    pub(super) title: String,
+    pub(super) subtitle: String,
+    pub(super) status: String,
+    pub(super) evidence_refs: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WireLlmProviderObservabilitySummary {
     pub(super) total_prompt_run_count: usize,
     pub(super) total_call_metadata_count: usize,

@@ -1,0 +1,57 @@
+{
+  "id": "fixture-llm-list-provider-activity",
+  "ok": true,
+  "result": {
+    "generated_by": "local-v2.64",
+    "rows": [
+      {
+        "id": "provider-call-fixture",
+        "kind": "provider_call",
+        "timestamp": 1782863999000,
+        "title": "analyze",
+        "subtitle": "openai-compatible · fixture-model · api.fixture.invalid",
+        "status": "succeeded",
+        "evidence_refs": ["provider-call:provider-call-fixture"]
+      },
+      {
+        "id": "prompt-run-fixture",
+        "kind": "prompt_run",
+        "timestamp": 1782863998000,
+        "title": "Review redacted provider activity.",
+        "subtitle": "openai-compatible · fixture-model · analyze",
+        "status": "succeeded",
+        "evidence_refs": ["prompt-run:prompt-run-fixture"]
+      }
+    ],
+    "source_revision": "sha256:fixture-provider-activity",
+    "returned_count": 2,
+    "total_count": 2,
+    "has_more": false,
+    "next_cursor": null,
+    "source_completeness": "enumerable",
+    "incomplete_reason": null,
+    "safety_flags": {
+      "read_only": true,
+      "app_local_only": true,
+      "provider_request_sent": false,
+      "credential_accessed": false,
+      "draft_copy_only": true,
+      "write_back_allowed": false,
+      "write_actions_available": false,
+      "skill_files_mutated": false,
+      "agent_config_mutated": false,
+      "script_execution_allowed": false,
+      "execution_actions_available": false,
+      "config_mutation_allowed": false,
+      "snapshot_created": false,
+      "triage_mutation_allowed": false,
+      "raw_secret_returned": false,
+      "raw_prompt_persisted": false,
+      "raw_response_persisted": false,
+      "raw_trace_persisted": false,
+      "unredacted_paths_returned": false,
+      "cloud_sync_performed": false,
+      "telemetry_emitted": false
+    }
+  }
+}

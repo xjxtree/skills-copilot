@@ -59,6 +59,7 @@ struct ProviderObservabilitySettingsPanel: View {
 }
 
 private struct ProviderObservabilityDashboardSettingsView: View {
+    @EnvironmentObject private var store: SkillStore
     let result: ProviderObservabilityResult
 
     var body: some View {
@@ -77,6 +78,19 @@ private struct ProviderObservabilityDashboardSettingsView: View {
                 } else {
                     ProviderObservabilitySettingsChartsPanel(result: result)
                 }
+
+                ProviderActivitySettingsSection(
+                    rows: store.providerActivityRows,
+                    completeness: store.providerActivityCompleteness,
+                    errorMessage: store.providerActivityErrorMessage,
+                    loadMore: {
+                        Task { await store.loadMoreProviderActivity(loadAll: false) }
+                    },
+                    loadAll: {
+                        Task { await store.loadMoreProviderActivity(loadAll: true) }
+                    },
+                    cancel: store.cancelProviderActivityLoadAll
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -307,7 +321,7 @@ private struct ProviderObservabilitySettingsChartsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label(UIStrings.providerObservabilityChartsTitle, systemImage: "chart.bar.xaxis")
+                Label(UIStrings.providerObservabilityTopFiveSummary, systemImage: "chart.bar.xaxis")
                     .font(.headline)
                 Spacer()
                 Text(UIStrings.providerObservabilityChartsMode)
@@ -485,6 +499,100 @@ private struct ProviderObservabilitySettingsChartsPanel: View {
             return .orange
         }
         return .blue
+    }
+}
+
+private struct ProviderActivitySettingsSection: View {
+    let rows: [ProviderActivityRow]
+    let completeness: ListCompletenessState
+    let errorMessage: String?
+    let loadMore: () -> Void
+    let loadAll: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(UIStrings.providerActivityTitle, systemImage: "list.bullet.rectangle")
+                    .font(.headline)
+                Spacer()
+                Text(UIStrings.providerActivityRedactedDetail)
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+            }
+
+            if rows.isEmpty {
+                Text(UIStrings.providerActivityEmpty)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { row in
+                        ProviderActivitySettingsRow(row: row)
+                        if row.id != rows.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(UIStrings.localizedServiceMessage(errorMessage))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            ListCompletenessFooter(
+                state: completeness,
+                onLoadMore: loadMore,
+                onLoadAll: loadAll,
+                onCancel: cancel,
+                accessibilityIdentifierPrefix: "provider-activity"
+            )
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .nativePanelSurface()
+        .accessibilityIdentifier("provider-activity.list")
+    }
+}
+
+private struct ProviderActivitySettingsRow: View {
+    let row: ProviderActivityRow
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: row.kind == "provider_call" ? "network" : "text.bubble")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(row.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(2)
+                Text(row.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(row.status)
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Text(activityTimestamp(row.timestamp))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("provider-activity.row.\(row.id)")
+    }
+
+    private func activityTimestamp(_ milliseconds: Int) -> String {
+        Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
     }
 }
 

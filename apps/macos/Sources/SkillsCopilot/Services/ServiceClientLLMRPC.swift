@@ -202,6 +202,33 @@ extension ServiceClient {
         }
     }
 
+    func listProviderActivity(
+        provider: String? = nil,
+        model: String? = nil,
+        action: String? = nil,
+        windowDays: Int? = nil,
+        startAt: Int? = nil,
+        endAt: Int? = nil,
+        limit: Int = 50,
+        cursor: String? = nil,
+        sourceRevision: String? = nil
+    ) async throws -> ProviderActivityPageResult {
+        try await call(
+            method: "llm.listProviderActivity",
+            params: ListProviderActivityParams(
+                provider: provider,
+                model: model,
+                action: action,
+                windowDays: windowDays,
+                startAt: startAt,
+                endAt: endAt,
+                limit: limit,
+                cursor: cursor,
+                sourceRevision: sourceRevision
+            )
+        )
+    }
+
     private func confirmPromptAndSend(
         previewID: String,
         request: PreviewLLMPromptParams,

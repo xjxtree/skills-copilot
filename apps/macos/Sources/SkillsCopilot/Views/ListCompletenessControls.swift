@@ -70,6 +70,7 @@ struct ListCompletenessFooter: View {
     let onLoadMore: () -> Void
     let onLoadAll: () -> Void
     let onCancel: () -> Void
+    var accessibilityIdentifierPrefix = "list-completeness"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -84,7 +85,8 @@ struct ListCompletenessFooter: View {
                     state: state,
                     onLoadMore: onLoadMore,
                     onLoadAll: onLoadAll,
-                    onCancel: onCancel
+                    onCancel: onCancel,
+                    accessibilityIdentifierPrefix: accessibilityIdentifierPrefix
                 )
             }
             if let reason = state.incompleteReason {
@@ -110,6 +112,7 @@ struct ListPagingActions: View {
     let onLoadMore: () -> Void
     let onLoadAll: () -> Void
     let onCancel: () -> Void
+    var accessibilityIdentifierPrefix = "list-completeness"
 
     var body: some View {
         HStack(spacing: 8) {
@@ -129,23 +132,41 @@ struct ListPagingActions: View {
 
     private var loadMoreButton: some View {
         Button(UIStrings.listCompletenessLoadMore, action: onLoadMore)
-            .accessibilityIdentifier("list-completeness.load-more")
+            .accessibilityIdentifier(loadMoreAccessibilityIdentifier)
             .accessibilityLabel(UIStrings.listCompletenessLoadMore)
             .help(UIStrings.listCompletenessLoadMoreHelp)
     }
 
     private var loadAllButton: some View {
         Button(UIStrings.listCompletenessLoadAll, action: onLoadAll)
-            .accessibilityIdentifier("list-completeness.load-all")
+            .accessibilityIdentifier(loadAllAccessibilityIdentifier)
             .accessibilityLabel(UIStrings.listCompletenessLoadAll)
             .help(UIStrings.listCompletenessLoadAllHelp)
     }
 
     private var cancelButton: some View {
         Button(UIStrings.listCompletenessCancelLoadingAll, action: onCancel)
-            .accessibilityIdentifier("list-completeness.cancel")
+            .accessibilityIdentifier(cancelAccessibilityIdentifier)
             .accessibilityLabel(UIStrings.listCompletenessCancelLoadingAll)
             .help(UIStrings.listCompletenessCancelHelp)
+    }
+
+    private var loadMoreAccessibilityIdentifier: String {
+        accessibilityIdentifierPrefix == "list-completeness"
+            ? "list-completeness.load-more"
+            : "\(accessibilityIdentifierPrefix).load-more"
+    }
+
+    private var loadAllAccessibilityIdentifier: String {
+        accessibilityIdentifierPrefix == "list-completeness"
+            ? "list-completeness.load-all"
+            : "\(accessibilityIdentifierPrefix).load-all"
+    }
+
+    private var cancelAccessibilityIdentifier: String {
+        accessibilityIdentifierPrefix == "list-completeness"
+            ? "list-completeness.cancel"
+            : "\(accessibilityIdentifierPrefix).cancel"
     }
 }
 

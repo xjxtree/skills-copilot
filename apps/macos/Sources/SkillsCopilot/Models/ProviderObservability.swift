@@ -1605,6 +1605,133 @@ private struct ProviderObservabilityDimensionAccumulator {
     }
 }
 
+struct ProviderActivityRow: Codable, Identifiable, Hashable {
+    let id: String
+    let kind: String
+    let timestamp: Int
+    let title: String
+    let subtitle: String
+    let status: String
+    let evidenceRefs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case timestamp
+        case title
+        case subtitle
+        case status
+        case evidenceRefs = "evidence_refs"
+        case evidenceRefsAlt = "evidenceRefs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(String.self, forKey: .kind)
+        timestamp = try container.decode(Int.self, forKey: .timestamp)
+        title = try container.decode(String.self, forKey: .title)
+        subtitle = try container.decode(String.self, forKey: .subtitle)
+        status = try container.decode(String.self, forKey: .status)
+        evidenceRefs = try container.decodeIfPresent([String].self, forKey: .evidenceRefs)
+            ?? container.decodeIfPresent([String].self, forKey: .evidenceRefsAlt)
+            ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(title, forKey: .title)
+        try container.encode(subtitle, forKey: .subtitle)
+        try container.encode(status, forKey: .status)
+        try container.encode(evidenceRefs, forKey: .evidenceRefs)
+    }
+}
+
+struct ProviderActivityPageResult: Decodable, Hashable {
+    let generatedBy: String
+    let rows: [ProviderActivityRow]
+    let sourceRevision: String
+    let returnedCount: Int
+    let totalCount: Int?
+    let hasMore: Bool
+    let nextCursor: String?
+    let sourceCompleteness: ListSourceCompleteness
+    let incompleteReason: ListIncompleteReason?
+    let safetyFlags: ProviderObservabilitySafety
+
+    var page: ListPage<ProviderActivityRow> {
+        ListPage(
+            items: rows,
+            returnedCount: returnedCount,
+            totalCount: totalCount,
+            hasMore: hasMore,
+            nextCursor: nextCursor,
+            sourceRevision: sourceRevision,
+            sourceCompleteness: sourceCompleteness,
+            incompleteReason: incompleteReason
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case generatedBy = "generated_by"
+        case generatedByAlt = "generatedBy"
+        case rows
+        case sourceRevision = "source_revision"
+        case sourceRevisionAlt = "sourceRevision"
+        case returnedCount = "returned_count"
+        case returnedCountAlt = "returnedCount"
+        case totalCount = "total_count"
+        case totalCountAlt = "totalCount"
+        case hasMore = "has_more"
+        case hasMoreAlt = "hasMore"
+        case nextCursor = "next_cursor"
+        case nextCursorAlt = "nextCursor"
+        case sourceCompleteness = "source_completeness"
+        case sourceCompletenessAlt = "sourceCompleteness"
+        case incompleteReason = "incomplete_reason"
+        case incompleteReasonAlt = "incompleteReason"
+        case safetyFlags = "safety_flags"
+        case safetyFlagsAlt = "safetyFlags"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generatedBy = try container.decodeIfPresent(String.self, forKey: .generatedBy)
+            ?? container.decode(String.self, forKey: .generatedByAlt)
+        rows = try container.decode([ProviderActivityRow].self, forKey: .rows)
+        sourceRevision = try container.decodeIfPresent(String.self, forKey: .sourceRevision)
+            ?? container.decode(String.self, forKey: .sourceRevisionAlt)
+        returnedCount = try container.decodeIfPresent(Int.self, forKey: .returnedCount)
+            ?? container.decode(Int.self, forKey: .returnedCountAlt)
+        totalCount = if container.contains(.totalCount) {
+            try container.decodeIfPresent(Int.self, forKey: .totalCount)
+        } else {
+            try container.decodeIfPresent(Int.self, forKey: .totalCountAlt)
+        }
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)
+            ?? container.decode(Bool.self, forKey: .hasMoreAlt)
+        nextCursor = if container.contains(.nextCursor) {
+            try container.decodeIfPresent(String.self, forKey: .nextCursor)
+        } else {
+            try container.decodeIfPresent(String.self, forKey: .nextCursorAlt)
+        }
+        sourceCompleteness = try container.decodeIfPresent(
+            ListSourceCompleteness.self,
+            forKey: .sourceCompleteness
+        ) ?? container.decode(ListSourceCompleteness.self, forKey: .sourceCompletenessAlt)
+        incompleteReason = if container.contains(.incompleteReason) {
+            try container.decodeIfPresent(ListIncompleteReason.self, forKey: .incompleteReason)
+        } else {
+            try container.decodeIfPresent(ListIncompleteReason.self, forKey: .incompleteReasonAlt)
+        }
+        safetyFlags = try container.decodeIfPresent(ProviderObservabilitySafety.self, forKey: .safetyFlags)
+            ?? container.decode(ProviderObservabilitySafety.self, forKey: .safetyFlagsAlt)
+    }
+}
+
 private extension KeyedDecodingContainer {
     func decodeFlexibleProviderObservabilityInt(keys: [Key]) throws -> Int? {
         for key in keys {

@@ -441,6 +441,10 @@
 "providerObservability.threshold" = "阈值";
 "providerObservability.charts.title" = "图表";
 "providerObservability.charts.mode" = "脱敏元数据";
+"providerObservability.charts.topFiveSummary" = "前 5 项摘要";
+"providerObservability.activity.title" = "活动明细";
+"providerObservability.activity.redacted" = "脱敏元数据";
+"providerObservability.activity.empty" = "该时间范围内没有匹配的脱敏活动记录。";
 "providerObservability.charts.summary" = "图表只汇总本地脱敏元数据。";
 "providerObservability.dateRange" = "范围";
 "providerObservability.dateRange.last7Days" = "7 天";

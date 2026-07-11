@@ -21,6 +21,7 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "llm.confirmPromptAndSend",
     "llm.listPromptRuns",
     "llm.providerObservability",
+    "llm.listProviderActivity",
     "llm.listModelTaskMatches",
     "llm.recordModelTaskMatch",
     "llm.deleteModelTaskMatch",

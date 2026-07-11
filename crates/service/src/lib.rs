@@ -989,6 +989,49 @@ pub struct LlmProviderObservabilitySafetyFlags {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct ListProviderActivityParams {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub window_days: Option<i64>,
+    #[serde(default)]
+    pub start_at: Option<i64>,
+    #[serde(default)]
+    pub end_at: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub source_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderActivityRow {
+    pub id: String,
+    pub kind: String,
+    pub timestamp: i64,
+    pub title: String,
+    pub subtitle: String,
+    pub status: String,
+    pub evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderActivityPageResult {
+    pub generated_by: &'static str,
+    pub rows: Vec<ProviderActivityRow>,
+    pub source_revision: String,
+    #[serde(flatten)]
+    pub page: ListPageMetadata,
+    pub safety_flags: LlmProviderObservabilitySafetyFlags,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ModelTaskMatchListParams {
     #[serde(default)]
     pub provider: Option<String>,

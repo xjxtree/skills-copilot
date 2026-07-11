@@ -1,4 +1,5 @@
 use super::*;
+use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 
 impl ServiceHost {
     pub fn llm_status(&self) -> LlmStatus {
@@ -457,6 +458,109 @@ impl ServiceHost {
                 copy_only: true,
                 note: "Provider observability is a deterministic local read model; this method never sends provider traffic or reads credentials.".to_string(),
             },
+            safety_flags: llm_provider_observability_safety_flags(),
+        })
+    }
+
+    pub fn list_provider_activity(
+        &self,
+        params: ListProviderActivityParams,
+    ) -> Result<ProviderActivityPageResult, ServiceError> {
+        const METHOD: &str = "llm.listProviderActivity";
+        let limit = params.limit.unwrap_or(50).clamp(1, 100);
+        let query_digest = provider_activity_query_digest(&params)?;
+        let cursor = params
+            .cursor
+            .as_deref()
+            .map(|text| decode_cursor(text, METHOD, &query_digest))
+            .transpose()?;
+        let adapter_ctx = self.effective_adapter_ctx()?;
+        let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
+        let filters = ProviderObservabilityFilters::from_activity_params(&params);
+        let (prompt_runs, _) = self.load_llm_prompt_runs_for_observability(&redaction_roots);
+        let (call_metadata, _) =
+            self.load_provider_call_metadata_for_observability(&redaction_roots);
+        let source_revision =
+            provider_activity_digest("provider-activity-source", &(&prompt_runs, &call_metadata))?;
+
+        let mut rows = prompt_runs
+            .iter()
+            .filter(|run| filters.matches_prompt_run(run))
+            .enumerate()
+            .map(|(index, run)| {
+                provider_activity_history_row(provider_observability_history_row(
+                    run,
+                    index,
+                    &redaction_roots,
+                ))
+            })
+            .chain(
+                call_metadata
+                    .iter()
+                    .filter(|metadata| filters.matches_provider_call(metadata))
+                    .enumerate()
+                    .map(|(index, metadata)| {
+                        provider_activity_call_row(provider_observability_call_row(
+                            metadata,
+                            index,
+                            &redaction_roots,
+                        ))
+                    }),
+            )
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            right
+                .timestamp
+                .cmp(&left.timestamp)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let cursor_revision = cursor
+            .as_ref()
+            .map(|cursor| cursor.source_revision.as_str());
+        if params
+            .source_revision
+            .as_deref()
+            .is_some_and(|revision| revision != source_revision)
+            || cursor_revision.is_some_and(|revision| revision != source_revision)
+        {
+            return Err(ServiceError::SourceChanged);
+        }
+
+        let total_count = rows.len();
+        if let Some(cursor) = cursor.as_ref() {
+            rows.retain(|row| {
+                row.timestamp < cursor.sort_value
+                    || (row.timestamp == cursor.sort_value && row.id > cursor.stable_id)
+            });
+        }
+        let has_more = rows.len() > limit;
+        if has_more {
+            rows.truncate(limit);
+        }
+        let next_cursor = if has_more {
+            rows.last()
+                .map(|row| {
+                    encode_cursor(&KeysetCursor {
+                        version: 1,
+                        method: METHOD.to_string(),
+                        query_digest: query_digest.clone(),
+                        source_revision: source_revision.clone(),
+                        sort_value: row.timestamp,
+                        stable_id: row.id.clone(),
+                        tie_breaker_digest: None,
+                        accepted_count: None,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(ProviderActivityPageResult {
+            generated_by: "local-v2.64",
+            page: ListPageMetadata::enumerable(rows.len(), Some(total_count), next_cursor),
+            rows,
+            source_revision,
             safety_flags: llm_provider_observability_safety_flags(),
         })
     }
@@ -1351,6 +1455,38 @@ impl ServiceHost {
             Ok(lines.join("\n"))
         }
     }
+}
+
+fn provider_activity_query_digest(
+    params: &ListProviderActivityParams,
+) -> Result<String, ServiceError> {
+    let mut start_at = params.start_at.filter(|value| *value >= 0);
+    let mut end_at = params.end_at.filter(|value| *value >= 0);
+    if let (Some(start), Some(end)) = (start_at, end_at) {
+        if start > end {
+            start_at = Some(end);
+            end_at = Some(start);
+        }
+    }
+    provider_activity_digest(
+        "llm.listProviderActivity-query",
+        &(
+            normalized_observability_filter(params.provider.as_deref()),
+            normalized_observability_filter(params.model.as_deref()),
+            normalized_observability_filter(params.action.as_deref()),
+            params.window_days.map(|days| days.clamp(1, 3_650)),
+            start_at,
+            end_at,
+        ),
+    )
+}
+
+fn provider_activity_digest<T: Serialize>(domain: &str, value: &T) -> Result<String, ServiceError> {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(value)?);
+    Ok(format!("sha256:{}", hex_prefix(&hasher.finalize(), 64)))
 }
 
 #[derive(Debug, Default)]

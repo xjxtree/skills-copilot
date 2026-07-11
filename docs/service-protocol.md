@@ -103,6 +103,7 @@ conditional on the exact local state that the client reviewed.
 | `llm.confirmPromptAndSend` | App-local data | Never | Always | Required |
 | `llm.listPromptRuns` | None | Never | Never | None |
 | `llm.providerObservability` | None | Never | Never | None |
+| `llm.listProviderActivity` | None | Never | Never | None |
 | `llm.listModelTaskMatches` | None | Never | Never | None |
 | `llm.recordModelTaskMatch` | App-local data | Never | Never | None |
 | `llm.deleteModelTaskMatch` | App-local data | Never | Never | None |
@@ -172,6 +173,16 @@ the applied range. The response `filters` echoes the applied range and includes
 `history_rows` and `call_rows`; summary metrics, grouping rows, status rows,
 and budget hints are computed from all app AI metadata matching the applied
 date/filter range before evidence rows are limited.
+
+`llm.listProviderActivity` is the read-only paged detail companion to that
+full-range aggregate. It merges the same redacted prompt-run and provider-call
+metadata into `(timestamp DESC, id ASC)` order without changing the aggregate
+summary. Page limits are clamped to `1...100`; opaque cursors bind provider,
+model, action, and time filters. Continuations also bind the first page's
+`source_revision`, and return `source_changed` if either metadata source changes.
+Only redacted titles, subtitles, status, stable IDs, and evidence references
+cross the service boundary. The method does not read credentials, send provider
+traffic, persist raw prompts/responses/traces, or expose write controls.
 
 ## Full-Access Local Lists
 

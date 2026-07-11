@@ -127,6 +127,15 @@ struct TaskCockpitPromptConfirmation: Identifiable, Hashable {
     }
 }
 
+private struct ProviderActivityFilterKey: Hashable {
+    let provider: String?
+    let model: String?
+    let action: String?
+    let windowDays: Int?
+    let startAt: Int?
+    let endAt: Int?
+}
+
 @MainActor
 final class SkillStore: ObservableObject {
     private static let lastMutationMessageDismissDelayNanoseconds: UInt64 = 3_500_000_000
@@ -134,6 +143,7 @@ final class SkillStore: ObservableObject {
     private static let localSessionPrewarmLimit = 800
     private static let globalSearchLimitPerKind = 6
     private static let providerObservabilityRowLimit = 100
+    private static let providerActivityPageLimit = 50
 
     @Published private(set) var skills: [SkillRecord] = [] {
         didSet {
@@ -192,6 +202,9 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingLLMPromptRuns = false
     @Published private(set) var providerObservabilityResult: ProviderObservabilityResult?
     @Published private(set) var isLoadingProviderObservability = false
+    @Published private(set) var providerActivityRows: [ProviderActivityRow] = []
+    @Published private(set) var providerActivityCompleteness = ListPageAccumulator<ProviderActivityRow>().state
+    @Published private(set) var providerActivityErrorMessage: String?
     @Published var providerObservabilityDateRange: ProviderObservabilityDateRangePreset = .last30Days {
         didSet {
             guard oldValue != providerObservabilityDateRange else { return }
@@ -545,6 +558,11 @@ final class SkillStore: ObservableObject {
     private var skillManagerApplyTask: Task<Void, Never>?
     private var hasLoadedAIProviderStatus = false
     private var hasLoadedProviderObservability = false
+    private var providerActivityAccumulators: [ProviderActivityFilterKey: ListPageAccumulator<ProviderActivityRow>] = [:]
+    private var providerActivityGenerations: [ProviderActivityFilterKey: UInt64] = [:]
+    private var activeProviderActivityFilterKey: ProviderActivityFilterKey?
+    private var providerActivityPageTask: Task<ProviderActivityPageResult, Error>?
+    private var providerActivityPageRequestID: UUID?
     private var taskCockpitOperationID: UUID?
     private var lastMutationMessageDismissTask: Task<Void, Never>?
     private var errorMessageDismissTask: Task<Void, Never>?
@@ -668,6 +686,7 @@ final class SkillStore: ObservableObject {
         skillManagerLocalDeleteTask?.cancel()
         localSessionDetailTask?.cancel()
         localSessionLoadAllTask?.cancel()
+        providerActivityPageTask?.cancel()
         let lane = autosaveMutationLane
         Task { @MainActor in
             lane.shutdown()
@@ -3552,11 +3571,21 @@ final class SkillStore: ObservableObject {
         isLoadingProviderObservability = true
         defer { isLoadingProviderObservability = false }
 
+        let range = providerObservabilityDateRange.resolved(
+            customStartDate: providerObservabilityCustomStartDate,
+            customEndDate: providerObservabilityCustomEndDate
+        )
+        let activityKey = ProviderActivityFilterKey(
+            provider: nil,
+            model: nil,
+            action: nil,
+            windowDays: range.windowDays,
+            startAt: range.startAt,
+            endAt: range.endAt
+        )
+        let activityGeneration = beginProviderActivityRefresh(for: activityKey)
+
         do {
-            let range = providerObservabilityDateRange.resolved(
-                customStartDate: providerObservabilityCustomStartDate,
-                customEndDate: providerObservabilityCustomEndDate
-            )
             providerObservabilityResult = try await service.providerObservability(
                 windowDays: range.windowDays,
                 startAt: range.startAt,
@@ -3568,10 +3597,169 @@ final class SkillStore: ObservableObject {
                 includeEvidence: false
             )
             hasLoadedProviderObservability = true
+            await loadInitialProviderActivity(
+                for: activityKey,
+                generation: activityGeneration
+            )
         } catch {
             providerObservabilityResult = .unavailable(reason: error.localizedDescription)
             hasLoadedProviderObservability = true
+            failProviderActivity(
+                error,
+                for: activityKey,
+                generation: activityGeneration
+            )
         }
+    }
+
+    func loadMoreProviderActivity(loadAll: Bool) async {
+        guard let key = activeProviderActivityFilterKey,
+              providerActivityPageTask == nil,
+              var accumulator = providerActivityAccumulators[key] else { return }
+        let state = accumulator.state
+        guard loadAll ? state.canLoadAll : state.canLoadMore else { return }
+        let generation = providerActivityGenerations[key] ?? 0
+        accumulator.begin(loadAll ? .all : .more)
+        providerActivityAccumulators[key] = accumulator
+        publishProviderActivity(for: key)
+
+        repeat {
+            let accepted = await requestAndAppendProviderActivityPage(
+                for: key,
+                generation: generation
+            )
+            guard accepted,
+                  loadAll,
+                  providerActivityGenerations[key] == generation,
+                  providerActivityAccumulators[key]?.state.hasMore == true else {
+                break
+            }
+        } while !Task.isCancelled
+    }
+
+    func cancelProviderActivityLoadAll() {
+        guard let key = activeProviderActivityFilterKey,
+              var accumulator = providerActivityAccumulators[key],
+              accumulator.state.loadingPhase == .all else { return }
+        providerActivityGenerations[key, default: 0] &+= 1
+        providerActivityPageTask?.cancel()
+        providerActivityPageTask = nil
+        providerActivityPageRequestID = nil
+        accumulator.cancel()
+        providerActivityAccumulators[key] = accumulator
+        publishProviderActivity(for: key)
+    }
+
+    private func beginProviderActivityRefresh(for key: ProviderActivityFilterKey) -> UInt64 {
+        if let activeKey = activeProviderActivityFilterKey {
+            providerActivityGenerations[activeKey, default: 0] &+= 1
+        }
+        providerActivityPageTask?.cancel()
+        providerActivityPageTask = nil
+        providerActivityPageRequestID = nil
+        activeProviderActivityFilterKey = key
+        providerActivityGenerations[key, default: 0] &+= 1
+        let generation = providerActivityGenerations[key] ?? 0
+        var accumulator = ListPageAccumulator<ProviderActivityRow>()
+        accumulator.begin(.initial)
+        providerActivityAccumulators[key] = accumulator
+        providerActivityErrorMessage = nil
+        publishProviderActivity(for: key)
+        return generation
+    }
+
+    private func loadInitialProviderActivity(
+        for key: ProviderActivityFilterKey,
+        generation: UInt64
+    ) async {
+        _ = await requestAndAppendProviderActivityPage(
+            for: key,
+            generation: generation
+        )
+    }
+
+    private func requestAndAppendProviderActivityPage(
+        for key: ProviderActivityFilterKey,
+        generation: UInt64
+    ) async -> Bool {
+        guard providerActivityGenerations[key] == generation,
+              let accumulator = providerActivityAccumulators[key] else { return false }
+        let requestID = UUID()
+        let service = service
+        let task = Task {
+            try await service.listProviderActivity(
+                provider: key.provider,
+                model: key.model,
+                action: key.action,
+                windowDays: key.windowDays,
+                startAt: key.startAt,
+                endAt: key.endAt,
+                limit: Self.providerActivityPageLimit,
+                cursor: accumulator.nextCursor,
+                sourceRevision: accumulator.sourceRevision
+            )
+        }
+        providerActivityPageRequestID = requestID
+        providerActivityPageTask = task
+
+        do {
+            let page = try await task.value
+            clearProviderActivityPageTask(requestID: requestID)
+            guard providerActivityGenerations[key] == generation,
+                  activeProviderActivityFilterKey == key,
+                  var current = providerActivityAccumulators[key] else { return false }
+            try current.append(page.page)
+            providerActivityAccumulators[key] = current
+            providerActivityErrorMessage = nil
+            publishProviderActivity(for: key)
+            return true
+        } catch {
+            clearProviderActivityPageTask(requestID: requestID)
+            guard providerActivityGenerations[key] == generation,
+                  activeProviderActivityFilterKey == key else { return false }
+            failProviderActivity(error, for: key, generation: generation)
+            return false
+        }
+    }
+
+    private func clearProviderActivityPageTask(requestID: UUID) {
+        guard providerActivityPageRequestID == requestID else { return }
+        providerActivityPageRequestID = nil
+        providerActivityPageTask = nil
+    }
+
+    private func failProviderActivity(
+        _ error: Error,
+        for key: ProviderActivityFilterKey,
+        generation: UInt64
+    ) {
+        guard providerActivityGenerations[key] == generation,
+              activeProviderActivityFilterKey == key,
+              var accumulator = providerActivityAccumulators[key] else { return }
+        let reason: ListIncompleteReason
+        if case ServiceClient.ClientError.service(let serviceError) = error {
+            switch serviceError.code {
+            case "source_changed":
+                reason = .sourceChanged
+            case "unknown_method":
+                reason = .unsupportedProtocol
+            default:
+                reason = .pageFailed
+            }
+        } else {
+            reason = .pageFailed
+        }
+        accumulator.fail(reason: reason)
+        providerActivityAccumulators[key] = accumulator
+        providerActivityErrorMessage = error.localizedDescription
+        publishProviderActivity(for: key)
+    }
+
+    private func publishProviderActivity(for key: ProviderActivityFilterKey) {
+        guard activeProviderActivityFilterKey == key,
+              let accumulator = providerActivityAccumulators[key] else { return }
+        providerActivityRows = accumulator.items
+        providerActivityCompleteness = accumulator.state
     }
 
     @discardableResult
