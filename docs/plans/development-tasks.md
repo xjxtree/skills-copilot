@@ -20,6 +20,15 @@ numbers, and main changelogs belong in GitHub tags and GitHub Releases.
 - Keep adapter capability text aligned with `docs/adapters/agent-adapters.md`.
 - Keep runbooks focused on commands and decision rules, not closeout history.
 
+## Active Comprehensive Audit
+
+- Resume the repository-wide audit from the verified cutoff, branch ledger,
+  review blockers, and ordered next actions in the
+  [2026-07-11 comprehensive audit handoff](comprehensive-audit-handoff-2026-07-11.md).
+- The handoff is the active routing source for this audit. Update its status
+  ledger when a task is approved or integrated; do not infer completion from an
+  implementation branch alone.
+
 ## Done Elsewhere
 
 - User-facing release notes and main changelogs live in GitHub Releases.
