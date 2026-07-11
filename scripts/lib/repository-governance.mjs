@@ -1,5 +1,13 @@
 import { posix as path } from "node:path";
 
+import {
+  collectInlineNodes,
+  collectReferenceDefinitions,
+  containerStacksEqual,
+  parseMarkdownBlocks,
+  renderInlineText,
+} from "./markdown-governance-parser.mjs";
+
 const ROOT_MARKDOWN_PATHS = new Set([
   "README.md",
   "AGENTS.md",
@@ -11,84 +19,6 @@ const ROOT_MARKDOWN_PATHS = new Set([
 const GENERIC_MARKDOWN_FILENAMES = new Set(["SKILL.md"]);
 const REPOSITORY_PREFIX = /^(?:docs|fixtures|\.github|scripts)\//;
 const EXTERNAL_DESTINATION = /^(?:https?:|mailto:|data:)/i;
-const HTML_ENTITIES = new Map([
-  ["amp", "&"],
-  ["apos", "'"],
-  ["gt", ">"],
-  ["lt", "<"],
-  ["nbsp", "\u00a0"],
-  ["quot", '"'],
-]);
-
-function parseContainerLine(line) {
-  let offset = line.match(/^ {0,3}/u)?.[0].length ?? 0;
-  let quoteDepth = 0;
-  while (line[offset] === ">") {
-    quoteDepth += 1;
-    offset += 1;
-    if (line[offset] === " " || line[offset] === "\t") offset += 1;
-    const indentation = line.slice(offset).match(/^ {0,3}/u)?.[0].length ?? 0;
-    offset += indentation;
-  }
-
-  const listMarkerOffset = offset;
-  const listMarker = line
-    .slice(offset)
-    .match(/^(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)/u);
-  if (listMarker) offset += listMarker[0].length;
-
-  return {
-    content: line.slice(offset),
-    contentOffset: offset,
-    hasListMarker: Boolean(listMarker),
-    listMarkerOffset: listMarker ? listMarkerOffset : undefined,
-    quoteDepth,
-  };
-}
-
-function stripFencedCode(markdown) {
-  let fence;
-  return markdown
-    .split("\n")
-    .map((line) => {
-      const parsed = parseContainerLine(line);
-      const content = parsed.content.replace(/\r$/u, "");
-      if (fence) {
-        const containerEnded =
-          parsed.quoteDepth < fence.quoteDepth ||
-          (fence.listContentOffset !== undefined &&
-            content.trim() &&
-            (parsed.listMarkerOffset ?? parsed.contentOffset) <
-              fence.listContentOffset);
-        if (!containerEnded) {
-          const close = content.match(/^(`{3,}|~{3,})[ \t]*$/u);
-          if (
-            close &&
-            close[1][0] === fence.character &&
-            close[1].length >= fence.length
-          ) {
-            fence = undefined;
-          }
-          return "";
-        }
-        fence = undefined;
-      }
-      const open = content.match(/^(`{3,}|~{3,})(.*)$/u);
-      if (open && !(open[1][0] === "`" && open[2].includes("`"))) {
-        fence = {
-          character: open[1][0],
-          length: open[1].length,
-          listContentOffset: parsed.hasListMarker
-            ? parsed.contentOffset
-            : undefined,
-          quoteDepth: parsed.quoteDepth,
-        };
-        return "";
-      }
-      return line;
-    })
-    .join("\n");
-}
 
 function lineAt(text, offset) {
   let line = 1;
@@ -104,23 +34,6 @@ function safelyDecode(value) {
   } catch {
     return value;
   }
-}
-
-function decodeHtmlEntities(value) {
-  return value.replace(
-    /&(?:#(\d+)|#x([\da-f]+)|([a-z][a-z\d]+));/giu,
-    (entity, decimal, hexadecimal, named) => {
-      if (decimal !== undefined) {
-        const codePoint = Number.parseInt(decimal, 10);
-        return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
-      }
-      if (hexadecimal !== undefined) {
-        const codePoint = Number.parseInt(hexadecimal, 16);
-        return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
-      }
-      return HTML_ENTITIES.get(named.toLocaleLowerCase("en-US")) ?? entity;
-    },
-  );
 }
 
 function splitDestination(destination) {
@@ -174,125 +87,42 @@ function repositoryCodeTarget(token, sourcePath) {
   return undefined;
 }
 
-function normalizeReferenceLabel(label) {
-  return decodeHtmlEntities(label)
-    .replace(/\\([!"#$%&'()*+,./:;<=>?@[\]^_`{|}~-])/gu, "$1")
-    .trim()
-    .replace(/[ \t\r\n]+/gu, " ")
-    .toLocaleLowerCase("en-US");
-}
-
-function parseReferenceDestination(rest) {
-  const value = rest.trim();
-  if (!value) return undefined;
-  let destination;
-  let remainder;
-  if (value.startsWith("<")) {
-    const closing = value.indexOf(">");
-    if (closing === -1) return undefined;
-    destination = value.slice(1, closing);
-    remainder = value.slice(closing + 1).trim();
-  } else {
-    const match = value.match(/^(\S+)(.*)$/u);
-    if (!match) return undefined;
-    destination = match[1];
-    remainder = match[2].trim();
-  }
-  if (
-    remainder &&
-    !/^(?:"[^"\r\n]*"|'[^'\r\n]*'|\([^()\r\n]*\))$/u.test(remainder)
-  ) {
-    return undefined;
-  }
-  return destination;
-}
-
-function collectReferenceDefinitions(text) {
-  const characters = text.split("");
-  const definitions = new Map();
-  let offset = 0;
-  for (const line of text.split("\n")) {
-    const content = parseContainerLine(line).content;
-    const match = content.match(/^\[([^\]\r\n]+)\]:[ \t]*(.*)$/u);
-    if (!match) {
-      offset += line.length + 1;
-      continue;
-    }
-    const destination = parseReferenceDestination(match[2]);
-    if (destination !== undefined) {
-      const label = normalizeReferenceLabel(match[1]);
-      if (label && !definitions.has(label)) definitions.set(label, destination);
-      for (let index = offset; index < offset + line.length; index += 1) {
-        characters[index] = " ";
-      }
-    }
-    offset += line.length + 1;
-  }
-  return { definitions, text: characters.join("") };
-}
-
-function blankRange(characters, start, end) {
-  for (let index = start; index < end; index += 1) {
-    if (characters[index] !== "\n") characters[index] = " ";
-  }
-}
-
 export function collectMarkdownReferences(markdown, sourcePath) {
   const source = path.normalize(sourcePath.replaceAll("\\", "/"));
-  const text = stripFencedCode(markdown);
+  const document = parseMarkdownBlocks(markdown);
+  const text = document.maskedText;
   const references = [];
-  const { definitions, text: definitionsMasked } = collectReferenceDefinitions(text);
-  const linkCharacters = definitionsMasked.split("");
+  const { definitions, text: definitionsMasked } =
+    collectReferenceDefinitions(document);
+  const { codeSpans, links } = collectInlineNodes(
+    definitionsMasked,
+    definitions,
+  );
 
-  const codeSpan = /(`+)([^`\n]*?)\1/g;
-  for (const match of definitionsMasked.matchAll(codeSpan)) {
-    const target = repositoryCodeTarget(match[2], source);
+  for (const codeSpan of codeSpans) {
+    const target = repositoryCodeTarget(codeSpan.content, source);
     if (target) {
       references.push({
         source,
         target,
-        line: lineAt(text, match.index),
+        line: lineAt(text, codeSpan.start),
         kind: "backtick",
-        offset: match.index,
+        offset: codeSpan.start,
       });
     }
-    blankRange(linkCharacters, match.index, match.index + match[0].length);
   }
 
-  const markdownLink = /!?\[[^\]\n]*\]\(\s*(<[^>\n]+>|[^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
-  for (const match of linkCharacters.join("").matchAll(markdownLink)) {
-    const target = normalizeTarget(match[1], source, false);
+  for (const link of links) {
+    const target = normalizeTarget(link.destination, source, false);
     if (target) {
       references.push({
         source,
         target,
-        line: lineAt(text, match.index),
+        line: lineAt(text, link.start),
         kind: "markdown",
-        offset: match.index,
+        offset: link.start,
       });
     }
-    blankRange(linkCharacters, match.index, match.index + match[0].length);
-  }
-
-  const referenceLink = /!?\[([^\]\n]+)\](?:\[([^\]\n]*)\])?/g;
-  for (const match of linkCharacters.join("").matchAll(referenceLink)) {
-    let escapes = 0;
-    for (let index = match.index - 1; index >= 0 && text[index] === "\\"; index -= 1) {
-      escapes += 1;
-    }
-    if (escapes % 2 === 1) continue;
-    const label = normalizeReferenceLabel(match[2] || match[1]);
-    const destination = definitions.get(label);
-    if (destination === undefined) continue;
-    const target = normalizeTarget(destination, source, false);
-    if (!target) continue;
-    references.push({
-      source,
-      target,
-      line: lineAt(text, match.index),
-      kind: "markdown",
-      offset: match.index,
-    });
   }
 
   return references
@@ -300,9 +130,8 @@ export function collectMarkdownReferences(markdown, sourcePath) {
     .map(({ offset: _offset, ...reference }) => reference);
 }
 
-export function collectDeclaredCreatePaths(markdown, sourcePath) {
-  const source = path.normalize(sourcePath.replaceAll("\\", "/"));
-  const text = stripFencedCode(markdown);
+export function collectDeclaredCreatePaths(markdown, _sourcePath) {
+  const text = parseMarkdownBlocks(markdown).maskedText;
   const declared = new Set();
   for (const line of text.split("\n")) {
     const match = line.match(/^- Create: `([^`]+)`\s*$/);
@@ -439,24 +268,13 @@ export function validateGateMembers(actual, expected) {
 }
 
 export function collectHeadingSlugs(markdown) {
-  const text = stripFencedCode(markdown);
+  const document = parseMarkdownBlocks(markdown);
+  const { definitions } = collectReferenceDefinitions(document);
   const slugs = new Set();
   const occurrences = new Map();
-  const lines = text.split("\n");
 
   function addHeading(rawLabel) {
-    const label = decodeHtmlEntities(
-      rawLabel
-      .replace(/<[^>]*>/g, "")
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-      .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, "$1")
-      .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
-      .replace(/!\[([^\]]*)\]/g, "$1")
-      .replace(/\[([^\]]+)\]/g, "$1")
-      .replace(/[`*_~]/g, "")
-      .replace(/\\([!"#$%&'()*+,./:;<=>?@[\]^_`{|}~-])/gu, "$1"),
-    )
+    const label = renderInlineText(rawLabel, definitions)
       .trim()
       .toLocaleLowerCase("en-US");
     const base = label
@@ -474,23 +292,21 @@ export function collectHeadingSlugs(markdown) {
     slugs.add(slug);
   }
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const current = parseContainerLine(lines[index]);
-    const atx = current.content.match(/^#{1,6}(?:[ \t]+|$)(.*)$/u);
+  for (let index = 0; index < document.lines.length; index += 1) {
+    const current = document.lines[index];
+    if (current.masked) continue;
+    const atx = current.content.match(/^ {0,3}#{1,6}(?:[ \t]+|$)(.*)$/u);
     if (atx) {
       addHeading(atx[1].replace(/[ \t]+#+[ \t]*$/u, ""));
       continue;
     }
-    const next = index + 1 < lines.length
-      ? parseContainerLine(lines[index + 1])
-      : undefined;
+    const next = document.lines[index + 1];
     if (
       next &&
+      !next.masked &&
       current.content.trim() &&
-      !current.hasListMarker &&
-      !next.hasListMarker &&
-      current.quoteDepth === next.quoteDepth &&
-      /^(?:=+|-+)[ \t]*$/u.test(next.content)
+      containerStacksEqual(current.containers, next.containers) &&
+      /^ {0,3}(?:=+|-+)[ \t]*$/u.test(next.content)
     ) {
       addHeading(current.content.trim());
       index += 1;

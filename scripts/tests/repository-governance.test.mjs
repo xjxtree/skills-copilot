@@ -41,10 +41,19 @@ const VALID_MANIFEST = {
 function createGovernanceFixture(manifest = VALID_MANIFEST) {
   const root = mkdtempSync(join(tmpdir(), "agent-copilot-governance-test-"));
   mkdirSync(join(root, "scripts", "lib"), { recursive: true });
-  copyFileSync(
-    join(TEST_REPOSITORY_ROOT, "scripts", "lib", "repository-governance.mjs"),
-    join(root, "scripts", "lib", "repository-governance.mjs"),
-  );
+  for (const moduleName of [
+    "repository-governance.mjs",
+    "markdown-governance-parser.mjs",
+    "html-character-entities.mjs",
+    "html-character-entities-a-f.mjs",
+    "html-character-entities-g-m.mjs",
+    "html-character-entities-n-z.mjs",
+  ]) {
+    copyFileSync(
+      join(TEST_REPOSITORY_ROOT, "scripts", "lib", moduleName),
+      join(root, "scripts", "lib", moduleName),
+    );
+  }
   copyFileSync(
     join(TEST_REPOSITORY_ROOT, "scripts", "verify-doc-governance.mjs"),
     join(root, "scripts", "verify-doc-governance.mjs"),
@@ -236,6 +245,74 @@ test("container fences end when their quote or list container ends", () => {
   );
 });
 
+test("final3 A exposes a root link after a list-contained fence ends", () => {
+  const markdown = [
+    "- item",
+    "",
+    "  ```md",
+    "  [hidden](hidden.md)",
+    "[go](missing.md)",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectMarkdownReferences(markdown, "docs/index.md").map(
+      (reference) => reference.target,
+    ),
+    ["docs/missing.md"],
+  );
+});
+
+test("final3 B keeps a wide ordered-list fence hidden", () => {
+  const markdown = [
+    "10. ```md",
+    "    [hidden](missing.md)",
+    "    ```",
+    "[go](visible.md)",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectMarkdownReferences(markdown, "docs/index.md").map(
+      (reference) => reference.target,
+    ),
+    ["docs/visible.md"],
+  );
+});
+
+test("final3 C does not let a deeper blockquote close an outer fence", () => {
+  const markdown = [
+    "> ```md",
+    ">> ```",
+    "> [hidden](missing.md)",
+    "> ```",
+    "[go](visible.md)",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectMarkdownReferences(markdown, "docs/index.md").map(
+      (reference) => reference.target,
+    ),
+    ["docs/visible.md"],
+  );
+});
+
+test("final3 D resolves continued reference destinations and titles", () => {
+  const markdown = [
+    "[destination][dest] [title][titled]",
+    "",
+    "[dest]:",
+    "  missing-destination.md",
+    "[titled]: missing-title.md",
+    "  \"Continued [hidden](title-only.md)\"",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectMarkdownReferences(markdown, "docs/index.md").map(
+      (reference) => reference.target,
+    ),
+    ["docs/missing-destination.md", "docs/missing-title.md"],
+  );
+});
+
 test("normalizes dot segments and same-document anchors", () => {
   const refs = collectMarkdownReferences(
     "[root](../README.md) [same](#Details)",
@@ -360,6 +437,23 @@ test("builds rendered heading slugs with block context and entities", () => {
     "save-and-rollback",
     "fish--chips-1",
   ]);
+});
+
+test("final3 E renders named entities and intraword underscores in slugs", () => {
+  assert.deepEqual(
+    [...collectHeadingSlugs("# Caf&eacute;\n# foo_bar")],
+    ["café", "foo_bar"],
+  );
+});
+
+test("final3 F honors multi-backtick code span delimiters", () => {
+  assert.deepEqual(
+    collectMarkdownReferences(
+      "`` `docs/missing.md` ``",
+      "docs/index.md",
+    ),
+    [],
+  );
 });
 
 test("create declarations reject non-file and non-repository paths", () => {
