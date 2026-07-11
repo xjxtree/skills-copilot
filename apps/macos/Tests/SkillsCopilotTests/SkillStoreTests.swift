@@ -164,6 +164,12 @@ struct SkillStoreTests {
         try await runCase("staleRollbackTokenRequiresAnotherPreview") {
             try await staleRollbackTokenRequiresAnotherPreview()
         }
+        try await runCase("inFlightRollbackFailureDoesNotPublishAfterSelectionChanges") {
+            try await inFlightRollbackFailureDoesNotPublishAfterSelectionChanges()
+        }
+        try await runCase("mismatchedInFlightRollbackPreviewDoesNotPublishAfterSelectionChanges") {
+            try await mismatchedInFlightRollbackPreviewDoesNotPublishAfterSelectionChanges()
+        }
         try await runCase("rollbackConfirmationInvalidatesOnSelectionTimelineAndPreviewChanges") {
             try await rollbackConfirmationInvalidatesOnSelectionTimelineAndPreviewChanges()
         }
@@ -2095,6 +2101,141 @@ struct SkillStoreTests {
         try expectNil(store.rollbackConfirmation, "A stale rollback should clear its invalid confirmation.")
         try expectEqual(store.errorMessage, Optional(UIStrings.rollbackPreviewAgain), "A stale rollback should ask for another preview with localized guidance.")
         try expectNil(store.lastMutationMessage, "A stale rollback must not publish a success mutation message.")
+    }
+
+    private func inFlightRollbackFailureDoesNotPublishAfterSelectionChanges() async throws {
+        let variants = [
+            (label: "stale_preview_token", scenario: "rollback-stale-blocked", changesSelection: true, reselectSnapshotA: false, expectsCurrentError: false),
+            (label: "generic service failure", scenario: "rollback-error-blocked", changesSelection: true, reselectSnapshotA: false, expectsCurrentError: false),
+            (label: "generic failure after A-B-A reselection", scenario: "rollback-error-blocked", changesSelection: true, reselectSnapshotA: true, expectsCurrentError: false),
+            (label: "generic failure while A remains current", scenario: "rollback-error-blocked", changesSelection: false, reselectSnapshotA: false, expectsCurrentError: true),
+        ]
+        var leakedErrors: [String] = []
+
+        for variant in variants {
+            let errorMessage = try await inFlightRollbackErrorAfterSelectionChange(
+                scenario: variant.scenario,
+                label: variant.label,
+                changesSelection: variant.changesSelection,
+                reselectSnapshotA: variant.reselectSnapshotA
+            )
+            if variant.expectsCurrentError {
+                try expectContains(errorMessage, "rollback_failed", "A generic rollback failure should remain visible while snapshot A is still current.")
+            } else if let errorMessage {
+                leakedErrors.append("\(variant.label): \(errorMessage)")
+            }
+        }
+
+        try expectEqual(
+            leakedErrors,
+            [],
+            "A stale rollback completion may not publish globally after its selection identity changes."
+        )
+    }
+
+    private func inFlightRollbackErrorAfterSelectionChange(
+        scenario: String,
+        label: String,
+        changesSelection: Bool,
+        reselectSnapshotA: Bool
+    ) async throws -> String? {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-cas")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        try await waitUntil("The \(label) fixture should expose snapshots A and B.") {
+            store.agentConfigSnapshots.count == 2
+        }
+        let snapshotA = store.agentConfigSnapshots[0]
+        let snapshotB = store.agentConfigSnapshots[1]
+        store.selectConfigSnapshot(snapshotA)
+        _ = try await store.previewRollback(snapshotID: snapshotA.id)
+        guard let confirmation = store.rollbackConfirmation else {
+            throw NativeModelTestFailure(description: "The \(label) fixture should authorize snapshot A before rollback.")
+        }
+
+        fake.setScenario(scenario)
+        let rollbackTask = Task { @MainActor in
+            await store.rollbackSnapshot(confirmation: confirmation)
+        }
+        try await waitUntil("The \(label) rollback RPC should reach the controllable service before selection changes.") {
+            self.countMethodCalls("snapshot.rollback", in: fake.calls()) == 1
+        }
+
+        if changesSelection {
+            store.selectConfigSnapshot(snapshotB)
+            if reselectSnapshotA {
+                store.selectConfigSnapshot(snapshotA)
+            }
+        }
+        fake.releaseBlockedResponse()
+        let rolledBack = await rollbackTask.value
+
+        try expectEqual(rolledBack, false, "The \(label) response must not report rollback success.")
+        let expectedSelectionID = !changesSelection || reselectSnapshotA ? snapshotA.id : snapshotB.id
+        try expectEqual(store.selectedConfigSnapshot?.id, Optional(expectedSelectionID), "The current selection must survive snapshot A's stale completion.")
+        try expectNil(store.rollbackConfirmation, "Snapshot A's consumed confirmation must stay cleared after selecting snapshot B.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 1, "The \(label) path must issue exactly one rollback RPC.")
+        try expectContains(fake.calls(), #""snapshot_id":"snap-claude-new""#, "Rollback must keep snapshot A's immutable id.")
+        try expectContains(fake.calls(), #""preview_token":"sha256:rollback-preview""#, "Rollback must keep snapshot A's immutable preview token.")
+        try expectFalse(fake.calls().contains("expected_revision"), "Rollback must not substitute a bare revision for its preview token.")
+        try expectNil(store.lastMutationMessage, "A failed snapshot A rollback must not publish success feedback.")
+        return store.errorMessage
+    }
+
+    private func mismatchedInFlightRollbackPreviewDoesNotPublishAfterSelectionChanges() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-cas")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        try await waitUntil("The mismatched-preview fixture should expose snapshots A and B.") {
+            store.agentConfigSnapshots.count == 2
+        }
+        let snapshotA = store.agentConfigSnapshots[0]
+        let snapshotB = store.agentConfigSnapshots[1]
+        store.selectConfigSnapshot(snapshotA)
+
+        var presentation = RollbackPreviewPresentationState<SnapshotRollbackPreviewRecord>()
+        let request = presentation.begin(snapshotID: snapshotA.id)
+        fake.setScenario("rollback-preview-mismatch-blocked")
+        let previewTask: Task<Result<SnapshotRollbackPreviewRecord, Error>, Never> = Task { @MainActor in
+            do {
+                return .success(try await store.previewRollback(snapshotID: request.snapshotID))
+            } catch {
+                return .failure(error)
+            }
+        }
+        try await waitUntil("Snapshot A's preview RPC should reach the controllable service before selection changes.") {
+            self.countMethodCalls("snapshot.previewRollback", in: fake.calls()) == 1
+        }
+
+        store.selectConfigSnapshot(snapshotB)
+        presentation.invalidate(selectedSnapshotID: snapshotB.id)
+        fake.releaseBlockedResponse()
+        let outcome = await previewTask.value
+
+        switch outcome {
+        case .success:
+            throw NativeModelTestFailure(description: "A preview whose payload names snapshot B must be rejected for snapshot A.")
+        case .failure(let error):
+            try expectContains(error.localizedDescription, "did not match the requested snapshot", "The service payload mismatch should remain the operation's local error.")
+            let published = presentation.publish(errorMessage: error.localizedDescription, for: request)
+            try expectFalse(published, "Snapshot A's rejected preview error must not publish into snapshot B's presentation state.")
+        }
+
+        try expectEqual(store.selectedConfigSnapshot?.id, Optional(snapshotB.id), "Snapshot B must remain selected after snapshot A's mismatched preview returns.")
+        try expectNil(store.errorMessage, "Snapshot A's mismatched preview must not write the Store's global error after selecting snapshot B.")
+        try expectNil(store.rollbackConfirmation, "A mismatched stale preview must not create rollback confirmation.")
+        try expectEqual(presentation.selectedSnapshotID, Optional(snapshotB.id), "Local preview state must remain bound to snapshot B.")
+        try expectNil(presentation.preview, "Snapshot B must not display snapshot A's mismatched preview payload.")
+        try expectNil(presentation.errorMessage, "Snapshot B must not display snapshot A's preview mismatch error.")
+        try expectNil(presentation.activeRequest, "Snapshot B must not retain snapshot A's preview request.")
+        try expectEqual(countMethodCalls("snapshot.previewRollback", in: fake.calls()), 1, "The mismatch path must issue exactly one preview RPC.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "A mismatched preview must never issue rollback RPC.")
     }
 
     private func rollbackConfirmationInvalidatesOnSelectionTimelineAndPreviewChanges() async throws {

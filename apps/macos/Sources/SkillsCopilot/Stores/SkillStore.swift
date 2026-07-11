@@ -2740,7 +2740,6 @@ final class SkillStore: ObservableObject {
             let preview = try await service.previewSnapshotRollback(snapshotID: snapshotID)
             guard preview.snapshot.id == snapshotID else {
                 let message = "Rollback preview did not match the requested snapshot."
-                errorMessage = message
                 throw ServiceClient.ClientError.invalidOutput(message)
             }
             if previewGeneration == rollbackPreviewGeneration,
@@ -2783,6 +2782,7 @@ final class SkillStore: ObservableObject {
             return false
         }
         clearRollbackConfirmation()
+        let rollbackFeedbackGeneration = rollbackPreviewGeneration
         isWriting = true
         errorMessage = nil
         lastMutationMessage = nil
@@ -2800,10 +2800,16 @@ final class SkillStore: ObservableObject {
             await loadSelectedDetail()
             return true
         } catch ServiceClient.ClientError.service(let error) where error.code == "stale_preview_token" {
-            errorMessage = UIStrings.rollbackPreviewAgain
+            if rollbackFeedbackGeneration == rollbackPreviewGeneration,
+               selectedConfigSnapshot?.id == confirmation.snapshotID {
+                errorMessage = UIStrings.rollbackPreviewAgain
+            }
             return false
         } catch {
-            errorMessage = error.localizedDescription
+            if rollbackFeedbackGeneration == rollbackPreviewGeneration,
+               selectedConfigSnapshot?.id == confirmation.snapshotID {
+                errorMessage = error.localizedDescription
+            }
             return false
         }
     }

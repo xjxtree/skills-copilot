@@ -12,6 +12,7 @@ final class FakeServiceScript: ServiceProcessRunning {
     private let delayedConfigSaveReleaseURL: URL
     private let delayedProviderSaveAReleaseURL: URL
     private let delayedProviderSaveBReleaseURL: URL
+    private let responseReleaseURL: URL
     private let scenarioLock = NSLock()
     private var currentScenario = "normal"
 
@@ -23,6 +24,7 @@ final class FakeServiceScript: ServiceProcessRunning {
         delayedConfigSaveReleaseURL = directory.appendingPathComponent("release-config-save-a")
         delayedProviderSaveAReleaseURL = directory.appendingPathComponent("release-provider-save-a")
         delayedProviderSaveBReleaseURL = directory.appendingPathComponent("release-provider-save-b")
+        responseReleaseURL = directory.appendingPathComponent("release-response")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: stateURL.path, contents: nil)
         try script.write(to: executableURL, atomically: true, encoding: .utf8)
@@ -61,6 +63,10 @@ final class FakeServiceScript: ServiceProcessRunning {
         FileManager.default.createFile(atPath: delayedProviderSaveBReleaseURL.path, contents: Data())
     }
 
+    func releaseBlockedResponse() {
+        FileManager.default.createFile(atPath: responseReleaseURL.path, contents: nil)
+    }
+
     func serviceClient() -> ServiceClient {
         ServiceClient(processRunner: self, serviceURL: executableURL)
     }
@@ -76,7 +82,8 @@ final class FakeServiceScript: ServiceProcessRunning {
                 "SKILLS_COPILOT_FAKE_SERVICE_CALLS": stateURL.path,
                 "SKILLS_COPILOT_FAKE_CONFIG_RELEASE": delayedConfigSaveReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE": delayedProviderSaveAReleaseURL.path,
-                "SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE": delayedProviderSaveBReleaseURL.path
+                "SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE": delayedProviderSaveBReleaseURL.path,
+                "SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE": responseReleaseURL.path
             ]
         )
     }
@@ -123,6 +130,12 @@ final class FakeServiceScript: ServiceProcessRunning {
             attempts=$((attempts + 1))
           done
           [ -f "$release_path" ]
+        }
+
+        wait_for_response_release() {
+          while [ ! -f "$SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE" ]; do
+            sleep 0.01
+          done
         }
 
         status_response() {
@@ -536,6 +549,9 @@ final class FakeServiceScript: ServiceProcessRunning {
             elif [ "$scenario" = "rollback-preview-delay" ]; then
               sleep 1
               respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-delay-current","preview_token":"sha256:rollback-delay-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+            elif [ "$scenario" = "rollback-preview-mismatch-blocked" ]; then
+              wait_for_response_release
+              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-old","agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","content":"{}\\n","reason":"pre-config-edit","created_at":20},"current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-mismatch-current","preview_token":"sha256:rollback-mismatch-preview","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "protocol-v1-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"legacy\\"}\\n","current_read_error":null,"current_revision":"sha256:malicious-v1-current","preview_token":"sha256:malicious-v1-token","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "protocol-v2-missing-bindings" ]; then
@@ -548,6 +564,12 @@ final class FakeServiceScript: ServiceProcessRunning {
               respond '{"id":"test","ok":true,"result":3}'
             elif [ "$scenario" = "rollback-stale" ]; then
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_preview_token","message":"preview no longer matches current state"}}'
+            elif [ "$scenario" = "rollback-stale-blocked" ]; then
+              wait_for_response_release
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_preview_token","message":"preview no longer matches current state"}}'
+            elif [ "$scenario" = "rollback-error-blocked" ]; then
+              wait_for_response_release
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"rollback_failed","message":"rollback service failed"}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing snapshot rollback"}}'
             ;;
