@@ -4,6 +4,13 @@ use std::{
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
+    time::UNIX_EPOCH,
+};
+
+#[cfg(unix)]
+use std::{
+    os::fd::{AsFd, OwnedFd},
+    path::{Component, PathBuf},
 };
 
 const MAX_READ_CHUNK_BYTES: usize = 64 * 1024;
@@ -24,6 +31,7 @@ pub(crate) struct BoundedText {
     pub(crate) tail_starts_at_line_boundary: bool,
     pub(crate) gap_stays_on_same_line: bool,
     pub(crate) record_provenance: Option<BoundedRecordProvenance>,
+    pub(crate) modified_at_millis: Option<i64>,
     pub(crate) truncated: bool,
     pub(crate) bytes_read: usize,
 }
@@ -764,6 +772,131 @@ pub(crate) struct LocalSessionIoContext {
     pub(crate) budget: LocalSessionReadBudget,
 }
 
+pub(crate) struct GuardedLocalSessionRoot {
+    #[cfg(unix)]
+    path: PathBuf,
+    #[cfg(unix)]
+    directory: OwnedFd,
+}
+
+impl GuardedLocalSessionRoot {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "guarded session root must be absolute",
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            use rustix::fs::{open, openat, Mode, OFlags};
+
+            let directory_flags =
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let mut directory =
+                open("/", directory_flags, Mode::empty()).map_err(io::Error::from)?;
+            let mut saw_root = false;
+            for component in path.components() {
+                match component {
+                    Component::RootDir => saw_root = true,
+                    Component::Normal(name) if saw_root => {
+                        directory = openat(&directory, name, directory_flags, Mode::empty())
+                            .map_err(io::Error::from)?;
+                    }
+                    Component::CurDir => {}
+                    Component::Prefix(_) | Component::ParentDir | Component::Normal(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "guarded session root contains an unsupported component",
+                        ));
+                    }
+                }
+            }
+            Ok(Self {
+                path: path.to_path_buf(),
+                directory,
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "guarded local session reads require descriptor-relative file access",
+            ))
+        }
+    }
+
+    #[cfg(unix)]
+    fn open_regular_file(&self, path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+        use rustix::fs::{openat, Mode, OFlags};
+
+        let relative = path.strip_prefix(&self.path).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "session candidate is outside the guarded root",
+            )
+        })?;
+        let mut components = relative.components().peekable();
+        if components.peek().is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session candidate does not name a file",
+            ));
+        }
+
+        let directory_flags =
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let file_flags =
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+        let mut parent: Option<OwnedFd> = None;
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "session candidate contains an unsupported component",
+                ));
+            };
+            let parent_fd = parent
+                .as_ref()
+                .map_or_else(|| self.directory.as_fd(), AsFd::as_fd);
+            if components.peek().is_some() {
+                parent = Some(
+                    openat(parent_fd, name, directory_flags, Mode::empty())
+                        .map_err(io::Error::from)?,
+                );
+                continue;
+            }
+
+            let descriptor =
+                openat(parent_fd, name, file_flags, Mode::empty()).map_err(io::Error::from)?;
+            let file = fs::File::from(descriptor);
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "session candidate is not a regular file",
+                ));
+            }
+            return Ok((file, metadata));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "session candidate does not name a file",
+        ))
+    }
+
+    #[cfg(not(unix))]
+    fn open_regular_file(&self, _path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "guarded local session reads require descriptor-relative file access",
+        ))
+    }
+}
+
 impl LocalSessionIoContext {
     pub(crate) fn new(limits: LocalSessionReadLimits) -> Self {
         Self {
@@ -774,18 +907,19 @@ impl LocalSessionIoContext {
 }
 
 pub(crate) fn read_bounded_text(
+    root: &GuardedLocalSessionRoot,
     path: &Path,
     spec: BoundedReadSpec,
     budget: &mut LocalSessionReadBudget,
 ) -> Result<BoundedText, ServiceError> {
-    let mut file = fs::File::open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(
-            io::Error::new(io::ErrorKind::InvalidInput, "session path is not a file").into(),
-        );
-    }
-    Ok(read_bounded_from(&mut file, metadata.len(), spec, budget)?)
+    let (mut file, metadata) = root.open_regular_file(path)?;
+    let mut bounded = read_bounded_from(&mut file, metadata.len(), spec, budget)?;
+    bounded.modified_at_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+    Ok(bounded)
 }
 
 fn read_bounded_from<R: Read + Seek>(
@@ -883,6 +1017,7 @@ fn read_bounded_from<R: Read + Seek>(
         tail_starts_at_line_boundary,
         gap_stays_on_same_line,
         record_provenance,
+        modified_at_millis: None,
         truncated,
         bytes_read,
     })
@@ -1029,6 +1164,252 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::io::{self, Cursor, Read, Seek, SeekFrom};
+
+    fn bounded_file_test_spec() -> BoundedReadSpec {
+        BoundedReadSpec {
+            head_bytes: 256,
+            tail_bytes: 0,
+            line_fragment_bytes: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    fn guarded_reader_fixture_root(case: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+        let unique = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        PathBuf::from("/tmp").join(format!("sc-guard-{case}-{}-{unique}", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_rejects_a_checked_file_swapped_to_an_outside_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = guarded_reader_fixture_root("final-symlink-swap");
+        let root = fixture.join("authorized");
+        let candidate = root.join("record.jsonl");
+        let parked = root.join("record.parked");
+        let outside = fixture.join("outside.jsonl");
+        fs::create_dir_all(&root).expect("create authorized root");
+        fs::write(&candidate, "user: SAFE_INSIDE\n").expect("write inside file");
+        fs::write(&outside, "user: OUTSIDE_FINAL_SYMLINK_MUST_NOT_SURFACE\n")
+            .expect("write outside file");
+        let guarded_root =
+            GuardedLocalSessionRoot::open(&root.canonicalize().expect("canonical authorized root"))
+                .expect("open guarded root");
+        let checked_candidate = candidate
+            .canonicalize()
+            .expect("canonical checked candidate");
+        fs::rename(&candidate, parked).expect("park checked candidate");
+        symlink(&outside, &candidate).expect("replace candidate with outside symlink");
+
+        let mut budget = LocalSessionReadBudget::new(1_024);
+        let result = read_bounded_text(
+            &guarded_root,
+            &checked_candidate,
+            bounded_file_test_spec(),
+            &mut budget,
+        );
+        let _ = fs::remove_dir_all(&fixture);
+
+        let error = result.expect_err("swapped final symlink must be rejected");
+        let message = error.to_string();
+        assert!(!message.contains("OUTSIDE_FINAL_SYMLINK_MUST_NOT_SURFACE"));
+        assert!(message.len() <= 160, "unbounded error: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_carries_modified_time_from_the_opened_descriptor() {
+        use std::fs::{FileTimes, OpenOptions};
+        use std::os::unix::fs::symlink;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let fixture = guarded_reader_fixture_root("descriptor-mtime");
+        let root = fixture.join("authorized");
+        fs::create_dir_all(&root).expect("create authorized root");
+        let root = root.canonicalize().expect("canonical authorized root");
+        let candidate = root.join("record.jsonl");
+        let parked = root.join("record.parked");
+        let outside = fixture.join("outside.jsonl");
+        fs::write(&candidate, "user: SAFE_DESCRIPTOR_MTIME\n").expect("write checked file");
+        fs::write(&outside, "user: OUTSIDE_MTIME\n").expect("write outside file");
+        let safe_modified = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let outside_modified = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        OpenOptions::new()
+            .write(true)
+            .open(&candidate)
+            .expect("open checked file for timestamp")
+            .set_times(FileTimes::new().set_modified(safe_modified))
+            .expect("set checked timestamp");
+        OpenOptions::new()
+            .write(true)
+            .open(&outside)
+            .expect("open outside file for timestamp")
+            .set_times(FileTimes::new().set_modified(outside_modified))
+            .expect("set outside timestamp");
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+        let mut budget = LocalSessionReadBudget::new(1_024);
+        let bounded = read_bounded_text(
+            &guarded_root,
+            &candidate,
+            bounded_file_test_spec(),
+            &mut budget,
+        )
+        .expect("read checked descriptor");
+        fs::rename(&candidate, parked).expect("park checked file");
+        symlink(&outside, &candidate).expect("replace path with outside symlink");
+        let _ = fs::remove_dir_all(&fixture);
+
+        assert_eq!(bounded.modified_at_millis, Some(1_600_000_000_000));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_rejects_a_checked_parent_swapped_to_an_outside_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = guarded_reader_fixture_root("parent-symlink-swap");
+        let root = fixture.join("authorized");
+        let live_parent = root.join("nested");
+        let parked_parent = root.join("nested-parked");
+        let outside_parent = fixture.join("outside");
+        let candidate = live_parent.join("record.jsonl");
+        fs::create_dir_all(&live_parent).expect("create live parent");
+        fs::create_dir_all(&outside_parent).expect("create outside parent");
+        fs::write(&candidate, "user: SAFE_INSIDE\n").expect("write inside file");
+        fs::write(
+            outside_parent.join("record.jsonl"),
+            "user: OUTSIDE_PARENT_SYMLINK_MUST_NOT_SURFACE\n",
+        )
+        .expect("write outside file");
+        let guarded_root =
+            GuardedLocalSessionRoot::open(&root.canonicalize().expect("canonical authorized root"))
+                .expect("open guarded root");
+        let checked_candidate = candidate
+            .canonicalize()
+            .expect("canonical checked candidate");
+        fs::rename(&live_parent, &parked_parent).expect("park checked parent");
+        symlink(&outside_parent, &live_parent).expect("replace parent with outside symlink");
+
+        let mut budget = LocalSessionReadBudget::new(1_024);
+        let result = read_bounded_text(
+            &guarded_root,
+            &checked_candidate,
+            bounded_file_test_spec(),
+            &mut budget,
+        );
+        let _ = fs::remove_dir_all(&fixture);
+
+        let error = result.expect_err("swapped parent symlink must be rejected");
+        let message = error.to_string();
+        assert!(!message.contains("OUTSIDE_PARENT_SYMLINK_MUST_NOT_SURFACE"));
+        assert!(message.len() <= 160, "unbounded error: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_rejects_static_file_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = guarded_reader_fixture_root("static-symlinks");
+        let root = fixture.join("authorized");
+        let outside_parent = fixture.join("outside");
+        fs::create_dir_all(&root).expect("create authorized root");
+        fs::create_dir_all(&outside_parent).expect("create outside parent");
+        let root = root.canonicalize().expect("canonical authorized root");
+        let outside = outside_parent.join("record.jsonl");
+        fs::write(&outside, "user: STATIC_SYMLINK_MUST_NOT_SURFACE\n").expect("write outside file");
+        let file_link = root.join("file-link.jsonl");
+        let directory_link = root.join("directory-link");
+        symlink(&outside, &file_link).expect("create file symlink");
+        symlink(&outside_parent, &directory_link).expect("create directory symlink");
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+
+        for candidate in [file_link, directory_link.join("record.jsonl")] {
+            let mut budget = LocalSessionReadBudget::new(1_024);
+            let result = read_bounded_text(
+                &guarded_root,
+                &candidate,
+                bounded_file_test_spec(),
+                &mut budget,
+            );
+            assert!(
+                result.is_err(),
+                "static symlink was followed: {candidate:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&fixture);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_accepts_regular_files_and_rejects_non_regular_nodes() {
+        use std::fs::OpenOptions;
+        use std::os::unix::net::UnixListener;
+        use std::process::Command;
+
+        let fixture = guarded_reader_fixture_root("node-types");
+        let root = fixture.join("authorized");
+        fs::create_dir_all(&root).expect("create authorized root");
+        let root = root.canonicalize().expect("canonical authorized root");
+        let guarded_root = GuardedLocalSessionRoot::open(&root).expect("open guarded root");
+        let regular = root.join("regular.jsonl");
+        fs::write(&regular, "user: SAFE_REGULAR_FILE\n").expect("write regular file");
+        let mut budget = LocalSessionReadBudget::new(1_024);
+        let text = read_bounded_text(
+            &guarded_root,
+            &regular,
+            bounded_file_test_spec(),
+            &mut budget,
+        )
+        .expect("regular file accepted");
+        assert!(text.head.contains("SAFE_REGULAR_FILE"));
+
+        let socket = root.join("session.socket");
+        let _listener = UnixListener::bind(&socket).expect("bind unix socket");
+        let fifo = root.join("session.fifo");
+        let status = Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed: {status}");
+        let _fifo_keeper = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo keeper without blocking");
+
+        for candidate in [root.clone(), socket, fifo] {
+            let mut budget = LocalSessionReadBudget::new(1_024);
+            let result = read_bounded_text(
+                &guarded_root,
+                &candidate,
+                bounded_file_test_spec(),
+                &mut budget,
+            );
+            assert!(
+                result.is_err(),
+                "non-regular node was accepted: {candidate:?}"
+            );
+        }
+        let device_root =
+            GuardedLocalSessionRoot::open(Path::new("/dev")).expect("open guarded device root");
+        let mut budget = LocalSessionReadBudget::new(1_024);
+        assert!(
+            read_bounded_text(
+                &device_root,
+                Path::new("/dev/null"),
+                bounded_file_test_spec(),
+                &mut budget,
+            )
+            .is_err(),
+            "device node was accepted"
+        );
+        let _ = fs::remove_dir_all(&fixture);
+    }
 
     #[test]
     fn bounded_reader_reads_disjoint_head_and_tail_windows() {

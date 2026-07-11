@@ -984,28 +984,34 @@ fn complete_conflicting_classifications_use_fail_closed_precedence() {
         })
         .to_string();
         let result = preview_codex_session_fixture(&format!("complete-conflict-{role}"), &session);
+        let serialized = serde_json::to_string(&result).expect("serialize conflicting result");
 
-        assert_eq!(
-            result
-                .pointer("/session_rows/0/user_message_count")
-                .and_then(Value::as_u64),
-            Some(0),
-            "{role}: {result}"
-        );
-        let items = result
-            .pointer("/session_rows/0/content_items")
-            .and_then(Value::as_array)
-            .expect("content items");
         match expected_kind {
-            Some(kind) => assert_eq!(
-                items
-                    .first()
-                    .and_then(|item| item.get("kind"))
-                    .and_then(Value::as_str),
-                Some(kind),
-                "{role}: {result}"
-            ),
-            None => assert!(items.is_empty(), "{role}: {result}"),
+            Some(kind) => {
+                assert_eq!(result.get("count").and_then(Value::as_u64), Some(1));
+                assert_eq!(
+                    result
+                        .pointer("/session_rows/0/user_message_count")
+                        .and_then(Value::as_u64),
+                    Some(0),
+                    "{role}: {result}"
+                );
+                assert_eq!(
+                    result
+                        .pointer("/session_rows/0/content_items/0/kind")
+                        .and_then(Value::as_str),
+                    Some(kind),
+                    "{role}: {result}"
+                );
+            }
+            None => {
+                assert_eq!(
+                    result.get("count").and_then(Value::as_u64),
+                    Some(0),
+                    "{role}: {result}"
+                );
+                assert!(!serialized.contains(&marker), "{role}: {serialized}");
+            }
         }
     }
 }
@@ -1030,23 +1036,22 @@ fn complete_deny_record_blocks_all_nested_content_extraction() {
     .to_string();
 
     let result = preview_codex_session_fixture("complete-deny-nested-content", &session);
+    let serialized = serde_json::to_string(&result).expect("serialize denied result");
 
-    assert!(
-        result
-            .pointer("/session_rows/0/content_items")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty),
+    assert_eq!(
+        result.get("count").and_then(Value::as_u64),
+        Some(0),
         "{result}"
     );
+    assert!(!serialized.contains(tool_marker), "{serialized}");
+    assert!(!serialized.contains(user_marker), "{serialized}");
     for metric in [
         "tool_call_count",
         "user_message_count",
         "total_message_count",
     ] {
         assert_eq!(
-            result
-                .pointer(&format!("/session_rows/0/{metric}"))
-                .and_then(Value::as_u64),
+            result.get(metric).and_then(Value::as_u64),
             Some(0),
             "{metric}: {result}"
         );
@@ -2916,28 +2921,15 @@ fn invalid_or_denying_classification_blocks_entire_nested_record() {
         .to_string();
 
         let result = preview_codex_session_fixture(&format!("complete-{case}"), &session);
+        let serialized = serde_json::to_string(&result).expect("serialize rejected record");
 
-        assert!(
-            result
-                .pointer("/session_rows/0/content_items")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty),
-            "{case}: {result}"
-        );
         assert_eq!(
-            result
-                .pointer("/session_rows/0/tool_call_count")
-                .and_then(Value::as_u64),
+            result.get("count").and_then(Value::as_u64),
             Some(0),
             "{case}: {result}"
         );
-        assert_eq!(
-            result
-                .pointer("/session_rows/0/user_message_count")
-                .and_then(Value::as_u64),
-            Some(0),
-            "{case}: {result}"
-        );
+        assert!(!serialized.contains(&tool_marker), "{case}: {serialized}");
+        assert!(!serialized.contains(&user_marker), "{case}: {serialized}");
     }
 }
 
@@ -2955,21 +2947,14 @@ fn encoded_classification_tokens_over_limit_deny_complete_records() {
         };
 
         let result = preview_codex_session_fixture(&format!("encoded-{case}-over-limit"), &session);
+        let serialized = serde_json::to_string(&result).expect("serialize over-limit result");
 
-        assert!(
-            result
-                .pointer("/session_rows/0/content_items")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty),
-            "{case}: {result}"
-        );
         assert_eq!(
-            result
-                .pointer("/session_rows/0/user_message_count")
-                .and_then(Value::as_u64),
+            result.get("count").and_then(Value::as_u64),
             Some(0),
             "{case}: {result}"
         );
+        assert!(!serialized.contains(&marker), "{case}: {serialized}");
     }
 }
 
@@ -4192,6 +4177,300 @@ fn local_session_preview_does_not_recover_scalars_nested_in_omitted_data() {
         result.get("user_message_count").and_then(Value::as_u64),
         Some(0)
     );
+}
+
+#[test]
+fn rejected_only_primary_documents_do_not_materialize_empty_session_rows() {
+    for (case, content, marker) in [
+        (
+            "unknown-role-only",
+            r#"{"role":"root","text":"UNKNOWN_ROLE_ONLY_MUST_NOT_SURFACE"}"#,
+            "UNKNOWN_ROLE_ONLY_MUST_NOT_SURFACE",
+        ),
+        (
+            "unknown-type-only",
+            r#"{"type":"mystery","text":"UNKNOWN_TYPE_ONLY_MUST_NOT_SURFACE"}"#,
+            "UNKNOWN_TYPE_ONLY_MUST_NOT_SURFACE",
+        ),
+        (
+            "unknown-role-conflict-only",
+            r#"{"type":"user","role":"root","text":"UNKNOWN_CONFLICT_ONLY_MUST_NOT_SURFACE"}"#,
+            "UNKNOWN_CONFLICT_ONLY_MUST_NOT_SURFACE",
+        ),
+        (
+            "unknown-array-only",
+            r#"[{"role":"root","text":"UNKNOWN_ARRAY_ONLY_MUST_NOT_SURFACE"}]"#,
+            "UNKNOWN_ARRAY_ONLY_MUST_NOT_SURFACE",
+        ),
+        (
+            "unknown-object-wrapper-only",
+            r#"{"items":[{"type":"mystery","text":"UNKNOWN_OBJECT_ONLY_MUST_NOT_SURFACE"}]}"#,
+            "UNKNOWN_OBJECT_ONLY_MUST_NOT_SURFACE",
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, content);
+        let serialized = serde_json::to_string(&result).expect("serialize rejected-only result");
+
+        assert!(!serialized.contains(marker), "{case}: {serialized}");
+        assert_eq!(
+            result.get("count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result.get("total_matched_count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert!(
+            result
+                .get("session_rows")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn accepted_metadata_and_structure_only_documents_still_materialize_rows() {
+    for (case, content) in [
+        (
+            "known-session-metadata-only",
+            r#"{"type":"session","id":"ses_metadata","title":"metadata only"}"#,
+        ),
+        (
+            "known-session-meta-only",
+            r#"{"type":"session_meta","id":"ses_meta"}"#,
+        ),
+        (
+            "known-message-structure-only",
+            r#"{"type":"message","role":"assistant"}"#,
+        ),
+        (
+            "known-tool-structure-only",
+            r#"{"type":"tool_call","name":"structure_only"}"#,
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, content);
+
+        assert_eq!(
+            result.get("count").and_then(Value::as_u64),
+            Some(1),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result.get("total_message_count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn present_unproven_role_aliases_reject_their_entire_record() {
+    for (case, content, marker) in [
+        (
+            "sender-null",
+            r#"{"type":"message","sender":null,"content":"SENDER_NULL_MUST_NOT_SURFACE"}"#,
+            "SENDER_NULL_MUST_NOT_SURFACE",
+        ),
+        (
+            "sender-object",
+            r#"{"type":"message","sender":{},"content":"SENDER_OBJECT_MUST_NOT_SURFACE"}"#,
+            "SENDER_OBJECT_MUST_NOT_SURFACE",
+        ),
+        (
+            "sender-unknown",
+            r#"{"type":"message","sender":"root","content":"SENDER_UNKNOWN_MUST_NOT_SURFACE"}"#,
+            "SENDER_UNKNOWN_MUST_NOT_SURFACE",
+        ),
+        (
+            "message-role-null",
+            r#"{"type":"message","message":{"role":null,"content":"MESSAGE_ROLE_NULL_MUST_NOT_SURFACE"}}"#,
+            "MESSAGE_ROLE_NULL_MUST_NOT_SURFACE",
+        ),
+        (
+            "payload-role-object",
+            r#"{"type":"response_item","payload":{"role":{},"content":"PAYLOAD_ROLE_OBJECT_MUST_NOT_SURFACE"}}"#,
+            "PAYLOAD_ROLE_OBJECT_MUST_NOT_SURFACE",
+        ),
+        (
+            "payload-item-role-unknown",
+            r#"{"type":"response_item","payload":{"item":{"role":"root","content":"PAYLOAD_ITEM_ROLE_UNKNOWN_MUST_NOT_SURFACE"}}}"#,
+            "PAYLOAD_ITEM_ROLE_UNKNOWN_MUST_NOT_SURFACE",
+        ),
+        (
+            "author-role-null",
+            r#"{"type":"message","author":{"role":null},"content":"AUTHOR_ROLE_NULL_MUST_NOT_SURFACE"}"#,
+            "AUTHOR_ROLE_NULL_MUST_NOT_SURFACE",
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, content);
+        let serialized = serde_json::to_string(&result).expect("serialize role-alias result");
+
+        assert!(!serialized.contains(marker), "{case}: {serialized}");
+        assert_eq!(
+            result.get("count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+        assert_eq!(
+            result.get("total_message_count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn unclassified_scalar_carriers_do_not_become_visible_agent_replies() {
+    for (case, content, marker) in [
+        (
+            "message-developer-carrier",
+            r#"{"type":"message","content":"developer: MESSAGE_CARRIER_MUST_NOT_SURFACE"}"#,
+            "MESSAGE_CARRIER_MUST_NOT_SURFACE",
+        ),
+        (
+            "text-system-carrier",
+            r#"{"type":"text","text":"system: TEXT_CARRIER_MUST_NOT_SURFACE"}"#,
+            "TEXT_CARRIER_MUST_NOT_SURFACE",
+        ),
+        (
+            "output-summary-carrier",
+            r#"{"type":"output_text","text":"summary: OUTPUT_CARRIER_MUST_NOT_SURFACE"}"#,
+            "OUTPUT_CARRIER_MUST_NOT_SURFACE",
+        ),
+        (
+            "missing-type-carrier",
+            r#"{"content":"developer: MISSING_CARRIER_MUST_NOT_SURFACE"}"#,
+            "MISSING_CARRIER_MUST_NOT_SURFACE",
+        ),
+        (
+            "message-generic-object-carrier",
+            r#"{"type":"message","content":{"note":"GENERIC_OBJECT_CARRIER_MUST_NOT_SURFACE"}}"#,
+            "GENERIC_OBJECT_CARRIER_MUST_NOT_SURFACE",
+        ),
+        (
+            "message-generic-array-carrier",
+            r#"{"type":"message","content":[{"note":"GENERIC_ARRAY_CARRIER_MUST_NOT_SURFACE"}]}"#,
+            "GENERIC_ARRAY_CARRIER_MUST_NOT_SURFACE",
+        ),
+        (
+            "message-generic-parts-carrier",
+            r#"{"type":"message","parts":[{"note":"GENERIC_PARTS_CARRIER_MUST_NOT_SURFACE"}]}"#,
+            "GENERIC_PARTS_CARRIER_MUST_NOT_SURFACE",
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, content);
+        let serialized = serde_json::to_string(&result).expect("serialize scalar-carrier result");
+
+        assert!(!serialized.contains(marker), "{case}: {serialized}");
+        assert_eq!(
+            result.get("total_message_count").and_then(Value::as_u64),
+            Some(0),
+            "{case}: {result}"
+        );
+    }
+
+    for (case, content, kind) in [
+        (
+            "safe-sender-assistant",
+            r#"{"type":"message","sender":"assistant","content":"SAFE_SENDER_ASSISTANT"}"#,
+            "agent_reply",
+        ),
+        (
+            "safe-author-user",
+            r#"{"type":"message","author":{"role":"user"},"content":"SAFE_AUTHOR_USER"}"#,
+            "user_message",
+        ),
+        (
+            "safe-proven-parent-output",
+            r#"{"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"SAFE_PROVEN_PARENT_OUTPUT"}]}}"#,
+            "agent_reply",
+        ),
+    ] {
+        let result = preview_codex_session_fixture(case, content);
+        let serialized = serde_json::to_string(&result).expect("serialize proven-role control");
+
+        assert!(serialized.contains("SAFE_"), "{case}: {serialized}");
+        assert_eq!(
+            result
+                .pointer("/session_rows/0/content_items/0/kind")
+                .and_then(Value::as_str),
+            Some(kind),
+            "{case}: {result}"
+        );
+    }
+}
+
+#[test]
+fn opencode_primary_and_sidecars_suppress_unproven_only_content() {
+    let unique = unique_suffix();
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-unproven-only-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-unproven-only-home-{}-{unique}",
+        std::process::id(),
+    ));
+    let storage_root = user_home.join(".local/share/opencode/storage");
+    let session_root = storage_root.join("session");
+    fs::create_dir_all(&session_root).expect("create opencode session root");
+    fs::write(
+        session_root.join("ses_rejected.json"),
+        r#"{"role":"root","text":"OPENCODE_PRIMARY_UNKNOWN_MUST_NOT_SURFACE"}"#,
+    )
+    .expect("write rejected-only opencode primary");
+
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let response = host.handle(ServiceRequest {
+        id: Some("session-preview-opencode-unproven-primary".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({"agent": "opencode", "limit": 10}),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let primary_result = response.result.expect("opencode primary result");
+    assert_eq!(
+        primary_result.get("count").and_then(Value::as_u64),
+        Some(0),
+        "{primary_result}"
+    );
+    assert!(
+        !primary_result
+            .to_string()
+            .contains("OPENCODE_PRIMARY_UNKNOWN_MUST_NOT_SURFACE"),
+        "{primary_result}"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+
+    let sidecar_result = preview_opencode_unknown_classification_fixture(
+        "present-unproven-role-aliases",
+        r#"{"type":"message","sender":null,"content":"OPENCODE_MESSAGE_ALIAS_MUST_NOT_SURFACE"}"#,
+        r#"{"type":"text","text":"summary: OPENCODE_PART_CARRIER_MUST_NOT_SURFACE"}"#,
+        "unused-opencode-unproven-skill",
+    );
+    let serialized = serde_json::to_string(&sidecar_result).expect("serialize opencode sidecars");
+    for marker in [
+        "OPENCODE_MESSAGE_ALIAS_MUST_NOT_SURFACE",
+        "OPENCODE_PART_CARRIER_MUST_NOT_SURFACE",
+    ] {
+        assert!(
+            !serialized.contains(marker),
+            "surfaced {marker}: {serialized}"
+        );
+    }
 }
 
 fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {

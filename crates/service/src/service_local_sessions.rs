@@ -1,6 +1,6 @@
 use super::service_local_session_io::{
-    read_bounded_text, BoundedReadSpec, BoundedText, LocalSessionIoContext, LocalSessionReadLimits,
-    MAX_PROVENANCE_TOKEN_BYTES,
+    read_bounded_text, BoundedReadSpec, BoundedText, GuardedLocalSessionRoot,
+    LocalSessionIoContext, LocalSessionReadLimits, MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -155,6 +155,21 @@ impl ServiceHost {
                     continue;
                 }
             };
+            let guarded_root = match GuardedLocalSessionRoot::open(&canonical_root) {
+                Ok(root) => root,
+                Err(error) => {
+                    let blocker =
+                        format!("Authorized session root could not be opened safely: {error}");
+                    blocker_notes.push(format!("{redacted_root}: {}", redactor.redact(&blocker)));
+                    root_rows.push(LocalSessionPreviewRoot {
+                        root: redacted_root,
+                        status: "blocked".to_string(),
+                        candidate_count: 0,
+                        blocker: Some(redactor.redact(&blocker)),
+                    });
+                    continue;
+                }
+            };
 
             let files = collect_local_session_files(
                 &canonical_root,
@@ -177,6 +192,7 @@ impl ServiceHost {
                 match local_session_preview_row(
                     &file,
                     &canonical_root,
+                    &guarded_root,
                     options,
                     &mut io,
                     &mut redactor,
@@ -767,6 +783,7 @@ fn is_ignored_local_session_file(path: &Path) -> bool {
 fn local_session_preview_row(
     path: &Path,
     root: &Path,
+    guarded_root: &GuardedLocalSessionRoot,
     options: LocalSessionPreviewRowOptions<'_>,
     io: &mut LocalSessionIoContext,
     redactor: &mut PromptRedactor<'_>,
@@ -774,7 +791,8 @@ fn local_session_preview_row(
     if !path.starts_with(root) {
         return Ok(None);
     }
-    let compacted_file_content = read_local_session_file_content(path, io)?;
+    let (compacted_file_content, modified_at) =
+        read_local_session_file_content(path, guarded_root, io)?;
     let file_content = strip_internal_local_session_records(&compacted_file_content);
     if file_content.is_empty() {
         return Ok(None);
@@ -791,6 +809,9 @@ fn local_session_preview_row(
     } else {
         accepted_local_session_content(&enriched_content)
     };
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
     let mut metadata = local_session_parsed_metadata(path, &content);
     if let Some(project_root) =
         local_session_storage_project_root(path, root, options.project_filter_roots)
@@ -848,7 +869,6 @@ fn local_session_preview_row(
         &skill_invocations,
         redactor,
     );
-    let modified_at = local_session_modified_at(path);
     let (started_at, ended_at) = local_session_time_bounds(&content, &content_items, modified_at);
     let metrics = local_session_metrics(&content_items, skill_invocations.len());
     let agent = options
@@ -892,9 +912,11 @@ fn local_session_preview_row(
 
 fn read_local_session_file_content(
     path: &Path,
+    root: &GuardedLocalSessionRoot,
     io: &mut LocalSessionIoContext,
-) -> Result<String, ServiceError> {
+) -> Result<(String, Option<i64>), ServiceError> {
     let bounded = read_bounded_text(
+        root,
         path,
         BoundedReadSpec {
             head_bytes: io.limits.primary_head_bytes,
@@ -904,9 +926,10 @@ fn read_local_session_file_content(
         &mut io.budget,
     )?;
     debug_assert!(bounded.bytes_read <= io.limits.max_preview_read_bytes);
-    Ok(compact_bounded_local_session_content(
-        &bounded,
-        io.limits.max_line_fragment_bytes,
+    let modified_at = bounded.modified_at_millis;
+    Ok((
+        compact_bounded_local_session_content(&bounded, io.limits.max_line_fragment_bytes),
+        modified_at,
     ))
 }
 
@@ -1091,12 +1114,14 @@ enum LocalSessionRecordClassification {
     Unproven,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LocalSessionRoleEvidence<'a> {
+    classification: LocalSessionRecordClassification,
+    role: Option<&'a str>,
+}
+
 fn local_session_object_is_denied(fields: &serde_json::Map<String, Value>) -> bool {
-    let fallback_role = json_session_role(fields).map(str::to_string);
-    local_session_classification_is_rejected(local_session_record_classification(
-        fields,
-        fallback_role.as_deref(),
-    ))
+    local_session_classification_is_rejected(local_session_record_classification(fields, None))
 }
 
 fn local_session_value_is_denied(value: &Value) -> bool {
@@ -1107,22 +1132,18 @@ fn local_session_value_is_denied(value: &Value) -> bool {
 
 fn local_session_record_classification(
     fields: &serde_json::Map<String, Value>,
-    fallback_role: Option<&str>,
+    inherited_role: Option<&str>,
 ) -> LocalSessionRecordClassification {
     let type_classification = local_session_type_classification(fields.get("type"));
-    let role_classification = fields.get("role").map_or_else(
-        || {
-            fallback_role.map_or(LocalSessionRecordClassification::Missing, |role| {
+    let role_evidence = local_session_role_evidence(fields);
+    let role_classification =
+        if role_evidence.classification == LocalSessionRecordClassification::Missing {
+            inherited_role.map_or(LocalSessionRecordClassification::Missing, |role| {
                 local_session_role_classification(role)
             })
-        },
-        |role| {
-            role.as_str().map_or(
-                LocalSessionRecordClassification::Unproven,
-                local_session_role_classification,
-            )
-        },
-    );
+        } else {
+            role_evidence.classification
+        };
 
     for classification in [type_classification, role_classification] {
         if local_session_classification_is_rejected(classification) {
@@ -1149,6 +1170,62 @@ fn local_session_record_classification(
         return LocalSessionRecordClassification::KnownStructure;
     }
     LocalSessionRecordClassification::Missing
+}
+
+fn local_session_role_evidence(
+    map: &serde_json::Map<String, Value>,
+) -> LocalSessionRoleEvidence<'_> {
+    let nested_role = |outer: &str| {
+        map.get(outer)
+            .and_then(Value::as_object)
+            .and_then(|nested| nested.get("role"))
+    };
+    let payload_item_role = map
+        .get("payload")
+        .and_then(Value::as_object)
+        .and_then(|payload| payload.get("item"))
+        .and_then(Value::as_object)
+        .and_then(|item| item.get("role"));
+    let role_values = [
+        map.get("role"),
+        map.get("sender"),
+        nested_role("message"),
+        nested_role("payload"),
+        payload_item_role,
+        nested_role("author"),
+    ];
+    let mut evidence = LocalSessionRoleEvidence {
+        classification: LocalSessionRecordClassification::Missing,
+        role: None,
+    };
+
+    for value in role_values.into_iter().flatten() {
+        let Some(role) = value.as_str() else {
+            return LocalSessionRoleEvidence {
+                classification: LocalSessionRecordClassification::Unproven,
+                role: None,
+            };
+        };
+        let classification = local_session_role_classification(role);
+        if local_session_classification_is_rejected(classification) {
+            return LocalSessionRoleEvidence {
+                classification,
+                role: None,
+            };
+        }
+        if evidence.classification == LocalSessionRecordClassification::Missing {
+            evidence = LocalSessionRoleEvidence {
+                classification,
+                role: Some(role),
+            };
+        } else if evidence.classification != classification {
+            return LocalSessionRoleEvidence {
+                classification: LocalSessionRecordClassification::Unproven,
+                role: None,
+            };
+        }
+    }
+    evidence
 }
 
 fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecordClassification {
@@ -2076,6 +2153,7 @@ mod bounded_content_tests {
             tail_starts_at_line_boundary: false,
             gap_stays_on_same_line: false,
             record_provenance: None,
+            modified_at_millis: None,
             truncated: true,
             bytes_read: 80,
         };
@@ -2097,6 +2175,7 @@ mod bounded_content_tests {
             tail_starts_at_line_boundary: false,
             gap_stays_on_same_line: false,
             record_provenance: None,
+            modified_at_millis: None,
             truncated: true,
             bytes_read: 128,
         };
@@ -2158,6 +2237,36 @@ mod bounded_content_tests {
             Some("2026-07-10T08:09:10Z")
         );
         assert!(!fields.contains_key("type"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn row_id_does_not_reresolve_a_checked_candidate_after_path_swap() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+        let unique = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let fixture =
+            PathBuf::from("/tmp").join(format!("sc-row-id-swap-{}-{unique}", std::process::id()));
+        let root = fixture.join("authorized");
+        let candidate = root.join("record.jsonl");
+        let parked = root.join("record.parked");
+        let outside = fixture.join("outside.jsonl");
+        fs::create_dir_all(&root).expect("create row-id fixture root");
+        fs::write(&candidate, "user: SAFE_CHECKED_PATH\n").expect("write checked candidate");
+        fs::write(&outside, "user: OUTSIDE_PATH\n").expect("write outside target");
+        let checked_candidate = candidate
+            .canonicalize()
+            .expect("canonical checked candidate");
+        let before_swap = local_session_row_id(&checked_candidate);
+        fs::rename(&candidate, parked).expect("park checked candidate");
+        symlink(&outside, &candidate).expect("replace candidate with outside symlink");
+
+        let after_swap = local_session_row_id(&checked_candidate);
+        let _ = fs::remove_dir_all(&fixture);
+
+        assert_eq!(before_swap, after_swap);
     }
 }
 
@@ -2268,37 +2377,80 @@ fn accepted_local_session_content(content: &str) -> String {
 }
 
 fn retain_accepted_local_session_value(value: &mut Value) -> (bool, bool) {
-    retain_accepted_local_session_value_at_boundary(value, true)
+    retain_accepted_local_session_value_at_boundary(value, true, true, false)
 }
 
 fn retain_accepted_local_session_value_at_boundary(
     value: &mut Value,
     plain_string_is_record: bool,
+    scalar_content_allowed: bool,
+    inherited_semantic: bool,
 ) -> (bool, bool) {
     match value {
         Value::Array(items) => {
             let mut changed = false;
             items.retain_mut(|nested| {
-                let (retained, nested_changed) =
-                    retain_accepted_local_session_value_at_boundary(nested, plain_string_is_record);
+                let (retained, nested_changed) = retain_accepted_local_session_value_at_boundary(
+                    nested,
+                    plain_string_is_record,
+                    scalar_content_allowed,
+                    inherited_semantic,
+                );
                 changed |= nested_changed || !retained;
                 retained
             });
-            (true, changed)
+            let retained = !items.is_empty() || inherited_semantic;
+            (retained, changed || !retained)
         }
         Value::Object(map) => {
-            if local_session_object_is_denied(map) {
+            let classification = local_session_record_classification(map, None);
+            if local_session_classification_is_rejected(classification) {
                 return (false, true);
             }
+            let own_semantic = matches!(
+                classification,
+                LocalSessionRecordClassification::User
+                    | LocalSessionRecordClassification::Assistant
+                    | LocalSessionRecordClassification::Thinking
+                    | LocalSessionRecordClassification::Tool
+            );
+            let semantic_body = own_semantic
+                || (inherited_semantic
+                    && classification == LocalSessionRecordClassification::KnownStructure);
+            let wrapper_only = !semantic_body
+                && matches!(
+                    classification,
+                    LocalSessionRecordClassification::KnownStructure
+                        | LocalSessionRecordClassification::Missing
+                );
             let mut changed = false;
-            map.retain(|_, nested| {
-                let (retained, nested_changed) =
-                    retain_accepted_local_session_value_at_boundary(nested, false);
+            map.retain(|key, nested| {
+                let nested_scalar_allowed = semantic_body || !is_json_session_scalar_body_key(key);
+                let nested_inherited_semantic = semantic_body
+                    && (is_json_session_scalar_body_key(key)
+                        || (classification == LocalSessionRecordClassification::Tool
+                            && is_json_tool_payload_key(key)));
+                let (mut retained, nested_changed) =
+                    retain_accepted_local_session_value_at_boundary(
+                        nested,
+                        false,
+                        nested_scalar_allowed,
+                        nested_inherited_semantic,
+                    );
+                if retained
+                    && wrapper_only
+                    && is_json_session_scalar_body_key(key)
+                    && !local_session_value_contains_proven_event(nested)
+                {
+                    retained = false;
+                }
                 changed |= nested_changed || !retained;
                 retained
             });
-            (true, changed)
+            let retained = !map.is_empty() || inherited_semantic;
+            (retained, changed || !retained)
         }
+        Value::String(_) if !scalar_content_allowed => (false, true),
         Value::String(text)
             if plain_string_is_record && plain_local_session_record_is_denied(text) =>
         {
@@ -2308,9 +2460,54 @@ fn retain_accepted_local_session_value_at_boundary(
     }
 }
 
+fn local_session_value_contains_proven_event(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(local_session_value_contains_proven_event),
+        Value::Object(map) => {
+            matches!(
+                local_session_record_classification(map, None),
+                LocalSessionRecordClassification::User
+                    | LocalSessionRecordClassification::Assistant
+                    | LocalSessionRecordClassification::Thinking
+                    | LocalSessionRecordClassification::Tool
+            ) || map.values().any(local_session_value_contains_proven_event)
+        }
+        _ => false,
+    }
+}
+
+fn is_json_tool_payload_key(key: &str) -> bool {
+    matches!(
+        key,
+        "arguments" | "input" | "result" | "output" | "error" | "payload" | "data" | "function"
+    )
+}
+
+fn is_json_session_scalar_body_key(key: &str) -> bool {
+    matches!(
+        key,
+        "content"
+            | "parts"
+            | "text"
+            | "message"
+            | "delta"
+            | "thinking"
+            | "reasoning"
+            | "thought"
+            | "summary"
+            | "result"
+            | "input"
+            | "output"
+    )
+}
+
 fn local_session_row_id(path: &Path) -> String {
-    let path_key = local_session_normalized_path(path);
-    let path_hash = trace_content_hash(&path_key)
+    let path_key = path.to_string_lossy().replace('\\', "/");
+    let path_key = path_key
+        .strip_prefix("//?/")
+        .unwrap_or(&path_key)
+        .trim_end_matches('/');
+    let path_hash = trace_content_hash(path_key)
         .chars()
         .take(16)
         .collect::<String>();
@@ -2372,10 +2569,12 @@ fn enrich_local_session_content(
                 chunks.push(message.clone());
                 if let Ok(message_value) = serde_json::from_str::<Value>(message.trim()) {
                     if let Some(message_id) = message_value.get("id").and_then(Value::as_str) {
+                        let inherited_role = message_value.as_object().and_then(json_session_role);
                         append_opencode_parts(
                             &storage_root,
                             root,
                             message_id,
+                            inherited_role,
                             max_line_fragment_bytes,
                             &mut chunks,
                         );
@@ -2391,6 +2590,7 @@ fn append_opencode_parts(
     storage_root: &Path,
     root: &Path,
     message_id: &str,
+    inherited_role: Option<&str>,
     max_line_fragment_bytes: usize,
     chunks: &mut Vec<String>,
 ) {
@@ -2417,15 +2617,50 @@ fn append_opencode_parts(
             continue;
         };
         if let Ok(part) = fs::read_to_string(part_path) {
-            let part = accepted_local_session_content(&compact_local_session_records(
-                &part,
-                max_line_fragment_bytes,
-            ));
+            let compacted = compact_local_session_records(&part, max_line_fragment_bytes);
+            let attributed = opencode_part_with_inherited_role(&compacted, inherited_role);
+            let part = accepted_local_session_content(&attributed);
             if !part.is_empty() {
                 chunks.push(part);
             }
         }
     }
+}
+
+fn opencode_part_with_inherited_role(content: &str, inherited_role: Option<&str>) -> String {
+    let Some(inherited_role) = inherited_role else {
+        return content.to_string();
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(content.trim()) else {
+        return content.to_string();
+    };
+    let Some(map) = value.as_object_mut() else {
+        return content.to_string();
+    };
+    if local_session_role_evidence(map).classification != LocalSessionRecordClassification::Missing
+        || !map
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|record_type| record_type.to_ascii_lowercase().replace(['_', '-'], ""))
+            .is_some_and(|record_type| {
+                matches!(record_type.as_str(), "text" | "inputtext" | "outputtext")
+            })
+    {
+        return content.to_string();
+    }
+    if json_session_text(map)
+        .as_deref()
+        .is_some_and(plain_local_session_record_is_denied)
+    {
+        return content.to_string();
+    }
+    map.insert(
+        "role".to_string(),
+        Value::String(inherited_role.to_string()),
+    );
+    let mut attributed = value.to_string();
+    attributed.push('\n');
+    attributed
 }
 
 fn authorized_local_session_extra_dir(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -3317,11 +3552,11 @@ fn collect_json_session_content_drafts(
         }
         Value::Object(map) => {
             let timestamp = json_session_timestamp_millis(value).or(inherited_timestamp);
-            let role = json_session_role(map).map(str::to_string);
             if local_session_object_is_denied(map) {
                 return;
             }
-            let direct_kind = json_session_content_kind(map, role.as_deref());
+            let classification = local_session_record_classification(map, None);
+            let direct_kind = json_session_content_kind(map, None);
             let direct_tool = direct_kind == Some("tool_call");
             let mut pushed_direct_tool = false;
             if let Some(kind) = direct_kind {
@@ -3344,6 +3579,20 @@ fn collect_json_session_content_drafts(
 
             if !pushed_direct_tool {
                 collect_json_tool_call_drafts(map, timestamp, drafts);
+            }
+
+            if direct_kind.is_none()
+                && matches!(
+                    classification,
+                    LocalSessionRecordClassification::KnownStructure
+                        | LocalSessionRecordClassification::Missing
+                )
+            {
+                for key in ["content", "text", "message", "delta", "parts"] {
+                    if let Some(nested @ (Value::Array(_) | Value::Object(_))) = map.get(key) {
+                        collect_nested_json_session_content_drafts(nested, timestamp, drafts);
+                    }
+                }
             }
 
             for (key, nested) in map {
@@ -3432,7 +3681,7 @@ fn collect_json_metadata_tool_drafts(
             if local_session_object_is_denied(map) {
                 return;
             }
-            if local_session_record_classification(map, json_session_role(map))
+            if local_session_record_classification(map, None)
                 == LocalSessionRecordClassification::Tool
             {
                 collect_json_session_content_drafts(value, inherited_timestamp, drafts);
@@ -4022,9 +4271,11 @@ fn json_non_tool_message_text(value: &Value) -> Option<String> {
 
 fn json_session_blocks_plain_text_fallback(map: &serde_json::Map<String, Value>) -> bool {
     matches!(
-        local_session_record_classification(map, json_session_role(map)),
+        local_session_record_classification(map, None),
         LocalSessionRecordClassification::Deny
             | LocalSessionRecordClassification::Tool
+            | LocalSessionRecordClassification::KnownStructure
+            | LocalSessionRecordClassification::Missing
             | LocalSessionRecordClassification::Unproven
     )
 }
@@ -4286,35 +4537,10 @@ fn local_session_metrics(
 }
 
 fn json_session_role(map: &serde_json::Map<String, Value>) -> Option<&str> {
-    map.get("role")
-        .and_then(Value::as_str)
-        .or_else(|| map.get("sender").and_then(Value::as_str))
-        .or_else(|| {
-            map.get("message")
-                .and_then(Value::as_object)
-                .and_then(|message| message.get("role"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            map.get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("role"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            map.get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("item"))
-                .and_then(Value::as_object)
-                .and_then(|item| item.get("role"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            map.get("author")
-                .and_then(Value::as_object)
-                .and_then(|author| author.get("role"))
-                .and_then(Value::as_str)
-        })
+    let evidence = local_session_role_evidence(map);
+    (!local_session_classification_is_rejected(evidence.classification))
+        .then_some(evidence.role)
+        .flatten()
 }
 
 fn local_session_title(path: &Path, short_hash: &str) -> String {
@@ -4338,14 +4564,6 @@ fn infer_local_session_agent(path: &Path) -> Option<String> {
     } else {
         None
     }
-}
-
-fn local_session_modified_at(path: &Path) -> Option<i64> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    modified
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis() as i64)
 }
 
 fn local_preview_redaction_summary_from(
