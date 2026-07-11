@@ -41,13 +41,18 @@ these members in this exact order:
 
 1. `verify:service-protocol-drift`
 2. `verify:module-size`
-3. `verify:list-completeness`
-4. `verify:doc-governance`
-5. `verify:macos-native-test-registry`
-6. `verify:js-syntax`
-7. `verify:rust-docs`
-8. `verify:validation-blockers`
-9. `verify:screenshot-artifacts`
+3. `verify:quality-budgets`
+4. `verify:list-completeness`
+5. `verify:doc-governance`
+6. `verify:macos-native-test-registry`
+7. `verify:js-syntax`
+8. `verify:rust-docs`
+9. `verify:validation-blockers`
+10. `verify:screenshot-artifacts`
+
+`verify:quality-budgets` checks the parser, exact 10k count contract, and
+checked-in elapsed/RSS/p95 ceilings. The live benchmark commands separately
+measure and enforce those ceilings against the current machine.
 
 `verify:list-completeness` checks the schema-v1 formal-list inventory, owning
 source paths and Swift type/member anchors, unique reachable full-access

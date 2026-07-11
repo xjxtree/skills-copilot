@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "scan_10k": {
+    "max_elapsed_ms": 8000,
+    "max_rss_mb": 640
+  },
+  "native_list": {
+    "max_p95_ms": 80
+  }
+}

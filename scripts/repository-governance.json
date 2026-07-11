@@ -38,6 +38,7 @@
     "members": [
       "verify:service-protocol-drift",
       "verify:module-size",
+      "verify:quality-budgets",
       "verify:list-completeness",
       "verify:doc-governance",
       "verify:macos-native-test-registry",

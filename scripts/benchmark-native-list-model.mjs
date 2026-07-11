@@ -5,20 +5,32 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import {
+  effectiveMaximum,
+  loadPerformanceBudgets,
+} from "./lib/quality-budgets.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const performanceBudgets = await loadPerformanceBudgets(
+  join(repoRoot, "scripts/performance-budgets.json"),
+);
 const tempDir = await mkdtemp(join(tmpdir(), "skills-copilot-native-list-bench-"));
 const runnerPath = join(tempDir, "NativeListModelBench.swift");
 const binaryPath = join(tempDir, "NativeListModelBench");
 const iterations = Number(process.env.NATIVE_LIST_BENCH_ITERATIONS ?? 80);
 const warmups = Number(process.env.NATIVE_LIST_BENCH_WARMUPS ?? 12);
-const maxP95Ms = Number(process.env.NATIVE_LIST_BENCH_MAX_P95_MS ?? 80);
+const maxP95Ms = effectiveMaximum(
+  performanceBudgets.native_list.max_p95_ms,
+  process.env.NATIVE_LIST_BENCH_MAX_P95_MS,
+  process.env.CI === "true",
+);
 
 await writeFile(runnerPath, makeRunnerSource({ iterations, maxP95Ms, warmups }), "utf8");
 
 try {
   run("swiftc", [
     "-O",
+    join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/ListCompleteness.swift"),
     join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/SkillRecord.swift"),
     join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/FindingTriageState.swift"),
     join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/ScriptExecutionPreview.swift"),
@@ -61,6 +73,7 @@ struct NativeListModelBench {
 
     static func main() {
         print("native-list-model-bench: records=\(skills.count) iterations=\(iterations) warmups=\(warmups)")
+        print("native-list-model-bench: budget max_p95_ms=\(maxP95Ms)")
         var failed = false
         let scenarios: [(String, () -> Void)] = [
             ("sort:name", {
