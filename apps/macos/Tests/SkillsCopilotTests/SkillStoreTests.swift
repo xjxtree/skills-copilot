@@ -257,6 +257,12 @@ struct SkillStoreTests {
         try await runCase("allAgentConfigHistoryPageTaskPreservesCachedRowsWithoutRPC") {
             try await allAgentConfigHistoryPageTaskPreservesCachedRowsWithoutRPC()
         }
+        try await runCase("allAgentConfigHistoryInvalidatesActiveSameAgentRequestKey") {
+            try await allAgentConfigHistoryInvalidatesActiveSameAgentRequestKey()
+        }
+        try await runCase("allAgentConfigHistoryInvalidatesCompletedSameAgentRequestKey") {
+            try await allAgentConfigHistoryInvalidatesCompletedSameAgentRequestKey()
+        }
         try await runCase("toggleSelectedSkillExposesWritingStateAndRefreshesSelection") {
             try await toggleSelectedSkillExposesWritingStateAndRefreshesSelection()
         }

@@ -134,4 +134,159 @@ extension SkillStoreTests {
         try expectEqual(store.agentConfigSnapshots.count, 201, "A late concrete-agent generation must not replace the All-agents cache.")
         try expectEqual(store.agentConfigSnapshotCompleteness, allState, "A late concrete-agent generation must not restore its old pagination metadata.")
     }
+
+    func allAgentConfigHistoryInvalidatesActiveSameAgentRequestKey() async throws {
+        let runner = AgentConfigRequestKeyRunner(delayedSnapshotCalls: [1, 2])
+        defer {
+            runner.releaseSnapshotCall(1)
+            runner.releaseSnapshotCall(2)
+        }
+        let store = SkillStore(service: runner.serviceClient())
+        let oldTask = Task { await store.loadAgentConfigSnapshotsIfNeeded(agent: "claude-code") }
+        try await waitUntil("The old concrete-agent request should suspend.") {
+            await runner.snapshotCallCount == 1
+        }
+
+        store.agentFilter = .all
+        await store.loadSelectedAgentConfigDataIfNeeded()
+        store.agentFilter = .claudeCode
+        try await waitUntil("Returning to the same concrete agent should start a replacement request.") {
+            await runner.snapshotCallCount == 2
+        }
+
+        runner.releaseSnapshotCall(1)
+        await oldTask.value
+        await store.loadAgentConfigSnapshotsIfNeeded(agent: "claude-code")
+        try expectEqual(await runner.snapshotCallCount, 2, "The stale request must not clear the active replacement request key.")
+
+        runner.releaseSnapshotCall(2)
+        try await waitUntil("The replacement concrete-agent request should publish its own row.") {
+            store.agentConfigSnapshots.map(\.id) == ["request-key-2"]
+                && store.agentConfigSnapshotCompleteness.isComplete
+        }
+        try expectEqual(store.agentConfigSnapshotCompleteness.loadedCount, 1, "The replacement request should restore concrete-agent completeness.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.totalCount, 1, "The replacement request should restore its concrete-agent total.")
+    }
+
+    func allAgentConfigHistoryInvalidatesCompletedSameAgentRequestKey() async throws {
+        let runner = AgentConfigRequestKeyRunner()
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.loadAgentConfigSnapshotsIfNeeded(agent: "claude-code")
+        try expectEqual(await runner.snapshotCallCount, 1, "The initial concrete-agent request should complete once.")
+        try expectEqual(store.agentConfigSnapshots.map(\.id), ["request-key-1"], "The initial concrete-agent row should be cached.")
+
+        store.agentFilter = .all
+        await store.loadSelectedAgentConfigDataIfNeeded()
+        store.agentFilter = .claudeCode
+        await store.loadAgentConfigSnapshotsIfNeeded(agent: "claude-code")
+
+        try expectEqual(await runner.snapshotCallCount, 2, "Returning from the cache-only source must not reuse the previous loaded request key.")
+        try expectEqual(store.agentConfigSnapshots.map(\.id), ["request-key-2"], "Returning to the concrete agent should replace the cache with freshly loaded rows.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.loadedCount, 1, "Concrete-agent completeness should match the fresh response.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.totalCount, 1, "Concrete-agent total should come from the fresh response.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.isComplete, true, "The fresh concrete-agent page should be complete.")
+    }
+}
+
+private final class AgentConfigRequestKeyRunner: ServiceProcessRunning, @unchecked Sendable {
+    private let state: State
+
+    init(delayedSnapshotCalls: Set<Int> = []) {
+        state = State(delayedSnapshotCalls: delayedSnapshotCalls)
+    }
+
+    var snapshotCallCount: Int {
+        get async { await state.snapshotCallCount }
+    }
+
+    func serviceClient() -> ServiceClient {
+        ServiceClient(
+            processRunner: self,
+            serviceURL: URL(fileURLWithPath: "/tmp/agent-config-request-key-service")
+        )
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        guard let request = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let method = request["method"] as? String else {
+            return Self.error(code: "invalid_request", message: "invalid request")
+        }
+        let params = request["params"] as? [String: Any] ?? [:]
+        switch method {
+        case "snapshot.listAgentConfigPage":
+            return await state.snapshotResponse(agent: params["agent"] as? String ?? "claude-code")
+        default:
+            return Self.error(code: "unknown_method", message: "unknown method: \(method)")
+        }
+    }
+
+    func releaseSnapshotCall(_ ordinal: Int) {
+        Task { await state.releaseSnapshotCall(ordinal) }
+    }
+
+    private actor State {
+        let delayedSnapshotCalls: Set<Int>
+        var snapshotCallCount = 0
+        var continuations: [Int: CheckedContinuation<Void, Never>] = [:]
+        var releasedCalls = Set<Int>()
+
+        init(delayedSnapshotCalls: Set<Int>) {
+            self.delayedSnapshotCalls = delayedSnapshotCalls
+        }
+
+        func snapshotResponse(agent: String) async -> Data {
+            snapshotCallCount += 1
+            let ordinal = snapshotCallCount
+            if delayedSnapshotCalls.contains(ordinal) {
+                await withCheckedContinuation { continuation in
+                    if releasedCalls.remove(ordinal) != nil {
+                        continuation.resume()
+                    } else {
+                        continuations[ordinal] = continuation
+                    }
+                }
+            }
+            return AgentConfigRequestKeyRunner.snapshotPage(agent: agent, ordinal: ordinal)
+        }
+
+        func releaseSnapshotCall(_ ordinal: Int) {
+            if let continuation = continuations.removeValue(forKey: ordinal) {
+                continuation.resume()
+            } else {
+                releasedCalls.insert(ordinal)
+            }
+        }
+    }
+
+    private static func snapshotPage(agent: String, ordinal: Int) -> Data {
+        response(result: [
+            "records": [[
+                "id": "request-key-\(ordinal)",
+                "agent": agent,
+                "scope": "agent-global",
+                "target": "/tmp/home/.\(agent)/config",
+                "content": "{}",
+                "reason": "request-key-test",
+                "created_at": ordinal,
+            ]],
+            "source_revision": "sha256:request-key-\(ordinal)",
+            "returned_count": 1,
+            "total_count": 1,
+            "has_more": false,
+            "source_completeness": "enumerable",
+        ])
+    }
+
+    private static func response(result: Any) -> Data {
+        json(["id": "test", "ok": true, "result": result])
+    }
+
+    private static func error(code: String, message: String) -> Data {
+        json(["id": "test", "ok": false, "error": ["code": code, "message": message]])
+    }
+
+    private static func json(_ value: Any) -> Data {
+        (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])) ?? Data()
+    }
 }

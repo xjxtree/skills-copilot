@@ -469,7 +469,7 @@ final class SkillStore: ObservableObject {
     private var claudeSettingsLoadGeneration = 0
     private var selectedDetailLoadGeneration = 0
     private var loadedAgentConfigSnapshotRequestKey: String?
-    private var activeAgentConfigSnapshotRequestKey: String?
+    private var activeAgentConfigSnapshotRequest: (key: String, id: UUID)?
     private var loadedAgentConfigDocumentRequestKey: String?
     private var activeAgentConfigDocumentRequestKey: String?
     private var loadedClaudeSettingsRequestKey: String?
@@ -673,8 +673,8 @@ final class SkillStore: ObservableObject {
         agentFilterLoadTask?.cancel()
         let requestedAgentFilter = agentFilter
         agentFilterLoadTask = Task { @MainActor [weak self, requestedAgentFilter] in
-            guard let self else { return }
-            await self.loadAgentConfigSnapshotsIfNeeded()
+            guard let self, !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
+            await self.loadAgentConfigSnapshotsIfNeeded(agent: requestedAgentFilter.rawValue)
             guard !Task.isCancelled, self.agentFilter == requestedAgentFilter else { return }
         }
     }
@@ -3859,7 +3859,7 @@ final class SkillStore: ObservableObject {
         agentConfigSnapshotLoadGeneration &+= 1
         activeClaudeSettingsRequestKey = nil
         activeAgentConfigDocumentRequestKey = nil
-        activeAgentConfigSnapshotRequestKey = nil
+        activeAgentConfigSnapshotRequest = nil
         loadedClaudeSettingsRequestKey = nil
         loadedAgentConfigDocumentRequestKey = nil
         loadedAgentConfigSnapshotRequestKey = nil
@@ -3927,30 +3927,31 @@ final class SkillStore: ObservableObject {
     private func loadAgentConfigSnapshots(agent requestedAgent: String? = nil, force: Bool) async {
         guard let agent = normalizedConfigAgent(requestedAgent) else {
             agentConfigSnapshotLoadGeneration &+= 1
+            activeAgentConfigSnapshotRequest = nil
+            loadedAgentConfigSnapshotRequestKey = nil
             agentConfigSnapshotAccumulator = ListPageAccumulator(cachedItems: agentConfigSnapshots)
             publishAgentConfigSnapshotPaging()
             normalizeConfigSelection()
             return
         }
-
         let requestKey = agentConfigRequestKey(agent: agent)
         if !force {
-            if loadedAgentConfigSnapshotRequestKey == requestKey || activeAgentConfigSnapshotRequestKey == requestKey {
+            if loadedAgentConfigSnapshotRequestKey == requestKey || activeAgentConfigSnapshotRequest?.key == requestKey {
                 return
             }
         }
-        guard activeAgentConfigSnapshotRequestKey != requestKey else { return }
+        guard activeAgentConfigSnapshotRequest?.key != requestKey else { return }
 
         clearRollbackConfirmation()
         if force || loadedAgentConfigSnapshotRequestKey != requestKey {
             cancelAgentConfigSnapshotLoadAll()
             resetAgentConfigSnapshotPaging(clearRows: true)
         }
-        activeAgentConfigSnapshotRequestKey = requestKey
+        let requestID = UUID()
+        activeAgentConfigSnapshotRequest = (requestKey, requestID)
         await loadMoreAgentConfigSnapshots(loadAll: true)
-        if activeAgentConfigSnapshotRequestKey == requestKey {
-            activeAgentConfigSnapshotRequestKey = nil
-        }
+        guard activeAgentConfigSnapshotRequest?.id == requestID else { return }
+        activeAgentConfigSnapshotRequest = nil
         if agentConfigSnapshotCompleteness.isComplete {
             loadedAgentConfigSnapshotRequestKey = requestKey
             normalizeConfigSelection()
