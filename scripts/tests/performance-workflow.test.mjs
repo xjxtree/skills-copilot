@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { workflowJobBody } from "../lib/performance-workflow.mjs";
 
 test("macOS CI runs both live performance gates after build and before smoke", async () => {
   const workflow = await readFile(
     new URL("../../.github/workflows/ci.yml", import.meta.url),
     "utf8",
   );
-  const jobStart = workflow.indexOf("\n  macos-app:\n");
-  assert.notEqual(jobStart, -1, "ci.yml must contain the macos-app job");
-  const macosJob = workflow.slice(jobStart);
+  const macosJob = workflowJobBody(workflow, "macos-app");
 
   const build = macosJob.indexOf("run: pnpm build:macos");
   const tenK = macosJob.indexOf("run: pnpm benchmark:10k");
@@ -35,4 +34,25 @@ test("macOS CI runs both live performance gates after build and before smoke", a
     1,
     "native list live gate must appear exactly once in macos-app",
   );
+});
+
+test("macOS performance assertions ignore matching commands in later jobs", () => {
+  const workflow = `
+jobs:
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - run: pnpm build:macos
+  later-job:
+    runs-on: macos-latest
+    steps:
+      - run: pnpm benchmark:10k
+      - run: pnpm benchmark:macos-list-model
+      - run: pnpm smoke:macos-app -- --fixture-data --headless-sidecar
+`;
+
+  const macosJob = workflowJobBody(workflow, "macos-app");
+  assert.match(macosJob, /run: pnpm build:macos/);
+  assert.doesNotMatch(macosJob, /benchmark:10k/);
+  assert.doesNotMatch(macosJob, /later-job:/);
 });

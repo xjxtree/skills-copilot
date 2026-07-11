@@ -79,7 +79,6 @@ final class SkillStore: ObservableObject {
     private static let localSessionPrewarmLimit = 800
     private static let globalSearchLimitPerKind = 6
     private static let providerObservabilityRowLimit = 100
-    static let providerActivityPageLimit = 50
 
     @Published private(set) var skills: [SkillRecord] = [] {
         didSet {
@@ -138,9 +137,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingLLMPromptRuns = false
     @Published private(set) var providerObservabilityResult: ProviderObservabilityResult?
     @Published private(set) var isLoadingProviderObservability = false
-    @Published var providerActivityRows: [ProviderActivityRow] = []
-    @Published var providerActivityCompleteness = ListPageAccumulator<ProviderActivityRow>().state
-    @Published var providerActivityErrorMessage: String?
     @Published var providerObservabilityDateRange: ProviderObservabilityDateRangePreset = .last30Days {
         didSet {
             guard oldValue != providerObservabilityDateRange else { return }
@@ -458,6 +454,7 @@ final class SkillStore: ObservableObject {
     }
 
     let service: ServiceClient
+    let providerActivityController: ProviderActivityController
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
@@ -494,11 +491,6 @@ final class SkillStore: ObservableObject {
     private var skillManagerApplyTask: Task<Void, Never>?
     private var hasLoadedAIProviderStatus = false
     private var hasLoadedProviderObservability = false
-    var providerActivityAccumulators: [ProviderActivityFilterKey: ListPageAccumulator<ProviderActivityRow>] = [:]
-    var providerActivityGenerations: [ProviderActivityFilterKey: UInt64] = [:]
-    var activeProviderActivityFilterKey: ProviderActivityFilterKey?
-    var providerActivityPageTask: Task<ProviderActivityPageResult, Error>?
-    var providerActivityPageRequestID: UUID?
     private var taskCockpitOperationID: UUID?
     private var lastMutationMessageDismissTask: Task<Void, Never>?
     private var errorMessageDismissTask: Task<Void, Never>?
@@ -603,6 +595,7 @@ final class SkillStore: ObservableObject {
         autosaveDelayNanoseconds: UInt64 = UIOptimizationPresentation.configEditor.autosaveDelayNanoseconds
     ) {
         self.service = service
+        providerActivityController = ProviderActivityController(service: service)
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
         self.taskCockpitHistoryStore = taskCockpitHistoryStore
         self.autosaveDelayNanoseconds = autosaveDelayNanoseconds
@@ -622,9 +615,10 @@ final class SkillStore: ObservableObject {
         skillManagerLocalDeleteTask?.cancel()
         localSessionDetailTask?.cancel()
         localSessionLoadAllTask?.cancel()
-        providerActivityPageTask?.cancel()
+        let activityController = providerActivityController
         let lane = autosaveMutationLane
         Task { @MainActor in
+            activityController.cancelActiveRequest()
             lane.shutdown()
         }
     }
@@ -3546,7 +3540,8 @@ final class SkillStore: ObservableObject {
             startAt: range.startAt,
             endAt: range.endAt
         )
-        let activityGeneration = beginProviderActivityRefresh(for: activityKey)
+        let activityGeneration = providerActivityController.beginRefresh(for: activityKey)
+        objectWillChange.send()
 
         do {
             providerObservabilityResult = try await service.providerObservability(
@@ -3560,18 +3555,20 @@ final class SkillStore: ObservableObject {
                 includeEvidence: false
             )
             hasLoadedProviderObservability = true
-            await loadInitialProviderActivity(
+            await providerActivityController.loadInitial(
                 for: activityKey,
                 generation: activityGeneration
             )
+            objectWillChange.send()
         } catch {
             providerObservabilityResult = .unavailable(reason: error.localizedDescription)
             hasLoadedProviderObservability = true
-            failProviderActivity(
+            providerActivityController.fail(
                 error,
                 for: activityKey,
                 generation: activityGeneration
             )
+            objectWillChange.send()
         }
     }
 

@@ -16,6 +16,7 @@ struct ListCompletenessModelTests {
         try pageFailureKeepsRetryContinuation()
         try initialPageFailureAllowsRetryAllOnly()
         try terminalFailureNeverCompletesUnknownTotal()
+        try occurrenceDisplayIDsRetainDuplicateLogicalRows()
     }
 
     private func appendsPagesWithoutDuplicateIDs() throws {
@@ -133,6 +134,8 @@ struct ListCompletenessModelTests {
     private func pageFailureKeepsRetryContinuation() throws {
         var value = try enumerableContinuation()
         value.fail(reason: .pageFailed)
+        try expectEqual(value.state.isComplete, false, "A failed continuation must never report complete")
+        try expectEqual(value.state.completeness, .incomplete, "A failed continuation must be visibly incomplete")
         try expectEqual(value.state.canLoadMore, true, "Page failure should keep retry continuation")
         try expectEqual(value.state.canLoadAll, true, "Page failure should keep retry-all continuation")
     }
@@ -173,5 +176,19 @@ struct ListCompletenessModelTests {
             totalCount: 3, hasMore: true, nextCursor: "next", sourceRevision: "r1",
             sourceCompleteness: .enumerable, incompleteReason: nil))
         return value
+    }
+
+    private func occurrenceDisplayIDsRetainDuplicateLogicalRows() throws {
+        let rows = [
+            Row(id: "duplicate", value: "first"),
+            Row(id: "unique", value: "middle"),
+            Row(id: "duplicate", value: "second")
+        ]
+        let first = OccurrenceIdentifiedItem.rows(for: rows)
+        let second = OccurrenceIdentifiedItem.rows(for: rows)
+
+        try expectEqual(first.map(\.value.value), ["first", "middle", "second"], "Occurrence display rows must retain every logical duplicate.")
+        try expectEqual(first.map(\.id.occurrence), [0, 0, 1], "Occurrences must be counted per logical ID, not by array offset.")
+        try expectEqual(first.map(\.id), second.map(\.id), "Occurrence display identity must remain stable for identical input order.")
     }
 }

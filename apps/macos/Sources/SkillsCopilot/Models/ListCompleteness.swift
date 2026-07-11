@@ -50,6 +50,28 @@ struct ListPage<Item> {
     let incompleteReason: ListIncompleteReason?
 }
 
+struct OccurrenceIdentifiedItem<Value: Identifiable>: Identifiable where Value.ID: Hashable {
+    struct ID: Hashable {
+        let logicalID: Value.ID
+        let occurrence: Int
+    }
+
+    let id: ID
+    let value: Value
+
+    static func rows(for values: [Value]) -> [OccurrenceIdentifiedItem<Value>] {
+        var occurrences: [Value.ID: Int] = [:]
+        return values.map { value in
+            let occurrence = occurrences[value.id, default: 0]
+            occurrences[value.id] = occurrence + 1
+            return OccurrenceIdentifiedItem(
+                id: ID(logicalID: value.id, occurrence: occurrence),
+                value: value
+            )
+        }
+    }
+}
+
 enum ListPageAccumulatorError: Error, Equatable {
     case sourceChanged
     case invalidPage
@@ -140,10 +162,6 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
         let completeness: ListCompleteness
         if isComplete {
             completeness = .complete
-        } else if incompleteReason == .pageFailed,
-                  sourceCompleteness == .enumerable,
-                  hasMore {
-            completeness = .partial
         } else if sourceCompleteness == .limited || incompleteReason != nil {
             completeness = .incomplete
         } else if sourceCompleteness == .unknown {

@@ -521,7 +521,11 @@ private struct ProviderActivitySettingsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            if rows.isEmpty {
+            if ProviderActivityPresentation.showsTrueEmptyState(
+                rows: rows,
+                completeness: completeness,
+                errorMessage: errorMessage
+            ) {
                 Text(UIStrings.providerActivityEmpty)
                     .font(.caption)
                     .foregroundStyle(.secondary)

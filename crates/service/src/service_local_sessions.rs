@@ -369,7 +369,7 @@ impl ServiceHost {
                     .to_string(),
             );
         }
-        let skill_usage_rows = local_session_skill_usage_rows(skill_usage, limit);
+        let skill_usage_rows = local_session_skill_usage_rows(skill_usage);
 
         Ok(LocalSessionPreviewResult {
             generated_by: "local-v2.98",
@@ -3623,7 +3623,6 @@ fn max_optional_millis(left: Option<i64>, right: Option<i64>) -> Option<i64> {
 
 fn local_session_skill_usage_rows(
     usage: BTreeMap<String, LocalSessionSkillUsageAccumulator>,
-    limit: usize,
 ) -> Vec<LocalSessionSkillUsageRow> {
     let mut rows = usage
         .into_values()
@@ -3645,7 +3644,6 @@ fn local_session_skill_usage_rows(
             .then_with(|| right.latest_modified_at.cmp(&left.latest_modified_at))
             .then_with(|| left.skill_name.cmp(&right.skill_name))
     });
-    rows.truncate(limit);
     rows
 }
 

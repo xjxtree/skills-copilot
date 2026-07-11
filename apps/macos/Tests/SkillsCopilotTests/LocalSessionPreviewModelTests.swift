@@ -6,6 +6,7 @@ struct LocalSessionPreviewModelTests {
         try previewDecodesRedactedRowsAndSafety()
         try previewDecodesCandidateAndContentCompatibility()
         try previewMergesPaginatedRows()
+        try previewMergesSkillUsageAcrossPages()
         try unavailableKeepsAuthorizationRequired()
         try filteredEmptyCopyExplainsHiddenLocalSessionCount()
     }
@@ -248,6 +249,56 @@ struct LocalSessionPreviewModelTests {
         try expectEqual(merged.hasMore, false, "Paginated merge should expose the latest page continuation state.")
         try expectNil(merged.nextOffset, "Final page should clear next offset.")
         try expectFalse(!merged.candidateSetTruncated, "Paginated merge should retain truncation from either page.")
+    }
+
+    private func previewMergesSkillUsageAcrossPages() throws {
+        let first = LocalSessionPreviewResult(
+            skillUsageRows: [
+                LocalSessionSkillUsageRow(
+                    skillId: "alpha",
+                    skillName: "Alpha",
+                    agent: "codex",
+                    callCount: 2,
+                    sessionCount: 1,
+                    latestModifiedAt: "100",
+                    evidenceRefs: ["alpha:one"]
+                )
+            ],
+            hasMore: true,
+            nextCursor: "next",
+            sourceRevision: "r1"
+        )
+        let second = LocalSessionPreviewResult(
+            skillUsageRows: [
+                LocalSessionSkillUsageRow(
+                    skillId: "beta",
+                    skillName: "Beta",
+                    agent: "codex",
+                    callCount: 3,
+                    sessionCount: 1,
+                    latestModifiedAt: "300",
+                    evidenceRefs: ["beta:one"]
+                ),
+                LocalSessionSkillUsageRow(
+                    skillId: "alpha",
+                    skillName: "Alpha",
+                    agent: "codex",
+                    callCount: 4,
+                    sessionCount: 2,
+                    latestModifiedAt: "200",
+                    evidenceRefs: ["alpha:one", "alpha:two"]
+                )
+            ],
+            hasMore: false,
+            sourceRevision: "r1"
+        )
+
+        let merged = first.mergingPage(second)
+        try expectEqual(merged.skillUsageRows.map(\.skillId), ["alpha", "beta"], "Final Show All source must keep skills from every accepted page in deterministic aggregate order.")
+        try expectEqual(merged.skillUsageRows.first?.callCount, 6, "Repeated skill calls must aggregate across pages.")
+        try expectEqual(merged.skillUsageRows.first?.sessionCount, 3, "Repeated skill session counts must aggregate across pages.")
+        try expectEqual(merged.skillUsageRows.first?.latestModifiedAt, "200", "Repeated skills must retain the latest timestamp.")
+        try expectEqual(merged.skillUsageRows.first?.evidenceRefs, ["alpha:one", "alpha:two"], "Evidence must merge without duplicates and preserve first-seen order.")
     }
 
     private func decodePreview(_ payload: String) throws -> LocalSessionPreviewResult {

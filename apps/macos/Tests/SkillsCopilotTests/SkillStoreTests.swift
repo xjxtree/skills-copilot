@@ -1306,7 +1306,7 @@ struct SkillStoreTests {
         await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
 
         try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "A second-page failure must retain the first accepted page.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .partial, "A retryable page failure should remain partial.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .incomplete, "A retryable page failure should remain visibly incomplete.")
 
         await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
 
@@ -1351,7 +1351,7 @@ struct SkillStoreTests {
 
         await store.reload()
         try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "Initial selected history should preserve the first page.")
-        try expectEqual(store.selectedSkillEventCompleteness.completeness, .partial, "The selected cached failure must be visibly partial.")
+        try expectEqual(store.selectedSkillEventCompleteness.completeness, .incomplete, "The selected cached failure must be visibly incomplete.")
 
         await store.loadSelectedDetail()
 

@@ -357,6 +357,10 @@ struct SkillManagerSearchRecord: Codable, Hashable {
             incompleteReason: incompleteReason
         )
     }
+
+    func displayResults(visibleCount: Int) -> [OccurrenceIdentifiedItem<SkillManagerSearchResult>] {
+        OccurrenceIdentifiedItem.rows(for: Array(results.prefix(max(0, visibleCount))))
+    }
 }
 
 struct SkillManagerListInstalledParams: Encodable {
@@ -418,6 +422,11 @@ struct SkillManagerInstalledListRecord: Codable, Hashable {
             sourceCompleteness: sourceCompleteness,
             incompleteReason: incompleteReason
         )
+    }
+
+
+    var displayRecords: [OccurrenceIdentifiedItem<SkillManagerInstalledRecord>] {
+        OccurrenceIdentifiedItem.rows(for: installed)
     }
 }
 

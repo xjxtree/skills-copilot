@@ -11,6 +11,7 @@ struct SkillManagerModelTests {
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
         try suggestionsRemainCompleteStableAndUnique()
+        try duplicateSearchAndInstalledIDsKeepEveryDisplayOccurrence()
     }
 
     private func visibleResultsRevealReturnedRowsInTwentyRowSteps() throws {
@@ -44,6 +45,50 @@ struct SkillManagerModelTests {
         try expectEqual(first, second, "Suggestion ordering must remain stable across identical inputs.")
         try expectEqual(Set(first.map { $0.lowercased() }).count, first.count, "Suggestion values must remain case-insensitively unique.")
         try expectEqual(first.last, "diagnostics", "Suggestion presentation must retain the final fallback item.")
+    }
+
+    private func duplicateSearchAndInstalledIDsKeepEveryDisplayOccurrence() throws {
+        let searchPayload = """
+        {
+          "preview": {"tool_id":"npx-skills","operation":"search","command":[],"cwd":"<project-root>","env":[],"requires_confirmation":false,"confirmed":false,"network_required":true,"network_allowed":true,"will_run":true,"preview_token":"fixture","summary":"fixture","risks":[]},
+          "output": null,
+          "results": [
+            {"name":"same","source":"owner/repo","raw":{}},
+            {"name":"same","source":"owner/repo","raw":{"variant":2}}
+          ],
+          "returned_count":2,"total_count":null,"has_more":false,
+          "source_completeness":"unknown","incomplete_reason":"source_limited"
+        }
+        """
+        let search = try JSONDecoder().decode(
+            SkillManagerSearchRecord.self,
+            from: Data(searchPayload.utf8)
+        )
+        let searchRows = search.displayResults(visibleCount: 2)
+        try expectEqual(searchRows.count, 2, "Duplicate manager search IDs must retain every returned row.")
+        try expectEqual(Set(searchRows.map(\.id)).count, 2, "Duplicate manager search IDs must receive occurrence-disambiguated display IDs.")
+        try expectEqual(searchRows.map(\.id.occurrence), [0, 1], "Manager search occurrences must be stable within the logical ID.")
+
+        let installedPayload = """
+        {
+          "preview": {"tool_id":"npx-skills","operation":"listInstalled","command":[],"cwd":"<project-root>","env":[],"requires_confirmation":false,"confirmed":false,"network_required":false,"network_allowed":true,"will_run":true,"preview_token":"fixture","summary":"fixture","risks":[]},
+          "output":{"status":"completed","exit_code":0,"stdout":"","stderr":""},
+          "installed": [
+            {"name":"same","source":"owner/repo","agents":["codex"],"scope":"project","path":"<project-root>/same","raw":{}},
+            {"name":"same","source":"owner/repo","agents":["codex"],"scope":"project","path":"<project-root>/same","raw":{"variant":2}}
+          ],
+          "returned_count":2,"total_count":2,"has_more":false,
+          "source_completeness":"enumerable"
+        }
+        """
+        let installed = try JSONDecoder().decode(
+            SkillManagerInstalledListRecord.self,
+            from: Data(installedPayload.utf8)
+        )
+        let installedRows = installed.displayRecords
+        try expectEqual(installedRows.count, 2, "Duplicate installed IDs must retain every returned row.")
+        try expectEqual(Set(installedRows.map(\.id)).count, 2, "Duplicate installed IDs must receive occurrence-disambiguated display IDs.")
+        try expectEqual(installedRows.map(\.id.occurrence), [0, 1], "Installed occurrences must be stable within the logical ID.")
     }
 
     private func defaultTargetsMatchSupportedManagerOrder() throws {

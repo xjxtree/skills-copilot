@@ -205,7 +205,7 @@ struct DenseDisclosureList<Item, RowContent: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
-            ForEach(Array(items.prefix(visibleLimit).enumerated()), id: \.offset) { _, item in
+            ForEach(Array(items[0..<visibleEnd].enumerated()), id: \.offset) { _, item in
                 rowContent(item)
             }
 
@@ -228,6 +228,10 @@ struct DenseDisclosureList<Item, RowContent: View>: View {
 
     private var hiddenCount: Int {
         max(0, items.count - visibleLimit)
+    }
+
+    private var visibleEnd: Int {
+        min(visibleLimit, items.count)
     }
 }
 

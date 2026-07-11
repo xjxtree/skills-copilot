@@ -65,7 +65,7 @@ struct TaskCockpitDecisionModel {
               !looksLikeRawStructuredPayload(trimmed)
         else { return nil }
 
-        switch normalizedSignalToken(trimmed) {
+        switch TaskCockpitSignalClassifier.normalizedToken(trimmed) {
         case "permissions.exec-needs-human":
             return UIStrings.taskCockpitReasonExecNeedsHuman
         case "permissions.network-declared":
@@ -158,91 +158,16 @@ struct TaskCockpitDecisionModel {
     }
 
     private static func isReviewOnlyRisk(_ row: TaskCockpitContextRow) -> Bool {
-        !signalTokens(for: row).isDisjoint(with: reviewOnlyRiskTokens)
+        TaskCockpitSignalClassifier.classification(for: row) == .reviewOnlyRisk
     }
 
     private static func isInternalBoundary(_ row: TaskCockpitContextRow) -> Bool {
-        !signalTokens(for: row).isDisjoint(with: internalBoundaryTokens)
+        TaskCockpitSignalClassifier.classification(for: row) == .internalBoundary
     }
 
     private static func isInternalBoundary(_ value: String) -> Bool {
-        internalBoundaryTokens.contains(normalizedSignalToken(value))
+        TaskCockpitSignalClassifier.isInternalBoundaryToken(value)
     }
-
-    private static func signalTokens(for row: TaskCockpitContextRow) -> Set<String> {
-        var tokens = Set<String>()
-        for value in [row.id, row.status, row.severity, row.source].compactMap(\.self) {
-            tokens.formUnion(signalTokenVariants(for: value))
-        }
-        for value in row.evidenceRefs + row.safetyFlags {
-            tokens.formUnion(signalTokenVariants(for: value))
-        }
-        return tokens
-    }
-
-    private static func signalTokenVariants(for value: String) -> Set<String> {
-        var tokens = Set<String>()
-        tokens.insert(normalizedSignalToken(value))
-        for separator in [":", "|", "#"] {
-            let parts = value.split(separator: Character(separator), omittingEmptySubsequences: true)
-            if parts.count > 1 {
-                tokens.insert(normalizedSignalToken(String(parts.last ?? "")))
-            }
-        }
-        return tokens.filter { !$0.isEmpty }
-    }
-
-    private static func normalizedSignalToken(_ value: String) -> String {
-        var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        for separator in ["_", " ", "/", ":", "`"] {
-            normalized = normalized.replacingOccurrences(of: separator, with: "-")
-        }
-        while normalized.contains("--") {
-            normalized = normalized.replacingOccurrences(of: "--", with: "-")
-        }
-        return normalized.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
-    }
-
-    private static let reviewOnlyRiskTokens: Set<String> = [
-        "permissions.exec-needs-human",
-        "permissions.network-declared",
-        "exec-needs-human",
-        "network-declared",
-        "requires-confirmation",
-        "network-access"
-    ]
-
-    private static let internalBoundaryTokens: Set<String> = [
-        "no-apply-path",
-        "read-only",
-        "readonly",
-        "read-only-preflight",
-        "preview-only",
-        "copy-only",
-        "provider-not-sent",
-        "task-cockpit-combined",
-        "cockpit-only",
-        "evaluated-top",
-        "matched-task-term",
-        "description-evidence",
-        "top-route-leads",
-        "one-visible-route-candidate",
-        "no-candidate-level-blockers",
-        "no-likely-wrong-pick-risk",
-        "skipped-by-filters",
-        "provider-observability-skipped",
-        "write-action",
-        "script-execution",
-        "snapshot",
-        "telemetry",
-        "cross-agent-analysis",
-        "duplicate-name",
-        "duplicate_name",
-        "cross-agent-duplicate",
-        "source-overlap",
-        "same-name",
-        "overlap-signals"
-    ]
 }
 
 struct TaskCockpitOperationState: Hashable {
@@ -838,6 +763,104 @@ struct TaskCockpitContextRow: Decodable, Hashable, Identifiable {
     }
 }
 
+enum TaskCockpitSignalClassification: Equatable {
+    case userFacing
+    case reviewOnlyRisk
+    case internalBoundary
+}
+
+enum TaskCockpitSignalClassifier {
+    static func classification(for row: TaskCockpitContextRow) -> TaskCockpitSignalClassification {
+        let tokens = signalTokens(for: row)
+        if !tokens.isDisjoint(with: internalBoundaryTokens) {
+            return .internalBoundary
+        }
+        if !tokens.isDisjoint(with: reviewOnlyRiskTokens) {
+            return .reviewOnlyRisk
+        }
+        return .userFacing
+    }
+
+    static func isInternalBoundaryToken(_ value: String) -> Bool {
+        internalBoundaryTokens.contains(normalizedToken(value))
+    }
+
+    static func normalizedToken(_ value: String) -> String {
+        var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for separator in ["_", " ", "/", ":", "`"] {
+            normalized = normalized.replacingOccurrences(of: separator, with: "-")
+        }
+        while normalized.contains("--") {
+            normalized = normalized.replacingOccurrences(of: "--", with: "-")
+        }
+        return normalized.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+    }
+
+    private static func signalTokens(for row: TaskCockpitContextRow) -> Set<String> {
+        var tokens = Set<String>()
+        for value in [row.id, row.status, row.severity, row.source].compactMap(\.self) {
+            tokens.formUnion(signalTokenVariants(for: value))
+        }
+        for value in row.evidenceRefs + row.safetyFlags {
+            tokens.formUnion(signalTokenVariants(for: value))
+        }
+        return tokens
+    }
+
+    private static func signalTokenVariants(for value: String) -> Set<String> {
+        var tokens = Set<String>()
+        tokens.insert(normalizedToken(value))
+        for separator in [":", "|", "#"] {
+            let parts = value.split(separator: Character(separator), omittingEmptySubsequences: true)
+            if parts.count > 1 {
+                tokens.insert(normalizedToken(String(parts.last ?? "")))
+            }
+        }
+        return tokens.filter { !$0.isEmpty }
+    }
+
+    private static let reviewOnlyRiskTokens: Set<String> = [
+        "permissions.exec-needs-human",
+        "permissions.network-declared",
+        "exec-needs-human",
+        "network-declared",
+        "requires-confirmation",
+        "network-access"
+    ]
+
+    private static let internalBoundaryTokens: Set<String> = [
+        "no-apply-path",
+        "read-only",
+        "readonly",
+        "read-only-preflight",
+        "preview-only",
+        "copy-only",
+        "provider-not-sent",
+        "task-cockpit-combined",
+        "cockpit-only",
+        "evaluated-top",
+        "matched-task-term",
+        "description-evidence",
+        "top-route-leads",
+        "one-visible-route-candidate",
+        "no-candidate-level-blockers",
+        "no-likely-wrong-pick-risk",
+        "skipped-by-filters",
+        "provider-observability-skipped",
+        "write-action",
+        "script-execution",
+        "snapshot",
+        "telemetry",
+        "cross-agent-analysis",
+        "duplicate-name",
+        "duplicate_name",
+        "cross-agent-duplicate",
+        "source-overlap",
+        "same-name",
+        "overlap-signals"
+    ]
+}
+
 struct TaskCockpitResult: Decodable, Hashable {
     let generatedBy: String
     let catalogAvailable: Bool
@@ -969,102 +992,20 @@ struct TaskCockpitResult: Decodable, Hashable {
         self.catalogAvailable = catalogAvailable
         self.filters = filters
         self.summary = summary
-        self.cockpitSections = Self.uniqueContextRows(cockpitSections, namespace: "section")
-        self.taskRows = Self.uniqueCandidateRows(taskRows, namespace: "task")
-        self.routeCandidates = Self.uniqueCandidateRows(routeCandidates, namespace: "route")
-        self.agentCandidates = Self.uniqueCandidateRows(agentCandidates, namespace: "agent")
-        self.skillCandidates = Self.uniqueCandidateRows(skillCandidates, namespace: "skill")
-        self.readinessSignals = Self.uniqueContextRows(readinessSignals, namespace: "readiness")
-        self.providerObservabilityContext = Self.uniqueContextRows(providerObservabilityContext, namespace: "provider")
-        self.gapRows = Self.uniqueContextRows(gapRows, namespace: "gap")
-        self.blockerRows = Self.uniqueContextRows(blockerRows, namespace: "blocker")
-        self.evidenceReferences = Self.uniqueEvidenceRows(evidenceReferences)
+        self.cockpitSections = cockpitSections
+        self.taskRows = taskRows
+        self.routeCandidates = routeCandidates
+        self.agentCandidates = agentCandidates
+        self.skillCandidates = skillCandidates
+        self.readinessSignals = readinessSignals
+        self.providerObservabilityContext = providerObservabilityContext
+        self.gapRows = gapRows
+        self.blockerRows = blockerRows
+        self.evidenceReferences = evidenceReferences
         self.promptRequest = promptRequest
         self.aggregation = aggregation
         self.safetyFlags = safetyFlags
         self.fallbackReason = fallbackReason
-    }
-
-    private static func uniqueCandidateRows(
-        _ rows: [TaskCockpitCandidateRow],
-        namespace: String
-    ) -> [TaskCockpitCandidateRow] {
-        var usedIDs = Set<String>()
-        return rows.enumerated().map { index, row in
-            let id = uniqueDisplayID(row.id, namespace: namespace, index: index, usedIDs: &usedIDs)
-            return TaskCockpitCandidateRow(
-                id: id,
-                rank: row.rank,
-                title: row.title,
-                agent: row.agent,
-                skill: row.skill,
-                readinessScore: row.readinessScore,
-                routingScore: row.routingScore,
-                score: row.score,
-                band: row.band,
-                status: row.status,
-                summary: row.summary,
-                reasons: row.reasons,
-                evidenceRefs: row.evidenceRefs,
-                safetyFlags: row.safetyFlags
-            )
-        }
-    }
-
-    private static func uniqueContextRows(
-        _ rows: [TaskCockpitContextRow],
-        namespace: String
-    ) -> [TaskCockpitContextRow] {
-        var usedIDs = Set<String>()
-        return rows.enumerated().map { index, row in
-            let id = uniqueDisplayID(row.id, namespace: namespace, index: index, usedIDs: &usedIDs)
-            return TaskCockpitContextRow(
-                id: id,
-                title: row.title,
-                detail: row.detail,
-                status: row.status,
-                severity: row.severity,
-                source: row.source,
-                agent: row.agent,
-                count: row.count,
-                evidenceRefs: row.evidenceRefs,
-                safetyFlags: row.safetyFlags
-            )
-        }
-    }
-
-    private static func uniqueEvidenceRows(
-        _ rows: [ProviderObservabilityEvidenceReference]
-    ) -> [ProviderObservabilityEvidenceReference] {
-        var usedIDs = Set<String>()
-        return rows.enumerated().map { index, row in
-            let id = uniqueDisplayID(row.id, namespace: "evidence", index: index, usedIDs: &usedIDs)
-            return ProviderObservabilityEvidenceReference(
-                id: id,
-                title: row.title,
-                detail: row.detail,
-                source: row.source,
-                agent: row.agent
-            )
-        }
-    }
-
-    private static func uniqueDisplayID(
-        _ sourceID: String,
-        namespace: String,
-        index: Int,
-        usedIDs: inout Set<String>
-    ) -> String {
-        let trimmed = sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = trimmed.isEmpty ? "\(namespace):\(index)" : trimmed
-        if usedIDs.insert(base).inserted {
-            return base
-        }
-        var suffix = 2
-        while !usedIDs.insert("\(base)#\(suffix)").inserted {
-            suffix += 1
-        }
-        return "\(base)#\(suffix)"
     }
 
     init(from decoder: Decoder) throws {

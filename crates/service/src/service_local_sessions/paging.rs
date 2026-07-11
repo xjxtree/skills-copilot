@@ -189,10 +189,17 @@ impl ServiceHost {
                 !local_session_candidate_is_after_cursor(candidate, cursor)
             })
         });
-        let accepted_before = cursor
-            .as_ref()
-            .and_then(|cursor| cursor.accepted_count)
-            .unwrap_or(0);
+        let accepted_before = match cursor.as_ref() {
+            Some(cursor) => match cursor.accepted_count {
+                Some(accepted_count) if accepted_count <= start => accepted_count,
+                _ => {
+                    return Err(ServiceError::InvalidRequest(
+                        "cursor accepted count is invalid".to_string(),
+                    ));
+                }
+            },
+            None => 0,
+        };
         let skill_matchers = self.local_session_skill_matchers(requested_agent)?;
         let mut session_rows = Vec::new();
         let mut seen_session_row_ids = BTreeSet::new();
@@ -334,7 +341,7 @@ impl ServiceHost {
             total_message_count,
             tool_call_count,
             skill_call_count,
-            skill_usage_rows: local_session_skill_usage_rows(skill_usage, limit),
+            skill_usage_rows: local_session_skill_usage_rows(skill_usage),
             session_rows,
             gap_notes,
             blocker_notes,

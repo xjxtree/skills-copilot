@@ -12,6 +12,8 @@ struct TaskCockpitModelTests {
         try parsesLooseProviderCandidateJSONWithoutLeakingRawOutput()
         try legacyDuplicateRowsReceiveStableUniqueDisplayIDs()
         try summaryCollectionsExposeEveryStableUniqueRow()
+        try duplicateExternalSummaryIDsKeepEveryDisplayOccurrence()
+        try signalClassificationHasSingleProductionContract()
     }
 
     private struct ServiceEnvelope<ResultPayload: Decodable>: Decodable {
@@ -210,11 +212,14 @@ struct TaskCockpitModelTests {
 
         let first = try JSONDecoder().decode(TaskCockpitResult.self, from: Data(json.utf8))
         let second = try JSONDecoder().decode(TaskCockpitResult.self, from: Data(json.utf8))
-        for rows in [first.routeCandidates.map(\.id), first.gapRows.map(\.id), first.blockerRows.map(\.id)] {
-            try expectEqual(Set(rows).count, rows.count, "Legacy Task Cockpit display IDs must be unique within every rendered list.")
-        }
-        try expectEqual(first.routeCandidates.map(\.id), second.routeCandidates.map(\.id), "Candidate display IDs must remain stable across identical decodes.")
-        try expectEqual(first.gapRows.map(\.id), second.gapRows.map(\.id), "Context display IDs must remain stable across identical decodes.")
+        try expectEqual(first.routeCandidates.map(\.id), second.routeCandidates.map(\.id), "External candidate logical IDs must remain stable across identical decodes.")
+        try expectEqual(first.gapRows.map(\.id), second.gapRows.map(\.id), "External context logical IDs must remain stable across identical decodes.")
+        let routeDisplay = OccurrenceIdentifiedItem.rows(for: first.routeCandidates)
+        let gapDisplay = OccurrenceIdentifiedItem.rows(for: first.gapRows)
+        let blockerDisplay = OccurrenceIdentifiedItem.rows(for: first.blockerRows)
+        try expectEqual(Set(routeDisplay.map(\.id)).count, routeDisplay.count, "Legacy route display IDs must be unique.")
+        try expectEqual(Set(gapDisplay.map(\.id)).count, gapDisplay.count, "Legacy gap display IDs must be unique.")
+        try expectEqual(Set(blockerDisplay.map(\.id)).count, blockerDisplay.count, "Legacy blocker display IDs must be unique.")
     }
 
     private func summaryCollectionsExposeEveryStableUniqueRow() throws {
@@ -270,6 +275,46 @@ struct TaskCockpitModelTests {
         try expectEqual(first.count, values.count, "Summary presentation rows must retain every input value.")
         try expectEqual(Set(first.map(\.id)).count, values.count, "Duplicate summary values must receive unique IDs.")
         try expectEqual(first.map(\.id), second.map(\.id), "Summary row IDs must be stable across identical inputs.")
+    }
+
+    private func duplicateExternalSummaryIDsKeepEveryDisplayOccurrence() throws {
+        let candidates = [
+            TaskCockpitCandidateRow(id: "external", title: "First external row"),
+            TaskCockpitCandidateRow(id: "external", title: "Second external row")
+        ]
+        let provider = [
+            TaskCockpitContextRow(id: "provider", title: "First provider row"),
+            TaskCockpitContextRow(id: "provider", title: "Second provider row")
+        ]
+
+        let candidateRows = OccurrenceIdentifiedItem.rows(for: candidates)
+        let providerRows = OccurrenceIdentifiedItem.rows(for: provider)
+        try expectEqual(candidateRows.map(\.value.title), ["First external row", "Second external row"], "Task Cockpit candidate summaries must retain duplicate external logical IDs.")
+        try expectEqual(providerRows.map(\.value.title), ["First provider row", "Second provider row"], "Task Cockpit provider summaries must retain duplicate provider logical IDs.")
+        try expectEqual(candidateRows.map(\.id.occurrence), [0, 1], "Candidate display IDs must use logical-ID occurrences.")
+        try expectEqual(providerRows.map(\.id.occurrence), [0, 1], "Provider display IDs must use logical-ID occurrences.")
+    }
+
+    private func signalClassificationHasSingleProductionContract() throws {
+        let review = TaskCockpitContextRow(
+            id: "fixture",
+            title: "Review",
+            safetyFlags: ["permissions.exec-needs-human"]
+        )
+        let internalBoundary = TaskCockpitContextRow(
+            id: "provider-observability-skipped",
+            title: "Internal boundary"
+        )
+        let userFacing = TaskCockpitContextRow(
+            id: "user-facing-gap",
+            title: "User-facing gap",
+            source: "task.preflight"
+        )
+
+        try expectEqual(TaskCockpitSignalClassifier.classification(for: review), .reviewOnlyRisk, "Review-only risk tokens must use the shared production classifier.")
+        try expectEqual(TaskCockpitSignalClassifier.classification(for: internalBoundary), .internalBoundary, "Internal-boundary tokens must use the shared production classifier.")
+        try expectEqual(TaskCockpitSignalClassifier.classification(for: userFacing), .userFacing, "Unclassified source rows must remain user-facing.")
+        try expectEqual(TaskCockpitSignalClassifier.normalizedToken(" Permissions_Exec Needs Human "), "permissions-exec-needs-human", "Token normalization must remain one production contract.")
     }
 
     private func classifiesFallbackAndPartialDiagnostics() throws {

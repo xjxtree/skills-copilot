@@ -1,4 +1,5 @@
 use super::*;
+use crate::service_keyset_cursor::{decode_cursor_for_method, encode_cursor};
 use crate::service_local_session_io::LocalSessionReadLimits;
 use crate::service_local_sessions::local_session_row_id;
 use std::collections::HashSet;
@@ -244,6 +245,73 @@ fn keyset_paging_requires_explicit_opt_in_on_the_first_page() {
 }
 
 #[test]
+fn keyset_page_keeps_every_distinct_skill_even_when_session_limit_is_one() {
+    let fixture = OrderedSessionFixture::new("keyset-skill-usage", &[("Alpha", 100)]);
+    fs::write(
+        fixture.root.join("alpha.jsonl"),
+        [
+            json!({"type": "user", "role": "user", "text": "skill:alpha-skill"}),
+            json!({"type": "assistant", "role": "assistant", "text": "skill:beta-skill"}),
+        ]
+        .into_iter()
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
+    )
+    .expect("write session with two distinct skills");
+    fs::create_dir_all(&fixture.host.app_data_dir).expect("create catalog directory");
+    let catalog = Catalog::open(&fixture.host.catalog_path()).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    for skill_name in ["alpha-skill", "beta-skill"] {
+        let skill_path = fixture.root.join(format!("{skill_name}/SKILL.md"));
+        catalog
+            .upsert_skill_instance(&SkillInstance {
+                id: format!("{skill_name}-id"),
+                agent: AgentId::Codex,
+                scope: Scope::AgentGlobal,
+                project_root: None,
+                path: skill_path.clone(),
+                display_path: skill_path,
+                definition_id: format!("{skill_name}-definition"),
+                name: skill_name.to_string(),
+                display_name: skill_name.to_string(),
+                description: "Keyset skill aggregation fixture.".to_string(),
+                version: None,
+                state: SkillState::Loaded,
+                enabled: true,
+                frontmatter_raw: format!("name: {skill_name}\ndescription: fixture\n"),
+                body: "Fixture body.".to_string(),
+                scripts: Vec::new(),
+                permissions: PermissionRequest::default(),
+                fingerprint: format!("{skill_name}-fingerprint"),
+                mtime: 1,
+                first_seen: 1,
+                last_seen: 1,
+            })
+            .expect("seed catalog skill");
+    }
+
+    let page = ordered_result(
+        &fixture,
+        json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 1
+        }),
+    );
+    let skill_ids = page["skill_usage_rows"]
+        .as_array()
+        .expect("skill usage rows")
+        .iter()
+        .filter_map(|row| row["skill_id"].as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(skill_ids.len(), 2, "{page}");
+    assert!(skill_ids.contains("alpha-skill-id"), "{page}");
+    assert!(skill_ids.contains("beta-skill-id"), "{page}");
+}
+
+#[test]
 fn keyset_pages_continue_past_legacy_max_files_without_duplicates() {
     let rows = (0..1_205)
         .map(|index| (format!("Session {index:04}"), 10_000 + index as i64))
@@ -353,6 +421,45 @@ fn keyset_continuation_rejects_source_change() {
         response.error.map(|error| error.code),
         Some("source_changed".to_string())
     );
+}
+
+#[test]
+fn keyset_continuation_rejects_missing_or_impossible_accepted_count() {
+    let fixture = OrderedSessionFixture::new(
+        "keyset-accepted-count",
+        &[("Alpha", 300), ("Bravo", 200), ("Charlie", 100)],
+    );
+    let first = ordered_result(
+        &fixture,
+        json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 1
+        }),
+    );
+    let encoded = first["next_cursor"].as_str().expect("first cursor");
+    let revision = first["source_revision"].clone();
+    let cursor = decode_cursor_for_method(encoded, "session.previewLocalSessions")
+        .expect("decode first cursor");
+
+    for accepted_count in [None, Some(2)] {
+        let mut tampered = cursor.clone();
+        tampered.accepted_count = accepted_count;
+        let response = fixture.request(json!({
+            "paging_mode": "keyset",
+            "max_files": null,
+            "include_content_items": false,
+            "limit": 1,
+            "cursor": encode_cursor(&tampered).expect("encode tampered cursor"),
+            "source_revision": revision
+        }));
+        assert_eq!(
+            response.error.map(|error| error.code),
+            Some("invalid_request".to_string()),
+            "accepted_count={accepted_count:?} must be rejected"
+        );
+    }
 }
 
 #[test]

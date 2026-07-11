@@ -355,12 +355,12 @@ struct SkillManagerPanel: View {
                         .foregroundStyle(.secondary)
                 } else {
                     LazyVStack(spacing: 8) {
-                        ForEach(store.skillManagerVisibleSearchResults) { result in
-                            SearchResultRow(result: result) {
+                        ForEach(store.skillManagerVisibleSearchResults) { displayRow in
+                            SearchResultRow(result: displayRow.value) {
                                 Task {
                                     await store.previewSkillManagerInstall(
-                                        source: result.source ?? result.name,
-                                        skillName: result.name
+                                        source: displayRow.value.source ?? displayRow.value.name,
+                                        skillName: displayRow.value.name
                                     )
                                 }
                             }
@@ -502,8 +502,8 @@ struct SkillManagerPanel: View {
                         .foregroundStyle(.secondary)
                 } else {
                     LazyVStack(spacing: 8) {
-                        ForEach(store.skillManagerVisibleInstalledRecords) { record in
-                            InstalledSkillRow(record: record, externalMutationDisabled: externalMutationDisabled)
+                        ForEach(store.skillManagerVisibleInstalledRecords) { displayRow in
+                            InstalledSkillRow(record: displayRow.value, externalMutationDisabled: externalMutationDisabled)
                         }
                     }
                     if let status = store.skillManagerInstalledStatus {

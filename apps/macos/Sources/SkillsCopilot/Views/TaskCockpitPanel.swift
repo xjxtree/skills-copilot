@@ -1296,87 +1296,12 @@ private struct TaskCockpitDecisionPresentationModel {
     }
 
     private static func isReviewOnlyRisk(_ row: TaskCockpitContextRow) -> Bool {
-        !signalTokens(for: row).isDisjoint(with: reviewOnlyRiskTokens)
+        TaskCockpitSignalClassifier.classification(for: row) == .reviewOnlyRisk
     }
 
     private static func isInternalBoundary(_ row: TaskCockpitContextRow) -> Bool {
-        !signalTokens(for: row).isDisjoint(with: internalBoundaryTokens)
+        TaskCockpitSignalClassifier.classification(for: row) == .internalBoundary
     }
-
-    private static func signalTokens(for row: TaskCockpitContextRow) -> Set<String> {
-        var tokens = Set<String>()
-        for value in [row.id, row.status, row.severity, row.source].compactMap(\.self) {
-            tokens.formUnion(signalTokenVariants(for: value))
-        }
-        for value in row.evidenceRefs + row.safetyFlags {
-            tokens.formUnion(signalTokenVariants(for: value))
-        }
-        return tokens
-    }
-
-    private static func signalTokenVariants(for value: String) -> Set<String> {
-        var tokens = Set<String>()
-        tokens.insert(normalizedSignalToken(value))
-        for separator in [":", "|", "#"] {
-            let parts = value.split(separator: Character(separator), omittingEmptySubsequences: true)
-            if parts.count > 1 {
-                tokens.insert(normalizedSignalToken(String(parts.last ?? "")))
-            }
-        }
-        return tokens.filter { !$0.isEmpty }
-    }
-
-    private static func normalizedSignalToken(_ value: String) -> String {
-        var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        for separator in ["_", " ", "/", ":", "`"] {
-            normalized = normalized.replacingOccurrences(of: separator, with: "-")
-        }
-        while normalized.contains("--") {
-            normalized = normalized.replacingOccurrences(of: "--", with: "-")
-        }
-        return normalized.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
-    }
-
-    private static let reviewOnlyRiskTokens: Set<String> = [
-        "permissions.exec-needs-human",
-        "permissions.network-declared",
-        "exec-needs-human",
-        "network-declared",
-        "requires-confirmation",
-        "network-access"
-    ]
-
-    private static let internalBoundaryTokens: Set<String> = [
-        "no-apply-path",
-        "read-only",
-        "readonly",
-        "read-only-preflight",
-        "preview-only",
-        "copy-only",
-        "provider-not-sent",
-        "task-cockpit-combined",
-        "cockpit-only",
-        "evaluated-top",
-        "matched-task-term",
-        "description-evidence",
-        "top-route-leads",
-        "one-visible-route-candidate",
-        "no-candidate-level-blockers",
-        "no-likely-wrong-pick-risk",
-        "skipped-by-filters",
-        "provider-observability-skipped",
-        "write-action",
-        "script-execution",
-        "snapshot",
-        "telemetry",
-        "cross-agent-analysis",
-        "duplicate-name",
-        "duplicate_name",
-        "cross-agent-duplicate",
-        "source-overlap",
-        "same-name",
-        "overlap-signals"
-    ]
 }
 
 private struct TaskCockpitScorePill: View {

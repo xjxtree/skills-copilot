@@ -35,6 +35,43 @@ extension SkillStoreTests {
         try expectEqual(store.providerActivityCompleteness.completeness, .complete, "Provider activity should become complete")
         try expectEqual(store.providerObservabilityResult?.summary, summary, "Paging must not change aggregate summary")
         try expectEqual(runner.activityRequestCount(), 3, "Provider activity requests should be serialized into three 50-row pages.")
+        try await providerActivityMethodUnavailableIsExplicit()
+        try await providerActivityInitialFailureRetriesFromNilCursor()
+    }
+
+    private func providerActivityMethodUnavailableIsExplicit() async throws {
+        let runner = ProviderActivityPageRunner(
+            totalCount: 50,
+            activityFailureCode: "unknown_method",
+            activityFailureCount: .max
+        )
+        let store = SkillStore(service: runner.serviceClient())
+        await store.loadProviderObservability()
+
+        try expectEqual(store.providerObservabilityResult?.isUnavailable, false, "Activity method fallback must not discard the available aggregate summary.")
+        try expectEqual(store.providerActivityRows, [], "Unavailable activity method must not invent rows.")
+        try expectEqual(store.providerActivityCompleteness.isComplete, false, "Unavailable activity method must remain incomplete.")
+        try expectEqual(store.providerActivityCompleteness.incompleteReason, .unsupportedProtocol, "Unknown activity method must expose unsupported_protocol.")
+        try expectEqual(store.providerActivityCompleteness.canLoadAll, false, "Unsupported activity cannot offer a retry loop.")
+    }
+
+    private func providerActivityInitialFailureRetriesFromNilCursor() async throws {
+        let runner = ProviderActivityPageRunner(
+            totalCount: 50,
+            activityFailureCode: "temporary_failure",
+            activityFailureCount: 1
+        )
+        let store = SkillStore(service: runner.serviceClient())
+        await store.loadProviderObservability()
+
+        try expectEqual(store.providerActivityRows, [], "Failed initial activity page must retain an empty accepted set.")
+        try expectEqual(store.providerActivityCompleteness.incompleteReason, .pageFailed, "Initial activity failure must be typed as page_failed.")
+        try expectEqual(store.providerActivityCompleteness.canLoadAll, true, "Initial activity failure must offer a safe retry from the nil cursor.")
+
+        await store.loadMoreProviderActivity(loadAll: true)
+        try expectEqual(store.providerActivityRows.count, 50, "Retry must obtain the full first page from the nil cursor.")
+        try expectEqual(store.providerActivityCompleteness.completeness, .complete, "Successful retry must reach complete EOF.")
+        try expectEqual(runner.activityRequestCount(), 2, "Initial retry must issue exactly one replacement first-page request.")
     }
 
     func providerActivityCancellationAndStaleGenerationPreserveAcceptedRows() async throws {
@@ -83,14 +120,23 @@ private final class ProviderActivityPageRunner: ServiceProcessRunning, @unchecke
     private let lock = NSLock()
     private let totalCount: Int
     private let delayedOffsets: Set<Int>
+    private let activityFailureCode: String?
+    private var activityFailuresRemaining: Int
     private var generation = 0
     private var activityRequests = 0
     private var releaseContinuations: [Int: [CheckedContinuation<Void, Never>]] = [:]
     private var releasedOffsets = Set<Int>()
 
-    init(totalCount: Int, delayedOffsets: Set<Int> = []) {
+    init(
+        totalCount: Int,
+        delayedOffsets: Set<Int> = [],
+        activityFailureCode: String? = nil,
+        activityFailureCount: Int = 0
+    ) {
         self.totalCount = totalCount
         self.delayedOffsets = delayedOffsets
+        self.activityFailureCode = activityFailureCode
+        activityFailuresRemaining = max(0, activityFailureCount)
     }
 
     func serviceClient() -> ServiceClient {
@@ -112,6 +158,9 @@ private final class ProviderActivityPageRunner: ServiceProcessRunning, @unchecke
             let params = request["params"] as? [String: Any] ?? [:]
             let cursor = params["cursor"] as? String
             let binding = recordActivityRequest(cursor: cursor)
+            if let failureCode = consumeActivityFailure() {
+                return Self.error(code: failureCode, message: "fixture activity failure")
+            }
             if delayedOffsets.contains(binding.offset) {
                 await waitForRelease(offset: binding.offset)
             }
@@ -141,6 +190,14 @@ private final class ProviderActivityPageRunner: ServiceProcessRunning, @unchecke
         }
         lock.unlock()
         continuations.forEach { $0.resume() }
+    }
+
+    private func consumeActivityFailure() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activityFailuresRemaining > 0 else { return nil }
+        activityFailuresRemaining -= 1
+        return activityFailureCode
     }
 
     private func recordActivityRequest(cursor: String?) -> (generation: Int, offset: Int) {

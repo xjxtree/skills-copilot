@@ -220,14 +220,16 @@ struct ExpandableSummaryList<Item: Identifiable, RowContent: View>: View {
         }
     }
 
-    private var visibleItems: [Item] {
-        isExpanded ? items : Array(items.prefix(visibleLimit))
+    private var visibleItems: [OccurrenceIdentifiedItem<Item>] {
+        let displayRows = OccurrenceIdentifiedItem.rows(for: items)
+        let visibleEnd = min(visibleLimit, displayRows.count)
+        return isExpanded ? displayRows : Array(displayRows[0..<visibleEnd])
     }
 
     @ViewBuilder
     private var itemRows: some View {
         ForEach(visibleItems) { item in
-            rowContent(item)
+            rowContent(item.value)
         }
     }
 }

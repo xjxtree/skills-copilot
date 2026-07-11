@@ -47,6 +47,7 @@ const files = {
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
   storeWorkflow: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreWorkflowSelectors.swift"),
   taskCockpit: await read("apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift"),
+  taskCockpitModel: await read("apps/macos/Sources/SkillsCopilot/Models/TaskCockpit.swift"),
   taskInput: await read("apps/macos/Sources/SkillsCopilot/Views/TaskInputTextEditor.swift"),
   taskInputModel: await read("apps/macos/Sources/SkillsCopilot/Models/TaskInputModel.swift"),
   nativePanelSurface: await read("apps/macos/Sources/SkillsCopilot/Views/NativePanelSurface.swift"),
@@ -603,7 +604,7 @@ const checks = [
   {
     label: "dense disclosure list caps visible rows and reveals overflow",
     text: files.detailPrimitives,
-    pattern: /struct DenseDisclosureList<Item,\s*RowContent:\s*View>:[\s\S]*?visibleLimit:\s*Int = 6[\s\S]*?ForEach\(Array\(items\.prefix\(visibleLimit\)\.enumerated\(\)\),\s*id:\s*\\\.offset\)[\s\S]*?DisclosureGroup\(isExpanded:\s*\$isExpanded\)[\s\S]*?items\.dropFirst\(visibleLimit\)/,
+    pattern: /struct DenseDisclosureList<Item,\s*RowContent:\s*View>:[\s\S]*?visibleLimit:\s*Int = 6[\s\S]*?ForEach\(Array\(items\[0\.\.<visibleEnd\]\.enumerated\(\)\),\s*id:\s*\\\.offset\)[\s\S]*?DisclosureGroup\(isExpanded:\s*\$isExpanded\)[\s\S]*?items\.dropFirst\(visibleLimit\)[\s\S]*?private var visibleEnd:\s*Int[\s\S]*?min\(visibleLimit,\s*items\.count\)/,
   },
   {
     label: "dense inline evidence lists are counted, collapsible, and screenshot-safe",
@@ -1124,17 +1125,20 @@ const customChecks = [
   {
     label: "task cockpit presentation uses structured tokens instead of English substring classification",
     passed: /private var hasRouteAmbiguity:[\s\S]*?candidateScores[\s\S]*?routeCandidateCount/.test(files.taskCockpit)
-      && /private static func isReviewOnlyRisk\(_ row: TaskCockpitContextRow\) -> Bool[\s\S]*?signalTokens\(for:\s*row\)/.test(files.taskCockpit)
-      && /private static func isInternalBoundary\(_ row: TaskCockpitContextRow\) -> Bool[\s\S]*?signalTokens\(for:\s*row\)/.test(files.taskCockpit)
-      && /private static func signalTokens\(for row: TaskCockpitContextRow\) -> Set<String>/.test(files.taskCockpit)
-      && /private static func normalizedSignalToken\(_ value: String\) -> String/.test(files.taskCockpit)
-      && !/normalized\.contains\("task readiness is blocked"\)/.test(files.taskCockpit)
-      && !/normalized\.contains\("routing confidence is blocked"\)/.test(files.taskCockpit)
-      && !/normalized\.contains\("small score margin"\)/.test(files.taskCockpit)
-      && !/normalized\.contains\("close or overlapping alternatives"\)/.test(files.taskCockpit)
-      && !/normalized\.contains\("read-only"\)/.test(files.taskCockpit)
-      && !/normalized\.contains\("provider not sent"\)/.test(files.taskCockpit)
-      && !/normalized\.contains\("task cockpit combined"\)/.test(files.taskCockpit),
+      && /enum TaskCockpitSignalClassifier[\s\S]*?static func classification\(for row: TaskCockpitContextRow\)[\s\S]*?signalTokens\(for:\s*row\)/.test(files.taskCockpitModel)
+      && /enum TaskCockpitSignalClassifier[\s\S]*?private static func signalTokens\(for row: TaskCockpitContextRow\) -> Set<String>/.test(files.taskCockpitModel)
+      && /enum TaskCockpitSignalClassifier[\s\S]*?static func normalizedToken\(_ value: String\) -> String/.test(files.taskCockpitModel)
+      && /private static func isReviewOnlyRisk\(_ row: TaskCockpitContextRow\) -> Bool[\s\S]*?TaskCockpitSignalClassifier\.classification\(for:\s*row\)/.test(files.taskCockpit)
+      && /private static func isInternalBoundary\(_ row: TaskCockpitContextRow\) -> Bool[\s\S]*?TaskCockpitSignalClassifier\.classification\(for:\s*row\)/.test(files.taskCockpit)
+      && /private static func isReviewOnlyRisk\(_ row: TaskCockpitContextRow\) -> Bool[\s\S]*?TaskCockpitSignalClassifier\.classification\(for:\s*row\)/.test(files.taskCockpitModel)
+      && /private static func isInternalBoundary\(_ row: TaskCockpitContextRow\) -> Bool[\s\S]*?TaskCockpitSignalClassifier\.classification\(for:\s*row\)/.test(files.taskCockpitModel)
+      && !/normalized\.contains\("task readiness is blocked"\)/.test(files.taskCockpit + files.taskCockpitModel)
+      && !/normalized\.contains\("routing confidence is blocked"\)/.test(files.taskCockpit + files.taskCockpitModel)
+      && !/normalized\.contains\("small score margin"\)/.test(files.taskCockpit + files.taskCockpitModel)
+      && !/normalized\.contains\("close or overlapping alternatives"\)/.test(files.taskCockpit + files.taskCockpitModel)
+      && !/normalized\.contains\("read-only"\)/.test(files.taskCockpit + files.taskCockpitModel)
+      && !/normalized\.contains\("provider not sent"\)/.test(files.taskCockpit + files.taskCockpitModel)
+      && !/normalized\.contains\("task cockpit combined"\)/.test(files.taskCockpit + files.taskCockpitModel),
   },
   {
     label: "skill filter controls show their role alongside the current value",

@@ -10,6 +10,63 @@ struct ProviderObservabilityModelTests {
         try decodesServiceProtocolFixture()
         try decodesProviderActivityPageFixtureAndAliases()
         try emptyServiceFixtureUsesDashboardEmptyState()
+        try providerActivityEmptyCopyOnlyRepresentsDefensibleEmptyEOF()
+    }
+
+    private func providerActivityEmptyCopyOnlyRepresentsDefensibleEmptyEOF() throws {
+        var loading = ListPageAccumulator<ProviderActivityRow>()
+        loading.begin(.initial)
+        try expectFalse(
+            ProviderActivityPresentation.showsTrueEmptyState(
+                rows: [],
+                completeness: loading.state,
+                errorMessage: nil
+            ),
+            "Loading activity must not also show the true-empty copy."
+        )
+
+        var failed = ListPageAccumulator<ProviderActivityRow>()
+        failed.fail(reason: .pageFailed)
+        try expectFalse(
+            ProviderActivityPresentation.showsTrueEmptyState(
+                rows: [],
+                completeness: failed.state,
+                errorMessage: "fixture failure"
+            ),
+            "Failed activity must not also show the true-empty copy."
+        )
+
+        var unsupported = ListPageAccumulator<ProviderActivityRow>()
+        unsupported.fail(reason: .unsupportedProtocol)
+        try expectFalse(
+            ProviderActivityPresentation.showsTrueEmptyState(
+                rows: [],
+                completeness: unsupported.state,
+                errorMessage: "unknown_method"
+            ),
+            "Unsupported activity must not also show the true-empty copy."
+        )
+
+        var empty = ListPageAccumulator<ProviderActivityRow>()
+        try empty.append(.init(
+            items: [],
+            returnedCount: 0,
+            totalCount: 0,
+            hasMore: false,
+            nextCursor: nil,
+            sourceRevision: "r1",
+            sourceCompleteness: .enumerable,
+            incompleteReason: nil
+        ))
+        try expectEqual(
+            ProviderActivityPresentation.showsTrueEmptyState(
+                rows: [],
+                completeness: empty.state,
+                errorMessage: nil
+            ),
+            true,
+            "Only a defensible empty EOF should show the true-empty copy."
+        )
     }
 
     private struct ServiceEnvelope<ResultPayload: Decodable>: Decodable {

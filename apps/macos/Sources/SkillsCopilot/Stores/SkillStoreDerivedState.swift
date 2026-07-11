@@ -65,13 +65,13 @@ extension SkillStore {
             }
     }
 
-    var skillManagerVisibleSearchResults: [SkillManagerSearchResult] {
+    var skillManagerVisibleSearchResults: [OccurrenceIdentifiedItem<SkillManagerSearchResult>] {
         guard let result = skillManagerSearchResult else { return [] }
-        return skillManagerSearchVisibility.visibleItems(in: result.results)
+        return result.displayResults(visibleCount: skillManagerSearchVisibility.visibleCount)
     }
 
-    var skillManagerVisibleInstalledRecords: [SkillManagerInstalledRecord] {
-        skillManagerInstalled?.installed ?? []
+    var skillManagerVisibleInstalledRecords: [OccurrenceIdentifiedItem<SkillManagerInstalledRecord>] {
+        skillManagerInstalled?.displayRecords ?? []
     }
 
     var skillManagerSearchStatus: ListCompletenessState? {

@@ -1,5 +1,19 @@
 import Foundation
 
+enum ProviderActivityPresentation {
+    static func showsTrueEmptyState(
+        rows: [ProviderActivityRow],
+        completeness: ListCompletenessState,
+        errorMessage: String?
+    ) -> Bool {
+        rows.isEmpty
+            && completeness.isComplete
+            && completeness.loadingPhase == .idle
+            && completeness.incompleteReason == nil
+            && errorMessage?.isEmpty != false
+    }
+}
+
 struct ProviderObservabilityFilters: Decodable, Hashable {
     let windowDays: Int?
     let startAt: Int?
