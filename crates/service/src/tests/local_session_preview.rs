@@ -2585,6 +2585,231 @@ fn malformed_or_deep_opencode_sidecars_fail_closed() {
 }
 
 #[test]
+fn opencode_sidecars_share_one_file_budget_per_session() {
+    let fixture =
+        OpencodeSidecarFixture::new("shared-file-budget", "ses_shared_files", "Primary title");
+    let message_id = "msg_shared_files";
+    fixture.write_message(
+        "000-message.json",
+        json!({
+            "id": message_id,
+            "role": "assistant",
+            "content": "skill:sidecar-file-budget"
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    for index in 0..241 {
+        fixture.write_part(
+            message_id,
+            &format!("part-{index:03}.json"),
+            json!({
+                "id": format!("part-{index:03}"),
+                "type": "text",
+                "text": "skill:sidecar-file-budget"
+            })
+            .to_string()
+            .as_bytes(),
+        );
+    }
+
+    let result = fixture.preview();
+    assert_primary_session(&result);
+    assert_eq!(
+        result["skill_call_count"],
+        json!(240),
+        "only 240 message/part sidecars may contribute: {result}"
+    );
+    assert_sidecar_truncation_gap(&result);
+}
+
+#[test]
+fn opencode_sidecars_share_one_byte_budget_per_session() {
+    let fixture =
+        OpencodeSidecarFixture::new("shared-byte-budget", "ses_shared_bytes", "Primary title");
+    let record = format!(
+        "{}\n",
+        json!({
+            "role": "assistant",
+            "content": "skill:sidecar-byte-budget"
+        })
+    );
+    let mut sidecar = Vec::with_capacity(256 * 1024);
+    while sidecar.len() + record.len() <= 256 * 1024 {
+        sidecar.extend_from_slice(record.as_bytes());
+    }
+    sidecar.resize(256 * 1024, b' ');
+    for index in 0..3 {
+        fixture.write_message(&format!("message-{index}.json"), &sidecar);
+    }
+
+    let result = fixture.preview();
+    let retained_invocation_bytes = result
+        .get("skill_call_count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .expect("bounded sidecar skill-call count")
+        .saturating_mul(record.len());
+    assert_primary_session(&result);
+    assert!(
+        retained_invocation_bytes <= 512 * 1024,
+        "accepted sidecar records exceeded the aggregate allowance: {retained_invocation_bytes} bytes"
+    );
+    assert_sidecar_truncation_gap(&result);
+}
+
+#[test]
+fn oversized_opencode_sidecar_does_not_drop_the_primary_session() {
+    let fixture =
+        OpencodeSidecarFixture::new("oversized-primary", "ses_oversized", "Primary title");
+    fixture.write_message(
+        "oversized.json",
+        json!({
+            "id": "msg_oversized",
+            "role": "assistant",
+            "content": "x".repeat(1024 * 1024)
+        })
+        .to_string()
+        .as_bytes(),
+    );
+
+    let result = fixture.preview();
+    assert_primary_session(&result);
+    assert_sidecar_truncation_gap(&result);
+}
+
+#[test]
+fn request_local_index_cache_is_empty_on_the_next_preview() {
+    let unique = unique_suffix();
+    let fixture = env::temp_dir().join(format!(
+        "skills-copilot-codex-request-cache-test-{}-{unique}",
+        std::process::id()
+    ));
+    let user_home = fixture.join("home");
+    let app_data_dir = fixture.join("app-data");
+    let codex_root = user_home.join(".codex");
+    let session_root = codex_root.join("sessions/2026/07/11");
+    let index_path = codex_root.join("session_index.jsonl");
+    fs::create_dir_all(&session_root).expect("create request-cache session root");
+    fs::write(
+        session_root.join("rollout-cache-session.jsonl"),
+        r#"{"type":"session","id":"cache-session"}"#,
+    )
+    .expect("write request-cache session");
+    fs::write(
+        &index_path,
+        json!({"id": "cache-session", "thread_name": "First index title"}).to_string(),
+    )
+    .expect("write first index title");
+    let host = ServiceHost {
+        app_data_dir,
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+
+    let first = preview_local_sessions_for_agent(&host, "codex");
+    assert_eq!(first["session_rows"][0]["title"], "First index title");
+
+    fs::write(
+        &index_path,
+        json!({"id": "cache-session", "thread_name": "Second index title"}).to_string(),
+    )
+    .expect("rewrite index title");
+    let second = preview_local_sessions_for_agent(&host, "codex");
+    assert_eq!(
+        second["session_rows"][0]["title"], "Second index title",
+        "the next preview must not reuse the prior request cache: {second}"
+    );
+
+    let _ = fs::remove_dir_all(fixture);
+}
+
+struct OpencodeSidecarFixture {
+    fixture: PathBuf,
+    host: ServiceHost,
+    storage_root: PathBuf,
+    session_id: String,
+}
+
+impl OpencodeSidecarFixture {
+    fn new(case: &str, session_id: &str, title: &str) -> Self {
+        let unique = unique_suffix();
+        let fixture = env::temp_dir().join(format!(
+            "skills-copilot-opencode-{case}-test-{}-{unique}",
+            std::process::id()
+        ));
+        let user_home = fixture.join("home");
+        let storage_root = user_home.join(".local/share/opencode/storage");
+        let session_root = storage_root.join("session");
+        fs::create_dir_all(&session_root).expect("create opencode session root");
+        fs::write(
+            session_root.join(format!("{session_id}.json")),
+            json!({"id": session_id, "title": title}).to_string(),
+        )
+        .expect("write opencode primary session");
+        Self {
+            host: ServiceHost {
+                app_data_dir: fixture.join("app-data"),
+                adapter_ctx: AdapterContext {
+                    user_home,
+                    project_root: None,
+                    project_cwd: None,
+                    extra_roots: Vec::new(),
+                },
+            },
+            fixture,
+            storage_root,
+            session_id: session_id.to_string(),
+        }
+    }
+
+    fn write_message(&self, name: &str, content: &[u8]) {
+        let message_root = self.storage_root.join("message").join(&self.session_id);
+        fs::create_dir_all(&message_root).expect("create opencode message root");
+        fs::write(message_root.join(name), content).expect("write opencode message sidecar");
+    }
+
+    fn write_part(&self, message_id: &str, name: &str, content: &[u8]) {
+        let part_root = self.storage_root.join("part").join(message_id);
+        fs::create_dir_all(&part_root).expect("create opencode part root");
+        fs::write(part_root.join(name), content).expect("write opencode part sidecar");
+    }
+
+    fn preview(&self) -> Value {
+        let result = preview_local_sessions_for_agent(&self.host, "opencode");
+        let _ = fs::remove_dir_all(&self.fixture);
+        result
+    }
+}
+
+fn assert_primary_session(result: &Value) {
+    assert_eq!(result["count"], json!(1), "{result}");
+    assert_eq!(result["session_rows"][0]["title"], json!("Primary title"));
+}
+
+fn preview_local_sessions_for_agent(host: &ServiceHost, agent: &str) -> Value {
+    let response = host.handle(ServiceRequest {
+        id: Some("task5-preview".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({"agent": agent, "limit": 10, "max_excerpt_chars": 4_000}),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    response.result.expect("local session preview result")
+}
+
+fn assert_sidecar_truncation_gap(result: &Value) {
+    let notes = result["gap_notes"].to_string().to_ascii_lowercase();
+    assert!(
+        notes.contains("sidecar") && notes.contains("truncat"),
+        "{result}"
+    );
+}
+
+#[test]
 fn malformed_opencode_message_and_part_field_matrix_fails_closed() {
     let unique = unique_suffix();
     let skill_name = "opencode-malformed-matrix-skill";

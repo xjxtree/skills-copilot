@@ -1,6 +1,7 @@
 use super::ServiceError;
 use serde_json::{Map, Value};
 use std::{
+    collections::HashMap,
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -766,11 +767,74 @@ impl LocalSessionReadBudget {
         self.remaining_bytes -= requested;
         true
     }
+
+    pub(crate) fn remaining_bytes(&self) -> usize {
+        self.remaining_bytes
+    }
+
+    pub(crate) fn consume(&mut self, consumed: usize) {
+        debug_assert!(consumed <= self.remaining_bytes);
+        self.remaining_bytes = self.remaining_bytes.saturating_sub(consumed);
+    }
+}
+
+pub(crate) struct SessionSidecarBudget {
+    remaining_files: usize,
+    remaining_bytes: usize,
+}
+
+impl SessionSidecarBudget {
+    pub(crate) fn new(remaining_files: usize, remaining_bytes: usize) -> Self {
+        Self {
+            remaining_files,
+            remaining_bytes,
+        }
+    }
+
+    pub(crate) fn claim_file(&mut self) -> bool {
+        if self.remaining_files == 0 || self.remaining_bytes == 0 {
+            return false;
+        }
+        self.remaining_files -= 1;
+        true
+    }
+
+    pub(crate) fn remaining_files(&self) -> usize {
+        self.remaining_files
+    }
+
+    pub(crate) fn remaining_bytes(&self) -> usize {
+        self.remaining_bytes
+    }
+
+    pub(crate) fn consume_bytes(&mut self, consumed: usize) {
+        debug_assert!(consumed <= self.remaining_bytes);
+        self.remaining_bytes = self.remaining_bytes.saturating_sub(consumed);
+    }
 }
 
 pub(crate) struct LocalSessionIoContext {
     pub(crate) limits: LocalSessionReadLimits,
     pub(crate) budget: LocalSessionReadBudget,
+    pub(crate) cache: LocalSessionRequestCache,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct LocalSessionRequestCache {
+    pub(crate) codex_titles: HashMap<PathBuf, HashMap<String, String>>,
+}
+
+impl LocalSessionRequestCache {
+    pub(crate) fn codex_titles_or_load<F>(
+        &mut self,
+        root: PathBuf,
+        load: F,
+    ) -> &HashMap<String, String>
+    where
+        F: FnOnce() -> HashMap<String, String>,
+    {
+        self.codex_titles.entry(root).or_insert_with(load)
+    }
 }
 
 pub(crate) struct GuardedLocalSessionRoot {
@@ -975,6 +1039,70 @@ impl GuardedLocalSessionRoot {
         }
     }
 
+    pub(crate) fn collect_regular_files_in_directory(
+        &self,
+        directory_path: &Path,
+    ) -> io::Result<Vec<PathBuf>> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
+
+            let relative = directory_path.strip_prefix(&self.path).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "session sidecar directory is outside the guarded root",
+                )
+            })?;
+            let directory_flags =
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let mut directory = openat(&self.directory, ".", directory_flags, Mode::empty())
+                .map_err(io::Error::from)?;
+            for component in relative.components() {
+                match component {
+                    Component::Normal(name) => {
+                        directory = openat(&directory, name, directory_flags, Mode::empty())
+                            .map_err(io::Error::from)?;
+                    }
+                    Component::CurDir => {}
+                    Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "session sidecar directory contains an unsupported component",
+                        ));
+                    }
+                }
+            }
+
+            let mut files = Vec::new();
+            let mut entries = Dir::read_from(&directory).map_err(io::Error::from)?;
+            for entry in &mut entries {
+                let entry = entry.map_err(io::Error::from)?;
+                let name_bytes = entry.file_name().to_bytes();
+                if matches!(name_bytes, b"." | b"..") {
+                    continue;
+                }
+                let name = std::ffi::OsStr::from_bytes(name_bytes);
+                let metadata = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+                if FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile {
+                    files.push(directory_path.join(name));
+                }
+            }
+            Ok(files)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = directory_path;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "guarded local session sidecar reads require descriptor-relative access",
+            ))
+        }
+    }
+
     #[cfg(unix)]
     fn open_regular_file(&self, path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
         use rustix::fs::{openat, Mode, OFlags};
@@ -1047,6 +1175,7 @@ impl LocalSessionIoContext {
     pub(crate) fn new(limits: LocalSessionReadLimits) -> Self {
         Self {
             budget: LocalSessionReadBudget::new(limits.max_preview_read_bytes),
+            cache: LocalSessionRequestCache::default(),
             limits,
         }
     }
@@ -1309,7 +1438,37 @@ fn usize_from_u64(value: u64) -> usize {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::io::{self, Cursor, Read, Seek, SeekFrom};
+    use std::{
+        cell::Cell,
+        collections::HashMap,
+        io::{self, Cursor, Read, Seek, SeekFrom},
+    };
+
+    #[test]
+    fn codex_index_cache_loads_once_per_store() {
+        let loads = Cell::new(0usize);
+        let root = PathBuf::from("/canonical/.codex");
+        let mut cache = LocalSessionRequestCache::default();
+
+        let first = cache.codex_titles_or_load(root.clone(), || {
+            loads.set(loads.get() + 1);
+            HashMap::from([("session-1".to_string(), "Cached title".to_string())])
+        });
+        assert_eq!(
+            first.get("session-1").map(String::as_str),
+            Some("Cached title")
+        );
+
+        let second = cache.codex_titles_or_load(root, || {
+            loads.set(loads.get() + 1);
+            HashMap::new()
+        });
+        assert_eq!(
+            second.get("session-1").map(String::as_str),
+            Some("Cached title")
+        );
+        assert_eq!(loads.get(), 1);
+    }
 
     fn bounded_file_test_spec() -> BoundedReadSpec {
         BoundedReadSpec {

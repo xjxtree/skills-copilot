@@ -1,8 +1,10 @@
 use super::service_local_session_io::{
     read_bounded_text, BoundedReadSpec, BoundedText, GuardedLocalSessionRoot,
-    LocalSessionIoContext, LocalSessionReadLimits, MAX_PROVENANCE_TOKEN_BYTES,
+    LocalSessionIoContext, LocalSessionReadBudget, LocalSessionReadLimits, SessionSidecarBudget,
+    MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
+use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 impl ServiceHost {
@@ -172,6 +174,7 @@ impl ServiceHost {
                     &guarded_root,
                     options,
                     &mut io,
+                    &mut gap_notes,
                     &mut redactor,
                 ) {
                     Ok(Some(entry)) => {
@@ -792,6 +795,7 @@ fn local_session_preview_row(
     guarded_root: &GuardedLocalSessionRoot,
     options: LocalSessionPreviewRowOptions<'_>,
     io: &mut LocalSessionIoContext,
+    gap_notes: &mut Vec<String>,
     redactor: &mut PromptRedactor<'_>,
 ) -> Result<Option<LocalSessionPreviewEntry>, ServiceError> {
     if !path.starts_with(root) {
@@ -804,12 +808,15 @@ fn local_session_preview_row(
         return Ok(None);
     }
     let accepted_file_content = accepted_local_session_content(&file_content);
-    let enriched_content = enrich_local_session_content(
-        path,
-        root,
-        &accepted_file_content,
-        io.limits.max_line_fragment_bytes,
-    );
+    let enriched_content =
+        enrich_local_session_content(path, guarded_root, &accepted_file_content, io);
+    if enriched_content.sidecars_truncated {
+        gap_notes.push(
+            "OpenCode sidecar enrichment was truncated by bounded file, session-byte, or session-file limits."
+                .to_string(),
+        );
+    }
+    let enriched_content = enriched_content.content;
     let content = if enriched_content == accepted_file_content {
         accepted_file_content
     } else {
@@ -828,7 +835,7 @@ fn local_session_preview_row(
         metadata.title = metadata
             .session_id
             .as_deref()
-            .and_then(|session_id| codex_session_index_title(path, session_id));
+            .and_then(|session_id| codex_session_index_title(io, path, session_id));
     }
     if !local_session_matches_scope(
         options.scope,
@@ -2522,115 +2529,177 @@ fn local_session_row_id(path: &Path) -> String {
 
 fn enrich_local_session_content(
     path: &Path,
-    root: &Path,
+    guarded_root: &GuardedLocalSessionRoot,
     file_content: &str,
-    max_line_fragment_bytes: usize,
-) -> String {
+    io: &mut LocalSessionIoContext,
+) -> LocalSessionEnrichment {
+    let unchanged = || LocalSessionEnrichment {
+        content: file_content.to_string(),
+        sidecars_truncated: false,
+    };
     let Some(agent) = infer_local_session_agent(path) else {
-        return file_content.to_string();
+        return unchanged();
     };
     if agent != AgentId::Opencode.as_str() && agent != "opencode" {
-        return file_content.to_string();
+        return unchanged();
     }
     let Ok(value) = serde_json::from_str::<Value>(file_content) else {
-        return file_content.to_string();
+        return unchanged();
     };
     let Some(session_id) = value.get("id").and_then(Value::as_str) else {
-        return file_content.to_string();
+        return unchanged();
     };
     let Some(storage_root) = opencode_storage_root(path) else {
-        return file_content.to_string();
+        return unchanged();
     };
 
     let mut chunks = vec![file_content.to_string()];
+    let mut sidecar_state = OpencodeSidecarReadState {
+        budget: SessionSidecarBudget::new(
+            io.limits.max_sidecar_files,
+            io.limits.max_sidecar_session_bytes,
+        ),
+        io,
+        truncated: false,
+    };
     let message_root = storage_root.join("message").join(session_id);
-    if let Some(message_root) = authorized_local_session_extra_dir(root, &message_root) {
-        let Ok(entries) = fs::read_dir(&message_root) else {
-            return chunks.join("\n");
+    {
+        let Ok(mut message_paths) = guarded_root.collect_regular_files_in_directory(&message_root)
+        else {
+            return LocalSessionEnrichment {
+                content: chunks.join("\n"),
+                sidecars_truncated: sidecar_state.truncated,
+            };
         };
-        let mut message_paths = entries
-            .flatten()
-            .filter_map(|entry| {
-                entry
-                    .file_type()
-                    .ok()
-                    .filter(|file_type| file_type.is_file())
-                    .map(|_| entry.path())
-            })
-            .collect::<Vec<_>>();
         message_paths.sort();
-        for message_path in message_paths.into_iter().take(240) {
-            let Some(message_path) = authorized_local_session_extra_file(root, &message_path)
+        for message_path in message_paths {
+            let Some(message) =
+                read_opencode_sidecar(guarded_root, &message_path, &mut sidecar_state)
             else {
+                if sidecar_state.budget.remaining_files() == 0
+                    || sidecar_state.budget.remaining_bytes() == 0
+                {
+                    sidecar_state.truncated = true;
+                    break;
+                }
                 continue;
             };
-            if let Ok(message) = fs::read_to_string(&message_path) {
+            {
                 let message = accepted_local_session_content(&compact_local_session_records(
                     &message,
-                    max_line_fragment_bytes,
+                    sidecar_state.io.limits.max_line_fragment_bytes,
                 ));
                 if message.is_empty() {
                     continue;
                 }
-                chunks.push(message.clone());
-                if let Ok(message_value) = serde_json::from_str::<Value>(message.trim()) {
-                    if let Some(message_id) = message_value.get("id").and_then(Value::as_str) {
-                        let inherited_role = message_value.as_object().and_then(json_session_role);
-                        append_opencode_parts(
-                            &storage_root,
-                            root,
-                            message_id,
-                            inherited_role,
-                            max_line_fragment_bytes,
-                            &mut chunks,
-                        );
-                    }
+                let message_value = serde_json::from_str::<Value>(message.trim()).ok();
+                let message_id = message_value
+                    .as_ref()
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str);
+                let inherited_role = message_value
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(json_session_role);
+                chunks.push(message);
+                if let Some(message_id) = message_id {
+                    append_opencode_parts(
+                        &storage_root,
+                        guarded_root,
+                        message_id,
+                        inherited_role,
+                        &mut sidecar_state,
+                        &mut chunks,
+                    );
                 }
             }
         }
     }
-    chunks.join("\n")
+    LocalSessionEnrichment {
+        content: chunks.join("\n"),
+        sidecars_truncated: sidecar_state.truncated,
+    }
+}
+
+struct LocalSessionEnrichment {
+    content: String,
+    sidecars_truncated: bool,
+}
+
+struct OpencodeSidecarReadState<'a> {
+    io: &'a mut LocalSessionIoContext,
+    budget: SessionSidecarBudget,
+    truncated: bool,
 }
 
 fn append_opencode_parts(
     storage_root: &Path,
-    root: &Path,
+    guarded_root: &GuardedLocalSessionRoot,
     message_id: &str,
     inherited_role: Option<&str>,
-    max_line_fragment_bytes: usize,
+    state: &mut OpencodeSidecarReadState<'_>,
     chunks: &mut Vec<String>,
 ) {
     let part_root = storage_root.join("part").join(message_id);
-    let Some(part_root) = authorized_local_session_extra_dir(root, &part_root) else {
+    let Ok(mut part_paths) = guarded_root.collect_regular_files_in_directory(&part_root) else {
         return;
     };
-    let Ok(entries) = fs::read_dir(&part_root) else {
-        return;
-    };
-    let mut part_paths = entries
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .file_type()
-                .ok()
-                .filter(|file_type| file_type.is_file())
-                .map(|_| entry.path())
-        })
-        .collect::<Vec<_>>();
     part_paths.sort();
-    for part_path in part_paths.into_iter().take(240) {
-        let Some(part_path) = authorized_local_session_extra_file(root, &part_path) else {
+    for part_path in part_paths {
+        let Some(part) = read_opencode_sidecar(guarded_root, &part_path, state) else {
+            if state.budget.remaining_files() == 0 || state.budget.remaining_bytes() == 0 {
+                state.truncated = true;
+                break;
+            }
             continue;
         };
-        if let Ok(part) = fs::read_to_string(part_path) {
-            let compacted = compact_local_session_records(&part, max_line_fragment_bytes);
-            let attributed = opencode_part_with_inherited_role(&compacted, inherited_role);
-            let part = accepted_local_session_content(&attributed);
-            if !part.is_empty() {
-                chunks.push(part);
-            }
+        let compacted =
+            compact_local_session_records(&part, state.io.limits.max_line_fragment_bytes);
+        let attributed = opencode_part_with_inherited_role(&compacted, inherited_role);
+        let part = accepted_local_session_content(&attributed);
+        if !part.is_empty() {
+            chunks.push(part);
         }
     }
+}
+
+fn read_opencode_sidecar(
+    guarded_root: &GuardedLocalSessionRoot,
+    path: &Path,
+    state: &mut OpencodeSidecarReadState<'_>,
+) -> Option<String> {
+    if !state.budget.claim_file() {
+        state.truncated = true;
+        return None;
+    }
+    let allowance = state
+        .budget
+        .remaining_bytes()
+        .min(state.io.budget.remaining_bytes());
+    if allowance == 0 {
+        state.truncated = true;
+        return None;
+    }
+    let half_file_limit = state.io.limits.max_sidecar_file_bytes / 2;
+    let mut read_budget = LocalSessionReadBudget::new(allowance);
+    let bounded = read_bounded_text(
+        guarded_root,
+        path,
+        BoundedReadSpec {
+            head_bytes: half_file_limit,
+            tail_bytes: half_file_limit,
+            line_fragment_bytes: state.io.limits.max_line_fragment_bytes,
+        },
+        &mut read_budget,
+    )
+    .ok()?;
+    state.budget.consume_bytes(bounded.bytes_read);
+    state.io.budget.consume(bounded.bytes_read);
+    state.truncated |= bounded.truncated;
+    Some(compact_bounded_local_session_content(
+        &bounded,
+        state.io.limits.max_line_fragment_bytes,
+    ))
 }
 
 fn opencode_part_with_inherited_role(content: &str, inherited_role: Option<&str>) -> String {
@@ -2667,16 +2736,6 @@ fn opencode_part_with_inherited_role(content: &str, inherited_role: Option<&str>
     let mut attributed = value.to_string();
     attributed.push('\n');
     attributed
-}
-
-fn authorized_local_session_extra_dir(root: &Path, path: &Path) -> Option<PathBuf> {
-    let canonical = path.canonicalize().ok()?;
-    canonical.starts_with(root).then_some(canonical)
-}
-
-fn authorized_local_session_extra_file(root: &Path, path: &Path) -> Option<PathBuf> {
-    let canonical = path.canonicalize().ok()?;
-    canonical.starts_with(root).then_some(canonical)
 }
 
 fn opencode_storage_root(path: &Path) -> Option<PathBuf> {
@@ -2931,15 +2990,50 @@ fn path_or_root_contains_session_marker(path_text: &str, root_text: &str, marker
         .any(|value| value.ends_with(marker) || value.contains(&format!("{marker}/")))
 }
 
-fn codex_session_index_title(path: &Path, session_id: &str) -> Option<String> {
+fn codex_session_index_title(
+    io: &mut LocalSessionIoContext,
+    path: &Path,
+    session_id: &str,
+) -> Option<String> {
     let codex_root = local_session_agent_store_root(path, ".codex")?;
+    let limits = io.limits;
+    let (cache, request_budget) = (&mut io.cache, &mut io.budget);
+    cache
+        .codex_titles_or_load(codex_root.clone(), || {
+            load_codex_session_index_titles(&codex_root, limits, request_budget)
+        })
+        .get(session_id)
+        .cloned()
+}
+
+fn load_codex_session_index_titles(
+    codex_root: &Path,
+    limits: LocalSessionReadLimits,
+    request_budget: &mut LocalSessionReadBudget,
+) -> HashMap<String, String> {
+    let Some(anchor) = codex_root.parent() else {
+        return HashMap::new();
+    };
+    let Ok(guarded_root) = GuardedLocalSessionRoot::open_beneath(anchor, codex_root) else {
+        return HashMap::new();
+    };
+    let mut titles = HashMap::new();
     for index_file_name in ["session_index.jsonl", "history.jsonl"] {
         let index_path = codex_root.join(index_file_name);
-        let Ok(index_content) = fs::read_to_string(index_path) else {
+        let Ok(bounded) = read_bounded_text(
+            &guarded_root,
+            &index_path,
+            BoundedReadSpec {
+                head_bytes: 32 * 1024,
+                tail_bytes: 32 * 1024,
+                line_fragment_bytes: limits.max_line_fragment_bytes,
+            },
+            request_budget,
+        ) else {
             continue;
         };
-        for line in index_content.lines().filter(|line| !line.trim().is_empty()) {
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
+        for line in complete_bounded_index_lines(&bounded) {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             let Some(map) = value.as_object() else {
@@ -2949,19 +3043,51 @@ fn codex_session_index_title(path: &Path, session_id: &str) -> Option<String> {
                 .get("id")
                 .or_else(|| map.get("session_id"))
                 .and_then(Value::as_str);
-            if row_id != Some(session_id) {
+            let Some(row_id) = row_id else {
                 continue;
-            }
+            };
             for key in ["thread_name", "title", "text"] {
                 if let Some(title) = map.get(key).and_then(Value::as_str) {
                     if let Some(title) = local_session_text_title_candidate(title) {
-                        return Some(title);
+                        titles.entry(row_id.to_string()).or_insert(title);
+                        break;
                     }
                 }
             }
         }
     }
-    None
+    titles
+}
+
+fn complete_bounded_index_lines(bounded: &BoundedText) -> Vec<String> {
+    if !bounded.truncated && bounded.retained_head_end == bounded.retained_tail_start {
+        let mut contiguous = String::with_capacity(bounded.head.len() + bounded.tail.len());
+        contiguous.push_str(&bounded.head);
+        contiguous.push_str(&bounded.tail);
+        return contiguous
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+
+    let head = bounded
+        .head
+        .rfind('\n')
+        .map_or("", |newline| &bounded.head[..newline]);
+    let tail = if bounded.tail_starts_at_line_boundary {
+        bounded.tail.as_str()
+    } else {
+        bounded
+            .tail
+            .find('\n')
+            .map_or("", |newline| &bounded.tail[newline + 1..])
+    };
+    head.lines()
+        .chain(tail.lines())
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn local_session_agent_store_root(path: &Path, directory_name: &str) -> Option<PathBuf> {
