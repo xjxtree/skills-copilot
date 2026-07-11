@@ -4441,7 +4441,7 @@ private actor AutosaveControlServiceState {
     }
 }
 
-private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Sendable {
+final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Sendable {
     private let lock = NSLock()
     private let failFirstMethods: Set<String>
     private let failSecondMethods: Set<String>

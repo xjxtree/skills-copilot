@@ -67,71 +67,71 @@ extension SkillStoreTests {
     }
 
     func allAgentConfigHistoryPageTaskPreservesCachedRowsWithoutRPC() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "normal")
+        let runner = LocalHistoryPageRunner(delayedThirdMethods: ["snapshot.listAgentConfigPage"])
+        defer { runner.release(method: "snapshot.listAgentConfigPage") }
+        let store = SkillStore(service: runner.serviceClient())
 
-        let store = SkillStore(service: fake.serviceClient())
-        let snapshots = [
-            ConfigSnapshotRecord(
-                id: "cached-claude",
-                agent: "claude-code",
-                scope: "agent-global",
-                target: "$HOME/.claude/settings.json",
-                content: "{}",
-                reason: "Match Claude config",
-                createdAt: 20
-            ),
-            ConfigSnapshotRecord(
-                id: "cached-codex",
-                agent: "codex",
-                scope: "agent-project",
-                target: "$PROJECT/.codex/config.toml",
-                content: "",
-                reason: "Match Codex config",
-                createdAt: 10
-            ),
-        ]
-        for snapshot in snapshots {
-            await store.selectAppSearchItem(AppSearchItem(
-                id: "config:\(snapshot.id)",
-                kind: .configHistory,
-                targetID: snapshot.id,
-                title: snapshot.reason,
-                subtitle: snapshot.target,
-                agent: snapshot.agent,
-                configSnapshot: snapshot
-            ))
+        await store.loadMoreAgentConfigSnapshots(loadAll: false)
+        try expectEqual(store.agentConfigSnapshotCompleteness.loadedCount, 100, "The concrete-agent fixture should publish its first page.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.totalCount, 205, "The concrete-agent fixture should expose its source total.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.hasMore, true, "The concrete-agent fixture should expose a continuation.")
+
+        let latePageTask = Task { await store.loadMoreAgentConfigSnapshots(loadAll: true) }
+        try await waitUntil("The concrete-agent load should suspend on its delayed third page.") {
+            runner.syncCallCount(for: "snapshot.listAgentConfigPage") == 3
         }
-        try expectEqual(
-            Set(store.agentConfigSnapshots.map(\.id)),
-            Set(snapshots.map(\.id)),
-            "The real Store should hold both cached agent snapshots before the All-agents page lifecycle runs."
+        try expectEqual(store.agentConfigSnapshots.count, 200, "Two concrete-agent pages should be cached before switching scope.")
+        try expectEqual(store.agentConfigSnapshotCompleteness.hasMore, true, "The in-flight concrete-agent accumulator should still carry its old continuation.")
+
+        let codexSnapshot = ConfigSnapshotRecord(
+            id: "cached-codex",
+            agent: "codex",
+            scope: "agent-project",
+            target: "$PROJECT/.codex/config.toml",
+            content: "",
+            reason: "Match Codex config",
+            createdAt: 1_000
         )
+        await store.selectAppSearchItem(AppSearchItem(
+            id: "config:\(codexSnapshot.id)",
+            kind: .configHistory,
+            targetID: codexSnapshot.id,
+            title: codexSnapshot.reason,
+            subtitle: codexSnapshot.target,
+            agent: codexSnapshot.agent,
+            configSnapshot: codexSnapshot
+        ))
+        try expectEqual(store.agentConfigSnapshots.count, 201, "The real Store should hold a multi-agent cache before the All-agents page lifecycle runs.")
 
         store.agentFilter = .all
         store.sidebarContentMode = .config
         store.configSidebarSearchText = "match"
-        let callsBeforePageTask = fake.calls()
+        let callsBeforePageTask = runner.syncCallCount(for: "snapshot.listAgentConfigPage")
 
         await store.loadSelectedAgentConfigDataIfNeeded()
 
-        try expectEqual(
-            Set(store.agentConfigSnapshots.map(\.id)),
-            Set(snapshots.map(\.id)),
-            "The Config History page task must preserve cached multi-agent rows under All agents."
-        )
+        try expectEqual(store.agentConfigSnapshots.count, 201, "The Config History page task must preserve cached multi-agent rows under All agents.")
         let reachable = AgentConfigSidebarModel.filteredSnapshots(
             store.agentConfigSnapshots,
             agentFilter: store.agentFilter,
             scopeFilter: store.configScopeFilter,
-            searchText: store.configSidebarSearchText
+            searchText: ""
         )
-        try expectEqual(
-            reachable.map(\.id),
-            ["cached-claude", "cached-codex"],
-            "Both cached real-agent rows should remain reachable after the All-agents page task."
-        )
-        try expectEqual(fake.calls(), callsBeforePageTask, "The All-agents Config History page task must issue zero service RPCs.")
+        try expectEqual(reachable.count, store.agentConfigSnapshots.count, "Every cached real-agent row should remain reachable after the All-agents page task.")
+        let allState = store.agentConfigSnapshotCompleteness
+        try expectEqual(allState.loadedCount, store.agentConfigSnapshots.count, "All-agents completeness must describe the published cache rows.")
+        try expectNil(allState.totalCount, "All-agents cache state must not reuse the concrete-agent source total.")
+        try expectEqual(allState.hasMore, false, "All-agents cache state must not reuse the concrete-agent continuation.")
+        try expectEqual(allState.canLoadMore, false, "All-agents cache state must not expose Load More.")
+        try expectEqual(allState.canLoadAll, false, "All-agents cache state must not expose Load All.")
+        try expectEqual(runner.syncCallCount(for: "snapshot.listAgentConfigPage"), callsBeforePageTask, "The All-agents Config History page task must issue zero service RPCs.")
+
+        await store.loadMoreAgentConfigSnapshots(loadAll: false)
+        try expectEqual(runner.syncCallCount(for: "snapshot.listAgentConfigPage"), callsBeforePageTask, "No stale concrete-agent cursor may issue an All-agents continuation RPC.")
+
+        runner.release(method: "snapshot.listAgentConfigPage")
+        await latePageTask.value
+        try expectEqual(store.agentConfigSnapshots.count, 201, "A late concrete-agent generation must not replace the All-agents cache.")
+        try expectEqual(store.agentConfigSnapshotCompleteness, allState, "A late concrete-agent generation must not restore its old pagination metadata.")
     }
 }

@@ -66,6 +66,13 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
     private var seenIDs = Set<Item.ID>()
     private var hasMore = false
 
+    init() {}
+
+    init(cachedItems: [Item]) {
+        items = cachedItems
+        seenIDs = Set(cachedItems.map(\.id))
+    }
+
     mutating func append(_ page: ListPage<Item>) throws {
         guard page.returnedCount == page.items.count else {
             throw ListPageAccumulatorError.invalidPage
