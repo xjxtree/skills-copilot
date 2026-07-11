@@ -790,6 +790,9 @@ dependencies = [
 [[package]]
 name = "skills-copilot-core"
 version = "0.1.2"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "skills-copilot-scanner"

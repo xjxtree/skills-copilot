@@ -115,6 +115,56 @@ enum UIStrings {
     static var adapterToggle: String { text("adapter.capability.toggle", "Toggle") }
     static var adapterInstall: String { text("adapter.capability.install", "Install") }
     static var loading: String { text("state.loading", "Loading...") }
+    static var listCompletenessStatus: String { text("list.completeness.status", "List completeness") }
+    static var listCompletenessComplete: String { text("list.completeness.complete", "Complete") }
+    static var listCompletenessPartial: String { text("list.completeness.partial", "Partial") }
+    static var listCompletenessIncomplete: String { text("list.completeness.incomplete", "Incomplete") }
+    static var listCompletenessUnknown: String { text("list.completeness.unknown", "Unknown") }
+    static var listCompletenessLoadMore: String { text("list.completeness.loadMore", "Load More") }
+    static var listCompletenessLoadAll: String { text("list.completeness.loadAll", "Load All") }
+    static var listCompletenessCancelLoadingAll: String { text("list.completeness.cancelLoadingAll", "Cancel Loading All") }
+    static var listCompletenessLoadMoreHelp: String { text("list.completeness.loadMore.help", "Load the next available page without clearing current rows.") }
+    static var listCompletenessLoadAllHelp: String { text("list.completeness.loadAll.help", "Continue loading available pages until the list is complete or loading is cancelled.") }
+    static var listCompletenessCancelHelp: String { text("list.completeness.cancel.help", "Stop loading pages and keep every row already loaded.") }
+    static func listCompletenessShowAll(_ count: Int) -> String {
+        format("list.completeness.showAll", "Show All %d", count)
+    }
+    static func listCompletenessShowAllHelp(_ count: Int) -> String {
+        format("list.completeness.showAll.help", "Show all %d items in this summary.", count)
+    }
+    static func listCompletenessSummaryValue(visibleCount: Int, totalCount: Int) -> String {
+        format("list.completeness.summaryValue", "Showing %d of %d summary items", visibleCount, totalCount)
+    }
+    static func listCompletenessSummary(
+        loadedCount: Int,
+        totalCount: Int?,
+        status: String,
+        isLoading: Bool
+    ) -> String {
+        let base: String
+        if let totalCount {
+            base = format("list.completeness.loadedOf", "Loaded %d of %d · %@", loadedCount, totalCount, status)
+        } else {
+            base = format("list.completeness.loadedUnknown", "Loaded %d · Total unknown · %@", loadedCount, status)
+        }
+        return isLoading ? format("list.completeness.loadingSummary", "%@ · Loading...", base) : base
+    }
+    static func listIncompleteReason(_ reason: ListIncompleteReason) -> String {
+        switch reason {
+        case .safetyBudget:
+            return text("list.completeness.reason.safetyBudget", "A safety budget stopped enumeration. Narrow the scope and retry.")
+        case .sourceChanged:
+            return text("list.completeness.reason.sourceChanged", "The source changed while loading. Restart the refresh before merging more rows.")
+        case .sourceLimited:
+            return text("list.completeness.reason.sourceLimited", "The source cannot expose or prove a complete result.")
+        case .unreadableSource:
+            return text("list.completeness.reason.unreadableSource", "Part of the source could not be read. Fix access and retry.")
+        case .pageFailed:
+            return text("list.completeness.reason.pageFailed", "The next page failed. Accepted rows remain available; retry the page.")
+        case .unsupportedProtocol:
+            return text("list.completeness.reason.unsupportedProtocol", "This service version cannot report complete list metadata.")
+        }
+    }
     static var startupPreparingLoading: String { text("startup.preparing", "Preparing startup...") }
     static var startupCatalogLoading: String { text("startup.catalog", "Loading catalog data...") }
     static var startupAnalysisLoading: String { text("startup.analysis", "Loading analysis data...") }

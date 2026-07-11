@@ -94,6 +94,7 @@ private let mainNativeModelSuites: [(String, () throws -> Void)] = [
     ("LocalSessionPreviewModelTests", { try LocalSessionPreviewModelTests().run() }),
     ("LocalSessionCacheTests", { try runAsyncTest { try await LocalSessionCacheTests().run() } }),
     ("SkillListModelTests", { try SkillListModelTests().run() }),
+    ("ListCompletenessModelTests", { try ListCompletenessModelTests().run() }),
 ]
 
 struct NativeModelSuiteSummary: Equatable {
@@ -151,9 +152,9 @@ public func runNativeModelTestsFromSwiftPMFallback() {
         try runAsyncTest {
             let summary = try await runAllNativeModelTestsAsync()
             try expectEqual(summary.serviceSuiteCount, 2, "Service suite count")
-            try expectEqual(summary.mainSuiteCount, 23, "Main suite count")
+            try expectEqual(summary.mainSuiteCount, 24, "Main suite count")
             try expectEqual(summary.skillStoreGroupCount, 64, "SkillStore group count")
-            try expectEqual(summary.namedExecutionCount, 89, "Named execution count")
+            try expectEqual(summary.namedExecutionCount, 90, "Named execution count")
         }
     } catch {
         fputs("SkillsCopilotTests: \(error)\n", stderr)

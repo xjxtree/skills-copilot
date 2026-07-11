@@ -41,6 +41,7 @@ const files = {
   uiOptimization: await read("apps/macos/Sources/SkillsCopilot/Models/UIOptimizationPresentation.swift"),
   revisionAutosave: await read("apps/macos/Sources/SkillsCopilot/Models/RevisionAutosaveCoordinator.swift"),
   localSessionCache: await read("apps/macos/Sources/SkillsCopilot/Models/LocalSessionCache.swift"),
+  listCompletenessControls: await read("apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
@@ -94,6 +95,14 @@ const statusFixtureMethods = parseStatusFixtureMethods(files.serviceStatusFixtur
 const forbiddenProtocolMethods = supportedMethods.filter((method) => /^(ipc|sidecar|daemon|process|socket)\./.test(method));
 
 const checks = [
+  {
+    label: "shared list completeness controls expose stable accessibility identifiers",
+    text: files.listCompletenessControls,
+    passed: /struct ListCompletenessBadge:[\s\S]*?list-completeness\.badge/.test(files.listCompletenessControls)
+      && /struct ListCompletenessFooter:/.test(files.listCompletenessControls)
+      && /struct ListPagingActions:[\s\S]*?list-completeness\.load-more[\s\S]*?list-completeness\.load-all[\s\S]*?list-completeness\.cancel/.test(files.listCompletenessControls)
+      && /struct ExpandableSummaryList<[\s\S]*?list-completeness\.show-all/.test(files.listCompletenessControls),
+  },
   {
     label: "app window defines stable minimum size and user-selectable appearance",
     text: files.app + "\n" + files.appTheme + "\n" + files.appThemePlatform + "\n" + files.mainWindowCoordinator + "\n" + files.mainWindowModel,
