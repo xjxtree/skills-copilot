@@ -1,5 +1,161 @@
 use super::*;
 
+#[cfg(unix)]
+#[test]
+fn auto_discovered_root_symlink_cannot_authorize_an_undeclared_target() {
+    use std::os::unix::fs::symlink;
+
+    let unique = unique_suffix();
+    let fixture = env::temp_dir().join(format!(
+        "skills-copilot-auto-root-symlink-test-{}-{unique}",
+        std::process::id()
+    ));
+    let user_home = fixture.join("home");
+    let documented_parent = user_home.join(".codex");
+    let undeclared_root = fixture.join("undeclared-sessions");
+    fs::create_dir_all(&documented_parent).expect("create documented parent");
+    fs::create_dir_all(&undeclared_root).expect("create undeclared target");
+    fs::write(
+        undeclared_root.join("record.jsonl"),
+        "user: UNDECLARED_AUTO_ROOT_TARGET_MUST_NOT_SURFACE\n",
+    )
+    .expect("write undeclared target");
+    symlink(&undeclared_root, documented_parent.join("sessions"))
+        .expect("create auto-root symlink");
+    let host = ServiceHost {
+        app_data_dir: fixture.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+
+    let response = host.handle(ServiceRequest {
+        id: Some("auto-root-symlink".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({"agent": "codex", "limit": 10}),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("auto-root symlink preview result");
+    let serialized = serde_json::to_string(&result).expect("serialize preview result");
+    let _ = fs::remove_dir_all(&fixture);
+
+    assert_eq!(result.get("count").and_then(Value::as_u64), Some(0));
+    assert!(
+        !serialized.contains("UNDECLARED_AUTO_ROOT_TARGET_MUST_NOT_SURFACE"),
+        "auto-discovered root followed an undeclared target: {serialized}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn scheduled_auto_discovered_root_swap_cannot_redirect_authorization() {
+    use std::os::unix::fs::symlink;
+
+    let unique = unique_suffix();
+    let fixture = env::temp_dir().join(format!(
+        "skills-copilot-scheduled-auto-root-swap-test-{}-{unique}",
+        std::process::id()
+    ));
+    let user_home = fixture.join("home");
+    let documented_parent = user_home.join(".codex");
+    let documented_root = documented_parent.join("sessions");
+    let parked_root = documented_parent.join("sessions-parked");
+    let undeclared_root = fixture.join("undeclared-sessions");
+    fs::create_dir_all(&documented_root).expect("create documented root");
+    fs::create_dir_all(&undeclared_root).expect("create undeclared target");
+    fs::write(
+        documented_root.join("safe.jsonl"),
+        "user: SAFE_DOCUMENTED_ROOT\n",
+    )
+    .expect("write documented session");
+    fs::write(
+        undeclared_root.join("record.jsonl"),
+        "user: SCHEDULED_ROOT_SWAP_TARGET_MUST_NOT_SURFACE\n",
+    )
+    .expect("write undeclared target");
+    let swap_documented_root = documented_root.clone();
+    let swap_parked_root = parked_root.clone();
+    let swap_undeclared_root = undeclared_root.clone();
+    service_local_sessions::install_scheduled_local_session_root_swap_test_hook(
+        user_home.clone(),
+        move || {
+            fs::rename(&swap_documented_root, &swap_parked_root).expect("park documented root");
+            symlink(&swap_undeclared_root, &swap_documented_root)
+                .expect("redirect documented root");
+        },
+    );
+    let host = ServiceHost {
+        app_data_dir: fixture.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+
+    let response = host.handle(ServiceRequest {
+        id: Some("scheduled-auto-root-swap".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({"agent": "codex", "limit": 10}),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("scheduled root-swap preview result");
+    let serialized = serde_json::to_string(&result).expect("serialize preview result");
+    let _ = fs::remove_dir_all(&fixture);
+
+    assert!(
+        !serialized.contains("SCHEDULED_ROOT_SWAP_TARGET_MUST_NOT_SURFACE"),
+        "scheduled root swap redirected authorization: {serialized}"
+    );
+}
+
+#[test]
+fn explicit_regular_session_root_remains_authorized() {
+    let unique = unique_suffix();
+    let fixture = env::temp_dir().join(format!(
+        "skills-copilot-explicit-regular-root-test-{}-{unique}",
+        std::process::id()
+    ));
+    let explicit_root = fixture.join("explicit-sessions");
+    fs::create_dir_all(&explicit_root).expect("create explicit root");
+    fs::write(
+        explicit_root.join("record.jsonl"),
+        "user: EXPLICIT_REGULAR_ROOT_CONTROL\n",
+    )
+    .expect("write explicit-root session");
+    let host = ServiceHost {
+        app_data_dir: fixture.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: fixture.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+
+    let response = host.handle(ServiceRequest {
+        id: Some("explicit-regular-root".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": [explicit_root.to_string_lossy()],
+            "auto_discover": false,
+            "limit": 10
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("explicit-root preview result");
+    let serialized = serde_json::to_string(&result).expect("serialize preview result");
+    let _ = fs::remove_dir_all(&fixture);
+
+    assert_eq!(result.get("count").and_then(Value::as_u64), Some(1));
+    assert!(serialized.contains("EXPLICIT_REGULAR_ROOT_CONTROL"));
+}
+
 #[test]
 fn local_session_preview_handles_non_ascii_skill_invocation_text() {
     let unique = unique_suffix();

@@ -34,10 +34,18 @@ impl ServiceHost {
 
         let mut root_requests = requested_roots
             .iter()
-            .map(|root| LocalSessionRootRequest {
-                path: PathBuf::from(root),
-                status: "authorized-read-only",
-                source_kind: "authorized-local-session",
+            .map(|root| {
+                let requested_path = PathBuf::from(root);
+                let guarded_root = GuardedLocalSessionRoot::open(&requested_path);
+                let path = guarded_root
+                    .as_ref()
+                    .map_or(requested_path, |root| root.path().to_path_buf());
+                LocalSessionRootRequest {
+                    path,
+                    guarded_root,
+                    status: "authorized-read-only",
+                    source_kind: "authorized-local-session",
+                }
             })
             .collect::<Vec<_>>();
         let mut gap_notes = Vec::new();
@@ -53,6 +61,7 @@ impl ServiceHost {
             gap_notes.extend(discovery_notes);
         }
         dedupe_local_session_root_requests(&mut root_requests);
+        run_scheduled_local_session_root_swap_test_hook(&adapter_ctx.user_home);
 
         if root_requests.is_empty() {
             if gap_notes.is_empty() {
@@ -104,9 +113,14 @@ impl ServiceHost {
         let mut io = LocalSessionIoContext::new(LocalSessionReadLimits::default());
 
         for root_request in root_requests {
-            let root = root_request.path.to_string_lossy().to_string();
+            let LocalSessionRootRequest {
+                path: root_path,
+                guarded_root,
+                status,
+                source_kind,
+            } = root_request;
+            let root = root_path.to_string_lossy().to_string();
             let redacted_root = redactor.redact(&root);
-            let root_path = root_request.path;
             if !root_path.is_absolute() {
                 let blocker = "Authorized session roots must be absolute paths.".to_string();
                 blocker_notes.push(format!("{redacted_root}: {blocker}"));
@@ -118,44 +132,7 @@ impl ServiceHost {
                 });
                 continue;
             }
-            if !root_path.exists() {
-                let blocker = "Authorized session root does not exist.".to_string();
-                blocker_notes.push(format!("{redacted_root}: {blocker}"));
-                root_rows.push(LocalSessionPreviewRoot {
-                    root: redacted_root,
-                    status: "blocked".to_string(),
-                    candidate_count: 0,
-                    blocker: Some(blocker),
-                });
-                continue;
-            }
-            if !root_path.is_dir() {
-                let blocker = "Authorized session root is not a directory.".to_string();
-                blocker_notes.push(format!("{redacted_root}: {blocker}"));
-                root_rows.push(LocalSessionPreviewRoot {
-                    root: redacted_root,
-                    status: "blocked".to_string(),
-                    candidate_count: 0,
-                    blocker: Some(blocker),
-                });
-                continue;
-            }
-
-            let canonical_root = match root_path.canonicalize() {
-                Ok(path) => path,
-                Err(error) => {
-                    let blocker = format!("Authorized session root could not be resolved: {error}");
-                    blocker_notes.push(format!("{redacted_root}: {}", redactor.redact(&blocker)));
-                    root_rows.push(LocalSessionPreviewRoot {
-                        root: redacted_root,
-                        status: "blocked".to_string(),
-                        candidate_count: 0,
-                        blocker: Some(redactor.redact(&blocker)),
-                    });
-                    continue;
-                }
-            };
-            let guarded_root = match GuardedLocalSessionRoot::open(&canonical_root) {
+            let guarded_root = match guarded_root {
                 Ok(root) => root,
                 Err(error) => {
                     let blocker =
@@ -171,19 +148,15 @@ impl ServiceHost {
                 }
             };
 
-            let files = collect_local_session_files(
-                &canonical_root,
-                max_files,
-                &mut gap_notes,
-                &mut redactor,
-            );
+            let files =
+                collect_local_session_files(&root_path, max_files, &mut gap_notes, &mut redactor);
             total_candidate_count += files.len();
             let mut root_candidate_count = 0usize;
             for file in files {
                 let options = LocalSessionPreviewRowOptions {
                     requested_agent,
                     max_excerpt_chars,
-                    source_kind: root_request.source_kind,
+                    source_kind,
                     skill_matchers: &skill_matchers,
                     scope,
                     project_filter_roots: &project_filter_roots,
@@ -191,7 +164,7 @@ impl ServiceHost {
                 };
                 match local_session_preview_row(
                     &file,
-                    &canonical_root,
+                    &root_path,
                     &guarded_root,
                     options,
                     &mut io,
@@ -217,7 +190,7 @@ impl ServiceHost {
 
             root_rows.push(LocalSessionPreviewRoot {
                 root: redacted_root,
-                status: root_request.status.to_string(),
+                status: status.to_string(),
                 candidate_count: root_candidate_count,
                 blocker: None,
             });
@@ -322,9 +295,59 @@ impl ServiceHost {
 
 struct LocalSessionRootRequest {
     path: PathBuf,
+    guarded_root: std::io::Result<GuardedLocalSessionRoot>,
     status: &'static str,
     source_kind: &'static str,
 }
+
+#[cfg(test)]
+struct ScheduledLocalSessionRootSwapTestHook {
+    user_home: PathBuf,
+    action: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+static SCHEDULED_LOCAL_SESSION_ROOT_SWAP_TEST_HOOK: std::sync::Mutex<
+    Option<ScheduledLocalSessionRootSwapTestHook>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn install_scheduled_local_session_root_swap_test_hook(
+    user_home: PathBuf,
+    action: impl FnOnce() + Send + 'static,
+) {
+    let mut hook = SCHEDULED_LOCAL_SESSION_ROOT_SWAP_TEST_HOOK
+        .lock()
+        .expect("lock scheduled local-session root-swap test hook");
+    assert!(hook.is_none(), "scheduled root-swap test hook already set");
+    *hook = Some(ScheduledLocalSessionRootSwapTestHook {
+        user_home,
+        action: Box::new(action),
+    });
+}
+
+#[cfg(test)]
+fn run_scheduled_local_session_root_swap_test_hook(user_home: &Path) {
+    let action = {
+        let mut hook = SCHEDULED_LOCAL_SESSION_ROOT_SWAP_TEST_HOOK
+            .lock()
+            .expect("lock scheduled local-session root-swap test hook");
+        if hook
+            .as_ref()
+            .is_some_and(|scheduled| scheduled.user_home == user_home)
+        {
+            hook.take().map(|scheduled| scheduled.action)
+        } else {
+            None
+        }
+    };
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(not(test))]
+fn run_scheduled_local_session_root_swap_test_hook(_user_home: &Path) {}
 
 #[derive(Debug, Clone)]
 struct LocalSessionPreviewEntry {
@@ -474,6 +497,7 @@ fn auto_local_session_roots(
                 let encoded = encode_claude_project_session_dir(project);
                 pushed_project_root |= push_existing_session_root(
                     &mut roots,
+                    home,
                     claude_projects.join(encoded),
                     "auto-discovered-read-only",
                     "auto-local-session",
@@ -482,6 +506,7 @@ fn auto_local_session_roots(
         }
         push_existing_session_root(
             &mut roots,
+            home,
             home.join(".claude/sessions"),
             "auto-discovered-read-only",
             "auto-local-session",
@@ -489,6 +514,7 @@ fn auto_local_session_roots(
         if scope == LocalSessionScope::All || project_roots.is_empty() || !pushed_project_root {
             push_existing_session_root(
                 &mut roots,
+                home,
                 claude_projects,
                 "auto-discovered-read-only",
                 "auto-local-session",
@@ -499,6 +525,7 @@ fn auto_local_session_roots(
     if local_session_agent_matches(requested_agent, AgentId::Codex.as_str()) {
         push_existing_session_root(
             &mut roots,
+            home,
             home.join(".codex/sessions"),
             "auto-discovered-read-only",
             "auto-local-session",
@@ -508,6 +535,7 @@ fn auto_local_session_roots(
     if local_session_agent_matches(requested_agent, AgentId::Opencode.as_str()) {
         push_existing_session_root(
             &mut roots,
+            home,
             home.join(".local/share/opencode/storage"),
             "auto-discovered-read-only",
             "auto-local-session",
@@ -522,6 +550,7 @@ fn auto_local_session_roots(
                 for encoded in encode_pi_project_session_dirs(project) {
                     pushed_project_root |= push_existing_session_root(
                         &mut roots,
+                        home,
                         pi_sessions.join(encoded),
                         "auto-discovered-read-only",
                         "auto-local-session",
@@ -532,6 +561,7 @@ fn auto_local_session_roots(
         if scope == LocalSessionScope::All || project_roots.is_empty() || !pushed_project_root {
             push_existing_session_root(
                 &mut roots,
+                home,
                 pi_sessions,
                 "auto-discovered-read-only",
                 "auto-local-session",
@@ -539,6 +569,7 @@ fn auto_local_session_roots(
         }
         push_existing_session_root(
             &mut roots,
+            home,
             home.join(".pi/context-mode/sessions"),
             "auto-discovered-read-only",
             "auto-local-session",
@@ -634,33 +665,27 @@ fn local_session_agent_matches(requested_agent: Option<&str>, agent: &str) -> bo
 
 fn push_existing_session_root(
     roots: &mut Vec<LocalSessionRootRequest>,
+    authorization_anchor: &Path,
     path: PathBuf,
     status: &'static str,
     source_kind: &'static str,
 ) -> bool {
-    if path.is_dir() {
-        roots.push(LocalSessionRootRequest {
-            path,
-            status,
-            source_kind,
-        });
-        true
-    } else {
-        false
-    }
+    let Ok(guarded_root) = GuardedLocalSessionRoot::open_beneath(authorization_anchor, &path)
+    else {
+        return false;
+    };
+    roots.push(LocalSessionRootRequest {
+        path: guarded_root.path().to_path_buf(),
+        guarded_root: Ok(guarded_root),
+        status,
+        source_kind,
+    });
+    true
 }
 
 fn dedupe_local_session_root_requests(roots: &mut Vec<LocalSessionRootRequest>) {
     let mut seen = BTreeSet::new();
-    roots.retain(|root| {
-        let key = root
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| root.path.clone())
-            .to_string_lossy()
-            .to_string();
-        seen.insert(key)
-    });
+    roots.retain(|root| seen.insert(root.path.clone()));
 }
 
 fn encode_claude_project_session_dir(project: &Path) -> String {
@@ -731,18 +756,7 @@ fn collect_local_session_files(
                 && is_supported_local_session_file(&path)
                 && !is_ignored_local_session_file(&path)
             {
-                match path.canonicalize() {
-                    Ok(canonical) if canonical.starts_with(root) => files.push(canonical),
-                    Ok(canonical) => gap_notes.push(format!(
-                        "{}: skipped because it resolves outside the authorized root.",
-                        redactor.redact(&canonical.to_string_lossy())
-                    )),
-                    Err(error) => gap_notes.push(format!(
-                        "{}: {}",
-                        redactor.redact(&path.to_string_lossy()),
-                        redactor.redact(&error.to_string())
-                    )),
-                }
+                files.push(path);
             }
         }
     }

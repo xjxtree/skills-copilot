@@ -790,31 +790,14 @@ impl GuardedLocalSessionRoot {
 
         #[cfg(unix)]
         {
-            use rustix::fs::{open, openat, Mode, OFlags};
+            use rustix::fs::{open, Mode, OFlags};
 
             let directory_flags =
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let mut directory =
-                open("/", directory_flags, Mode::empty()).map_err(io::Error::from)?;
-            let mut saw_root = false;
-            for component in path.components() {
-                match component {
-                    Component::RootDir => saw_root = true,
-                    Component::Normal(name) if saw_root => {
-                        directory = openat(&directory, name, directory_flags, Mode::empty())
-                            .map_err(io::Error::from)?;
-                    }
-                    Component::CurDir => {}
-                    Component::Prefix(_) | Component::ParentDir | Component::Normal(_) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "guarded session root contains an unsupported component",
-                        ));
-                    }
-                }
-            }
+            let directory = open(path, directory_flags, Mode::empty()).map_err(io::Error::from)?;
+            let resolved_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             Ok(Self {
-                path: path.to_path_buf(),
+                path: resolved_path,
                 directory,
             })
         }
@@ -826,6 +809,74 @@ impl GuardedLocalSessionRoot {
                 io::ErrorKind::Unsupported,
                 "guarded local session reads require descriptor-relative file access",
             ))
+        }
+    }
+
+    pub(crate) fn open_beneath(anchor: &Path, path: &Path) -> io::Result<Self> {
+        if !anchor.is_absolute() || !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "guarded session root and authorization anchor must be absolute",
+            ));
+        }
+        let relative = path.strip_prefix(anchor).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "session root is outside its authorization anchor",
+            )
+        })?;
+
+        #[cfg(unix)]
+        {
+            use rustix::fs::{open, openat, Mode, OFlags};
+
+            let directory_flags =
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let mut directory =
+                open(anchor, directory_flags, Mode::empty()).map_err(io::Error::from)?;
+            for component in relative.components() {
+                match component {
+                    Component::Normal(name) => {
+                        directory = openat(&directory, name, directory_flags, Mode::empty())
+                            .map_err(io::Error::from)?;
+                    }
+                    Component::CurDir => {}
+                    Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "guarded session root contains an unsupported component",
+                        ));
+                    }
+                }
+            }
+            let resolved_anchor = anchor
+                .canonicalize()
+                .unwrap_or_else(|_| anchor.to_path_buf());
+            Ok(Self {
+                path: resolved_anchor.join(relative),
+                directory,
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = relative;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "guarded local session reads require descriptor-relative file access",
+            ))
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        #[cfg(unix)]
+        {
+            &self.path
+        }
+
+        #[cfg(not(unix))]
+        {
+            unreachable!("non-Unix guarded roots cannot be constructed")
         }
     }
 
