@@ -39,6 +39,7 @@
     "verify:macos-ui-layout": "node scripts/verify-native-ui-layout.mjs"
   },
   "devDependencies": {
+    "github-slugger": "2.0.0",
     "mdast-util-from-markdown": "2.0.3"
   }
 }

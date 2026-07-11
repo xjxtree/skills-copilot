@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
@@ -80,11 +81,51 @@ function createGovernanceFixture(manifest = VALID_MANIFEST) {
   return root;
 }
 
-function runGovernanceFixture(root) {
+function runGovernanceFixture(root, environment = process.env) {
   return spawnSync(process.execPath, ["scripts/verify-doc-governance.mjs"], {
     cwd: root,
     encoding: "utf8",
+    env: environment,
   });
+}
+
+function addBrokenMarkdown(root) {
+  mkdirSync(join(root, "docs"), { recursive: true });
+  writeFileSync(join(root, "docs", "hidden.md"), "[missing](missing.md)\n");
+  execFileSync("git", ["add", "docs/hidden.md"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "add broken markdown"], { cwd: root });
+}
+
+function createMinimalGitRepository() {
+  const root = mkdtempSync(join(tmpdir(), "agent-copilot-git-decoy-"));
+  writeFileSync(join(root, "README.md"), "# Decoy\n");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "fixture@example.invalid"], {
+    cwd: root,
+  });
+  execFileSync("git", ["config", "user.name", "Governance Fixture"], {
+    cwd: root,
+  });
+  execFileSync("git", ["add", "README.md"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "decoy"], { cwd: root });
+  return root;
+}
+
+function writeFsmonitorProbe(root, name) {
+  const marker = join(root, `${name}.executed`);
+  const executable = join(root, `${name}.mjs`);
+  writeFileSync(
+    executable,
+    [
+      "#!/usr/bin/env node",
+      'import { writeFileSync } from "node:fs";',
+      `writeFileSync(${JSON.stringify(marker)}, "executed\\n");`,
+      'process.stdout.write("builtin:governance-test\\0");',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(executable, 0o755);
+  return { executable, marker };
 }
 
 function assertMissingMarkdownTarget(markdown, target, line) {
@@ -173,6 +214,40 @@ test("declared creates do not excuse markdown links or another plan", () => {
       "docs/superpowers/plans/first.md:2 -> scripts/future.mjs is missing",
       "docs/superpowers/plans/second.md:1 -> scripts/future.mjs is missing",
     ],
+  );
+});
+
+test("HTML blocks cannot grant plan-local Create allowances", () => {
+  const hiddenBlocks = [
+    ["pre", "<pre>\n- Create: `scripts/pre.mjs`\n</pre>"],
+    ["script", "<script>\n- Create: `scripts/script.mjs`\n</script>"],
+    ["comment", "<!--\n- Create: `scripts/comment.mjs`\n-->"],
+    ["generic", "<div>\n- Create: `scripts/generic.mjs`\n</div>"],
+    ["fenced", "```md\n- Create: `scripts/fenced.mjs`\n```"],
+    ["indented", "    - Create: `scripts/indented.mjs`"],
+  ];
+
+  for (const [name, block] of hiddenBlocks) {
+    assert.deepEqual(
+      [...collectDeclaredCreatePaths(
+        `${block}\n\nUse \`scripts/${name}.mjs\`.`,
+        "docs/superpowers/plans/example.md",
+      )],
+      [],
+      name,
+    );
+  }
+
+  assert.deepEqual(
+    [...collectDeclaredCreatePaths(
+      [
+        "<span>ordinary inline HTML</span>",
+        "",
+        "- Create: `scripts/visible.mjs`",
+      ].join("\n"),
+      "docs/superpowers/plans/example.md",
+    )],
+    ["scripts/visible.mjs"],
   );
 });
 
@@ -407,6 +482,76 @@ test("normalizes dot segments and same-document anchors", () => {
   ]);
 });
 
+test("markdown links use literal paths while backticks retain repository globs", () => {
+  const source = "docs/index.md";
+  const markdown = [
+    "[raw star](literal-*.md)",
+    "[encoded star](encoded-%2A.md)",
+    "[raw question](query-?.md)",
+    "[encoded question](encoded-%3F.md)",
+    "[raw brackets](literal-[ab].md)",
+    "[encoded brackets](encoded-%5Bab%5D.md)",
+    "[raw braces](literal-{ab}.md)",
+    "[encoded braces](encoded-%7Bab%7D.md)",
+    "[valid query](target.md?plain=1#Launch)",
+    "`fixtures/api/*.json`",
+  ].join("\n");
+  const references = collectMarkdownReferences(markdown, source);
+
+  assert.deepEqual(references.map((reference) => reference.target), [
+    "docs/literal-*.md",
+    "docs/encoded-*.md",
+    "docs/query-",
+    "docs/encoded-?.md",
+    "docs/literal-[ab].md",
+    "docs/encoded-[ab].md",
+    "docs/literal-{ab}.md",
+    "docs/encoded-{ab}.md",
+    "docs/target.md#Launch",
+    "fixtures/api/*.json",
+  ]);
+
+  const wildcardOnlyFiles = new Set([
+    source,
+    "docs/literal-a.md",
+    "docs/encoded-a.md",
+    "docs/query-x.md",
+    "docs/encoded-x.md",
+    "docs/literal-a.md",
+    "docs/encoded-a.md",
+    "docs/literal-ab.md",
+    "docs/encoded-ab.md",
+    "docs/target.md",
+    "fixtures/api/request.json",
+  ]);
+  assert.deepEqual(
+    validateReferences({
+      references,
+      trackedFiles: wildcardOnlyFiles,
+      headingsByFile: new Map([["docs/target.md", new Set(["launch"])]]),
+    }),
+    references.slice(0, 8).map(
+      (reference) =>
+        `${reference.source}:${reference.line} -> ${reference.target} is missing`,
+    ),
+  );
+
+  const literalFiles = new Set([
+    source,
+    ...references.slice(0, 8).map((reference) => reference.target),
+    "docs/target.md",
+    "fixtures/api/request.json",
+  ]);
+  assert.deepEqual(
+    validateReferences({
+      references,
+      trackedFiles: literalFiles,
+      headingsByFile: new Map([["docs/target.md", new Set(["launch"])]]),
+    }),
+    [],
+  );
+});
+
 test("validates repository globs and strips backticked line locations", () => {
   const references = collectMarkdownReferences(
     "Read `docs/service-protocol.md:100-115`, `fixtures/api/*.json`, and `SKILL.md` records.",
@@ -529,6 +674,49 @@ test("final3 E renders named entities and intraword underscores in slugs", () =>
   );
 });
 
+test("uses canonical GitHub slugs for entities and Unicode edge cases", () => {
+  const markdown = [
+    "# a&nbsp;b",
+    "# &#32;Alpha&#32;",
+    "# &ensp;Beta&ensp;",
+    "# ⓖ",
+    "# Hello, world!",
+    "# Cafe\u0301",
+    "# !!!",
+    "# !!!",
+  ].join("\n");
+
+  assert.deepEqual([...collectHeadingSlugs(markdown)], [
+    "ab",
+    "-alpha-",
+    "beta",
+    "ⓖ",
+    "hello-world",
+    "cafe\u0301",
+    "",
+    "-1",
+  ]);
+});
+
+test("handles deeply nested CommonMark blocks without call-stack overflow", () => {
+  const markdown = `${"> ".repeat(10_000)}[x](missing.md)`;
+  assert.deepEqual(collectMarkdownReferences(markdown, "docs/index.md"), [
+    {
+      source: "docs/index.md",
+      target: "docs/missing.md",
+      line: 1,
+      kind: "markdown",
+    },
+  ]);
+});
+
+test("renders deeply nested inline headings without call-stack overflow", () => {
+  const depth = 4_000;
+  const markdown = `# ${"*a ".repeat(depth)}x${" z*".repeat(depth)}`;
+  const expected = `${"a-".repeat(depth)}x${"-z".repeat(depth)}`;
+  assert.deepEqual([...collectHeadingSlugs(markdown)], [expected]);
+});
+
 test("final3 F honors multi-backtick code span delimiters", () => {
   assert.deepEqual(
     collectMarkdownReferences(
@@ -621,6 +809,264 @@ test("requires exact gate order and membership", () => {
     ],
   );
   assert.deepEqual(validateGateMembers(["verify:a"], ["verify:a"]), []);
+});
+
+test("forbidden governance patterns are Unicode case-insensitive", () => {
+  const manifest = {
+    ...VALID_MANIFEST,
+    forbidden_patterns: [
+      "\\bV\\d+\\.\\d+\\b",
+      "MVP\\s*(?:/|\\|)\\s*V1",
+      "Current (?:Status|State|Baseline)",
+      "Completed baseline",
+      "Current phase",
+    ],
+  };
+  const cases = [
+    [manifest.forbidden_patterns[0], ["v1.2", "V1.2"]],
+    [manifest.forbidden_patterns[1], ["mvp / v1", "MvP | v1", "MVP/V1"]],
+    [
+      manifest.forbidden_patterns[2],
+      ["current status", "CURRENT STATE", "CuRrEnT BaSeLiNe"],
+    ],
+    [
+      manifest.forbidden_patterns[3],
+      ["completed baseline", "COMPLETED BASELINE", "CoMpLeTeD BaSeLiNe"],
+    ],
+    [
+      manifest.forbidden_patterns[4],
+      ["current phase", "CURRENT PHASE", "CuRrEnT PhAsE"],
+    ],
+  ];
+  const root = createGovernanceFixture(manifest);
+  try {
+    for (const [pattern, variants] of cases) {
+      for (const policyText of variants) {
+        writeFileSync(
+          join(root, "README.md"),
+          `# Fixture\n\nRequired marker\n\n${policyText}\n`,
+        );
+        const result = runGovernanceFixture(root);
+        assert.equal(result.status, 1, policyText);
+        assert.match(
+          result.stderr,
+          new RegExp(
+            `contains forbidden pattern: ${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+          ),
+          policyText,
+        );
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("case-insensitive policy matching does not fold repository paths", () => {
+  const manifest = { ...VALID_MANIFEST, forbidden_paths: ["blocked"] };
+  const root = createGovernanceFixture(manifest);
+  try {
+    mkdirSync(join(root, "Blocked"));
+    writeFileSync(join(root, "Blocked", "kept.txt"), "case exact\n");
+    execFileSync("git", ["add", "Blocked/kept.txt"], { cwd: root });
+    const mixedCase = runGovernanceFixture(root);
+    assert.equal(mixedCase.status, 0, mixedCase.stderr);
+
+    renameSync(join(root, "Blocked"), join(root, "blocked"));
+    const exactCase = runGovernanceFixture(root);
+    assert.equal(exactCase.status, 1, exactCase.stdout || exactCase.stderr);
+    assert.match(exactCase.stderr, /forbidden path exists: blocked/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Git inventory ignores inherited repository and pathspec selectors", () => {
+  const root = createGovernanceFixture();
+  const decoy = createMinimalGitRepository();
+  try {
+    addBrokenMarkdown(root);
+    const alternateIndex = join(root, "alternate.index");
+    const alternateEnvironment = {
+      ...process.env,
+      GIT_INDEX_FILE: alternateIndex,
+    };
+    execFileSync("git", ["read-tree", "--empty"], {
+      cwd: root,
+      env: alternateEnvironment,
+    });
+    execFileSync("git", ["add", "README.md"], {
+      cwd: root,
+      env: alternateEnvironment,
+    });
+
+    const attacks = [
+      {
+        name: "repository redirect",
+        environment: {
+          GIT_DIR: join(decoy, ".git"),
+          GIT_WORK_TREE: decoy,
+        },
+      },
+      {
+        name: "alternate index",
+        environment: { GIT_INDEX_FILE: alternateIndex },
+      },
+      {
+        name: "literal pathspec",
+        environment: { GIT_LITERAL_PATHSPECS: "1" },
+      },
+      {
+        name: "no-glob pathspec",
+        environment: { GIT_NOGLOB_PATHSPECS: "1" },
+      },
+    ];
+
+    for (const attack of attacks) {
+      const result = runGovernanceFixture(root, {
+        ...process.env,
+        ...attack.environment,
+      });
+      assert.equal(result.status, 1, attack.name);
+      assert.match(
+        result.stderr,
+        /docs\/hidden\.md:1 -> docs\/missing\.md is missing/u,
+        attack.name,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(decoy, { recursive: true, force: true });
+  }
+});
+
+test("Git inventory disables fsmonitor and inherited trace side effects", () => {
+  const root = createGovernanceFixture();
+  const results = [];
+  const markers = [];
+  try {
+    addBrokenMarkdown(root);
+
+    const localProbe = writeFsmonitorProbe(root, "local-fsmonitor");
+    markers.push(localProbe.marker);
+    execFileSync("git", ["config", "core.fsmonitor", localProbe.executable], {
+      cwd: root,
+    });
+    results.push(["repository fsmonitor", runGovernanceFixture(root)]);
+    execFileSync("git", ["config", "--unset", "core.fsmonitor"], { cwd: root });
+
+    const globalProbe = writeFsmonitorProbe(root, "global-fsmonitor");
+    const globalConfig = join(root, "injected-global.gitconfig");
+    writeFileSync(
+      globalConfig,
+      `[core]\n\tfsmonitor = ${globalProbe.executable}\n`,
+    );
+    markers.push(globalProbe.marker);
+    results.push([
+      "global fsmonitor",
+      runGovernanceFixture(root, {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: globalConfig,
+      }),
+    ]);
+
+    const systemProbe = writeFsmonitorProbe(root, "system-fsmonitor");
+    const systemConfig = join(root, "injected-system.gitconfig");
+    writeFileSync(
+      systemConfig,
+      `[core]\n\tfsmonitor = ${systemProbe.executable}\n`,
+    );
+    markers.push(systemProbe.marker);
+    results.push([
+      "system fsmonitor",
+      runGovernanceFixture(root, {
+        ...process.env,
+        GIT_CONFIG_SYSTEM: systemConfig,
+      }),
+    ]);
+
+    const countProbe = writeFsmonitorProbe(root, "count-fsmonitor");
+    markers.push(countProbe.marker);
+    results.push([
+      "command environment fsmonitor",
+      runGovernanceFixture(root, {
+        ...process.env,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.fsmonitor",
+        GIT_CONFIG_VALUE_0: countProbe.executable,
+      }),
+    ]);
+
+    const trace = join(root, "git-trace.log");
+    const trace2 = join(root, "git-trace2.json");
+    markers.push(trace, trace2);
+    results.push([
+      "trace outputs",
+      runGovernanceFixture(root, {
+        ...process.env,
+        GIT_TRACE: trace,
+        GIT_TRACE2_EVENT: trace2,
+      }),
+    ]);
+
+    for (const [name, result] of results) {
+      assert.equal(result.status, 1, name);
+      assert.match(
+        result.stderr,
+        /docs\/hidden\.md:1 -> docs\/missing\.md is missing/u,
+        name,
+      );
+    }
+    for (const marker of markers) {
+      assert.equal(existsSync(marker), false, `${marker} must not be created`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Git inventory discovers linked worktrees after clearing selectors", () => {
+  const root = createGovernanceFixture();
+  const decoy = createMinimalGitRepository();
+  const linkedParent = mkdtempSync(
+    join(tmpdir(), "agent-copilot-governance-linked-"),
+  );
+  const linkedRoot = join(linkedParent, "worktree");
+  try {
+    addBrokenMarkdown(root);
+    execFileSync(
+      "git",
+      ["worktree", "add", "-q", "-b", "governance-linked", linkedRoot],
+      { cwd: root },
+    );
+    symlinkSync(
+      join(TEST_REPOSITORY_ROOT, "node_modules"),
+      join(linkedRoot, "node_modules"),
+      "dir",
+    );
+
+    const result = runGovernanceFixture(linkedRoot, {
+      ...process.env,
+      GIT_DIR: join(decoy, ".git"),
+      GIT_WORK_TREE: decoy,
+    });
+    assert.equal(result.status, 1, result.stdout || result.stderr);
+    assert.match(
+      result.stderr,
+      /docs\/hidden\.md:1 -> docs\/missing\.md is missing/u,
+    );
+  } finally {
+    try {
+      execFileSync("git", ["worktree", "remove", "--force", linkedRoot], {
+        cwd: root,
+      });
+    } catch {
+      // A partially created linked fixture is removed below.
+    }
+    rmSync(linkedParent, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(decoy, { recursive: true, force: true });
+  }
 });
 
 test("manifest shape failures are deterministic and fail closed", async (t) => {

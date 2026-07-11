@@ -1,4 +1,5 @@
 import { posix as path } from "node:path";
+import GithubSlugger from "github-slugger";
 
 import { parseGovernanceMarkdown } from "./markdown-ast-governance.mjs";
 
@@ -22,7 +23,7 @@ function safelyDecode(value) {
   }
 }
 
-function splitDestination(destination) {
+function splitFragment(destination) {
   const hash = destination.indexOf("#");
   if (hash === -1) return { pathname: destination, fragment: "" };
   return {
@@ -31,14 +32,24 @@ function splitDestination(destination) {
   };
 }
 
-function normalizeTarget(destination, sourcePath, rootRelative) {
+function normalizeTarget(
+  destination,
+  sourcePath,
+  rootRelative,
+  { markdownUrl = false } = {},
+) {
   let target = destination.trim();
   if (target.startsWith("<") && target.endsWith(">")) {
     target = target.slice(1, -1).trim();
   }
   if (!target || EXTERNAL_DESTINATION.test(target)) return undefined;
 
-  const { pathname, fragment } = splitDestination(target);
+  const split = splitFragment(target);
+  const query = markdownUrl ? split.pathname.indexOf("?") : -1;
+  const pathname = query === -1
+    ? split.pathname
+    : split.pathname.slice(0, query);
+  const { fragment } = split;
   const decodedPath = safelyDecode(pathname.replaceAll("\\", "/"));
   let normalizedPath;
   if (!decodedPath) {
@@ -59,7 +70,7 @@ function repositoryCodeTarget(token, sourcePath) {
     .trim()
     .replace(/:L?\d+(?:-L?\d+)?(?=#|$)/i, "");
   if (!value) return undefined;
-  const { pathname } = splitDestination(value);
+  const { pathname } = splitFragment(value);
   if (REPOSITORY_PREFIX.test(pathname)) {
     return normalizeTarget(value, sourcePath, true);
   }
@@ -79,7 +90,7 @@ export function collectMarkdownReferences(markdown, sourcePath) {
   for (const reference of parseGovernanceMarkdown(markdown).references) {
     const target = reference.kind === "backtick"
       ? repositoryCodeTarget(reference.value, source)
-      : normalizeTarget(reference.value, source, false);
+      : normalizeTarget(reference.value, source, false, { markdownUrl: true });
     if (target) {
       references.push({
         source,
@@ -97,12 +108,12 @@ export function collectMarkdownReferences(markdown, sourcePath) {
 }
 
 export function collectDeclaredCreatePaths(markdown, _sourcePath) {
-  const { codeBlockRanges } = parseGovernanceMarkdown(markdown);
+  const { excludedBlockRanges } = parseGovernanceMarkdown(markdown);
   const declared = new Set();
   for (const [index, line] of markdown.split("\n").entries()) {
     const lineNumber = index + 1;
     if (
-      codeBlockRanges.some(
+      excludedBlockRanges.some(
         (range) => lineNumber >= range.start && lineNumber <= range.end,
       )
     ) {
@@ -148,9 +159,9 @@ function targetParts(target) {
   };
 }
 
-function trackedPathExists(pathname, trackedFiles) {
+function trackedPathExists(pathname, trackedFiles, allowGlob) {
   if (trackedFiles.has(pathname)) return true;
-  if (/[*?]/.test(pathname)) {
+  if (allowGlob && /[*?]/.test(pathname)) {
     let expression = "^";
     for (let index = 0; index < pathname.length; index += 1) {
       const character = pathname[index];
@@ -187,7 +198,13 @@ export function validateReferences({
   const errors = [];
   for (const reference of references) {
     const { pathname, anchor } = targetParts(reference.target);
-    if (!trackedPathExists(pathname, trackedFiles)) {
+    if (
+      !trackedPathExists(
+        pathname,
+        trackedFiles,
+        reference.kind === "backtick",
+      )
+    ) {
       const declared = declaredCreates.get(reference.source);
       const allowedCreate =
         reference.kind === "backtick" && declared?.has(pathname) === true;
@@ -243,27 +260,10 @@ export function validateGateMembers(actual, expected) {
 
 export function collectHeadingSlugs(markdown) {
   const slugs = new Set();
-  const occurrences = new Map();
-
-  function addHeading(rawLabel) {
-    const label = rawLabel.trim().toLocaleLowerCase("en-US");
-    const base = label
-      .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
-      .replace(/\s/gu, "-");
-    if (!base) return;
-    let slug = base;
-    let suffix = occurrences.get(base) ?? 0;
-    while (occurrences.has(slug)) {
-      suffix += 1;
-      occurrences.set(base, suffix);
-      slug = `${base}-${suffix}`;
-    }
-    occurrences.set(slug, 0);
-    slugs.add(slug);
-  }
+  const slugger = new GithubSlugger();
 
   for (const heading of parseGovernanceMarkdown(markdown).headings) {
-    addHeading(heading);
+    slugs.add(slugger.slug(heading));
   }
   return slugs;
 }

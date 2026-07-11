@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +27,14 @@ const MANIFEST_KEYS = [
   "gate",
 ];
 const GATE_KEYS = ["script", "members"];
+const SAFE_GIT_CONFIG = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.untrackedCache=false",
+  "-c",
+  "core.excludesFile=/dev/null",
+];
 
 function isPlainObject(value) {
   return (
@@ -141,14 +149,41 @@ export function validateGovernanceManifest(manifest) {
   return errors;
 }
 
-function trackedEntries(pathspec) {
-  const args = ["ls-files", "--stage", "-z"];
-  if (pathspec) args.push("--", pathspec);
-  const output = execFileSync("git", args, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-  });
+function controlledGitEnvironment() {
+  const environment = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!/^GIT_/u.test(key)) environment[key] = value;
+  }
+  return {
+    ...environment,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+  };
+}
+
+function runGit(args) {
+  return execFileSync(
+    "git",
+    ["-C", repoRoot, ...SAFE_GIT_CONFIG, ...args],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: controlledGitEnvironment(),
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  );
+}
+
+function trackedEntries() {
+  const topLevel = runGit(["rev-parse", "--show-toplevel"]).trim();
+  if (resolve(topLevel) !== repoRoot) {
+    throw new Error("Git repository root does not match the verifier root");
+  }
+  const output = runGit(["ls-files", "--stage", "-z"]);
   return output
     .split("\0")
     .filter(Boolean)
@@ -170,7 +205,6 @@ function trackedEntries(pathspec) {
 }
 
 function pathExists(relativePath, trackedFiles) {
-  if (existsSync(join(repoRoot, relativePath))) return true;
   if (trackedFiles.has(relativePath)) return true;
   const prefix = relativePath.endsWith("/")
     ? relativePath
@@ -178,7 +212,19 @@ function pathExists(relativePath, trackedFiles) {
   for (const tracked of trackedFiles) {
     if (tracked.startsWith(prefix)) return true;
   }
-  return false;
+
+  let current = repoRoot;
+  for (const component of relativePath.split("/").filter(Boolean)) {
+    let entries;
+    try {
+      entries = readdirSync(current);
+    } catch {
+      return false;
+    }
+    if (!entries.includes(component)) return false;
+    current = join(current, component);
+  }
+  return current !== repoRoot;
 }
 
 function loadJson(path, label, errors) {
@@ -308,19 +354,17 @@ export function verifyRepositoryGovernance() {
   if (errors.length > 0) return errors;
 
   let allTrackedEntries;
-  let markdownEntries;
   try {
     allTrackedEntries = trackedEntries();
-    markdownEntries = trackedEntries("*.md");
   } catch {
     errors.push("git ls-files failed");
     return errors;
   }
   const indexEntries = entriesByPath(allTrackedEntries);
   const trackedFiles = new Set(indexEntries.keys());
-  const markdownPaths = [
-    ...new Set(markdownEntries.map((entry) => entry.relativePath)),
-  ];
+  const markdownPaths = [...indexEntries.keys()].filter((relativePath) =>
+    relativePath.endsWith(".md")
+  );
   const readRepositoryFile = createRepositoryReader(indexEntries, errors);
 
   const policyDocuments = new Map();
@@ -351,7 +395,7 @@ export function verifyRepositoryGovernance() {
   for (const patternText of manifest.forbidden_patterns) {
     let pattern;
     try {
-      pattern = new RegExp(patternText, "u");
+      pattern = new RegExp(patternText, "iu");
     } catch (error) {
       errors.push(`invalid forbidden pattern ${patternText}: ${error.message}`);
       continue;

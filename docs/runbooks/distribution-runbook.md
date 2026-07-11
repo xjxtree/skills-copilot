@@ -18,9 +18,9 @@ Public distribution requires an explicit scoped implementation for:
 
 Do not describe local app bundles as public release artifacts.
 
-The manually scoped v0.1.x ZIP releases are an exception: generated app bundles
-are ad-hoc signed for local bundle-integrity validation only. Ad-hoc signing is
-not Developer ID signing and does not replace notarization.
+Manually scoped ZIP releases are an exception: generated app bundles are ad-hoc
+signed for local bundle-integrity validation only. Ad-hoc signing is not
+Developer ID signing and does not replace notarization.
 
 ## Version Strategy
 

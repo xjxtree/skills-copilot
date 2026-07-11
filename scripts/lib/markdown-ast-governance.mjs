@@ -1,26 +1,56 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 
 function visit(node, visitor) {
-  visitor(node);
-  for (const child of node.children ?? []) visit(child, visitor);
+  const stack = [{ node, parent: undefined }];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    visitor(current.node, current.parent);
+    const children = current.node.children ?? [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ node: children[index], parent: current.node });
+    }
+  }
 }
 
 function renderInline(node) {
-  switch (node.type) {
-    case "text":
-    case "inlineCode":
-      return node.value ?? "";
-    case "break":
-      return "\n";
-    case "image":
-    case "imageReference":
-      return node.alt ?? "";
-    case "html":
-      return "";
-    default:
-      return (node.children ?? []).map(renderInline).join("");
+  let rendered = "";
+  const stack = [node];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    switch (current.type) {
+      case "text":
+      case "inlineCode":
+        rendered += current.value ?? "";
+        break;
+      case "break":
+        rendered += "\n";
+        break;
+      case "image":
+      case "imageReference":
+        rendered += current.alt ?? "";
+        break;
+      case "html":
+        break;
+      default: {
+        const children = current.children ?? [];
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          stack.push(children[index]);
+        }
+      }
+    }
   }
+  return rendered;
 }
+
+const INLINE_HTML_PARENTS = new Set([
+  "delete",
+  "emphasis",
+  "heading",
+  "link",
+  "linkReference",
+  "paragraph",
+  "strong",
+]);
 
 export function parseGovernanceMarkdown(markdown) {
   const document = fromMarkdown(markdown);
@@ -34,10 +64,10 @@ export function parseGovernanceMarkdown(markdown) {
 
   const references = [];
   const headings = [];
-  const codeBlockRanges = [];
+  const excludedBlockRanges = [];
   let order = 0;
 
-  visit(document, (node) => {
+  visit(document, (node, parent) => {
     const line = node.position?.start?.line;
     if (node.type === "heading") {
       headings.push(renderInline(node));
@@ -74,14 +104,17 @@ export function parseGovernanceMarkdown(markdown) {
         });
         order += 1;
       }
-    } else if (node.type === "code") {
+    } else if (
+      node.type === "code" ||
+      (node.type === "html" && !INLINE_HTML_PARENTS.has(parent?.type))
+    ) {
       const start = node.position?.start?.line;
       const end = node.position?.end?.line;
       if (Number.isInteger(start) && Number.isInteger(end)) {
-        codeBlockRanges.push({ start, end });
+        excludedBlockRanges.push({ start, end });
       }
     }
   });
 
-  return { references, headings, codeBlockRanges };
+  return { references, headings, excludedBlockRanges };
 }
