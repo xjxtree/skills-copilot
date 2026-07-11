@@ -64,8 +64,10 @@ expansion action. It is a static declaration and control-boundary
 check. Native model and UI tests remain responsible for proving loading,
 continuation, expansion, routing, cancellation, and focus behavior.
 
-The live `pnpm benchmark:10k` and `pnpm benchmark:macos-list-model` checks are
-separate CI/release commands, not members of the deterministic parity gate.
+The live `pnpm benchmark:10k` and `pnpm benchmark:macos-list-model` checks run
+after tests and bundle build in the macOS CI job, and remain separate from the
+deterministic parity gate. Their checked-in sampling minimums and metric
+ceilings cannot be weakened by CI environment overrides.
 Fixture-only headless bundled-sidecar smoke is also separate from real-local
 GUI validation and cannot substitute for operating the visible app window.
 

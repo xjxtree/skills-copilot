@@ -14,7 +14,9 @@ export async function loadPerformanceBudgets(path) {
     manifest?.schema_version !== 1 ||
     !isPositiveNumber(manifest?.scan_10k?.max_elapsed_ms) ||
     !isPositiveNumber(manifest?.scan_10k?.max_rss_mb) ||
-    !isPositiveNumber(manifest?.native_list?.max_p95_ms)
+    !isPositiveNumber(manifest?.native_list?.max_p95_ms) ||
+    !isPositiveInteger(manifest?.native_list?.minimum_iterations) ||
+    !isPositiveInteger(manifest?.native_list?.minimum_warmups)
   ) {
     throw new Error(`performance budget manifest is invalid: ${path}`);
   }
@@ -83,6 +85,30 @@ export function effectiveMaximum(manifestMaximum, override, ci) {
   return parsed;
 }
 
+export function effectiveSampleCount(manifestMinimum, override, ci, label) {
+  if (!isPositiveInteger(manifestMinimum)) {
+    throw new Error(`invalid checked-in native benchmark ${label} minimum`);
+  }
+  if (override === undefined || override === "") {
+    return manifestMinimum;
+  }
+  const parsed = Number(override);
+  if (!isPositiveInteger(parsed)) {
+    throw new Error(`invalid native benchmark ${label} override: ${override}`);
+  }
+  if (parsed < manifestMinimum) {
+    const scope = ci ? "CI " : "";
+    throw new Error(
+      `${scope}native benchmark ${label} override ${parsed} is below checked-in minimum ${manifestMinimum}`,
+    );
+  }
+  return parsed;
+}
+
 function isPositiveNumber(value) {
   return Number.isFinite(value) && value > 0;
+}
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
 }

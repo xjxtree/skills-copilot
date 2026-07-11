@@ -31,7 +31,7 @@
     "verify:rust-docs": "cargo doc --workspace --no-deps",
     "verify:service-protocol-drift": "node scripts/verify-service-protocol-drift.mjs",
     "test:list-completeness": "node --test scripts/tests/list-completeness.test.mjs",
-    "test:quality-budgets": "node --test scripts/tests/quality-budgets.test.mjs scripts/tests/native-list-benchmark.test.mjs",
+    "test:quality-budgets": "node --test scripts/tests/quality-budgets.test.mjs scripts/tests/native-list-benchmark.test.mjs scripts/tests/performance-workflow.test.mjs",
     "test:repository-governance": "node --test scripts/tests/repository-governance.test.mjs",
     "test:service-protocol-effects": "node --test scripts/tests/service-protocol-effects.test.mjs",
     "verify:gate-parity": "pnpm verify:service-protocol-drift && pnpm verify:module-size && pnpm verify:quality-budgets && pnpm verify:list-completeness && pnpm verify:doc-governance && pnpm verify:macos-native-test-registry && pnpm verify:js-syntax && pnpm verify:rust-docs && pnpm verify:validation-blockers && pnpm verify:screenshot-artifacts",

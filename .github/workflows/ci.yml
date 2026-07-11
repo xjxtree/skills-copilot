@@ -142,5 +142,11 @@ jobs:
       - name: Build native macOS app bundle
         run: pnpm build:macos
 
+      - name: Enforce 10k runtime and RSS budget
+        run: pnpm benchmark:10k
+
+      - name: Enforce native list p95 budget
+        run: pnpm benchmark:macos-list-model
+
       - name: Smoke bundled Rust sidecar with fixtures
         run: pnpm smoke:macos-app -- --fixture-data --headless-sidecar

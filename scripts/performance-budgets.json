@@ -5,6 +5,8 @@
     "max_rss_mb": 640
   },
   "native_list": {
-    "max_p95_ms": 80
+    "max_p95_ms": 80,
+    "minimum_iterations": 80,
+    "minimum_warmups": 12
   }
 }

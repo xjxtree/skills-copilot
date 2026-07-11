@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   effectiveMaximum,
+  effectiveSampleCount,
   loadPerformanceBudgets,
 } from "./lib/quality-budgets.mjs";
 
@@ -17,8 +18,18 @@ const performanceBudgets = await loadPerformanceBudgets(
 const tempDir = await mkdtemp(join(tmpdir(), "skills-copilot-native-list-bench-"));
 const runnerPath = join(tempDir, "NativeListModelBench.swift");
 const binaryPath = join(tempDir, "NativeListModelBench");
-const iterations = Number(process.env.NATIVE_LIST_BENCH_ITERATIONS ?? 80);
-const warmups = Number(process.env.NATIVE_LIST_BENCH_WARMUPS ?? 12);
+const iterations = effectiveSampleCount(
+  performanceBudgets.native_list.minimum_iterations,
+  process.env.NATIVE_LIST_BENCH_ITERATIONS,
+  process.env.CI === "true",
+  "iterations",
+);
+const warmups = effectiveSampleCount(
+  performanceBudgets.native_list.minimum_warmups,
+  process.env.NATIVE_LIST_BENCH_WARMUPS,
+  process.env.CI === "true",
+  "warmups",
+);
 const maxP95Ms = effectiveMaximum(
   performanceBudgets.native_list.max_p95_ms,
   process.env.NATIVE_LIST_BENCH_MAX_P95_MS,
