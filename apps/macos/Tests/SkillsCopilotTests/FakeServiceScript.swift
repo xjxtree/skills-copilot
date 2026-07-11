@@ -267,19 +267,28 @@ final class FakeServiceScript: ServiceProcessRunning {
             fi
             ;;
           *\\"llm.listProviderProfiles\\"*)
-            if [ "$scenario" = "autosave-delayed-provider" ]; then
-              respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://provider-b.example.com/v1","model":"model-b","enabled":true,"configured":true,"has_api_key":true}]}}'
+            if [ "$scenario" = "autosave-delayed-provider" ] || [ "$scenario" = "autosave-delayed-provider-failure" ]; then
+              provider_save_count=$(grep -c '"method":"llm.saveProviderProfile"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
+              if [ "$provider_save_count" -gt 1 ] && [ -f "$SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE" ]; then
+                respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://provider-b.example.com/v1","model":"model-b","enabled":true,"configured":true,"has_api_key":true}]}}'
+              elif [ "$provider_save_count" -gt 0 ] && [ -f "$SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE" ]; then
+                respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://provider-a.example.com/v1","model":"model-a","enabled":true,"configured":true,"has_api_key":true}]}}'
+              fi
+              respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://provider-x.example.com/v1","model":"model-x","enabled":true,"configured":true,"has_api_key":true}]}}'
             elif [ "$scenario" = "prompt-ready" ]; then
               respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://llm.example.com/v1","model":"gpt-5","enabled":true,"configured":true,"has_api_key":true}]}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.listProviderProfiles"}}'
             ;;
           *\\"llm.saveProviderProfile\\"*)
-            if [ "$scenario" = "autosave-delayed-provider" ]; then
+            if [ "$scenario" = "autosave-delayed-provider" ] || [ "$scenario" = "autosave-delayed-provider-failure" ]; then
               if printf '%s' "$input" | grep -q '\\"api_key\\":\\"A\\"'; then
                 wait_for_release "$SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE" || service_error
               elif printf '%s' "$input" | grep -q '\\"api_key\\":\\"B\\"'; then
                 wait_for_release "$SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE" || service_error
+              fi
+              if [ "$scenario" = "autosave-delayed-provider-failure" ]; then
+                respond '{"id":"test","ok":false,"result":null,"error":{"code":"provider_save_failed","message":"provider A failed"}}'
               fi
               respond '{"id":"test","ok":true,"result":{"profile":null}}'
             fi
@@ -504,7 +513,13 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":true,"result":[]}'
             ;;
           *\\"config.readClaudeSettings\\"*)
-            if [ "$scenario" = "autosave-delayed-config" ]; then
+            if [ "$scenario" = "autosave-external-after-save" ]; then
+              save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
+              if [ "$save_count" -gt 0 ]; then
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-external","exists":true,"revision":"sha256:external-after-a"}}'
+              fi
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-x","exists":true,"revision":"sha256:autosave-initial"}}'
+            elif [ "$scenario" = "autosave-delayed-config" ] || [ "$scenario" = "autosave-delayed-config-failure" ]; then
               save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
               if [ "$save_count" -gt 1 ]; then
                 respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
@@ -532,10 +547,27 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings"}}'
             ;;
           *\\"config.saveClaudeSettings\\"*)
-            if [ "$scenario" = "autosave-delayed-config" ]; then
-              if printf '%s' "$input" | grep -q 'config-a'; then
+            if [ "$scenario" = "autosave-external-after-save" ]; then
+              if printf '%s' "$input" | grep -q 'config-a' && printf '%s' "$input" | grep -q '"expected_revision":"sha256:autosave-initial"'; then
                 wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
                 respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
+              elif printf '%s' "$input" | grep -q 'config-b' && printf '%s' "$input" | grep -q '"expected_revision":"sha256:external-after-a"'; then
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
+              fi
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config changed since it was read"}}'
+            elif [ "$scenario" = "autosave-delayed-config" ] || [ "$scenario" = "autosave-delayed-config-failure" ]; then
+              if printf '%s' "$input" | grep -q 'config-a'; then
+                if ! printf '%s' "$input" | grep -q '"expected_revision":"sha256:autosave-initial"'; then
+                  respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config A used the wrong expected revision"}}'
+                fi
+                wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
+                if [ "$scenario" = "autosave-delayed-config-failure" ]; then
+                  respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_save_failed","message":"config A failed"}}'
+                fi
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
+              fi
+              if ! printf '%s' "$input" | grep -q '"expected_revision":"sha256:autosave-a"'; then
+                respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config B used the wrong expected revision"}}'
               fi
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
             elif [ "$scenario" = "config-cas" ]; then
@@ -629,16 +661,6 @@ final class FakeServiceScript: ServiceProcessRunning {
               esac
             fi
             respond '{"id":"test","ok":true,"result":[]}'
-            ;;
-          *\\"config.saveClaudeSettings\\"*)
-            if [ "$scenario" = "autosave-delayed-config" ]; then
-              if printf '%s' "$input" | grep -q 'config-a'; then
-                wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true}}'
-              fi
-              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true}}'
-            fi
-            respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.unknown","message":"unknown method"}}'
             ;;
           *\\"config.toggleSkill\\"*)
             if [ "$scenario" = "stale-after-toggle" ]; then

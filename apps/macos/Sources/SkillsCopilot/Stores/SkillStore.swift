@@ -535,6 +535,7 @@ final class SkillStore: ObservableObject {
     private let autosaveDelayNanoseconds: UInt64
     private let autosaveMutationLane = AutosaveMutationLane()
     private var configAutosaveAgentByRevision: [UInt64: String] = [:]
+    private var configAutosaveCommittedRevisionByRevision: [UInt64: String] = [:]
     private var latestConfigAutosaveRevision: UInt64?
     private var latestProviderAutosaveRevision: UInt64?
     private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<ConfigSaveBinding>(
@@ -554,7 +555,8 @@ final class SkillStore: ObservableObject {
                     ?? SkillAgentFilter.claudeCode.rawValue
                 return await self.saveClaudeSettingsInsideMutationLane(
                     binding: binding,
-                    submittedAgent: submittedAgent
+                    submittedAgent: submittedAgent,
+                    autosaveRevision: revision
                 )
             }
             switch result {
@@ -583,7 +585,10 @@ final class SkillStore: ObservableObject {
                 token: AutosaveMutationLaneToken(family: .provider, revision: revision)
             ) { [weak self] in
                 guard let self else { return false }
-                return await self.saveAIProviderSettingsInsideMutationLane(draft: draft)
+                return await self.saveAIProviderSettingsInsideMutationLane(
+                    draft: draft,
+                    autosaveRevision: revision
+                )
             }
             switch result {
             case .completed(true): return .succeeded
@@ -3028,8 +3033,11 @@ final class SkillStore: ObservableObject {
         _ completion: RevisionAutosaveCompletion<ConfigSaveBinding>
     ) {
         configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
+        let committedRevision = configAutosaveCommittedRevisionByRevision.removeValue(
+            forKey: completion.revision
+        )
         if completion.succeeded,
-           let committedRevision = claudeSettings?.revision,
+           let committedRevision,
            !committedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             configAutosaveCoordinator.updatePendingValue { pendingBinding in
                 guard pendingBinding.expectedRevision == completion.value.expectedRevision else {
@@ -3141,23 +3149,37 @@ final class SkillStore: ObservableObject {
     @discardableResult
     func saveAIProviderSettings(draft: AIProviderSettingsDraft) async -> Bool {
         await autosaveMutationLane.perform { [self] in
-            await saveAIProviderSettingsInsideMutationLane(draft: draft)
+            await saveAIProviderSettingsInsideMutationLane(draft: draft, autosaveRevision: nil)
         }
     }
 
-    private func saveAIProviderSettingsInsideMutationLane(draft: AIProviderSettingsDraft) async -> Bool {
+    private func saveAIProviderSettingsInsideMutationLane(
+        draft: AIProviderSettingsDraft,
+        autosaveRevision: UInt64?
+    ) async -> Bool {
         guard !isRefreshBusy else {
-            aiProviderErrorMessage = UIStrings.operationUnavailableBusy
+            publishProviderSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: UIStrings.operationUnavailableBusy
+            )
             return false
         }
         if let validationMessage = draft.validationMessage {
-            aiProviderErrorMessage = validationMessage
+            publishProviderSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: validationMessage
+            )
             return false
         }
 
         isSavingAIProvider = true
-        aiProviderErrorMessage = nil
-        aiProviderMessage = nil
+        publishProviderSaveFeedback(
+            autosaveRevision: autosaveRevision,
+            message: nil,
+            error: nil
+        )
         defer { isSavingAIProvider = false }
 
         do {
@@ -3165,21 +3187,49 @@ final class SkillStore: ObservableObject {
             guard savedStatus.serviceAvailable else {
                 aiProviderStatus = savedStatus
                 hasLoadedAIProviderStatus = true
-                aiProviderErrorMessage = UIStrings.aiProviderUnavailable
+                publishProviderSaveFeedback(
+                    autosaveRevision: autosaveRevision,
+                    message: nil,
+                    error: UIStrings.aiProviderUnavailable
+                )
                 return false
             }
             aiProviderStatus = savedStatus
             aiProviderTestResult = aiProviderStatus.lastTest
             hasLoadedAIProviderStatus = true
-            aiProviderMessage = UIStrings.aiProviderSaved
+            publishProviderSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: UIStrings.aiProviderSaved,
+                error: nil
+            )
             return true
         } catch ServiceClient.ClientError.service(let error) where error.code == "unknown_method" {
-            aiProviderErrorMessage = UIStrings.aiProviderUnavailable
+            publishProviderSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: UIStrings.aiProviderUnavailable
+            )
             return false
         } catch {
-            aiProviderErrorMessage = error.localizedDescription
+            publishProviderSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: error.localizedDescription
+            )
             return false
         }
+    }
+
+    private func publishProviderSaveFeedback(
+        autosaveRevision: UInt64?,
+        message: String?,
+        error: String?
+    ) {
+        guard autosaveRevision == nil || autosaveRevision == latestProviderAutosaveRevision else {
+            return
+        }
+        aiProviderMessage = message
+        aiProviderErrorMessage = error
     }
 
     @discardableResult
@@ -3245,30 +3295,43 @@ final class SkillStore: ObservableObject {
         await autosaveMutationLane.perform { [self] in
             await saveClaudeSettingsInsideMutationLane(
                 binding: binding,
-                submittedAgent: submittedAgent
+                submittedAgent: submittedAgent,
+                autosaveRevision: nil
             )
         }
     }
 
     private func saveClaudeSettingsInsideMutationLane(
         binding: ConfigSaveBinding,
-        submittedAgent: String
+        submittedAgent: String,
+        autosaveRevision: UInt64?
     ) async -> Bool {
         guard !isRefreshBusy else {
-            settingsErrorMessage = UIStrings.operationUnavailableBusy
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: UIStrings.operationUnavailableBusy,
+                mutationState: .failed(UIStrings.operationUnavailableBusy)
+            )
             return false
         }
         guard supportsConfigConsistencyProtocol else {
-            settingsErrorMessage = UIStrings.configConsistencyProtocolRequired
-            settingsMessage = nil
-            configMutationState = .failed(UIStrings.configConsistencyProtocolRequired)
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: UIStrings.configConsistencyProtocolRequired,
+                mutationState: .failed(UIStrings.configConsistencyProtocolRequired)
+            )
             return false
         }
         guard let currentRevision = claudeSettings?.revision,
               !currentRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            settingsErrorMessage = UIStrings.configRevisionUnavailable
-            settingsMessage = nil
-            configMutationState = .failed(UIStrings.configRevisionUnavailable)
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: UIStrings.configRevisionUnavailable,
+                mutationState: .failed(UIStrings.configRevisionUnavailable)
+            )
             return false
         }
         guard currentRevision == binding.expectedRevision else {
@@ -3277,17 +3340,21 @@ final class SkillStore: ObservableObject {
                 latestRevision: currentRevision,
                 displayMessage: UIStrings.configConflict
             )
-            settingsErrorMessage = conflict.displayMessage
-            settingsMessage = nil
-            lastMutationMessage = nil
-            configMutationState = .conflict(conflict)
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: conflict.displayMessage,
+                mutationState: .conflict(conflict)
+            )
             return false
         }
         isSavingSettings = true
-        settingsErrorMessage = nil
-        settingsMessage = nil
-        lastMutationMessage = nil
-        configMutationState = .saving
+        publishConfigSaveFeedback(
+            autosaveRevision: autosaveRevision,
+            message: nil,
+            error: nil,
+            mutationState: .saving
+        )
         defer { isSavingSettings = false }
 
         do {
@@ -3295,16 +3362,24 @@ final class SkillStore: ObservableObject {
                 content: binding.content,
                 expectedRevision: binding.expectedRevision
             )
+            if let autosaveRevision,
+               let committedRevision = savedSettings.revision,
+               !committedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                configAutosaveCommittedRevisionByRevision[autosaveRevision] = committedRevision
+            }
             invalidateConfigReadGenerations()
             claudeSettings = savedSettings
             detailsByID.removeAll()
             try await refreshCollections(includeSupplementalData: false)
             await refreshConfigCachesAfterSave(submittedAgent: submittedAgent)
-            settingsMessage = UIStrings.savedSettings
-            lastMutationMessage = settingsMessage
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: UIStrings.savedSettings,
+                error: nil,
+                mutationState: .idle
+            )
             recordLocalRefresh(message: UIStrings.refreshAfterSettingsSave)
             await loadSelectedDetail()
-            configMutationState = .idle
             return true
         } catch ServiceClient.ClientError.service(let error) where error.code == "config_conflict" {
             let latestDocument = try? await service.readClaudeSettings()
@@ -3313,17 +3388,40 @@ final class SkillStore: ObservableObject {
                 latestRevision: latestDocument?.revision,
                 displayMessage: UIStrings.configConflict
             )
-            settingsErrorMessage = conflict.displayMessage
-            configMutationState = .conflict(conflict)
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: conflict.displayMessage,
+                mutationState: .conflict(conflict)
+            )
             if let latestDocument {
                 claudeSettings = latestDocument
             }
             return false
         } catch {
-            settingsErrorMessage = error.localizedDescription
-            configMutationState = .failed(error.localizedDescription)
+            publishConfigSaveFeedback(
+                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: error.localizedDescription,
+                mutationState: .failed(error.localizedDescription)
+            )
             return false
         }
+    }
+
+    private func publishConfigSaveFeedback(
+        autosaveRevision: UInt64?,
+        message: String?,
+        error: String?,
+        mutationState: ConfigMutationState
+    ) {
+        guard autosaveRevision == nil || autosaveRevision == latestConfigAutosaveRevision else {
+            return
+        }
+        settingsMessage = message
+        settingsErrorMessage = error
+        lastMutationMessage = message
+        configMutationState = mutationState
     }
 
     private func invalidateConfigReadGenerations() {

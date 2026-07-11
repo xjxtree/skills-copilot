@@ -86,8 +86,17 @@ struct SkillStoreTests {
         try await runCase("configAutosaveKeepsEditArrivingDuringSave") {
             try await configAutosaveKeepsEditArrivingDuringSave()
         }
+        try await runCase("queuedConfigAutosaveNeverInheritsExternalPostSaveRevision") {
+            try await queuedConfigAutosaveNeverInheritsExternalPostSaveRevision()
+        }
+        try await runCase("olderConfigAutosaveFeedbackDoesNotPublishForNewerDraft") {
+            try await olderConfigAutosaveFeedbackDoesNotPublishForNewerDraft()
+        }
         try await runCase("providerAutosaveKeepsEditArrivingDuringSave") {
             try await providerAutosaveKeepsEditArrivingDuringSave()
+        }
+        try await runCase("olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft") {
+            try await olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft()
         }
         try await runCase("configAutosaveQueuesRevertDuringActiveSave") {
             try await configAutosaveQueuesRevertDuringActiveSave()
@@ -1257,7 +1266,103 @@ struct SkillStoreTests {
         }
         try expectEqual(callA.lowerBound < callB.lowerBound, true, "Config autosave should preserve A then B service order.")
         try expectEqual(store.claudeSettings?.content, "config-b", "The final stored config should be revision B.")
+        try expectEqual(store.settingsMessage, Optional(UIStrings.savedSettings), "The exact latest config completion should publish saved feedback.")
         try expectEqual(store.configAutosavePhase, .idle, "Config autosave should settle after both writes.")
+    }
+
+    private func queuedConfigAutosaveNeverInheritsExternalPostSaveRevision() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "autosave-external-after-save")
+
+        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
+        let revisionA = store.submitConfigAutosave(content: "config-a", validationError: nil)
+        try await waitUntil("Config autosave A should reach the external-race service.", timeout: 5) {
+            countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
+        }
+
+        let revisionB = store.submitConfigAutosave(content: "config-b", validationError: nil)
+        try expectEqual(revisionB, revisionA + 1, "The queued external-race draft should retain FIFO revision order.")
+        fake.releaseDelayedConfigSave()
+        await store.flushPendingAutosaves()
+
+        let calls = fake.calls()
+        try expectEqual(
+            countMethodCalls("config.saveClaudeSettings", in: calls),
+            1,
+            "External RX observed during A's post-save read must stop B locally before a second write RPC."
+        )
+        try expectContains(
+            calls,
+            #""expected_revision":"sha256:autosave-initial""#,
+            "A should retain its original R0 authorization."
+        )
+        try expectFalse(
+            calls.contains(#""expected_revision":"sha256:external-after-a""#),
+            "Queued B must never inherit mutable external revision RX."
+        )
+        try expectEqual(store.configAutosaveDraft, "config-b", "Rejected B should remain available as the unsaved draft.")
+        guard case let .conflict(conflict) = store.configMutationState else {
+            throw NativeModelTestFailure(description: "Queued B should preserve CAS conflict semantics against external RX.")
+        }
+        try expectEqual(conflict.attemptedRevision, "sha256:autosave-a", "B should remain bound to A's exact returned revision R1.")
+        try expectEqual(conflict.latestRevision, Optional("sha256:external-after-a"), "The local CAS boundary should expose external RX without authorizing B with it.")
+    }
+
+    private func olderConfigAutosaveFeedbackDoesNotPublishForNewerDraft() async throws {
+        for (scenario, expectsSuccess) in [
+            ("autosave-delayed-config", true),
+            ("autosave-delayed-config-failure", false),
+        ] {
+            let fake = try FakeServiceScript()
+            defer { fake.cleanup() }
+            fake.activate(scenario: scenario)
+
+            let store = SkillStore(
+                service: fake.serviceClient(),
+                autosaveDelayNanoseconds: 500_000_000
+            )
+            await prepareConfigConsistencyContext(store)
+            _ = store.submitConfigAutosave(content: "config-a", validationError: nil)
+            try await waitUntil("Config autosave A should reach the feedback service.", timeout: 5) {
+                countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
+            }
+
+            let revisionB = store.submitConfigAutosave(content: "config-b", validationError: nil)
+            fake.releaseDelayedConfigSave()
+            try await waitUntil("Config A should finish while B owns visible feedback.", timeout: 5) {
+                store.configAutosavePhase == .debouncing(revision: revisionB)
+            }
+
+            try expectNil(store.settingsMessage, "Older config A success must not publish a saved banner for B.")
+            try expectNil(store.settingsErrorMessage, "Older config A failure must not publish an error for B.")
+            if expectsSuccess {
+                try expectFalse(store.configMutationState == .idle, "Older config A success must not publish terminal idle state for B.")
+            } else {
+                guard case .saving = store.configMutationState else {
+                    throw NativeModelTestFailure(description: "Older config A failure must leave B's in-progress mutation state untouched.")
+                }
+            }
+            store.cancelPendingConfigAutosave()
+        }
+
+        let latestFake = try FakeServiceScript()
+        defer { latestFake.cleanup() }
+        latestFake.activate(scenario: "autosave-delayed-config-failure")
+        let latestStore = SkillStore(service: latestFake.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(latestStore)
+        _ = latestStore.submitConfigAutosave(content: "config-a", validationError: nil)
+        try await waitUntil("Latest config failure should reach the service.", timeout: 5) {
+            countMethodCalls("config.saveClaudeSettings", in: latestFake.calls()) == 1
+        }
+        latestFake.releaseDelayedConfigSave()
+        await latestStore.flushPendingAutosaves()
+        try expectContains(
+            latestStore.settingsErrorMessage ?? "",
+            "config A failed",
+            "The exact latest config failure should publish terminal feedback."
+        )
     }
 
     private func providerAutosaveKeepsEditArrivingDuringSave() async throws {
@@ -1312,7 +1417,66 @@ struct SkillStoreTests {
         let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
         try expectEqual(committedDraft.endpoint, draftB.endpoint, "Persisted provider state should settle on revision B.")
         try expectEqual(committedDraft.apiKey, "", "Hydrating committed provider state must not restore its API key.")
+        try expectEqual(store.aiProviderMessage, Optional(UIStrings.aiProviderSaved), "The exact latest provider completion should publish saved feedback.")
         try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after both writes.")
+    }
+
+    private func olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft() async throws {
+        for scenario in ["autosave-delayed-provider", "autosave-delayed-provider-failure"] {
+            let fake = try FakeServiceScript()
+            defer { fake.cleanup() }
+            fake.activate(scenario: scenario)
+
+            let store = SkillStore(
+                service: fake.serviceClient(),
+                autosaveDelayNanoseconds: 500_000_000
+            )
+            await store.loadAIProviderStatus()
+            var draftA = AIProviderSettingsDraft(status: store.aiProviderStatus)
+            draftA.endpoint = "https://provider-a.example.com/v1"
+            draftA.model = "model-a"
+            draftA.apiKey = "A"
+            _ = store.submitProviderAutosave(draft: draftA)
+            try await waitUntil("Provider autosave A should reach the feedback service.", timeout: 5) {
+                countMethodCalls("llm.saveProviderProfile", in: fake.calls()) == 1
+            }
+
+            var draftB = draftA
+            draftB.endpoint = "https://provider-b.example.com/v1"
+            draftB.model = "model-b"
+            draftB.apiKey = "B"
+            let revisionB = store.submitProviderAutosave(draft: draftB)
+            fake.releaseDelayedProviderSaveA()
+            try await waitUntil("Provider A should finish while B owns visible feedback.", timeout: 5) {
+                store.providerAutosavePhase == .debouncing(revision: revisionB)
+            }
+
+            try expectNil(store.aiProviderMessage, "Older provider A success must not publish a saved banner for B.")
+            try expectNil(store.aiProviderErrorMessage, "Older provider A failure must not publish an error for B.")
+            try expectEqual(store.providerAutosaveDraft?.apiKey, "B", "Older provider completion must preserve B's secret draft.")
+            store.cancelPendingProviderAutosave()
+        }
+
+        let latestFake = try FakeServiceScript()
+        defer { latestFake.cleanup() }
+        latestFake.activate(scenario: "autosave-delayed-provider-failure")
+        let latestStore = SkillStore(service: latestFake.serviceClient(), autosaveDelayNanoseconds: 0)
+        await latestStore.loadAIProviderStatus()
+        var latestDraft = AIProviderSettingsDraft(status: latestStore.aiProviderStatus)
+        latestDraft.endpoint = "https://provider-a.example.com/v1"
+        latestDraft.model = "model-a"
+        latestDraft.apiKey = "A"
+        _ = latestStore.submitProviderAutosave(draft: latestDraft)
+        try await waitUntil("Latest provider failure should reach the service.", timeout: 5) {
+            countMethodCalls("llm.saveProviderProfile", in: latestFake.calls()) == 1
+        }
+        latestFake.releaseDelayedProviderSaveA()
+        await latestStore.flushPendingAutosaves()
+        try expectContains(
+            latestStore.aiProviderErrorMessage ?? "",
+            "provider A failed",
+            "The exact latest provider failure should publish terminal feedback."
+        )
     }
 
     private func configAutosaveQueuesRevertDuringActiveSave() async throws {
@@ -3629,6 +3793,14 @@ private actor AutosaveControlServiceState {
         switch method {
         case "config.saveClaudeSettings":
             let content = params["content"] as? String ?? ""
+            let expectedRevision = params["expected_revision"] as? String ?? ""
+            let currentRevision = "sha256:test-\(configContent)"
+            guard expectedRevision == currentRevision else {
+                return Self.error(
+                    code: "config_conflict",
+                    message: "expected \(expectedRevision), current \(currentRevision)"
+                )
+            }
             configSaveContents.append(content)
             beginMutation(event: "config.save.start")
             if suspendMutations {
