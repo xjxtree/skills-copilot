@@ -37,5 +37,8 @@
     "test:path-identity": "node --test scripts/tests/path-identity.test.mjs scripts/tests/build-run-path-records.test.mjs",
     "benchmark:macos-list-model": "node scripts/benchmark-native-list-model.mjs",
     "verify:macos-ui-layout": "node scripts/verify-native-ui-layout.mjs"
+  },
+  "devDependencies": {
+    "mdast-util-from-markdown": "2.0.3"
   }
 }

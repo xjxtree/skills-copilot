@@ -1,12 +1,6 @@
 import { posix as path } from "node:path";
 
-import {
-  collectInlineNodes,
-  collectReferenceDefinitions,
-  containerStacksEqual,
-  parseMarkdownBlocks,
-  renderInlineText,
-} from "./markdown-governance-parser.mjs";
+import { parseGovernanceMarkdown } from "./markdown-ast-governance.mjs";
 
 const ROOT_MARKDOWN_PATHS = new Set([
   "README.md",
@@ -19,14 +13,6 @@ const ROOT_MARKDOWN_PATHS = new Set([
 const GENERIC_MARKDOWN_FILENAMES = new Set(["SKILL.md"]);
 const REPOSITORY_PREFIX = /^(?:docs|fixtures|\.github|scripts)\//;
 const EXTERNAL_DESTINATION = /^(?:https?:|mailto:|data:)/i;
-
-function lineAt(text, offset) {
-  let line = 1;
-  for (let index = 0; index < offset; index += 1) {
-    if (text.charCodeAt(index) === 10) line += 1;
-  }
-  return line;
-}
 
 function safelyDecode(value) {
   try {
@@ -89,51 +75,39 @@ function repositoryCodeTarget(token, sourcePath) {
 
 export function collectMarkdownReferences(markdown, sourcePath) {
   const source = path.normalize(sourcePath.replaceAll("\\", "/"));
-  const document = parseMarkdownBlocks(markdown);
-  const text = document.maskedText;
   const references = [];
-  const { definitions, text: definitionsMasked } =
-    collectReferenceDefinitions(document);
-  const { codeSpans, links } = collectInlineNodes(
-    definitionsMasked,
-    definitions,
-  );
-
-  for (const codeSpan of codeSpans) {
-    const target = repositoryCodeTarget(codeSpan.content, source);
+  for (const reference of parseGovernanceMarkdown(markdown).references) {
+    const target = reference.kind === "backtick"
+      ? repositoryCodeTarget(reference.value, source)
+      : normalizeTarget(reference.value, source, false);
     if (target) {
       references.push({
         source,
         target,
-        line: lineAt(text, codeSpan.start),
-        kind: "backtick",
-        offset: codeSpan.start,
-      });
-    }
-  }
-
-  for (const link of links) {
-    const target = normalizeTarget(link.destination, source, false);
-    if (target) {
-      references.push({
-        source,
-        target,
-        line: lineAt(text, link.start),
-        kind: "markdown",
-        offset: link.start,
+        line: reference.line,
+        kind: reference.kind,
+        order: reference.order,
       });
     }
   }
 
   return references
-    .sort((left, right) => left.offset - right.offset)
-    .map(({ offset: _offset, ...reference }) => reference);
+    .sort((left, right) => left.order - right.order)
+    .map(({ order: _order, ...reference }) => reference);
 }
 
 export function collectDeclaredCreatePaths(markdown, _sourcePath) {
-  const text = parseMarkdownBlocks(markdown).maskedText;
+  const { codeBlockRanges } = parseGovernanceMarkdown(markdown);
   const declared = new Set();
-  for (const line of text.split("\n")) {
+  for (const [index, line] of markdown.split("\n").entries()) {
+    const lineNumber = index + 1;
+    if (
+      codeBlockRanges.some(
+        (range) => lineNumber >= range.start && lineNumber <= range.end,
+      )
+    ) {
+      continue;
+    }
     const match = line.match(/^- Create: `([^`]+)`\s*$/);
     if (!match) continue;
     const rawTarget = match[1];
@@ -268,15 +242,11 @@ export function validateGateMembers(actual, expected) {
 }
 
 export function collectHeadingSlugs(markdown) {
-  const document = parseMarkdownBlocks(markdown);
-  const { definitions } = collectReferenceDefinitions(document);
   const slugs = new Set();
   const occurrences = new Map();
 
   function addHeading(rawLabel) {
-    const label = renderInlineText(rawLabel, definitions)
-      .trim()
-      .toLocaleLowerCase("en-US");
+    const label = rawLabel.trim().toLocaleLowerCase("en-US");
     const base = label
       .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
       .replace(/\s/gu, "-");
@@ -292,25 +262,8 @@ export function collectHeadingSlugs(markdown) {
     slugs.add(slug);
   }
 
-  for (let index = 0; index < document.lines.length; index += 1) {
-    const current = document.lines[index];
-    if (current.masked) continue;
-    const atx = current.content.match(/^ {0,3}#{1,6}(?:[ \t]+|$)(.*)$/u);
-    if (atx) {
-      addHeading(atx[1].replace(/[ \t]+#+[ \t]*$/u, ""));
-      continue;
-    }
-    const next = document.lines[index + 1];
-    if (
-      next &&
-      !next.masked &&
-      current.content.trim() &&
-      containerStacksEqual(current.containers, next.containers) &&
-      /^ {0,3}(?:=+|-+)[ \t]*$/u.test(next.content)
-    ) {
-      addHeading(current.content.trim());
-      index += 1;
-    }
+  for (const heading of parseGovernanceMarkdown(markdown).headings) {
+    addHeading(heading);
   }
   return slugs;
 }

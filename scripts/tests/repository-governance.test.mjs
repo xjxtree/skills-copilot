@@ -43,11 +43,7 @@ function createGovernanceFixture(manifest = VALID_MANIFEST) {
   mkdirSync(join(root, "scripts", "lib"), { recursive: true });
   for (const moduleName of [
     "repository-governance.mjs",
-    "markdown-governance-parser.mjs",
-    "html-character-entities.mjs",
-    "html-character-entities-a-f.mjs",
-    "html-character-entities-g-m.mjs",
-    "html-character-entities-n-z.mjs",
+    "markdown-ast-governance.mjs",
   ]) {
     copyFileSync(
       join(TEST_REPOSITORY_ROOT, "scripts", "lib", moduleName),
@@ -76,6 +72,11 @@ function createGovernanceFixture(manifest = VALID_MANIFEST) {
   });
   execFileSync("git", ["add", "--all"], { cwd: root });
   execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+  symlinkSync(
+    join(TEST_REPOSITORY_ROOT, "node_modules"),
+    join(root, "node_modules"),
+    "dir",
+  );
   return root;
 }
 
@@ -84,6 +85,22 @@ function runGovernanceFixture(root) {
     cwd: root,
     encoding: "utf8",
   });
+}
+
+function assertMissingMarkdownTarget(markdown, target, line) {
+  const source = "docs/index.md";
+  const references = collectMarkdownReferences(markdown, source);
+  assert.deepEqual(references, [
+    { source, target: `docs/${target}`, line, kind: "markdown" },
+  ]);
+  assert.deepEqual(
+    validateReferences({
+      references,
+      trackedFiles: new Set([source]),
+      headingsByFile: new Map(),
+    }),
+    [`${source}:${line} -> docs/${target} is missing`],
+  );
 }
 
 test("finds markdown links and backticked repository paths", () => {
@@ -202,6 +219,72 @@ test("resolves full collapsed and shortcut reference links", () => {
       { target: "docs/missing.md", line: 1 },
       { target: "README.md", line: 1 },
     ],
+  );
+});
+
+test("unmatched backticks cannot hide links across CommonMark leaf blocks", () => {
+  assertMissingMarkdownTarget(
+    "`open\n\n[x](missing-after-blank.md)\n`",
+    "missing-after-blank.md",
+    3,
+  );
+  assertMissingMarkdownTarget(
+    "`open\n# Boundary\n[x](missing-after-heading.md)\n`",
+    "missing-after-heading.md",
+    3,
+  );
+});
+
+test("collects a missing inline link whose title spans lines", () => {
+  assertMissingMarkdownTarget(
+    '[x](missing-multiline-title.md "multi\nline")',
+    "missing-multiline-title.md",
+    1,
+  );
+});
+
+test("collects a missing reference whose definition label spans lines", () => {
+  assertMissingMarkdownTarget(
+    "[Baz][Foo bar]\n\n[Foo\n  bar]: missing-multiline-label.md",
+    "missing-multiline-label.md",
+    1,
+  );
+});
+
+test("collects a missing reference with an escaped closing bracket label", () => {
+  assertMissingMarkdownTarget(
+    "[x][foo\\]]\n\n[foo\\]]: missing-escaped-label.md",
+    "missing-escaped-label.md",
+    1,
+  );
+});
+
+test("uses Unicode full case folding for reference labels", () => {
+  assertMissingMarkdownTarget(
+    "[ẞ]\n\n[SS]: missing-unicode-casefold.md",
+    "missing-unicode-casefold.md",
+    1,
+  );
+});
+
+test("reports exact lines after a multiline inline title", () => {
+  assertMissingMarkdownTarget(
+    '[first](https://example.com "multi\nline") [x](missing-after-title.md)',
+    "missing-after-title.md",
+    2,
+  );
+});
+
+test("reports exact lines after a multiline reference label", () => {
+  assertMissingMarkdownTarget(
+    [
+      "[first][foo",
+      "bar] [x](missing-after-reference-label.md)",
+      "",
+      "[foo bar]: https://example.com",
+    ].join("\n"),
+    "missing-after-reference-label.md",
+    2,
   );
 });
 
