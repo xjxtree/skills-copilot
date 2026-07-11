@@ -71,11 +71,13 @@ fn scheduled_auto_discovered_root_swap_cannot_redirect_authorization() {
         "user: SAFE_DOCUMENTED_ROOT\n",
     )
     .expect("write documented session");
-    fs::write(
-        undeclared_root.join("record.jsonl"),
-        "user: SCHEDULED_ROOT_SWAP_TARGET_MUST_NOT_SURFACE\n",
-    )
-    .expect("write undeclared target");
+    for target_name in ["undeclared-alpha.jsonl", "undeclared-beta.jsonl"] {
+        fs::write(
+            undeclared_root.join(target_name),
+            format!("user: SCHEDULED_ROOT_SWAP_TARGET_MUST_NOT_SURFACE {target_name}\n"),
+        )
+        .expect("write undeclared target");
+    }
     let swap_documented_root = documented_root.clone();
     let swap_parked_root = parked_root.clone();
     let swap_undeclared_root = undeclared_root.clone();
@@ -107,10 +109,23 @@ fn scheduled_auto_discovered_root_swap_cannot_redirect_authorization() {
     let serialized = serde_json::to_string(&result).expect("serialize preview result");
     let _ = fs::remove_dir_all(&fixture);
 
-    assert!(
-        !serialized.contains("SCHEDULED_ROOT_SWAP_TARGET_MUST_NOT_SURFACE"),
-        "scheduled root swap redirected authorization: {serialized}"
+    assert_eq!(
+        result.get("total_candidate_count").and_then(Value::as_u64),
+        Some(1),
+        "inventory must remain on the one-file directory held by the authorized descriptor: {serialized}"
     );
+    assert_eq!(result.get("count").and_then(Value::as_u64), Some(1));
+    assert!(serialized.contains("SAFE_DOCUMENTED_ROOT"));
+    for target_marker in [
+        "SCHEDULED_ROOT_SWAP_TARGET_MUST_NOT_SURFACE",
+        "undeclared-alpha.jsonl",
+        "undeclared-beta.jsonl",
+    ] {
+        assert!(
+            !serialized.contains(target_marker),
+            "scheduled root swap exposed undeclared inventory marker {target_marker}: {serialized}"
+        );
+    }
 }
 
 #[test]

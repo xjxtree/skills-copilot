@@ -148,8 +148,12 @@ impl ServiceHost {
                 }
             };
 
-            let files =
-                collect_local_session_files(&root_path, max_files, &mut gap_notes, &mut redactor);
+            let files = collect_local_session_files(
+                &guarded_root,
+                max_files,
+                &mut gap_notes,
+                &mut redactor,
+            );
             total_candidate_count += files.len();
             let mut root_candidate_count = 0usize;
             for file in files {
@@ -718,50 +722,38 @@ fn encode_project_path_session_component(project: &Path) -> String {
 }
 
 fn collect_local_session_files(
-    root: &Path,
+    root: &GuardedLocalSessionRoot,
     max_files: usize,
     gap_notes: &mut Vec<String>,
     redactor: &mut PromptRedactor<'_>,
 ) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut directories = vec![root.to_path_buf()];
-
-    while let Some(directory) = directories.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) => {
-                gap_notes.push(format!(
-                    "{}: {}",
-                    redactor.redact(&directory.to_string_lossy()),
-                    redactor.redact(&error.to_string())
-                ));
-                continue;
-            }
-        };
-        for entry in entries.flatten() {
-            if files.len() >= max_files {
-                gap_notes.push(format!(
-                    "Local session preview stopped after {} candidate file(s) for bounded read latency.",
-                    max_files
-                ));
-                return files;
-            }
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                directories.push(path);
-            } else if file_type.is_file()
-                && is_supported_local_session_file(&path)
-                && !is_ignored_local_session_file(&path)
-            {
-                files.push(path);
-            }
+    let inventory = match root.collect_regular_files(max_files, |path| {
+        is_supported_local_session_file(path) && !is_ignored_local_session_file(path)
+    }) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            gap_notes.push(format!(
+                "{}: {}",
+                redactor.redact(&root.path().to_string_lossy()),
+                redactor.redact(&error.to_string())
+            ));
+            return Vec::new();
         }
+    };
+    for (directory, error) in inventory.directory_errors {
+        gap_notes.push(format!(
+            "{}: {}",
+            redactor.redact(&directory.to_string_lossy()),
+            redactor.redact(&error.to_string())
+        ));
     }
-
-    files
+    if inventory.truncated {
+        gap_notes.push(format!(
+            "Local session preview stopped after {} candidate file(s) for bounded read latency.",
+            max_files
+        ));
+    }
+    inventory.files
 }
 
 fn is_supported_local_session_file(path: &Path) -> bool {

@@ -3,14 +3,15 @@ use serde_json::{Map, Value};
 use std::{
     fs,
     io::{self, Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
 #[cfg(unix)]
 use std::{
     os::fd::{AsFd, OwnedFd},
-    path::{Component, PathBuf},
+    os::unix::ffi::OsStrExt,
+    path::Component,
 };
 
 const MAX_READ_CHUNK_BYTES: usize = 64 * 1024;
@@ -779,6 +780,12 @@ pub(crate) struct GuardedLocalSessionRoot {
     directory: OwnedFd,
 }
 
+pub(crate) struct GuardedLocalSessionInventory {
+    pub(crate) files: Vec<PathBuf>,
+    pub(crate) directory_errors: Vec<(PathBuf, io::Error)>,
+    pub(crate) truncated: bool,
+}
+
 impl GuardedLocalSessionRoot {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
@@ -877,6 +884,94 @@ impl GuardedLocalSessionRoot {
         #[cfg(not(unix))]
         {
             unreachable!("non-Unix guarded roots cannot be constructed")
+        }
+    }
+
+    pub(crate) fn collect_regular_files(
+        &self,
+        max_files: usize,
+        mut is_candidate: impl FnMut(&Path) -> bool,
+    ) -> io::Result<GuardedLocalSessionInventory> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
+
+            let directory_flags =
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let root_directory = openat(&self.directory, ".", directory_flags, Mode::empty())
+                .map_err(io::Error::from)?;
+            let mut directories = vec![(PathBuf::new(), root_directory)];
+            let mut inventory = GuardedLocalSessionInventory {
+                files: Vec::new(),
+                directory_errors: Vec::new(),
+                truncated: false,
+            };
+
+            while let Some((relative_directory, directory)) = directories.pop() {
+                let mut entries = match Dir::read_from(&directory) {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        inventory
+                            .directory_errors
+                            .push((self.path.join(&relative_directory), io::Error::from(error)));
+                        continue;
+                    }
+                };
+                for entry in &mut entries {
+                    if inventory.files.len() >= max_files {
+                        inventory.truncated = true;
+                        return Ok(inventory);
+                    }
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            inventory.directory_errors.push((
+                                self.path.join(&relative_directory),
+                                io::Error::from(error),
+                            ));
+                            break;
+                        }
+                    };
+                    let name_bytes = entry.file_name().to_bytes();
+                    if matches!(name_bytes, b"." | b"..") {
+                        continue;
+                    }
+                    let name = std::ffi::OsStr::from_bytes(name_bytes);
+                    let relative_path = relative_directory.join(name);
+                    let metadata = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+                        Ok(metadata) => metadata,
+                        Err(_) => continue,
+                    };
+                    match FileType::from_raw_mode(metadata.st_mode) {
+                        FileType::Directory => {
+                            match openat(&directory, name, directory_flags, Mode::empty()) {
+                                Ok(child) => directories.push((relative_path, child)),
+                                Err(error) => inventory
+                                    .directory_errors
+                                    .push((self.path.join(relative_path), io::Error::from(error))),
+                            }
+                        }
+                        FileType::RegularFile => {
+                            let path = self.path.join(relative_path);
+                            if is_candidate(&path) {
+                                inventory.files.push(path);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            Ok(inventory)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = (max_files, &mut is_candidate);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "guarded local session inventory requires descriptor-relative directory access",
+            ))
         }
     }
 
