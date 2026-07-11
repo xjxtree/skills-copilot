@@ -104,6 +104,16 @@ private struct AgentConfigOverviewDetailPanel: View {
             && store.claudeSettings?.supportsCompareAndSwap == true
     }
 
+    private var sensitiveTogglePolicy: AgentConfigSensitiveTogglePolicy {
+        AgentConfigSensitiveTogglePolicy(
+            isSensitiveVisible: revealsSensitiveConfig,
+            hasLoadedDocument: store.claudeSettings != nil,
+            hasWritableBinding: hasWritableConfigBinding,
+            isLoading: store.isLoadingSettings,
+            isSaving: store.isSavingSettings
+        )
+    }
+
     private var hasConfigConflict: Bool {
         if case .conflict = store.configMutationState {
             return true
@@ -191,9 +201,7 @@ private struct AgentConfigOverviewDetailPanel: View {
             ConfigCodeToolbar(
                 isReloadDisabled: store.isLoadingSettings || store.isSavingSettings,
                 isFormatDisabled: !revealsSensitiveConfig || validationMessage != nil || draft.isEmpty,
-                isRevealDisabled: store.isLoadingSettings
-                    || store.isSavingSettings
-                    || (store.claudeSettings != nil && !hasWritableConfigBinding),
+                isRevealDisabled: sensitiveTogglePolicy.isDisabled,
                 isSensitiveVisible: revealsSensitiveConfig,
                 revealHelp: revealsSensitiveConfig ? UIStrings.agentConfigHideSensitive : UIStrings.agentConfigShowSensitive,
                 onReload: reloadClaudeConfig,
@@ -397,9 +405,17 @@ private struct AgentConfigSnapshotDetailPanel: View {
     @EnvironmentObject private var store: SkillStore
     let snapshot: ConfigSnapshotRecord
 
-    @State private var preview: SnapshotRollbackPreviewRecord?
-    @State private var previewError: String?
+    @State private var previewPresentation = RollbackPreviewPresentationState<SnapshotRollbackPreviewRecord>()
+    @State private var previewLoadTask: Task<Void, Never>?
     @State private var confirmationToApply: RollbackConfirmation?
+
+    private var preview: SnapshotRollbackPreviewRecord? {
+        previewPresentation.preview
+    }
+
+    private var previewError: String? {
+        previewPresentation.errorMessage
+    }
 
     private var confirmedPreview: SnapshotRollbackPreviewRecord? {
         guard store.supportsConfigConsistencyProtocol,
@@ -522,8 +538,10 @@ private struct AgentConfigSnapshotDetailPanel: View {
                 Task {
                     let succeeded = await store.rollbackSnapshot(confirmation: confirmation)
                     guard !succeeded else { return }
-                    preview = nil
-                    previewError = store.errorMessage
+                    previewPresentation.replaceWithError(
+                        store.errorMessage,
+                        selectedSnapshotID: snapshot.id
+                    )
                 }
             }
             Button(UIStrings.cancel, role: .cancel) {
@@ -535,24 +553,40 @@ private struct AgentConfigSnapshotDetailPanel: View {
             ))
         }
         .onChange(of: snapshot.id) { _ in
-            preview = nil
-            previewError = nil
-            confirmationToApply = nil
-            store.clearRollbackConfirmation()
+            invalidatePreviewLoad(selectedSnapshotID: snapshot.id)
+        }
+        .onDisappear {
+            invalidatePreviewLoad(selectedSnapshotID: nil)
         }
     }
 
     private func loadPreview() {
-        previewError = nil
-        preview = nil
+        previewLoadTask?.cancel()
+        store.clearRollbackConfirmation()
+        let request = previewPresentation.begin(snapshotID: snapshot.id)
         confirmationToApply = nil
-        Task {
+        previewLoadTask = Task { @MainActor in
             do {
-                preview = try await store.previewRollback(snapshotID: snapshot.id)
+                let loadedPreview = try await store.previewRollback(snapshotID: request.snapshotID)
+                guard previewPresentation.publish(preview: loadedPreview, for: request) else { return }
+                previewLoadTask = nil
+            } catch is CancellationError {
+                guard previewPresentation.activeRequest == request else { return }
+                previewPresentation.invalidate(selectedSnapshotID: request.snapshotID)
+                previewLoadTask = nil
             } catch {
-                previewError = error.localizedDescription
+                guard previewPresentation.publish(errorMessage: error.localizedDescription, for: request) else { return }
+                previewLoadTask = nil
             }
         }
+    }
+
+    private func invalidatePreviewLoad(selectedSnapshotID: String?) {
+        previewLoadTask?.cancel()
+        previewLoadTask = nil
+        previewPresentation.invalidate(selectedSnapshotID: selectedSnapshotID)
+        confirmationToApply = nil
+        store.clearRollbackConfirmation()
     }
 }
 

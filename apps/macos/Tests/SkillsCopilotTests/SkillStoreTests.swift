@@ -2175,6 +2175,7 @@ struct SkillStoreTests {
 
         try expectEqual(store.selectedConfigSnapshot?.id, Optional(second.id), "Selection should remain on the newly chosen snapshot.")
         try expectNil(store.rollbackConfirmation, "An invalidated in-flight preview must not restore its old confirmation.")
+        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "A stale preview response must never issue a rollback RPC.")
     }
 
     private func rollbackSnapshotRequiresVisibleAgentTimelineRecord() async throws {

@@ -829,21 +829,27 @@ function runFixtureServiceSmoke(env) {
   if (!Array.isArray(snapshots) || snapshots.length === 0) {
     fail("expected snapshots after toggle/settings write flow");
   }
+  const snapshot = snapshots[0];
   const preview = callService(
     "snapshot.previewRollback",
-    { snapshot_id: snapshots[0].id },
+    { snapshot_id: snapshot.id },
     env,
   );
-  if (!preview.snapshot?.id) {
-    fail("snapshot preview did not return snapshot payload");
+  if (preview.snapshot?.id !== snapshot.id) {
+    fail("snapshot preview did not return the requested snapshot payload");
   }
-  if (typeof preview.preview_token !== "string" || preview.preview_token.length === 0) {
-    fail("snapshot preview did not return a rollback token");
+  if (
+    typeof preview.current_revision !== "string" ||
+    preview.current_revision.length === 0 ||
+    typeof preview.preview_token !== "string" ||
+    preview.preview_token.length === 0
+  ) {
+    fail("snapshot preview did not return a complete protocol-v2 rollback binding");
   }
   callService(
     "snapshot.rollback",
     {
-      snapshot_id: snapshots[0].id,
+      snapshot_id: preview.snapshot.id,
       preview_token: preview.preview_token,
     },
     env,

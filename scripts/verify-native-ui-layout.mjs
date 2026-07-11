@@ -414,6 +414,25 @@ const checks = [
       && /handleConfigAutosaveCompletion\([\s\S]*?completion\.revision == latestConfigAutosaveRevision[\s\S]*?configAutosaveDraft = nil/.test(files.store),
   },
   {
+    label: "rollback preview presentation rejects stale view tasks across replacement selection and disappearance",
+    text: files.agentConfigWorkspace,
+    passed: /@State private var previewPresentation = RollbackPreviewPresentationState<SnapshotRollbackPreviewRecord>\(\)/.test(files.agentConfigWorkspace)
+      && /@State private var previewLoadTask: Task<Void,\s*Never>\?/.test(files.agentConfigWorkspace)
+      && /private func invalidatePreviewLoad\(selectedSnapshotID:\s*String\?\)[\s\S]*?previewLoadTask\?\.cancel\(\)[\s\S]*?previewPresentation\.invalidate\(selectedSnapshotID:\s*selectedSnapshotID\)[\s\S]*?store\.clearRollbackConfirmation\(\)/.test(files.agentConfigWorkspace)
+      && /\.onChange\(of:\s*snapshot\.id\)[\s\S]*?invalidatePreviewLoad\(selectedSnapshotID:\s*snapshot\.id\)/.test(files.agentConfigWorkspace)
+      && /\.onDisappear[\s\S]*?invalidatePreviewLoad\(selectedSnapshotID:\s*nil\)/.test(files.agentConfigWorkspace)
+      && /private func loadPreview\(\)[\s\S]*?previewLoadTask\?\.cancel\(\)[\s\S]*?let request = previewPresentation\.begin\(snapshotID:\s*snapshot\.id\)[\s\S]*?previewLoadTask = Task \{ @MainActor in[\s\S]*?store\.previewRollback\(snapshotID:\s*request\.snapshotID\)[\s\S]*?previewPresentation\.publish\(preview:\s*loadedPreview,\s*for:\s*request\)[\s\S]*?previewPresentation\.publish\(errorMessage:\s*error\.localizedDescription,\s*for:\s*request\)/.test(files.agentConfigWorkspace)
+      && !/@State private var preview:\s*SnapshotRollbackPreviewRecord\?/.test(files.agentConfigWorkspace)
+      && !/@State private var previewError:\s*String\?/.test(files.agentConfigWorkspace),
+  },
+  {
+    label: "config sensitive toggle keeps Hide enabled while Reveal remains binding and busy gated",
+    text: files.agentConfigWorkspace,
+    passed: /private var sensitiveTogglePolicy:\s*AgentConfigSensitiveTogglePolicy[\s\S]*?AgentConfigSensitiveTogglePolicy\([\s\S]*?isSensitiveVisible:\s*revealsSensitiveConfig,[\s\S]*?hasLoadedDocument:\s*store\.claudeSettings != nil,[\s\S]*?hasWritableBinding:\s*hasWritableConfigBinding,[\s\S]*?isLoading:\s*store\.isLoadingSettings,[\s\S]*?isSaving:\s*store\.isSavingSettings/.test(files.agentConfigWorkspace)
+      && /isRevealDisabled:\s*sensitiveTogglePolicy\.isDisabled/.test(files.agentConfigWorkspace)
+      && !/isRevealDisabled:\s*store\.isLoadingSettings[\s\S]*?store\.claudeSettings != nil && !hasWritableConfigBinding/.test(files.agentConfigWorkspace),
+  },
+  {
     label: "detail sections use expanded tag selector",
     text: files.detailSurface,
     pattern: /struct DetailSectionSwitcher:[\s\S]*?ScrollView\(\.horizontal,\s*showsIndicators:\s*false\)[\s\S]*?ForEach\(DetailSection\.visibleCases\)[\s\S]*?DetailSectionTagButton\([\s\S]*?isSelected:\s*selection == item[\s\S]*?selection = item[\s\S]*?private struct DetailSectionTagButton:[\s\S]*?\.background\(background,\s*in:\s*Capsule\(\)\)[\s\S]*?\.accessibilityAddTraits\(isSelected \? \.isSelected : \[\]\)/,
