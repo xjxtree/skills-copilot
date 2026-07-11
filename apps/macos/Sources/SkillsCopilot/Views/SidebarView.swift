@@ -1242,6 +1242,7 @@ private struct SessionSidebarPanel: View {
                             onCancel: { store.cancelLocalSessionLoadAll() },
                             accessibilityIdentifierPrefix: "sessions"
                         )
+                        .accessibilityIdentifier("sessions.completeness")
                         Text(UIStrings.text(
                             "sidebar.sessions.loadedRowsOnly",
                             "Search, scope, and sort cover loaded rows while more remain."
@@ -2094,6 +2095,7 @@ private struct ConfigSidebarPanel: View {
                         },
                         accessibilityIdentifierPrefix: "config-history"
                     )
+                    .accessibilityIdentifier("config-history.completeness")
                 }
             }
         }

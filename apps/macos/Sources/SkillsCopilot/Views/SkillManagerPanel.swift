@@ -370,6 +370,7 @@ struct SkillManagerPanel: View {
                 }
                 if let status = store.skillManagerSearchStatus {
                     skillManagerSearchFooter(status, sourceCompleteness: search.sourceCompleteness)
+                        .accessibilityIdentifier("skill-manager.search.completeness")
                 }
             } else {
                 Text(UIStrings.text("skillManager.results.empty", "Run a search or preview an install to populate this side of the workflow."))
@@ -397,8 +398,6 @@ struct SkillManagerPanel: View {
             seen.insert(trimmed.lowercased())
             return trimmed
         }
-        .prefix(6)
-        .map { $0 }
     }
 
     private var canSearchSkillManager: Bool {

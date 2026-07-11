@@ -550,6 +550,7 @@ private struct ProviderActivitySettingsSection: View {
                 onCancel: cancel,
                 accessibilityIdentifierPrefix: "provider-activity"
             )
+            .accessibilityIdentifier("provider-activity.completeness")
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

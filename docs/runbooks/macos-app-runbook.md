@@ -50,11 +50,13 @@ these members in this exact order:
 9. `verify:screenshot-artifacts`
 
 `verify:list-completeness` checks the schema-v1 formal-list inventory, owning
-source paths, reachable full-access accessibility controls, and new raw
-`prefix()`-defined `ForEach`/`List` presentations. It is a static declaration
-and control-boundary check. Native model and UI tests remain responsible for
-proving loading, continuation, expansion, routing, cancellation, and focus
-behavior.
+source paths and Swift type/member anchors, unique reachable full-access
+accessibility controls, and new direct or alias-defined `prefix()`
+`ForEach`/`List` presentations. Its DenseDisclosureList and
+ExpandableSummaryList exceptions validate the canonical component's remainder
+path and expansion control. It is a static declaration and control-boundary
+check. Native model and UI tests remain responsible for proving loading,
+continuation, expansion, routing, cancellation, and focus behavior.
 
 The live `pnpm benchmark:10k` and `pnpm benchmark:macos-list-model` checks are
 separate CI/release commands, not members of the deterministic parity gate.

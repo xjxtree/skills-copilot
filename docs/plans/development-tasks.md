@@ -15,7 +15,8 @@ numbers, and main changelogs belong in GitHub tags and GitHub Releases.
 - Treat `scripts/list-completeness-surfaces.json` as the active routing ledger
   for formal list ownership and policy. A list change must update its manifest
   entry and pass `pnpm verify:list-completeness`; paged and summarized surfaces
-  must retain a real reachable full-access control.
+  must retain a unique full-access control in the declared live Swift
+  type/member scope, and paged surfaces must retain a status control.
 - Keep the list verifier's responsibility limited to static declarations,
   source paths, control IDs, and forbidden raw prefix presentations. Route
   loading/expansion/routing/cancellation and accessibility behavior changes to

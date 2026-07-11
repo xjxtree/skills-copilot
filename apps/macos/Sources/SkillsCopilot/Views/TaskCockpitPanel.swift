@@ -1205,13 +1205,13 @@ private struct TaskCockpitDecisionModel {
             values.append(contentsOf: topSkill.reasons)
         }
         values.append(contentsOf: result.readinessSignals.map(\.detail))
-        values.append(contentsOf: result.agentCandidates.prefix(1).map(\.summary))
-        values.append(contentsOf: result.agentCandidates.prefix(1).flatMap(\.reasons))
+        values.append(contentsOf: result.agentCandidates.map(\.summary))
+        values.append(contentsOf: result.agentCandidates.flatMap(\.reasons))
         return Self.uniqueMeaningful(values)
     }
 
     var attentionRows: [TaskCockpitContextRow] {
-        Array((userBlockerRows + reviewRiskRows + result.gapRows).prefix(2))
+        userBlockerRows + reviewRiskRows + result.gapRows
     }
 
     var keyReasons: [String] {
@@ -1222,12 +1222,12 @@ private struct TaskCockpitDecisionModel {
             ].compactMap(\.self)
         }
         values.append(contentsOf: reasons)
-        return Array(Self.uniqueMeaningful(values).prefix(2))
+        return Self.uniqueMeaningful(values)
     }
 
     var candidateAlternatives: [String] {
         guard uniqueCandidateRows.count > 1 else { return [] }
-        return Array(uniqueCandidateRows.prefix(3).enumerated()).map { index, row in
+        return Array(uniqueCandidateRows.enumerated()).map { index, row in
             candidateAlternativeLine(index: index, row: row)
         }
     }
@@ -1479,6 +1479,11 @@ private struct TaskCockpitScorePill: View {
     }
 }
 
+private struct TaskCockpitSummaryTextRow: Identifiable {
+    let id: Int
+    let value: String
+}
+
 private struct TaskCockpitDecisionSummaryCard: View {
     let model: TaskCockpitDecisionModel
 
@@ -1533,8 +1538,13 @@ private struct TaskCockpitDecisionSummaryCard: View {
                     Label(UIStrings.taskCockpitReasonsTitle, systemImage: "text.bubble")
                         .font(.callout.bold())
 
-                    ForEach(Array(model.keyReasons.enumerated()), id: \.offset) { _, reason in
-                        PrivacyEvidenceLabel(value: reason, systemImage: reasonSystemImage, font: .callout, lineLimit: 2)
+                    ExpandableSummaryList(
+                        summaryRows(model.keyReasons),
+                        visibleLimit: 2,
+                        spacing: 7,
+                        accessibilityIdentifier: "task-cockpit-decision-reasons.show-all"
+                    ) { reason in
+                        PrivacyEvidenceLabel(value: reason.value, systemImage: reasonSystemImage, font: .callout, lineLimit: 2)
                     }
                 }
             }
@@ -1544,8 +1554,13 @@ private struct TaskCockpitDecisionSummaryCard: View {
                     Label(UIStrings.taskCockpitCandidateAlternativesTitle, systemImage: "list.bullet")
                         .font(.callout.bold())
 
-                    ForEach(Array(model.candidateAlternatives.enumerated()), id: \.offset) { _, candidate in
-                        PrivacyEvidenceLabel(value: candidate, systemImage: "chevron.right.circle", font: .callout, lineLimit: 1)
+                    ExpandableSummaryList(
+                        summaryRows(model.candidateAlternatives),
+                        visibleLimit: 3,
+                        spacing: 6,
+                        accessibilityIdentifier: "task-cockpit-candidate-alternatives.show-all"
+                    ) { candidate in
+                        PrivacyEvidenceLabel(value: candidate.value, systemImage: "chevron.right.circle", font: .callout, lineLimit: 1)
                     }
                 }
             }
@@ -1574,6 +1589,10 @@ private struct TaskCockpitDecisionSummaryCard: View {
         case .unavailable:
             return "questionmark.circle"
         }
+    }
+
+    private func summaryRows(_ values: [String]) -> [TaskCockpitSummaryTextRow] {
+        values.enumerated().map { TaskCockpitSummaryTextRow(id: $0.offset, value: $0.element) }
     }
 }
 
@@ -1759,9 +1778,14 @@ private struct TaskCockpitMatchingProcessView: View {
                     )
                 }
 
-                ForEach(Array(processNotes.enumerated()), id: \.offset) { _, note in
+                ExpandableSummaryList(
+                    processNoteRows,
+                    visibleLimit: 3,
+                    spacing: 7,
+                    accessibilityIdentifier: "task-cockpit-process-notes.show-all"
+                ) { note in
                     PrivacyEvidenceLabel(
-                        value: note,
+                        value: note.value,
                         systemImage: "text.bubble",
                         font: .callout,
                         lineLimit: 2
@@ -1791,7 +1815,11 @@ private struct TaskCockpitMatchingProcessView: View {
         }
         values.append(contentsOf: result.gapRows.map(\.detail))
         values.append(contentsOf: result.blockerRows.map(\.detail))
-        return Array(values.compactMap(TaskCockpitDecisionModel.displayText).prefix(3))
+        return values.compactMap(TaskCockpitDecisionModel.displayText)
+    }
+
+    private var processNoteRows: [TaskCockpitSummaryTextRow] {
+        processNotes.enumerated().map { TaskCockpitSummaryTextRow(id: $0.offset, value: $0.element) }
     }
 }
 

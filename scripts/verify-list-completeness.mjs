@@ -34,7 +34,9 @@ export function verifyRepositoryListCompleteness() {
   const errors = verifyListSurfaceInventory(manifest, { repoRoot });
   for (const path of swiftFiles(nativeSourceRoot)) {
     const relativePath = relative(repoRoot, path);
-    for (const finding of findUndeclaredPrefixLists(readFileSync(path, "utf8"))) {
+    for (const finding of findUndeclaredPrefixLists(readFileSync(path, "utf8"), {
+      relativePath,
+    })) {
       errors.push(`${relativePath}: ${finding}`);
     }
   }

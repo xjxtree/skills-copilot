@@ -247,6 +247,7 @@ struct HistorySection: View {
                     onCancel: onCancel,
                     accessibilityIdentifierPrefix: "skill-events"
                 )
+                .accessibilityIdentifier("skill-events.completeness")
             }
         }
     }

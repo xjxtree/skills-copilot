@@ -55,14 +55,18 @@ This file captures UI and evidence standards.
 ## Formal List Completeness
 
 - Declare every user-visible formal list in
-  `scripts/list-completeness-surfaces.json` with its owning source, data source,
-  completeness policy, total-count source, allowed limitations, and full-access
-  accessibility control when the policy is paged or summarized.
+  `scripts/list-completeness-surfaces.json` with its owning Swift type, real
+  source anchor, completeness policy, total-count source, allowed limitations,
+  and full-access accessibility control when the policy is paged or summarized.
+  Paged and summarized entries also declare the exact live member scope that
+  contains both the source anchor and control; comments, strings, unrelated
+  members, and duplicate control IDs do not satisfy the verifier.
 - Run `pnpm test:list-completeness` while changing the verifier and `pnpm
   verify:list-completeness` for every list-surface change. New raw
-  `ForEach(...prefix(...))` and `List(...prefix(...))` presentations are
-  rejected unless the complete collection remains reachable through the
-  approved disclosure component.
+  `ForEach(...prefix(...))` and `List(...prefix(...))` presentations, including
+  prefix-defined aliases and computed properties, are rejected unless the
+  complete collection remains reachable through a canonical, verified
+  disclosure component.
 - The manifest verifier proves declaration, source-path, and reachable-control
   wiring. Native model/UI tests separately prove pagination state, Load More,
   Load All, cancellation, Show All, canonical-list routing, and accessibility
