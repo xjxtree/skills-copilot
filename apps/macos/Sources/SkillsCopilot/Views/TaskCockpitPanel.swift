@@ -1479,11 +1479,6 @@ private struct TaskCockpitScorePill: View {
     }
 }
 
-private struct TaskCockpitSummaryTextRow: Identifiable {
-    let id: Int
-    let value: String
-}
-
 private struct TaskCockpitDecisionSummaryCard: View {
     let model: TaskCockpitDecisionModel
 
@@ -1539,7 +1534,7 @@ private struct TaskCockpitDecisionSummaryCard: View {
                         .font(.callout.bold())
 
                     ExpandableSummaryList(
-                        summaryRows(model.keyReasons),
+                        TaskCockpitSummaryTextRow.rows(for: model.keyReasons),
                         visibleLimit: 2,
                         spacing: 7,
                         accessibilityIdentifier: "task-cockpit-decision-reasons.show-all"
@@ -1555,7 +1550,7 @@ private struct TaskCockpitDecisionSummaryCard: View {
                         .font(.callout.bold())
 
                     ExpandableSummaryList(
-                        summaryRows(model.candidateAlternatives),
+                        TaskCockpitSummaryTextRow.rows(for: model.candidateAlternatives),
                         visibleLimit: 3,
                         spacing: 6,
                         accessibilityIdentifier: "task-cockpit-candidate-alternatives.show-all"
@@ -1591,9 +1586,6 @@ private struct TaskCockpitDecisionSummaryCard: View {
         }
     }
 
-    private func summaryRows(_ values: [String]) -> [TaskCockpitSummaryTextRow] {
-        values.enumerated().map { TaskCockpitSummaryTextRow(id: $0.offset, value: $0.element) }
-    }
 }
 
 private struct TaskCockpitTechnicalDiagnosticsView: View {
@@ -1809,17 +1801,12 @@ private struct TaskCockpitMatchingProcessView: View {
     }
 
     private var processNotes: [String] {
-        var values: [String] = []
-        if let topRoute = result.routeCandidates.first {
-            values.append(contentsOf: topRoute.reasons)
-        }
-        values.append(contentsOf: result.gapRows.map(\.detail))
-        values.append(contentsOf: result.blockerRows.map(\.detail))
-        return values.compactMap(TaskCockpitDecisionModel.displayText)
+        TaskCockpitSummaryTextRow.matchingProcessValues(for: result)
+            .compactMap(TaskCockpitDecisionModel.displayText)
     }
 
     private var processNoteRows: [TaskCockpitSummaryTextRow] {
-        processNotes.enumerated().map { TaskCockpitSummaryTextRow(id: $0.offset, value: $0.element) }
+        TaskCockpitSummaryTextRow.rows(for: processNotes)
     }
 }
 

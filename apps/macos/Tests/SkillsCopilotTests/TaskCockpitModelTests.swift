@@ -11,6 +11,7 @@ struct TaskCockpitModelTests {
         try derivesFallbackProgressRowsWithoutUnsafeCapabilities()
         try parsesLooseProviderCandidateJSONWithoutLeakingRawOutput()
         try legacyDuplicateRowsReceiveStableUniqueDisplayIDs()
+        try summaryCollectionsExposeEveryStableUniqueRow()
     }
 
     private struct ServiceEnvelope<ResultPayload: Decodable>: Decodable {
@@ -214,6 +215,68 @@ struct TaskCockpitModelTests {
         }
         try expectEqual(first.routeCandidates.map(\.id), second.routeCandidates.map(\.id), "Candidate display IDs must remain stable across identical decodes.")
         try expectEqual(first.gapRows.map(\.id), second.gapRows.map(\.id), "Context display IDs must remain stable across identical decodes.")
+    }
+
+    private func summaryCollectionsExposeEveryStableUniqueRow() throws {
+        let candidates = (0..<5).map { index in
+            TaskCockpitCandidateRow(
+                id: "candidate-\(index)",
+                title: "Candidate \(index)",
+                agent: "codex",
+                score: 90 - index,
+                summary: "Candidate summary \(index)",
+                reasons: ["Candidate reason \(index)"]
+            )
+        }
+        let gaps = (0..<3).map { index in
+            TaskCockpitContextRow(
+                id: "gap-\(index)",
+                title: "Gap \(index)",
+                detail: "Gap detail \(index)"
+            )
+        }
+        let blockers = (0..<2).map { index in
+            TaskCockpitContextRow(
+                id: "blocker-\(index)",
+                title: "Blocker \(index)",
+                detail: "Blocker detail \(index)"
+            )
+        }
+        let result = TaskCockpitResult(
+            summary: TaskCockpitSummary(
+                summaryText: "Complete decision summary",
+                recommendedAgent: "codex",
+                recommendedSkillName: "Candidate 0"
+            ),
+            routeCandidates: candidates,
+            agentCandidates: candidates,
+            skillCandidates: candidates,
+            gapRows: gaps,
+            blockerRows: blockers
+        )
+
+        let decisionRows = TaskCockpitSummaryTextRow.rows(
+            for: result.agentCandidates.flatMap(\.reasons)
+        )
+        try expectEqual(decisionRows.count, 5, "Decision reasons must keep every candidate reason.")
+        try expectEqual(decisionRows.last?.value, "Candidate reason 4", "Decision reasons must retain the final candidate reason.")
+
+        let candidateRows = TaskCockpitSummaryTextRow.rows(
+            for: result.agentCandidates.map(\.title)
+        )
+        try expectEqual(candidateRows.count, 5, "Candidate presentation must keep every unique candidate.")
+        try expectEqual(candidateRows.last?.value, "Candidate 4", "Candidate presentation must retain the final candidate.")
+
+        let processNotes = TaskCockpitSummaryTextRow.matchingProcessValues(for: result)
+        try expectEqual(processNotes.count, 6, "Matching-process notes must keep top-route reasons plus every gap and blocker detail.")
+        try expectEqual(processNotes.last, "Blocker detail 1", "Matching-process notes must retain the final source row.")
+
+        let values = ["Alpha", "Beta", "Alpha", "Gamma", "Delta"]
+        let first = TaskCockpitSummaryTextRow.rows(for: values)
+        let second = TaskCockpitSummaryTextRow.rows(for: values)
+        try expectEqual(first.count, values.count, "Summary presentation rows must retain every input value.")
+        try expectEqual(Set(first.map(\.id)).count, values.count, "Duplicate summary values must receive unique IDs.")
+        try expectEqual(first.map(\.id), second.map(\.id), "Summary row IDs must be stable across identical inputs.")
     }
 
     private func classifiesFallbackAndPartialDiagnostics() throws {

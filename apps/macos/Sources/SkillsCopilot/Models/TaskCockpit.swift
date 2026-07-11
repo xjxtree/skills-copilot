@@ -1,5 +1,37 @@
 import Foundation
 
+struct TaskCockpitSummaryTextRow: Identifiable, Hashable {
+    struct ID: Hashable {
+        let value: String
+        let occurrence: Int
+    }
+
+    let id: ID
+    let value: String
+
+    static func rows(for values: [String]) -> [TaskCockpitSummaryTextRow] {
+        var occurrences: [String: Int] = [:]
+        return values.map { value in
+            let occurrence = occurrences[value, default: 0]
+            occurrences[value] = occurrence + 1
+            return TaskCockpitSummaryTextRow(
+                id: ID(value: value, occurrence: occurrence),
+                value: value
+            )
+        }
+    }
+
+    static func matchingProcessValues(for result: TaskCockpitResult) -> [String] {
+        var values: [String] = []
+        if let topRoute = result.routeCandidates.first {
+            values.append(contentsOf: topRoute.reasons)
+        }
+        values.append(contentsOf: result.gapRows.map(\.detail))
+        values.append(contentsOf: result.blockerRows.map(\.detail))
+        return values
+    }
+}
+
 struct TaskCockpitOperationState: Hashable {
     enum Phase: String, Hashable {
         case idle

@@ -391,13 +391,11 @@ struct SkillManagerPanel: View {
             UIStrings.text("skillManager.suggestion.review", "code review"),
             UIStrings.text("skillManager.suggestion.diagnostics", "diagnostics")
         ]
-        var seen = Set<String>()
-        return (localNames + installedNames + fallback).compactMap { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !seen.contains(trimmed.lowercased()) else { return nil }
-            seen.insert(trimmed.lowercased())
-            return trimmed
-        }
+        return SkillManagerSuggestionModel.suggestions(
+            localNames: localNames,
+            installedNames: installedNames,
+            fallback: fallback
+        )
     }
 
     private var canSearchSkillManager: Bool {
@@ -412,7 +410,7 @@ struct SkillManagerPanel: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                LazyHStack(spacing: 6) {
                     ForEach(skillManagerSearchSuggestions, id: \.self) { suggestion in
                         Button {
                             store.skillManagerSearchQuery = suggestion

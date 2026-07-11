@@ -200,7 +200,8 @@ test("identifier-returning accessibility helpers are reachable controls", () => 
         "struct GlobalSearchResultsOverlay: View {",
         "var body: some View {",
         "let kindResults = results.filter { $0.kind == kind }",
-        ".accessibilityIdentifier(viewAllAccessibilityIdentifier(for: kind))",
+        'Button("View All") {}',
+        "  .accessibilityIdentifier(viewAllAccessibilityIdentifier(for: kind))",
         "}",
         "private func viewAllAccessibilityIdentifier(for kind: Kind) -> String {",
         '  return "global-search.skills.view-all"',
@@ -354,6 +355,99 @@ test("controls in an unrelated owner member are not reachable", () => {
   );
 });
 
+test("controls in compile-time false branches are not reachable", () => {
+  withRepository(
+    {
+      [sessions.file]: [
+        "struct SessionSidebarPanel: View {",
+        "  var body: some View {",
+        "    ForEach(preview.sessionRows) { row in Text(row.id) }",
+        "    if false {",
+        "      ListCompletenessFooter(",
+        "        state: state, onLoadMore: {}, onLoadAll: {}, onCancel: {},",
+        '        accessibilityIdentifierPrefix: "sessions"',
+        "      )",
+        '      .accessibilityIdentifier("sessions.completeness")',
+        "    }",
+        "  }",
+        "}",
+      ].join("\n"),
+    },
+    (repoRoot) => {
+      assert.deepEqual(
+        verifyListSurfaceInventory(manifest(sessions), { repoRoot }),
+        [
+          "sessions.sidebar: declared status_id is not attached to an accessibility control in owner SessionSidebarPanel scope body: sessions.completeness",
+          "sessions.sidebar: declared full_access_id is not attached to an accessibility control in owner SessionSidebarPanel scope body: sessions.load-all",
+        ],
+      );
+    },
+  );
+});
+
+test("unrelated Text and destructive Button identifiers are not full-access controls", () => {
+  const summary = {
+    id: "batch-toggle.items",
+    file: "BatchSkillOperationSheet.swift",
+    owner: "BatchTogglePreviewSummary",
+    source: "preview.affectedSkills",
+    policy: "summary_with_expand",
+    total_count_source: "preview.affectedSkills.count",
+    allowed_limitations: [],
+    control_scope: "body",
+    full_access_id: "batch-toggle-items.show-all",
+  };
+  withRepository(
+    {
+      [summary.file]: [
+        "struct BatchTogglePreviewSummary: View {",
+        "  var body: some View {",
+        "    ForEach(preview.affectedSkills) { row in Text(row.name) }",
+        '    Text("Decorative").accessibilityIdentifier("batch-toggle-items.show-all")',
+        '    Button("Delete", role: .destructive) {}',
+        '      .accessibilityIdentifier("batch-toggle-items.show-all")',
+        "  }",
+        "}",
+      ].join("\n"),
+    },
+    (repoRoot) => {
+      assert.deepEqual(
+        verifyListSurfaceInventory(manifest(summary), { repoRoot }),
+        [
+          "batch-toggle.items: declared full_access_id is not attached to an accessibility control in owner BatchTogglePreviewSummary scope body: batch-toggle-items.show-all",
+        ],
+      );
+    },
+  );
+});
+
+test("raw Swift strings cannot authenticate accessibility controls", () => {
+  withRepository(
+    {
+      [sessions.file]: [
+        "struct SessionSidebarPanel: View {",
+        "  var body: some View {",
+        "    ForEach(preview.sessionRows) { row in Text(row.id) }",
+        '    let fake = ##"""',
+        '      .accessibilityIdentifier("sessions.completeness")',
+        '      accessibilityIdentifierPrefix: "sessions"',
+        '    """##',
+        "  }",
+        "}",
+      ].join("\n"),
+    },
+    (repoRoot) => {
+      assert.deepEqual(
+        verifyListSurfaceInventory(manifest(sessions), { repoRoot }),
+        [
+          "sessions.sidebar: declared status_id is not attached to an accessibility control in owner SessionSidebarPanel scope body: sessions.completeness",
+          "sessions.sidebar: declared full_access_id is not attached to an accessibility control in owner SessionSidebarPanel scope body: sessions.load-all",
+        ],
+      );
+    },
+  );
+});
+
 test("loads a schema-v1 manifest", () => {
   withRepository(
     {
@@ -409,6 +503,69 @@ test("finds prefix-defined computed properties consumed by a formal list", () =>
   ]);
 });
 
+test("finds multiline chained prefix aliases", () => {
+  const source = [
+    "let visible = records",
+    "    .lazy",
+    "    .prefix(8)",
+    "ForEach(visible) { row in rowView(row) }",
+  ].join("\n");
+  assert.deepEqual(findUndeclaredPrefixLists(source), [
+    "undeclared prefix-defined formal list at line 4",
+  ]);
+});
+
+test("propagates prefix taint through wrapper aliases", () => {
+  const source = [
+    "let first = records.prefix(8)",
+    "let copied = Array(first)",
+    "let visible = copied.map { $0 }",
+    "ForEach(visible) { row in rowView(row) }",
+  ].join("\n");
+  assert.deepEqual(findUndeclaredPrefixLists(source), [
+    "undeclared prefix-defined formal list at line 4",
+  ]);
+});
+
+test("finds formal lists fed by prefix-returning helpers", () => {
+  const source = [
+    "func visibleRows(_ records: [Row]) -> [Row] {",
+    "  Array(records.prefix(8))",
+    "}",
+    "ForEach(visibleRows(records)) { row in rowView(row) }",
+  ].join("\n");
+  assert.deepEqual(findUndeclaredPrefixLists(source), [
+    "undeclared prefix-defined formal list at line 4",
+  ]);
+});
+
+test("propagates helper prefix taint through computed properties", () => {
+  const source = [
+    "func firstRows(_ records: [Row]) -> [Row] { Array(records.prefix(8)) }",
+    "var visibleRows: [Row] {",
+    "  firstRows(records)",
+    "}",
+    "ForEach(visibleRows) { row in rowView(row) }",
+  ].join("\n");
+  assert.deepEqual(findUndeclaredPrefixLists(source), [
+    "undeclared prefix-defined formal list at line 5",
+  ]);
+});
+
+test("formal-list syntax inside ordinary multiline and raw strings is ignored", () => {
+  const source = [
+    'let ordinary = "ForEach(records.prefix(8))"',
+    'let multiline = """',
+    "ForEach(records.prefix(8))",
+    '"""',
+    'let raw = #"ForEach(records.prefix(8))"#',
+    'let rawMultiline = ##"""',
+    "ForEach(records.prefix(8))",
+    '"""##',
+  ].join("\n");
+  assert.deepEqual(findUndeclaredPrefixLists(source), []);
+});
+
 test("approved complete-prefix components are not formal-list findings", () => {
   const denseDisclosureSource = `
 struct DenseDisclosureList<Item, RowContent: View>: View {
@@ -441,6 +598,46 @@ test("a prefix-only component cannot impersonate DenseDisclosureList", () => {
   assert.deepEqual(findUndeclaredPrefixLists(fake), [
     "undeclared prefix-defined formal list at line 3",
   ]);
+});
+
+test("DenseDisclosureList remainder must feed the disclosure ForEach", () => {
+  const fake = `struct DenseDisclosureList<Item, RowContent: View>: View {
+    var body: some View {
+        let unused = items.dropFirst(visibleLimit)
+        ForEach(items.prefix(visibleLimit)) { item in rowContent(item) }
+        DisclosureGroup(isExpanded: $isExpanded) {
+            Text("No remainder")
+        }
+    }
+}`;
+  assert.deepEqual(
+    findUndeclaredPrefixLists(fake, {
+      relativePath: "apps/macos/Sources/SkillsCopilot/Views/DetailPresentationPrimitives.swift",
+    }),
+    ["undeclared prefix-defined formal list at line 4"],
+  );
+});
+
+test("ExpandableSummaryList must expand from its Button action", () => {
+  const fake = `struct ExpandableSummaryList<Item: Identifiable, RowContent: View>: View {
+    let items: [Item]
+    @State private var isExpanded = false
+    var body: some View {
+        ForEach(visibleItems) { item in rowContent(item) }
+        Button("Show All") { doNothing() }
+            .accessibilityIdentifier(accessibilityIdentifier)
+    }
+    private var visibleItems: [Item] {
+        isExpanded ? items : Array(items.prefix(visibleLimit))
+    }
+    private func unused() { isExpanded = true }
+}`;
+  assert.deepEqual(
+    findUndeclaredPrefixLists(fake, {
+      relativePath: "apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift",
+    }),
+    ["undeclared prefix-defined formal list at line 5"],
+  );
 });
 
 test("DenseDisclosureList does not exempt later undeclared formal lists", () => {

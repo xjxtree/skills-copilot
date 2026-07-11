@@ -28,10 +28,25 @@ function sanitizeSwift(source) {
   const structure = source.split("");
   let index = 0;
   let blockCommentDepth = 0;
+  let rawStringClosing = "";
   let state = "code";
   while (index < source.length) {
     const nextTwo = source.slice(index, index + 2);
     const nextThree = source.slice(index, index + 3);
+    if (state === "raw-string") {
+      if (rawStringClosing && source.startsWith(rawStringClosing, index)) {
+        for (let offset = 0; offset < rawStringClosing.length; offset += 1) {
+          code[index + offset] = structure[index + offset] = " ";
+        }
+        index += rawStringClosing.length;
+        rawStringClosing = "";
+        state = "code";
+      } else {
+        if (source[index] !== "\n") code[index] = structure[index] = " ";
+        index += 1;
+      }
+      continue;
+    }
     if (state === "line-comment") {
       if (source[index] === "\n") state = "code";
       else code[index] = structure[index] = " ";
@@ -84,7 +99,16 @@ function sanitizeSwift(source) {
       }
       continue;
     }
-    if (nextTwo === "//") {
+    const rawString = source.slice(index).match(/^(#+)("""|")/u);
+    if (rawString !== null) {
+      const [opening, hashes, quotes] = rawString;
+      rawStringClosing = `${quotes}${hashes}`;
+      for (let offset = 0; offset < opening.length; offset += 1) {
+        code[index + offset] = structure[index + offset] = " ";
+      }
+      state = "raw-string";
+      index += opening.length;
+    } else if (nextTwo === "//") {
       code[index] = code[index + 1] = " ";
       structure[index] = structure[index + 1] = " ";
       state = "line-comment";
@@ -112,24 +136,49 @@ function sanitizeSwift(source) {
   return { code: code.join(""), structure: structure.join("") };
 }
 
-function blockRange(structure, declarationPattern) {
-  const declaration = declarationPattern.exec(structure);
-  if (declaration === null) return undefined;
-  const opening = structure.indexOf("{", declaration.index + declaration[0].length);
+function blockRangeAt(structure, declarationStart, declarationLength = 0) {
+  const opening = structure.indexOf("{", declarationStart + declarationLength);
   if (opening < 0) return undefined;
   let depth = 0;
   for (let index = opening; index < structure.length; index += 1) {
     if (structure[index] === "{") depth += 1;
     else if (structure[index] === "}") {
       depth -= 1;
-      if (depth === 0) return { start: declaration.index, end: index + 1 };
+      if (depth === 0) return { start: declarationStart, opening, end: index + 1 };
     }
   }
   return undefined;
 }
 
+function blockRange(structure, declarationPattern) {
+  const declaration = declarationPattern.exec(structure);
+  if (declaration === null) return undefined;
+  return blockRangeAt(structure, declaration.index, declaration[0].length);
+}
+
+function withoutCompileTimeFalseBranches(sanitized) {
+  const code = sanitized.code.split("");
+  const structure = sanitized.structure.split("");
+  let searchFrom = 0;
+  while (searchFrom < structure.length) {
+    const text = structure.join("");
+    const match = /\bif\s+false\s*\{/gu;
+    match.lastIndex = searchFrom;
+    const declaration = match.exec(text);
+    if (declaration === null) break;
+    const range = blockRangeAt(text, declaration.index, declaration[0].length - 1);
+    if (range === undefined) break;
+    for (let index = declaration.index; index < range.end; index += 1) {
+      if (code[index] !== "\n") code[index] = " ";
+      if (structure[index] !== "\n") structure[index] = " ";
+    }
+    searchFrom = range.end;
+  }
+  return { code: code.join(""), structure: structure.join("") };
+}
+
 function ownerSource(source, owner) {
-  const sanitized = sanitizeSwift(source);
+  const sanitized = withoutCompileTimeFalseBranches(sanitizeSwift(source));
   const escaped = owner.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const range = blockRange(
     sanitized.structure,
@@ -164,8 +213,68 @@ function memberSource(owner, member) {
   };
 }
 
-function hasAttachedAccessibilityIdentifier(owner, scope, identifier) {
+function identifierLiteralPattern(identifier) {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return `["']${escaped}["']`;
+}
+
+function buttonBindsIdentifier(source, identifier) {
+  const literal = identifierLiteralPattern(identifier);
+  for (const match of source.matchAll(/\bButton\s*\(/gu)) {
+    const nextButton = source.indexOf("Button(", match.index + match[0].length);
+    const end = Math.min(
+      nextButton < 0 ? source.length : nextButton,
+      match.index + 1800,
+    );
+    const invocation = source.slice(match.index, end);
+    if (/\brole\s*:\s*\.destructive\b/u.test(invocation)) continue;
+    if (new RegExp(`\\.accessibilityIdentifier\\(\\s*${literal}\\s*\\)`, "u").test(invocation)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function buttonUsesAccessibilityHelper(source, helper) {
+  const escaped = helper.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  for (const match of source.matchAll(/\bButton\s*\(/gu)) {
+    const invocation = source.slice(match.index, match.index + 1800);
+    if (/\brole\s*:\s*\.destructive\b/u.test(invocation)) continue;
+    if (new RegExp(`\\.accessibilityIdentifier\\(\\s*${escaped}\\s*\\(`, "u").test(invocation)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function knownExpandableHelperBinds(fileSource, scopeSource, identifier) {
+  const literal = identifierLiteralPattern(identifier);
+  for (const [helper, argument] of [
+    ["BatchToggleItemList", "showAllAccessibilityIdentifier"],
+    ["TaskCockpitCandidateList", "accessibilityIdentifier"],
+    ["TaskCockpitContextList", "accessibilityIdentifier"],
+  ]) {
+    const invocation = new RegExp(
+      `\\b${helper}\\s*\\([\\s\\S]{0,1800}?\\b${argument}\\s*:\\s*${literal}`,
+      "u",
+    );
+    if (!invocation.test(scopeSource)) continue;
+    const range = namedTypeRange(fileSource.structure, helper);
+    if (range === undefined) continue;
+    const implementation = fileSource.structure.slice(range.start, range.end);
+    if (new RegExp(
+      `\\bExpandableSummaryList\\s*\\([\\s\\S]{0,1800}?\\baccessibilityIdentifier\\s*:\\s*${argument}\\b`,
+      "u",
+    ).test(implementation)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasAttachedAccessibilityIdentifier(fileSource, owner, scope, surface, field) {
   const source = scope.code;
+  const identifier = surface[field];
   const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const pagingMatch = identifier.match(/^(.*)\.(?:load-more|load-all|cancel)$/u);
   const helperCalls = [
@@ -175,29 +284,39 @@ function hasAttachedAccessibilityIdentifier(owner, scope, identifier) {
   ].map((match) => match[1]);
   const returnedByAccessibilityHelper = helperCalls.some((helper) => {
     const body = functionBlock(owner, helper);
-    return body !== undefined && new RegExp(`["']${escaped}["']`, "u").test(body);
+    if (body === undefined || !new RegExp(`["']${escaped}["']`, "u").test(body)) {
+      return false;
+    }
+    return buttonUsesAccessibilityHelper(source, helper);
   });
   const invokedHelpers = [
     ...source.matchAll(/\b([a-z][A-Za-z0-9_]*)\s*\(/gu),
   ].map((match) => match[1]);
   const attachedInInvokedHelper = invokedHelpers.some((helper) => {
     const body = functionBlock(owner, helper);
-    return body !== undefined && (
-      new RegExp(`\\.accessibilityIdentifier\\(\\s*["']${escaped}["']\\s*\\)`, "u").test(body) ||
-      new RegExp(`\\b[A-Za-z_][A-Za-z0-9_]*AccessibilityIdentifier\\s*:\\s*["']${escaped}["']`, "u").test(body)
-    );
+    return body !== undefined && buttonBindsIdentifier(body, identifier);
   });
+  if (field === "status_id") {
+    return new RegExp(
+      `(?:ListCompletenessFooter|skillManagerSearchFooter)\\s*\\([\\s\\S]{0,1800}?\\)\\s*\\.accessibilityIdentifier\\(\\s*["']${escaped}["']\\s*\\)`,
+      "u",
+    ).test(source);
+  }
+  if (surface.policy === "paged") {
+    return attachedInInvokedHelper ||
+      (pagingMatch !== null &&
+        new RegExp(
+          `ListCompletenessFooter\\s*\\([\\s\\S]{0,1800}?accessibilityIdentifierPrefix\\s*:\\s*["']${pagingMatch[1].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}["']`,
+          "u",
+        ).test(source));
+  }
   return (
-    new RegExp(`\\.accessibilityIdentifier\\(\\s*["']${escaped}["']\\s*\\)`, "u").test(source) ||
-    new RegExp(`\\b[A-Za-z_][A-Za-z0-9_]*AccessibilityIdentifier\\s*:\\s*["']${escaped}["']`, "u").test(source) ||
-    new RegExp(`\\baccessibilityIdentifier\\s*:\\s*["']${escaped}["']`, "u").test(source) ||
-    returnedByAccessibilityHelper ||
-    attachedInInvokedHelper ||
-    (pagingMatch !== null &&
-      new RegExp(
-        `ListCompletenessFooter\\s*\\([\\s\\S]{0,1200}?accessibilityIdentifierPrefix\\s*:\\s*["']${pagingMatch[1].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}["']`,
-        "u",
-      ).test(source))
+    new RegExp(
+      `ExpandableSummaryList\\s*\\([\\s\\S]{0,1600}?\\baccessibilityIdentifier\\s*:\\s*["']${escaped}["']`,
+      "u",
+    ).test(source) ||
+    knownExpandableHelperBinds(fileSource, source, identifier) ||
+    returnedByAccessibilityHelper
   );
 }
 
@@ -297,6 +416,7 @@ export function verifyListSurfaceInventory(manifest, { repoRoot } = {}) {
       continue;
     }
     const source = readFileSync(absolutePath, "utf8");
+    const fileSource = withoutCompileTimeFalseBranches(sanitizeSwift(source));
     const owner = ownerSource(source, surface.owner);
     if (owner === undefined) {
       errors.push(`${id}: declared owner is missing: ${surface.owner}`);
@@ -322,7 +442,7 @@ export function verifyListSurfaceInventory(manifest, { repoRoot } = {}) {
       if (
         typeof identifier === "string" &&
         identifier &&
-        !hasAttachedAccessibilityIdentifier(owner, scope ?? owner, identifier)
+        !hasAttachedAccessibilityIdentifier(fileSource, owner, scope ?? owner, surface, field)
       ) {
         errors.push(
           `${id}: declared ${field} is not attached to an accessibility control in owner ${surface.owner}${surface.control_scope ? ` scope ${surface.control_scope}` : ""}: ${identifier}`,
@@ -333,114 +453,148 @@ export function verifyListSurfaceInventory(manifest, { repoRoot } = {}) {
   return errors;
 }
 
-export function findUndeclaredPrefixLists(source, { relativePath } = {}) {
-  const errors = [];
-  const sanitized = sanitizeSwift(source);
-  const lines = sanitized.code.split(/\r?\n/u);
-  const structureLines = sanitized.structure.split(/\r?\n/u);
-  const approvedComponentLines = new Set();
-  let inApprovedComponent = false;
-  let approvedBraceDepth = 0;
-  let sawApprovedOpeningBrace = false;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = structureLines[index];
-    if (!inApprovedComponent && /struct\s+DenseDisclosureList\b/u.test(line)) {
-      inApprovedComponent = true;
+function namedTypeRange(structure, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return blockRange(
+    structure,
+    new RegExp(`\\bstruct\\s+${escaped}\\b`, "gu"),
+  );
+}
+
+function linesForRange(source, range) {
+  const start = source.slice(0, range.start).split(/\r?\n/u).length - 1;
+  const end = source.slice(0, range.end).split(/\r?\n/u).length - 1;
+  return new Set(Array.from({ length: end - start + 1 }, (_, offset) => start + offset));
+}
+
+function disclosureRendersRemainder(component) {
+  const disclosure = /\bDisclosureGroup\s*(?:\([^)]*\))?\s*\{/gu.exec(component);
+  if (disclosure === null) return false;
+  const range = blockRangeAt(component, disclosure.index, disclosure[0].length - 1);
+  if (range === undefined) return false;
+  const content = component.slice(range.opening + 1, range.end - 1);
+  return /\bForEach\s*\(\s*Array\s*\(\s*items\.dropFirst\s*\(\s*visibleLimit\s*\)/u.test(content) ||
+    /\bForEach\s*\(\s*items\.dropFirst\s*\(\s*visibleLimit\s*\)/u.test(content);
+}
+
+function expandableButtonMutatesState(component) {
+  for (const button of component.matchAll(/\bButton\s*\(/gu)) {
+    const range = blockRangeAt(component, button.index, button[0].length);
+    if (range === undefined) continue;
+    const action = component.slice(range.opening + 1, range.end - 1);
+    if (/\bisExpanded\s*=\s*true\b/u.test(action) || /\bisExpanded\.toggle\s*\(\s*\)/u.test(action)) {
+      return true;
     }
-    if (inApprovedComponent) {
-      approvedComponentLines.add(index);
-      const openings = line.match(/\{/gu)?.length ?? 0;
-      const closings = line.match(/\}/gu)?.length ?? 0;
-      if (openings > 0) sawApprovedOpeningBrace = true;
-      approvedBraceDepth += openings - closings;
-      if (sawApprovedOpeningBrace && approvedBraceDepth === 0) {
-        inApprovedComponent = false;
-        sawApprovedOpeningBrace = false;
+  }
+  return false;
+}
+
+function declarationExpressions(structure) {
+  const definitions = new Map();
+  const add = (name, expression) => {
+    const existing = definitions.get(name) ?? [];
+    existing.push(expression);
+    definitions.set(name, existing);
+  };
+  const lines = structure.split(/\r?\n/u);
+  for (let index = 0; index < lines.length; index += 1) {
+    const declaration = lines[index].match(
+      /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*=\s*(.*)$/u,
+    );
+    if (declaration === null) continue;
+    let expression = declaration[2];
+    let continuation = index + 1;
+    while (continuation < lines.length && continuation <= index + 30) {
+      const trimmed = lines[continuation].trim();
+      if (!trimmed.startsWith(".") && !trimmed.startsWith("?.")) break;
+      expression += `\n${lines[continuation]}`;
+      continuation += 1;
+    }
+    add(declaration[1], expression);
+  }
+  for (const method of structure.matchAll(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\b/gu)) {
+    const range = blockRangeAt(structure, method.index, method[0].length);
+    if (range !== undefined) add(method[1], structure.slice(range.opening + 1, range.end - 1));
+  }
+  for (const property of structure.matchAll(
+    /\bvar\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*\{/gu,
+  )) {
+    const range = blockRangeAt(structure, property.index, property[0].length - 1);
+    if (range !== undefined) add(property[1], structure.slice(range.opening + 1, range.end - 1));
+  }
+  return definitions;
+}
+
+function prefixTaintedNames(structure) {
+  const definitions = declarationExpressions(structure);
+  const tainted = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, expressions] of definitions) {
+      if (tainted.has(name)) continue;
+      const isTainted = expressions.some((expression) =>
+        /\.prefix\s*\(/u.test(expression) ||
+        [...tainted].some((source) => new RegExp(`\\b${source}\\b`, "u").test(expression)),
+      );
+      if (isTainted) {
+        tainted.add(name);
+        changed = true;
       }
     }
   }
-  const denseSource = [...approvedComponentLines].sort((left, right) => left - right)
-    .map((index) => lines[index])
-    .join("\n");
-  const denseIsCanonical =
-    approvedComponentLines.size > 0 &&
-    (relativePath === undefined || relativePath === canonicalDenseDisclosurePath) &&
-    /DisclosureGroup\s*\(/u.test(denseSource) &&
-    /items\.prefix\s*\(/u.test(denseSource) &&
-    /items\.dropFirst\s*\(/u.test(denseSource);
-  if (!denseIsCanonical) approvedComponentLines.clear();
+  return tainted;
+}
 
-  const expandableLines = new Set();
-  let inExpandable = false;
-  let expandableDepth = 0;
-  let sawExpandableBrace = false;
-  for (let index = 0; index < structureLines.length; index += 1) {
-    const line = structureLines[index];
-    if (!inExpandable && /struct\s+ExpandableSummaryList\b/u.test(line)) {
-      inExpandable = true;
+export function findUndeclaredPrefixLists(source, { relativePath } = {}) {
+  const sanitized = withoutCompileTimeFalseBranches(sanitizeSwift(source));
+  const structure = sanitized.structure;
+  const lines = structure.split(/\r?\n/u);
+  const approvedLines = new Set();
+
+  const denseRange = namedTypeRange(structure, "DenseDisclosureList");
+  if (denseRange !== undefined) {
+    const component = structure.slice(denseRange.start, denseRange.end);
+    const canonical =
+      (relativePath === undefined || relativePath === canonicalDenseDisclosurePath) &&
+      /\bForEach\s*\(\s*Array\s*\(\s*items\.prefix\s*\(\s*visibleLimit\s*\)/u.test(component) &&
+      disclosureRendersRemainder(component);
+    if (canonical) {
+      for (const line of linesForRange(structure, denseRange)) approvedLines.add(line);
     }
-    if (!inExpandable) continue;
-    expandableLines.add(index);
-    const openings = line.match(/\{/gu)?.length ?? 0;
-    const closings = line.match(/\}/gu)?.length ?? 0;
-    if (openings > 0) sawExpandableBrace = true;
-    expandableDepth += openings - closings;
-    if (sawExpandableBrace && expandableDepth === 0) {
-      inExpandable = false;
-      sawExpandableBrace = false;
-    }
-  }
-  const expandableSource = [...expandableLines].sort((left, right) => left - right)
-    .map((index) => lines[index])
-    .join("\n");
-  const expandableIsCanonical =
-    expandableLines.size > 0 &&
-    (relativePath === undefined || relativePath === canonicalExpandableSummaryPath) &&
-    /isExpanded\s*\?\s*items\s*:\s*Array\s*\(\s*items\.prefix/u.test(expandableSource) &&
-    /ForEach\s*\(\s*visibleItems\s*\)/u.test(expandableSource) &&
-    /\.accessibilityIdentifier\s*\(\s*accessibilityIdentifier\s*\)/u.test(expandableSource);
-  if (expandableIsCanonical) {
-    for (const line of expandableLines) approvedComponentLines.add(line);
   }
 
-  const truncatedAliases = new Set();
-  for (let index = 0; index < lines.length; index += 1) {
-    const local = lines[index].match(
-      /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n]*=\s*[^\n]*\.prefix\s*\(/u,
-    );
-    if (local !== null) truncatedAliases.add(local[1]);
-  }
-  for (const match of sanitized.structure.matchAll(
-    /\bvar\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*\{/gu,
-  )) {
-    const range = blockRange(
-      sanitized.structure,
-      new RegExp(`\\bvar\\s+${match[1]}[^=\\n{]*`, "gu"),
-    );
-    if (range !== undefined && /\.prefix\s*\(/u.test(sanitized.code.slice(range.start, range.end))) {
-      truncatedAliases.add(match[1]);
+  const expandableRange = namedTypeRange(structure, "ExpandableSummaryList");
+  if (expandableRange !== undefined) {
+    const component = structure.slice(expandableRange.start, expandableRange.end);
+    const canonical =
+      (relativePath === undefined || relativePath === canonicalExpandableSummaryPath) &&
+      /\bisExpanded\s*\?\s*items\s*:\s*Array\s*\(\s*items\.prefix\s*\(\s*visibleLimit\s*\)/u.test(component) &&
+      /\bForEach\s*\(\s*visibleItems\s*\)/u.test(component) &&
+      /\.accessibilityIdentifier\s*\(\s*accessibilityIdentifier\s*\)/u.test(component) &&
+      expandableButtonMutatesState(component);
+    if (canonical) {
+      for (const line of linesForRange(structure, expandableRange)) approvedLines.add(line);
     }
   }
+
+  const tainted = prefixTaintedNames(structure);
+  const errors = [];
   for (let index = 0; index < lines.length; index += 1) {
-    if (approvedComponentLines.has(index)) continue;
+    if (approvedLines.has(index)) continue;
     const call = lines[index].match(/\b(?:ForEach|List)\s*\(/u);
     if (call === null) continue;
     let expression = lines[index].slice(call.index);
     let continuation = index + 1;
-    while (
-      !expression.includes("{") &&
-      continuation < lines.length &&
-      continuation <= index + 30 &&
-      !approvedComponentLines.has(continuation)
-    ) {
+    while (!expression.includes("{") && continuation < lines.length && continuation <= index + 30) {
       expression += `\n${lines[continuation]}`;
       continuation += 1;
     }
-    const collectionExpression = expression.split("{", 1)[0];
-    const usesTruncatedAlias = [...truncatedAliases].some((alias) =>
-      new RegExp(`\\b${alias}\\b`, "u").test(collectionExpression),
-    );
-    if (/\.prefix\s*\(/u.test(collectionExpression) || usesTruncatedAlias) {
+    const collection = expression.split("{", 1)[0];
+    if (
+      /\.prefix\s*\(/u.test(collection) ||
+      [...tainted].some((name) => new RegExp(`\\b${name}\\b`, "u").test(collection))
+    ) {
       errors.push(`undeclared prefix-defined formal list at line ${index + 1}`);
     }
   }

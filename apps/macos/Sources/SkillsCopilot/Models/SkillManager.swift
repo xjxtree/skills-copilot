@@ -1,5 +1,21 @@
 import Foundation
 
+enum SkillManagerSuggestionModel {
+    static func suggestions(
+        localNames: [String],
+        installedNames: [String],
+        fallback: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        return (localNames + installedNames + fallback).compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = trimmed.lowercased()
+            guard !trimmed.isEmpty, seen.insert(key).inserted else { return nil }
+            return trimmed
+        }
+    }
+}
+
 enum SkillManagerAgent: String, CaseIterable, Identifiable, Hashable {
     case claudeCode = "claude-code"
     case pi

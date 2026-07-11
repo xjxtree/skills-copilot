@@ -10,6 +10,7 @@ struct SkillManagerModelTests {
         try methodSpecificPageMetadataRejectsCrossMethodSemantics()
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
+        try suggestionsRemainCompleteStableAndUnique()
     }
 
     private func visibleResultsRevealReturnedRowsInTwentyRowSteps() throws {
@@ -22,6 +23,27 @@ struct SkillManagerModelTests {
         search.reset()
         search.loadAll(totalReturned: 35)
         try expectEqual(search.visibleItems(in: rows).count, 35, "Search Load All")
+    }
+
+    private func suggestionsRemainCompleteStableAndUnique() throws {
+        let local = (0..<12).map { "local-\($0)" }
+        let installed = (0..<9).map { "installed-\($0)" } + ["LOCAL-0"]
+        let fallback = ["security", "review", "diagnostics"]
+        let first = SkillManagerSuggestionModel.suggestions(
+            localNames: local,
+            installedNames: installed,
+            fallback: fallback
+        )
+        let second = SkillManagerSuggestionModel.suggestions(
+            localNames: local,
+            installedNames: installed,
+            fallback: fallback
+        )
+
+        try expectEqual(first.count, 24, "Suggestion presentation must keep every case-insensitively unique item.")
+        try expectEqual(first, second, "Suggestion ordering must remain stable across identical inputs.")
+        try expectEqual(Set(first.map { $0.lowercased() }).count, first.count, "Suggestion values must remain case-insensitively unique.")
+        try expectEqual(first.last, "diagnostics", "Suggestion presentation must retain the final fallback item.")
     }
 
     private func defaultTargetsMatchSupportedManagerOrder() throws {
