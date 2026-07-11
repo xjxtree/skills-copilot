@@ -328,6 +328,11 @@ final class RevisionAutosaveCoordinator<Value: Equatable> {
         publishPhaseWithoutPending()
     }
 
+    func updatePendingValue(_ transform: (Value) -> Value) {
+        guard let pending else { return }
+        self.pending = (pending.revision, transform(pending.value))
+    }
+
     func flush() async {
         while true {
             cancelDebounceTask()

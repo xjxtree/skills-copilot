@@ -110,9 +110,6 @@ final class FakeServiceScript: ServiceProcessRunning {
           protocol_version=1
         fi
 
-        if [ -n "$SKILLS_COPILOT_FAKE_SERVICE_CALLS" ]; then
-          printf '%s\\n' "$input" >> "$SKILLS_COPILOT_FAKE_SERVICE_CALLS"
-        fi
         respond() {
           printf '%s' "$1"
           exit 0
@@ -507,7 +504,15 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":true,"result":[]}'
             ;;
           *\\"config.readClaudeSettings\\"*)
-            if [ "$scenario" = "config-legacy" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
+            if [ "$scenario" = "autosave-delayed-config" ]; then
+              save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
+              if [ "$save_count" -gt 1 ]; then
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
+              elif [ "$save_count" -gt 0 ]; then
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
+              fi
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-x","exists":true,"revision":"sha256:autosave-initial"}}'
+            elif [ "$scenario" = "config-legacy" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{}\\n","exists":true}}'
             elif [ "$scenario" = "protocol-v1-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"legacy\\"}\\n","exists":true,"revision":"sha256:malicious-v1-revision"}}'
@@ -518,12 +523,22 @@ final class FakeServiceScript: ServiceProcessRunning {
               fi
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"}}'
             elif [ "$scenario" = "config-cas" ]; then
+              save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
+              if [ "$save_count" -gt 0 ]; then
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"}}'
+              fi
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings"}}'
             ;;
           *\\"config.saveClaudeSettings\\"*)
-            if [ "$scenario" = "config-cas" ]; then
+            if [ "$scenario" = "autosave-delayed-config" ]; then
+              if printf '%s' "$input" | grep -q 'config-a'; then
+                wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
+              fi
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
+            elif [ "$scenario" = "config-cas" ]; then
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"}}'
             elif [ "$scenario" = "config-conflict" ]; then
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config changed since it was read"}}'
@@ -560,7 +575,17 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing snapshot preview"}}'
             ;;
           *\\"snapshot.rollback\\"*)
-            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
+            if [ "$scenario" = "config-cas" ]; then
+              case "$input" in
+                *\\"snapshot_id\\":\\"snap-claude-new\\"*\\"preview_token\\":\\"sha256:rollback-preview\\"*|*\\"preview_token\\":\\"sha256:rollback-preview\\"*\\"snapshot_id\\":\\"snap-claude-new\\"*)
+                  respond '{"id":"test","ok":true,"result":3}'
+                  ;;
+                *\\"snapshot_id\\":\\"snap-claude-old\\"*\\"preview_token\\":\\"sha256:rollback-preview-2\\"*|*\\"preview_token\\":\\"sha256:rollback-preview-2\\"*\\"snapshot_id\\":\\"snap-claude-old\\"*)
+                  respond '{"id":"test","ok":true,"result":3}'
+                  ;;
+              esac
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"invalid_preview_binding","message":"rollback inputs did not match the preview"}}'
+            elif [ "$scenario" = "timeline" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               respond '{"id":"test","ok":true,"result":3}'
             elif [ "$scenario" = "rollback-stale" ]; then
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_preview_token","message":"preview no longer matches current state"}}'

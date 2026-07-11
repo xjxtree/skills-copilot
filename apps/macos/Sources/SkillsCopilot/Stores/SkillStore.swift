@@ -2952,6 +2952,11 @@ final class SkillStore: ObservableObject {
                 ? UIStrings.configRevisionUnavailable
                 : UIStrings.configConsistencyProtocolRequired)
             : nil
+        if let bindingError, validationError == nil {
+            settingsErrorMessage = bindingError
+            settingsMessage = nil
+            configMutationState = .failed(bindingError)
+        }
         let revision = configAutosaveCoordinator.submit(
             binding,
             validationError: validationError ?? bindingError
@@ -3023,6 +3028,19 @@ final class SkillStore: ObservableObject {
         _ completion: RevisionAutosaveCompletion<ConfigSaveBinding>
     ) {
         configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
+        if completion.succeeded,
+           let committedRevision = claudeSettings?.revision,
+           !committedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            configAutosaveCoordinator.updatePendingValue { pendingBinding in
+                guard pendingBinding.expectedRevision == completion.value.expectedRevision else {
+                    return pendingBinding
+                }
+                return ConfigSaveBinding(
+                    content: pendingBinding.content,
+                    expectedRevision: committedRevision
+                )
+            }
+        }
         guard completion.revision == latestConfigAutosaveRevision,
               completion.succeeded else { return }
         latestConfigAutosaveRevision = nil

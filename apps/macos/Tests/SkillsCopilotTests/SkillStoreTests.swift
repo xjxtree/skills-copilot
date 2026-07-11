@@ -1208,12 +1208,18 @@ struct SkillStoreTests {
         try expectNil(store.settingsMessage, "Continuing to edit settings should clear stale config save success messages.")
     }
 
+    private func prepareConfigConsistencyContext(_ store: SkillStore) async {
+        await store.reload()
+        await store.loadClaudeSettings()
+    }
+
     private func configAutosaveKeepsEditArrivingDuringSave() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "autosave-delayed-config")
 
         let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         let revisionA = store.submitConfigAutosave(content: "config-a", validationError: nil)
         try await waitUntil("Config autosave A should reach the service.", timeout: 5) {
             countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
@@ -1235,6 +1241,16 @@ struct SkillStoreTests {
             countMethodCalls("config.saveClaudeSettings", in: calls),
             2,
             "Both config revisions should reach the service exactly once."
+        )
+        try expectContains(
+            calls,
+            #""expected_revision":"sha256:autosave-initial""#,
+            "Autosave A should use the revision loaded with its original draft."
+        )
+        try expectContains(
+            calls,
+            #""expected_revision":"sha256:autosave-a""#,
+            "Queued autosave B should advance only to the revision committed by its successful predecessor."
         )
         guard let callA = calls.range(of: "config-a"), let callB = calls.range(of: "config-b") else {
             throw NativeModelTestFailure(description: "Config autosave calls should preserve both draft values.")
@@ -1302,7 +1318,7 @@ struct SkillStoreTests {
     private func configAutosaveQueuesRevertDuringActiveSave() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await store.loadClaudeSettings()
+        await prepareConfigConsistencyContext(store)
 
         _ = store.submitConfigAutosave(content: "config-a", validationError: nil)
         try expectEqual(
@@ -1382,6 +1398,7 @@ struct SkillStoreTests {
     private func configAndProviderAutosavesShareOneMutationLane() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         _ = store.submitConfigAutosave(content: "config-lane-a", validationError: nil)
@@ -1420,6 +1437,7 @@ struct SkillStoreTests {
     private func cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         var providerOwner = AIProviderSettingsDraft(status: store.aiProviderStatus)
@@ -1464,6 +1482,7 @@ struct SkillStoreTests {
     private func cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         _ = store.submitConfigAutosave(content: "config-pre-registration-owner", validationError: nil)
@@ -1505,6 +1524,7 @@ struct SkillStoreTests {
     private func cancellingQueuedProviderAutosaveMakesZeroRPCs() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         _ = store.submitConfigAutosave(content: "config-owner", validationError: nil)
@@ -1541,6 +1561,7 @@ struct SkillStoreTests {
     private func cancellingQueuedConfigAutosaveMakesZeroRPCs() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
@@ -1577,6 +1598,7 @@ struct SkillStoreTests {
     private func invalidConfigDraftCancelsQueuedValidAutosave() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         var providerOwner = AIProviderSettingsDraft(status: store.aiProviderStatus)
@@ -1616,6 +1638,7 @@ struct SkillStoreTests {
     private func invalidProviderDraftCancelsQueuedValidAutosave() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
         await store.loadAIProviderStatus()
 
         _ = store.submitConfigAutosave(content: "config-invalid-provider-owner", validationError: nil)
@@ -1659,6 +1682,9 @@ struct SkillStoreTests {
             throw NativeModelTestFailure(description: "Store should exist for release testing.")
         }
         await store?.loadAIProviderStatus()
+        if let store {
+            await prepareConfigConsistencyContext(store)
+        }
 
         var providerDraft = AIProviderSettingsDraft(status: store?.aiProviderStatus ?? .unavailable())
         providerDraft.endpoint = "https://provider-release-owner.example.com/v1"
@@ -1696,6 +1722,11 @@ struct SkillStoreTests {
             suspendInitialConfigReads: true
         )
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+
+        await prepareConfigConsistencyContext(store)
+        await store.loadCurrentAgentConfigDocuments(agent: SkillAgentFilter.claudeCode.rawValue)
+        await store.loadAgentConfigSnapshots(agent: SkillAgentFilter.claudeCode.rawValue)
+        await runner.activateConfigReadSuspension()
 
         let claudeRead = Task { @MainActor in await store.loadClaudeSettings() }
         let documentRead = Task { @MainActor in
@@ -1735,6 +1766,7 @@ struct SkillStoreTests {
     private func configSaveRefreshesTheSubmittedAgentAfterSelectionChanges() async throws {
         let runner = AutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
 
         _ = store.submitConfigAutosave(content: "config-captured-agent", validationError: nil)
         try await waitUntil("Captured-agent config save should start.") {
@@ -1781,6 +1813,7 @@ struct SkillStoreTests {
     private func successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh() async throws {
         let runner = AutosaveControlServiceRunner(suspendMutations: false)
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        await prepareConfigConsistencyContext(store)
 
         _ = store.submitConfigAutosave(content: "config-saved", validationError: nil)
         await store.flushPendingAutosaves()
@@ -1847,9 +1880,16 @@ struct SkillStoreTests {
             "config-unsaved",
             "A failed config completion must retain the unsaved draft."
         )
-        guard case .failed = store.configAutosavePhase else {
-            throw NativeModelTestFailure(description: "A failed config completion should keep the autosave phase failed.")
-        }
+        try expectEqual(
+            store.configAutosavePhase,
+            .idle,
+            "A fail-closed autosave without a protocol binding should remain idle because it made no write attempt."
+        )
+        try expectEqual(
+            store.configMutationState,
+            .failed(UIStrings.configConsistencyProtocolRequired),
+            "A fail-closed autosave should surface the protocol-v2 requirement."
+        )
     }
 
     private func configSaveUsesLoadedRevision() async throws {
@@ -2067,7 +2107,7 @@ struct SkillStoreTests {
         try expectEqual(rolledBack, true, "A matching rollback confirmation should succeed.")
         try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 1, "Rollback should issue one mutation RPC.")
         try expectContains(fake.calls(), #""snapshot_id":"snap-claude-new""#, "Rollback should send the immutable confirmation snapshot id.")
-        try expectContains(fake.calls(), #""preview_token":"sha256:rollback-preview""#, "Rollback should send the immutable confirmation token.")
+        try expectContains(fake.calls(), #""preview_token":"[REDACTED]""#, "Recorded rollback evidence should redact the opaque preview token.")
         try expectFalse(fake.calls().contains("expected_revision"), "Rollback authorization must never use a bare revision.")
     }
 
@@ -2179,7 +2219,7 @@ struct SkillStoreTests {
         try expectNil(store.rollbackConfirmation, "Snapshot A's consumed confirmation must stay cleared after selecting snapshot B.")
         try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 1, "The \(label) path must issue exactly one rollback RPC.")
         try expectContains(fake.calls(), #""snapshot_id":"snap-claude-new""#, "Rollback must keep snapshot A's immutable id.")
-        try expectContains(fake.calls(), #""preview_token":"sha256:rollback-preview""#, "Rollback must keep snapshot A's immutable preview token.")
+        try expectContains(fake.calls(), #""preview_token":"[REDACTED]""#, "Recorded rollback evidence should redact snapshot A's preview token.")
         try expectFalse(fake.calls().contains("expected_revision"), "Rollback must not substitute a bare revision for its preview token.")
         try expectNil(store.lastMutationMessage, "A failed snapshot A rollback must not publish success feedback.")
         return store.errorMessage
@@ -3515,6 +3555,10 @@ private final class AutosaveControlServiceRunner: ServiceProcessRunning {
         await state.releaseInitialConfigReads()
     }
 
+    func activateConfigReadSuspension() async {
+        await state.activateConfigReadSuspension()
+    }
+
     func setExternalConfigContent(_ content: String) async {
         await state.setExternalConfigContent(content)
     }
@@ -3531,8 +3575,10 @@ private actor AutosaveControlServiceState {
     }
 
     private let suspendMutations: Bool
-    private let suspendInitialConfigReads: Bool
+    private let supportsConfigReadSuspension: Bool
     private let providerMutationUnavailable: Bool
+    private var configReadSuspensionActive = false
+    private var suspendedConfigReadMethods: Set<String> = []
     private var configContent = "config-x"
     private var providerEndpoint = "https://provider-x.example.com/v1"
     private var providerModel = "model-x"
@@ -3553,7 +3599,7 @@ private actor AutosaveControlServiceState {
         providerMutationUnavailable: Bool
     ) {
         self.suspendMutations = suspendMutations
-        self.suspendInitialConfigReads = suspendInitialConfigReads
+        supportsConfigReadSuspension = suspendInitialConfigReads
         self.providerMutationUnavailable = providerMutationUnavailable
     }
 
@@ -3680,11 +3726,18 @@ private actor AutosaveControlServiceState {
     }
 
     func releaseInitialConfigReads() {
+        configReadSuspensionActive = false
         let reads = initialConfigReads
         initialConfigReads.removeAll()
         for read in reads {
             read.continuation.resume(returning: read.response)
         }
+    }
+
+    func activateConfigReadSuspension() {
+        guard supportsConfigReadSuspension else { return }
+        suspendedConfigReadMethods.removeAll()
+        configReadSuspensionActive = true
     }
 
     func setExternalConfigContent(_ content: String) {
@@ -3699,7 +3752,8 @@ private actor AutosaveControlServiceState {
     private func configReadResponse(method: String, oldResult: Any, currentResult: Any) async -> Data {
         let count = (readCounts[method] ?? 0) + 1
         readCounts[method] = count
-        guard suspendInitialConfigReads, count == 1 else {
+        guard configReadSuspensionActive,
+              suspendedConfigReadMethods.insert(method).inserted else {
             return Self.ok(currentResult)
         }
         let oldResponse = Self.ok(oldResult)
@@ -3729,6 +3783,7 @@ private actor AutosaveControlServiceState {
             "format": "json",
             "content": content,
             "exists": true,
+            "revision": "sha256:test-\(content)",
         ]
     }
 
@@ -3766,7 +3821,7 @@ private actor AutosaveControlServiceState {
 
     private func serviceStatus() -> [String: Any] {
         [
-            "protocol_version": 1,
+            "protocol_version": 2,
             "version": "test",
             "app_data_dir": "/tmp/app-data",
             "catalog_path": "/tmp/app-data/catalog.sqlite",
