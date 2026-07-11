@@ -2,7 +2,7 @@
 
 Date: 2026-07-11
 
-Status: approved in conversation; pending written-spec review
+Status: approved in conversation and approved after written-spec review
 
 ## Purpose
 
@@ -365,7 +365,9 @@ after cancellation or failure.
 
 ## Governance
 
-Add `scripts/list-completeness-surfaces.json` as the inventory of formal lists.
+Task 7 of the approved implementation plan creates a governed manifest under
+`scripts/` as the inventory of formal lists; the implementation plan owns the
+exact future path declaration.
 Each entry declares:
 
 - surface ID and owning view/model;
