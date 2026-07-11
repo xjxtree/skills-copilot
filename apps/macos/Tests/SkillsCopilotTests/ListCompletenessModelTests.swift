@@ -14,6 +14,7 @@ struct ListCompletenessModelTests {
         try rejectsTerminalKnownTotalMismatchWithoutMutation()
         try terminalLimitationsDisableContinuation()
         try pageFailureKeepsRetryContinuation()
+        try terminalFailureNeverCompletesUnknownTotal()
     }
 
     private func appendsPagesWithoutDuplicateIDs() throws {
@@ -133,6 +134,20 @@ struct ListCompletenessModelTests {
         value.fail(reason: .pageFailed)
         try expectEqual(value.state.canLoadMore, true, "Page failure should keep retry continuation")
         try expectEqual(value.state.canLoadAll, true, "Page failure should keep retry-all continuation")
+    }
+
+    private func terminalFailureNeverCompletesUnknownTotal() throws {
+        for reason in [ListIncompleteReason.sourceChanged, .safetyBudget] {
+            var value = ListPageAccumulator<Row>()
+            try value.append(.init(items: [.init(id: "a", value: "A")], returnedCount: 1,
+                totalCount: nil, hasMore: true, nextCursor: "next", sourceRevision: "r1",
+                sourceCompleteness: .enumerable, incompleteReason: nil))
+            value.fail(reason: reason)
+            try expectEqual(value.state.isComplete, false, "\(reason) must not complete unknown total")
+            try expectEqual(value.state.completeness, .incomplete, "\(reason) must stay incomplete")
+            try expectEqual(value.state.canLoadMore, false, "\(reason) must disable Load More")
+            try expectEqual(value.state.canLoadAll, false, "\(reason) must disable Load All")
+        }
     }
 
     private func enumerableContinuation() throws -> ListPageAccumulator<Row> {

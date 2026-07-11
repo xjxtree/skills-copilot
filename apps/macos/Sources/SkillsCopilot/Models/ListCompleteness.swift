@@ -126,7 +126,8 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
     }
 
     var state: ListCompletenessState {
-        let isComplete = !hasMore
+        let isComplete = incompleteReason == nil
+            && !hasMore
             && sourceCompleteness == .enumerable
             && (totalCount == nil || totalCount == items.count)
         let completeness: ListCompleteness
