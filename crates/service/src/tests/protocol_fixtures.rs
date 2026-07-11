@@ -1,5 +1,6 @@
 use super::app_wire_fixtures::*;
 use super::dispatch_fixtures::*;
+use super::skill_manager_fixtures::assert_skill_manager_page_metadata;
 use super::*;
 
 #[test]
@@ -181,6 +182,14 @@ struct WireSkillManagerSearchRecord {
     preview: WireSkillManagerCommandPreview,
     output: Option<WireSkillManagerCommandOutput>,
     results: Vec<WireSkillManagerSearchResult>,
+    returned_count: usize,
+    total_count: Option<usize>,
+    has_more: bool,
+    #[serde(default)]
+    next_cursor: Option<String>,
+    source_completeness: String,
+    #[serde(default)]
+    incomplete_reason: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -200,6 +209,14 @@ struct WireSkillManagerInstalledListRecord {
     preview: WireSkillManagerCommandPreview,
     output: WireSkillManagerCommandOutput,
     installed: Vec<WireSkillManagerInstalledRecord>,
+    returned_count: usize,
+    total_count: Option<usize>,
+    has_more: bool,
+    #[serde(default)]
+    next_cursor: Option<String>,
+    source_completeness: String,
+    #[serde(default)]
+    incomplete_reason: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -628,6 +645,7 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         }
         "skillManager.search" => {
             let search: WireSkillManagerSearchRecord = decode_fixture_result(method, result, path);
+            assert_skill_manager_page_metadata(method, result);
             assert_eq!(search.preview.operation, "search");
             assert!(!search.preview.requires_confirmation);
             assert!(search.preview.network_required);
@@ -636,6 +654,7 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         "skillManager.listInstalled" => {
             let installed: WireSkillManagerInstalledListRecord =
                 decode_fixture_result(method, result, path);
+            assert_skill_manager_page_metadata(method, result);
             assert_eq!(installed.preview.operation, "listInstalled");
             assert!(installed.preview.command.iter().any(|arg| arg == "--json"));
             assert!(!installed.installed.is_empty());

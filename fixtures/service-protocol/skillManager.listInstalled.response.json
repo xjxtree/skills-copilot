@@ -68,6 +68,10 @@
           "path": "/tmp/skills-copilot-project/.codex/skills/frontend-design/SKILL.md"
         }
       }
-    ]
+    ],
+    "returned_count": 1,
+    "total_count": 1,
+    "has_more": false,
+    "source_completeness": "enumerable"
   }
 }

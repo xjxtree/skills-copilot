@@ -354,8 +354,8 @@ struct SkillManagerPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    VStack(spacing: 8) {
-                        ForEach(search.results.prefix(8)) { result in
+                    LazyVStack(spacing: 8) {
+                        ForEach(store.skillManagerVisibleSearchResults) { result in
                             SearchResultRow(result: result) {
                                 Task {
                                     await store.previewSkillManagerInstall(
@@ -366,6 +366,9 @@ struct SkillManagerPanel: View {
                             }
                             .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
                         }
+                    }
+                    if let status = store.skillManagerSearchStatus {
+                        skillManagerSearchFooter(status, sourceCompleteness: search.sourceCompleteness)
                     }
                 }
             } else {
@@ -501,10 +504,13 @@ struct SkillManagerPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    VStack(spacing: 8) {
-                        ForEach(installed.installed.prefix(12)) { record in
+                    LazyVStack(spacing: 8) {
+                        ForEach(store.skillManagerVisibleInstalledRecords) { record in
                             InstalledSkillRow(record: record, externalMutationDisabled: externalMutationDisabled)
                         }
+                    }
+                    if let status = store.skillManagerInstalledStatus {
+                        skillManagerStatusLine(status)
                     }
                 }
             } else {
@@ -549,8 +555,8 @@ struct SkillManagerPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                VStack(spacing: 8) {
-                    ForEach(store.localSkillLibrarySkills.prefix(12)) { skill in
+                LazyVStack(spacing: 8) {
+                    ForEach(store.localSkillLibrarySkills) { skill in
                         LocalSkillLibraryRow(skill: skill, externalMutationDisabled: externalMutationDisabled)
                     }
                 }
@@ -559,6 +565,55 @@ struct SkillManagerPanel: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativePanelSurface()
+    }
+
+    private func skillManagerSearchFooter(
+        _ status: ListCompletenessState,
+        sourceCompleteness: ListSourceCompleteness
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                skillManagerStatusLine(status)
+                Spacer(minLength: 8)
+                if status.canLoadMore {
+                    Button(UIStrings.listCompletenessLoadMore) {
+                        store.loadMoreSkillManagerSearchResults()
+                    }
+                    .accessibilityIdentifier("skill-manager.search.load-more")
+                    Button(sourceCompleteness == .unknown
+                        ? UIStrings.text(
+                            "skillManager.results.showAllReturned",
+                            "Show all returned results"
+                        )
+                        : UIStrings.listCompletenessLoadAll
+                    ) {
+                        store.showAllReturnedSkillManagerSearchResults()
+                    }
+                    .accessibilityIdentifier("skill-manager.search.show-all-returned")
+                }
+            }
+            if let reason = status.incompleteReason {
+                Text(UIStrings.listIncompleteReason(reason.rawValue))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private func skillManagerStatusLine(_ status: ListCompletenessState) -> some View {
+        HStack(spacing: 8) {
+            ListCompletenessBadge(state: status)
+            Text(UIStrings.listCompletenessSummary(
+                loadedCount: status.loadedCount,
+                totalCount: status.totalCount,
+                status: ListCompletenessBadge(state: status).statusLabel,
+                isLoading: false
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
     }
 
     private func mutationPreview(_ confirmation: SkillManagerMutationConfirmation) -> some View {

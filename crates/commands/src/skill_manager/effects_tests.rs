@@ -1,4 +1,25 @@
 use super::*;
+use skills_copilot_core::{ListIncompleteReason, ListSourceCompleteness};
+
+fn test_preview(operation: &str) -> SkillManagerCommandPreview {
+    SkillManagerCommandPreview {
+        tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+        operation: operation.to_string(),
+        command: vec!["/usr/bin/false".to_string()],
+        cwd: "/tmp".to_string(),
+        env: Vec::new(),
+        requires_confirmation: false,
+        confirmed: false,
+        network_required: operation == "search",
+        network_allowed: true,
+        will_run: false,
+        preview_token: "test-token".to_string(),
+        summary: "test".to_string(),
+        risks: Vec::new(),
+        source: None,
+        skills: Vec::new(),
+    }
+}
 
 #[test]
 fn search_parser_extracts_ansi_find_results() {
@@ -12,6 +33,80 @@ fn search_parser_extracts_ansi_find_results() {
     assert_eq!(results[0].description.as_deref(), Some("245.4K installs"));
     assert_eq!(results[1].name, "systematic-debugging");
     assert_eq!(results[1].source.as_deref(), Some("obra/superpowers"));
+}
+
+#[test]
+fn search_parser_does_not_cap_returned_manager_rows() {
+    let stdout = (0..55)
+        .map(|index| format!("owner/repo@skill-{index} Result {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let results = parse_search_results(&stdout);
+
+    assert_eq!(results.len(), 55);
+}
+
+#[test]
+fn search_record_preserves_all_returned_rows_without_claiming_source_total() {
+    let stdout = serde_json::to_string(
+        &(0..35)
+            .map(|index| {
+                serde_json::json!({
+                    "name": format!("skill-{index}"),
+                    "source": "owner/repo",
+                    "description": format!("Result {index}")
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("search JSON");
+    let search =
+        skill_manager_search_record(test_preview("search"), None, parse_search_results(&stdout));
+
+    assert_eq!(search.results.len(), 35);
+    assert_eq!(search.page.returned_count, 35);
+    assert_eq!(search.page.total_count, None);
+    assert_eq!(
+        search.page.source_completeness,
+        ListSourceCompleteness::Unknown
+    );
+    assert_eq!(
+        search.page.incomplete_reason,
+        Some(ListIncompleteReason::SourceLimited)
+    );
+}
+
+#[test]
+fn installed_record_reports_exact_enumerable_total() {
+    let stdout = serde_json::to_string(&serde_json::json!({
+        "skills": (0..27)
+            .map(|index| serde_json::json!({
+                "name": format!("installed-{index}"),
+                "source": "owner/repo"
+            }))
+            .collect::<Vec<_>>()
+    }))
+    .expect("installed JSON");
+    let installed = skill_manager_installed_record(
+        test_preview("listInstalled"),
+        SkillManagerCommandOutput {
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            stdout: stdout.clone(),
+            stderr: String::new(),
+        },
+        parse_installed_records(&stdout),
+    );
+
+    assert_eq!(installed.installed.len(), 27);
+    assert_eq!(installed.page.returned_count, 27);
+    assert_eq!(installed.page.total_count, Some(27));
+    assert_eq!(
+        installed.page.source_completeness,
+        ListSourceCompleteness::Enumerable
+    );
+    assert_eq!(installed.page.incomplete_reason, None);
 }
 
 #[test]
@@ -42,6 +137,17 @@ fn search_without_network_does_not_create_manager_cwd() {
     .expect("preview prohibited network search");
 
     assert!(record.output.is_none());
+    assert!(record.results.is_empty());
+    assert_eq!(record.page.returned_count, 0);
+    assert_eq!(record.page.total_count, None);
+    assert_eq!(
+        record.page.source_completeness,
+        ListSourceCompleteness::Unknown
+    );
+    assert_eq!(
+        record.page.incomplete_reason,
+        Some(ListIncompleteReason::SourceLimited)
+    );
     assert!(!ctx.user_home.exists());
     let _ = fs::remove_dir_all(root);
 }

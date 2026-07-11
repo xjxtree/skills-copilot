@@ -56,6 +56,11 @@
       ]
     },
     "output": null,
-    "results": []
+    "results": [],
+    "returned_count": 0,
+    "total_count": null,
+    "has_more": false,
+    "source_completeness": "unknown",
+    "incomplete_reason": "source_limited"
   }
 }

@@ -275,13 +275,62 @@ struct SkillManagerSearchResult: Codable, Identifiable, Hashable {
     }
 }
 
+struct SkillManagerVisibleResults<ID: Hashable>: Equatable {
+    private(set) var visibleCount = 20
+
+    func visibleItems<Item>(in items: [Item]) -> [Item] {
+        Array(items.prefix(visibleCount))
+    }
+
+    mutating func loadMore(totalReturned: Int) {
+        visibleCount = min(max(0, totalReturned), visibleCount + 20)
+    }
+
+    mutating func loadAll(totalReturned: Int) {
+        visibleCount = max(0, totalReturned)
+    }
+
+    mutating func reset() {
+        visibleCount = 20
+    }
+}
+
 struct SkillManagerSearchRecord: Codable, Hashable {
     let preview: SkillManagerCommandPreview
     let output: SkillManagerCommandOutput?
     let results: [SkillManagerSearchResult]
+    let returnedCount: Int
+    let totalCount: Int?
+    let hasMore: Bool
+    let nextCursor: String?
+    let sourceCompleteness: ListSourceCompleteness
+    let incompleteReason: ListIncompleteReason?
+
+    enum CodingKeys: String, CodingKey {
+        case preview
+        case output
+        case results
+        case returnedCount = "returned_count"
+        case totalCount = "total_count"
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+        case sourceCompleteness = "source_completeness"
+        case incompleteReason = "incomplete_reason"
+    }
 
     var isBlockedByNetwork: Bool {
         preview.networkRequired && !preview.networkAllowed && output == nil
+    }
+
+    var hasValidPageMetadata: Bool {
+        skillManagerPageMetadataIsValid(
+            returnedCount: returnedCount,
+            rowCount: results.count,
+            totalCount: totalCount,
+            hasMore: hasMore,
+            nextCursor: nextCursor,
+            sourceCompleteness: sourceCompleteness
+        )
     }
 }
 
@@ -307,6 +356,53 @@ struct SkillManagerInstalledListRecord: Codable, Hashable {
     let preview: SkillManagerCommandPreview
     let output: SkillManagerCommandOutput
     let installed: [SkillManagerInstalledRecord]
+    let returnedCount: Int
+    let totalCount: Int?
+    let hasMore: Bool
+    let nextCursor: String?
+    let sourceCompleteness: ListSourceCompleteness
+    let incompleteReason: ListIncompleteReason?
+
+    enum CodingKeys: String, CodingKey {
+        case preview
+        case output
+        case installed
+        case returnedCount = "returned_count"
+        case totalCount = "total_count"
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+        case sourceCompleteness = "source_completeness"
+        case incompleteReason = "incomplete_reason"
+    }
+
+    var hasValidPageMetadata: Bool {
+        skillManagerPageMetadataIsValid(
+            returnedCount: returnedCount,
+            rowCount: installed.count,
+            totalCount: totalCount,
+            hasMore: hasMore,
+            nextCursor: nextCursor,
+            sourceCompleteness: sourceCompleteness
+        )
+    }
+}
+
+private func skillManagerPageMetadataIsValid(
+    returnedCount: Int,
+    rowCount: Int,
+    totalCount: Int?,
+    hasMore: Bool,
+    nextCursor: String?,
+    sourceCompleteness: ListSourceCompleteness
+) -> Bool {
+    guard returnedCount == rowCount else { return false }
+    guard totalCount.map({ $0 >= rowCount }) ?? true else { return false }
+    guard hasMore || nextCursor == nil else { return false }
+    guard !(hasMore && sourceCompleteness == .enumerable && nextCursor == nil) else { return false }
+    if !hasMore, sourceCompleteness == .enumerable, let totalCount {
+        return totalCount == rowCount
+    }
+    return true
 }
 
 struct SkillManagerInstallParams: Encodable {

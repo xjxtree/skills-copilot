@@ -238,6 +238,19 @@ date/filter range before evidence rows are limited.
 - Search, install, and update may require external network access through the
   manager CLI. Requests must carry `network_allowed`; previews show whether a
   command will run.
+- `skillManager.search` returns every row emitted by the invoked manager and
+  flattens list metadata into the response. Because the current manager output
+  does not advertise an authoritative total or continuation token, search uses
+  `total_count=null`, `has_more=false`, `source_completeness=unknown`, and
+  `incomplete_reason=source_limited`; `returned_count` is only the number of
+  rows actually returned and is never presented as the source total. A
+  network-blocked preview uses the same source semantics with zero rows.
+- `skillManager.listInstalled` consumes the manager's complete JSON list and
+  reports `returned_count=total_count`, `source_completeness=enumerable`, and
+  no incomplete reason. No pagination flags or tokens are invented for either
+  command. The native client may reveal an already-returned search collection
+  in 20-row steps without issuing another manager or network request, while
+  installed JSON and the app-owned local library remain fully accessible.
 - The Skill Manager UI does not expose agent-layer enable/disable controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.

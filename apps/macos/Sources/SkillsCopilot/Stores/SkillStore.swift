@@ -229,6 +229,8 @@ final class SkillStore: ObservableObject {
     @Published private(set) var skillManagerTools: [SkillManagerToolRecord] = []
     @Published private(set) var skillManagerSearchResult: SkillManagerSearchRecord?
     @Published private(set) var skillManagerInstalled: SkillManagerInstalledListRecord?
+    @Published private(set) var skillManagerSearchVisibility = SkillManagerVisibleResults<String>()
+    @Published private(set) var skillManagerInstalledVisibility = SkillManagerVisibleResults<String>()
     @Published private(set) var skillManagerMutationConfirmation: SkillManagerMutationConfirmation?
     @Published private(set) var skillManagerLocalCreateConfirmation: SkillManagerLocalCreateConfirmation?
     @Published private(set) var skillManagerLocalDeleteConfirmation: SkillManagerLocalDeleteConfirmation?
@@ -1481,6 +1483,7 @@ final class SkillStore: ObservableObject {
                 guard let self else { return }
                 defer { self.finishSkillManagerSearch(generation) }
                 guard self.currentSkillManagerSearchGeneration == generation else { return }
+                self.skillManagerSearchVisibility.reset()
                 self.skillManagerSearchResult = result
             } catch {
                 guard let self else { return }
@@ -1516,6 +1519,8 @@ final class SkillStore: ObservableObject {
                 guard let self else { return }
                 defer { self.finishSkillManagerInstalledList(generation) }
                 guard self.currentSkillManagerInstalledGeneration == generation else { return }
+                self.skillManagerInstalledVisibility.reset()
+                self.skillManagerInstalledVisibility.loadAll(totalReturned: result.installed.count)
                 self.skillManagerInstalled = result
             } catch {
                 guard let self else { return }
@@ -1550,6 +1555,16 @@ final class SkillStore: ObservableObject {
 
     func clearSkillManagerAgents() {
         skillManagerSelectedAgentIDs = []
+    }
+
+    func loadMoreSkillManagerSearchResults() {
+        guard let result = skillManagerSearchResult else { return }
+        skillManagerSearchVisibility.loadMore(totalReturned: result.results.count)
+    }
+
+    func showAllReturnedSkillManagerSearchResults() {
+        guard let result = skillManagerSearchResult else { return }
+        skillManagerSearchVisibility.loadAll(totalReturned: result.results.count)
     }
 
     func previewSkillManagerInstall(source: String? = nil, skillName: String? = nil) async {
@@ -1974,6 +1989,7 @@ final class SkillStore: ObservableObject {
         skillManagerSearchGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerSearchGenerationValue, key: key)
         currentSkillManagerSearchGeneration = generation
+        skillManagerSearchVisibility.reset()
         skillManagerSearchResult = nil
         isSearchingSkillManager = true
         return generation
@@ -1990,6 +2006,7 @@ final class SkillStore: ObservableObject {
         skillManagerSearchTask = nil
         skillManagerSearchGenerationValue &+= 1
         currentSkillManagerSearchGeneration = nil
+        skillManagerSearchVisibility.reset()
         skillManagerSearchResult = nil
         isSearchingSkillManager = false
     }
@@ -2000,6 +2017,7 @@ final class SkillStore: ObservableObject {
         skillManagerInstalledGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerInstalledGenerationValue, key: key)
         currentSkillManagerInstalledGeneration = generation
+        skillManagerInstalledVisibility.reset()
         skillManagerInstalled = nil
         isListingSkillManagerInstalled = true
         return generation
@@ -2016,6 +2034,7 @@ final class SkillStore: ObservableObject {
         skillManagerInstalledTask = nil
         skillManagerInstalledGenerationValue &+= 1
         currentSkillManagerInstalledGeneration = nil
+        skillManagerInstalledVisibility.reset()
         skillManagerInstalled = nil
         isListingSkillManagerInstalled = false
     }

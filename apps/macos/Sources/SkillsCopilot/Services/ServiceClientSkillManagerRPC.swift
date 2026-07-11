@@ -6,7 +6,7 @@ extension ServiceClient {
     }
 
     func searchSkillManager(query: String, owner: String?, networkAllowed: Bool) async throws -> SkillManagerSearchRecord {
-        try await call(
+        let result: SkillManagerSearchRecord = try await call(
             method: "skillManager.search",
             params: SkillManagerSearchParams(
                 query: query,
@@ -15,10 +15,14 @@ extension ServiceClient {
             ),
             timeoutMS: networkAllowed ? 120_000 : nil
         )
+        guard result.hasValidPageMetadata else {
+            throw ClientError.invalidOutput("skillManager.search returned inconsistent page metadata")
+        }
+        return result
     }
 
     func listSkillManagerInstalled(agents: [String], scope: SkillManagerScope) async throws -> SkillManagerInstalledListRecord {
-        try await call(
+        let result: SkillManagerInstalledListRecord = try await call(
             method: "skillManager.listInstalled",
             params: SkillManagerListInstalledParams(
                 agents: agents,
@@ -26,6 +30,10 @@ extension ServiceClient {
             ),
             timeoutMS: 120_000
         )
+        guard result.hasValidPageMetadata else {
+            throw ClientError.invalidOutput("skillManager.listInstalled returned inconsistent page metadata")
+        }
+        return result
     }
 
     func previewSkillManagerInstall(

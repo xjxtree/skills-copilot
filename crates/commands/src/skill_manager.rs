@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use skills_copilot_catalog::{Catalog, SkillEventDraft, SkillRecord};
-use skills_copilot_core::{AdapterContext, AgentId, Scope};
+use skills_copilot_core::{
+    AdapterContext, AgentId, ListIncompleteReason, ListPageMetadata, ListSourceCompleteness, Scope,
+};
 
 use crate::{
     import_local_skill_to_tool_global, scan_all_catalog_report, tool_global_staging_skills_root,
@@ -100,6 +102,8 @@ pub struct SkillManagerSearchRecord {
     pub preview: SkillManagerCommandPreview,
     pub output: Option<SkillManagerCommandOutput>,
     pub results: Vec<SkillManagerSearchResult>,
+    #[serde(flatten)]
+    pub page: ListPageMetadata,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,6 +129,8 @@ pub struct SkillManagerInstalledListRecord {
     pub preview: SkillManagerCommandPreview,
     pub output: SkillManagerCommandOutput,
     pub installed: Vec<SkillManagerInstalledRecord>,
+    #[serde(flatten)]
+    pub page: ListPageMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -330,19 +336,11 @@ pub fn search_skills_with_manager(
         },
     )?;
     if !params.network_allowed {
-        return Ok(SkillManagerSearchRecord {
-            preview,
-            output: None,
-            results: Vec::new(),
-        });
+        return Ok(skill_manager_search_record(preview, None, Vec::new()));
     }
     let output = run_previewed_command(ctx, &preview)?;
     let results = parse_search_results(&output.stdout);
-    Ok(SkillManagerSearchRecord {
-        preview,
-        output: Some(output),
-        results,
-    })
+    Ok(skill_manager_search_record(preview, Some(output), results))
 }
 
 pub fn list_installed_skills_with_manager(
@@ -373,11 +371,42 @@ pub fn list_installed_skills_with_manager(
     )?;
     let output = run_previewed_command(ctx, &preview)?;
     let installed = parse_installed_records(&output.stdout);
-    Ok(SkillManagerInstalledListRecord {
+    Ok(skill_manager_installed_record(preview, output, installed))
+}
+
+fn skill_manager_search_record(
+    preview: SkillManagerCommandPreview,
+    output: Option<SkillManagerCommandOutput>,
+    results: Vec<SkillManagerSearchResult>,
+) -> SkillManagerSearchRecord {
+    let page = ListPageMetadata {
+        returned_count: results.len(),
+        total_count: None,
+        has_more: false,
+        next_cursor: None,
+        source_completeness: ListSourceCompleteness::Unknown,
+        incomplete_reason: Some(ListIncompleteReason::SourceLimited),
+    };
+    SkillManagerSearchRecord {
+        preview,
+        output,
+        results,
+        page,
+    }
+}
+
+fn skill_manager_installed_record(
+    preview: SkillManagerCommandPreview,
+    output: SkillManagerCommandOutput,
+    installed: Vec<SkillManagerInstalledRecord>,
+) -> SkillManagerInstalledListRecord {
+    let page = ListPageMetadata::enumerable(installed.len(), Some(installed.len()), None);
+    SkillManagerInstalledListRecord {
         preview,
         output,
         installed,
-    })
+        page,
+    }
 }
 
 pub fn preview_install_with_manager(
@@ -1230,9 +1259,6 @@ fn parse_search_results(stdout: &str) -> Vec<SkillManagerSearchResult> {
                 "raw": line
             }),
         });
-        if results.len() >= 50 {
-            break;
-        }
     }
     results
 }

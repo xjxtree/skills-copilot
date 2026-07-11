@@ -6,8 +6,10 @@ struct SkillManagerRequestGenerationTests {
     func run() async throws {
         try canonicalInputsNormalizeIdentity()
         try await newerSearchWinsWhenOlderResponseFinishesLast()
+        try await staleSearchCannotChangeVisibleIDsOrUnknownTotal()
         try await staleSearchErrorDoesNotReplaceNewSuccess()
         try await installedListIsScopedToCapturedAgentsAndScope()
+        try await installedAndLocalLibraryExposeEveryVisibleID()
         try await inputChangeInvalidatesMutationPreview()
         try await localCreateInputChangeIgnoresOldPreview()
         try await localDeleteSelectionChangeIgnoresOldPreview()
@@ -29,6 +31,50 @@ struct SkillManagerRequestGenerationTests {
         try await localDeleteApplyConvergesAfterCallerCancellation()
         try await applyUsesExactPreviewInputsAndToken()
         try await oldCompletionDoesNotClearCurrentLoadingState()
+    }
+
+    private func staleSearchCannotChangeVisibleIDsOrUnknownTotal() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("search:old-35")
+        await runner.suspend("search:current-35")
+        let store = makeStore(runner)
+
+        store.skillManagerSearchQuery = "old-35"
+        store.skillManagerOwner = "old-owner"
+        let old = Task { await store.searchSkillManager() }
+        try await waitForPending("search:old-35", runner: runner)
+
+        store.skillManagerSearchQuery = "current-35"
+        store.skillManagerOwner = "current-owner"
+        let current = Task { await store.searchSkillManager() }
+        try await waitForPending("search:current-35", runner: runner)
+        await runner.resumeSuccess("search:current-35")
+        await current.value
+
+        let currentIDs = store.skillManagerVisibleSearchResults.map(\.id)
+        try expectEqual(currentIDs.count, 20, "A returned remote collection should initially reveal twenty rows.")
+        try expectEqual(store.skillManagerSearchStatus?.totalCount, nil, "Remote manager search must keep its unknown source total.")
+
+        await runner.resumeSuccess("search:old-35")
+        await old.value
+        try expectEqual(
+            store.skillManagerVisibleSearchResults.map(\.id),
+            currentIDs,
+            "A delayed old query/owner generation must not change current visible IDs."
+        )
+    }
+
+    private func installedAndLocalLibraryExposeEveryVisibleID() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerSelectedAgentIDs = ["codex"]
+        store.skillManagerScope = .project
+
+        await store.listSkillManagerInstalled()
+        try expectEqual(store.skillManagerVisibleInstalledRecords.map(\.id).count, 27, "Installed JSON should expose all 27 exact rows.")
+
+        await store.loadAppStartupDataIfNeeded()
+        try expectEqual(store.localSkillLibrarySkills.map(\.id).count, 31, "App-owned local library should expose all 31 rows.")
     }
 
     private func canonicalInputsNormalizeIdentity() throws {
@@ -1027,17 +1073,45 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         switch call.method {
         case "skillManager.search":
             let query = call.query ?? ""
+            let count = query.hasSuffix("-35") ? 35 : 1
+            let results = (0..<count).map { index in
+                [
+                    "name": index == 0 ? query : "\(query)-\(index)",
+                    "source": "fixture/\(query)",
+                    "description": "fixture \(index)",
+                    "raw": [:],
+                ] as [String: Any]
+            }
             result = [
                 "preview": preview(operation: "search", token: "search:\(query)", source: nil, skills: []),
                 "output": NSNull(),
-                "results": [["name": query, "source": "fixture/\(query)", "description": "fixture", "raw": [:]]]
+                "results": results,
+                "returned_count": results.count,
+                "total_count": NSNull(),
+                "has_more": false,
+                "source_completeness": "unknown",
+                "incomplete_reason": "source_limited",
             ]
         case "skillManager.listInstalled":
             let name = "\(call.scope ?? "none"):\(call.agents.joined(separator: ","))"
+            let installed = (0..<27).map { index in
+                [
+                    "name": index == 0 ? name : "\(name)-\(index)",
+                    "source": "fixture",
+                    "agents": call.agents,
+                    "scope": call.scope ?? "",
+                    "path": "/tmp/fixture/\(index)",
+                    "raw": [:],
+                ] as [String: Any]
+            }
             result = [
                 "preview": preview(operation: "listInstalled", token: "installed:\(name)", source: nil, skills: []),
                 "output": output,
-                "installed": [["name": name, "source": "fixture", "agents": call.agents, "scope": call.scope ?? "", "path": "/tmp/fixture", "raw": [:]]]
+                "installed": installed,
+                "returned_count": installed.count,
+                "total_count": installed.count,
+                "has_more": false,
+                "source_completeness": "enumerable",
             ]
         case "skillManager.previewInstall", "skillManager.applyInstall":
             result = mutationResponse(call: call, operation: "install")
@@ -1069,6 +1143,19 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                 "summary": "fixture local delete"
             ]
         case "app.stateSnapshot":
+            let localSkills = (0..<31).map { index in
+                [
+                    "id": "local-\(index)",
+                    "agent": "tool-global",
+                    "scope": "tool-global",
+                    "path": "/tmp/tool-global/local-\(index)/SKILL.md",
+                    "display_path": "Tool Pool/local-\(index)/SKILL.md",
+                    "definition_id": "tool:local-\(index)",
+                    "name": "Local \(index)",
+                    "state": "loaded",
+                    "enabled": true,
+                ] as [String: Any]
+            }
             result = [
                 "status": [
                     "protocol_version": 2,
@@ -1078,11 +1165,17 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                     "user_home": "/tmp/home",
                     "supported_methods": []
                 ],
-                "skills": [],
+                "skills": localSkills,
                 "findings": [],
                 "conflicts": [],
                 "snapshots": []
             ]
+        case "llm.status":
+            result = ["enabled": false, "disabled_reason": "disabled", "supported_actions": []]
+        case "project.getContext":
+            result = ["active": NSNull(), "recent": []]
+        case "rules.listTuning":
+            result = ["records": []]
         default:
             return serviceErrorResponse
         }

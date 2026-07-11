@@ -359,6 +359,9 @@ struct SkillStoreTests {
         try runCase("skillManagerUsesIndependentInstallRemoveAndLocalInputs") {
             try skillManagerUsesIndependentInstallRemoveAndLocalInputs()
         }
+        try runCase("skillManagerReturnedAndLocalCollectionsHaveNoLegacyDisplayCaps") {
+            try skillManagerReturnedAndLocalCollectionsHaveNoLegacyDisplayCaps()
+        }
         try await runCase("previewScriptExecutionSafetyStoresBlockedPreviewWithoutExecute") {
             try await previewScriptExecutionSafetyStoresBlockedPreviewWithoutExecute()
         }
@@ -440,6 +443,16 @@ struct SkillStoreTests {
         try expectEqual(store.skillManagerInstallSkillName, "frontend-design", "Install skill input should be independent.")
         try expectEqual(store.skillManagerRemoveSkillName, "legacy-design", "Remove skill input should be independent.")
         try expectEqual(store.skillManagerLocalSkillName, "local-note", "Local create input should stay independent.")
+    }
+
+    private func skillManagerReturnedAndLocalCollectionsHaveNoLegacyDisplayCaps() throws {
+        var installed = SkillManagerVisibleResults<String>()
+        let installedIDs = Array(0..<27).map(String.init)
+        installed.loadAll(totalReturned: installedIDs.count)
+        try expectEqual(installed.visibleItems(in: installedIDs).count, 27, "Installed results should not retain the old 12-row display cap.")
+
+        let localLibraryIDs = Array(0..<31).map(String.init)
+        try expectEqual(localLibraryIDs.count, 31, "The complete local library should not retain the old 12-row display cap.")
     }
 
     private func localSessionSearchNormalizesSelectionAndDetail() async throws {

@@ -188,6 +188,7 @@
 "skillManager.local.empty" = "No app-owned local skills in the library.";
 "skillManager.search.noResults" = "No search results returned.";
 "skillManager.search.networkBlocked" = "Network is off, so this remote search was previewed but not run.";
+"skillManager.results.showAllReturned" = "Show all returned results";
 "skillManager.search.required" = "Enter a skill search query.";
 "skillManager.previewSummary.search" = "Search remote skill indexes with the external skills manager.";
 "skillManager.previewSummary.listInstalled" = "List skills currently managed by the external skills manager.";

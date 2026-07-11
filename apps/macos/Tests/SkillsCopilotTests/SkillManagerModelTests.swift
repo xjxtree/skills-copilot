@@ -5,9 +5,22 @@ struct SkillManagerModelTests {
     func run() throws {
         try defaultTargetsMatchSupportedManagerOrder()
         try workflowsSeparatePackageOperations()
+        try visibleResultsRevealReturnedRowsInTwentyRowSteps()
         try searchRecordSeparatesNetworkBlockedFromEmptyResults()
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
+    }
+
+    private func visibleResultsRevealReturnedRowsInTwentyRowSteps() throws {
+        let rows = Array(0..<35).map(String.init)
+        var search = SkillManagerVisibleResults<String>()
+
+        try expectEqual(search.visibleItems(in: rows).count, 20, "Initial search page")
+        search.loadMore(totalReturned: 35)
+        try expectEqual(search.visibleItems(in: rows).count, 35, "Search Load More")
+        search.reset()
+        search.loadAll(totalReturned: 35)
+        try expectEqual(search.visibleItems(in: rows).count, 35, "Search Load All")
     }
 
     private func defaultTargetsMatchSupportedManagerOrder() throws {
@@ -70,13 +83,28 @@ struct SkillManagerModelTests {
             "risks": ["Search may contact skills.sh."]
           },
           "output": null,
-          "results": []
+          "results": [],
+          "returned_count": 0,
+          "total_count": null,
+          "has_more": false,
+          "source_completeness": "unknown",
+          "incomplete_reason": "source_limited"
         }
         """.data(using: .utf8)!
 
         let search = try JSONDecoder().decode(SkillManagerSearchRecord.self, from: payload)
 
         try expectEqual(search.isBlockedByNetwork, true, "Network-blocked search should not be presented as an empty result set.")
+        try expectEqual(search.totalCount, nil, "Blocked remote search must not invent an enumerable total.")
+        try expectEqual(search.sourceCompleteness, .unknown, "Blocked remote search source completeness should remain unknown.")
+        try expectEqual(search.incompleteReason, .sourceLimited, "Blocked remote search should explain that the source was not enumerated.")
+        try expectEqual(search.hasValidPageMetadata, true, "Matching flattened search metadata should validate.")
+
+        let mismatchedPayload = String(data: payload, encoding: .utf8)!
+            .replacingOccurrences(of: "\"returned_count\": 0", with: "\"returned_count\": 1")
+            .data(using: .utf8)!
+        let mismatched = try JSONDecoder().decode(SkillManagerSearchRecord.self, from: mismatchedPayload)
+        try expectEqual(mismatched.hasValidPageMetadata, false, "Returned count must match decoded rows.")
     }
 
     private func previewSummaryLocalizesKnownOperations() throws {
