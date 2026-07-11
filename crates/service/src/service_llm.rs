@@ -1,5 +1,5 @@
 use super::*;
-use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
+use crate::service_keyset_cursor::{decode_cursor_for_method, encode_cursor, KeysetCursor};
 
 impl ServiceHost {
     pub fn llm_status(&self) -> LlmStatus {
@@ -466,48 +466,74 @@ impl ServiceHost {
         &self,
         params: ListProviderActivityParams,
     ) -> Result<ProviderActivityPageResult, ServiceError> {
+        self.list_provider_activity_at(params, unix_timestamp_millis())
+    }
+
+    pub(crate) fn list_provider_activity_at(
+        &self,
+        params: ListProviderActivityParams,
+        now: i64,
+    ) -> Result<ProviderActivityPageResult, ServiceError> {
         const METHOD: &str = "llm.listProviderActivity";
         let limit = params.limit.unwrap_or(50).clamp(1, 100);
-        let query_digest = provider_activity_query_digest(&params)?;
         let cursor = params
             .cursor
             .as_deref()
-            .map(|text| decode_cursor(text, METHOD, &query_digest))
+            .map(|text| decode_cursor_for_method(text, METHOD))
             .transpose()?;
+        let query = resolve_provider_activity_query(&params, cursor.as_ref(), now)?;
+        let query_digest = provider_activity_query_digest(&params, &query)?;
+        if cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.query_digest != query_digest)
+        {
+            return Err(ServiceError::InvalidRequest(
+                "cursor does not match this list query".to_string(),
+            ));
+        }
         let adapter_ctx = self.effective_adapter_ctx()?;
         let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
-        let filters = ProviderObservabilityFilters::from_activity_params(&params);
-        let (prompt_runs, _) = self.load_llm_prompt_runs_for_observability(&redaction_roots);
-        let (call_metadata, _) =
-            self.load_provider_call_metadata_for_observability(&redaction_roots);
-        let source_revision =
-            provider_activity_digest("provider-activity-source", &(&prompt_runs, &call_metadata))?;
+        let filters = ProviderObservabilityFilters::from_activity_bounds(
+            &params,
+            query.resolved_start_at,
+            query.resolved_end_at,
+        );
+        let raw_snapshot = read_consistent_provider_activity_raw_snapshot(
+            &self.llm_prompt_runs_path(),
+            &provider_call_metadata_path(&self.app_data_dir),
+        )?;
+        let source_revision = provider_activity_raw_source_revision(&raw_snapshot);
+        let prompt_runs = parse_provider_activity_prompt_runs(&raw_snapshot.prompt_runs)?;
+        let call_metadata = parse_provider_activity_provider_calls(&raw_snapshot.provider_calls)?;
 
         let mut rows = prompt_runs
             .iter()
             .filter(|run| filters.matches_prompt_run(run))
             .enumerate()
-            .map(|(index, run)| {
-                provider_activity_history_row(provider_observability_history_row(
-                    run,
-                    index,
-                    &redaction_roots,
-                ))
-            })
-            .chain(
-                call_metadata
-                    .iter()
-                    .filter(|metadata| filters.matches_provider_call(metadata))
-                    .enumerate()
-                    .map(|(index, metadata)| {
-                        provider_activity_call_row(provider_observability_call_row(
-                            metadata,
-                            index,
-                            &redaction_roots,
-                        ))
-                    }),
+            .map(
+                |(index, run)| -> Result<ProviderActivityRow, ServiceError> {
+                    Ok(provider_activity_history_row(
+                        provider_observability_history_row(run, index, &redaction_roots),
+                        provider_activity_prompt_run_id(run)?,
+                    ))
+                },
             )
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.extend(
+            call_metadata
+                .iter()
+                .filter(|metadata| filters.matches_provider_call(metadata))
+                .enumerate()
+                .map(
+                    |(index, metadata)| -> Result<ProviderActivityRow, ServiceError> {
+                        Ok(provider_activity_call_row(
+                            provider_observability_call_row(metadata, index, &redaction_roots),
+                            provider_activity_provider_call_id(metadata)?,
+                        ))
+                    },
+                )
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         rows.sort_by(|left, right| {
             right
                 .timestamp
@@ -550,6 +576,8 @@ impl ServiceHost {
                         stable_id: row.id.clone(),
                         tie_breaker_digest: None,
                         accepted_count: None,
+                        resolved_start_at: query.resolved_start_at,
+                        resolved_end_at: query.resolved_end_at,
                     })
                 })
                 .transpose()?
@@ -1457,9 +1485,21 @@ impl ServiceHost {
     }
 }
 
-fn provider_activity_query_digest(
+#[derive(Debug, Clone, Copy)]
+struct ProviderActivityResolvedQuery {
+    requested_window_days: Option<i64>,
+    requested_start_at: Option<i64>,
+    requested_end_at: Option<i64>,
+    resolved_start_at: Option<i64>,
+    resolved_end_at: Option<i64>,
+}
+
+fn resolve_provider_activity_query(
     params: &ListProviderActivityParams,
-) -> Result<String, ServiceError> {
+    cursor: Option<&KeysetCursor>,
+    now: i64,
+) -> Result<ProviderActivityResolvedQuery, ServiceError> {
+    let requested_window_days = params.window_days.map(|days| days.clamp(1, 3_650));
     let mut start_at = params.start_at.filter(|value| *value >= 0);
     let mut end_at = params.end_at.filter(|value| *value >= 0);
     if let (Some(start), Some(end)) = (start_at, end_at) {
@@ -1468,15 +1508,52 @@ fn provider_activity_query_digest(
             end_at = Some(start);
         }
     }
+    let (resolved_start_at, resolved_end_at) = if start_at.is_some() || end_at.is_some() {
+        (start_at, end_at)
+    } else if let Some(days) = requested_window_days {
+        if let Some(cursor) = cursor {
+            let start = cursor.resolved_start_at.ok_or_else(|| {
+                ServiceError::InvalidRequest(
+                    "rolling activity cursor is missing fixed bounds".to_string(),
+                )
+            })?;
+            let end = cursor.resolved_end_at.ok_or_else(|| {
+                ServiceError::InvalidRequest(
+                    "rolling activity cursor is missing fixed bounds".to_string(),
+                )
+            })?;
+            (Some(start), Some(end))
+        } else {
+            let duration = days.saturating_mul(86_400_000);
+            (Some(now.saturating_sub(duration)), Some(now))
+        }
+    } else {
+        (None, None)
+    };
+    Ok(ProviderActivityResolvedQuery {
+        requested_window_days,
+        requested_start_at: start_at,
+        requested_end_at: end_at,
+        resolved_start_at,
+        resolved_end_at,
+    })
+}
+
+fn provider_activity_query_digest(
+    params: &ListProviderActivityParams,
+    query: &ProviderActivityResolvedQuery,
+) -> Result<String, ServiceError> {
     provider_activity_digest(
         "llm.listProviderActivity-query",
         &(
             normalized_observability_filter(params.provider.as_deref()),
             normalized_observability_filter(params.model.as_deref()),
             normalized_observability_filter(params.action.as_deref()),
-            params.window_days.map(|days| days.clamp(1, 3_650)),
-            start_at,
-            end_at,
+            query.requested_window_days,
+            query.requested_start_at,
+            query.requested_end_at,
+            query.resolved_start_at,
+            query.resolved_end_at,
         ),
     )
 }
@@ -1487,6 +1564,162 @@ fn provider_activity_digest<T: Serialize>(domain: &str, value: &T) -> Result<Str
     hasher.update([0]);
     hasher.update(serde_json::to_vec(value)?);
     Ok(format!("sha256:{}", hex_prefix(&hasher.finalize(), 64)))
+}
+
+const PROVIDER_ACTIVITY_SNAPSHOT_READ_ATTEMPTS: usize = 3;
+const PROVIDER_ACTIVITY_MAX_SOURCE_BYTES: usize = 8 * 1_024 * 1_024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderActivitySource {
+    PromptRuns,
+    ProviderCalls,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderActivityRawSource {
+    pub(crate) present: bool,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl ProviderActivityRawSource {
+    pub(crate) fn present(bytes: Vec<u8>) -> Self {
+        Self {
+            present: true,
+            bytes,
+        }
+    }
+
+    fn missing() -> Self {
+        Self {
+            present: false,
+            bytes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderActivityRawSnapshot {
+    pub(crate) prompt_runs: ProviderActivityRawSource,
+    pub(crate) provider_calls: ProviderActivityRawSource,
+}
+
+pub(crate) fn read_consistent_provider_activity_raw_snapshot_with<F>(
+    mut read: F,
+) -> Result<ProviderActivityRawSnapshot, ServiceError>
+where
+    F: FnMut(ProviderActivitySource) -> Result<ProviderActivityRawSource, ServiceError>,
+{
+    for _ in 0..PROVIDER_ACTIVITY_SNAPSHOT_READ_ATTEMPTS {
+        let first_prompt_runs = read(ProviderActivitySource::PromptRuns)?;
+        let first_provider_calls = read(ProviderActivitySource::ProviderCalls)?;
+        let second_prompt_runs = read(ProviderActivitySource::PromptRuns)?;
+        let second_provider_calls = read(ProviderActivitySource::ProviderCalls)?;
+        if first_prompt_runs == second_prompt_runs && first_provider_calls == second_provider_calls
+        {
+            return Ok(ProviderActivityRawSnapshot {
+                prompt_runs: second_prompt_runs,
+                provider_calls: second_provider_calls,
+            });
+        }
+    }
+    Err(ServiceError::SourceChanged)
+}
+
+fn read_consistent_provider_activity_raw_snapshot(
+    prompt_runs_path: &Path,
+    provider_calls_path: &Path,
+) -> Result<ProviderActivityRawSnapshot, ServiceError> {
+    read_consistent_provider_activity_raw_snapshot_with(|source| match source {
+        ProviderActivitySource::PromptRuns => {
+            read_provider_activity_raw_source(prompt_runs_path, "prompt-runs")
+        }
+        ProviderActivitySource::ProviderCalls => {
+            read_provider_activity_raw_source(provider_calls_path, "provider-call-metadata")
+        }
+    })
+}
+
+fn read_provider_activity_raw_source(
+    path: &Path,
+    label: &'static str,
+) -> Result<ProviderActivityRawSource, ServiceError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ProviderActivityRawSource::missing());
+        }
+        Err(_) => return Err(ServiceError::ProviderActivitySourceUnreadable(label)),
+    };
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > PROVIDER_ACTIVITY_MAX_SOURCE_BYTES as u64
+    {
+        return Err(ServiceError::ProviderActivitySourceInvalid(label));
+    }
+    let bytes =
+        fs::read(path).map_err(|_| ServiceError::ProviderActivitySourceUnreadable(label))?;
+    if bytes.len() > PROVIDER_ACTIVITY_MAX_SOURCE_BYTES {
+        return Err(ServiceError::ProviderActivitySourceInvalid(label));
+    }
+    Ok(ProviderActivityRawSource::present(bytes))
+}
+
+fn parse_provider_activity_prompt_runs(
+    source: &ProviderActivityRawSource,
+) -> Result<Vec<LlmPromptRunRecord>, ServiceError> {
+    if !source.present {
+        return Ok(Vec::new());
+    }
+    let mut rows = serde_json::from_slice::<Vec<LlmPromptRunRecord>>(&source.bytes)
+        .map_err(|_| ServiceError::ProviderActivitySourceInvalid("prompt-runs"))?;
+    rows.sort_by(llm_prompt_run_record_sort);
+    Ok(rows)
+}
+
+fn parse_provider_activity_provider_calls(
+    source: &ProviderActivityRawSource,
+) -> Result<Vec<ProviderCallMetadata>, ServiceError> {
+    if !source.present {
+        return Ok(Vec::new());
+    }
+    let content = std::str::from_utf8(&source.bytes)
+        .map_err(|_| ServiceError::ProviderActivitySourceInvalid("provider-call-metadata"))?;
+    let mut rows = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        rows.push(
+            serde_json::from_str::<ProviderCallMetadata>(trimmed).map_err(|_| {
+                ServiceError::ProviderActivitySourceInvalid("provider-call-metadata")
+            })?,
+        );
+    }
+    rows.sort_by(|left, right| {
+        right
+            .timestamp
+            .cmp(&left.timestamp)
+            .then_with(|| left.profile_id.cmp(&right.profile_id))
+            .then_with(|| left.action_type.cmp(&right.action_type))
+    });
+    Ok(rows)
+}
+
+fn provider_activity_raw_source_revision(snapshot: &ProviderActivityRawSnapshot) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"provider-activity-raw-source-v1");
+    for (label, source) in [
+        (b"prompt-runs".as_slice(), &snapshot.prompt_runs),
+        (b"provider-calls".as_slice(), &snapshot.provider_calls),
+    ] {
+        hasher.update([0]);
+        hasher.update(label);
+        hasher.update([u8::from(source.present)]);
+        hasher.update(source.bytes.len().to_le_bytes());
+        hasher.update(&source.bytes);
+    }
+    format!("sha256:{}", hex_prefix(&hasher.finalize(), 64))
 }
 
 #[derive(Debug, Default)]

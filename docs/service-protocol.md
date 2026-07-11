@@ -178,11 +178,28 @@ date/filter range before evidence rows are limited.
 full-range aggregate. It merges the same redacted prompt-run and provider-call
 metadata into `(timestamp DESC, id ASC)` order without changing the aggregate
 summary. Page limits are clamped to `1...100`; opaque cursors bind provider,
-model, action, and time filters. Continuations also bind the first page's
-`source_revision`, and return `source_changed` if either metadata source changes.
-Only redacted titles, subtitles, status, stable IDs, and evidence references
-cross the service boundary. The method does not read credentials, send provider
-traffic, persist raw prompts/responses/traces, or expose write controls.
+model, action, and time filters. A rolling `window_days` request resolves fixed
+start/end bounds on page one; the opaque cursor carries those bounds so later
+pages do not move when the clock advances. Explicit start/end bounds remain
+exactly filter-bound.
+
+Activity reads use a bounded, retrying before/after snapshot of the complete raw
+bytes for both app-local metadata sources. A page is returned only when the two
+sources were jointly stable during one read window. Prompt-run JSON and every
+non-empty provider-call JSONL row must parse completely; unreadable, oversized,
+truncated, or malformed sources fail closed with
+`provider_activity_source_unreadable` or `provider_activity_source_invalid`
+without returning raw error text. The opaque `source_revision` hashes the
+presence and complete bounded raw bytes of both sources, including bytes that do
+not become display rows. Any later source-byte change returns `source_changed`.
+
+Row IDs derive from the prompt-run ID or provider-call confirmation ID, with a
+source-prefixed canonical metadata digest fallback for older records. They do
+not depend on filter position or array index, and remain distinct across the two
+source kinds. Only redacted titles, subtitles, status, stable IDs, and evidence
+references cross the service boundary. The method does not read credentials,
+send provider traffic, persist raw prompts/responses/traces, or expose write
+controls.
 
 ## Full-Access Local Lists
 

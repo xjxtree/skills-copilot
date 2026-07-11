@@ -248,14 +248,17 @@ impl ProviderObservabilityFilters {
         }
     }
 
-    pub(crate) fn from_activity_params(params: &ListProviderActivityParams) -> Self {
+    pub(crate) fn from_activity_bounds(
+        params: &ListProviderActivityParams,
+        start_at: Option<i64>,
+        end_at: Option<i64>,
+    ) -> Self {
         Self::from_params(&LlmProviderObservabilityParams {
             provider: params.provider.clone(),
             model: params.model.clone(),
             action: params.action.clone(),
-            window_days: params.window_days,
-            start_at: params.start_at,
-            end_at: params.end_at,
+            start_at,
+            end_at,
             ..LlmProviderObservabilityParams::default()
         })
     }
@@ -508,9 +511,11 @@ pub(crate) fn provider_observability_history_row(
 
 pub(crate) fn provider_activity_call_row(
     row: LlmProviderObservabilityCallRow,
+    stable_id: String,
 ) -> ProviderActivityRow {
     ProviderActivityRow {
-        id: row.id,
+        evidence_refs: vec![format!("provider-call:{stable_id}")],
+        id: stable_id,
         kind: "provider_call".to_string(),
         timestamp: row.timestamp,
         title: row.action_type,
@@ -519,26 +524,63 @@ pub(crate) fn provider_activity_call_row(
             row.provider, row.model, row.destination_host
         ),
         status: row.status,
-        evidence_refs: row.evidence_refs,
     }
 }
 
 pub(crate) fn provider_activity_history_row(
     row: LlmProviderObservabilityHistoryRow,
+    stable_id: String,
 ) -> ProviderActivityRow {
     let title = row
         .task
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| row.action.clone());
     ProviderActivityRow {
-        id: row.id,
+        evidence_refs: vec![format!("prompt-run:{stable_id}")],
+        id: stable_id,
         kind: "prompt_run".to_string(),
         timestamp: row.completed_at,
         title,
         subtitle: format!("{} · {} · {}", row.provider, row.model, row.action),
         status: row.status,
-        evidence_refs: row.evidence_refs,
     }
+}
+
+pub(crate) fn provider_activity_prompt_run_id(
+    run: &LlmPromptRunRecord,
+) -> Result<String, ServiceError> {
+    let intrinsic_id = run.id.trim();
+    if !intrinsic_id.is_empty() {
+        return Ok(provider_observability_row_id(
+            "provider-activity-prompt-run",
+            &[intrinsic_id],
+        ));
+    }
+    provider_activity_canonical_record_id("provider-activity-prompt-run", run)
+}
+
+pub(crate) fn provider_activity_provider_call_id(
+    metadata: &ProviderCallMetadata,
+) -> Result<String, ServiceError> {
+    let intrinsic_id = metadata.confirmation_id.trim();
+    if !intrinsic_id.is_empty() {
+        return Ok(provider_observability_row_id(
+            "provider-activity-provider-call",
+            &[intrinsic_id],
+        ));
+    }
+    provider_activity_canonical_record_id("provider-activity-provider-call", metadata)
+}
+
+fn provider_activity_canonical_record_id<T: Serialize>(
+    prefix: &str,
+    value: &T,
+) -> Result<String, ServiceError> {
+    let mut hasher = Sha256::new();
+    hasher.update(prefix.as_bytes());
+    hasher.update(b"\0canonical-record-v1\0");
+    hasher.update(serde_json::to_vec(value)?);
+    Ok(format!("{prefix}-{}", hex_prefix(&hasher.finalize(), 12)))
 }
 
 pub(crate) fn provider_observability_grouping_rows(

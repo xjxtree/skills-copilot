@@ -11,6 +11,10 @@ pub(crate) struct KeysetCursor {
     pub(crate) tie_breaker_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) accepted_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resolved_start_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resolved_end_at: Option<i64>,
 }
 
 pub(crate) fn encode_cursor(value: &KeysetCursor) -> Result<String, ServiceError> {
@@ -23,13 +27,26 @@ pub(crate) fn decode_cursor(
     method: &str,
     query_digest: &str,
 ) -> Result<KeysetCursor, ServiceError> {
+    let cursor = decode_cursor_for_method(text, method)?;
+    if cursor.query_digest != query_digest {
+        return Err(ServiceError::InvalidRequest(
+            "cursor does not match this list query".to_string(),
+        ));
+    }
+    Ok(cursor)
+}
+
+pub(crate) fn decode_cursor_for_method(
+    text: &str,
+    method: &str,
+) -> Result<KeysetCursor, ServiceError> {
     let encoded = text.strip_prefix("v1:").ok_or_else(|| {
         ServiceError::InvalidRequest("cursor must use the v1 encoding".to_string())
     })?;
     let bytes = decode_lowercase_hex(encoded)?;
     let cursor: KeysetCursor = serde_json::from_slice(&bytes)
         .map_err(|_| ServiceError::InvalidRequest("cursor payload is invalid".to_string()))?;
-    if cursor.version != 1 || cursor.method != method || cursor.query_digest != query_digest {
+    if cursor.version != 1 || cursor.method != method {
         return Err(ServiceError::InvalidRequest(
             "cursor does not match this list query".to_string(),
         ));

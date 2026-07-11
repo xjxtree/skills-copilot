@@ -1,5 +1,9 @@
 use super::dispatch_fixtures::*;
 use super::*;
+use crate::service_llm::{
+    read_consistent_provider_activity_raw_snapshot_with, ProviderActivityRawSource,
+    ProviderActivitySource,
+};
 
 #[test]
 fn llm_preview_prompt_returns_redacted_confirmation_payload() {
@@ -1428,6 +1432,409 @@ fn provider_activity_cursor_binds_filters_and_rejects_source_mutation() {
         changed.error.expect("source changed error").code,
         "source_changed"
     );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_snapshot_retries_mixed_source_window_or_returns_source_changed() {
+    use std::collections::VecDeque;
+
+    let mut reads = VecDeque::from([
+        (ProviderActivitySource::PromptRuns, b"prompt-old".to_vec()),
+        (ProviderActivitySource::ProviderCalls, b"calls-old".to_vec()),
+        (ProviderActivitySource::PromptRuns, b"prompt-new".to_vec()),
+        (ProviderActivitySource::ProviderCalls, b"calls-old".to_vec()),
+        (ProviderActivitySource::PromptRuns, b"prompt-new".to_vec()),
+        (ProviderActivitySource::ProviderCalls, b"calls-new".to_vec()),
+        (ProviderActivitySource::PromptRuns, b"prompt-new".to_vec()),
+        (ProviderActivitySource::ProviderCalls, b"calls-new".to_vec()),
+    ]);
+    let snapshot = read_consistent_provider_activity_raw_snapshot_with(|source| {
+        let (expected, bytes) = reads.pop_front().expect("scheduled activity source read");
+        assert_eq!(
+            source, expected,
+            "activity sources must use a fixed read order"
+        );
+        Ok(ProviderActivityRawSource::present(bytes))
+    })
+    .expect("a stable retry should produce one source snapshot");
+    assert_eq!(snapshot.prompt_runs.bytes, b"prompt-new");
+    assert_eq!(snapshot.provider_calls.bytes, b"calls-new");
+    assert!(reads.is_empty());
+
+    let mut read_number = 0usize;
+    let error = read_consistent_provider_activity_raw_snapshot_with(|source| {
+        read_number += 1;
+        Ok(ProviderActivityRawSource::present(
+            format!("{source:?}-{read_number}").into_bytes(),
+        ))
+    })
+    .expect_err("a source that never stabilizes must fail closed");
+    assert_eq!(error.code(), "source_changed");
+}
+
+#[test]
+fn provider_activity_corrupt_sources_fail_closed_without_enumerable_page() {
+    for (label, seed) in [
+        ("prompt-runs", ("prompt-runs.json", "{not-valid-json\n")),
+        (
+            "provider-calls",
+            (
+                "llm/provider-call-metadata.jsonl",
+                "{\"status\":\"succeeded\"}\nnot-json\n",
+            ),
+        ),
+    ] {
+        let app_data_dir = env::temp_dir().join(format!(
+            "skills-copilot-provider-activity-corrupt-{label}-{}-{}",
+            std::process::id(),
+            unique_suffix(),
+        ));
+        let host = test_host(app_data_dir.clone());
+        let path = app_data_dir.join(seed.0);
+        fs::create_dir_all(path.parent().expect("corrupt source parent"))
+            .expect("create corrupt source parent");
+        fs::write(path, seed.1).expect("write corrupt activity source");
+
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("provider-activity-corrupt-{label}")),
+            method: "llm.listProviderActivity".to_string(),
+            params: json!({ "limit": 50 }),
+        });
+        assert!(
+            !response.ok,
+            "corrupt {label} must not return an exact page"
+        );
+        let error = response.error.expect("corrupt activity source error");
+        assert_eq!(error.code, "provider_activity_source_invalid");
+        assert!(!error.message.contains("not-valid-json"));
+        assert!(!error.message.contains("not-json"));
+
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+}
+
+#[test]
+fn provider_activity_revision_hashes_complete_raw_source_bytes() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-raw-revision-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+    let rows = (0..3)
+        .map(|index| ProviderCallMetadata {
+            timestamp: 3_000 - index,
+            action_type: "analyze".to_string(),
+            profile_id: "fixture-openai".to_string(),
+            provider_type: provider::ProviderType::OpenAiCompatible,
+            model: "fixture-model".to_string(),
+            destination_host: "api.fixture.invalid".to_string(),
+            status: "succeeded".to_string(),
+            error_code: None,
+            error_message: None,
+            duration_ms: 8,
+            estimated_input_tokens: 5,
+            estimated_output_tokens: 3,
+            estimated_cost_usd: 0.01,
+            confirmation_id: format!("raw-revision-{index}"),
+            redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+            provider_request_sent: true,
+            credential_accessed: true,
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+        })
+        .map(|row| serde_json::to_string(&row).expect("serialize metadata"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata_path = provider_call_metadata_path(&app_data_dir);
+    fs::write(&metadata_path, format!("{rows}\n")).expect("write provider metadata");
+
+    let first = host.handle(ServiceRequest {
+        id: Some("provider-activity-raw-first".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({ "limit": 1 }),
+    });
+    assert!(first.ok, "{:?}", first.error);
+    let first = first.result.expect("first raw revision page");
+    let cursor = first["next_cursor"].as_str().expect("activity cursor");
+    let revision = first["source_revision"]
+        .as_str()
+        .expect("activity revision");
+
+    let mut raw = fs::read(&metadata_path).expect("read provider metadata bytes");
+    raw.extend_from_slice(b" \n");
+    fs::write(&metadata_path, raw).expect("change only raw whitespace bytes");
+
+    let continuation = host.handle(ServiceRequest {
+        id: Some("provider-activity-raw-continuation".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({
+            "limit": 1,
+            "cursor": cursor,
+            "source_revision": revision
+        }),
+    });
+    assert!(!continuation.ok);
+    assert_eq!(
+        continuation.error.expect("raw mutation error").code,
+        "source_changed"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_ids_are_stable_across_filters_windows_and_front_inserts() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-stable-ids-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+    let prompt_run = |id: &str, action: &str, task: &str, completed_at: i64| LlmPromptRunRecord {
+        id: id.to_string(),
+        preview_id: format!("preview-{id}"),
+        confirmation_id: format!("confirm-{id}"),
+        action: action.to_string(),
+        request_kind: action.to_string(),
+        analysis_kind: None,
+        scope: Some("selected".to_string()),
+        instance_id: Some("fixture-skill".to_string()),
+        instance_ids: vec!["fixture-skill".to_string()],
+        definition_id: Some("fixture-definition".to_string()),
+        agent: Some("codex".to_string()),
+        task: Some(task.to_string()),
+        profile_id: "fixture-openai".to_string(),
+        provider: "openai-compatible".to_string(),
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 10,
+        estimated_input_tokens: 6,
+        estimated_output_tokens: 4,
+        estimated_total_tokens: 10,
+        estimated_cost_usd: 0.01,
+        draft_output: None,
+        draft_requires_user_copy: true,
+        provider_request_sent: true,
+        credential_accessed: true,
+        raw_secret_returned: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        redaction_summary: LlmPromptRunRedactionSummary {
+            status: "redacted-local-only".to_string(),
+            redacted_value_count: 0,
+            redacted_fields: Vec::new(),
+            placeholders: Vec::new(),
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+            raw_secret_returned: false,
+        },
+        created_at: completed_at - 10,
+        completed_at,
+        safety_flags: llm_prompt_run_safety_flags(true, true),
+    };
+    let provider_call =
+        |confirmation_id: &str, action: &str, timestamp: i64| ProviderCallMetadata {
+            timestamp,
+            action_type: action.to_string(),
+            profile_id: "fixture-openai".to_string(),
+            provider_type: provider::ProviderType::OpenAiCompatible,
+            model: "fixture-model".to_string(),
+            destination_host: "api.fixture.invalid".to_string(),
+            status: "succeeded".to_string(),
+            error_code: None,
+            error_message: None,
+            duration_ms: 8,
+            estimated_input_tokens: 5,
+            estimated_output_tokens: 3,
+            estimated_cost_usd: 0.01,
+            confirmation_id: confirmation_id.to_string(),
+            redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+            provider_request_sent: true,
+            credential_accessed: true,
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+        };
+    let target_prompt = prompt_run(
+        "shared-stable-id",
+        "analyze",
+        "Target prompt activity",
+        2_000,
+    );
+    let front_prompt = prompt_run("front-prompt", "recommend", "Front prompt", 3_000);
+    host.save_llm_prompt_runs(&[front_prompt.clone(), target_prompt.clone()])
+        .expect("save initial prompt rows");
+    let target_call = provider_call("shared-stable-id", "analyze", 2_100);
+    let front_call = provider_call("front-call", "recommend", 3_100);
+    let write_calls = |rows: &[ProviderCallMetadata]| {
+        let content = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize call row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(
+            provider_call_metadata_path(&app_data_dir),
+            format!("{content}\n"),
+        )
+        .expect("write call rows");
+    };
+    write_calls(&[front_call.clone(), target_call.clone()]);
+
+    let request_rows = |params: Value| {
+        let response = host.handle(ServiceRequest {
+            id: Some("provider-activity-stable-ids".to_string()),
+            method: "llm.listProviderActivity".to_string(),
+            params,
+        });
+        assert!(response.ok, "{:?}", response.error);
+        response.result.expect("stable id result")["rows"]
+            .as_array()
+            .expect("stable id rows")
+            .clone()
+    };
+    let target_ids = |rows: &[Value]| {
+        let prompt_id = rows
+            .iter()
+            .find(|row| row["kind"] == "prompt_run" && row["timestamp"].as_i64() == Some(2_000))
+            .and_then(|row| row["id"].as_str())
+            .expect("target prompt id")
+            .to_string();
+        let call_id = rows
+            .iter()
+            .find(|row| row["kind"] == "provider_call" && row["timestamp"].as_i64() == Some(2_100))
+            .and_then(|row| row["id"].as_str())
+            .expect("target provider call id")
+            .to_string();
+        (prompt_id, call_id)
+    };
+
+    let all_rows = request_rows(json!({ "limit": 100 }));
+    let original_ids = target_ids(&all_rows);
+    let filtered_rows = request_rows(json!({
+        "action": "analyze",
+        "start_at": 1_900,
+        "end_at": 2_200,
+        "limit": 100
+    }));
+    assert_eq!(target_ids(&filtered_rows), original_ids);
+    assert_ne!(
+        original_ids.0, original_ids.1,
+        "source prefixes prevent collisions"
+    );
+
+    let inserted_prompt = prompt_run("inserted-prompt", "analyze", "Inserted prompt", 4_000);
+    host.save_llm_prompt_runs(&[inserted_prompt, front_prompt, target_prompt])
+        .expect("insert prompt before target");
+    let inserted_call = provider_call("inserted-call", "analyze", 4_100);
+    write_calls(&[inserted_call, front_call, target_call]);
+    let after_insert = request_rows(json!({ "limit": 100 }));
+    assert_eq!(target_ids(&after_insert), original_ids);
+    assert_eq!(
+        after_insert
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        after_insert.len(),
+        "unified activity IDs must be unique across both sources"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_rolling_window_is_fixed_across_continuation_clock_changes() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-fixed-window-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create llm app data");
+    let metadata = |timestamp: i64, confirmation_id: &str| ProviderCallMetadata {
+        timestamp,
+        action_type: "analyze".to_string(),
+        profile_id: "fixture-openai".to_string(),
+        provider_type: provider::ProviderType::OpenAiCompatible,
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 8,
+        estimated_input_tokens: 5,
+        estimated_output_tokens: 3,
+        estimated_cost_usd: 0.01,
+        confirmation_id: confirmation_id.to_string(),
+        redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+        provider_request_sent: true,
+        credential_accessed: true,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+    };
+    let raw = [
+        metadata(190_000_000, "fixed-window-new"),
+        metadata(120_000_000, "fixed-window-boundary"),
+        metadata(100_000_000, "fixed-window-old"),
+    ]
+    .into_iter()
+    .map(|row| serde_json::to_string(&row).expect("serialize fixed-window metadata"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    fs::write(
+        provider_call_metadata_path(&app_data_dir),
+        format!("{raw}\n"),
+    )
+    .expect("write fixed-window metadata");
+
+    let first_params = ListProviderActivityParams {
+        window_days: Some(1),
+        limit: Some(1),
+        ..ListProviderActivityParams::default()
+    };
+    let first = host
+        .list_provider_activity_at(first_params.clone(), 200_000_000)
+        .expect("first fixed-window page");
+    assert_eq!(first.page.total_count, Some(2));
+    assert_eq!(first.rows[0].timestamp, 190_000_000);
+    let cursor = first.page.next_cursor.clone().expect("fixed-window cursor");
+    let revision = first.source_revision.clone();
+
+    let continuation = host
+        .list_provider_activity_at(
+            ListProviderActivityParams {
+                cursor: Some(cursor.clone()),
+                source_revision: Some(revision.clone()),
+                ..first_params.clone()
+            },
+            300_000_000,
+        )
+        .expect("continuation should reuse first-page bounds");
+    assert_eq!(continuation.page.total_count, Some(2));
+    assert_eq!(continuation.rows.len(), 1);
+    assert_eq!(continuation.rows[0].timestamp, 120_000_000);
+
+    let changed_window = host
+        .list_provider_activity_at(
+            ListProviderActivityParams {
+                window_days: Some(2),
+                cursor: Some(cursor),
+                source_revision: Some(revision),
+                limit: Some(1),
+                ..ListProviderActivityParams::default()
+            },
+            300_000_000,
+        )
+        .expect_err("a changed rolling filter must reject the cursor");
+    assert_eq!(changed_window.code(), "invalid_request");
 
     let _ = fs::remove_dir_all(app_data_dir);
 }

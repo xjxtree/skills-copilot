@@ -273,6 +273,8 @@ impl ServiceHost {
                         stable_id: candidate.row_id.clone(),
                         tie_breaker_digest: Some(candidate.path_digest.clone()),
                         accepted_count: Some(accepted_through),
+                        resolved_start_at: None,
+                        resolved_end_at: None,
                     })
                 })
                 .transpose()?

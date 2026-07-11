@@ -1510,6 +1510,10 @@ pub enum ServiceError {
     ConfirmationRequired(String),
     #[error("list source changed during pagination")]
     SourceChanged,
+    #[error("provider activity source is unreadable: {0}")]
+    ProviderActivitySourceUnreadable(&'static str),
+    #[error("provider activity source is invalid: {0}")]
+    ProviderActivitySourceInvalid(&'static str),
 }
 
 impl ServiceError {
@@ -1531,6 +1535,8 @@ impl ServiceError {
             Self::SkillNotFound(_) => "skill_not_found",
             Self::ConfirmationRequired(_) => "confirmation_required",
             Self::SourceChanged => "source_changed",
+            Self::ProviderActivitySourceUnreadable(_) => "provider_activity_source_unreadable",
+            Self::ProviderActivitySourceInvalid(_) => "provider_activity_source_invalid",
         }
     }
 }
