@@ -575,19 +575,24 @@ struct MarkdownTableView: View {
                     .padding(8)
             } else {
                 ScrollView(.horizontal) {
-                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
-                        ForEach(Array(model.displayRows.enumerated()), id: \.offset) { rowIndex, row in
+                    ExpandableSummaryList(
+                        model.identifiedRows,
+                        visibleLimit: model.visibleRowLimit,
+                        spacing: 6,
+                        accessibilityIdentifier: "markdown-table.show-all"
+                    ) { displayRow in
+                        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
                             GridRow {
-                                ForEach(Array(model.normalizedRow(row).enumerated()), id: \.offset) { columnIndex, value in
+                                ForEach(Array(model.normalizedRow(displayRow.values).enumerated()), id: \.offset) { columnIndex, value in
                                     MarkdownInlineText(
                                         value.isEmpty ? " " : value,
-                                        font: rowIndex == 0 ? .caption.bold() : .caption
+                                        font: displayRow.id == 0 ? .caption.bold() : .caption
                                     )
                                     .frame(width: model.columnWidth(at: columnIndex), alignment: .leading)
                                     .padding(.vertical, 3)
                                 }
                             }
-                            if rowIndex == 0 && model.displayRows.count > 1 {
+                            if displayRow.id == 0 && model.identifiedRows.count > 1 {
                                 Divider()
                                     .gridCellColumns(model.columnCount)
                             }
@@ -597,14 +602,6 @@ struct MarkdownTableView: View {
                     .padding(8)
                 }
                 .scrollIndicators(.automatic)
-            }
-
-            if model.hiddenRowCount > 0 {
-                Text(UIStrings.markdownTableHiddenRows(model.hiddenRowCount))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -636,10 +633,13 @@ struct MarkdownTableCardList: View {
     let model: MarkdownTableDisplayModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(model.displayCardRows.enumerated()), id: \.offset) { _, row in
-                MarkdownTableCard(row: model.normalizedRow(row), headers: model.headerRow)
-            }
+        ExpandableSummaryList(
+            model.identifiedCardRows,
+            visibleLimit: model.visibleCardRowLimit,
+            spacing: 8,
+            accessibilityIdentifier: "markdown-table.show-all"
+        ) { displayRow in
+            MarkdownTableCard(row: model.normalizedRow(displayRow.values), headers: model.headerRow)
         }
     }
 }

@@ -1249,8 +1249,12 @@ private struct SessionSidebarPanel: View {
             }
 
             if !preview.skillUsageRows.isEmpty {
-                Section(UIStrings.text("sidebar.sessions.topSkills", "Top skills from sessions")) {
-                    ForEach(preview.skillUsageRows.prefix(3)) { row in
+                Section(UIStrings.localSessionTopSkillsSummary(totalCount: preview.skillUsageRows.count)) {
+                    ExpandableSummaryList(
+                        preview.skillUsageRows,
+                        visibleLimit: 3,
+                        accessibilityIdentifier: "session-top-skills.show-all"
+                    ) { row in
                         SidebarMetricRow(
                             title: row.skillName,
                             value: "\(row.callCount)",

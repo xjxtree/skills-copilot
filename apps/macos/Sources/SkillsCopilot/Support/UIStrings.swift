@@ -206,6 +206,21 @@ enum UIStrings {
     static func localSessionNoMatchesMessage(totalCount: Int) -> String {
         format("sidebar.sessions.noMatchesWithCount", "No sessions match the current filters. %d local sessions are loaded; clear search or change scope to show them.", totalCount)
     }
+    static func localSessionTopSkillsSummary(totalCount: Int) -> String {
+        format("sidebar.sessions.topSkills", "Top 3 of %d skills from sessions", totalCount)
+    }
+    static func appSearchViewAllSkills(_ count: Int) -> String {
+        format("toolbar.globalSearch.viewAll.skills", "View All %d Skills", count)
+    }
+    static func appSearchViewAllSessions(_ count: Int) -> String {
+        format("toolbar.globalSearch.viewAll.sessions", "View All %d Sessions", count)
+    }
+    static func appSearchViewAllConfigRecords(_ count: Int) -> String {
+        format("toolbar.globalSearch.viewAll.configRecords", "View All %d Config Records", count)
+    }
+    static func appSearchViewAllHelp(_ count: Int, kind: String) -> String {
+        format("toolbar.globalSearch.viewAll.help", "Open all %d matching %@ in the canonical list.", count, kind)
+    }
     static var noConfigSelected: String { text("empty.noConfigSelected", "No Config History Selected") }
     static var noConfigSelectedMessage: String { text("empty.noConfigSelected.message", "Select Config in the primary sidebar, then choose a config history item to inspect.") }
     static var noFindings: String { text("empty.noFindings", "No Issues") }

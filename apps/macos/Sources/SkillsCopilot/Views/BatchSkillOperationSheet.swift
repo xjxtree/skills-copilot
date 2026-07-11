@@ -257,10 +257,17 @@ private struct BatchTogglePreviewSummary: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
                 if !preview.snapshotPlan.targets.isEmpty {
-                    Text(preview.snapshotPlan.targets.prefix(2).joined(separator: ", "))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                    ExpandableSummaryList(
+                        snapshotTargetRows,
+                        visibleLimit: 2,
+                        spacing: 2,
+                        accessibilityIdentifier: "batch-toggle-snapshot-targets.show-all"
+                    ) { row in
+                        Text(row.value)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                 }
             }
             .padding(8)
@@ -268,14 +275,22 @@ private struct BatchTogglePreviewSummary: View {
             .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
 
             DisclosureGroup(isExpanded: $showAffected) {
-                BatchToggleItemList(items: preview.affectedSkills, emptyMessage: UIStrings.batchToggleNoAffectedSkills)
+                BatchToggleItemList(
+                    items: preview.affectedSkills,
+                    emptyMessage: UIStrings.batchToggleNoAffectedSkills,
+                    showAllAccessibilityIdentifier: "batch-toggle-items.show-all"
+                )
             } label: {
                 Text(UIStrings.batchToggleAffectedSkills(preview.affectedSkills.count))
                     .font(.caption.bold())
             }
 
             DisclosureGroup(isExpanded: $showSkipped) {
-                BatchToggleItemList(items: preview.skippedItems, emptyMessage: UIStrings.batchToggleNoSkippedSkills)
+                BatchToggleItemList(
+                    items: preview.skippedItems,
+                    emptyMessage: UIStrings.batchToggleNoSkippedSkills,
+                    showAllAccessibilityIdentifier: "batch-toggle-skipped-items.show-all"
+                )
             } label: {
                 Text(UIStrings.batchToggleSkippedSkills(preview.skippedItems.count))
                     .font(.caption.bold())
@@ -288,6 +303,17 @@ private struct BatchTogglePreviewSummary: View {
             }
         }
     }
+
+    private var snapshotTargetRows: [BatchToggleSnapshotTargetRow] {
+        preview.snapshotPlan.targets.enumerated().map { index, value in
+            BatchToggleSnapshotTargetRow(id: index, value: value)
+        }
+    }
+}
+
+private struct BatchToggleSnapshotTargetRow: Identifiable {
+    let id: Int
+    let value: String
 }
 
 private struct BatchToggleCountPill: View {
@@ -313,6 +339,7 @@ private struct BatchToggleCountPill: View {
 private struct BatchToggleItemList: View {
     let items: [BatchToggleSkillItem]
     let emptyMessage: String
+    let showAllAccessibilityIdentifier: String
 
     var body: some View {
         if items.isEmpty {
@@ -321,24 +348,22 @@ private struct BatchToggleItemList: View {
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 3)
         } else {
-            VStack(alignment: .leading, spacing: 5) {
-                ForEach(items.prefix(8)) { item in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.name)
-                            .font(.caption.bold())
-                            .lineLimit(1)
-                        Text(itemSubtitle(item))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    .padding(.vertical, 2)
-                }
-                if items.count > 8 {
-                    Text(UIStrings.batchToggleMoreItems(items.count - 8))
+            ExpandableSummaryList(
+                items,
+                visibleLimit: 8,
+                spacing: 5,
+                accessibilityIdentifier: showAllAccessibilityIdentifier
+            ) { item in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.name)
+                        .font(.caption.bold())
+                        .lineLimit(1)
+                    Text(itemSubtitle(item))
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
+                .padding(.vertical, 2)
             }
         }
     }

@@ -107,6 +107,9 @@ struct SkillStoreTests {
         try await runCase("appSearchSkillSelectionSynchronizesListAndDetail") {
             try await appSearchSkillSelectionSynchronizesListAndDetail()
         }
+        try await runCase("appSearchViewAllRoutesCanonicallyWithoutRPC") {
+            try await appSearchViewAllRoutesCanonicallyWithoutRPC()
+        }
         try await runCase("agentConfigTimelineFollowsSelectedAgentFilterOnly") {
             try await agentConfigTimelineFollowsSelectedAgentFilterOnly()
         }

@@ -1715,52 +1715,56 @@ private struct TaskCockpitCandidateList: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 8)], alignment: .leading, spacing: 8) {
-                    ForEach(rows.prefix(8)) { row in
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Label(rowTitle(row), systemImage: systemImage)
-                                    .font(.callout.bold())
-                                    .lineLimit(1)
-                                Spacer()
-                                if let score = row.routingScore ?? row.readinessScore ?? row.score {
-                                    Text("\(score)")
-                                        .font(.caption.monospacedDigit().bold())
-                                }
+                ExpandableSummaryList(
+                    rows,
+                    visibleLimit: 8,
+                    spacing: 8,
+                    columns: [GridItem(.adaptive(minimum: 250), spacing: 8)],
+                    accessibilityIdentifier: "task-cockpit-candidates.show-all"
+                ) { row in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Label(rowTitle(row), systemImage: systemImage)
+                                .font(.callout.bold())
+                                .lineLimit(1)
+                            Spacer()
+                            if let score = row.routingScore ?? row.readinessScore ?? row.score {
+                                Text("\(score)")
+                                    .font(.caption.monospacedDigit().bold())
                             }
-                            HStack(spacing: 6) {
-                                if let agent = row.agent, !agent.isEmpty {
-                                    Text(DisplayText.agent(agent))
-                                }
-                                if let band = row.band, !band.isEmpty {
-                                    Text(band)
-                                }
-                                if let status = row.status, !status.isEmpty {
-                                    Text(status)
-                                }
-                            }
-                            .font(.caption2.bold())
-                            .foregroundStyle(.secondary)
-
-                            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
-                                MetadataRow(label: UIStrings.taskCockpitAgentReadinessScore, value: row.readinessScore.map(String.init) ?? UIStrings.unknown)
-                                MetadataRow(label: UIStrings.taskCockpitAgentRoutingScore, value: row.routingScore.map(String.init) ?? UIStrings.unknown)
-                                if let skill = row.skill {
-                                    MetadataRow(label: UIStrings.taskCockpitAgentBestSkill, value: skill.name)
-                                }
-                            }
-
-                            if !row.summary.isEmpty {
-                                PrivacyEvidenceText(value: row.summary, font: .caption, lineLimit: 3)
-                            }
-                            RoutingInlineList(title: UIStrings.taskCockpitAgentReasons, empty: UIStrings.taskCockpitAgentNoReasons, values: row.reasons, systemImage: "text.bubble")
-                            RoutingInlineList(title: UIStrings.taskCockpitEvidence, empty: UIStrings.taskCockpitNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
-                            RoutingInlineList(title: UIStrings.safetyFlags, empty: UIStrings.noSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
+                        HStack(spacing: 6) {
+                            if let agent = row.agent, !agent.isEmpty {
+                                Text(DisplayText.agent(agent))
+                            }
+                            if let band = row.band, !band.isEmpty {
+                                Text(band)
+                            }
+                            if let status = row.status, !status.isEmpty {
+                                Text(status)
+                            }
+                        }
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+
+                        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
+                            MetadataRow(label: UIStrings.taskCockpitAgentReadinessScore, value: row.readinessScore.map(String.init) ?? UIStrings.unknown)
+                            MetadataRow(label: UIStrings.taskCockpitAgentRoutingScore, value: row.routingScore.map(String.init) ?? UIStrings.unknown)
+                            if let skill = row.skill {
+                                MetadataRow(label: UIStrings.taskCockpitAgentBestSkill, value: skill.name)
+                            }
+                        }
+
+                        if !row.summary.isEmpty {
+                            PrivacyEvidenceText(value: row.summary, font: .caption, lineLimit: 3)
+                        }
+                        RoutingInlineList(title: UIStrings.taskCockpitAgentReasons, empty: UIStrings.taskCockpitAgentNoReasons, values: row.reasons, systemImage: "text.bubble")
+                        RoutingInlineList(title: UIStrings.taskCockpitEvidence, empty: UIStrings.taskCockpitNoEvidence, values: row.evidenceRefs, systemImage: "checklist")
+                        RoutingInlineList(title: UIStrings.safetyFlags, empty: UIStrings.noSafetyFlags, values: row.safetyFlags, systemImage: "checkmark.shield")
                     }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -1790,7 +1794,12 @@ private struct TaskCockpitContextList: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(rows.prefix(6)) { row in
+                ExpandableSummaryList(
+                    rows,
+                    visibleLimit: 6,
+                    spacing: 6,
+                    accessibilityIdentifier: "task-cockpit-context.show-all"
+                ) { row in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline) {
                             Label(row.title, systemImage: systemImage)

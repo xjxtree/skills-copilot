@@ -166,6 +166,38 @@ const checks = [
       && /deinit[\s\S]*?lane\.shutdown\(\)/.test(files.store),
   },
   {
+    label: "formal summaries and global search expose stable full-access controls",
+    text: [
+      files.sidebar,
+      files.batchSkillOperation,
+      files.detailOverview,
+      files.taskCockpit,
+      files.skillManager,
+      files.detailPrimitives,
+      files.content,
+    ].join("\n"),
+    passed: [
+      "session-top-skills.show-all",
+      "batch-toggle-items.show-all",
+      "permission-summary.show-all",
+      "task-cockpit-candidates.show-all",
+      "task-cockpit-context.show-all",
+      "skill-manager-agents.show-all",
+      "markdown-table.show-all",
+      "global-search.skills.view-all",
+      "global-search.sessions.view-all",
+      "global-search.config-history.view-all",
+    ].every((identifier) => [
+      files.sidebar,
+      files.batchSkillOperation,
+      files.detailOverview,
+      files.taskCockpit,
+      files.skillManager,
+      files.detailPrimitives,
+      files.content,
+    ].some((source) => source.includes(identifier))),
+  },
+  {
     label: "main shell uses NavigationSplitView",
     text: files.content,
     pattern: /NavigationSplitView(?:\([\s\S]*?\))?\s*{/,
@@ -180,7 +212,7 @@ const checks = [
       && /private var appShell:\s*some View\s*\{[\s\S]*?navigationShell[\s\S]*?\n\s*\}/.test(files.content)
       && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?isSearchFocused:\s*\$isGlobalSearchFocused,[\s\S]*?showsSearchResults:\s*\$showsGlobalSearchResults,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.accessibilityHidden\(true\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
       && /@State private var isGlobalSearchFocused = false[\s\S]*?@State private var showsGlobalSearchResults = false/.test(files.content)
-      && /private var globalSearchResultsOverlay:[\s\S]*?GlobalSearchResultsOverlay\([\s\S]*?query:\s*trimmedGlobalSearchText,[\s\S]*?results:\s*globalSearchResults[\s\S]*?selectGlobalSearchResult\(result\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsTrailingPadding/.test(files.content)
+      && /private var globalSearchResultsOverlay:[\s\S]*?GlobalSearchResultsOverlay\([\s\S]*?query:\s*trimmedGlobalSearchText,[\s\S]*?results:\s*globalSearchResults,[\s\S]*?kindCounts:\s*store\.appSearchResult\.kindCounts[\s\S]*?onViewAll:\s*showAllGlobalSearchResults[\s\S]*?selectGlobalSearchResult\(result\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsTrailingPadding/.test(files.content)
       && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
       && !/WindowChromeAgentControl/.test(files.content)
       && !/WindowChromeProjectControl/.test(files.content)
@@ -209,7 +241,7 @@ const checks = [
       && !/private struct GlobalWindowSearchControl:[\s\S]*?\.popover\(isPresented:\s*resultsPopoverBinding/.test(files.content)
       && /private struct WindowChromeSearchTextField:\s*NSViewRepresentable[\s\S]*?FirstMouseNSTextField[\s\S]*?isBordered = false[\s\S]*?drawsBackground = false[\s\S]*?focusRingType = \.none[\s\S]*?controlTextDidChange[\s\S]*?control\([\s\S]*?insertNewline/.test(files.content)
       && /private final class FirstMouseNSTextField:\s*NSTextField[\s\S]*?acceptsFirstMouse/.test(files.content)
-      && /private struct GlobalSearchResultsOverlay:[\s\S]*?let results:\s*\[AppSearchItem\][\s\S]*?let isLoading:\s*Bool[\s\S]*?ForEach\(AppSearchItemKind\.allCases[\s\S]*?let kindResults = results\.filter \{ \$0\.kind == kind \}[\s\S]*?Text\("\\\(kind\.title\) \\\(kindResults\.count\)"\)[\s\S]*?ForEach\(kindResults\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsMinHeight[\s\S]*?WindowChromeToolbarMetrics\.searchResultsWidth[\s\S]*?\.fill\(\.regularMaterial\)/.test(files.content)
+      && /private struct GlobalSearchResultsOverlay:[\s\S]*?let results:\s*\[AppSearchItem\][\s\S]*?let kindCounts:\s*\[AppSearchKindCount\][\s\S]*?let isLoading:\s*Bool[\s\S]*?ForEach\(AppSearchItemKind\.allCases[\s\S]*?let kindResults = results\.filter \{ \$0\.kind == kind \}[\s\S]*?Text\("\\\(kind\.title\) \\\(count\(for:\s*kind\)\)"\)[\s\S]*?Button\(viewAllTitle\(for:\s*kind\)\)[\s\S]*?ForEach\(kindResults\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsMinHeight[\s\S]*?WindowChromeToolbarMetrics\.searchResultsWidth[\s\S]*?\.fill\(\.regularMaterial\)/.test(files.content)
       && !/NativeToolbarSearchField/.test(files.content)
       && !/NSSearchField/.test(files.content)
       && !/ToolbarAvatarView/.test(files.content)
@@ -1171,11 +1203,11 @@ const customChecks = [
       && /"skillManager\.search\.completenessRecovery"/.test(files.localizableZh),
   },
   {
-    label: "Skill Manager target controls collapse to an icon summary bar",
+    label: "Skill Manager target controls preserve compact selection and expose all agents",
     passed: /@State private var isShowingSkillManagerTargets = false/.test(files.skillManager)
       && /private var selectedTargetAgents:\s*\[SkillManagerAgent\][\s\S]*?SkillManagerAgent\.defaultTargets\.filter[\s\S]*?store\.skillManagerSelectedAgentIDs\.contains/.test(files.skillManager)
       && /private var targetControls:[\s\S]*?SkillManagerTargetSummary\(agents:\s*selectedTargetAgents\)[\s\S]*?Button\s*\{[\s\S]*?isShowingSkillManagerTargets\.toggle\(\)[\s\S]*?\} label:[\s\S]*?isShowingSkillManagerTargets \? "chevron\.up" : "chevron\.down"[\s\S]*?if isShowingSkillManagerTargets \{[\s\S]*?LazyVGrid/.test(files.skillManager)
-      && /private struct SkillManagerTargetSummary:[\s\S]*?ForEach\(agents\.prefix\(4\)\)[\s\S]*?SkillManagerTargetIcon\(agent:\s*agent\)[\s\S]*?UIStrings\.text\("skillManager\.agents\.allSelected"/.test(files.skillManager)
+      && /private struct SkillManagerTargetSummary:[\s\S]*?ExpandableSummaryList\([\s\S]*?agents,[\s\S]*?visibleLimit:\s*4,[\s\S]*?skill-manager-agents\.show-all[\s\S]*?SkillManagerTargetIcon\(agent:\s*agent\)[\s\S]*?UIStrings\.text\("skillManager\.agents\.allSelected"/.test(files.skillManager)
       && /private struct SkillManagerTargetIcon:[\s\S]*?AgentIconProvider\.image\(for:\s*agent\.skillAgentFilter\)[\s\S]*?Image\(nsImage:\s*image\)/.test(files.skillManager)
       && /private extension SkillManagerAgent\s*\{[\s\S]*?var skillAgentFilter:\s*SkillAgentFilter[\s\S]*?case \.hermesAgent:[\s\S]*?return \.hermes/.test(files.skillManager),
   },

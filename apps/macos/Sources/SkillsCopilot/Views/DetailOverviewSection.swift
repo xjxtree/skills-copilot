@@ -181,21 +181,25 @@ private struct OverviewRiskPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            DetailMetricGrid(minColumnWidth: 150, spacing: 8) {
-                ForEach(permissionSummary.rows.prefix(5)) { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.label)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(row.value)
-                            .font(.caption.bold())
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                    }
-                    .padding(9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
+            ExpandableSummaryList(
+                permissionSummary.rows,
+                visibleLimit: 5,
+                spacing: 8,
+                columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                accessibilityIdentifier: "permission-summary.show-all"
+            ) { row in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(row.value)
+                        .font(.caption.bold())
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                 }
+                .padding(9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
             }
 
             Text(permissionSummary.note)

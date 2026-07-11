@@ -14,6 +14,7 @@ struct LocalSessionCacheTests {
         try oldSummaryAndDetailGenerationsAreIgnored()
         try cursorMetadataIsTransientAndCancellationRejectsLatePages()
         try globalSearchIndexesSummariesOnly()
+        try globalSearchLimitsShortcutsButPreservesExactKindCounts()
     }
 
     private let source = LocalSessionSnapshotKey(
@@ -225,6 +226,55 @@ struct LocalSessionCacheTests {
         try expectEqual(result.items.map(\.targetID), ["session-search"], "Global search should index session summary fields.")
         try expectFalse(result.items.contains { !($0.session?.contentItems.isEmpty ?? true) }, "Global search results must contain summary-only sessions.")
         try expectEqual(index.search(query: "RAW_DETAIL", limitPerKind: 6).items.count, 0, "Global search must not inspect detail content items.")
+    }
+
+    private func globalSearchLimitsShortcutsButPreservesExactKindCounts() throws {
+        let skills = (0..<20).map { index in
+            SkillRecord(
+                id: "skill-\(index)",
+                agent: "codex",
+                scope: "agent-project",
+                path: "/project/skills/match-\(index)/SKILL.md",
+                displayPath: "$PROJECT/skills/match-\(index)/SKILL.md",
+                definitionId: "definition.match.\(index)",
+                name: "Match skill \(index)",
+                state: "loaded",
+                enabled: true
+            )
+        }
+        let sessions = (0..<20).map { index in
+            row(id: "session-match-\(index)", title: "Match session \(index)")
+        }
+        let snapshots = (0..<20).map { index in
+            ConfigSnapshotRecord(
+                id: "snapshot-\(index)",
+                agent: "codex",
+                scope: "agent-project",
+                target: "$PROJECT/config-\(index).json",
+                content: "{}",
+                reason: "Match config \(index)",
+                createdAt: Int64(index)
+            )
+        }
+        let result = AppSearchIndex(
+            skills: skills,
+            sessionSummaries: sessions,
+            configSnapshots: snapshots
+        ).search(query: "match", limitPerKind: 6)
+
+        for kind in AppSearchItemKind.allCases {
+            try expectEqual(
+                result.items.filter { $0.kind == kind }.count,
+                6,
+                "Global search should expose six shortcuts for \(kind)."
+            )
+            try expectEqual(
+                result.count(for: kind),
+                20,
+                "Global search should preserve the exact full count for \(kind)."
+            )
+        }
+        try expectEqual(result.totalMatchedCount, 60, "Global search should preserve the exact aggregate match count.")
     }
 
     private func cursorMetadataIsTransientAndCancellationRejectsLatePages() throws {

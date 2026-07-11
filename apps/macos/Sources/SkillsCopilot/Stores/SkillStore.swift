@@ -3083,6 +3083,33 @@ final class SkillStore: ObservableObject {
         }
     }
 
+    func showAllAppSearchResults(kind: AppSearchItemKind, query: String) async {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+
+        selectedDetailSection = .overview
+        switch kind {
+        case .skill:
+            stateFilter = .all
+            skillScopeFilter = .all
+            searchText = query
+            sidebarContentMode = .skills
+            normalizeSelectionToVisibleSkills()
+
+        case .session:
+            localSessionScopeFilter = .all
+            sidebarContentMode = .sessions
+            localSessionSearchText = query
+            normalizeSelectedLocalSession()
+
+        case .configHistory:
+            configScopeFilter = .all
+            sidebarContentMode = .config
+            configSidebarSearchText = query
+            setSidebarSelection(.configOverview)
+        }
+    }
+
     private func ensureConfigSnapshot(_ snapshot: ConfigSnapshotRecord) {
         guard !agentConfigSnapshots.contains(where: { $0.id == snapshot.id }) else { return }
         agentConfigSnapshots.append(snapshot)

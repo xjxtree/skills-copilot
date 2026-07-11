@@ -61,7 +61,12 @@ struct AppSearchIndex {
             query: query,
             totalMatchedCount: matchingSkills.count + matchingSessions.count + matchingSnapshots.count,
             limitPerKind: limit,
-            items: items
+            items: items,
+            kindCounts: [
+                AppSearchKindCount(kind: .skill, count: matchingSkills.count),
+                AppSearchKindCount(kind: .session, count: matchingSessions.count),
+                AppSearchKindCount(kind: .configHistory, count: matchingSnapshots.count),
+            ]
         )
     }
 }

@@ -134,7 +134,11 @@
 "sidebar.sessions.recent" = "Recent Session Reviews";
 "sidebar.sessions.authorizationHint" = "No supported local session store was found for the selected agent.";
 "sidebar.sessions.skillsUnit" = "skills";
-"sidebar.sessions.topSkills" = "Top skills from sessions";
+"sidebar.sessions.topSkills" = "Top 3 of %d skills from sessions";
+"toolbar.globalSearch.viewAll.skills" = "View All %d Skills";
+"toolbar.globalSearch.viewAll.sessions" = "View All %d Sessions";
+"toolbar.globalSearch.viewAll.configRecords" = "View All %d Config Records";
+"toolbar.globalSearch.viewAll.help" = "Open all %d matching %@ in the canonical list.";
 "sidebar.sessions.list" = "Sessions";
 "sidebar.sessions.empty" = "No local sessions found.";
 "sidebar.sessions.noMatches" = "No sessions match the current search.";

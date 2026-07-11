@@ -134,7 +134,11 @@
 "sidebar.sessions.recent" = "最近会话分析";
 "sidebar.sessions.authorizationHint" = "未找到当前 agent 支持的本地会话存储。";
 "sidebar.sessions.skillsUnit" = "个技能";
-"sidebar.sessions.topSkills" = "会话中的高频技能";
+"sidebar.sessions.topSkills" = "会话技能前 3 项（共 %d 项）";
+"toolbar.globalSearch.viewAll.skills" = "查看全部 %d 个技能";
+"toolbar.globalSearch.viewAll.sessions" = "查看全部 %d 个会话";
+"toolbar.globalSearch.viewAll.configRecords" = "查看全部 %d 条配置记录";
+"toolbar.globalSearch.viewAll.help" = "在规范列表中打开全部 %d 个匹配的%@。";
 "sidebar.sessions.list" = "会话列表";
 "sidebar.sessions.empty" = "未发现本地会话。";
 "sidebar.sessions.noMatches" = "没有匹配当前搜索的会话。";

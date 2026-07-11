@@ -1011,18 +1011,30 @@ private struct SkillManagerTargetSummary: View {
     let agents: [SkillManagerAgent]
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(agents.prefix(4)) { agent in
-                SkillManagerTargetIcon(agent: agent)
-            }
+        VStack(alignment: .leading, spacing: 5) {
             Text(summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
+            ExpandableSummaryList(
+                agents,
+                visibleLimit: 4,
+                spacing: 4,
+                accessibilityIdentifier: "skill-manager-agents.show-all"
+            ) { agent in
+                HStack(spacing: 6) {
+                    SkillManagerTargetIcon(agent: agent)
+                    Text(agent.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color.agentCopilotPanelBackground, in: Capsule())
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
         .help(agents.map(\.title).joined(separator: ", "))
     }
 

@@ -1,6 +1,11 @@
 import CoreGraphics
 import Foundation
 
+struct MarkdownTableDisplayRow: Identifiable, Equatable {
+    let id: Int
+    let values: [String]
+}
+
 struct MarkdownTableDisplayModel {
     static let minimumColumnWidth: CGFloat = 120
     static let maximumColumnWidth: CGFloat = 280
@@ -23,6 +28,16 @@ struct MarkdownTableDisplayModel {
         return Array(nonEmptyRows.prefix(maxVisibleRows))
     }
 
+    var identifiedRows: [MarkdownTableDisplayRow] {
+        nonEmptyRows.enumerated().map { index, values in
+            MarkdownTableDisplayRow(id: index, values: values)
+        }
+    }
+
+    var visibleRowLimit: Int {
+        min(maxVisibleRows ?? nonEmptyRows.count, nonEmptyRows.count)
+    }
+
     var usesCardLayout: Bool {
         columnCount > 3 || (columnCount > 2 && containsLongBodyCell)
     }
@@ -38,6 +53,17 @@ struct MarkdownTableDisplayModel {
         }
         let visibleBodyCount = max(1, maxVisibleRows - 1)
         return Array(bodyRows.prefix(visibleBodyCount))
+    }
+
+    var identifiedCardRows: [MarkdownTableDisplayRow] {
+        cardBodyRows.enumerated().map { index, values in
+            MarkdownTableDisplayRow(id: index, values: values)
+        }
+    }
+
+    var visibleCardRowLimit: Int {
+        guard let maxVisibleRows else { return cardBodyRows.count }
+        return min(max(1, maxVisibleRows - 1), cardBodyRows.count)
     }
 
     var hiddenRowCount: Int {

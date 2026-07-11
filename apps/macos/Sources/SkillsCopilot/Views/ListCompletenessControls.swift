@@ -174,6 +174,8 @@ struct ExpandableSummaryList<Item: Identifiable, RowContent: View>: View {
     let items: [Item]
     let visibleLimit: Int
     let spacing: CGFloat
+    let columns: [GridItem]?
+    let accessibilityIdentifier: String
     let rowContent: (Item) -> RowContent
     @State private var isExpanded = false
 
@@ -181,25 +183,33 @@ struct ExpandableSummaryList<Item: Identifiable, RowContent: View>: View {
         _ items: [Item],
         visibleLimit: Int,
         spacing: CGFloat = 4,
+        columns: [GridItem]? = nil,
+        accessibilityIdentifier: String = "list-completeness.show-all",
         @ViewBuilder rowContent: @escaping (Item) -> RowContent
     ) {
         self.items = items
         self.visibleLimit = max(0, visibleLimit)
         self.spacing = spacing
+        self.columns = columns
+        self.accessibilityIdentifier = accessibilityIdentifier
         self.rowContent = rowContent
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
-            ForEach(visibleItems) { item in
-                rowContent(item)
+            if let columns {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: spacing) {
+                    itemRows
+                }
+            } else {
+                itemRows
             }
             if !isExpanded && items.count > visibleLimit {
                 Button(UIStrings.listCompletenessShowAll(items.count)) {
                     isExpanded = true
                 }
                 .buttonStyle(.link)
-                .accessibilityIdentifier("list-completeness.show-all")
+                .accessibilityIdentifier(accessibilityIdentifier)
                 .accessibilityLabel(UIStrings.listCompletenessShowAll(items.count))
                 .accessibilityValue(UIStrings.listCompletenessSummaryValue(
                     visibleCount: visibleLimit,
@@ -212,5 +222,12 @@ struct ExpandableSummaryList<Item: Identifiable, RowContent: View>: View {
 
     private var visibleItems: [Item] {
         isExpanded ? items : Array(items.prefix(visibleLimit))
+    }
+
+    @ViewBuilder
+    private var itemRows: some View {
+        ForEach(visibleItems) { item in
+            rowContent(item)
+        }
     }
 }

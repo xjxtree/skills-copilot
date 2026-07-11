@@ -112,8 +112,10 @@ struct ContentView: View {
         GlobalSearchResultsOverlay(
             query: trimmedGlobalSearchText,
             results: globalSearchResults,
+            kindCounts: store.appSearchResult.kindCounts,
             isLoading: store.isSearchingApp,
-            fallbackReason: store.appSearchResult.fallbackReason
+            fallbackReason: store.appSearchResult.fallbackReason,
+            onViewAll: showAllGlobalSearchResults
         ) { result in
             showsGlobalSearchResults = false
             isGlobalSearchFocused = false
@@ -141,6 +143,16 @@ struct ContentView: View {
             await store.selectAppSearchItem(result)
             globalSearchText = ""
             showsGlobalSearchResults = false
+        }
+    }
+
+    private func showAllGlobalSearchResults(_ kind: AppSearchItemKind) {
+        let query = trimmedGlobalSearchText
+        Task { @MainActor in
+            await store.showAllAppSearchResults(kind: kind, query: query)
+            globalSearchText = ""
+            showsGlobalSearchResults = false
+            isGlobalSearchFocused = false
         }
     }
 }
@@ -934,8 +946,10 @@ private struct WindowChromeAboutButton: View {
 private struct GlobalSearchResultsOverlay: View {
     let query: String
     let results: [AppSearchItem]
+    let kindCounts: [AppSearchKindCount]
     let isLoading: Bool
     let fallbackReason: String?
+    let onViewAll: (AppSearchItemKind) -> Void
     let onSelect: (AppSearchItem) -> Void
 
     var body: some View {
@@ -973,9 +987,18 @@ private struct GlobalSearchResultsOverlay: View {
                                             .font(.caption.weight(.semibold))
                                             .foregroundStyle(.secondary)
                                             .frame(width: 14)
-                                        Text("\(kind.title) \(kindResults.count)")
+                                        Text("\(kind.title) \(count(for: kind))")
                                             .font(.caption.weight(.semibold))
                                             .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button(viewAllTitle(for: kind)) {
+                                            onViewAll(kind)
+                                        }
+                                        .buttonStyle(.link)
+                                        .controlSize(.small)
+                                        .accessibilityIdentifier(viewAllAccessibilityIdentifier(for: kind))
+                                        .accessibilityLabel(viewAllTitle(for: kind))
+                                        .help(viewAllHelp(for: kind))
                                     }
                                     .padding(.horizontal, 8)
 
@@ -1021,6 +1044,38 @@ private struct GlobalSearchResultsOverlay: View {
                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
+    }
+
+    private func count(for kind: AppSearchItemKind) -> Int {
+        kindCounts.first(where: { $0.kind == kind })?.count
+            ?? results.lazy.filter { $0.kind == kind }.count
+    }
+
+    private func viewAllTitle(for kind: AppSearchItemKind) -> String {
+        let count = count(for: kind)
+        switch kind {
+        case .skill:
+            return UIStrings.appSearchViewAllSkills(count)
+        case .session:
+            return UIStrings.appSearchViewAllSessions(count)
+        case .configHistory:
+            return UIStrings.appSearchViewAllConfigRecords(count)
+        }
+    }
+
+    private func viewAllAccessibilityIdentifier(for kind: AppSearchItemKind) -> String {
+        switch kind {
+        case .skill:
+            return "global-search.skills.view-all"
+        case .session:
+            return "global-search.sessions.view-all"
+        case .configHistory:
+            return "global-search.config-history.view-all"
+        }
+    }
+
+    private func viewAllHelp(for kind: AppSearchItemKind) -> String {
+        UIStrings.appSearchViewAllHelp(count(for: kind), kind: kind.title.lowercased())
     }
 }
 

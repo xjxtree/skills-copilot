@@ -28,6 +28,11 @@ enum AppSearchItemKind: String, CaseIterable, Decodable, Hashable {
     }
 }
 
+struct AppSearchKindCount: Decodable, Hashable {
+    let kind: AppSearchItemKind
+    let count: Int
+}
+
 struct AppSearchResult: Decodable, Hashable {
     let generatedBy: String
     let query: String
@@ -35,6 +40,7 @@ struct AppSearchResult: Decodable, Hashable {
     let totalMatchedCount: Int
     let limitPerKind: Int
     let items: [AppSearchItem]
+    let kindCounts: [AppSearchKindCount]
     let readOnly: Bool
     let providerRequestSent: Bool
     let skillFilesMutated: Bool
@@ -53,6 +59,8 @@ struct AppSearchResult: Decodable, Hashable {
         case limitPerKind = "limit_per_kind"
         case limitPerKindAlt = "limitPerKind"
         case items
+        case kindCounts = "kind_counts"
+        case kindCountsAlt = "kindCounts"
         case readOnly = "read_only"
         case readOnlyAlt = "readOnly"
         case providerRequestSent = "provider_request_sent"
@@ -76,6 +84,7 @@ struct AppSearchResult: Decodable, Hashable {
         totalMatchedCount: Int? = nil,
         limitPerKind: Int = 0,
         items: [AppSearchItem] = [],
+        kindCounts: [AppSearchKindCount]? = nil,
         readOnly: Bool = true,
         providerRequestSent: Bool = false,
         skillFilesMutated: Bool = false,
@@ -90,6 +99,9 @@ struct AppSearchResult: Decodable, Hashable {
         self.totalMatchedCount = totalMatchedCount ?? items.count
         self.limitPerKind = limitPerKind
         self.items = items
+        self.kindCounts = kindCounts ?? AppSearchItemKind.allCases.map { kind in
+            AppSearchKindCount(kind: kind, count: items.lazy.filter { $0.kind == kind }.count)
+        }
         self.readOnly = readOnly
         self.providerRequestSent = providerRequestSent
         self.skillFilesMutated = skillFilesMutated
@@ -114,6 +126,8 @@ struct AppSearchResult: Decodable, Hashable {
                 ?? container.decodeIfPresent(Int.self, forKey: .limitPerKindAlt)
                 ?? items.count,
             items: items,
+            kindCounts: try container.decodeIfPresent([AppSearchKindCount].self, forKey: .kindCounts)
+                ?? container.decodeIfPresent([AppSearchKindCount].self, forKey: .kindCountsAlt),
             readOnly: try container.decodeIfPresent(Bool.self, forKey: .readOnly)
                 ?? container.decodeIfPresent(Bool.self, forKey: .readOnlyAlt)
                 ?? true,
@@ -143,6 +157,11 @@ struct AppSearchResult: Decodable, Hashable {
 
     static func unavailable(query: String, reason: String) -> AppSearchResult {
         AppSearchResult(query: query, fallbackReason: reason)
+    }
+
+    func count(for kind: AppSearchItemKind) -> Int {
+        kindCounts.first(where: { $0.kind == kind })?.count
+            ?? items.lazy.filter { $0.kind == kind }.count
     }
 }
 
