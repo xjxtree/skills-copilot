@@ -244,7 +244,8 @@ struct HistorySection: View {
                     state: completeness,
                     onLoadMore: onLoadMore,
                     onLoadAll: onLoadAll,
-                    onCancel: onCancel
+                    onCancel: onCancel,
+                    accessibilityIdentifierPrefix: "skill-events"
                 )
             }
         }

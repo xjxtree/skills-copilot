@@ -41,12 +41,20 @@ these members in this exact order:
 
 1. `verify:service-protocol-drift`
 2. `verify:module-size`
-3. `verify:doc-governance`
-4. `verify:macos-native-test-registry`
-5. `verify:js-syntax`
-6. `verify:rust-docs`
-7. `verify:validation-blockers`
-8. `verify:screenshot-artifacts`
+3. `verify:list-completeness`
+4. `verify:doc-governance`
+5. `verify:macos-native-test-registry`
+6. `verify:js-syntax`
+7. `verify:rust-docs`
+8. `verify:validation-blockers`
+9. `verify:screenshot-artifacts`
+
+`verify:list-completeness` checks the schema-v1 formal-list inventory, owning
+source paths, reachable full-access accessibility controls, and new raw
+`prefix()`-defined `ForEach`/`List` presentations. It is a static declaration
+and control-boundary check. Native model and UI tests remain responsible for
+proving loading, continuation, expansion, routing, cancellation, and focus
+behavior.
 
 The live `pnpm benchmark:10k` and `pnpm benchmark:macos-list-model` checks are
 separate CI/release commands, not members of the deterministic parity gate.

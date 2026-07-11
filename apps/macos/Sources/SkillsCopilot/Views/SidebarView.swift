@@ -1239,7 +1239,8 @@ private struct SessionSidebarPanel: View {
                             state: store.localSessionCompleteness,
                             onLoadMore: { Task { await store.loadMoreLocalSessions() } },
                             onLoadAll: { Task { await store.loadAllLocalSessions() } },
-                            onCancel: { store.cancelLocalSessionLoadAll() }
+                            onCancel: { store.cancelLocalSessionLoadAll() },
+                            accessibilityIdentifierPrefix: "sessions"
                         )
                         Text(UIStrings.text(
                             "sidebar.sessions.loadedRowsOnly",
@@ -2090,7 +2091,8 @@ private struct ConfigSidebarPanel: View {
                         },
                         onCancel: {
                             store.cancelAgentConfigSnapshotLoadAll()
-                        }
+                        },
+                        accessibilityIdentifierPrefix: "config-history"
                     )
                 }
             }

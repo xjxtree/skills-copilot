@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "surfaces": [
+    {
+      "id": "catalog.skills",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
+      "source": "app.stateSnapshot.skills",
+      "policy": "complete",
+      "total_count_source": "catalog snapshot skills count",
+      "allowed_limitations": ["safety_budget", "unreadable_source"]
+    },
+    {
+      "id": "catalog.findings",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailFindingsHistorySection.swift",
+      "source": "app.stateSnapshot.findings",
+      "policy": "complete",
+      "total_count_source": "filtered catalog finding count",
+      "allowed_limitations": ["safety_budget", "unreadable_source"]
+    },
+    {
+      "id": "catalog.conflicts",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailFindingsHistorySection.swift",
+      "source": "app.stateSnapshot.conflicts",
+      "policy": "complete",
+      "total_count_source": "filtered catalog conflict count",
+      "allowed_limitations": ["safety_budget", "unreadable_source"]
+    },
+    {
+      "id": "catalog.rules",
+      "file": "apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift",
+      "source": "rule.listTuning",
+      "policy": "complete",
+      "total_count_source": "rule tuning record count",
+      "allowed_limitations": ["unreadable_source"]
+    },
+    {
+      "id": "skill-events.history",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailHeaderOverviewSection.swift",
+      "source": "event.listPage",
+      "policy": "paged",
+      "total_count_source": "event page metadata total_count",
+      "full_access_id": "skill-events.load-all",
+      "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "sessions.sidebar",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
+      "source": "session.previewLocalSessions",
+      "policy": "paged",
+      "total_count_source": "local-session page metadata total_count",
+      "full_access_id": "sessions.load-all",
+      "allowed_limitations": ["safety_budget", "source_changed", "page_failed"]
+    },
+    {
+      "id": "config.history",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
+      "source": "snapshot.listAgentConfigPage",
+      "policy": "paged",
+      "total_count_source": "config-history page metadata total_count",
+      "full_access_id": "config-history.load-all",
+      "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "skill-manager.search",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
+      "source": "skillManager.search",
+      "policy": "paged",
+      "total_count_source": "external manager total_count when defensible",
+      "full_access_id": "skill-manager.search.show-all-returned",
+      "allowed_limitations": ["source_limited", "unsupported_protocol"]
+    },
+    {
+      "id": "skill-manager.installed",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
+      "source": "skillManager.listInstalled",
+      "policy": "complete",
+      "total_count_source": "installed result total_count",
+      "allowed_limitations": ["source_limited", "unsupported_protocol"]
+    },
+    {
+      "id": "skill-manager.local-library",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
+      "source": "app-owned local skill library",
+      "policy": "complete",
+      "total_count_source": "local library collection count",
+      "allowed_limitations": []
+    },
+    {
+      "id": "provider.activity",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ProviderObservabilitySettingsPanel.swift",
+      "source": "llm.listProviderActivity",
+      "policy": "paged",
+      "total_count_source": "provider activity page metadata total_count",
+      "full_access_id": "provider-activity.load-all",
+      "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "global-search.skills",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ContentView.swift",
+      "source": "AppSearchIndex.search skill matches",
+      "policy": "summary_with_expand",
+      "total_count_source": "in-memory skill match count",
+      "full_access_id": "global-search.skills.view-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "global-search.sessions",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ContentView.swift",
+      "source": "AppSearchIndex.search session matches",
+      "policy": "summary_with_expand",
+      "total_count_source": "in-memory session match count",
+      "full_access_id": "global-search.sessions.view-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "global-search.config-history",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ContentView.swift",
+      "source": "AppSearchIndex.search config-history matches",
+      "policy": "summary_with_expand",
+      "total_count_source": "in-memory config-history match count",
+      "full_access_id": "global-search.config-history.view-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "session.top-skills",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
+      "source": "LocalSessionPreview.skillUsageRows",
+      "policy": "summary_with_expand",
+      "total_count_source": "session skill usage row count",
+      "full_access_id": "session-top-skills.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "batch-toggle.snapshot-targets",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/BatchSkillOperationSheet.swift",
+      "source": "BatchTogglePreview.snapshotPlan.targets",
+      "policy": "summary_with_expand",
+      "total_count_source": "snapshot target count",
+      "full_access_id": "batch-toggle-snapshot-targets.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "batch-toggle.items",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/BatchSkillOperationSheet.swift",
+      "source": "BatchTogglePreview.affectedSkills",
+      "policy": "summary_with_expand",
+      "total_count_source": "affected skill count",
+      "full_access_id": "batch-toggle-items.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "batch-toggle.skipped-items",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/BatchSkillOperationSheet.swift",
+      "source": "BatchTogglePreview.skippedItems",
+      "policy": "summary_with_expand",
+      "total_count_source": "skipped item count",
+      "full_access_id": "batch-toggle-skipped-items.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "permission.summary",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailOverviewSection.swift",
+      "source": "PermissionSummary.rows",
+      "policy": "summary_with_expand",
+      "total_count_source": "permission summary row count",
+      "full_access_id": "permission-summary.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.tasks",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.taskRows",
+      "policy": "summary_with_expand",
+      "total_count_source": "task row count",
+      "full_access_id": "task-cockpit-tasks.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.routes",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.routeCandidates",
+      "policy": "summary_with_expand",
+      "total_count_source": "route candidate count",
+      "full_access_id": "task-cockpit-candidates.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.agents",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.agentCandidates",
+      "policy": "summary_with_expand",
+      "total_count_source": "agent candidate count",
+      "full_access_id": "task-cockpit-agents.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.skills",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.skillCandidates",
+      "policy": "summary_with_expand",
+      "total_count_source": "skill candidate count",
+      "full_access_id": "task-cockpit-skills.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.sections",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.cockpitSections",
+      "policy": "summary_with_expand",
+      "total_count_source": "cockpit section count",
+      "full_access_id": "task-cockpit-sections.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.readiness",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.readinessSignals",
+      "policy": "summary_with_expand",
+      "total_count_source": "readiness signal count",
+      "full_access_id": "task-cockpit-readiness.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.provider-context",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.providerObservabilityContext",
+      "policy": "summary_with_expand",
+      "total_count_source": "provider context row count",
+      "full_access_id": "task-cockpit-provider-context.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.gaps",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.gapRows",
+      "policy": "summary_with_expand",
+      "total_count_source": "gap row count",
+      "full_access_id": "task-cockpit-context.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.blockers",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.blockerRows",
+      "policy": "summary_with_expand",
+      "total_count_source": "blocker row count",
+      "full_access_id": "task-cockpit-blockers.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.evidence",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "TaskCockpitResult.evidenceReferences",
+      "policy": "summary_with_expand",
+      "total_count_source": "evidence reference count",
+      "full_access_id": "task-cockpit-evidence.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.inline-details",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailPresentationPrimitives.swift",
+      "source": "RoutingInlineList.values",
+      "policy": "complete",
+      "total_count_source": "inline value count",
+      "allowed_limitations": []
+    },
+    {
+      "id": "task-cockpit.safety-notes",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "source": "ProviderObservabilitySafety.notes",
+      "policy": "complete",
+      "total_count_source": "safety note count",
+      "allowed_limitations": []
+    },
+    {
+      "id": "skill-manager.agents",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
+      "source": "SkillManagerTargetSummary.agents",
+      "policy": "summary_with_expand",
+      "total_count_source": "manager target agent count",
+      "full_access_id": "skill-manager-agents.show-all",
+      "allowed_limitations": []
+    },
+    {
+      "id": "skill-manager.risks",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
+      "source": "SkillManagerCommandPreview.risks",
+      "policy": "complete",
+      "total_count_source": "mutation risk count",
+      "allowed_limitations": []
+    },
+    {
+      "id": "markdown.tables",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailPresentationPrimitives.swift",
+      "source": "MarkdownTableDisplayModel rows",
+      "policy": "summary_with_expand",
+      "total_count_source": "normalized Markdown table row count",
+      "full_access_id": "markdown-table.show-all",
+      "allowed_limitations": []
+    }
+  ]
+}

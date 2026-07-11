@@ -12,6 +12,14 @@ numbers, and main changelogs belong in GitHub tags and GitHub Releases.
 - If documentation claims completion, screenshot evidence, or verifier results,
   run the relevant command and record the real outcome.
 - Keep work items close to the owning architecture boundary.
+- Treat `scripts/list-completeness-surfaces.json` as the active routing ledger
+  for formal list ownership and policy. A list change must update its manifest
+  entry and pass `pnpm verify:list-completeness`; paged and summarized surfaces
+  must retain a real reachable full-access control.
+- Keep the list verifier's responsibility limited to static declarations,
+  source paths, control IDs, and forbidden raw prefix presentations. Route
+  loading/expansion/routing/cancellation and accessibility behavior changes to
+  the owning native model/UI tests.
 
 ## Backlog
 

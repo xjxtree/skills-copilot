@@ -51,3 +51,19 @@ This file captures UI and evidence standards.
   replacement for the full gate.
 - Use `pnpm verify:screenshot-artifacts` when adding, removing, or reorganizing
   screenshot evidence.
+
+## Formal List Completeness
+
+- Declare every user-visible formal list in
+  `scripts/list-completeness-surfaces.json` with its owning source, data source,
+  completeness policy, total-count source, allowed limitations, and full-access
+  accessibility control when the policy is paged or summarized.
+- Run `pnpm test:list-completeness` while changing the verifier and `pnpm
+  verify:list-completeness` for every list-surface change. New raw
+  `ForEach(...prefix(...))` and `List(...prefix(...))` presentations are
+  rejected unless the complete collection remains reachable through the
+  approved disclosure component.
+- The manifest verifier proves declaration, source-path, and reachable-control
+  wiring. Native model/UI tests separately prove pagination state, Load More,
+  Load All, cancellation, Show All, canonical-list routing, and accessibility
+  behavior; neither layer substitutes for the other.
