@@ -10,6 +10,7 @@ struct AgentSessionDetailPanel: View {
             detailState: store.selectedLocalSessionDetailState,
             gapNotes: store.selectedLocalSession == nil ? store.localSessionPreviewResult.gapNotes : [],
             isRefreshing: store.isPreviewingLocalSessions,
+            showsLoadedRowsFilterNotice: store.localSessionCompleteness.hasMore,
             onRefresh: {
                 Task {
                     await store.previewLocalSessions()
@@ -28,6 +29,7 @@ private struct AgentSessionContentPanel: View {
     let detailState: LocalSessionDetailState?
     let gapNotes: [String]
     let isRefreshing: Bool
+    let showsLoadedRowsFilterNotice: Bool
     let onRefresh: () -> Void
     let onLoadDetail: () -> Void
 
@@ -117,6 +119,15 @@ private struct AgentSessionContentPanel: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+
+            if showsLoadedRowsFilterNotice {
+                Text(UIStrings.text(
+                    "agentCopilot.sessions.loadedRowsFilterNotice",
+                    "Search, scope, and sort currently cover loaded session summaries; load more to include remaining rows."
+                ))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
         }
         .padding()

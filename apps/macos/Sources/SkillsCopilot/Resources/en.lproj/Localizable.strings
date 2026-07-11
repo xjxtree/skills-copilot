@@ -145,6 +145,7 @@
 "sidebar.sessions.skillShort" = "skill";
 "sidebar.sessions.startShort" = "Start";
 "sidebar.sessions.lastShort" = "Last";
+"sidebar.sessions.loadedRowsOnly" = "Search, scope, and sort cover loaded rows while more remain.";
 "skillManager.title" = "Skill Package Manager";
 "skillManager.sidebar.subtitle" = "Search, install, local library";
 "skillManager.targets" = "Targets";
@@ -237,6 +238,7 @@
 "agentCopilot.sessions.filterAll" = "All";
 "agentCopilot.sessions.started" = "Started";
 "agentCopilot.sessions.ended" = "Last";
+"agentCopilot.sessions.loadedRowsFilterNotice" = "Search, scope, and sort currently cover loaded session summaries; load more to include remaining rows.";
 "sort.name" = "Name";
 "sort.path" = "Path";
 "app.title" = "Agent Copilot";

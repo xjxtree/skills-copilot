@@ -48,6 +48,7 @@ struct ServiceClientRPCTests {
 
         try await configConsistencyRequestsUseExactBindings()
         try await localHistoryPageRequestsDecodeAliases()
+        try await localSessionCursorRequestDecodesCompleteness()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
@@ -100,6 +101,28 @@ struct ServiceClientRPCTests {
         try expectEqual(eventParams["instance_id"] as? String, Optional("skill-1"), "Event page stable instance id")
         try expectEqual(eventParams["cursor"] as? String, Optional("v1:event-page-1"), "Event continuation cursor")
         try expectEqual(eventParams["source_revision"] as? String, Optional("sha256:event-revision"), "Event source revision")
+    }
+
+    private func localSessionCursorRequestDecodesCompleteness() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+        let page = try await client.previewLocalSessions(
+            authorizedRoots: ["/tmp/sessions"],
+            agent: "codex",
+            scope: .all,
+            includeContentItems: false,
+            limit: 100,
+            cursor: "v1:cursor-100",
+            sourceRevision: "sha256:sessions"
+        )
+        let params = try runner.params(for: "session.previewLocalSessions")
+        try expectEqual(params["cursor"] as? String, "v1:cursor-100", "Session cursor request")
+        try expectEqual(params["source_revision"] as? String, "sha256:sessions", "Session source revision request")
+        try expectNil(params["offset"], "Cursor requests must not send legacy offset.")
+        try expectNil(params["max_files"], "Cursor requests must not send legacy max-files.")
+        try expectEqual(page.nextCursor, "v1:cursor-200", "Session next cursor")
+        try expectEqual(page.sourceCompleteness, .enumerable, "Session source completeness")
+        try expectNil(page.incompleteReason, "Enumerable session page should not report incompleteness.")
     }
 
     private func encodedObjectKeys<T: Encodable>(_ value: T) throws -> Set<String> {
@@ -215,6 +238,121 @@ struct ServiceClientRPCTests {
     }
 }
 
+@MainActor
+extension SkillStoreTests {
+    func localSessionPrewarmMoreAndAllUseCursorPages() async throws {
+        let runner = PagedLocalSessionRunner(totalCount: 1_205)
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/paged-session-service")))
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 800, "Prewarm boundary")
+        try expectEqual(store.localSessionCompleteness.loadedCount, 800, "Prewarm loaded count")
+        try expectEqual(store.localSessionCompleteness.hasMore, true, "Prewarm should expose continuation")
+        await store.loadMoreLocalSessions()
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 900, "One more page")
+        await store.loadAllLocalSessions()
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 1_205, "Load all count")
+        try expectEqual(store.localSessionCompleteness.completeness, .complete, "Load all completeness")
+        try expectEqual(Set(store.localSessionPreviewResult.sessionRows.map(\.id)).count, 1_205, "No duplicates")
+        let requests = await runner.recordedRequests()
+        try expectFalse(!requests.allSatisfy { $0.limit == 100 }, "Every summary page must request at most 100 rows.")
+        try expectFalse(!requests.dropFirst().allSatisfy { $0.cursor != nil && $0.sourceRevision != nil }, "Every continuation must bind cursor and source revision.")
+    }
+
+    func cancelledAndStaleLocalSessionPagesCannotPublish() async throws {
+        let runner = PagedLocalSessionRunner(totalCount: 1_205, initiallyReleasedThroughPage: 7)
+        let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/delayed-session-service")))
+        await store.refreshLocalSessionSnapshot(reason: .startup)
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 800, "Delayed fixture prewarm")
+        let loadAll = Task { @MainActor in await store.loadAllLocalSessions() }
+        await runner.releaseNextPage()
+        try await waitUntil("Load All should accept its first released continuation.") { store.localSessionPreviewResult.sessionRows.count == 900 }
+        await runner.releaseNextPage()
+        try await waitUntil("Load All should accept its second released continuation.") { store.localSessionPreviewResult.sessionRows.count == 1_000 }
+        let acceptedCount = store.localSessionPreviewResult.sessionRows.count
+        try await waitUntil("A third Load All page should be in flight.") { await runner.requestCount() >= 11 }
+        store.cancelLocalSessionLoadAll()
+        await runner.releaseNextPage()
+        await loadAll.value
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, acceptedCount, "Cancellation must retain accepted rows and reject the old response.")
+
+        let staleRunner = PagedLocalSessionRunner(totalCount: 1_205, initiallyReleasedThroughPage: 7)
+        let staleStore = SkillStore(service: ServiceClient(processRunner: staleRunner, serviceURL: URL(fileURLWithPath: "/tmp/stale-session-service")))
+        await staleStore.refreshLocalSessionSnapshot(reason: .startup)
+        let staleLoad = Task { @MainActor in await staleStore.loadMoreLocalSessions() }
+        try await waitUntil("The stale source continuation should be in flight.") { await staleRunner.requestCount() >= 9 }
+        staleStore.agentFilter = .codex
+        await staleRunner.releaseNextPage()
+        await staleLoad.value
+        try expectFalse(staleStore.localSessionPreviewResult.sessionRows.contains { $0.id.hasPrefix("claude-code-session-8") }, "A page released after changing agentFilter must never enter the active source.")
+    }
+}
+
+struct RecordedPagedSessionRequest: Sendable {
+    let limit: Int?
+    let cursor: String?
+    let sourceRevision: String?
+}
+
+actor PagedLocalSessionRunner: ServiceProcessRunning {
+    private let totalCount: Int
+    private var releasedThroughPage: Int
+    private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
+    private var requests: [RecordedPagedSessionRequest] = []
+
+    init(totalCount: Int, initiallyReleasedThroughPage: Int = .max) {
+        self.totalCount = totalCount
+        releasedThroughPage = initiallyReleasedThroughPage
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let request = try JSONSerialization.jsonObject(with: input) as? [String: Any] ?? [:]
+        let params = request["params"] as? [String: Any] ?? [:]
+        let cursor = params["cursor"] as? String
+        requests.append(RecordedPagedSessionRequest(
+            limit: params["limit"] as? Int,
+            cursor: cursor,
+            sourceRevision: params["source_revision"] as? String
+        ))
+        let start = cursor.flatMap { Int($0.replacingOccurrences(of: "cursor-", with: "")) } ?? 0
+        let pageIndex = start / 100
+        if pageIndex > releasedThroughPage {
+            await withCheckedContinuation { waiters[pageIndex, default: []].append($0) }
+        }
+        let agent = (params["agent"] as? String) ?? "all"
+        let end = min(start + 100, totalCount)
+        let rows: [[String: Any]] = (start..<end).map { index in
+            ["id": "\(agent)-session-\(index)", "title": "Session \(index)",
+             "source_kind": "authorized-local-session", "scope": "all",
+             "redacted_path": "$HOME/.sessions/\(index).jsonl", "modified_at": totalCount - index,
+             "excerpt": "Summary \(index)", "content_included": false, "content_items": []]
+        }
+        let hasMore = end < totalCount
+        let result: [String: Any] = [
+            "generated_by": "local-v2.98", "authorized": true, "count": rows.count,
+            "total_candidate_count": totalCount, "total_matched_count": totalCount,
+            "offset": 0, "limit": 100, "has_more": hasMore,
+            "next_cursor": hasMore ? "cursor-\(end)" : NSNull(),
+            "source_revision": "sha256:\(agent)-sessions", "source_completeness": "enumerable",
+            "incomplete_reason": NSNull(), "candidate_set_truncated": false, "session_rows": rows
+        ]
+        return try JSONSerialization.data(withJSONObject: [
+            "id": request["id"] ?? "test", "ok": true, "result": result
+        ])
+    }
+
+    func releaseNextPage() {
+        guard releasedThroughPage < Int.max else { return }
+        releasedThroughPage += 1
+        for page in waiters.keys.filter({ $0 <= releasedThroughPage }) {
+            (waiters.removeValue(forKey: page) ?? []).forEach { $0.resume() }
+        }
+    }
+
+    func requestCount() -> Int { requests.count }
+    func recordedRequests() -> [RecordedPagedSessionRequest] { requests }
+}
+
 private final class RecordingServiceProcessRunner: ServiceProcessRunning {
     private(set) var methods: [String] = []
     private(set) var timeoutMilliseconds: [Int?] = []
@@ -249,6 +387,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.configSnapshotPageResponse.utf8)
         case "skill.listEventsPage":
             return Data(Self.skillEventPageResponse.utf8)
+        case "session.previewLocalSessions":
+            return Data(Self.localSessionPageResponse.utf8)
         case "llm.previewPrompt":
             return Data(Self.previewResponse.utf8)
         case "llm.confirmPromptAndSend":
@@ -280,6 +420,10 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
 
     private static let skillEventPageResponse = """
     {"id":"test","ok":true,"result":{"records":[{"id":7,"instance_id":"skill-1","kind":"toggle","payload":{},"occurred_at":1}],"sourceRevision":"sha256:event-revision","returnedCount":1,"totalCount":2,"hasMore":true,"nextCursor":"v1:event-page-2","sourceCompleteness":"enumerable","incompleteReason":null}}
+    """
+
+    private static let localSessionPageResponse = """
+    {"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":205,"total_matched_count":205,"offset":0,"limit":100,"has_more":true,"next_cursor":"v1:cursor-200","source_revision":"sha256:sessions","source_completeness":"enumerable","candidate_set_truncated":false,"session_rows":[{"id":"session-100","title":"Session 100","source_kind":"authorized-local-session","scope":"all","redacted_path":"$HOME/.sessions/100.jsonl","excerpt":"Summary","content_included":false,"content_items":[]}]}}
     """
 
     private static let sendResponse = """

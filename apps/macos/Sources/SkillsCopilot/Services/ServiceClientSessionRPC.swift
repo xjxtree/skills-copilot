@@ -10,7 +10,9 @@ extension ServiceClient {
         sessionID: String? = nil,
         includeContentItems: Bool? = nil,
         limit: Int = 20,
-        offset: Int = 0,
+        offset: Int? = nil,
+        cursor: String? = nil,
+        sourceRevision: String? = nil,
         sort: LocalSessionSortOrder = .recent,
         direction: SkillSortDirection = .descending
     ) async throws -> LocalSessionPreviewResult {
@@ -27,9 +29,11 @@ extension ServiceClient {
             includeContentItems: includeContentItems,
             limit: limit,
             offset: offset,
+            cursor: cursor,
+            sourceRevision: sourceRevision,
             sort: sort.rawValue,
             direction: direction == .ascending ? "asc" : "desc",
-            maxFiles: 800,
+            maxFiles: nil,
             maxExcerptChars: 1000
         )
         do {

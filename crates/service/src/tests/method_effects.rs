@@ -231,6 +231,73 @@ fn manifest_declared_read_only_methods_leave_fresh_filesystem_unchanged() {
 }
 
 #[test]
+fn session_keyset_continuation_is_stateless_and_does_not_persist_paths() {
+    let root = temp_test_dir("effects-session-cursor");
+    let home = root.join("home");
+    let sessions = home.join(".codex/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join("one.jsonl"),
+        r#"{"type":"session","title":"One"}"#,
+    )
+    .unwrap();
+    fs::write(
+        sessions.join("two.jsonl"),
+        r#"{"type":"session","title":"Two"}"#,
+    )
+    .unwrap();
+    let host = ServiceHost {
+        app_data_dir: root.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        },
+    };
+    let before = tree_snapshot(&root);
+    let first = host.handle(ServiceRequest {
+        id: Some("effects-session-first".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": [sessions.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "limit": 1
+        }),
+    });
+    assert!(first.ok, "{first:?}");
+    let page = first.result.expect("first session page");
+    let cursor = page["next_cursor"].as_str().expect("session cursor");
+    let revision = page["source_revision"].as_str().expect("session revision");
+    assert!(!cursor.contains(&sessions.to_string_lossy().to_string()));
+    let second = host.handle(ServiceRequest {
+        id: Some("effects-session-second".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": [sessions.to_string_lossy()],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "limit": 1,
+            "cursor": cursor,
+            "source_revision": revision
+        }),
+    });
+    assert!(second.ok, "{second:?}");
+    assert_tree_unchanged(
+        "session.previewLocalSessions cursor",
+        &before,
+        &tree_snapshot(&root),
+    );
+    assert!(!host.app_data_dir.exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn valid_snapshot_preview_does_not_create_target_parent_or_change_catalog_bytes() {
     let root = temp_test_dir("effects-preview-rollback");
     let home = root.join("home");

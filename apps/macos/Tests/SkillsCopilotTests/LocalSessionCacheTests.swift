@@ -12,6 +12,7 @@ struct LocalSessionCacheTests {
         try failedDetailDoesNotChangeSummaryList()
         try detailCacheIsBoundedAndSourceScoped()
         try oldSummaryAndDetailGenerationsAreIgnored()
+        try cursorMetadataIsTransientAndCancellationRejectsLatePages()
         try globalSearchIndexesSummariesOnly()
     }
 
@@ -224,6 +225,39 @@ struct LocalSessionCacheTests {
         try expectEqual(result.items.map(\.targetID), ["session-search"], "Global search should index session summary fields.")
         try expectFalse(result.items.contains { !($0.session?.contentItems.isEmpty ?? true) }, "Global search results must contain summary-only sessions.")
         try expectEqual(index.search(query: "RAW_DETAIL", limitPerKind: 6).items.count, 0, "Global search must not inspect detail content items.")
+    }
+
+    private func cursorMetadataIsTransientAndCancellationRejectsLatePages() throws {
+        let cache = LocalSessionCache()
+        let generation = cache.beginSummaryRefresh(for: source)
+        let accepted = LocalSessionSnapshot(
+            key: source,
+            generation: generation,
+            result: LocalSessionPreviewResult(
+                authorized: true,
+                sessionRows: [row(id: "accepted")],
+                totalCandidateCount: 2,
+                totalMatchedCount: 2,
+                hasMore: true,
+                nextCursor: "v1:opaque",
+                sourceRevision: "sha256:revision"
+            ),
+            refreshedAt: Date(),
+            isComplete: false,
+            nextCursor: "v1:opaque",
+            sourceRevision: "sha256:revision"
+        )
+        cache.publishSummary(accepted)
+        try expectEqual(cache.successfulSnapshot(for: source)?.nextCursor, "v1:opaque", "The transient snapshot should retain its continuation cursor.")
+        cache.cancelSummaryLoad(key: source, generation: generation)
+        cache.publishSummary(LocalSessionSnapshot(
+            key: source,
+            generation: generation,
+            result: accepted.result.mergingPage(LocalSessionPreviewResult(sessionRows: [row(id: "late")])),
+            refreshedAt: Date(),
+            isComplete: true
+        ))
+        try expectEqual(cache.successfulSnapshot(for: source)?.result.sessionRows.map(\.id), ["accepted"], "Cancellation must invalidate a late page generation while retaining accepted rows.")
     }
 
     private func required<T>(_ value: T?, _ message: String) throws -> T {

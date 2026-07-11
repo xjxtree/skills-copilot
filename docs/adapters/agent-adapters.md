@@ -7,6 +7,11 @@ blocked operations. It is a current contract, not a version history.
 
 - Adapters are stateless. They discover roots, parse skill records, and report
   enabled state; they do not cache file contents.
+- Local-session inventories are also request-scoped and stateless. Continuation
+  re-inventories only authorized roots within the established directory, entry,
+  file, sidecar, and byte budgets; opaque cursors contain digests rather than raw
+  paths. Adapters must not persist session cursors, inventories, summaries,
+  details, or raw session content in SQLite or app data.
 - Scan roots and symlink-target roots are explicit. A symlink target is readable
   only when its canonical path is under a declared root with the same scope;
   the rest of the user home or project tree does not authorize traversal.

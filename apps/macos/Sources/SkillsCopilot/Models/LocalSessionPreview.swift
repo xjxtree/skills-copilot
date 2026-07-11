@@ -475,6 +475,10 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
     let limit: Int
     let hasMore: Bool
     let nextOffset: Int?
+    let nextCursor: String?
+    let sourceRevision: String?
+    let sourceCompleteness: ListSourceCompleteness
+    let incompleteReason: ListIncompleteReason?
     let candidateSetTruncated: Bool
     let userMessageCount: Int
     let totalMessageCount: Int
@@ -513,6 +517,14 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         case hasMoreAlt = "hasMore"
         case nextOffset = "next_offset"
         case nextOffsetAlt = "nextOffset"
+        case nextCursor = "next_cursor"
+        case nextCursorAlt = "nextCursor"
+        case sourceRevision = "source_revision"
+        case sourceRevisionAlt = "sourceRevision"
+        case sourceCompleteness = "source_completeness"
+        case sourceCompletenessAlt = "sourceCompleteness"
+        case incompleteReason = "incomplete_reason"
+        case incompleteReasonAlt = "incompleteReason"
         case candidateSetTruncated = "candidate_set_truncated"
         case candidateSetTruncatedAlt = "candidateSetTruncated"
         case userMessageCount = "user_message_count"
@@ -549,6 +561,10 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         limit: Int? = nil,
         hasMore: Bool = false,
         nextOffset: Int? = nil,
+        nextCursor: String? = nil,
+        sourceRevision: String? = nil,
+        sourceCompleteness: ListSourceCompleteness = .enumerable,
+        incompleteReason: ListIncompleteReason? = nil,
         candidateSetTruncated: Bool = false,
         userMessageCount: Int? = nil,
         totalMessageCount: Int? = nil,
@@ -573,6 +589,10 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
         self.limit = limit ?? sessionRows.count
         self.hasMore = hasMore
         self.nextOffset = nextOffset
+        self.nextCursor = nextCursor
+        self.sourceRevision = sourceRevision
+        self.sourceCompleteness = sourceCompleteness
+        self.incompleteReason = incompleteReason
         self.candidateSetTruncated = candidateSetTruncated
         self.userMessageCount = userMessageCount ?? sessionRows.reduce(0) { $0 + $1.userMessageCount }
         self.totalMessageCount = totalMessageCount ?? sessionRows.reduce(0) { $0 + $1.totalMessageCount }
@@ -618,6 +638,15 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
                 ?? false,
             nextOffset: try container.decodeIfPresent(Int.self, forKey: .nextOffset)
                 ?? container.decodeIfPresent(Int.self, forKey: .nextOffsetAlt),
+            nextCursor: try container.decodeIfPresent(String.self, forKey: .nextCursor)
+                ?? container.decodeIfPresent(String.self, forKey: .nextCursorAlt),
+            sourceRevision: try container.decodeIfPresent(String.self, forKey: .sourceRevision)
+                ?? container.decodeIfPresent(String.self, forKey: .sourceRevisionAlt),
+            sourceCompleteness: try container.decodeIfPresent(ListSourceCompleteness.self, forKey: .sourceCompleteness)
+                ?? container.decodeIfPresent(ListSourceCompleteness.self, forKey: .sourceCompletenessAlt)
+                ?? .enumerable,
+            incompleteReason: try container.decodeIfPresent(ListIncompleteReason.self, forKey: .incompleteReason)
+                ?? container.decodeIfPresent(ListIncompleteReason.self, forKey: .incompleteReasonAlt),
             candidateSetTruncated: try container.decodeIfPresent(Bool.self, forKey: .candidateSetTruncated)
                 ?? container.decodeIfPresent(Bool.self, forKey: .candidateSetTruncatedAlt)
                 ?? false,
@@ -667,6 +696,10 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             limit: page.limit,
             hasMore: page.hasMore,
             nextOffset: page.nextOffset,
+            nextCursor: page.nextCursor,
+            sourceRevision: page.sourceRevision,
+            sourceCompleteness: page.sourceCompleteness,
+            incompleteReason: page.incompleteReason,
             candidateSetTruncated: candidateSetTruncated || page.candidateSetTruncated,
             gapNotes: page.gapNotes,
             blockerNotes: page.blockerNotes,
@@ -697,6 +730,10 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             limit: limit,
             hasMore: hasMore,
             nextOffset: nextOffset,
+            nextCursor: nextCursor,
+            sourceRevision: sourceRevision,
+            sourceCompleteness: sourceCompleteness,
+            incompleteReason: incompleteReason,
             candidateSetTruncated: candidateSetTruncated,
             gapNotes: gapNotes,
             blockerNotes: blockerNotes,

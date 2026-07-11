@@ -39,7 +39,8 @@ use skills_copilot_commands::{
     SnapshotRollbackPreviewRecord, ToolGlobalImportResult, SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_core::{
-    AdapterContext, AdapterRoot, AgentId, ListPageMetadata, RootSource, Scope,
+    AdapterContext, AdapterRoot, AgentId, ListIncompleteReason, ListPageMetadata,
+    ListSourceCompleteness, RootSource, Scope,
 };
 use thiserror::Error;
 
@@ -318,6 +319,10 @@ pub struct LocalSessionPreviewParams {
     #[serde(default)]
     pub offset: Option<usize>,
     #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub source_revision: Option<String>,
+    #[serde(default)]
     pub sort: Option<String>,
     #[serde(default)]
     pub direction: Option<String>,
@@ -397,6 +402,13 @@ pub struct LocalSessionPreviewResult {
     pub has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<String>,
+    pub source_completeness: ListSourceCompleteness,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete_reason: Option<ListIncompleteReason>,
     pub candidate_set_truncated: bool,
     pub user_message_count: usize,
     pub total_message_count: usize,

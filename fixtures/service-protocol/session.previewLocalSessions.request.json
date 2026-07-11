@@ -8,6 +8,8 @@
     "session_id": null,
     "include_content_items": false,
     "limit": 20,
+    "cursor": null,
+    "source_revision": null,
     "sort": "modified_at",
     "direction": "desc",
     "max_excerpt_chars": 1000

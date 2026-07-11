@@ -8,6 +8,8 @@ use super::*;
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+mod paging;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum LocalSessionSort {
     ModifiedAt,
@@ -85,7 +87,7 @@ impl ServiceHost {
         let limit = params.limit.unwrap_or(20).clamp(1, 100);
         let max_files = params.max_files.unwrap_or(200).clamp(1, 1_000);
         let max_excerpt_chars = params.max_excerpt_chars.unwrap_or(1_000).clamp(120, 4_000);
-        let requested_roots = normalize_string_list(params.authorized_roots);
+        let requested_roots = normalize_string_list(params.authorized_roots.clone());
         let auto_discover = params.auto_discover.unwrap_or(requested_roots.is_empty());
         let adapter_ctx = self.effective_adapter_ctx()?;
         let scope = LocalSessionScope::from_param(params.scope.as_deref());
@@ -154,6 +156,10 @@ impl ServiceHost {
                 limit,
                 has_more: false,
                 next_offset: None,
+                next_cursor: None,
+                source_revision: None,
+                source_completeness: ListSourceCompleteness::Enumerable,
+                incomplete_reason: None,
                 candidate_set_truncated: false,
                 user_message_count: 0,
                 total_message_count: 0,
@@ -175,6 +181,35 @@ impl ServiceHost {
                 raw_response_persisted: false,
                 raw_trace_persisted: false,
             });
+        }
+
+        let uses_keyset_paging = params.cursor.is_some()
+            || (params.offset.is_none()
+                && params.max_files.is_none()
+                && requested_session_id.is_none()
+                && params.include_content_items == Some(false)
+                && sort == LocalSessionSort::ModifiedAt
+                && direction == SortDirection::Desc
+                && search.is_none()
+                && scope == LocalSessionScope::All);
+        if uses_keyset_paging {
+            return self.preview_local_sessions_keyset(
+                &params,
+                root_requests,
+                requested_agent,
+                &project_filter_roots,
+                scope,
+                sort,
+                direction,
+                search.is_some(),
+                limit,
+                max_excerpt_chars,
+                include_content_items,
+                io,
+                gap_notes,
+                blocker_notes,
+                redactor,
+            );
         }
 
         let mut root_rows = Vec::new();
@@ -339,6 +374,15 @@ impl ServiceHost {
             limit,
             has_more,
             next_offset: has_more.then_some(page_end),
+            next_cursor: None,
+            source_revision: None,
+            source_completeness: if candidate_set_was_truncated {
+                ListSourceCompleteness::Limited
+            } else {
+                ListSourceCompleteness::Enumerable
+            },
+            incomplete_reason: candidate_set_was_truncated
+                .then_some(ListIncompleteReason::SafetyBudget),
             candidate_set_truncated: candidate_set_was_truncated,
             user_message_count,
             total_message_count,

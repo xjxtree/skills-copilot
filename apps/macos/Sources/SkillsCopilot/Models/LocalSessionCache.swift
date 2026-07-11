@@ -20,6 +20,32 @@ struct LocalSessionSnapshot: Equatable {
     let result: LocalSessionPreviewResult
     let refreshedAt: Date
     let isComplete: Bool
+    let nextCursor: String?
+    let sourceRevision: String?
+    let sourceCompleteness: ListSourceCompleteness
+    let incompleteReason: ListIncompleteReason?
+
+    init(
+        key: LocalSessionSnapshotKey,
+        generation: UInt64,
+        result: LocalSessionPreviewResult,
+        refreshedAt: Date,
+        isComplete: Bool,
+        nextCursor: String? = nil,
+        sourceRevision: String? = nil,
+        sourceCompleteness: ListSourceCompleteness = .enumerable,
+        incompleteReason: ListIncompleteReason? = nil
+    ) {
+        self.key = key
+        self.generation = generation
+        self.result = result
+        self.refreshedAt = refreshedAt
+        self.isComplete = isComplete
+        self.nextCursor = nextCursor
+        self.sourceRevision = sourceRevision
+        self.sourceCompleteness = sourceCompleteness
+        self.incompleteReason = incompleteReason
+    }
 }
 
 enum LocalSessionLoadState: Equatable {
@@ -93,9 +119,21 @@ final class LocalSessionCache {
             generation: snapshot.generation,
             result: summaryResult(snapshot.result, rows: rows),
             refreshedAt: snapshot.refreshedAt,
-            isComplete: snapshot.isComplete
+            isComplete: snapshot.isComplete,
+            nextCursor: snapshot.nextCursor,
+            sourceRevision: snapshot.sourceRevision,
+            sourceCompleteness: snapshot.sourceCompleteness,
+            incompleteReason: snapshot.incompleteReason
         )
         summaryStates[snapshot.key] = .fresh(sanitized)
+    }
+
+    func cancelSummaryLoad(key: LocalSessionSnapshotKey, generation: UInt64) {
+        guard summaryGenerations[key] == generation else { return }
+        summaryGenerations[key] = makeGeneration()
+        if let snapshot = successfulSnapshot(for: key) {
+            summaryStates[key] = .fresh(snapshot)
+        }
     }
 
     func failSummary(key: LocalSessionSnapshotKey, generation: UInt64, displayError: String) {
@@ -254,6 +292,10 @@ final class LocalSessionCache {
             limit: result.limit,
             hasMore: result.hasMore,
             nextOffset: result.nextOffset,
+            nextCursor: result.nextCursor,
+            sourceRevision: result.sourceRevision,
+            sourceCompleteness: result.sourceCompleteness,
+            incompleteReason: result.incompleteReason,
             candidateSetTruncated: result.candidateSetTruncated,
             userMessageCount: result.userMessageCount,
             totalMessageCount: result.totalMessageCount,

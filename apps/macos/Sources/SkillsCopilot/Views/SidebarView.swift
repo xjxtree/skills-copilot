@@ -1227,6 +1227,27 @@ private struct SessionSidebarPanel: View {
                 }
             }
 
+            if shouldShowPagingFooter {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ListCompletenessFooter(
+                            state: store.localSessionCompleteness,
+                            onLoadMore: { Task { await store.loadMoreLocalSessions() } },
+                            onLoadAll: { Task { await store.loadAllLocalSessions() } },
+                            onCancel: { store.cancelLocalSessionLoadAll() }
+                        )
+                        Text(UIStrings.text(
+                            "sidebar.sessions.loadedRowsOnly",
+                            "Search, scope, and sort cover loaded rows while more remain."
+                        ))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, CGFloat(UIOptimizationPresentation.listPage.cardHorizontalInset))
+                }
+                .listPageChromeRow()
+            }
+
             if !preview.skillUsageRows.isEmpty {
                 Section(UIStrings.text("sidebar.sessions.topSkills", "Top skills from sessions")) {
                     ForEach(preview.skillUsageRows.prefix(3)) { row in
@@ -1283,12 +1304,17 @@ private struct SessionSidebarPanel: View {
     }
 
     private var sessionCountText: String {
-        let preview = store.localSessionPreviewResult
-        let loaded = store.filteredLocalSessionRows.count
-        guard preview.totalMatchedCount > loaded else {
-            return "\(loaded)"
+        let completeness = store.localSessionCompleteness
+        guard let total = completeness.totalCount, total > completeness.loadedCount else {
+            return "\(completeness.loadedCount)"
         }
-        return "\(loaded)/\(preview.totalMatchedCount)"
+        return "\(completeness.loadedCount)/\(total)"
+    }
+
+    private var shouldShowPagingFooter: Bool {
+        store.localSessionCompleteness.hasMore
+            || store.localSessionCompleteness.incompleteReason != nil
+            || store.localSessionCompleteness.loadingPhase != .idle
     }
 
     private var sessionScopePicker: some View {

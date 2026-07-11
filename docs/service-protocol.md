@@ -252,11 +252,21 @@ date/filter range before evidence rows are limited.
   `ended_at` in Unix epoch milliseconds, with `ended_at` representing the last
   parsed session message/content event. Each `content_items[]` item includes
   `timestamp` when its source event has a timestamp.
-- `session.previewLocalSessions` supports server-side `scope`, `search`,
-  `sort`, `direction`, `limit`, and `offset`. Responses include
-  `total_matched_count`, `has_more`, and `next_offset`; UI shells should request
-  additional pages instead of treating the first page as the full local session
-  list.
+- `session.previewLocalSessions` supports complete, stateless summary paging with
+  optional `cursor` and `source_revision`. Cursor pages are limited to 100 rows,
+  inventory every authorized root within the existing request budgets, and use
+  canonical `(modified_at DESC, stable row id ASC, normalized path digest ASC)`
+  order. Responses include `next_cursor`, `source_revision`,
+  `source_completeness`, and optional `incomplete_reason`. A changed candidate
+  inventory returns `source_changed` before continuation rows are returned.
+- Cursors are opaque `v1:` values containing only stable metadata and digests;
+  they never contain a raw path. Cursor pages read primary content only for the
+  selected page rows. No cursor, inventory, summary, detail, or raw session
+  content is written to app data, SQLite, or another persistent cache.
+- Legacy `scope`, `search`, `sort`, `direction`, `offset`, and `max_files`
+  behavior remains available when no cursor flow is requested. New summary
+  clients omit `offset` and `max_files`, request all-scope recent pages, and
+  apply scope, search, and sort locally over accepted summaries.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
   ascending.
@@ -267,6 +277,9 @@ date/filter range before evidence rows are limited.
 - `candidate_set_truncated=true` means additional disk candidates were omitted
   by `max_files` or the request-owned inventory limits. A false value does not
   weaken per-file, sidecar, or aggregate read bounds.
+- An inventory directory/entry budget stop retains accepted rows and reports
+  `candidate_set_truncated=true`, `source_completeness=limited`, and
+  `incomplete_reason=safety_budget`; it does not offer an unsafe continuation.
 - `include_content_items` defaults to `true` when omitted for compatibility.
   Summary/list clients send `false`; every returned row then has
   `content_included=false` and `content_items=[]` while retaining bounded title,
@@ -277,10 +290,14 @@ date/filter range before evidence rows are limited.
   after metadata inventory, before newest-candidate selection and before opening
   any primary session file. A detail request sends one `session_id`,
   `include_content_items=true`, `limit=1`, and `offset=0`.
-- The native app prewarms and manually refreshes source-scoped summary snapshots
-  only. Scope, search, sort, and global search project those summaries in memory.
-  At most a selected row's bounded detail is held in the in-memory detail cache;
-  neither summaries nor details persist raw session content.
+- The native app requests 100 summaries at a time and prewarms serially to at
+  most 800 accepted summaries. The 800-row mark is only the automatic startup
+  boundary: explicit Load More and Load All continue with the snapshot's
+  in-memory cursor/revision. Cancellation or a source-key/generation change
+  retains accepted rows and rejects late responses. Scope, search, sort, and
+  global search project all loaded summaries in memory. At most a selected
+  row's bounded detail is held in the in-memory detail cache; neither summaries
+  nor details persist raw session content.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
 

@@ -292,6 +292,13 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(!preview.raw_trace_persisted);
             assert_eq!(preview.count, preview.session_rows.len());
             assert!(!preview.candidate_set_truncated);
+            assert_eq!(preview.source_completeness, "enumerable");
+            assert!(preview
+                .source_revision
+                .as_deref()
+                .is_some_and(|value| value.starts_with("sha256:")));
+            assert!(preview.next_cursor.is_none());
+            assert!(preview.incomplete_reason.is_none());
             assert_eq!(
                 preview.user_message_count,
                 preview

@@ -145,6 +145,7 @@
 "sidebar.sessions.skillShort" = "技能";
 "sidebar.sessions.startShort" = "开始";
 "sidebar.sessions.lastShort" = "最后";
+"sidebar.sessions.loadedRowsOnly" = "仍有更多条目时，搜索、范围和排序仅覆盖已加载行。";
 "skillManager.title" = "技能包管理";
 "skillManager.sidebar.subtitle" = "搜索、安装、本地库";
 "skillManager.targets" = "目标";
@@ -237,6 +238,7 @@
 "agentCopilot.sessions.filterAll" = "全部";
 "agentCopilot.sessions.started" = "开始";
 "agentCopilot.sessions.ended" = "最后";
+"agentCopilot.sessions.loadedRowsFilterNotice" = "搜索、范围和排序当前仅覆盖已加载的会话摘要；加载更多后可包含剩余条目。";
 "sort.name" = "名称";
 "sort.path" = "路径";
 "app.title" = "Agent Copilot";

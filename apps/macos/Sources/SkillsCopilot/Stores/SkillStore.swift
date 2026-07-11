@@ -130,7 +130,8 @@ struct TaskCockpitPromptConfirmation: Identifiable, Hashable {
 @MainActor
 final class SkillStore: ObservableObject {
     private static let lastMutationMessageDismissDelayNanoseconds: UInt64 = 3_500_000_000
-    private static let localSessionPageLimit = 800
+    private static let localSessionPageLimit = 100
+    private static let localSessionPrewarmLimit = 800
     private static let globalSearchLimitPerKind = 6
     private static let providerObservabilityRowLimit = 100
 
@@ -167,6 +168,17 @@ final class SkillStore: ObservableObject {
         didSet { invalidateScopedLocalSessionSummaryCache() }
     }
     @Published private(set) var localSessionLoadState: LocalSessionLoadState = .empty
+    @Published private(set) var localSessionCompleteness = ListCompletenessState(
+        loadedCount: 0,
+        totalCount: nil,
+        hasMore: false,
+        isComplete: false,
+        completeness: .unknown,
+        incompleteReason: nil,
+        loadingPhase: .idle,
+        canLoadMore: false,
+        canLoadAll: false
+    )
     @Published private(set) var selectedLocalSessionDetailState: LocalSessionDetailState?
     @Published private(set) var appSearchResult = AppSearchResult.empty()
     @Published private(set) var skillListScrollRequest: SkillListScrollRequest?
@@ -538,6 +550,8 @@ final class SkillStore: ObservableObject {
     private var agentFilterLoadTask: Task<Void, Never>?
     private var listCriteriaDetailTask: Task<Void, Never>?
     private var localSessionDetailTask: Task<Void, Never>?
+    private var localSessionLoadAllTask: Task<Void, Never>?
+    private var localSessionLoadAllID: UUID?
     private var appSearchTask: Task<Void, Never>?
     private var providerObservabilityCriteriaTask: Task<Void, Never>?
     private var postRefreshSupplementalLoadTask: Task<Void, Never>?
@@ -652,6 +666,7 @@ final class SkillStore: ObservableObject {
         skillManagerLocalCreateTask?.cancel()
         skillManagerLocalDeleteTask?.cancel()
         localSessionDetailTask?.cancel()
+        localSessionLoadAllTask?.cancel()
         let lane = autosaveMutationLane
         Task { @MainActor in
             lane.shutdown()
@@ -2541,10 +2556,10 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            var offset = 0
             var mergedResult: LocalSessionPreviewResult?
             var seenIDs = Set<String>()
-            var isComplete = true
+            var cursor: String?
+            var sourceRevision: String?
             while true {
                 let page = try await service.previewLocalSessions(
                     authorizedRoots: key.authorizedRoots,
@@ -2555,7 +2570,9 @@ final class SkillStore: ObservableObject {
                     sessionID: nil,
                     includeContentItems: false,
                     limit: Self.localSessionPageLimit,
-                    offset: offset,
+                    offset: nil,
+                    cursor: cursor,
+                    sourceRevision: sourceRevision,
                     sort: .recent,
                     direction: .descending
                 )
@@ -2564,21 +2581,27 @@ final class SkillStore: ObservableObject {
                         page.fallbackReason ?? "local session preview unavailable"
                     )
                 }
-                guard activeLocalSessionSnapshotKey == key else { return }
+                guard activeLocalSessionSnapshotKey == key,
+                      activeLocalSessionRefreshGeneration == generation else { return }
+                if let sourceRevision, page.sourceRevision != sourceRevision {
+                    throw ServiceClient.ClientError.service(ServiceErrorPayload(
+                        code: "source_changed",
+                        message: "local session source changed during prewarm"
+                    ))
+                }
                 let newRows = page.sessionRows.filter { seenIDs.insert($0.id).inserted }
                 mergedResult = mergeLocalSessionSummaryPage(
                     accumulated: mergedResult,
                     page: page,
                     newRows: newRows
                 )
-                guard page.hasMore else { break }
-                guard !newRows.isEmpty,
-                      let nextOffset = page.nextOffset,
-                      nextOffset > offset else {
-                    isComplete = false
-                    break
+                sourceRevision = page.sourceRevision ?? sourceRevision
+                cursor = page.nextCursor
+                guard page.hasMore,
+                      (mergedResult?.sessionRows.count ?? 0) < Self.localSessionPrewarmLimit else { break }
+                guard !newRows.isEmpty, cursor != nil, sourceRevision != nil else {
+                    throw ServiceClient.ClientError.invalidOutput("invalid local session continuation page")
                 }
-                offset = nextOffset
             }
             guard let mergedResult else {
                 throw ServiceClient.ClientError.invalidOutput("missing local session summary page")
@@ -2588,7 +2611,14 @@ final class SkillStore: ObservableObject {
                 generation: generation,
                 result: mergedResult,
                 refreshedAt: Date(),
-                isComplete: isComplete && !mergedResult.candidateSetTruncated
+                isComplete: !mergedResult.hasMore
+                    && mergedResult.sourceCompleteness == .enumerable
+                    && mergedResult.incompleteReason == nil
+                    && mergedResult.sessionRows.count == mergedResult.totalMatchedCount,
+                nextCursor: mergedResult.nextCursor,
+                sourceRevision: mergedResult.sourceRevision,
+                sourceCompleteness: mergedResult.sourceCompleteness,
+                incompleteReason: mergedResult.incompleteReason
             )
             localSessionCache.publishSummary(snapshot)
             guard let published = localSessionCache.successfulSnapshot(for: key),
@@ -2606,9 +2636,157 @@ final class SkillStore: ObservableObject {
                 ?? .failed(key: key, displayError: error.localizedDescription)
             if let previous = localSessionCache.successfulSnapshot(for: key) {
                 localSessionPreviewResult = previous.result
+                localSessionCompleteness = localSessionCompletenessAfterFailure(
+                    snapshot: previous,
+                    error: error
+                )
             } else {
                 localSessionPreviewResult = .unavailable(reason: error.localizedDescription)
+                localSessionCompleteness = localSessionCompletenessAfterFailure(
+                    snapshot: nil,
+                    error: error
+                )
             }
+        }
+    }
+
+    func loadMoreLocalSessions() async {
+        await continueLocalSessionPages(loadAll: false)
+    }
+
+    func loadAllLocalSessions() async {
+        guard localSessionLoadAllTask == nil else { return }
+        let loadID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.continueLocalSessionPages(loadAll: true)
+        }
+        localSessionLoadAllID = loadID
+        localSessionLoadAllTask = task
+        await task.value
+        if localSessionLoadAllID == loadID {
+            localSessionLoadAllTask = nil
+            localSessionLoadAllID = nil
+        }
+    }
+
+    func cancelLocalSessionLoadAll() {
+        localSessionLoadAllTask?.cancel()
+        localSessionLoadAllTask = nil
+        localSessionLoadAllID = nil
+        guard let key = activeLocalSessionSnapshotKey,
+              let generation = activeLocalSessionRefreshGeneration else { return }
+        localSessionCache.cancelSummaryLoad(key: key, generation: generation)
+        activeLocalSessionRefreshGeneration = nil
+        isPreviewingLocalSessions = false
+        if let snapshot = localSessionCache.successfulSnapshot(for: key) {
+            publishLocalSessionSnapshot(snapshot)
+        }
+    }
+
+    private func continueLocalSessionPages(loadAll: Bool) async {
+        guard let key = activeLocalSessionSnapshotKey,
+              let initial = localSessionCache.successfulSnapshot(for: key),
+              initial.nextCursor != nil,
+              initial.sourceRevision != nil,
+              !isPreviewingLocalSessions else { return }
+        let generation = localSessionCache.beginSummaryRefresh(for: key)
+        activeLocalSessionRefreshGeneration = generation
+        isPreviewingLocalSessions = true
+        localSessionCompleteness = localSessionCompletenessState(
+            for: initial,
+            phase: loadAll ? .all : .more
+        )
+        defer {
+            if activeLocalSessionSnapshotKey == key,
+               activeLocalSessionRefreshGeneration == generation {
+                activeLocalSessionRefreshGeneration = nil
+                isPreviewingLocalSessions = false
+            }
+        }
+
+        let agent = key.agent == SkillAgentFilter.all.rawValue ? nil : key.agent
+        let project = activeProjectContext
+        var snapshot = initial
+        do {
+            repeat {
+                guard !Task.isCancelled,
+                      activeLocalSessionSnapshotKey == key,
+                      activeLocalSessionRefreshGeneration == generation,
+                      let cursor = snapshot.nextCursor,
+                      let sourceRevision = snapshot.sourceRevision else { return }
+                let page = try await service.previewLocalSessions(
+                    authorizedRoots: key.authorizedRoots,
+                    agent: agent,
+                    scope: .all,
+                    search: nil,
+                    project: project,
+                    sessionID: nil,
+                    includeContentItems: false,
+                    limit: Self.localSessionPageLimit,
+                    offset: nil,
+                    cursor: cursor,
+                    sourceRevision: sourceRevision,
+                    sort: .recent,
+                    direction: .descending
+                )
+                guard !Task.isCancelled,
+                      activeLocalSessionSnapshotKey == key,
+                      activeLocalSessionRefreshGeneration == generation else { return }
+                guard page.sourceRevision == sourceRevision else {
+                    throw ServiceClient.ClientError.service(ServiceErrorPayload(
+                        code: "source_changed",
+                        message: "local session source changed during pagination"
+                    ))
+                }
+                let previousCount = snapshot.result.sessionRows.count
+                let merged = mergeLocalSessionSummaryPage(
+                    accumulated: snapshot.result,
+                    page: page,
+                    newRows: page.sessionRows
+                )
+                guard merged.sessionRows.count > previousCount || !page.hasMore else {
+                    throw ServiceClient.ClientError.invalidOutput("local session page made no progress")
+                }
+                if !page.hasMore,
+                   page.sourceCompleteness == .enumerable,
+                   merged.sessionRows.count != page.totalMatchedCount {
+                    throw ServiceClient.ClientError.invalidOutput("terminal local session page count mismatch")
+                }
+                snapshot = LocalSessionSnapshot(
+                    key: key,
+                    generation: generation,
+                    result: merged,
+                    refreshedAt: Date(),
+                    isComplete: !page.hasMore
+                        && page.sourceCompleteness == .enumerable
+                        && page.incompleteReason == nil,
+                    nextCursor: page.nextCursor,
+                    sourceRevision: page.sourceRevision,
+                    sourceCompleteness: page.sourceCompleteness,
+                    incompleteReason: page.incompleteReason
+                )
+                localSessionCache.publishSummary(snapshot)
+                guard let published = localSessionCache.successfulSnapshot(for: key),
+                      published.generation == generation else { return }
+                snapshot = published
+                publishLocalSessionSnapshot(published)
+                guard !page.hasMore || page.nextCursor != nil else {
+                    throw ServiceClient.ClientError.invalidOutput("invalid local session continuation page")
+                }
+            } while loadAll && snapshot.nextCursor != nil
+        } catch {
+            localSessionCache.failSummary(
+                key: key,
+                generation: generation,
+                displayError: error.localizedDescription
+            )
+            guard activeLocalSessionSnapshotKey == key,
+                  activeLocalSessionRefreshGeneration == generation else { return }
+            localSessionCompleteness = localSessionCompletenessAfterFailure(
+                snapshot: localSessionCache.successfulSnapshot(for: key),
+                error: error
+            )
         }
     }
 
@@ -2628,6 +2806,13 @@ final class SkillStore: ObservableObject {
     }
 
     private func activateLocalSessionSourceCache() {
+        if let activeKey = activeLocalSessionSnapshotKey,
+           let generation = activeLocalSessionRefreshGeneration {
+            localSessionCache.cancelSummaryLoad(key: activeKey, generation: generation)
+        }
+        localSessionLoadAllTask?.cancel()
+        localSessionLoadAllTask = nil
+        localSessionLoadAllID = nil
         let key = localSessionSnapshotKey(roots: normalizedLocalSessionPreviewRoots)
         activeLocalSessionSnapshotKey = key
         activeLocalSessionRefreshGeneration = nil
@@ -2639,6 +2824,17 @@ final class SkillStore: ObservableObject {
         } else {
             localSessionLoadState = .empty
             localSessionPreviewResult = LocalSessionPreviewResult()
+            localSessionCompleteness = ListCompletenessState(
+                loadedCount: 0,
+                totalCount: nil,
+                hasMore: false,
+                isComplete: false,
+                completeness: .unknown,
+                incompleteReason: nil,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: false
+            )
             selectedLocalSessionID = nil
             if selectedSidebarSelection?.isSession == true {
                 setSidebarSelection(nil)
@@ -2650,6 +2846,7 @@ final class SkillStore: ObservableObject {
         guard activeLocalSessionSnapshotKey == snapshot.key else { return }
         localSessionLoadState = localSessionCache.summaryStates[snapshot.key] ?? .fresh(snapshot)
         localSessionPreviewResult = snapshot.result
+        localSessionCompleteness = localSessionCompletenessState(for: snapshot, phase: .idle)
         normalizeSelectedLocalSession()
         synchronizeSelectedLocalSessionDetailState()
     }
@@ -2659,7 +2856,10 @@ final class SkillStore: ObservableObject {
         page: LocalSessionPreviewResult,
         newRows: [LocalSessionPreviewRow]
     ) -> LocalSessionPreviewResult {
-        let rows = (accumulated?.sessionRows ?? []) + newRows.map(\.summaryOnly)
+        let accumulatedRows = accumulated?.sessionRows ?? []
+        var seenIDs = Set(accumulatedRows.map(\.id))
+        let novelRows = newRows.filter { seenIDs.insert($0.id).inserted }
+        let rows = accumulatedRows + novelRows.map(\.summaryOnly)
         return LocalSessionPreviewResult(
             generatedBy: page.generatedBy,
             authorized: page.authorized || (accumulated?.authorized ?? false),
@@ -2676,6 +2876,10 @@ final class SkillStore: ObservableObject {
             limit: page.limit,
             hasMore: page.hasMore,
             nextOffset: page.nextOffset,
+            nextCursor: page.nextCursor,
+            sourceRevision: page.sourceRevision,
+            sourceCompleteness: page.sourceCompleteness,
+            incompleteReason: page.incompleteReason,
             candidateSetTruncated: page.candidateSetTruncated
                 || (accumulated?.candidateSetTruncated ?? false),
             gapNotes: Array(Set((accumulated?.gapNotes ?? []) + page.gapNotes)).sorted(),
@@ -2683,6 +2887,73 @@ final class SkillStore: ObservableObject {
             redactionSummary: page.redactionSummary,
             safetyFlags: page.safetyFlags,
             fallbackReason: page.fallbackReason
+        )
+    }
+
+    private func localSessionCompletenessState(
+        for snapshot: LocalSessionSnapshot,
+        phase: ListLoadingPhase
+    ) -> ListCompletenessState {
+        let loadedCount = snapshot.result.sessionRows.count
+        let totalCount = max(snapshot.result.totalMatchedCount, loadedCount)
+        let hasMore = snapshot.nextCursor != nil && snapshot.result.hasMore
+        let isComplete = snapshot.isComplete
+        let completeness: ListCompleteness
+        if isComplete {
+            completeness = .complete
+        } else if snapshot.sourceCompleteness == .limited || snapshot.incompleteReason != nil {
+            completeness = .incomplete
+        } else if snapshot.sourceCompleteness == .unknown {
+            completeness = .unknown
+        } else {
+            completeness = .partial
+        }
+        let canContinue = phase == .idle
+            && hasMore
+            && snapshot.nextCursor != nil
+            && (snapshot.incompleteReason == nil || snapshot.incompleteReason == .pageFailed)
+        return ListCompletenessState(
+            loadedCount: loadedCount,
+            totalCount: totalCount,
+            hasMore: hasMore,
+            isComplete: isComplete,
+            completeness: completeness,
+            incompleteReason: snapshot.incompleteReason,
+            loadingPhase: phase,
+            canLoadMore: canContinue,
+            canLoadAll: canContinue
+        )
+    }
+
+    private func localSessionCompletenessAfterFailure(
+        snapshot: LocalSessionSnapshot?,
+        error: Error
+    ) -> ListCompletenessState {
+        let reason = listFailureReason(for: error)
+        guard let snapshot else {
+            return ListCompletenessState(
+                loadedCount: 0,
+                totalCount: nil,
+                hasMore: false,
+                isComplete: false,
+                completeness: .incomplete,
+                incompleteReason: reason,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: true
+            )
+        }
+        let retryable = reason == .pageFailed && snapshot.nextCursor != nil
+        return ListCompletenessState(
+            loadedCount: snapshot.result.sessionRows.count,
+            totalCount: max(snapshot.result.totalMatchedCount, snapshot.result.sessionRows.count),
+            hasMore: retryable,
+            isComplete: false,
+            completeness: retryable ? .partial : .incomplete,
+            incompleteReason: reason,
+            loadingPhase: .idle,
+            canLoadMore: retryable,
+            canLoadAll: retryable
         )
     }
 

@@ -130,6 +130,8 @@ struct LocalSessionPreviewParams: Encodable {
     let includeContentItems: Bool?
     let limit: Int?
     let offset: Int?
+    let cursor: String?
+    let sourceRevision: String?
     let sort: String?
     let direction: String?
     let maxFiles: Int?
@@ -147,6 +149,8 @@ struct LocalSessionPreviewParams: Encodable {
         case includeContentItems = "include_content_items"
         case limit
         case offset
+        case cursor
+        case sourceRevision = "source_revision"
         case sort
         case direction
         case maxFiles = "max_files"

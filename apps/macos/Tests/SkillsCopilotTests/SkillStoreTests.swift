@@ -29,6 +29,12 @@ struct SkillStoreTests {
         try await runCase("startupPreviewRequestsSummaryRows") {
             try await startupPreviewRequestsSummaryRows()
         }
+        try await runCase("localSessionPrewarmMoreAndAllUseCursorPages") {
+            try await localSessionPrewarmMoreAndAllUseCursorPages()
+        }
+        try await runCase("cancelledAndStaleLocalSessionPagesCannotPublish") {
+            try await cancelledAndStaleLocalSessionPagesCannotPublish()
+        }
         try await runCase("selectingSummaryRequestsOnlySelectedDetail") {
             try await selectingSummaryRequestsOnlySelectedDetail()
         }
@@ -3933,7 +3939,7 @@ struct SkillStoreTests {
         try JSONDecoder().decode(AppSearchItem.self, from: Data(json.utf8))
     }
 
-    private func waitUntil(
+    func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
         predicate: @escaping @MainActor () async -> Bool
