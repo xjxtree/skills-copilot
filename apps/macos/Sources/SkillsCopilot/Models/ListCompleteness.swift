@@ -70,19 +70,36 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
         guard page.returnedCount == page.items.count else {
             throw ListPageAccumulatorError.invalidPage
         }
+        guard !(page.hasMore
+            && page.sourceCompleteness == .enumerable
+            && page.nextCursor == nil) else {
+            throw ListPageAccumulatorError.invalidPage
+        }
+        guard page.hasMore || page.nextCursor == nil else {
+            throw ListPageAccumulatorError.invalidPage
+        }
         if let sourceRevision, let pageRevision = page.sourceRevision,
            sourceRevision != pageRevision {
             throw ListPageAccumulatorError.sourceChanged
         }
 
-        for item in page.items where seenIDs.insert(item.id).inserted {
-            items.append(item)
+        var candidateIDs = seenIDs
+        let novelItems = page.items.filter { candidateIDs.insert($0.id).inserted }
+        let candidateTotalCount = page.totalCount ?? totalCount
+        if !page.hasMore,
+           page.sourceCompleteness == .enumerable,
+           let candidateTotalCount,
+           items.count + novelItems.count != candidateTotalCount {
+            throw ListPageAccumulatorError.invalidPage
         }
+
+        seenIDs = candidateIDs
+        items.append(contentsOf: novelItems)
         if sourceRevision == nil {
             sourceRevision = page.sourceRevision
         }
         nextCursor = page.nextCursor
-        totalCount = page.totalCount
+        totalCount = candidateTotalCount
         hasMore = page.hasMore
         sourceCompleteness = page.sourceCompleteness
         incompleteReason = page.incompleteReason
@@ -102,6 +119,10 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
     mutating func fail(reason: ListIncompleteReason) {
         incompleteReason = reason
         loadingPhase = .idle
+        if reason != .pageFailed {
+            hasMore = false
+            nextCursor = nil
+        }
     }
 
     var state: ListCompletenessState {
@@ -118,7 +139,11 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
         } else {
             completeness = .partial
         }
-        let canContinue = hasMore && nextCursor != nil && loadingPhase == .idle
+        let failureAllowsRetry = incompleteReason == nil || incompleteReason == .pageFailed
+        let canContinue = hasMore
+            && nextCursor != nil
+            && loadingPhase == .idle
+            && failureAllowsRetry
         return ListCompletenessState(
             loadedCount: items.count,
             totalCount: totalCount,

@@ -16,7 +16,7 @@ struct ListCompletenessBadge: View {
             .help(summary)
     }
 
-    private var statusLabel: String {
+    var statusLabel: String {
         switch state.completeness {
         case .complete:
             return UIStrings.listCompletenessComplete
@@ -75,6 +75,10 @@ struct ListCompletenessFooter: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 ListCompletenessBadge(state: state)
+                Text(visibleSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer(minLength: 8)
                 ListPagingActions(
                     state: state,
@@ -84,11 +88,20 @@ struct ListCompletenessFooter: View {
                 )
             }
             if let reason = state.incompleteReason {
-                Text(UIStrings.listIncompleteReason(reason))
+                Text(UIStrings.listIncompleteReason(reason.rawValue))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var visibleSummary: String {
+        UIStrings.listCompletenessSummary(
+            loadedCount: state.loadedCount,
+            totalCount: state.totalCount,
+            status: ListCompletenessBadge(state: state).statusLabel,
+            isLoading: state.loadingPhase != .idle
+        )
     }
 }
 

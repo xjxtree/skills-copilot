@@ -149,20 +149,22 @@ enum UIStrings {
         }
         return isLoading ? format("list.completeness.loadingSummary", "%@ · Loading...", base) : base
     }
-    static func listIncompleteReason(_ reason: ListIncompleteReason) -> String {
+    static func listIncompleteReason(_ reason: String) -> String {
         switch reason {
-        case .safetyBudget:
+        case "safety_budget":
             return text("list.completeness.reason.safetyBudget", "A safety budget stopped enumeration. Narrow the scope and retry.")
-        case .sourceChanged:
+        case "source_changed":
             return text("list.completeness.reason.sourceChanged", "The source changed while loading. Restart the refresh before merging more rows.")
-        case .sourceLimited:
+        case "source_limited":
             return text("list.completeness.reason.sourceLimited", "The source cannot expose or prove a complete result.")
-        case .unreadableSource:
+        case "unreadable_source":
             return text("list.completeness.reason.unreadableSource", "Part of the source could not be read. Fix access and retry.")
-        case .pageFailed:
+        case "page_failed":
             return text("list.completeness.reason.pageFailed", "The next page failed. Accepted rows remain available; retry the page.")
-        case .unsupportedProtocol:
+        case "unsupported_protocol":
             return text("list.completeness.reason.unsupportedProtocol", "This service version cannot report complete list metadata.")
+        default:
+            return listCompletenessUnknown
         }
     }
     static var startupPreparingLoading: String { text("startup.preparing", "Preparing startup...") }

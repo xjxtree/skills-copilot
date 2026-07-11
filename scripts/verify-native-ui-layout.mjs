@@ -99,7 +99,7 @@ const checks = [
     label: "shared list completeness controls expose stable accessibility identifiers",
     text: files.listCompletenessControls,
     passed: /struct ListCompletenessBadge:[\s\S]*?list-completeness\.badge/.test(files.listCompletenessControls)
-      && /struct ListCompletenessFooter:/.test(files.listCompletenessControls)
+      && /struct ListCompletenessFooter:[\s\S]*?Text\(visibleSummary\)[\s\S]*?private var visibleSummary:[\s\S]*?UIStrings\.listCompletenessSummary\(/.test(files.listCompletenessControls)
       && /struct ListPagingActions:[\s\S]*?list-completeness\.load-more[\s\S]*?list-completeness\.load-all[\s\S]*?list-completeness\.cancel/.test(files.listCompletenessControls)
       && /struct ExpandableSummaryList<[\s\S]*?list-completeness\.show-all/.test(files.listCompletenessControls),
   },

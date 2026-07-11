@@ -9,6 +9,11 @@ struct ListCompletenessModelTests {
         try knownTotalCompletesOnlyAtEOF()
         try unknownTotalNeverInventsKnownTotal()
         try cancellationKeepsAcceptedRowsPartial()
+        try rejectsEnumerableContinuationWithoutCursor()
+        try rejectsCursorOnTerminalPage()
+        try rejectsTerminalKnownTotalMismatchWithoutMutation()
+        try terminalLimitationsDisableContinuation()
+        try pageFailureKeepsRetryContinuation()
     }
 
     private func appendsPagesWithoutDuplicateIDs() throws {
@@ -63,5 +68,78 @@ struct ListCompletenessModelTests {
         value.cancel()
         try expectEqual(value.items.map(\.id), ["a"], "Cancel must retain accepted rows")
         try expectEqual(value.state.completeness, .partial, "Cancelled continuation is partial")
+    }
+
+    private func rejectsEnumerableContinuationWithoutCursor() throws {
+        var value = ListPageAccumulator<Row>()
+        do {
+            try value.append(.init(items: [.init(id: "a", value: "A")], returnedCount: 1,
+                totalCount: 2, hasMore: true, nextCursor: nil, sourceRevision: "r1",
+                sourceCompleteness: .enumerable, incompleteReason: nil))
+            throw NativeModelTestFailure(description: "Enumerable continuation without a cursor should fail")
+        } catch ListPageAccumulatorError.invalidPage {}
+        try expectEqual(value.items, [], "Rejected cursorless continuation must not mutate rows")
+    }
+
+    private func rejectsCursorOnTerminalPage() throws {
+        var value = ListPageAccumulator<Row>()
+        do {
+            try value.append(.init(items: [.init(id: "a", value: "A")], returnedCount: 1,
+                totalCount: 1, hasMore: false, nextCursor: "stale", sourceRevision: "r1",
+                sourceCompleteness: .enumerable, incompleteReason: nil))
+            throw NativeModelTestFailure(description: "Terminal page with a cursor should fail")
+        } catch ListPageAccumulatorError.invalidPage {}
+        try expectEqual(value.items, [], "Rejected terminal cursor must not mutate rows")
+    }
+
+    private func rejectsTerminalKnownTotalMismatchWithoutMutation() throws {
+        var value = try enumerableContinuation()
+        do {
+            try value.append(.init(
+                items: [.init(id: "a", value: "duplicate"), .init(id: "b", value: "B")],
+                returnedCount: 2,
+                totalCount: 3,
+                hasMore: false,
+                nextCursor: nil,
+                sourceRevision: "r1",
+                sourceCompleteness: .enumerable,
+                incompleteReason: nil
+            ))
+            throw NativeModelTestFailure(description: "Terminal page must account for the known total")
+        } catch ListPageAccumulatorError.invalidPage {}
+        try expectEqual(value.items.map(\.id), ["a"], "Rejected terminal page must not mutate rows")
+        try expectEqual(value.state.canLoadMore, true, "Rejected terminal page must preserve the accepted cursor")
+    }
+
+    private func terminalLimitationsDisableContinuation() throws {
+        let reasons: [ListIncompleteReason] = [
+            .safetyBudget,
+            .sourceChanged,
+            .sourceLimited,
+            .unreadableSource,
+            .unsupportedProtocol,
+        ]
+        for reason in reasons {
+            var value = try enumerableContinuation()
+            value.fail(reason: reason)
+            try expectEqual(value.state.canLoadMore, false, "\(reason) must disable Load More")
+            try expectEqual(value.state.canLoadAll, false, "\(reason) must disable Load All")
+            try expectEqual(value.state.hasMore, false, "\(reason) must be terminal")
+        }
+    }
+
+    private func pageFailureKeepsRetryContinuation() throws {
+        var value = try enumerableContinuation()
+        value.fail(reason: .pageFailed)
+        try expectEqual(value.state.canLoadMore, true, "Page failure should keep retry continuation")
+        try expectEqual(value.state.canLoadAll, true, "Page failure should keep retry-all continuation")
+    }
+
+    private func enumerableContinuation() throws -> ListPageAccumulator<Row> {
+        var value = ListPageAccumulator<Row>()
+        try value.append(.init(items: [.init(id: "a", value: "A")], returnedCount: 1,
+            totalCount: 3, hasMore: true, nextCursor: "next", sourceRevision: "r1",
+            sourceCompleteness: .enumerable, incompleteReason: nil))
+        return value
     }
 }
