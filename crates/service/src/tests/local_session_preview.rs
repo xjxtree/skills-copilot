@@ -1462,6 +1462,214 @@ fn malformed_json_shaped_deny_records_fail_closed_without_dropping_plaintext() {
     );
 }
 
+fn append_pending_malformed_classification_records(
+    content: &mut String,
+    hidden_markers: &mut Vec<String>,
+    path_label: &str,
+    skill_name: &str,
+) {
+    const CLASSIFICATION_SCAN_BYTES: usize = 64 * 1024;
+    const CLASSIFICATION_TOKEN_BYTES: usize = 4 * 1024;
+    let scan_filler = "x".repeat(CLASSIFICATION_SCAN_BYTES);
+    let token_filler = "y".repeat(CLASSIFICATION_TOKEN_BYTES + 1);
+
+    for field in ["role", "type"] {
+        for termination in [
+            "EOF",
+            "LINE_COMMENT",
+            "BLOCK_COMMENT",
+            "TOKEN_EXHAUSTION",
+            "SCAN_CAP",
+        ] {
+            let marker = format!("{path_label}_{field}_{termination}_MUST_NOT_SURFACE");
+            let record = match termination {
+                "EOF" => {
+                    format!(r#"{{text: "{marker} skill:{skill_name}", {field}:"#)
+                }
+                "LINE_COMMENT" => {
+                    format!(r#"{{text: "{marker} skill:{skill_name}", {field}: // unresolved"#)
+                }
+                "BLOCK_COMMENT" => {
+                    format!(r#"{{text: "{marker} skill:{skill_name}", {field}: /* unresolved"#)
+                }
+                "TOKEN_EXHAUSTION" => {
+                    format!(r#"{{text: "{marker} skill:{skill_name}", {field}: '{token_filler}"#)
+                }
+                "SCAN_CAP" => format!(
+                    r#"{{text: "{marker} skill:{skill_name}", padding: {scan_filler}, {field}:"#
+                ),
+                _ => unreachable!("fixed termination matrix"),
+            };
+            content.push_str(&record);
+            content.push('\n');
+            hidden_markers.push(marker);
+        }
+    }
+}
+
+fn append_relaxed_escaped_classification_records(
+    content: &mut String,
+    hidden_markers: &mut Vec<String>,
+    path_label: &str,
+    skill_name: &str,
+) {
+    for case in [
+        "SINGLE_ROLE_VALUE",
+        "SINGLE_TYPE_KEY",
+        "BACKTICK_TYPE_VALUE",
+        "BACKTICK_ROLE_KEY",
+    ] {
+        let marker = format!("{path_label}_{case}_MUST_NOT_SURFACE");
+        let record = match case {
+            "SINGLE_ROLE_VALUE" => {
+                format!(r#"{{'role':'dev\u0065loper','text':'{marker} skill:{skill_name}'}}"#)
+            }
+            "SINGLE_TYPE_KEY" => {
+                format!(r#"{{'t\u0079pe':'metadata','text':'{marker} skill:{skill_name}'}}"#)
+            }
+            "BACKTICK_TYPE_VALUE" => {
+                format!(r#"{{`type`:`meta\u0064ata`,`text`:`{marker} skill:{skill_name}`}}"#)
+            }
+            "BACKTICK_ROLE_KEY" => {
+                format!(r#"{{`r\u006fle`:`developer`,`text`:`{marker} skill:{skill_name}`}}"#)
+            }
+            _ => unreachable!("fixed relaxed classification matrix"),
+        };
+        content.push_str(&record);
+        content.push('\n');
+        hidden_markers.push(marker);
+    }
+}
+
+fn assert_malformed_classification_markers_absent(
+    result: &Value,
+    hidden_markers: &[String],
+    skill_name: &str,
+) {
+    let serialized = serde_json::to_string(result).expect("serialize malformed classification");
+    let row = result
+        .pointer("/session_rows/0")
+        .expect("safe malformed classification row");
+    let content_items = row
+        .get("content_items")
+        .and_then(Value::as_array)
+        .expect("malformed classification content items");
+    let mut hidden = hidden_markers.to_vec();
+    hidden.push(skill_name.to_string());
+
+    for marker in hidden {
+        assert!(
+            !serialized.contains(&marker),
+            "serialized output surfaced {marker}: {serialized}"
+        );
+        assert!(
+            !row.get("title")
+                .and_then(Value::as_str)
+                .is_some_and(|title| title.contains(&marker)),
+            "title surfaced {marker}: {result}"
+        );
+        assert!(
+            !row.get("excerpt")
+                .and_then(Value::as_str)
+                .is_some_and(|excerpt| excerpt.contains(&marker)),
+            "excerpt surfaced {marker}: {result}"
+        );
+        assert!(
+            content_items
+                .iter()
+                .all(|item| !item.to_string().contains(&marker)),
+            "content item surfaced {marker}: {result}"
+        );
+    }
+    assert_eq!(
+        row.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    assert_eq!(
+        result.get("skill_call_count").and_then(Value::as_u64),
+        Some(0),
+        "{result}"
+    );
+    assert!(
+        result
+            .get("skill_usage_rows")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "{result}"
+    );
+}
+
+#[test]
+fn pending_and_escaped_primary_classifications_fail_closed() {
+    const CLASSIFICATION_SCAN_BYTES: usize = 64 * 1024;
+    let skill_name = "final16-primary-denied-skill";
+    let mut session = "user: SAFE_FINAL16_PRIMARY_SIBLING\n".to_string();
+    let mut hidden_markers = Vec::new();
+    append_pending_malformed_classification_records(
+        &mut session,
+        &mut hidden_markers,
+        "PRIMARY",
+        skill_name,
+    );
+    append_relaxed_escaped_classification_records(
+        &mut session,
+        &mut hidden_markers,
+        "PRIMARY",
+        skill_name,
+    );
+
+    let result = preview_codex_session_fixture_with_catalog_skill(
+        "final16-primary-classification",
+        &session,
+        skill_name,
+    );
+
+    assert_malformed_classification_markers_absent(&result, &hidden_markers, skill_name);
+    assert!(
+        serde_json::to_string(&result)
+            .expect("serialize primary result")
+            .contains("SAFE_FINAL16_PRIMARY_SIBLING"),
+        "{result}"
+    );
+
+    for (case, control, visible) in [
+        (
+            "short-curly-control",
+            "{plain SHORT_CURLY_CONTROL_REMAINS_VISIBLE".to_string(),
+            "SHORT_CURLY_CONTROL_REMAINS_VISIBLE",
+        ),
+        (
+            "short-info-control",
+            "[INFO] SHORT_INFO_CONTROL_REMAINS_VISIBLE".to_string(),
+            "SHORT_INFO_CONTROL_REMAINS_VISIBLE",
+        ),
+        (
+            "long-curly-control",
+            format!(
+                "{{plain LONG_CURLY_CONTROL_REMAINS_VISIBLE {}",
+                "c".repeat(CLASSIFICATION_SCAN_BYTES + 64)
+            ),
+            "LONG_CURLY_CONTROL_REMAINS_VISIBLE",
+        ),
+        (
+            "long-info-control",
+            format!(
+                "[INFO] LONG_INFO_CONTROL_REMAINS_VISIBLE {}",
+                "i".repeat(CLASSIFICATION_SCAN_BYTES + 64)
+            ),
+            "LONG_INFO_CONTROL_REMAINS_VISIBLE",
+        ),
+    ] {
+        let control_result = preview_codex_session_fixture_with_extension(case, "log", &control);
+        let serialized = serde_json::to_string(&control_result).expect("serialize primary control");
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
+}
+
 #[test]
 fn malformed_json_shaped_deny_field_matrix_fails_closed() {
     let skill_name = "malformed-matrix-denied-skill";
@@ -2051,6 +2259,159 @@ fn malformed_opencode_message_and_part_field_matrix_fails_closed() {
             .is_some_and(Vec::is_empty),
         "{result}"
     );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+}
+
+#[test]
+fn pending_and_escaped_opencode_message_and_part_classifications_fail_closed() {
+    let unique = unique_suffix();
+    let skill_name = "final16-opencode-denied-skill";
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-final16-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-local-session-opencode-final16-home-{}-{unique}",
+        std::process::id(),
+    ));
+    let storage_root = user_home.join(".local/share/opencode/storage");
+    let session_root = storage_root.join("session");
+    let message_root = storage_root.join("message/ses_final16");
+    let part_root = storage_root.join("part/msg_final16_visible");
+    fs::create_dir_all(&session_root).expect("create final16 session root");
+    fs::create_dir_all(&message_root).expect("create final16 message root");
+    fs::create_dir_all(&part_root).expect("create final16 part root");
+    fs::write(
+        session_root.join("ses_final16.json"),
+        json!({ "id": "ses_final16", "title": "safe final16 opencode session" }).to_string(),
+    )
+    .expect("write final16 session");
+
+    let mut message_content = String::new();
+    let mut message_markers = Vec::new();
+    append_pending_malformed_classification_records(
+        &mut message_content,
+        &mut message_markers,
+        "MESSAGE",
+        skill_name,
+    );
+    append_relaxed_escaped_classification_records(
+        &mut message_content,
+        &mut message_markers,
+        "MESSAGE",
+        skill_name,
+    );
+    fs::write(
+        message_root.join("01-malformed-final16.json"),
+        message_content,
+    )
+    .expect("write final16 malformed message");
+    fs::write(
+        message_root.join("02-visible.json"),
+        json!({
+            "id": "msg_final16_visible",
+            "role": "assistant",
+            "content": "SAFE_FINAL16_OPENCODE_MESSAGE_SIBLING"
+        })
+        .to_string(),
+    )
+    .expect("write final16 safe message");
+
+    let mut part_content = String::new();
+    let mut part_markers = Vec::new();
+    append_pending_malformed_classification_records(
+        &mut part_content,
+        &mut part_markers,
+        "PART",
+        skill_name,
+    );
+    append_relaxed_escaped_classification_records(
+        &mut part_content,
+        &mut part_markers,
+        "PART",
+        skill_name,
+    );
+    fs::write(part_root.join("01-malformed-final16.json"), part_content)
+        .expect("write final16 malformed part");
+    fs::write(
+        part_root.join("02-visible.json"),
+        json!({
+            "type": "text",
+            "text": "SAFE_FINAL16_OPENCODE_PART_SIBLING"
+        })
+        .to_string(),
+    )
+    .expect("write final16 safe part");
+
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    fs::create_dir_all(&host.app_data_dir).expect("create final16 catalog directory");
+    let catalog = Catalog::open(&host.catalog_path()).expect("open final16 catalog");
+    catalog.init().expect("initialize final16 catalog");
+    let skill_path = user_home
+        .join(".config/opencode/skills")
+        .join(skill_name)
+        .join("SKILL.md");
+    catalog
+        .upsert_skill_instance(&SkillInstance {
+            id: format!("{skill_name}-id"),
+            agent: AgentId::Opencode,
+            scope: Scope::AgentGlobal,
+            project_root: None,
+            path: skill_path.clone(),
+            display_path: skill_path,
+            definition_id: format!("{skill_name}-definition"),
+            name: skill_name.to_string(),
+            display_name: skill_name.to_string(),
+            description: "Final16 matching fixture.".to_string(),
+            version: None,
+            state: SkillState::Loaded,
+            enabled: true,
+            frontmatter_raw: format!("name: {skill_name}\ndescription: fixture\n"),
+            body: "Fixture body.".to_string(),
+            scripts: Vec::new(),
+            permissions: PermissionRequest::default(),
+            fingerprint: format!("{skill_name}-fingerprint"),
+            mtime: 1,
+            first_seen: 1,
+            last_seen: 1,
+        })
+        .expect("seed final16 skill");
+
+    let response = host.handle(ServiceRequest {
+        id: Some("session-preview-opencode-final16".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "opencode",
+            "limit": 10,
+            "max_excerpt_chars": 4_000
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("final16 opencode preview result");
+    let mut hidden_markers = message_markers;
+    hidden_markers.extend(part_markers);
+
+    assert_malformed_classification_markers_absent(&result, &hidden_markers, skill_name);
+    let serialized = serde_json::to_string(&result).expect("serialize final16 opencode result");
+    for visible in [
+        "SAFE_FINAL16_OPENCODE_MESSAGE_SIBLING",
+        "SAFE_FINAL16_OPENCODE_PART_SIBLING",
+    ] {
+        assert!(
+            serialized.contains(visible),
+            "missing {visible}: {serialized}"
+        );
+    }
 
     let _ = fs::remove_dir_all(app_data_dir);
     let _ = fs::remove_dir_all(user_home);

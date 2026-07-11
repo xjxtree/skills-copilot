@@ -1026,6 +1026,11 @@ fn compact_local_session_records(text: &str, max_line_fragment_bytes: usize) -> 
         if looks_like_json_member_or_array_fragment(trimmed) {
             continue;
         }
+        if trimmed.len().saturating_add(1) > max_line_fragment_bytes
+            && malformed_json_shaped_record_is_denied(trimmed)
+        {
+            continue;
+        }
         content.push_str(&truncate_utf8_bytes(
             trimmed,
             max_line_fragment_bytes.saturating_sub(1),
@@ -1733,6 +1738,7 @@ enum MalformedJsonLikeToken {
 struct MalformedJsonLikeTokenScanner<'a> {
     bytes: &'a [u8],
     cursor: usize,
+    scan_truncated: bool,
 }
 
 impl<'a> MalformedJsonLikeTokenScanner<'a> {
@@ -1744,7 +1750,12 @@ impl<'a> MalformedJsonLikeTokenScanner<'a> {
         Self {
             bytes: &text.as_bytes()[..end],
             cursor: 0,
+            scan_truncated: end < text.len(),
         }
+    }
+
+    fn exhausted_truncated_scan(&self) -> bool {
+        self.scan_truncated && self.cursor >= self.bytes.len()
     }
 
     fn next_token(&mut self) -> Option<MalformedJsonLikeToken> {
@@ -1852,13 +1863,12 @@ fn is_malformed_json_like_bare_scalar_byte(byte: u8) -> bool {
 }
 
 fn decode_relaxed_quoted_scalar(bytes: &[u8]) -> Option<String> {
+    if bytes.contains(&b'\\') {
+        return None;
+    }
     let mut decoded = Vec::with_capacity(bytes.len().min(MAX_PROVENANCE_TOKEN_BYTES));
     let mut cursor = 0usize;
     while cursor < bytes.len() {
-        let byte = bytes[cursor];
-        if byte == b'\\' && cursor + 1 < bytes.len() {
-            cursor += 1;
-        }
         if decoded.len() >= MAX_PROVENANCE_TOKEN_BYTES {
             return None;
         }
@@ -1876,8 +1886,9 @@ fn malformed_json_shaped_record_is_denied(text: &str) -> bool {
     }
 
     let mut depth = 1usize;
-    let mut last_scalar: Option<String> = None;
+    let mut last_scalar: Option<Option<String>> = None;
     let mut classification_key: Option<String> = None;
+    let mut saw_colon = false;
     while let Some(token) = scanner.next_token() {
         match token {
             MalformedJsonLikeToken::Open => {
@@ -1904,9 +1915,13 @@ fn malformed_json_shaped_record_is_denied(text: &str) -> bool {
                 last_scalar = None;
             }
             MalformedJsonLikeToken::Colon => {
+                saw_colon = true;
                 let Some(key) = last_scalar.take() else {
                     classification_key = None;
                     continue;
+                };
+                let Some(key) = key else {
+                    return true;
                 };
                 let normalized_key = normalized_malformed_json_token(&key);
                 if malformed_json_deny_label(&normalized_key) {
@@ -1924,7 +1939,7 @@ fn malformed_json_shaped_record_is_denied(text: &str) -> bool {
                         return true;
                     }
                 }
-                last_scalar = value;
+                last_scalar = Some(value);
             }
             MalformedJsonLikeToken::Other => {
                 if classification_key.take().is_some() {
@@ -1934,7 +1949,7 @@ fn malformed_json_shaped_record_is_denied(text: &str) -> bool {
             }
         }
     }
-    false
+    classification_key.is_some() || (depth > 0 && saw_colon && scanner.exhausted_truncated_scan())
 }
 
 fn normalized_malformed_json_token(value: &str) -> String {
