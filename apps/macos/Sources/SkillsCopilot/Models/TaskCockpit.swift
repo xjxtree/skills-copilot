@@ -724,20 +724,102 @@ struct TaskCockpitResult: Decodable, Hashable {
         self.catalogAvailable = catalogAvailable
         self.filters = filters
         self.summary = summary
-        self.cockpitSections = cockpitSections
-        self.taskRows = taskRows
-        self.routeCandidates = routeCandidates
-        self.agentCandidates = agentCandidates
-        self.skillCandidates = skillCandidates
-        self.readinessSignals = readinessSignals
-        self.providerObservabilityContext = providerObservabilityContext
-        self.gapRows = gapRows
-        self.blockerRows = blockerRows
-        self.evidenceReferences = evidenceReferences
+        self.cockpitSections = Self.uniqueContextRows(cockpitSections, namespace: "section")
+        self.taskRows = Self.uniqueCandidateRows(taskRows, namespace: "task")
+        self.routeCandidates = Self.uniqueCandidateRows(routeCandidates, namespace: "route")
+        self.agentCandidates = Self.uniqueCandidateRows(agentCandidates, namespace: "agent")
+        self.skillCandidates = Self.uniqueCandidateRows(skillCandidates, namespace: "skill")
+        self.readinessSignals = Self.uniqueContextRows(readinessSignals, namespace: "readiness")
+        self.providerObservabilityContext = Self.uniqueContextRows(providerObservabilityContext, namespace: "provider")
+        self.gapRows = Self.uniqueContextRows(gapRows, namespace: "gap")
+        self.blockerRows = Self.uniqueContextRows(blockerRows, namespace: "blocker")
+        self.evidenceReferences = Self.uniqueEvidenceRows(evidenceReferences)
         self.promptRequest = promptRequest
         self.aggregation = aggregation
         self.safetyFlags = safetyFlags
         self.fallbackReason = fallbackReason
+    }
+
+    private static func uniqueCandidateRows(
+        _ rows: [TaskCockpitCandidateRow],
+        namespace: String
+    ) -> [TaskCockpitCandidateRow] {
+        var usedIDs = Set<String>()
+        return rows.enumerated().map { index, row in
+            let id = uniqueDisplayID(row.id, namespace: namespace, index: index, usedIDs: &usedIDs)
+            return TaskCockpitCandidateRow(
+                id: id,
+                rank: row.rank,
+                title: row.title,
+                agent: row.agent,
+                skill: row.skill,
+                readinessScore: row.readinessScore,
+                routingScore: row.routingScore,
+                score: row.score,
+                band: row.band,
+                status: row.status,
+                summary: row.summary,
+                reasons: row.reasons,
+                evidenceRefs: row.evidenceRefs,
+                safetyFlags: row.safetyFlags
+            )
+        }
+    }
+
+    private static func uniqueContextRows(
+        _ rows: [TaskCockpitContextRow],
+        namespace: String
+    ) -> [TaskCockpitContextRow] {
+        var usedIDs = Set<String>()
+        return rows.enumerated().map { index, row in
+            let id = uniqueDisplayID(row.id, namespace: namespace, index: index, usedIDs: &usedIDs)
+            return TaskCockpitContextRow(
+                id: id,
+                title: row.title,
+                detail: row.detail,
+                status: row.status,
+                severity: row.severity,
+                source: row.source,
+                agent: row.agent,
+                count: row.count,
+                evidenceRefs: row.evidenceRefs,
+                safetyFlags: row.safetyFlags
+            )
+        }
+    }
+
+    private static func uniqueEvidenceRows(
+        _ rows: [ProviderObservabilityEvidenceReference]
+    ) -> [ProviderObservabilityEvidenceReference] {
+        var usedIDs = Set<String>()
+        return rows.enumerated().map { index, row in
+            let id = uniqueDisplayID(row.id, namespace: "evidence", index: index, usedIDs: &usedIDs)
+            return ProviderObservabilityEvidenceReference(
+                id: id,
+                title: row.title,
+                detail: row.detail,
+                source: row.source,
+                agent: row.agent
+            )
+        }
+    }
+
+    private static func uniqueDisplayID(
+        _ sourceID: String,
+        namespace: String,
+        index: Int,
+        usedIDs: inout Set<String>
+    ) -> String {
+        let trimmed = sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "\(namespace):\(index)" : trimmed
+        if usedIDs.insert(base).inserted {
+            return base
+        }
+        var suffix = 2
+        while !usedIDs.insert("\(base)#\(suffix)").inserted {
+            suffix += 1
+        }
+        return "\(base)#\(suffix)"
     }
 
     init(from decoder: Decoder) throws {

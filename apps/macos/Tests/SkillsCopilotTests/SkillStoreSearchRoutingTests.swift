@@ -31,5 +31,38 @@ extension SkillStoreTests {
         try expectFalse(store.selectedSidebarSelection?.isConfig != true, "View All Config History should normalize selection to the canonical Config list.")
 
         try expectEqual(fake.calls(), callsBeforeRouting, "View All routing must not issue service RPCs.")
+
+        let allAgentStore = SkillStore(service: fake.serviceClient())
+        allAgentStore.agentFilter = .all
+        let allAgentCallsBeforeRouting = fake.calls()
+        await allAgentStore.showAllAppSearchResults(kind: .configHistory, query: "match")
+        let multiAgentSnapshots = [
+            ConfigSnapshotRecord(
+                id: "snapshot-claude",
+                agent: "claude-code",
+                scope: "agent-global",
+                target: "$HOME/.claude/settings.json",
+                content: "{}",
+                reason: "Match Claude config",
+                createdAt: 20
+            ),
+            ConfigSnapshotRecord(
+                id: "snapshot-codex",
+                agent: "codex",
+                scope: "agent-project",
+                target: "$PROJECT/.codex/config.toml",
+                content: "",
+                reason: "Match Codex config",
+                createdAt: 10
+            ),
+        ]
+        let reachable = AgentConfigSidebarModel.filteredSnapshots(
+            multiAgentSnapshots,
+            agentFilter: allAgentStore.agentFilter,
+            scopeFilter: allAgentStore.configScopeFilter,
+            searchText: allAgentStore.configSidebarSearchText
+        )
+        try expectEqual(reachable.map(\.id), ["snapshot-claude", "snapshot-codex"], "Config History View All under the All agent filter should keep every real-agent snapshot reachable.")
+        try expectEqual(fake.calls(), allAgentCallsBeforeRouting, "All-agent Config History View All must remain a zero-RPC route.")
     }
 }

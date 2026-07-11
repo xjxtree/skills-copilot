@@ -1021,6 +1021,7 @@ private struct SkillManagerTargetSummary: View {
                 agents,
                 visibleLimit: 4,
                 spacing: 4,
+                columns: [GridItem(.adaptive(minimum: 120), spacing: 6)],
                 accessibilityIdentifier: "skill-manager-agents.show-all"
             ) { agent in
                 HStack(spacing: 6) {

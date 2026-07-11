@@ -304,14 +304,7 @@ enum SkillListModel {
             cachedIssueIndex = index
             return index
         }
-        let searched = query.isEmpty
-            ? skills
-            : skills.filter { skill in
-                skill.name.localizedCaseInsensitiveContains(query)
-                    || skill.definitionId.localizedCaseInsensitiveContains(query)
-                    || skill.displayPath.localizedCaseInsensitiveContains(query)
-                    || agentSearchText(for: skill.agent).localizedCaseInsensitiveContains(query)
-            }
+        let searched = skills.filter { matchesSearchQuery($0, query: query) }
         let filtered = searched.filter { skill in
             guard agentFilter.includes(skill) else {
                 return false
@@ -374,6 +367,20 @@ enum SkillListModel {
             return sorted
         case .descending:
             return Array(sorted.reversed())
+        }
+    }
+
+    static func matchesSearchQuery(_ skill: SkillRecord, query rawQuery: String) -> Bool {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        return [
+            skill.name,
+            skill.definitionId,
+            skill.displayPath,
+            agentSearchText(for: skill.agent),
+            skill.scope,
+        ].contains { value in
+            value.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -694,5 +701,41 @@ enum SkillListModel {
             }
         }
         return groups
+    }
+}
+
+enum AgentConfigSidebarModel {
+    static func filteredSnapshots(
+        _ snapshots: [ConfigSnapshotRecord],
+        agentFilter: SkillAgentFilter,
+        scopeFilter: AgentConfigScopeFilter,
+        searchText: String
+    ) -> [ConfigSnapshotRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return snapshots
+            .filter { snapshot in
+                (agentFilter == .all || snapshot.agent == agentFilter.rawValue)
+                    && scopeFilter.includes(snapshot)
+                    && matches(snapshot, query: query)
+            }
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.id > rhs.id
+            }
+    }
+
+    private static func matches(_ snapshot: ConfigSnapshotRecord, query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        return [
+            snapshot.agent,
+            snapshot.scope,
+            snapshot.target,
+            snapshot.reason,
+            DisplayText.timestamp(snapshot.createdAt),
+        ].contains { value in
+            value.localizedCaseInsensitiveContains(query)
+        }
     }
 }

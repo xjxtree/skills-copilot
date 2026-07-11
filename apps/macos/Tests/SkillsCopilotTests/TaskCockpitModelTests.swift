@@ -10,6 +10,7 @@ struct TaskCockpitModelTests {
         try derivesCompletedProgressRowsFromResultMetadata()
         try derivesFallbackProgressRowsWithoutUnsafeCapabilities()
         try parsesLooseProviderCandidateJSONWithoutLeakingRawOutput()
+        try legacyDuplicateRowsReceiveStableUniqueDisplayIDs()
     }
 
     private struct ServiceEnvelope<ResultPayload: Decodable>: Decodable {
@@ -187,6 +188,32 @@ struct TaskCockpitModelTests {
         try expectEqual(result.evidenceReferences.first?.title, "task-cockpit:evidence", "String evidence should decode.")
         try expectEqual(result.promptRequest?.requestKind, "task_cockpit", "Prompt request camel-case alias should decode.")
         try expectEqual(result.safetyFlags.notes, ["provider not sent"], "Safety string array should decode.")
+    }
+
+    private func legacyDuplicateRowsReceiveStableUniqueDisplayIDs() throws {
+        let json = """
+        {
+          "route_candidates": [
+            {"title":"Same route","agent":"codex"},
+            {"title":"Same route","agent":"codex"},
+            {"id":"explicit-duplicate","title":"Explicit route"},
+            {"id":"explicit-duplicate","title":"Explicit route"}
+          ],
+          "gap_rows": [
+            {"title":"Same gap","detail":"Same detail"},
+            {"title":"Same gap","detail":"Same detail"}
+          ],
+          "blocker_rows": ["Same blocker", "Same blocker"]
+        }
+        """
+
+        let first = try JSONDecoder().decode(TaskCockpitResult.self, from: Data(json.utf8))
+        let second = try JSONDecoder().decode(TaskCockpitResult.self, from: Data(json.utf8))
+        for rows in [first.routeCandidates.map(\.id), first.gapRows.map(\.id), first.blockerRows.map(\.id)] {
+            try expectEqual(Set(rows).count, rows.count, "Legacy Task Cockpit display IDs must be unique within every rendered list.")
+        }
+        try expectEqual(first.routeCandidates.map(\.id), second.routeCandidates.map(\.id), "Candidate display IDs must remain stable across identical decodes.")
+        try expectEqual(first.gapRows.map(\.id), second.gapRows.map(\.id), "Context display IDs must remain stable across identical decodes.")
     }
 
     private func classifiesFallbackAndPartialDiagnostics() throws {

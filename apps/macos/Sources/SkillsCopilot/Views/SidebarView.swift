@@ -221,7 +221,12 @@ struct SidebarView: View {
     }
 
     private var configHistoryCount: Int {
-        store.agentConfigSnapshots.filter { $0.agent == store.agentFilter.rawValue }.count
+        AgentConfigSidebarModel.filteredSnapshots(
+            store.agentConfigSnapshots,
+            agentFilter: store.agentFilter,
+            scopeFilter: .all,
+            searchText: ""
+        ).count
     }
 
     private var configCountText: String? {
@@ -2001,18 +2006,12 @@ private struct ConfigSidebarPanel: View {
     }
 
     private var selectedSnapshots: [ConfigSnapshotRecord] {
-        store.agentConfigSnapshots
-            .filter { snapshot in
-                snapshot.agent == store.agentFilter.rawValue
-                    && store.configScopeFilter.includes(snapshot)
-                    && store.configSnapshotMatchesSidebarQuery(snapshot)
-            }
-            .sorted { lhs, rhs in
-                if lhs.createdAt != rhs.createdAt {
-                    return lhs.createdAt > rhs.createdAt
-                }
-                return lhs.id > rhs.id
-            }
+        AgentConfigSidebarModel.filteredSnapshots(
+            store.agentConfigSnapshots,
+            agentFilter: store.agentFilter,
+            scopeFilter: store.configScopeFilter,
+            searchText: store.configSidebarSearchText
+        )
     }
 
     private var disabledSkills: [SkillRecord] {

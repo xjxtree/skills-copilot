@@ -11,9 +11,7 @@ struct AppSearchIndex {
         let needle = query.lowercased()
         let limit = max(1, limitPerKind)
 
-        let matchingSkills = skills.filter {
-            [$0.name, $0.agent, $0.scope].contains { $0.lowercased().contains(needle) }
-        }
+        let matchingSkills = skills.filter { SkillListModel.matchesSearchQuery($0, query: query) }
         let summaries = sessionSummaries.map(\.summaryOnly)
         let matchingSessions = summaries.filter {
             [$0.title, $0.excerpt, $0.agent ?? ""].contains { $0.lowercased().contains(needle) }

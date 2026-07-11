@@ -1605,6 +1605,102 @@ private struct TaskCockpitTechnicalDiagnosticsView: View {
                 skillCount: skillCount,
                 agentCount: agentCount
             )
+
+            if !result.taskRows.isEmpty {
+                TaskCockpitCandidateList(
+                    title: UIStrings.taskCockpitTasks,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.taskRows,
+                    systemImage: "checklist",
+                    accessibilityIdentifier: "task-cockpit-tasks.show-all"
+                )
+            }
+
+            if !result.routeCandidates.isEmpty {
+                TaskCockpitCandidateList(
+                    title: UIStrings.taskCockpitRoutes,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.routeCandidates,
+                    systemImage: "arrow.triangle.branch",
+                    accessibilityIdentifier: "task-cockpit-candidates.show-all"
+                )
+            }
+
+            if !result.agentCandidates.isEmpty {
+                TaskCockpitCandidateList(
+                    title: UIStrings.taskCockpitAgents,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.agentCandidates,
+                    systemImage: "person.2",
+                    accessibilityIdentifier: "task-cockpit-agents.show-all"
+                )
+            }
+
+            if !result.skillCandidates.isEmpty {
+                TaskCockpitCandidateList(
+                    title: UIStrings.taskCockpitSkills,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.skillCandidates,
+                    systemImage: "square.stack.3d.up",
+                    accessibilityIdentifier: "task-cockpit-skills.show-all"
+                )
+            }
+
+            if !result.cockpitSections.isEmpty {
+                TaskCockpitContextList(
+                    title: UIStrings.taskCockpitSections,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.cockpitSections,
+                    systemImage: "rectangle.3.group",
+                    accessibilityIdentifier: "task-cockpit-sections.show-all"
+                )
+            }
+
+            if !result.readinessSignals.isEmpty {
+                TaskCockpitContextList(
+                    title: UIStrings.taskCockpitReadinessSignals,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.readinessSignals,
+                    systemImage: "checkmark.seal",
+                    accessibilityIdentifier: "task-cockpit-readiness.show-all"
+                )
+            }
+
+            if !result.providerObservabilityContext.isEmpty {
+                TaskCockpitContextList(
+                    title: UIStrings.taskCockpitProviderContext,
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.providerObservabilityContext,
+                    systemImage: "waveform.path.ecg",
+                    accessibilityIdentifier: "task-cockpit-provider-context.show-all"
+                )
+            }
+
+            if !result.gapRows.isEmpty {
+                TaskCockpitContextList(
+                    title: UIStrings.text("taskCockpit.gaps", "Gaps"),
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.gapRows,
+                    systemImage: "exclamationmark.triangle",
+                    accessibilityIdentifier: "task-cockpit-context.show-all"
+                )
+            }
+
+            if !result.blockerRows.isEmpty {
+                TaskCockpitContextList(
+                    title: UIStrings.text("taskCockpit.blockers", "Blockers"),
+                    empty: UIStrings.taskCockpitNoRows,
+                    rows: result.blockerRows,
+                    systemImage: "exclamationmark.octagon",
+                    accessibilityIdentifier: "task-cockpit-blockers.show-all"
+                )
+            }
+
+            if !result.evidenceReferences.isEmpty {
+                TaskCockpitEvidenceList(evidence: result.evidenceReferences)
+            }
+
+            TaskCockpitSafetyList(safety: result.safetyFlags)
         }
     }
 
@@ -1704,6 +1800,7 @@ private struct TaskCockpitCandidateList: View {
     let empty: String
     let rows: [TaskCockpitCandidateRow]
     let systemImage: String
+    let accessibilityIdentifier: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1720,7 +1817,7 @@ private struct TaskCockpitCandidateList: View {
                     visibleLimit: 8,
                     spacing: 8,
                     columns: [GridItem(.adaptive(minimum: 250), spacing: 8)],
-                    accessibilityIdentifier: "task-cockpit-candidates.show-all"
+                    accessibilityIdentifier: accessibilityIdentifier
                 ) { row in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack(alignment: .firstTextBaseline) {
@@ -1783,6 +1880,7 @@ private struct TaskCockpitContextList: View {
     let empty: String
     let rows: [TaskCockpitContextRow]
     let systemImage: String
+    let accessibilityIdentifier: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1798,7 +1896,7 @@ private struct TaskCockpitContextList: View {
                     rows,
                     visibleLimit: 6,
                     spacing: 6,
-                    accessibilityIdentifier: "task-cockpit-context.show-all"
+                    accessibilityIdentifier: accessibilityIdentifier
                 ) { row in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline) {
@@ -1859,7 +1957,12 @@ private struct TaskCockpitEvidenceList: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
-                DenseDisclosureList(evidence, visibleLimit: 6, spacing: 6) { item in
+                ExpandableSummaryList(
+                    evidence,
+                    visibleLimit: 6,
+                    spacing: 6,
+                    accessibilityIdentifier: "task-cockpit-evidence.show-all"
+                ) { item in
                     VStack(alignment: .leading, spacing: 2) {
                         Label(item.title, systemImage: "checklist")
                             .font(.callout)

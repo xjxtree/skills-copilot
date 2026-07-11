@@ -15,6 +15,7 @@ struct LocalSessionCacheTests {
         try cursorMetadataIsTransientAndCancellationRejectsLatePages()
         try globalSearchIndexesSummariesOnly()
         try globalSearchLimitsShortcutsButPreservesExactKindCounts()
+        try globalSearchSkillMatchesCanonicalSkillPredicate()
     }
 
     private let source = LocalSessionSnapshotKey(
@@ -275,6 +276,74 @@ struct LocalSessionCacheTests {
             )
         }
         try expectEqual(result.totalMatchedCount, 60, "Global search should preserve the exact aggregate match count.")
+    }
+
+    private func globalSearchSkillMatchesCanonicalSkillPredicate() throws {
+        let skills = [
+            SkillRecord(
+                id: "scope-only",
+                agent: "claude-code",
+                scope: "match-scope-only",
+                path: "/project/skills/scope/SKILL.md",
+                displayPath: "$PROJECT/skills/scope/SKILL.md",
+                definitionId: "definition.scope",
+                name: "Scope Record",
+                state: "loaded",
+                enabled: true
+            ),
+            SkillRecord(
+                id: "definition-only",
+                agent: "codex",
+                scope: "agent-global",
+                path: "/project/skills/definition/SKILL.md",
+                displayPath: "$PROJECT/skills/definition/SKILL.md",
+                definitionId: "match-definition-only",
+                name: "Definition Record",
+                state: "loaded",
+                enabled: true
+            ),
+            SkillRecord(
+                id: "path-only",
+                agent: "opencode",
+                scope: "agent-global",
+                path: "/project/skills/path/SKILL.md",
+                displayPath: "$PROJECT/match-path-only/SKILL.md",
+                definitionId: "definition.path",
+                name: "Path Record",
+                state: "loaded",
+                enabled: true
+            ),
+            SkillRecord(
+                id: "alias-only",
+                agent: "opencode",
+                scope: "agent-global",
+                path: "/project/skills/alias/SKILL.md",
+                displayPath: "$PROJECT/skills/alias/SKILL.md",
+                definitionId: "definition.alias",
+                name: "Alias Record",
+                state: "loaded",
+                enabled: true
+            ),
+        ]
+
+        for query in ["match-scope-only", "match-definition-only", "match-path-only", "open code"] {
+            let overlayIDs = Set(AppSearchIndex(
+                skills: skills,
+                sessionSummaries: [],
+                configSnapshots: []
+            ).search(query: query, limitPerKind: 6).items.map(\.targetID))
+            let canonicalIDs = Set(SkillListModel.filteredAndSorted(
+                skills: skills,
+                findings: [],
+                conflicts: [],
+                searchText: query,
+                agentFilter: .all,
+                stateFilter: .all,
+                scopeFilter: .all,
+                sortOrder: .name
+            ).map(\.id))
+            try expectEqual(overlayIDs, canonicalIDs, "Global search and canonical Skills should return the same set for \(query).")
+        }
     }
 
     private func cursorMetadataIsTransientAndCancellationRejectsLatePages() throws {

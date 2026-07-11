@@ -195,7 +195,9 @@ const checks = [
       files.skillManager,
       files.detailPrimitives,
       files.content,
-    ].some((source) => source.includes(identifier))),
+    ].some((source) => source.includes(identifier)))
+      && /private struct TaskCockpitTechnicalDiagnosticsView:[\s\S]*?TaskCockpitCandidateList\([\s\S]*?routeCandidates[\s\S]*?TaskCockpitCandidateList\([\s\S]*?agentCandidates[\s\S]*?TaskCockpitCandidateList\([\s\S]*?skillCandidates[\s\S]*?TaskCockpitContextList\([\s\S]*?gapRows[\s\S]*?TaskCockpitContextList\([\s\S]*?blockerRows[\s\S]*?TaskCockpitEvidenceList\([\s\S]*?evidenceReferences[\s\S]*?TaskCockpitSafetyList\(/.test(files.taskCockpit)
+      && /private struct SkillManagerTargetSummary:[\s\S]*?ExpandableSummaryList\([\s\S]*?columns:\s*\[GridItem\(\.adaptive/.test(files.skillManager),
   },
   {
     label: "main shell uses NavigationSplitView",
@@ -609,9 +611,9 @@ const checks = [
     pattern: /struct RoutingInlineList:[\s\S]*?DenseCountBadge\(count:\s*values\.count\)[\s\S]*?DenseDisclosureList\(values,\s*visibleLimit:\s*3,\s*spacing:\s*3\)[\s\S]*?PrivacyEvidenceLabel\(value:\s*value,\s*systemImage:\s*systemImage,\s*font:\s*\.caption,\s*lineLimit:\s*2\)/,
   },
   {
-    label: "task cockpit evidence list is capped and screenshot-safe",
+    label: "task cockpit evidence list is compact, expandable, and screenshot-safe",
     text: files.taskCockpit,
-    pattern: /struct TaskCockpitEvidenceList:[\s\S]*?DenseDisclosureList\(evidence,\s*visibleLimit:\s*6,\s*spacing:\s*6\)[\s\S]*?PrivacyEvidenceText\(value:\s*source,\s*font:\s*\.caption2,\s*lineLimit:\s*1\)[\s\S]*?PrivacyEvidenceText\(value:\s*item\.detail,\s*font:\s*\.caption,\s*lineLimit:\s*nil\)/,
+    pattern: /struct TaskCockpitEvidenceList:[\s\S]*?ExpandableSummaryList\([\s\S]*?evidence,[\s\S]*?visibleLimit:\s*6,[\s\S]*?task-cockpit-evidence\.show-all[\s\S]*?PrivacyEvidenceText\(value:\s*source,\s*font:\s*\.caption2,\s*lineLimit:\s*1\)[\s\S]*?PrivacyEvidenceText\(value:\s*item\.detail,\s*font:\s*\.caption,\s*lineLimit:\s*nil\)/,
   },
   {
     label: "window titlebar accessory owns agent and project selection",
@@ -1253,10 +1255,12 @@ const customChecks = [
       && !/AgentProfileInfoRow/.test(files.agentSessionDetail),
   },
   {
-    label: "detail evidence lists are row-capped and use privacy rendering",
+    label: "detail evidence lists are compact, fully expandable, and use privacy rendering",
     passed: detailEvidenceLists.every((name) => {
       const body = extractStructBody(files.detailSurface, name);
-      return (body.includes("ForEach(evidence.prefix(") || body.includes("DenseDisclosureList(evidence, visibleLimit:"))
+      return (body.includes("ForEach(evidence.prefix(")
+          || body.includes("DenseDisclosureList(evidence, visibleLimit:")
+          || body.includes("ExpandableSummaryList("))
         && body.includes("PrivacyEvidenceText(value: item.detail")
         && body.includes("PrivacyEvidenceText(value: source");
     }),
