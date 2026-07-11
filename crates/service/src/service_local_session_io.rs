@@ -17,6 +17,58 @@ use std::{
 
 const MAX_READ_CHUNK_BYTES: usize = 64 * 1024;
 
+#[cfg(test)]
+static SCHEDULED_SIDECAR_READ_FAULTS: std::sync::Mutex<Vec<(PathBuf, usize)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn install_scheduled_sidecar_read_fault(path: PathBuf, bytes_before_error: usize) {
+    let mut faults = SCHEDULED_SIDECAR_READ_FAULTS
+        .lock()
+        .expect("lock scheduled sidecar read faults");
+    assert!(
+        !faults.iter().any(|(scheduled, _)| scheduled == &path),
+        "sidecar read fault already scheduled for {}",
+        path.display()
+    );
+    faults.push((path, bytes_before_error));
+}
+
+#[cfg(test)]
+fn take_scheduled_sidecar_read_fault(path: &Path) -> Option<usize> {
+    let mut faults = SCHEDULED_SIDECAR_READ_FAULTS
+        .lock()
+        .expect("lock scheduled sidecar read faults");
+    let index = faults.iter().position(|(scheduled, _)| scheduled == path)?;
+    Some(faults.swap_remove(index).1)
+}
+
+#[cfg(test)]
+struct ScheduledReadFault<R> {
+    inner: R,
+    bytes_before_error: usize,
+}
+
+#[cfg(test)]
+impl<R: Read> Read for ScheduledReadFault<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.bytes_before_error == 0 {
+            return Err(io::Error::other("injected sidecar read fault"));
+        }
+        let allowed = buffer.len().min(self.bytes_before_error);
+        let read = self.inner.read(&mut buffer[..allowed])?;
+        self.bytes_before_error = self.bytes_before_error.saturating_sub(read);
+        Ok(read)
+    }
+}
+
+#[cfg(test)]
+impl<R: Seek> Seek for ScheduledReadFault<R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BoundedReadSpec {
     pub(crate) head_bytes: usize,
@@ -1283,13 +1335,42 @@ pub(crate) fn read_bounded_sidecar_text(
     request_budget: &mut LocalSessionReadBudget,
 ) -> Result<BoundedText, ServiceError> {
     let (mut file, metadata) = root.open_regular_file(path)?;
-    let mut bounded = read_bounded_sidecar_from(
-        &mut file,
-        metadata.len(),
-        spec,
-        session_budget,
-        request_budget,
-    )?;
+    let mut bounded = {
+        #[cfg(test)]
+        {
+            if let Some(bytes_before_error) = take_scheduled_sidecar_read_fault(path) {
+                let mut fault = ScheduledReadFault {
+                    inner: &mut file,
+                    bytes_before_error,
+                };
+                read_bounded_sidecar_from(
+                    &mut fault,
+                    metadata.len(),
+                    spec,
+                    session_budget,
+                    request_budget,
+                )?
+            } else {
+                read_bounded_sidecar_from(
+                    &mut file,
+                    metadata.len(),
+                    spec,
+                    session_budget,
+                    request_budget,
+                )?
+            }
+        }
+        #[cfg(not(test))]
+        {
+            read_bounded_sidecar_from(
+                &mut file,
+                metadata.len(),
+                spec,
+                session_budget,
+                request_budget,
+            )?
+        }
+    };
     bounded.modified_at_millis = metadata
         .modified()
         .ok()

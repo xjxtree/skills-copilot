@@ -12,6 +12,23 @@ impl ServiceHost {
         &self,
         params: LocalSessionPreviewParams,
     ) -> Result<LocalSessionPreviewResult, ServiceError> {
+        self.preview_local_sessions_with_read_limits(params, LocalSessionReadLimits::default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preview_local_sessions_with_test_limits(
+        &self,
+        params: LocalSessionPreviewParams,
+        limits: LocalSessionReadLimits,
+    ) -> Result<LocalSessionPreviewResult, ServiceError> {
+        self.preview_local_sessions_with_read_limits(params, limits)
+    }
+
+    fn preview_local_sessions_with_read_limits(
+        &self,
+        params: LocalSessionPreviewParams,
+        limits: LocalSessionReadLimits,
+    ) -> Result<LocalSessionPreviewResult, ServiceError> {
         let limit = params.limit.unwrap_or(20).clamp(1, 100);
         let max_files = params.max_files.unwrap_or(200).clamp(1, 1_000);
         let max_excerpt_chars = params.max_excerpt_chars.unwrap_or(1_000).clamp(120, 4_000);
@@ -112,7 +129,7 @@ impl ServiceHost {
         let mut skill_usage = BTreeMap::<String, LocalSessionSkillUsageAccumulator>::new();
         let skill_matchers = self.local_session_skill_matchers(requested_agent)?;
         let mut total_candidate_count = 0usize;
-        let mut io = LocalSessionIoContext::new(LocalSessionReadLimits::default());
+        let mut io = LocalSessionIoContext::new(limits);
 
         for root_request in root_requests {
             let LocalSessionRootRequest {
@@ -2254,6 +2271,76 @@ mod bounded_content_tests {
 
     #[cfg(unix)]
     #[test]
+    fn request_budget_fault_preserves_primary_and_sidecar_truncation_gap() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+        let unique = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let fixture = PathBuf::from("/tmp").join(format!(
+            "sc-request-budget-fault-{}-{unique}",
+            std::process::id()
+        ));
+        let user_home = fixture.join("home");
+        let storage_root = user_home.join(".local/share/opencode/storage");
+        let session_root = storage_root.join("session");
+        let message_root = storage_root.join("message/ses_request_fault");
+        fs::create_dir_all(&session_root).expect("create opencode session root");
+        fs::create_dir_all(&message_root).expect("create opencode message root");
+        fs::write(
+            session_root.join("ses_request_fault.json"),
+            r#"{"id":"ses_request_fault","title":"Primary title"}"#,
+        )
+        .expect("write primary session");
+        fs::write(
+            message_root.join("000-fault.json"),
+            r#"{"id":"msg_fault","role":"assistant","content":"faulting sidecar"}"#,
+        )
+        .expect("write faulting sidecar");
+        fs::write(
+            message_root.join("001-later.json"),
+            r#"{"id":"msg_later","role":"assistant","content":"skill:must-not-read"}"#,
+        )
+        .expect("write later sidecar");
+        let fault_path = message_root
+            .join("000-fault.json")
+            .canonicalize()
+            .expect("canonicalize faulting sidecar");
+        super::super::service_local_session_io::install_scheduled_sidecar_read_fault(fault_path, 3);
+        let host = ServiceHost {
+            app_data_dir: fixture.join("app-data"),
+            adapter_ctx: AdapterContext {
+                user_home,
+                project_root: None,
+                project_cwd: None,
+                extra_roots: Vec::new(),
+            },
+        };
+        let result = host
+            .preview_local_sessions_with_test_limits(
+                LocalSessionPreviewParams {
+                    agent: Some("opencode".to_string()),
+                    limit: Some(10),
+                    ..LocalSessionPreviewParams::default()
+                },
+                LocalSessionReadLimits {
+                    max_preview_read_bytes: 128,
+                    ..LocalSessionReadLimits::default()
+                },
+            )
+            .expect("preview bounded opencode session");
+        let _ = fs::remove_dir_all(&fixture);
+
+        assert_eq!(result.count, 1, "primary row must remain");
+        assert_eq!(result.session_rows[0].title, "Primary title");
+        assert_eq!(result.skill_call_count, 0, "later sidecar must be omitted");
+        assert!(result.gap_notes.iter().any(|note| {
+            let note = note.to_ascii_lowercase();
+            note.contains("sidecar") && note.contains("truncat")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn row_id_does_not_reresolve_a_checked_candidate_after_path_swap() {
         use std::os::unix::fs::symlink;
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -2581,6 +2668,7 @@ fn enrich_local_session_content(
             else {
                 if sidecar_state.budget.remaining_files() == 0
                     || sidecar_state.budget.remaining_bytes() == 0
+                    || sidecar_state.io.budget.remaining_bytes() == 0
                 {
                     sidecar_state.truncated = true;
                     break;
@@ -2654,7 +2742,10 @@ fn append_opencode_parts(
     state.truncated |= part_inventory.truncated;
     for part_path in part_inventory.files {
         let Some(part) = read_opencode_sidecar(guarded_root, &part_path, state) else {
-            if state.budget.remaining_files() == 0 || state.budget.remaining_bytes() == 0 {
+            if state.budget.remaining_files() == 0
+                || state.budget.remaining_bytes() == 0
+                || state.io.budget.remaining_bytes() == 0
+            {
                 state.truncated = true;
                 break;
             }
