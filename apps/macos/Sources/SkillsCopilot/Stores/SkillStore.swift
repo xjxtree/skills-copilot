@@ -150,8 +150,10 @@ final class SkillStore: ObservableObject {
     @Published private(set) var healthSummary = SkillHealthSummary.empty
     @Published private(set) var agentConfigSnapshots: [ConfigSnapshotRecord] = []
     @Published private(set) var isLoadingAgentConfigSnapshots = false
+    @Published private(set) var agentConfigSnapshotCompleteness = ListPageAccumulator<ConfigSnapshotRecord>().state
     @Published private(set) var detailsByID: [SkillRecord.ID: SkillDetailRecord] = [:]
     @Published private(set) var skillEventsByID: [SkillRecord.ID: [SkillEventRecord]] = [:]
+    @Published private(set) var skillEventCompletenessByID: [SkillRecord.ID: ListCompletenessState] = [:]
     private(set) var adoptingAgentSummaryBySkillID: [SkillRecord.ID: String] = [:]
     @Published private(set) var loadingSkillEventIDs: Set<SkillRecord.ID> = []
     @Published private(set) var status: ServiceStatus?
@@ -329,6 +331,17 @@ final class SkillStore: ObservableObject {
     @Published private(set) var watcherStatusMessage = UIStrings.refreshWatcherManual
     @Published private(set) var refreshLogEntries: [RefreshLogEntry] = []
     @Published private(set) var lastScanActivity: RefreshActivity?
+    @Published private(set) var catalogListCompleteness = ListCompletenessState(
+        loadedCount: 0,
+        totalCount: nil,
+        hasMore: false,
+        isComplete: false,
+        completeness: .unknown,
+        incompleteReason: nil,
+        loadingPhase: .idle,
+        canLoadMore: false,
+        canLoadAll: false
+    )
     @Published private(set) var canRetryLastRefresh = false
     @Published private(set) var claudeSettings: ConfigDocumentRecord?
     @Published private(set) var configMutationState: ConfigMutationState = .idle
@@ -485,6 +498,9 @@ final class SkillStore: ObservableObject {
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
+    private var agentConfigSnapshotAccumulator = ListPageAccumulator<ConfigSnapshotRecord>()
+    private var skillEventAccumulatorsByID: [SkillRecord.ID: ListPageAccumulator<SkillEventRecord>] = [:]
+    private var skillEventLoadGenerations: [SkillRecord.ID: Int] = [:]
     private var rollbackPreviewGeneration = 0
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
@@ -790,12 +806,20 @@ final class SkillStore: ObservableObject {
         for instanceID in instanceIDs {
             detailsByID.removeValue(forKey: instanceID)
             skillEventsByID.removeValue(forKey: instanceID)
+            skillEventAccumulatorsByID.removeValue(forKey: instanceID)
+            skillEventCompletenessByID.removeValue(forKey: instanceID)
+            skillEventLoadGenerations.removeValue(forKey: instanceID)
+            loadingSkillEventIDs.remove(instanceID)
         }
     }
 
     func pruneDetailCaches(to currentSkillIDs: Set<SkillRecord.ID>) {
         detailsByID = detailsByID.filter { currentSkillIDs.contains($0.key) }
         skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventAccumulatorsByID = skillEventAccumulatorsByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventCompletenessByID = skillEventCompletenessByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventLoadGenerations = skillEventLoadGenerations.filter { currentSkillIDs.contains($0.key) }
+        loadingSkillEventIDs = loadingSkillEventIDs.filter { currentSkillIDs.contains($0) }
     }
 
     func invalidateScopedLocalSessionSummaryCache() {
@@ -1198,6 +1222,7 @@ final class SkillStore: ObservableObject {
             try await refreshCollections()
             lastMutationMessage = UIStrings.scannedSkills(result.scannedCount)
             applyRefreshActivity(result.activity)
+            catalogListCompleteness = catalogCompleteness(after: result)
             await loadSelectedDetail()
         } catch {
             handleRefreshFailure(error, action: .scan)
@@ -1285,8 +1310,7 @@ final class SkillStore: ObservableObject {
 
         do {
             _ = try await service.toggleSkill(instanceID: skill.id, on: on)
-            detailsByID.removeValue(forKey: skill.id)
-            skillEventsByID.removeValue(forKey: skill.id)
+            invalidateDetailCaches(for: [skill.id])
             try await refreshCollections()
             lastMutationMessage = UIStrings.toggledSkill(on: on, name: skill.name, agent: skill.agent)
             recordLocalRefresh(message: UIStrings.refreshAfterWrite)
@@ -1384,10 +1408,7 @@ final class SkillStore: ObservableObject {
 
         do {
             let result = try await service.applyBatchSkillToggles(preview: preview)
-            for item in preview.affectedSkills {
-                detailsByID.removeValue(forKey: item.instanceID)
-                skillEventsByID.removeValue(forKey: item.instanceID)
-            }
+            invalidateDetailCaches(for: preview.affectedSkills.map(\.instanceID))
             try await refreshCollections()
             lastMutationMessage = UIStrings.batchToggleApplied(
                 action: preview.action.title,
@@ -2822,7 +2843,7 @@ final class SkillStore: ObservableObject {
             if lhs.createdAt != rhs.createdAt {
                 return lhs.createdAt > rhs.createdAt
             }
-            return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
+            return lhs.id > rhs.id
         }
     }
 
@@ -3551,7 +3572,8 @@ final class SkillStore: ObservableObject {
         loadedAgentConfigSnapshotRequestKey = nil
         isLoadingSettings = false
         isLoadingAgentConfigDocuments = false
-        isLoadingAgentConfigSnapshots = false
+        agentConfigSnapshotAccumulator.cancel()
+        publishAgentConfigSnapshotPaging()
     }
 
     private func refreshConfigCachesAfterSave(submittedAgent: String) async {
@@ -3611,10 +3633,9 @@ final class SkillStore: ObservableObject {
 
     private func loadAgentConfigSnapshots(agent requestedAgent: String? = nil, force: Bool) async {
         guard let agent = normalizedConfigAgent(requestedAgent) else {
-            if !agentConfigSnapshots.isEmpty {
-                agentConfigSnapshots = []
-                normalizeConfigSelection()
-            }
+            cancelAgentConfigSnapshotLoadAll()
+            resetAgentConfigSnapshotPaging(clearRows: true)
+            normalizeConfigSelection()
             return
         }
 
@@ -3627,29 +3648,111 @@ final class SkillStore: ObservableObject {
         guard activeAgentConfigSnapshotRequestKey != requestKey else { return }
 
         clearRollbackConfirmation()
-        agentConfigSnapshotLoadGeneration += 1
-        let generation = agentConfigSnapshotLoadGeneration
+        if force || loadedAgentConfigSnapshotRequestKey != requestKey {
+            cancelAgentConfigSnapshotLoadAll()
+            resetAgentConfigSnapshotPaging(clearRows: true)
+        }
         activeAgentConfigSnapshotRequestKey = requestKey
-        isLoadingAgentConfigSnapshots = true
+        await loadMoreAgentConfigSnapshots(loadAll: true)
+        if activeAgentConfigSnapshotRequestKey == requestKey {
+            activeAgentConfigSnapshotRequestKey = nil
+        }
+        if agentConfigSnapshotCompleteness.isComplete {
+            loadedAgentConfigSnapshotRequestKey = requestKey
+            normalizeConfigSelection()
+        }
+    }
+
+    func loadMoreAgentConfigSnapshots(loadAll: Bool) async {
+        guard let agent = normalizedConfigAgent(nil), !isLoadingAgentConfigSnapshots else { return }
+        agentConfigSnapshotLoadGeneration &+= 1
+        let generation = agentConfigSnapshotLoadGeneration
+        agentConfigSnapshotAccumulator.begin(
+            agentConfigSnapshotAccumulator.items.isEmpty ? .initial : (loadAll ? .all : .more)
+        )
+        publishAgentConfigSnapshotPaging()
         defer {
             if generation == agentConfigSnapshotLoadGeneration {
-                isLoadingAgentConfigSnapshots = false
-                if activeAgentConfigSnapshotRequestKey == requestKey {
-                    activeAgentConfigSnapshotRequestKey = nil
-                }
+                agentConfigSnapshotAccumulator.cancel()
+                publishAgentConfigSnapshotPaging()
             }
         }
 
-        do {
-            let records = try await fetchAgentConfigSnapshots(agent: agent)
-            guard generation == agentConfigSnapshotLoadGeneration, normalizedConfigAgent(nil) == agent else { return }
-            agentConfigSnapshots = records
-            loadedAgentConfigSnapshotRequestKey = requestKey
-            normalizeConfigSelection()
-        } catch {
-            guard generation == agentConfigSnapshotLoadGeneration, normalizedConfigAgent(nil) == agent else { return }
-            errorMessage = error.localizedDescription
+        while true {
+            do {
+                let result = try await service.listAgentConfigSnapshotPage(
+                    agent: agent,
+                    scope: nil,
+                    limit: 100,
+                    cursor: agentConfigSnapshotAccumulator.nextCursor,
+                    sourceRevision: agentConfigSnapshotAccumulator.sourceRevision
+                )
+                guard generation == agentConfigSnapshotLoadGeneration,
+                      !Task.isCancelled,
+                      normalizedConfigAgent(nil) == agent else { return }
+                try agentConfigSnapshotAccumulator.append(result.page)
+                publishAgentConfigSnapshotPaging()
+            } catch ServiceClient.ClientError.service(let error)
+                where error.code == "unknown_method" && agentConfigSnapshotAccumulator.items.isEmpty {
+                do {
+                    let records = try await service.listAgentConfigSnapshots(agent: agent, scope: nil)
+                    guard generation == agentConfigSnapshotLoadGeneration,
+                          !Task.isCancelled,
+                          normalizedConfigAgent(nil) == agent else { return }
+                    try agentConfigSnapshotAccumulator.append(ListPage(
+                        items: records,
+                        returnedCount: records.count,
+                        totalCount: records.count,
+                        hasMore: false,
+                        nextCursor: nil,
+                        sourceRevision: nil,
+                        sourceCompleteness: .enumerable,
+                        incompleteReason: nil
+                    ))
+                    publishAgentConfigSnapshotPaging()
+                } catch {
+                    failAgentConfigSnapshotPaging(error, generation: generation, agent: agent)
+                }
+                return
+            } catch {
+                failAgentConfigSnapshotPaging(error, generation: generation, agent: agent)
+                return
+            }
+
+            guard loadAll,
+                  agentConfigSnapshotAccumulator.state.hasMore,
+                  agentConfigSnapshotAccumulator.nextCursor != nil else { return }
+            agentConfigSnapshotAccumulator.begin(.all)
+            publishAgentConfigSnapshotPaging()
         }
+    }
+
+    func cancelAgentConfigSnapshotLoadAll() {
+        agentConfigSnapshotLoadGeneration &+= 1
+        agentConfigSnapshotAccumulator.cancel()
+        publishAgentConfigSnapshotPaging()
+    }
+
+    private func resetAgentConfigSnapshotPaging(clearRows: Bool) {
+        agentConfigSnapshotAccumulator = ListPageAccumulator()
+        if clearRows {
+            agentConfigSnapshots = []
+        }
+        publishAgentConfigSnapshotPaging()
+    }
+
+    private func publishAgentConfigSnapshotPaging() {
+        agentConfigSnapshots = agentConfigSnapshotAccumulator.items
+        agentConfigSnapshotCompleteness = agentConfigSnapshotAccumulator.state
+        isLoadingAgentConfigSnapshots = agentConfigSnapshotCompleteness.loadingPhase != .idle
+    }
+
+    private func failAgentConfigSnapshotPaging(_ error: Error, generation: Int, agent: String) {
+        guard generation == agentConfigSnapshotLoadGeneration,
+              normalizedConfigAgent(nil) == agent else { return }
+        agentConfigSnapshotAccumulator.fail(reason: listFailureReason(for: error))
+        publishAgentConfigSnapshotPaging()
+        errorMessage = error.localizedDescription
     }
 
     private func refreshCollections(
@@ -3675,6 +3778,7 @@ final class SkillStore: ObservableObject {
         self.llmStatus = fetchedLLMStatus
         self.projectContextState = fetchedProjectContextState
         self.skills = snapshot.skills
+        self.catalogListCompleteness = unknownCatalogCompleteness(loadedCount: snapshot.skills.count)
         self.findings = snapshot.findings
         self.ruleTuning = fetchedRuleTuning
         self.conflicts = snapshot.conflicts
@@ -3689,7 +3793,18 @@ final class SkillStore: ObservableObject {
         }
         if let fetchedAgentConfigSnapshots {
             clearRollbackConfirmation()
-            self.agentConfigSnapshots = fetchedAgentConfigSnapshots
+            self.agentConfigSnapshotAccumulator = ListPageAccumulator()
+            try? self.agentConfigSnapshotAccumulator.append(ListPage(
+                items: fetchedAgentConfigSnapshots,
+                returnedCount: fetchedAgentConfigSnapshots.count,
+                totalCount: fetchedAgentConfigSnapshots.count,
+                hasMore: false,
+                nextCursor: nil,
+                sourceRevision: nil,
+                sourceCompleteness: .enumerable,
+                incompleteReason: nil
+            ))
+            self.publishAgentConfigSnapshotPaging()
             if let agent = selectedAgentConfigTimelineAgent {
                 loadedAgentConfigSnapshotRequestKey = agentConfigRequestKey(agent: agent)
             } else {
@@ -3702,9 +3817,84 @@ final class SkillStore: ObservableObject {
             hydratePromptSendResultsFromRuns(currentSkillIDs: currentSkillIDs)
         }
         skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventAccumulatorsByID = skillEventAccumulatorsByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventCompletenessByID = skillEventCompletenessByID.filter { currentSkillIDs.contains($0.key) }
+        skillEventLoadGenerations = skillEventLoadGenerations.filter { currentSkillIDs.contains($0.key) }
+        loadingSkillEventIDs = loadingSkillEventIDs.filter { currentSkillIDs.contains($0) }
         batchTogglePreview = nil
         refreshWatcherMessage(from: self.status)
         normalizeSelectionToVisibleSkills()
+    }
+
+    private func unknownCatalogCompleteness(loadedCount: Int) -> ListCompletenessState {
+        ListCompletenessState(
+            loadedCount: loadedCount,
+            totalCount: nil,
+            hasMore: false,
+            isComplete: false,
+            completeness: .unknown,
+            incompleteReason: nil,
+            loadingPhase: .idle,
+            canLoadMore: false,
+            canLoadAll: false
+        )
+    }
+
+    private func catalogCompleteness(after result: ScanResult) -> ListCompletenessState {
+        guard let activity = result.activity else {
+            return ListCompletenessState(
+                loadedCount: result.skills.count,
+                totalCount: nil,
+                hasMore: false,
+                isComplete: false,
+                completeness: .incomplete,
+                incompleteReason: .sourceLimited,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: false
+            )
+        }
+        let summaries = activity.agentSummaries ?? []
+        let issues = summaries.flatMap(\.scanIssues)
+        let complete = activity.status == "completed"
+            && summaries.allSatisfy { summary in
+                summary.status == "completed"
+                    && summary.rootsPartial.isEmpty
+                    && summary.rootsSkipped.isEmpty
+                    && summary.scanIssues.isEmpty
+            }
+        if complete {
+            return ListCompletenessState(
+                loadedCount: result.skills.count,
+                totalCount: result.skills.count,
+                hasMore: false,
+                isComplete: true,
+                completeness: .complete,
+                incompleteReason: nil,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: false
+            )
+        }
+        let reason: ListIncompleteReason
+        if issues.contains(where: { $0.kind == "budget_exceeded" }) {
+            reason = .safetyBudget
+        } else if !issues.isEmpty {
+            reason = .unreadableSource
+        } else {
+            reason = .sourceLimited
+        }
+        return ListCompletenessState(
+            loadedCount: result.skills.count,
+            totalCount: nil,
+            hasMore: false,
+            isComplete: false,
+            completeness: .incomplete,
+            incompleteReason: reason,
+            loadingPhase: .idle,
+            canLoadMore: false,
+            canLoadAll: false
+        )
     }
 
     private func fetchAIProviderStatus() async -> AIProviderStatus {
@@ -3749,28 +3939,153 @@ final class SkillStore: ObservableObject {
         guard let agent = normalizedConfigAgent(requestedAgent) else {
             return []
         }
-        let records = try await service.listAgentConfigSnapshots(agent: agent, scope: nil)
-        return records
-            .filter { $0.agent == agent }
-            .sorted { $0.createdAt > $1.createdAt }
+        var accumulator = ListPageAccumulator<ConfigSnapshotRecord>()
+        do {
+            while true {
+                let result = try await service.listAgentConfigSnapshotPage(
+                    agent: agent,
+                    scope: nil,
+                    limit: 100,
+                    cursor: accumulator.nextCursor,
+                    sourceRevision: accumulator.sourceRevision
+                )
+                try accumulator.append(result.page)
+                guard accumulator.state.hasMore, accumulator.nextCursor != nil else {
+                    return accumulator.items
+                }
+                accumulator.begin(.all)
+            }
+        } catch ServiceClient.ClientError.service(let error) where error.code == "unknown_method" {
+            return try await service.listAgentConfigSnapshots(agent: agent, scope: nil)
+                .filter { $0.agent == agent }
+                .sorted { lhs, rhs in
+                    if lhs.createdAt != rhs.createdAt {
+                        return lhs.createdAt > rhs.createdAt
+                    }
+                    return lhs.id > rhs.id
+                }
+        }
     }
 
     private func loadSkillEventsIfNeeded(instanceID: SkillRecord.ID, force: Bool = false) async {
         if !force, skillEventsByID[instanceID] != nil {
             return
         }
-        guard !loadingSkillEventIDs.contains(instanceID) else { return }
-        loadingSkillEventIDs.insert(instanceID)
-        defer { loadingSkillEventIDs.remove(instanceID) }
-
-        do {
-            skillEventsByID[instanceID] = try await service.listSkillEvents(instanceID: instanceID)
-        } catch {
+        if force || skillEventAccumulatorsByID[instanceID] == nil {
+            cancelSkillEventLoadAll(instanceID: instanceID)
+            skillEventAccumulatorsByID[instanceID] = ListPageAccumulator()
             skillEventsByID[instanceID] = []
-            if errorMessage == nil {
-                errorMessage = error.localizedDescription
+            publishSkillEventPaging(instanceID: instanceID)
+        }
+        await loadMoreSkillEvents(instanceID: instanceID, loadAll: true)
+    }
+
+    func loadMoreSkillEvents(instanceID: SkillRecord.ID, loadAll: Bool) async {
+        guard !loadingSkillEventIDs.contains(instanceID) else { return }
+        var accumulator = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
+        let generation = (skillEventLoadGenerations[instanceID] ?? 0) &+ 1
+        skillEventLoadGenerations[instanceID] = generation
+        accumulator.begin(accumulator.items.isEmpty ? .initial : (loadAll ? .all : .more))
+        skillEventAccumulatorsByID[instanceID] = accumulator
+        loadingSkillEventIDs.insert(instanceID)
+        publishSkillEventPaging(instanceID: instanceID)
+        defer {
+            if skillEventLoadGenerations[instanceID] == generation {
+                skillEventAccumulatorsByID[instanceID]?.cancel()
+                loadingSkillEventIDs.remove(instanceID)
+                publishSkillEventPaging(instanceID: instanceID)
             }
         }
+
+        while true {
+            guard let current = skillEventAccumulatorsByID[instanceID] else { return }
+            do {
+                let result = try await service.listSkillEventPage(
+                    instanceID: instanceID,
+                    limit: 100,
+                    cursor: current.nextCursor,
+                    sourceRevision: current.sourceRevision
+                )
+                guard skillEventLoadGenerations[instanceID] == generation,
+                      !Task.isCancelled else { return }
+                var accepted = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
+                try accepted.append(result.page)
+                skillEventAccumulatorsByID[instanceID] = accepted
+                publishSkillEventPaging(instanceID: instanceID)
+            } catch ServiceClient.ClientError.service(let error)
+                where error.code == "unknown_method" && current.items.isEmpty {
+                do {
+                    let records = try await service.listSkillEvents(instanceID: instanceID)
+                    guard skillEventLoadGenerations[instanceID] == generation,
+                          !Task.isCancelled else { return }
+                    var accepted = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
+                    try accepted.append(ListPage(
+                        items: records,
+                        returnedCount: records.count,
+                        totalCount: records.count,
+                        hasMore: false,
+                        nextCursor: nil,
+                        sourceRevision: nil,
+                        sourceCompleteness: .enumerable,
+                        incompleteReason: nil
+                    ))
+                    skillEventAccumulatorsByID[instanceID] = accepted
+                    publishSkillEventPaging(instanceID: instanceID)
+                } catch {
+                    failSkillEventPaging(error, instanceID: instanceID, generation: generation)
+                }
+                return
+            } catch {
+                failSkillEventPaging(error, instanceID: instanceID, generation: generation)
+                return
+            }
+
+            guard loadAll,
+                  skillEventAccumulatorsByID[instanceID]?.state.hasMore == true,
+                  skillEventAccumulatorsByID[instanceID]?.nextCursor != nil else { return }
+            skillEventAccumulatorsByID[instanceID]?.begin(.all)
+            publishSkillEventPaging(instanceID: instanceID)
+        }
+    }
+
+    func cancelSkillEventLoadAll(instanceID: SkillRecord.ID) {
+        skillEventLoadGenerations[instanceID] = (skillEventLoadGenerations[instanceID] ?? 0) &+ 1
+        skillEventAccumulatorsByID[instanceID]?.cancel()
+        loadingSkillEventIDs.remove(instanceID)
+        publishSkillEventPaging(instanceID: instanceID)
+    }
+
+    private func publishSkillEventPaging(instanceID: SkillRecord.ID) {
+        guard let accumulator = skillEventAccumulatorsByID[instanceID] else {
+            skillEventCompletenessByID.removeValue(forKey: instanceID)
+            return
+        }
+        skillEventsByID[instanceID] = accumulator.items
+        skillEventCompletenessByID[instanceID] = accumulator.state
+    }
+
+    private func failSkillEventPaging(
+        _ error: Error,
+        instanceID: SkillRecord.ID,
+        generation: Int
+    ) {
+        guard skillEventLoadGenerations[instanceID] == generation else { return }
+        skillEventAccumulatorsByID[instanceID]?.fail(reason: listFailureReason(for: error))
+        publishSkillEventPaging(instanceID: instanceID)
+        if errorMessage == nil {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func listFailureReason(for error: Error) -> ListIncompleteReason {
+        if case ServiceClient.ClientError.service(let serviceError) = error,
+           serviceError.code == "source_changed" {
+            return .sourceChanged
+        }
+        if case ListPageAccumulatorError.sourceChanged = error {
+            return .sourceChanged
+        }
+        return .pageFailed
     }
 
     private func llmPromptActionKey(action: LLMAction, skillID: SkillRecord.ID) -> String {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 
 impl ServiceHost {
     pub fn from_env() -> Result<Self, ServiceError> {
@@ -372,6 +373,12 @@ impl ServiceHost {
                     list_skill_events(&catalog, &params.instance_id, params.limit)?;
                 serde_json::to_value(events).map_err(Into::into)
             }
+            "skill.listEventsPage" => {
+                let params: ListSkillEventsPageParams = serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog_for_read()?;
+                let result = skill_event_page_result(&catalog, params)?;
+                serde_json::to_value(result).map_err(Into::into)
+            }
             "catalog.listFindings" => {
                 let catalog = self.open_catalog_for_read()?;
                 let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
@@ -590,6 +597,12 @@ impl ServiceHost {
                 let snapshots: Vec<ConfigSnapshotRecord> =
                     list_agent_config_snapshots(&catalog, &params.agent, scope)?;
                 serde_json::to_value(snapshots).map_err(Into::into)
+            }
+            "snapshot.listAgentConfigPage" => {
+                let params: ListAgentConfigPageParams = serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog_for_read()?;
+                let result = config_snapshot_page_result(&catalog, params)?;
+                serde_json::to_value(result).map_err(Into::into)
             }
             "snapshot.previewRollback" => {
                 let params: SnapshotParams = serde_json::from_value(request.params)?;
@@ -1513,4 +1526,138 @@ fn normalized_redaction_path_text(value: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn config_snapshot_page_result(
+    catalog: &Catalog,
+    params: ListAgentConfigPageParams,
+) -> Result<ConfigSnapshotPageResult, ServiceError> {
+    const METHOD: &str = "snapshot.listAgentConfigPage";
+    let scope = params.scope.as_deref().filter(|scope| !scope.is_empty());
+    let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let query_digest = tagged_digest(METHOD, &(params.agent.as_str(), scope))?;
+    let metadata = list_agent_config_snapshot_revision_metadata(catalog, &params.agent, scope)?;
+    let source_revision = tagged_digest(METHOD, &metadata)?;
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(|text| decode_cursor(text, METHOD, &query_digest))
+        .transpose()?;
+    validate_source_revision(
+        params.source_revision.as_deref(),
+        cursor.as_ref(),
+        &source_revision,
+    )?;
+    let before = cursor
+        .as_ref()
+        .map(|cursor| (cursor.sort_value, cursor.stable_id.as_str()));
+    let mut records =
+        list_agent_config_snapshot_page(catalog, &params.agent, scope, before, limit)?;
+    let has_more = records.len() > limit;
+    if has_more {
+        records.truncate(limit);
+    }
+    let next_cursor = if has_more {
+        records
+            .last()
+            .map(|record| {
+                encode_cursor(&KeysetCursor {
+                    version: 1,
+                    method: METHOD.to_string(),
+                    query_digest: query_digest.clone(),
+                    source_revision: source_revision.clone(),
+                    sort_value: record.created_at,
+                    stable_id: record.id.clone(),
+                    tie_breaker_digest: None,
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(ConfigSnapshotPageResult {
+        page: ListPageMetadata::enumerable(records.len(), Some(metadata.len()), next_cursor),
+        records,
+        source_revision,
+    })
+}
+
+fn skill_event_page_result(
+    catalog: &Catalog,
+    params: ListSkillEventsPageParams,
+) -> Result<SkillEventPageResult, ServiceError> {
+    const METHOD: &str = "skill.listEventsPage";
+    let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let query_digest = tagged_digest(METHOD, &params.instance_id)?;
+    let metadata = list_skill_event_revision_metadata(catalog, &params.instance_id)?;
+    let source_revision = tagged_digest(METHOD, &metadata)?;
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(|text| decode_cursor(text, METHOD, &query_digest))
+        .transpose()?;
+    validate_source_revision(
+        params.source_revision.as_deref(),
+        cursor.as_ref(),
+        &source_revision,
+    )?;
+    let before = cursor
+        .as_ref()
+        .map(|cursor| {
+            cursor
+                .stable_id
+                .parse::<i64>()
+                .map(|id| (cursor.sort_value, id))
+                .map_err(|_| ServiceError::InvalidRequest("event cursor id is invalid".to_string()))
+        })
+        .transpose()?;
+    let mut records = list_skill_event_page(catalog, &params.instance_id, before, limit)?;
+    let has_more = records.len() > limit;
+    if has_more {
+        records.truncate(limit);
+    }
+    let next_cursor = if has_more {
+        records
+            .last()
+            .map(|record| {
+                encode_cursor(&KeysetCursor {
+                    version: 1,
+                    method: METHOD.to_string(),
+                    query_digest: query_digest.clone(),
+                    source_revision: source_revision.clone(),
+                    sort_value: record.occurred_at,
+                    stable_id: record.id.to_string(),
+                    tie_breaker_digest: None,
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(SkillEventPageResult {
+        page: ListPageMetadata::enumerable(records.len(), Some(metadata.len()), next_cursor),
+        records,
+        source_revision,
+    })
+}
+
+fn validate_source_revision(
+    requested: Option<&str>,
+    cursor: Option<&KeysetCursor>,
+    current: &str,
+) -> Result<(), ServiceError> {
+    if requested.is_some_and(|revision| revision != current)
+        || cursor.is_some_and(|cursor| cursor.source_revision != current)
+    {
+        return Err(ServiceError::SourceChanged);
+    }
+    Ok(())
+}
+
+fn tagged_digest<T: Serialize>(domain: &str, value: &T) -> Result<String, ServiceError> {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(value)?);
+    Ok(format!("sha256:{}", hex_prefix(&hasher.finalize(), 64)))
 }

@@ -549,6 +549,9 @@ final class FakeServiceScript: ServiceProcessRunning {
           *\\"catalog.listConflicts\\"*)
             respond '{"id":"test","ok":true,"result":[]}'
             ;;
+          *\\"skill.listEventsPage\\"*)
+            respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: skill.listEventsPage"}}'
+            ;;
           *\\"skill.listEvents\\"*)
             if [ "$scenario" = "detail-scope" ]; then
               case "$input" in
@@ -679,6 +682,9 @@ final class FakeServiceScript: ServiceProcessRunning {
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"rollback_failed","message":"rollback service failed"}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing snapshot rollback"}}'
+            ;;
+          *\\"snapshot.listAgentConfigPage\\"*)
+            respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: snapshot.listAgentConfigPage"}}'
             ;;
           *\\"snapshot.listAgentConfig\\"*)
             if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "rollback-stale" ] || [ "$scenario" = "rollback-preview-delay" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then

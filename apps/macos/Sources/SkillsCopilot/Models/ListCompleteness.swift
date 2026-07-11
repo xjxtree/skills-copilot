@@ -133,6 +133,10 @@ struct ListPageAccumulator<Item: Identifiable> where Item.ID: Hashable {
         let completeness: ListCompleteness
         if isComplete {
             completeness = .complete
+        } else if incompleteReason == .pageFailed,
+                  sourceCompleteness == .enumerable,
+                  hasMore {
+            completeness = .partial
         } else if sourceCompleteness == .limited || incompleteReason != nil {
             completeness = .incomplete
         } else if sourceCompleteness == .unknown {

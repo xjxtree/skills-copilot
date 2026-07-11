@@ -1,12 +1,9 @@
 import Foundation
 
 struct AgentConfigTimelineModel: Hashable {
-    static let visibleLimit = 5
-
     let agentTitle: String
     let isSpecificAgent: Bool
     let items: [AgentConfigTimelineItem]
-    let hiddenCount: Int
 
     var summaryText: String {
         guard isSpecificAgent else {
@@ -15,33 +12,33 @@ struct AgentConfigTimelineModel: Hashable {
         if items.isEmpty {
             return UIStrings.agentConfigTimelineEmptySummary(agentTitle)
         }
-        return UIStrings.agentConfigTimelineSummary(agentTitle, items.count + hiddenCount)
+        return UIStrings.agentConfigTimelineSummary(agentTitle, items.count)
     }
 
     static func make(
         snapshots: [ConfigSnapshotRecord],
-        agentFilter: SkillAgentFilter,
-        limit: Int = visibleLimit
+        agentFilter: SkillAgentFilter
     ) -> AgentConfigTimelineModel {
         guard agentFilter != .all else {
             return AgentConfigTimelineModel(
                 agentTitle: agentFilter.title,
                 isSpecificAgent: false,
-                items: [],
-                hiddenCount: 0
+                items: []
             )
         }
 
         let filtered = snapshots
             .filter { $0.agent == agentFilter.rawValue }
-            .sorted { $0.createdAt > $1.createdAt }
-        let safeLimit = max(0, limit)
-        let visible = Array(filtered.prefix(safeLimit))
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.id > rhs.id
+            }
         return AgentConfigTimelineModel(
             agentTitle: agentFilter.title,
             isSpecificAgent: true,
-            items: visible.map(AgentConfigTimelineItem.init(snapshot:)),
-            hiddenCount: max(0, filtered.count - visible.count)
+            items: filtered.map(AgentConfigTimelineItem.init(snapshot:))
         )
     }
 }

@@ -3,6 +3,7 @@
 struct AgentConfigTimelineModelTests {
     func run() throws {
         try timelineShowsOnlySelectedAgentSnapshots()
+        try equalTimestampSnapshotsKeepKeysetOrder()
         try allAgentsDoesNotMixRollbackPoints()
         try delayedRollbackPreviewSuccessDoesNotReplaceNewSelection()
         try delayedRollbackPreviewErrorDoesNotReplaceNewSelection()
@@ -16,20 +17,34 @@ struct AgentConfigTimelineModelTests {
         try hiddenConfigAllowsRevealWithValidIdleBinding()
     }
 
+    private func equalTimestampSnapshotsKeepKeysetOrder() throws {
+        let model = AgentConfigTimelineModel.make(
+            snapshots: [
+                snapshot(id: "snapshot-a", agent: "codex", target: "/tmp/a.toml", createdAt: 10),
+                snapshot(id: "snapshot-z", agent: "codex", target: "/tmp/z.toml", createdAt: 10),
+            ],
+            agentFilter: .codex
+        )
+
+        try expectEqual(model.items.map(\.id), ["snapshot-z", "snapshot-a"], "Equal timestamps should use id descending like the service keyset.")
+    }
+
     private func timelineShowsOnlySelectedAgentSnapshots() throws {
         let snapshots = [
             snapshot(id: "old-claude", agent: "claude-code", target: "/tmp/claude/settings.json", reason: "toggle beta", createdAt: 10),
             snapshot(id: "new-codex", agent: "codex", target: "/tmp/project/.codex/config.toml", reason: "disable gamma", createdAt: 30),
             snapshot(id: "old-codex", agent: "codex", target: "/tmp/codex/config.toml", reason: "", createdAt: 20),
             snapshot(id: "older-codex", agent: "codex", target: "/tmp/codex/older.toml", reason: "older", createdAt: 15),
+            snapshot(id: "oldest-codex", agent: "codex", target: "/tmp/codex/oldest.toml", reason: "oldest", createdAt: 10),
+            snapshot(id: "ancient-codex", agent: "codex", target: "/tmp/codex/ancient.toml", reason: "ancient", createdAt: 5),
+            snapshot(id: "first-codex", agent: "codex", target: "/tmp/codex/first.toml", reason: "first", createdAt: 1),
         ]
 
-        let model = AgentConfigTimelineModel.make(snapshots: snapshots, agentFilter: .codex, limit: 2)
+        let model = AgentConfigTimelineModel.make(snapshots: snapshots, agentFilter: .codex)
 
         try expectEqual(model.isSpecificAgent, true, "Timeline should be active for a specific agent.")
         try expectEqual(model.agentTitle, UIStrings.codex, "Timeline should use selected agent display name.")
-        try expectEqual(model.items.map(\.id), ["new-codex", "old-codex"], "Timeline should sort newest first and keep only the selected agent.")
-        try expectEqual(model.hiddenCount, 1, "Timeline should keep older entries out of the compact sidebar.")
+        try expectEqual(model.items.map(\.id), ["new-codex", "old-codex", "older-codex", "oldest-codex", "ancient-codex", "first-codex"], "Timeline should sort newest first and expose every selected-agent snapshot.")
         try expectEqual(model.items[0].targetSummary, ".../.codex/config.toml", "Timeline should summarize config target paths.")
         try expectEqual(model.items[1].actionText, UIStrings.agentConfigTimelineDefaultAction, "Empty reasons should fall back to a stable action label.")
         try expectEqual(model.items[0].statusText, UIStrings.agentConfigTimelineStatus, "Timeline rows should expose a visible rollback-point status.")

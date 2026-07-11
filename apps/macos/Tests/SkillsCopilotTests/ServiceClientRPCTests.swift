@@ -47,9 +47,45 @@ struct ServiceClientRPCTests {
         try expectContains(calls, "llm.providerObservability", "LLM wrapper should call the observability method.")
 
         try await configConsistencyRequestsUseExactBindings()
+        try await localHistoryPageRequestsDecodeAliases()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
+    }
+
+    private func localHistoryPageRequestsDecodeAliases() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+
+        let snapshots = try await client.listAgentConfigSnapshotPage(
+            agent: "claude-code",
+            scope: nil,
+            limit: 100,
+            cursor: nil,
+            sourceRevision: nil
+        )
+        let events = try await client.listSkillEventPage(
+            instanceID: "skill-1",
+            limit: 100,
+            cursor: "v1:event-page-1",
+            sourceRevision: "sha256:event-revision"
+        )
+
+        try expectEqual(snapshots.records.map(\.id), ["snapshot-1"], "Snapshot page should decode records.")
+        try expectEqual(snapshots.returnedCount, 1, "Snapshot page should decode snake_case metadata.")
+        try expectEqual(snapshots.nextCursor, Optional("v1:snapshot-page-2"), "Snapshot cursor")
+        try expectEqual(events.records.map(\.id), [Int64(7)], "Event page should decode records.")
+        try expectEqual(events.totalCount, Optional(2), "Event page should decode camelCase metadata aliases.")
+        try expectEqual(events.sourceRevision, "sha256:event-revision", "Event source revision alias")
+
+        let snapshotParams = try runner.params(for: "snapshot.listAgentConfigPage")
+        try expectEqual(snapshotParams["agent"] as? String, Optional("claude-code"), "Snapshot page agent")
+        try expectEqual(snapshotParams["limit"] as? Int, Optional(100), "Snapshot page limit")
+        try expectNil(snapshotParams["cursor"], "First snapshot page should omit cursor.")
+        let eventParams = try runner.params(for: "skill.listEventsPage")
+        try expectEqual(eventParams["instance_id"] as? String, Optional("skill-1"), "Event page stable instance id")
+        try expectEqual(eventParams["cursor"] as? String, Optional("v1:event-page-1"), "Event continuation cursor")
+        try expectEqual(eventParams["source_revision"] as? String, Optional("sha256:event-revision"), "Event source revision")
     }
 
     private func configConsistencyRequestsUseExactBindings() async throws {
@@ -187,6 +223,10 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.rollbackPreviewResponse.utf8)
         case "snapshot.rollback":
             return Data(Self.rollbackResponse.utf8)
+        case "snapshot.listAgentConfigPage":
+            return Data(Self.configSnapshotPageResponse.utf8)
+        case "skill.listEventsPage":
+            return Data(Self.skillEventPageResponse.utf8)
         case "llm.previewPrompt":
             return Data(Self.previewResponse.utf8)
         case "llm.confirmPromptAndSend":
@@ -210,6 +250,14 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
 
     private static let rollbackResponse = """
     {"id":"test","ok":true,"result":3}
+    """
+
+    private static let configSnapshotPageResponse = """
+    {"id":"test","ok":true,"result":{"records":[{"id":"snapshot-1","agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","content":"{}\\n","reason":"test","created_at":1}],"source_revision":"sha256:snapshot-revision","returned_count":1,"total_count":2,"has_more":true,"next_cursor":"v1:snapshot-page-2","source_completeness":"enumerable"}}
+    """
+
+    private static let skillEventPageResponse = """
+    {"id":"test","ok":true,"result":{"records":[{"id":7,"instance_id":"skill-1","kind":"toggle","payload":{},"occurred_at":1}],"sourceRevision":"sha256:event-revision","returnedCount":1,"totalCount":2,"hasMore":true,"nextCursor":"v1:event-page-2","sourceCompleteness":"enumerable","incompleteReason":null}}
     """
 
     private static let sendResponse = """

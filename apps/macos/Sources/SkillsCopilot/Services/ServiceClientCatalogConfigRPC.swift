@@ -160,10 +160,46 @@ extension ServiceClient {
         )
     }
 
+    func listAgentConfigSnapshotPage(
+        agent: String,
+        scope: String?,
+        limit: Int = 100,
+        cursor: String?,
+        sourceRevision: String?
+    ) async throws -> ConfigSnapshotPageResult {
+        try await call(
+            method: "snapshot.listAgentConfigPage",
+            params: ListAgentConfigPageParams(
+                agent: agent,
+                scope: scope,
+                limit: limit,
+                cursor: cursor,
+                sourceRevision: sourceRevision
+            )
+        )
+    }
+
     func listSkillEvents(instanceID: String, limit: Int? = nil) async throws -> [SkillEventRecord] {
         try await call(
             method: "skill.listEvents",
             params: ListSkillEventsParams(instanceId: instanceID, limit: limit)
+        )
+    }
+
+    func listSkillEventPage(
+        instanceID: String,
+        limit: Int = 100,
+        cursor: String?,
+        sourceRevision: String?
+    ) async throws -> SkillEventPageResult {
+        try await call(
+            method: "skill.listEventsPage",
+            params: ListSkillEventsPageParams(
+                instanceId: instanceID,
+                limit: limit,
+                cursor: cursor,
+                sourceRevision: sourceRevision
+            )
         )
     }
 

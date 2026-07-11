@@ -19,8 +19,10 @@ use skills_copilot_commands::{
     commit_prepared_claude_settings_save, delete_local_skill_with_manager, export_skill_bundle,
     export_staging_skill_bundle, get_skill, import_github_skill_to_tool_global_deferred,
     import_local_skill_to_tool_global, install_skill_from_tool_global, list_adapter_capabilities,
-    list_adapter_diagnostics, list_agent_config_snapshots, list_conflicts, list_finding_triage,
-    list_findings, list_installed_skills_with_manager, list_rule_tuning, list_skill_events,
+    list_adapter_diagnostics, list_agent_config_snapshot_page,
+    list_agent_config_snapshot_revision_metadata, list_agent_config_snapshots, list_conflicts,
+    list_finding_triage, list_findings, list_installed_skills_with_manager, list_rule_tuning,
+    list_skill_event_page, list_skill_event_revision_metadata, list_skill_events,
     list_skill_management_tools, list_snapshots, prepare_claude_settings_save,
     preview_install_with_manager, preview_local_create_with_manager, preview_remove_with_manager,
     preview_script_execution, preview_skill_toggles, preview_snapshot_rollback,
@@ -37,7 +39,9 @@ use skills_copilot_commands::{
     SkillManagerSearchParams, SkillManagerUpdateParams, SnapshotRollbackPreviewRecord,
     ToolGlobalImportResult, SCRIPT_EXECUTION_DISABLED_REASON,
 };
-use skills_copilot_core::{AdapterContext, AdapterRoot, AgentId, RootSource, Scope};
+use skills_copilot_core::{
+    AdapterContext, AdapterRoot, AgentId, ListPageMetadata, RootSource, Scope,
+};
 use thiserror::Error;
 
 mod project_context;
@@ -45,6 +49,7 @@ mod protocol;
 mod provider;
 mod service_app_search;
 mod service_host;
+mod service_keyset_cursor;
 mod service_llm;
 mod service_llm_prompt_helpers;
 mod service_local_session_io;
@@ -1263,6 +1268,25 @@ pub struct ListSkillEventsParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ListSkillEventsPageParams {
+    pub instance_id: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub source_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillEventPageResult {
+    pub records: Vec<SkillEventRecord>,
+    pub source_revision: String,
+    #[serde(flatten)]
+    pub page: ListPageMetadata,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct SetFindingTriageParams {
     pub triage_key: String,
     pub status: String,
@@ -1357,6 +1381,27 @@ pub struct ListAgentConfigSnapshotsParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ListAgentConfigPageParams {
+    pub agent: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub source_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigSnapshotPageResult {
+    pub records: Vec<ConfigSnapshotRecord>,
+    pub source_revision: String,
+    #[serde(flatten)]
+    pub page: ListPageMetadata,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReadAgentConfigParams {
     pub agent: String,
     #[serde(default)]
@@ -1407,6 +1452,8 @@ pub enum ServiceError {
     SkillNotFound(String),
     #[error("confirmation required: {0}")]
     ConfirmationRequired(String),
+    #[error("list source changed during pagination")]
+    SourceChanged,
 }
 
 impl ServiceError {
@@ -1427,6 +1474,7 @@ impl ServiceError {
             Self::Json(_) => "json_error",
             Self::SkillNotFound(_) => "skill_not_found",
             Self::ConfirmationRequired(_) => "confirmation_required",
+            Self::SourceChanged => "source_changed",
         }
     }
 }

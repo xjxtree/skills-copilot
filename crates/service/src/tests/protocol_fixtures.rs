@@ -839,6 +839,20 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         "skill.listEvents" => {
             let _: Vec<WireSkillEventRecord> = decode_fixture_result(method, result, path);
         }
+        "skill.listEventsPage" => {
+            let page: WireSkillEventPageResult = decode_fixture_result(method, result, path);
+            assert_eq!(page.records.len(), 2);
+            assert_eq!(page.returned_count, 2);
+            assert_eq!(page.total_count, Some(3));
+            assert!(page.has_more);
+            assert!(page
+                .next_cursor
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()));
+            assert!(!page.source_revision.is_empty());
+            assert_eq!(page.source_completeness, "enumerable");
+            assert_eq!(page.incomplete_reason, None);
+        }
         "config.readAgentConfig" => {
             let documents: Vec<WireConfigDocumentRecord> =
                 decode_fixture_result(method, result, path);
@@ -856,6 +870,20 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         }
         "snapshot.list" | "snapshot.listAgentConfig" => {
             let _: Vec<WireConfigSnapshotRecord> = decode_fixture_result(method, result, path);
+        }
+        "snapshot.listAgentConfigPage" => {
+            let page: WireConfigSnapshotPageResult = decode_fixture_result(method, result, path);
+            assert_eq!(page.records.len(), 2);
+            assert_eq!(page.returned_count, 2);
+            assert_eq!(page.total_count, Some(3));
+            assert!(page.has_more);
+            assert!(page
+                .next_cursor
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()));
+            assert!(!page.source_revision.is_empty());
+            assert_eq!(page.source_completeness, "enumerable");
+            assert_eq!(page.incomplete_reason, None);
         }
         "snapshot.previewRollback" => {
             let preview: WireSnapshotRollbackPreviewRecord =

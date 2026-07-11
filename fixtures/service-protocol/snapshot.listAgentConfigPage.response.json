@@ -1,0 +1,32 @@
+{
+  "id": "fixture-snapshot-list-agent-config-page",
+  "ok": true,
+  "result": {
+    "records": [
+      {
+        "id": "snapshot-3",
+        "agent": "claude-code",
+        "scope": "agent-global",
+        "target": "/tmp/skills-copilot-home/.claude/settings.json",
+        "content": "{\"enabled\":true}\n",
+        "reason": "pre-toggle",
+        "created_at": 1780590000000
+      },
+      {
+        "id": "snapshot-2",
+        "agent": "claude-code",
+        "scope": "agent-global",
+        "target": "/tmp/skills-copilot-home/.claude/settings.json",
+        "content": "{}\n",
+        "reason": "pre-config-edit",
+        "created_at": 1780580000000
+      }
+    ],
+    "source_revision": "sha256:redacted",
+    "returned_count": 2,
+    "total_count": 3,
+    "has_more": true,
+    "next_cursor": "v1:7265646163746564",
+    "source_completeness": "enumerable"
+  }
+}

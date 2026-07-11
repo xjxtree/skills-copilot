@@ -275,6 +275,22 @@ struct ListAgentConfigSnapshotsParams: Encodable {
     let scope: String?
 }
 
+struct ListAgentConfigPageParams: Encodable {
+    let agent: String
+    let scope: String?
+    let limit: Int
+    let cursor: String?
+    let sourceRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case agent
+        case scope
+        case limit
+        case cursor
+        case sourceRevision = "source_revision"
+    }
+}
+
 struct ListSkillEventsParams: Encodable {
     let instanceId: String
     let limit: Int?
@@ -282,6 +298,20 @@ struct ListSkillEventsParams: Encodable {
     enum CodingKeys: String, CodingKey {
         case instanceId = "instance_id"
         case limit
+    }
+}
+
+struct ListSkillEventsPageParams: Encodable {
+    let instanceId: String
+    let limit: Int
+    let cursor: String?
+    let sourceRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case instanceId = "instance_id"
+        case limit
+        case cursor
+        case sourceRevision = "source_revision"
     }
 }
 

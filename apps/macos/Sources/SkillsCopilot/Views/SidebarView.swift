@@ -1599,6 +1599,17 @@ private struct SkillSidebarPanel: View {
                     }
                     .id(skillListRefreshID(visibleCount: visibleSkills.count))
                 }
+
+                if store.catalogListCompleteness.completeness != .complete {
+                    Section {
+                        ListCompletenessFooter(
+                            state: store.catalogListCompleteness,
+                            onLoadMore: {},
+                            onLoadAll: {},
+                            onCancel: {}
+                        )
+                    }
+                }
             }
             .onAppear {
                 synchronizeSearchDraft(with: store.searchText)
@@ -1966,7 +1977,12 @@ private struct ConfigSidebarPanel: View {
                     && store.configScopeFilter.includes(snapshot)
                     && store.configSnapshotMatchesSidebarQuery(snapshot)
             }
-            .sorted { $0.createdAt > $1.createdAt }
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.id > rhs.id
+            }
     }
 
     private var disabledSkills: [SkillRecord] {
@@ -2031,6 +2047,22 @@ private struct ConfigSidebarPanel: View {
                             store.selectConfigSnapshot(snapshot)
                         }
                     }
+                }
+
+                if store.agentConfigSnapshotCompleteness.loadingPhase != .idle
+                    || store.agentConfigSnapshotCompleteness.completeness != .complete {
+                    ListCompletenessFooter(
+                        state: store.agentConfigSnapshotCompleteness,
+                        onLoadMore: {
+                            Task { await store.loadMoreAgentConfigSnapshots(loadAll: false) }
+                        },
+                        onLoadAll: {
+                            Task { await store.loadMoreAgentConfigSnapshots(loadAll: true) }
+                        },
+                        onCancel: {
+                            store.cancelAgentConfigSnapshotLoadAll()
+                        }
+                    )
                 }
             }
         }
@@ -2295,7 +2327,7 @@ private struct AgentConfigTimelinePanel: View {
                 } else if model.items.isEmpty, !isLoading {
                     SidebarEmptyMessage(message: UIStrings.noSnapshotsMessage)
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(model.items) { item in
                             AgentConfigTimelineRow(
                                 item: item,
@@ -2309,12 +2341,6 @@ private struct AgentConfigTimelinePanel: View {
                             )
                         }
 
-                        if model.hiddenCount > 0 {
-                            Text(UIStrings.agentConfigTimelineMore(model.hiddenCount))
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .padding(.top, 2)
-                        }
                     }
                 }
             }

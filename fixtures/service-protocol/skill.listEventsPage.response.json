@@ -1,0 +1,28 @@
+{
+  "id": "fixture-skill-list-events-page",
+  "ok": true,
+  "result": {
+    "records": [
+      {
+        "id": 3,
+        "instance_id": "skill-instance-id",
+        "kind": "toggle",
+        "payload": { "enabled": false },
+        "occurred_at": 1780590000000
+      },
+      {
+        "id": 2,
+        "instance_id": "skill-instance-id",
+        "kind": "updated",
+        "payload": { "source": "scan" },
+        "occurred_at": 1780580000000
+      }
+    ],
+    "source_revision": "sha256:redacted",
+    "returned_count": 2,
+    "total_count": 3,
+    "has_more": true,
+    "next_cursor": "v1:7265646163746564",
+    "source_completeness": "enumerable"
+  }
+}

@@ -33,6 +33,7 @@ use skills_copilot_core::SkillScript;
 mod analysis;
 mod config_consistency;
 mod config_support;
+mod history;
 mod script_execution;
 mod skill_manager;
 
@@ -53,6 +54,7 @@ use config_support::{
 
 pub use analysis::*;
 pub use config_support::read_agent_config;
+pub use history::*;
 pub use script_execution::*;
 pub use skill_manager::*;
 

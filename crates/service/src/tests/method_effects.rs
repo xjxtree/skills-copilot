@@ -309,10 +309,18 @@ fn catalog_backed_read_handlers_leave_seeded_database_and_sidecars_unchanged() {
             "skill.listEvents",
             json!({ "instance_id": "llm-skill-id", "limit": 12 }),
         ),
+        (
+            "skill.listEventsPage",
+            json!({ "instance_id": "llm-skill-id", "limit": 12 }),
+        ),
         ("snapshot.list", json!({})),
         (
             "snapshot.listAgentConfig",
             json!({ "agent": "claude-code" }),
+        ),
+        (
+            "snapshot.listAgentConfigPage",
+            json!({ "agent": "claude-code", "limit": 12 }),
         ),
         (
             "snapshot.previewRollback",

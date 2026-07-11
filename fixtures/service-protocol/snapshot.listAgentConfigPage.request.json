@@ -1,0 +1,9 @@
+{
+  "id": "fixture-snapshot-list-agent-config-page",
+  "method": "snapshot.listAgentConfigPage",
+  "params": {
+    "agent": "claude-code",
+    "scope": "agent-global",
+    "limit": 2
+  }
+}

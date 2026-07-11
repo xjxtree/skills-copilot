@@ -86,6 +86,18 @@ struct SkillStoreTests {
         try await runCase("agentConfigTimelineFollowsSelectedAgentFilterOnly") {
             try await agentConfigTimelineFollowsSelectedAgentFilterOnly()
         }
+        try await runCase("localHistoriesAutoLoadEveryPage") {
+            try await localHistoriesAutoLoadEveryPage()
+        }
+        try await runCase("localHistoryFailureRetryPreservesRows") {
+            try await localHistoryFailureRetryPreservesRows()
+        }
+        try await runCase("cancellingLocalHistoryLoadAllPreservesAcceptedRows") {
+            try await cancellingLocalHistoryLoadAllPreservesAcceptedRows()
+        }
+        try await runCase("catalogScanCompletenessTracksExplicitScan") {
+            try await catalogScanCompletenessTracksExplicitScan()
+        }
         try await runCase("readOnlyAgentConfigLoadsCurrentDocuments") {
             try await readOnlyAgentConfigLoadsCurrentDocuments()
         }
@@ -1200,6 +1212,87 @@ struct SkillStoreTests {
             store.agentConfigSnapshots.isEmpty
         }
         try expectNil(store.selectedAgentConfigTimelineAgent, "All filter has no single selected agent timeline.")
+    }
+
+    private func localHistoriesAutoLoadEveryPage() async throws {
+        let runner = LocalHistoryPageRunner()
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.loadMoreAgentConfigSnapshots(loadAll: true)
+        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
+
+        try expectEqual(store.agentConfigSnapshots.count, 205, "Config history should auto-load every local page")
+        try expectEqual(store.agentConfigSnapshotCompleteness.loadedCount, 205, "Loaded count")
+        try expectEqual(store.agentConfigSnapshotCompleteness.completeness, .complete, "Config completeness")
+        try expectEqual(store.agentConfigTimeline.items.count, 205, "Timeline must not cap at five")
+        let events = store.skillEventsByID["skill-1"] ?? []
+        try expectEqual(events.count, 201, "Skill events should auto-load every local page.")
+        try expectEqual(Set(events.map(\.id)).count, 201, "Every event stable ID should be retained exactly once.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "Event completeness")
+        try expectEqual(runner.cursors(for: "snapshot.listAgentConfigPage"), [nil, "config-100", "config-200"], "Config pages must be serial keyset continuations.")
+        try expectEqual(runner.cursors(for: "skill.listEventsPage"), [nil, "event-100", "event-200"], "Event pages must be serial keyset continuations.")
+    }
+
+    private func localHistoryFailureRetryPreservesRows() async throws {
+        let runner = LocalHistoryPageRunner(failSecondMethods: ["skill.listEventsPage"])
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
+
+        try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "A second-page failure must retain the first accepted page.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .partial, "A retryable page failure should remain partial.")
+
+        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
+
+        try expectEqual(store.skillEventsByID["skill-1"]?.count, 201, "Retry should continue from the accepted cursor and finish.")
+        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "Retry completeness")
+        try expectEqual(runner.cursors(for: "skill.listEventsPage"), [nil, "event-100", "event-100", "event-200"], "Retry must reuse the last accepted cursor.")
+
+        let changedRunner = LocalHistoryPageRunner(sourceChangedSecondMethods: ["snapshot.listAgentConfigPage"])
+        let changedStore = SkillStore(service: changedRunner.serviceClient())
+        await changedStore.loadMoreAgentConfigSnapshots(loadAll: true)
+        try expectEqual(changedStore.agentConfigSnapshots.count, 100, "Source change must retain the accepted first page.")
+        try expectEqual(changedStore.agentConfigSnapshotCompleteness.completeness, .incomplete, "Source change should be terminal incomplete.")
+        try expectEqual(changedStore.agentConfigSnapshotCompleteness.incompleteReason, .sourceChanged, "Source change reason")
+    }
+
+    private func cancellingLocalHistoryLoadAllPreservesAcceptedRows() async throws {
+        let configRunner = LocalHistoryPageRunner(delayedThirdMethods: ["snapshot.listAgentConfigPage"])
+        let configStore = SkillStore(service: configRunner.serviceClient())
+        let configTask = Task { await configStore.loadMoreAgentConfigSnapshots(loadAll: true) }
+        try await waitUntil("Config Load All should reach the delayed third page.") {
+            configRunner.syncCallCount(for: "snapshot.listAgentConfigPage") == 3
+        }
+        configStore.cancelAgentConfigSnapshotLoadAll()
+        configRunner.release(method: "snapshot.listAgentConfigPage")
+        await configTask.value
+        try expectEqual(configStore.agentConfigSnapshots.count, 200, "Config cancellation must retain accepted rows and reject the delayed page.")
+        try expectEqual(configStore.agentConfigSnapshotCompleteness.completeness, .partial, "Cancelled config Load All should remain partial.")
+
+        let eventRunner = LocalHistoryPageRunner(delayedThirdMethods: ["skill.listEventsPage"])
+        let eventStore = SkillStore(service: eventRunner.serviceClient())
+        let eventTask = Task { await eventStore.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true) }
+        try await waitUntil("Event Load All should reach the delayed third page.") {
+            eventRunner.syncCallCount(for: "skill.listEventsPage") == 3
+        }
+        eventStore.cancelSkillEventLoadAll(instanceID: "skill-1")
+        eventRunner.release(method: "skill.listEventsPage")
+        await eventTask.value
+        try expectEqual(eventStore.skillEventsByID["skill-1"]?.count, 200, "Event cancellation must retain accepted rows and reject the delayed page.")
+        try expectEqual(eventStore.skillEventCompletenessByID["skill-1"]?.completeness, .partial, "Cancelled event Load All should remain partial.")
+    }
+
+    private func catalogScanCompletenessTracksExplicitScan() async throws {
+        let runner = CatalogRefreshServiceRunner(scanFixtures: [.complete, .budget])
+        let store = SkillStore(service: runner.serviceClient())
+
+        await store.loadAppStartupDataIfNeeded()
+        try expectEqual(store.catalogListCompleteness.completeness, .unknown, "Catalog-only startup cannot prove scan completeness")
+        await store.scanAll()
+        try expectEqual(store.catalogListCompleteness.completeness, .complete, "Complete scan should prove catalog completeness")
+        await store.scanAll()
+        try expectEqual(store.catalogListCompleteness.completeness, .incomplete, "Budgeted scan must be visible as incomplete")
+        try expectEqual(store.catalogListCompleteness.incompleteReason, .safetyBudget, "Budget reason")
     }
 
     private func previewRollbackShowsDiffWithoutCallingRollback() async throws {
@@ -4066,6 +4159,15 @@ private actor AutosaveControlServiceState {
                 currentResult: [snapshot(agent: agent, id: "snapshot-new", content: configContent)]
             )
 
+        case "snapshot.listAgentConfigPage":
+            let agent = params["agent"] as? String ?? "claude-code"
+            events.append("snapshot.listAgentConfig:\(agent)")
+            return await configReadResponse(
+                method: method,
+                oldResult: snapshotPage(agent: agent, id: "snapshot-old", content: "config-x"),
+                currentResult: snapshotPage(agent: agent, id: "snapshot-new", content: configContent)
+            )
+
         case "llm.listProviderProfiles":
             return Self.ok(providerStatus())
         case "app.stateSnapshot":
@@ -4212,9 +4314,21 @@ private actor AutosaveControlServiceState {
                 "config.readAgentConfig",
                 "config.saveClaudeSettings",
                 "snapshot.listAgentConfig",
+                "snapshot.listAgentConfigPage",
                 "llm.listProviderProfiles",
                 "llm.saveProviderProfile",
             ],
+        ]
+    }
+
+    private func snapshotPage(agent: String, id: String, content: String) -> [String: Any] {
+        [
+            "records": [snapshot(agent: agent, id: id, content: content)],
+            "source_revision": "sha256:\(id)",
+            "returned_count": 1,
+            "total_count": 1,
+            "has_more": false,
+            "source_completeness": "enumerable",
         ]
     }
 
@@ -4236,9 +4350,191 @@ private actor AutosaveControlServiceState {
     }
 }
 
+private final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failSecondMethods: Set<String>
+    private let sourceChangedSecondMethods: Set<String>
+    private let delayedThirdMethods: Set<String>
+    private var failedMethods = Set<String>()
+    private var recordedCursors: [String: [String?]] = [:]
+    private var callCounts: [String: Int] = [:]
+    private var releaseContinuations: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var releasedMethods = Set<String>()
+
+    init(
+        failSecondMethods: Set<String> = [],
+        sourceChangedSecondMethods: Set<String> = [],
+        delayedThirdMethods: Set<String> = []
+    ) {
+        self.failSecondMethods = failSecondMethods
+        self.sourceChangedSecondMethods = sourceChangedSecondMethods
+        self.delayedThirdMethods = delayedThirdMethods
+    }
+
+    func serviceClient() -> ServiceClient {
+        ServiceClient(
+            processRunner: self,
+            serviceURL: URL(fileURLWithPath: "/tmp/local-history-page-service")
+        )
+    }
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        guard let request = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let method = request["method"] as? String,
+              let params = request["params"] as? [String: Any] else {
+            return Self.error(code: "invalid_request", message: "invalid test request")
+        }
+        let cursor = params["cursor"] as? String
+        let offset = cursor.flatMap { Int($0.split(separator: "-").last ?? "") } ?? 0
+        let behavior = record(method: method, cursor: cursor, offset: offset)
+        if let errorCode = behavior.errorCode {
+            return Self.error(code: errorCode, message: "synthetic second-page failure")
+        }
+        if behavior.delay {
+            await waitForRelease(method: method)
+        }
+        switch method {
+        case "snapshot.listAgentConfigPage":
+            return Self.configPage(offset: offset)
+        case "skill.listEventsPage":
+            return Self.eventPage(offset: offset)
+        default:
+            return Self.error(code: "unknown_method", message: "unknown method: \(method)")
+        }
+    }
+
+    func cursors(for method: String) -> [String?] {
+        lock.lock()
+        let values = recordedCursors[method] ?? []
+        lock.unlock()
+        return values
+    }
+
+    func syncCallCount(for method: String) -> Int {
+        lock.lock()
+        let count = callCounts[method] ?? 0
+        lock.unlock()
+        return count
+    }
+
+    func release(method: String) {
+        lock.lock()
+        let continuations = releaseContinuations.removeValue(forKey: method) ?? []
+        if continuations.isEmpty {
+            releasedMethods.insert(method)
+        }
+        lock.unlock()
+        continuations.forEach { $0.resume() }
+    }
+
+    private func record(method: String, cursor: String?, offset: Int) -> (errorCode: String?, delay: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedCursors[method, default: []].append(cursor)
+        callCounts[method, default: 0] += 1
+        let pageFailure = offset == 100
+            && failSecondMethods.contains(method)
+            && failedMethods.insert(method).inserted
+        let sourceChanged = offset == 100 && sourceChangedSecondMethods.contains(method)
+        let delay = offset == 200 && delayedThirdMethods.contains(method)
+        return (sourceChanged ? "source_changed" : (pageFailure ? "page_failed" : nil), delay)
+    }
+
+    private func waitForRelease(method: String) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            let wasReleased = releasedMethods.remove(method) != nil
+            if !wasReleased {
+                releaseContinuations[method, default: []].append(continuation)
+            }
+            lock.unlock()
+            if wasReleased {
+                continuation.resume()
+            }
+        }
+    }
+
+    private static func configPage(offset: Int) -> Data {
+        let total = 205
+        let end = min(offset + 100, total)
+        let records: [[String: Any]] = (offset..<end).map { index in
+            [
+                "id": "config-\(index)",
+                "agent": "claude-code",
+                "scope": "agent-global",
+                "target": "/tmp/home/.claude/settings.json",
+                "content": "{}\n",
+                "reason": "pre-toggle",
+                "created_at": total - index,
+            ]
+        }
+        return page(
+            records: records,
+            sourceRevision: "sha256:config-revision",
+            total: total,
+            nextCursor: end < total ? "config-\(end)" : nil
+        )
+    }
+
+    private static func eventPage(offset: Int) -> Data {
+        let total = 201
+        let end = min(offset + 100, total)
+        let records: [[String: Any]] = (offset..<end).map { index in
+            [
+                "id": total - index,
+                "instance_id": "skill-1",
+                "kind": "scan",
+                "payload": ["index": index],
+                "occurred_at": total - index,
+            ]
+        }
+        return page(
+            records: records,
+            sourceRevision: "sha256:event-revision",
+            total: total,
+            nextCursor: end < total ? "event-\(end)" : nil
+        )
+    }
+
+    private static func page(
+        records: [[String: Any]],
+        sourceRevision: String,
+        total: Int,
+        nextCursor: String?
+    ) -> Data {
+        var result: [String: Any] = [
+            "records": records,
+            "source_revision": sourceRevision,
+            "returned_count": records.count,
+            "total_count": total,
+            "has_more": nextCursor != nil,
+            "source_completeness": "enumerable",
+        ]
+        if let nextCursor {
+            result["next_cursor"] = nextCursor
+        }
+        return response(result: result)
+    }
+
+    private static func error(code: String, message: String) -> Data {
+        let object: [String: Any] = [
+            "id": "test",
+            "ok": false,
+            "error": ["code": code, "message": message],
+        ]
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    }
+
+    private static func response(result: [String: Any]) -> Data {
+        let object: [String: Any] = ["id": "test", "ok": true, "result": result]
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    }
+}
+
 private enum CatalogRefreshScanFixture {
     case partial
     case complete
+    case budget
     case legacySummary
     case legacyWithoutActivity
 }
@@ -4288,6 +4584,8 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
             return Self.ok(Self.detail(for: rawInput))
         case "skill.listEvents", "snapshot.listAgentConfig":
             return Self.ok("[]")
+        case "skill.listEventsPage", "snapshot.listAgentConfigPage":
+            return Self.unknown(method)
         case "project.getContext":
             return Self.ok(Self.projectContext)
         case "llm.status",
@@ -4332,6 +4630,8 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
             partialScanResult
         case .complete:
             completeScanResult
+        case .budget:
+            budgetScanResult
         case .legacySummary:
             legacySummaryScanResult
         case .legacyWithoutActivity:
@@ -4361,6 +4661,10 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
 
     private static let completeScanResult = """
     {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":["$HOME/.claude/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
+    """
+
+    private static let budgetScanResult = """
+    {"scanned_count":2,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed-partial","started_at":7,"finished_at":8,"scanned_count":2,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills"],"log_entries":[],"recovery_actions":["Retry Scan after reducing the selected roots."],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed-partial","scanned_count":2,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":[],"roots_partial":["$HOME/.claude/skills"],"roots_skipped":[],"scan_issues":[{"kind":"budget_exceeded","path":"$HOME/.claude/skills","detail":"The scan stopped after reaching a configured work budget."}],"recovery_actions":["Retry Scan after reducing the selected roots."]}]}}
     """
 
     private static let legacySummaryScanResult = """

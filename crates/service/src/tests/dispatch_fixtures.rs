@@ -127,6 +127,8 @@ fn dispatch_coverage_params(method: &str) -> Value {
         }),
         method if method.starts_with("skillManager.") => skill_manager_dispatch_params(method),
         "config.readAgentConfig" => json!({ "agent": "codex" }),
+        "snapshot.listAgentConfigPage" => json!({ "agent": "codex", "limit": 2 }),
+        "skill.listEventsPage" => json!({ "instance_id": "missing-skill", "limit": 2 }),
         "config.saveClaudeSettings" => json!({
             "content": "{}\n",
             "expected_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -1717,6 +1719,34 @@ pub(super) struct WireSkillEventRecord {
     pub(super) kind: String,
     pub(super) payload: Value,
     pub(super) occurred_at: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireConfigSnapshotPageResult {
+    pub(super) records: Vec<WireConfigSnapshotRecord>,
+    pub(super) source_revision: String,
+    pub(super) returned_count: usize,
+    pub(super) total_count: Option<usize>,
+    pub(super) has_more: bool,
+    pub(super) next_cursor: Option<String>,
+    pub(super) source_completeness: String,
+    pub(super) incomplete_reason: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireSkillEventPageResult {
+    pub(super) records: Vec<WireSkillEventRecord>,
+    pub(super) source_revision: String,
+    pub(super) returned_count: usize,
+    pub(super) total_count: Option<usize>,
+    pub(super) has_more: bool,
+    pub(super) next_cursor: Option<String>,
+    pub(super) source_completeness: String,
+    pub(super) incomplete_reason: Option<String>,
 }
 
 #[allow(dead_code)]

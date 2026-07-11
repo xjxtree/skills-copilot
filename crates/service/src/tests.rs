@@ -11,6 +11,7 @@ use std::{
 mod app_wire_fixtures;
 mod config_consistency;
 mod dispatch_fixtures;
+mod list_page_local_catalog;
 mod llm_provider;
 mod local_session_inventory;
 mod local_session_preview;

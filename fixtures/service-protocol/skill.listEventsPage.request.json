@@ -1,0 +1,8 @@
+{
+  "id": "fixture-skill-list-events-page",
+  "method": "skill.listEventsPage",
+  "params": {
+    "instance_id": "skill-instance-id",
+    "limit": 2
+  }
+}

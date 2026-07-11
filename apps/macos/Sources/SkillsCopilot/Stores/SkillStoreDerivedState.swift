@@ -118,6 +118,10 @@ extension SkillStore {
         }
     }
 
+    var agentConfigTimeline: AgentConfigTimelineModel {
+        AgentConfigTimelineModel.make(snapshots: agentConfigSnapshots, agentFilter: agentFilter)
+    }
+
     var selectedAgentLocalSessionRefreshKey: String {
         [
             agentFilter.rawValue,

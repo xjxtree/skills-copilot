@@ -146,12 +146,14 @@ conditional on the exact local state that the client reviewed.
 | `skill.exportBundle` | Export destination | Never | Never | None |
 | `skill.install` | Agent skill files, App-local data | Never | Never | Required |
 | `skill.listEvents` | None | Never | Never | None |
+| `skill.listEventsPage` | None | Never | Never | None |
 | `config.toggleSkill` | Agent config, App-local data | Never | Never | None |
 | `config.readAgentConfig` | None | Never | Never | None |
 | `config.readClaudeSettings` | None | Never | Never | None |
 | `config.saveClaudeSettings` | Agent config, App-local data | Never | Never | None |
 | `snapshot.list` | None | Never | Never | None |
 | `snapshot.listAgentConfig` | None | Never | Never | None |
+| `snapshot.listAgentConfigPage` | None | Never | Never | None |
 | `snapshot.previewRollback` | None | Never | Never | None |
 | `snapshot.rollback` | Agent config, App-local data | Never | Never | Required |
 
@@ -180,6 +182,17 @@ date/filter range before evidence rows are limited.
   supports it (`total_count` / `returned_count` or
   `total_*_count` / `returned_*_count`, plus `truncated`) so clients do not
   mistake a limited page for full history.
+- `snapshot.listAgentConfigPage` and `skill.listEventsPage` provide complete,
+  additive paged access while the legacy unpaged methods and response shapes
+  remain supported. Page limits are clamped to `1...100`.
+- Config pages use `(created_at DESC, id DESC)` and event pages use
+  `(occurred_at DESC, id DESC)` stable keyset order. Continuations carry an
+  opaque `v1:` cursor and the first page's `source_revision`; a changed ordered
+  source returns `source_changed` before returning continuation rows.
+- Page results contain `records`, `source_revision`, `returned_count`,
+  `total_count`, `has_more`, `next_cursor`, `source_completeness`, and optional
+  `incomplete_reason`. Clients should accumulate by stable record ID and retain
+  accepted rows if loading is cancelled or a later page fails.
 
 ## Catalog Scan Diagnostics
 

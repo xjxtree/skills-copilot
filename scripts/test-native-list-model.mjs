@@ -288,6 +288,7 @@ await writeFile(runnerPath, runnerSource, "utf8");
 
 try {
   run("swiftc", [
+    join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/ListCompleteness.swift"),
     join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/SkillRecord.swift"),
     join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/FindingTriageState.swift"),
     join(repoRoot, "apps/macos/Sources/SkillsCopilot/Models/ScriptExecutionPreview.swift"),
