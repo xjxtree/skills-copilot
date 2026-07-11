@@ -162,7 +162,7 @@ function withoutCompileTimeFalseBranches(sanitized) {
   let searchFrom = 0;
   while (searchFrom < structure.length) {
     const text = structure.join("");
-    const match = /\bif\s+false\s*\{/gu;
+    const match = /\bif\s+(?:false|\(\s*false\s*\))\s*\{/gu;
     match.lastIndex = searchFrom;
     const declaration = match.exec(text);
     if (declaration === null) break;
@@ -218,106 +218,271 @@ function identifierLiteralPattern(identifier) {
   return `["']${escaped}["']`;
 }
 
-function buttonBindsIdentifier(source, identifier) {
-  const literal = identifierLiteralPattern(identifier);
-  for (const match of source.matchAll(/\bButton\s*\(/gu)) {
-    const nextButton = source.indexOf("Button(", match.index + match[0].length);
-    const end = Math.min(
-      nextButton < 0 ? source.length : nextButton,
-      match.index + 1800,
-    );
-    const invocation = source.slice(match.index, end);
-    if (/\brole\s*:\s*\.destructive\b/u.test(invocation)) continue;
-    if (new RegExp(`\\.accessibilityIdentifier\\(\\s*${literal}\\s*\\)`, "u").test(invocation)) {
-      return true;
+function matchingDelimiter(structure, opening, open = "(", close = ")") {
+  if (structure[opening] !== open) return undefined;
+  let depth = 0;
+  for (let index = opening; index < structure.length; index += 1) {
+    if (structure[index] === open) depth += 1;
+    else if (structure[index] === close) {
+      depth -= 1;
+      if (depth === 0) return index;
     }
   }
-  return false;
+  return undefined;
 }
 
-function buttonUsesAccessibilityHelper(source, helper) {
-  const escaped = helper.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  for (const match of source.matchAll(/\bButton\s*\(/gu)) {
-    const invocation = source.slice(match.index, match.index + 1800);
-    if (/\brole\s*:\s*\.destructive\b/u.test(invocation)) continue;
-    if (new RegExp(`\\.accessibilityIdentifier\\(\\s*${escaped}\\s*\\(`, "u").test(invocation)) {
-      return true;
-    }
-  }
-  return false;
+function skipWhitespace(source, start) {
+  let index = start;
+  while (index < source.length && /\s/u.test(source[index])) index += 1;
+  return index;
 }
 
-function knownExpandableHelperBinds(fileSource, scopeSource, identifier) {
-  const literal = identifierLiteralPattern(identifier);
-  for (const [helper, argument] of [
-    ["BatchToggleItemList", "showAllAccessibilityIdentifier"],
-    ["TaskCockpitCandidateList", "accessibilityIdentifier"],
-    ["TaskCockpitContextList", "accessibilityIdentifier"],
-  ]) {
-    const invocation = new RegExp(
-      `\\b${helper}\\s*\\([\\s\\S]{0,1800}?\\b${argument}\\s*:\\s*${literal}`,
-      "u",
-    );
-    if (!invocation.test(scopeSource)) continue;
-    const range = namedTypeRange(fileSource.structure, helper);
-    if (range === undefined) continue;
-    const implementation = fileSource.structure.slice(range.start, range.end);
-    if (new RegExp(
-      `\\bExpandableSummaryList\\s*\\([\\s\\S]{0,1800}?\\baccessibilityIdentifier\\s*:\\s*${argument}\\b`,
-      "u",
-    ).test(implementation)) {
-      return true;
+function callRanges(sanitized, name) {
+  const ranges = [];
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  for (const match of sanitized.structure.matchAll(new RegExp(`\\b${escaped}\\s*\\(`, "gu"))) {
+    const opening = sanitized.structure.indexOf("(", match.index);
+    const closing = matchingDelimiter(sanitized.structure, opening);
+    if (closing === undefined) continue;
+    let end = closing + 1;
+    let cursor = skipWhitespace(sanitized.structure, end);
+    if (sanitized.structure[cursor] === "{") {
+      const trailingEnd = matchingDelimiter(sanitized.structure, cursor, "{", "}");
+      if (trailingEnd !== undefined) {
+        end = trailingEnd + 1;
+        cursor = skipWhitespace(sanitized.structure, end);
+        const label = sanitized.structure.slice(cursor).match(/^(?:label|content)\s*:\s*\{/u);
+        if (label !== null) {
+          const labelOpening = sanitized.structure.indexOf("{", cursor);
+          const labelEnd = matchingDelimiter(sanitized.structure, labelOpening, "{", "}");
+          if (labelEnd !== undefined) end = labelEnd + 1;
+        }
+      }
     }
+    cursor = skipWhitespace(sanitized.structure, end);
+    while (sanitized.structure[cursor] === ".") {
+      const modifier = sanitized.structure.slice(cursor).match(/^\.[A-Za-z_][A-Za-z0-9_]*\s*\(/u);
+      if (modifier === null) break;
+      const modifierOpening = sanitized.structure.indexOf("(", cursor);
+      const modifierEnd = matchingDelimiter(sanitized.structure, modifierOpening);
+      if (modifierEnd === undefined) break;
+      end = modifierEnd + 1;
+      cursor = skipWhitespace(sanitized.structure, end);
+    }
+    ranges.push({
+      name,
+      start: match.index,
+      opening,
+      closing,
+      end,
+      code: sanitized.code.slice(match.index, end),
+      structure: sanitized.structure.slice(match.index, end),
+      arguments: sanitized.structure.slice(opening + 1, closing),
+      argumentsCode: sanitized.code.slice(opening + 1, closing),
+    });
   }
-  return false;
+  return ranges;
 }
 
-function hasAttachedAccessibilityIdentifier(fileSource, owner, scope, surface, field) {
-  const source = scope.code;
-  const identifier = surface[field];
-  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const pagingMatch = identifier.match(/^(.*)\.(?:load-more|load-all|cancel)$/u);
-  const helperCalls = [
-    ...source.matchAll(
-      /\.accessibilityIdentifier\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
-    ),
-  ].map((match) => match[1]);
-  const returnedByAccessibilityHelper = helperCalls.some((helper) => {
-    const body = functionBlock(owner, helper);
-    if (body === undefined || !new RegExp(`["']${escaped}["']`, "u").test(body)) {
-      return false;
+function argumentSegments(argumentsSource) {
+  const segments = [];
+  let start = 0;
+  const depths = { "(": 0, "[": 0, "{": 0 };
+  const closingFor = { ")": "(", "]": "[", "}": "{" };
+  for (let index = 0; index <= argumentsSource.length; index += 1) {
+    const character = argumentsSource[index];
+    if (character in depths) depths[character] += 1;
+    else if (character in closingFor) depths[closingFor[character]] -= 1;
+    const atBoundary = index === argumentsSource.length ||
+      (character === "," && Object.values(depths).every((depth) => depth === 0));
+    if (atBoundary) {
+      segments.push(argumentsSource.slice(start, index).trim());
+      start = index + 1;
     }
-    return buttonUsesAccessibilityHelper(source, helper);
-  });
-  const invokedHelpers = [
-    ...source.matchAll(/\b([a-z][A-Za-z0-9_]*)\s*\(/gu),
-  ].map((match) => match[1]);
-  const attachedInInvokedHelper = invokedHelpers.some((helper) => {
-    const body = functionBlock(owner, helper);
-    return body !== undefined && buttonBindsIdentifier(body, identifier);
-  });
-  if (field === "status_id") {
-    return new RegExp(
-      `(?:ListCompletenessFooter|skillManagerSearchFooter)\\s*\\([\\s\\S]{0,1800}?\\)\\s*\\.accessibilityIdentifier\\(\\s*["']${escaped}["']\\s*\\)`,
-      "u",
-    ).test(source);
   }
-  if (surface.policy === "paged") {
-    return attachedInInvokedHelper ||
-      (pagingMatch !== null &&
-        new RegExp(
-          `ListCompletenessFooter\\s*\\([\\s\\S]{0,1800}?accessibilityIdentifierPrefix\\s*:\\s*["']${pagingMatch[1].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}["']`,
-          "u",
-        ).test(source));
+  return segments;
+}
+
+function callArgument(call, label, useCode = false) {
+  const segments = argumentSegments(useCode ? call.argumentsCode : call.arguments);
+  if (label === undefined) {
+    const first = segments[0] ?? "";
+    const labeled = first.match(/^[A-Za-z_][A-Za-z0-9_]*\s*:\s*([\s\S]*)$/u);
+    return labeled?.[1] ?? first;
   }
-  return (
-    new RegExp(
-      `ExpandableSummaryList\\s*\\([\\s\\S]{0,1600}?\\baccessibilityIdentifier\\s*:\\s*["']${escaped}["']`,
-      "u",
-    ).test(source) ||
-    knownExpandableHelperBinds(fileSource, source, identifier) ||
-    returnedByAccessibilityHelper
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  for (const segment of segments) {
+    const match = segment.match(new RegExp(`^${escaped}\\s*:\\s*([\\s\\S]*)$`, "u"));
+    if (match !== null) return match[1];
+  }
+  return undefined;
+}
+
+function normalizedExpression(value) {
+  return value.replace(/\s+/gu, "");
+}
+
+function declarationBody(structure, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const computed = blockRange(
+    structure,
+    new RegExp(`\\b(?:var|func)\\s+${escaped}\\b[^=\\n{]*`, "gu"),
   );
+  if (computed !== undefined) return structure.slice(computed.start, computed.end);
+  const assignment = new RegExp(`\\b(?:let|var)\\s+${escaped}\\b[^=\\n{]*=`, "gu").exec(structure);
+  if (assignment === null) return undefined;
+  return initializerExpression(structure, assignment.index + assignment[0].length);
+}
+
+function expressionDependsOnSource(expression, source, structure, visited = new Set()) {
+  const normalizedSource = normalizedExpression(source);
+  if (normalizedExpression(expression).includes(normalizedSource)) return true;
+  for (const identifier of expression.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/gu)) {
+    const name = identifier[0];
+    if (visited.has(name)) continue;
+    const body = declarationBody(structure, name);
+    if (body === undefined) continue;
+    const nextVisited = new Set(visited);
+    nextVisited.add(name);
+    if (expressionDependsOnSource(body, source, structure, nextVisited)) return true;
+  }
+  return false;
+}
+
+function exactIdentifierInCall(call, identifier) {
+  const literal = identifierLiteralPattern(identifier);
+  return new RegExp(
+    `\\.accessibilityIdentifier\\(\\s*${literal}\\s*\\)`,
+    "u",
+  ).test(call.code) || new RegExp(
+    `\\baccessibilityIdentifier\\s*:\\s*${literal}`,
+    "u",
+  ).test(call.argumentsCode);
+}
+
+function sourceHasFormalSink(structure, source) {
+  for (const name of ["ForEach", "List", "DenseDisclosureList", "ExpandableSummaryList"]) {
+    for (const call of callRanges({ code: structure, structure }, name)) {
+      if (expressionDependsOnSource(callArgument(call), source, structure)) return true;
+    }
+  }
+  return false;
+}
+
+function pagedControlBinding(fileSource, owner, scope, surface) {
+  const prefix = surface.full_access_id.replace(/\.(?:load-more|load-all|cancel|show-all-returned)$/u, "");
+  const footers = callRanges(scope, "ListCompletenessFooter");
+  let hasStatus = false;
+  let hasFull = false;
+  for (const footer of footers) {
+    const status = exactIdentifierInCall(footer, surface.status_id);
+    const declaredPrefix = callArgument(footer, "accessibilityIdentifierPrefix", true);
+    const full = declaredPrefix !== undefined &&
+      normalizedExpression(declaredPrefix) === normalizedExpression(`"${prefix}"`);
+    hasStatus ||= status;
+    hasFull ||= full;
+    const target = normalizedExpression(footer.structure).includes(
+      normalizedExpression(surface.control_anchor),
+    );
+    if (target && status && full) return { status: true, full: true, sameTarget: true };
+  }
+
+  for (const helperCall of callRanges(scope, "skillManagerSearchFooter")) {
+    const status = exactIdentifierInCall(helperCall, surface.status_id);
+    const helperBody = functionBlock(owner, "skillManagerSearchFooter") ?? "";
+    const full = new RegExp(
+      `\\.accessibilityIdentifier\\(\\s*${identifierLiteralPattern(surface.full_access_id)}\\s*\\)`,
+      "u",
+    ).test(helperBody);
+    hasStatus ||= status;
+    hasFull ||= full;
+    const target = normalizedExpression(helperCall.structure).includes(
+      normalizedExpression(surface.control_anchor),
+    );
+    if (target && status && full && sourceHasFormalSink(scope.structure, surface.source)) {
+      return { status: true, full: true, sameTarget: true };
+    }
+  }
+  return { status: hasStatus, full: hasFull, sameTarget: false };
+}
+
+function knownHelperSummaryBinding(fileSource, owner, scope, surface) {
+  for (const definition of [
+    { name: "BatchToggleItemList", collectionLabel: "items", idLabel: "showAllAccessibilityIdentifier" },
+    { name: "TaskCockpitCandidateList", collectionLabel: "rows", idLabel: "accessibilityIdentifier" },
+    { name: "TaskCockpitContextList", collectionLabel: "rows", idLabel: "accessibilityIdentifier" },
+  ]) {
+    for (const call of callRanges(scope, definition.name)) {
+      const collection = callArgument(call, definition.collectionLabel);
+      const identifier = callArgument(call, definition.idLabel, true);
+      if (identifier === undefined || !new RegExp(`^${identifierLiteralPattern(surface.full_access_id)}$`, "u").test(identifier.trim())) {
+        continue;
+      }
+      const range = namedTypeRange(fileSource.structure, definition.name);
+      if (range === undefined) continue;
+      const implementation = {
+        code: fileSource.code.slice(range.start, range.end),
+        structure: fileSource.structure.slice(range.start, range.end),
+      };
+      const forwardsArguments = callRanges(implementation, "ExpandableSummaryList").some((expandable) =>
+        normalizedExpression(callArgument(expandable)) === definition.collectionLabel &&
+        normalizedExpression(callArgument(expandable, "accessibilityIdentifier") ?? "") === definition.idLabel,
+      );
+      if (!forwardsArguments) continue;
+      return {
+        hasIdentifierControl: true,
+        matchesSource: collection !== undefined &&
+          expressionDependsOnSource(collection, surface.source, owner.structure),
+      };
+    }
+  }
+  return { hasIdentifierControl: false, matchesSource: false };
+}
+
+function dynamicButtonSummaryBinding(owner, scope, surface) {
+  if (!sourceHasFormalSink(scope.structure, surface.source)) {
+    return { hasIdentifierControl: false, matchesSource: false };
+  }
+  for (const button of callRanges(scope, "Button")) {
+    if (/\brole\s*:\s*\.destructive\b/u.test(button.structure)) continue;
+    const helper = button.structure.match(
+      /\.accessibilityIdentifier\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\)/u,
+    );
+    if (helper === null) continue;
+    const body = functionBlock(owner, helper[1]);
+    if (body === undefined || !new RegExp(identifierLiteralPattern(surface.full_access_id), "u").test(body)) {
+      continue;
+    }
+    const sourceName = surface.source.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/u)?.[0];
+    const sourceDefinition = sourceName === undefined ? undefined : declarationBody(scope.structure, sourceName);
+    const discriminants = new Set([
+      ...(sourceDefinition ?? "").matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/gu),
+    ].map((match) => match[0]).filter((name) => ![sourceName, "let", "var", "filter", "results"].includes(name)));
+    const matchesSource = [...discriminants].some((name) =>
+      new RegExp(`\\b${name}\\b`, "u").test(helper[2]) &&
+      new RegExp(`\\b${name}\\b`, "u").test(button.structure),
+    );
+    return { hasIdentifierControl: true, matchesSource };
+  }
+  return { hasIdentifierControl: false, matchesSource: false };
+}
+
+function summaryControlBinding(fileSource, owner, scope, surface) {
+  let hasIdentifierControl = false;
+  for (const call of callRanges(scope, "ExpandableSummaryList")) {
+    if (!exactIdentifierInCall(call, surface.full_access_id)) continue;
+    hasIdentifierControl = true;
+    if (expressionDependsOnSource(callArgument(call), surface.source, owner.structure)) {
+      return { full: true, wrongSource: false };
+    }
+  }
+  const helper = knownHelperSummaryBinding(fileSource, owner, scope, surface);
+  hasIdentifierControl ||= helper.hasIdentifierControl;
+  if (helper.matchesSource) return { full: true, wrongSource: false };
+  const button = dynamicButtonSummaryBinding(owner, scope, surface);
+  hasIdentifierControl ||= button.hasIdentifierControl;
+  if (button.matchesSource) return { full: true, wrongSource: false };
+  return { full: false, wrongSource: hasIdentifierControl };
 }
 
 export function loadListCompletenessManifest({
@@ -372,6 +537,13 @@ export function verifyListSurfaceInventory(manifest, { repoRoot } = {}) {
       (typeof surface.control_scope !== "string" || !surface.control_scope)
     ) {
       errors.push(`${id}: ${surface.policy} surface is missing control_scope`);
+      missingDeclaration = true;
+    }
+    if (
+      surface.policy === "paged" &&
+      (typeof surface.control_anchor !== "string" || !surface.control_anchor)
+    ) {
+      errors.push(`${id}: paged surface is missing control_anchor`);
       missingDeclaration = true;
     }
     if (missingDeclaration) continue;
@@ -437,16 +609,32 @@ export function verifyListSurfaceInventory(manifest, { repoRoot } = {}) {
         `${id}: declared source anchor is not reachable in owner ${surface.owner}${surface.control_scope ? ` scope ${surface.control_scope}` : ""}: ${surface.source}`,
       );
     }
-    for (const field of ["status_id", "full_access_id"]) {
-      const identifier = surface[field];
-      if (
-        typeof identifier === "string" &&
-        identifier &&
-        !hasAttachedAccessibilityIdentifier(fileSource, owner, scope ?? owner, surface, field)
-      ) {
+    const controlContext = scope ?? owner;
+    const scopeLabel = `owner ${surface.owner}${surface.control_scope ? ` scope ${surface.control_scope}` : ""}`;
+    if (surface.policy === "paged") {
+      const binding = pagedControlBinding(fileSource, owner, controlContext, surface);
+      if (!binding.sameTarget && binding.status && binding.full) {
         errors.push(
-          `${id}: declared ${field} is not attached to an accessibility control in owner ${surface.owner}${surface.control_scope ? ` scope ${surface.control_scope}` : ""}: ${identifier}`,
+          `${id}: declared status_id and full_access_id are not attached to the same target control in ${scopeLabel}`,
         );
+      } else if (!binding.sameTarget) {
+        if (!binding.status) {
+          errors.push(
+            `${id}: declared status_id is not attached to an accessibility control in ${scopeLabel}: ${surface.status_id}`,
+          );
+        }
+        if (!binding.full) {
+          errors.push(
+            `${id}: declared full_access_id is not attached to an accessibility control in ${scopeLabel}: ${surface.full_access_id}`,
+          );
+        }
+      }
+    } else if (surface.policy === "summary_with_expand") {
+      const binding = summaryControlBinding(fileSource, owner, controlContext, surface);
+      if (!binding.full) {
+        errors.push(binding.wrongSource
+          ? `${id}: declared full_access_id is not attached to the declared source control in ${scopeLabel}: ${surface.full_access_id}`
+          : `${id}: declared full_access_id is not attached to an accessibility control in ${scopeLabel}: ${surface.full_access_id}`);
       }
     }
   }
@@ -467,21 +655,49 @@ function linesForRange(source, range) {
   return new Set(Array.from({ length: end - start + 1 }, (_, offset) => start + offset));
 }
 
-function disclosureRendersRemainder(component) {
-  const disclosure = /\bDisclosureGroup\s*(?:\([^)]*\))?\s*\{/gu.exec(component);
-  if (disclosure === null) return false;
-  const range = blockRangeAt(component, disclosure.index, disclosure[0].length - 1);
-  if (range === undefined) return false;
-  const content = component.slice(range.opening + 1, range.end - 1);
-  return /\bForEach\s*\(\s*Array\s*\(\s*items\.dropFirst\s*\(\s*visibleLimit\s*\)/u.test(content) ||
-    /\bForEach\s*\(\s*items\.dropFirst\s*\(\s*visibleLimit\s*\)/u.test(content);
+function trailingClosureBody(call) {
+  const relativeClosing = call.closing - call.start;
+  const opening = skipWhitespace(call.structure, relativeClosing + 1);
+  if (call.structure[opening] !== "{") return undefined;
+  const closing = matchingDelimiter(call.structure, opening, "{", "}");
+  return closing === undefined ? undefined : call.structure.slice(opening + 1, closing);
 }
 
-function expandableButtonMutatesState(component) {
-  for (const button of component.matchAll(/\bButton\s*\(/gu)) {
-    const range = blockRangeAt(component, button.index, button[0].length);
-    if (range === undefined) continue;
-    const action = component.slice(range.opening + 1, range.end - 1);
+function forEachRenders(call, collectionPattern) {
+  if (!collectionPattern.test(normalizedExpression(callArgument(call)))) return false;
+  const body = trailingClosureBody(call) ?? "";
+  return /\browContent\s*\(\s*item\s*\)/u.test(body);
+}
+
+function denseIsCanonical(component) {
+  const sanitized = { code: component, structure: component };
+  const loops = callRanges(sanitized, "ForEach");
+  const visible = loops.some((call) => forEachRenders(
+    call,
+    /^Array\(items\.prefix\(visibleLimit\)\.enumerated\(\)\)$/u,
+  ));
+  if (!visible) return false;
+  for (const disclosure of callRanges(sanitized, "DisclosureGroup")) {
+    const body = trailingClosureBody(disclosure);
+    if (body === undefined) continue;
+    const bodySource = { code: body, structure: body };
+    if (callRanges(bodySource, "ForEach").some((call) => forEachRenders(
+      call,
+      /^(?:Array\()?items\.dropFirst\(visibleLimit\)(?:\.enumerated\(\)\))?\)?$/u,
+    ))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function expandableIdentifiedButtonMutatesState(component) {
+  const sanitized = { code: component, structure: component };
+  for (const button of callRanges(sanitized, "Button")) {
+    if (!/\.accessibilityIdentifier\s*\(\s*accessibilityIdentifier\s*\)/u.test(button.structure)) {
+      continue;
+    }
+    const action = trailingClosureBody(button) ?? "";
     if (/\bisExpanded\s*=\s*true\b/u.test(action) || /\bisExpanded\.toggle\s*\(\s*\)/u.test(action)) {
       return true;
     }
@@ -489,54 +705,108 @@ function expandableButtonMutatesState(component) {
   return false;
 }
 
-function declarationExpressions(structure) {
-  const definitions = new Map();
-  const add = (name, expression) => {
-    const existing = definitions.get(name) ?? [];
-    existing.push(expression);
-    definitions.set(name, existing);
-  };
-  const lines = structure.split(/\r?\n/u);
-  for (let index = 0; index < lines.length; index += 1) {
-    const declaration = lines[index].match(
-      /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*=\s*(.*)$/u,
-    );
-    if (declaration === null) continue;
-    let expression = declaration[2];
-    let continuation = index + 1;
-    while (continuation < lines.length && continuation <= index + 30) {
-      const trimmed = lines[continuation].trim();
-      if (!trimmed.startsWith(".") && !trimmed.startsWith("?.")) break;
-      expression += `\n${lines[continuation]}`;
-      continuation += 1;
+function initializerExpression(structure, start) {
+  const depths = { "(": 0, "[": 0, "{": 0 };
+  const closingFor = { ")": "(", "]": "[", "}": "{" };
+  for (let index = start; index < structure.length; index += 1) {
+    const character = structure[index];
+    if (character in depths) depths[character] += 1;
+    else if (character in closingFor) depths[closingFor[character]] -= 1;
+    if (character !== "\n" || !Object.values(depths).every((depth) => depth === 0)) {
+      continue;
     }
-    add(declaration[1], expression);
+    const next = skipWhitespace(structure, index + 1);
+    if (structure[next] === "." || structure.slice(next, next + 2) === "?.") continue;
+    return structure.slice(start, index);
   }
-  for (const method of structure.matchAll(/\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\b/gu)) {
-    const range = blockRangeAt(structure, method.index, method[0].length);
-    if (range !== undefined) add(method[1], structure.slice(range.opening + 1, range.end - 1));
+  return structure.slice(start);
+}
+
+function braceDepths(structure) {
+  const result = new Array(structure.length + 1).fill(0);
+  let depth = 0;
+  for (let index = 0; index < structure.length; index += 1) {
+    result[index] = depth;
+    if (structure[index] === "{") depth += 1;
+    else if (structure[index] === "}") depth = Math.max(0, depth - 1);
   }
-  for (const property of structure.matchAll(
-    /\bvar\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*\{/gu,
+  result[structure.length] = depth;
+  return result;
+}
+
+function typeRanges(structure) {
+  const ranges = [];
+  for (const match of structure.matchAll(
+    /\b(?:struct|class|enum|actor|extension)\s+[A-Za-z_][A-Za-z0-9_.]*/gu,
   )) {
-    const range = blockRangeAt(structure, property.index, property[0].length - 1);
-    if (range !== undefined) add(property[1], structure.slice(range.opening + 1, range.end - 1));
+    const range = blockRangeAt(structure, match.index, match[0].length);
+    if (range !== undefined) ranges.push(range);
+  }
+  return ranges;
+}
+
+function containingRange(ranges, index) {
+  return ranges
+    .filter((range) => range.start <= index && index < range.end)
+    .sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
+}
+
+function directCallableDefinitions(structure, container, depths) {
+  const definitions = [];
+  const start = container === undefined ? 0 : container.opening + 1;
+  const end = container === undefined ? structure.length : container.end - 1;
+  const directDepth = container === undefined ? 0 : depths[container.opening] + 1;
+  const patterns = [
+    /\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\b/gu,
+    /\bvar\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*\{/gu,
+  ];
+  for (const pattern of patterns) {
+    pattern.lastIndex = start;
+    while (pattern.lastIndex < end) {
+      const match = pattern.exec(structure);
+      if (match === null || match.index >= end) break;
+      if (depths[match.index] !== directDepth) continue;
+      const range = blockRangeAt(structure, match.index, match[0].length - (match[0].endsWith("{") ? 1 : 0));
+      if (range === undefined || range.end > end + 1) continue;
+      definitions.push({
+        name: match[1],
+        expression: structure.slice(range.opening + 1, range.end - 1),
+        range,
+      });
+    }
   }
   return definitions;
 }
 
-function prefixTaintedNames(structure) {
-  const definitions = declarationExpressions(structure);
+function assignmentDefinitions(structure, range, before) {
+  const definitions = [];
+  const start = range === undefined ? 0 : range.opening + 1;
+  const end = Math.min(before, range === undefined ? before : range.end - 1);
+  const pattern = /\b(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n{]*=/gu;
+  pattern.lastIndex = start;
+  while (pattern.lastIndex < end) {
+    const match = pattern.exec(structure);
+    if (match === null || match.index >= end) break;
+    definitions.push({
+      name: match[1],
+      expression: initializerExpression(structure.slice(0, end), match.index + match[0].length),
+      position: match.index,
+    });
+  }
+  return definitions;
+}
+
+function prefixTaintedNames(definitions) {
+  const byName = new Map();
+  for (const definition of definitions) byName.set(definition.name, definition.expression);
   const tainted = new Set();
   let changed = true;
   while (changed) {
     changed = false;
-    for (const [name, expressions] of definitions) {
+    for (const [name, expression] of byName) {
       if (tainted.has(name)) continue;
-      const isTainted = expressions.some((expression) =>
-        /\.prefix\s*\(/u.test(expression) ||
-        [...tainted].some((source) => new RegExp(`\\b${source}\\b`, "u").test(expression)),
-      );
+      const isTainted = /\.prefix\s*\(/u.test(expression) ||
+        [...tainted].some((source) => new RegExp(`\\b${source}\\b`, "u").test(expression));
       if (isTainted) {
         tainted.add(name);
         changed = true;
@@ -544,6 +814,14 @@ function prefixTaintedNames(structure) {
     }
   }
   return tainted;
+}
+
+function visibleDefinitionsForSink(structure, sink, types, depths) {
+  const container = containingRange(types, sink.start);
+  const callableDefinitions = directCallableDefinitions(structure, container, depths);
+  const member = containingRange(callableDefinitions.map((definition) => definition.range), sink.start);
+  const localDefinitions = assignmentDefinitions(structure, member ?? container, sink.start);
+  return [...callableDefinitions, ...localDefinitions];
 }
 
 export function findUndeclaredPrefixLists(source, { relativePath } = {}) {
@@ -557,8 +835,7 @@ export function findUndeclaredPrefixLists(source, { relativePath } = {}) {
     const component = structure.slice(denseRange.start, denseRange.end);
     const canonical =
       (relativePath === undefined || relativePath === canonicalDenseDisclosurePath) &&
-      /\bForEach\s*\(\s*Array\s*\(\s*items\.prefix\s*\(\s*visibleLimit\s*\)/u.test(component) &&
-      disclosureRendersRemainder(component);
+      denseIsCanonical(component);
     if (canonical) {
       for (const line of linesForRange(structure, denseRange)) approvedLines.add(line);
     }
@@ -572,30 +849,34 @@ export function findUndeclaredPrefixLists(source, { relativePath } = {}) {
       /\bisExpanded\s*\?\s*items\s*:\s*Array\s*\(\s*items\.prefix\s*\(\s*visibleLimit\s*\)/u.test(component) &&
       /\bForEach\s*\(\s*visibleItems\s*\)/u.test(component) &&
       /\.accessibilityIdentifier\s*\(\s*accessibilityIdentifier\s*\)/u.test(component) &&
-      expandableButtonMutatesState(component);
+      expandableIdentifiedButtonMutatesState(component);
     if (canonical) {
       for (const line of linesForRange(structure, expandableRange)) approvedLines.add(line);
     }
   }
 
-  const tainted = prefixTaintedNames(structure);
   const errors = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    if (approvedLines.has(index)) continue;
-    const call = lines[index].match(/\b(?:ForEach|List)\s*\(/u);
-    if (call === null) continue;
-    let expression = lines[index].slice(call.index);
-    let continuation = index + 1;
-    while (!expression.includes("{") && continuation < lines.length && continuation <= index + 30) {
-      expression += `\n${lines[continuation]}`;
-      continuation += 1;
-    }
-    const collection = expression.split("{", 1)[0];
+  const types = typeRanges(structure);
+  const depths = braceDepths(structure);
+  const sinks = ["ForEach", "List", "DenseDisclosureList", "ExpandableSummaryList"]
+    .flatMap((name) => callRanges(sanitized, name))
+    .sort((left, right) => left.start - right.start);
+  for (const sink of sinks) {
+    const line = structure.slice(0, sink.start).split(/\r?\n/u).length - 1;
+    if (approvedLines.has(line)) continue;
+    const collection = callArgument(sink);
+    if (!collection) continue;
+    const tainted = prefixTaintedNames(visibleDefinitionsForSink(
+      structure,
+      sink,
+      types,
+      depths,
+    ));
     if (
       /\.prefix\s*\(/u.test(collection) ||
       [...tainted].some((name) => new RegExp(`\\b${name}\\b`, "u").test(collection))
     ) {
-      errors.push(`undeclared prefix-defined formal list at line ${index + 1}`);
+      errors.push(`undeclared prefix-defined formal list at line ${line + 1}`);
     }
   }
   return errors;

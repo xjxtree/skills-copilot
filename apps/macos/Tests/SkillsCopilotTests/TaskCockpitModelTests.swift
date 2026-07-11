@@ -255,19 +255,12 @@ struct TaskCockpitModelTests {
             blockerRows: blockers
         )
 
-        let decisionRows = TaskCockpitSummaryTextRow.rows(
-            for: result.agentCandidates.flatMap(\.reasons)
-        )
-        try expectEqual(decisionRows.count, 5, "Decision reasons must keep every candidate reason.")
-        try expectEqual(decisionRows.last?.value, "Candidate reason 4", "Decision reasons must retain the final candidate reason.")
+        let decision = TaskCockpitDecisionModel(result: result)
+        try expectFalse(!decision.keyReasons.contains("Candidate reason 4"), "Production decision reasons must retain the final candidate reason.")
+        try expectEqual(decision.candidateAlternatives.count, 5, "Production candidate alternatives must keep every unique candidate.")
+        try expectFalse(!decision.candidateAlternatives.last!.contains("Candidate 4"), "Production candidate alternatives must retain the final candidate.")
 
-        let candidateRows = TaskCockpitSummaryTextRow.rows(
-            for: result.agentCandidates.map(\.title)
-        )
-        try expectEqual(candidateRows.count, 5, "Candidate presentation must keep every unique candidate.")
-        try expectEqual(candidateRows.last?.value, "Candidate 4", "Candidate presentation must retain the final candidate.")
-
-        let processNotes = TaskCockpitSummaryTextRow.matchingProcessValues(for: result)
+        let processNotes = decision.processNotes
         try expectEqual(processNotes.count, 6, "Matching-process notes must keep top-route reasons plus every gap and blocker detail.")
         try expectEqual(processNotes.last, "Blocker detail 1", "Matching-process notes must retain the final source row.")
 

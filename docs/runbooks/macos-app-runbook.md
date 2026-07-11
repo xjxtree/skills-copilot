@@ -51,10 +51,11 @@ these members in this exact order:
 
 `verify:list-completeness` checks the schema-v1 formal-list inventory, owning
 source paths and Swift type/member anchors, unique reachable full-access
-accessibility controls, and new direct or alias-defined `prefix()`
-`ForEach`/`List` presentations. Its DenseDisclosureList and
-ExpandableSummaryList exceptions validate the canonical component's remainder
-path and expansion control. It is a static declaration and control-boundary
+accessibility controls, paged `control_anchor` bindings, and new direct or
+lexically alias-defined `prefix()` collections passed to `ForEach`, `List`,
+`DenseDisclosureList`, or `ExpandableSummaryList`. Its canonical component
+exceptions validate the rendered remainder and the identified Button's own
+expansion action. It is a static declaration and control-boundary
 check. Native model and UI tests remain responsible for proving loading,
 continuation, expansion, routing, cancellation, and focus behavior.
 

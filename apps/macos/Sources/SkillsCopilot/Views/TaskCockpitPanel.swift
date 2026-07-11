@@ -232,8 +232,8 @@ private struct TaskPreflightHistoryRow: View {
     let isSelected: Bool
     let onSelect: () -> Void
 
-    private var model: TaskCockpitDecisionModel {
-        TaskCockpitDecisionModel(result: record.result)
+    private var model: TaskCockpitDecisionPresentationModel {
+        TaskCockpitDecisionPresentationModel(result: record.result)
     }
 
     var body: some View {
@@ -1005,8 +1005,8 @@ private struct TaskCockpitResultView: View {
     let isBuilding: Bool
     @State private var diagnosticsExpanded = false
 
-    private var model: TaskCockpitDecisionModel {
-        TaskCockpitDecisionModel(result: result)
+    private var model: TaskCockpitDecisionPresentationModel {
+        TaskCockpitDecisionPresentationModel(result: result)
     }
 
     var body: some View {
@@ -1094,7 +1094,7 @@ private enum TaskCockpitVerdict {
     }
 }
 
-private struct TaskCockpitDecisionModel {
+private struct TaskCockpitDecisionPresentationModel {
     let result: TaskCockpitResult
 
     var verdict: TaskCockpitVerdict {
@@ -1193,43 +1193,12 @@ private struct TaskCockpitDecisionModel {
         result.recoveryDiagnosticReason != nil && !result.isUnavailable
     }
 
-    var reasons: [String] {
-        var values: [String] = []
-        values.append(result.summary.summaryText)
-        if let topRoute {
-            values.append(topRoute.summary)
-            values.append(contentsOf: topRoute.reasons)
-        }
-        if let topSkill {
-            values.append(topSkill.summary)
-            values.append(contentsOf: topSkill.reasons)
-        }
-        values.append(contentsOf: result.readinessSignals.map(\.detail))
-        values.append(contentsOf: result.agentCandidates.map(\.summary))
-        values.append(contentsOf: result.agentCandidates.flatMap(\.reasons))
-        return Self.uniqueMeaningful(values)
-    }
-
-    var attentionRows: [TaskCockpitContextRow] {
-        userBlockerRows + reviewRiskRows + result.gapRows
-    }
-
     var keyReasons: [String] {
-        var values = attentionRows.flatMap { row -> [String] in
-            [
-                Self.displayText(row.title),
-                Self.displayText(row.detail)
-            ].compactMap(\.self)
-        }
-        values.append(contentsOf: reasons)
-        return Self.uniqueMeaningful(values)
+        TaskCockpitDecisionModel(result: result).keyReasons
     }
 
     var candidateAlternatives: [String] {
-        guard uniqueCandidateRows.count > 1 else { return [] }
-        return Array(uniqueCandidateRows.enumerated()).map { index, row in
-            candidateAlternativeLine(index: index, row: row)
-        }
+        TaskCockpitDecisionModel(result: result).candidateAlternatives
     }
 
     var nextStep: String {
@@ -1307,17 +1276,6 @@ private struct TaskCockpitDecisionModel {
         return unique
     }
 
-    private func candidateAlternativeLine(index: Int, row: TaskCockpitCandidateRow) -> String {
-        let agent = row.agent.map(DisplayText.agent)
-        let name = row.skill?.name ?? row.title
-        let score = row.routingScore ?? row.readinessScore ?? row.score
-        let scoreText = score.map { " · \(UIStrings.taskCockpitRoutingShort) \($0)" } ?? ""
-        if let agent, !agent.isEmpty {
-            return "\(index + 1). \(agent) · \(name)\(scoreText)"
-        }
-        return "\(index + 1). \(name)\(scoreText)"
-    }
-
     private var userBlockerRows: [TaskCockpitContextRow] {
         result.blockerRows.filter { row in
             !Self.isInternalBoundary(row)
@@ -1337,54 +1295,12 @@ private struct TaskCockpitDecisionModel {
         return score < 70
     }
 
-    private static func uniqueMeaningful(_ values: [String]) -> [String] {
-        var seen = Set<String>()
-        var result: [String] = []
-        for value in values {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let display = displayText(trimmed) else { continue }
-            guard seen.insert(display.lowercased()).inserted else { continue }
-            result.append(display)
-        }
-        return result
-    }
-
-    fileprivate static func displayText(_ value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isInternalBoundary(trimmed), !looksLikeRawStructuredPayload(trimmed) else { return nil }
-
-        switch normalizedSignalToken(trimmed) {
-        case "permissions.exec-needs-human":
-            return UIStrings.taskCockpitReasonExecNeedsHuman
-        case "permissions.network-declared":
-            return UIStrings.taskCockpitReasonNetworkDeclared
-        case "duplicate-name", "cross-agent-analysis":
-            return nil
-        default:
-            return UIStrings.localizedServiceMessage(trimmed)
-        }
-    }
-
-    private static func looksLikeRawStructuredPayload(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasPrefix("{")
-            || trimmed.hasPrefix("[")
-            || trimmed.hasPrefix("```")
-            || trimmed.contains("\"agent_candidates\"")
-            || trimmed.contains("\"skill_candidates\"")
-            || trimmed.contains("\"route_candidates\"")
-    }
-
     private static func isReviewOnlyRisk(_ row: TaskCockpitContextRow) -> Bool {
         !signalTokens(for: row).isDisjoint(with: reviewOnlyRiskTokens)
     }
 
     private static func isInternalBoundary(_ row: TaskCockpitContextRow) -> Bool {
         !signalTokens(for: row).isDisjoint(with: internalBoundaryTokens)
-    }
-
-    fileprivate static func isInternalBoundary(_ value: String) -> Bool {
-        internalBoundaryTokens.contains(normalizedSignalToken(value))
     }
 
     private static func signalTokens(for row: TaskCockpitContextRow) -> Set<String> {
@@ -1480,7 +1396,7 @@ private struct TaskCockpitScorePill: View {
 }
 
 private struct TaskCockpitDecisionSummaryCard: View {
-    let model: TaskCockpitDecisionModel
+    let model: TaskCockpitDecisionPresentationModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1801,8 +1717,7 @@ private struct TaskCockpitMatchingProcessView: View {
     }
 
     private var processNotes: [String] {
-        TaskCockpitSummaryTextRow.matchingProcessValues(for: result)
-            .compactMap(TaskCockpitDecisionModel.displayText)
+        TaskCockpitDecisionModel(result: result).processNotes
     }
 
     private var processNoteRows: [TaskCockpitSummaryTextRow] {

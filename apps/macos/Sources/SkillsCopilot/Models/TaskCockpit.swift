@@ -32,6 +32,219 @@ struct TaskCockpitSummaryTextRow: Identifiable, Hashable {
     }
 }
 
+struct TaskCockpitDecisionModel {
+    let result: TaskCockpitResult
+
+    var keyReasons: [String] {
+        var values = attentionRows.flatMap { row -> [String] in
+            [
+                Self.displayText(row.title),
+                Self.displayText(row.detail)
+            ].compactMap(\.self)
+        }
+        values.append(contentsOf: reasons)
+        return Self.uniqueMeaningful(values)
+    }
+
+    var candidateAlternatives: [String] {
+        guard uniqueCandidateRows.count > 1 else { return [] }
+        return Array(uniqueCandidateRows.enumerated()).map { index, row in
+            candidateAlternativeLine(index: index, row: row)
+        }
+    }
+
+    var processNotes: [String] {
+        TaskCockpitSummaryTextRow.matchingProcessValues(for: result)
+            .compactMap(Self.displayText)
+    }
+
+    static func displayText(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !isInternalBoundary(trimmed),
+              !looksLikeRawStructuredPayload(trimmed)
+        else { return nil }
+
+        switch normalizedSignalToken(trimmed) {
+        case "permissions.exec-needs-human":
+            return UIStrings.taskCockpitReasonExecNeedsHuman
+        case "permissions.network-declared":
+            return UIStrings.taskCockpitReasonNetworkDeclared
+        case "duplicate-name", "cross-agent-analysis":
+            return nil
+        default:
+            return UIStrings.localizedServiceMessage(trimmed)
+        }
+    }
+
+    private var reasons: [String] {
+        var values: [String] = []
+        values.append(result.summary.summaryText)
+        if let topRoute = result.routeCandidates.first {
+            values.append(topRoute.summary)
+            values.append(contentsOf: topRoute.reasons)
+        }
+        if let topSkill = result.skillCandidates.first {
+            values.append(topSkill.summary)
+            values.append(contentsOf: topSkill.reasons)
+        }
+        values.append(contentsOf: result.readinessSignals.map(\.detail))
+        values.append(contentsOf: result.agentCandidates.map(\.summary))
+        values.append(contentsOf: result.agentCandidates.flatMap(\.reasons))
+        return Self.uniqueMeaningful(values)
+    }
+
+    private var attentionRows: [TaskCockpitContextRow] {
+        userBlockerRows + reviewRiskRows + result.gapRows
+    }
+
+    private var userBlockerRows: [TaskCockpitContextRow] {
+        result.blockerRows.filter { row in
+            !Self.isInternalBoundary(row) && !Self.isReviewOnlyRisk(row)
+        }
+    }
+
+    private var reviewRiskRows: [TaskCockpitContextRow] {
+        result.blockerRows.filter { row in
+            !Self.isInternalBoundary(row) && Self.isReviewOnlyRisk(row)
+        }
+    }
+
+    private var uniqueCandidateRows: [TaskCockpitCandidateRow] {
+        let rows: [TaskCockpitCandidateRow]
+        if !result.skillCandidates.isEmpty {
+            rows = result.skillCandidates
+        } else if !result.routeCandidates.isEmpty {
+            rows = result.routeCandidates
+        } else {
+            rows = result.agentCandidates
+        }
+        var seen = Set<String>()
+        return rows.filter { row in
+            let name = row.skill?.name ?? row.title
+            return seen.insert("\(row.agent ?? ""):\(name)".lowercased()).inserted
+        }
+    }
+
+    private func candidateAlternativeLine(index: Int, row: TaskCockpitCandidateRow) -> String {
+        let agent = row.agent.map(DisplayText.agent)
+        let name = row.skill?.name ?? row.title
+        let score = row.routingScore ?? row.readinessScore ?? row.score
+        let scoreText = score.map { " · \(UIStrings.taskCockpitRoutingShort) \($0)" } ?? ""
+        if let agent, !agent.isEmpty {
+            return "\(index + 1). \(agent) · \(name)\(scoreText)"
+        }
+        return "\(index + 1). \(name)\(scoreText)"
+    }
+
+    private static func uniqueMeaningful(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            guard let display = displayText(value),
+                  seen.insert(display.lowercased()).inserted
+            else { return nil }
+            return display
+        }
+    }
+
+    private static func looksLikeRawStructuredPayload(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("{")
+            || trimmed.hasPrefix("[")
+            || trimmed.hasPrefix("```")
+            || trimmed.contains("\"agent_candidates\"")
+            || trimmed.contains("\"skill_candidates\"")
+            || trimmed.contains("\"route_candidates\"")
+    }
+
+    private static func isReviewOnlyRisk(_ row: TaskCockpitContextRow) -> Bool {
+        !signalTokens(for: row).isDisjoint(with: reviewOnlyRiskTokens)
+    }
+
+    private static func isInternalBoundary(_ row: TaskCockpitContextRow) -> Bool {
+        !signalTokens(for: row).isDisjoint(with: internalBoundaryTokens)
+    }
+
+    private static func isInternalBoundary(_ value: String) -> Bool {
+        internalBoundaryTokens.contains(normalizedSignalToken(value))
+    }
+
+    private static func signalTokens(for row: TaskCockpitContextRow) -> Set<String> {
+        var tokens = Set<String>()
+        for value in [row.id, row.status, row.severity, row.source].compactMap(\.self) {
+            tokens.formUnion(signalTokenVariants(for: value))
+        }
+        for value in row.evidenceRefs + row.safetyFlags {
+            tokens.formUnion(signalTokenVariants(for: value))
+        }
+        return tokens
+    }
+
+    private static func signalTokenVariants(for value: String) -> Set<String> {
+        var tokens = Set<String>()
+        tokens.insert(normalizedSignalToken(value))
+        for separator in [":", "|", "#"] {
+            let parts = value.split(separator: Character(separator), omittingEmptySubsequences: true)
+            if parts.count > 1 {
+                tokens.insert(normalizedSignalToken(String(parts.last ?? "")))
+            }
+        }
+        return tokens.filter { !$0.isEmpty }
+    }
+
+    private static func normalizedSignalToken(_ value: String) -> String {
+        var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for separator in ["_", " ", "/", ":", "`"] {
+            normalized = normalized.replacingOccurrences(of: separator, with: "-")
+        }
+        while normalized.contains("--") {
+            normalized = normalized.replacingOccurrences(of: "--", with: "-")
+        }
+        return normalized.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+    }
+
+    private static let reviewOnlyRiskTokens: Set<String> = [
+        "permissions.exec-needs-human",
+        "permissions.network-declared",
+        "exec-needs-human",
+        "network-declared",
+        "requires-confirmation",
+        "network-access"
+    ]
+
+    private static let internalBoundaryTokens: Set<String> = [
+        "no-apply-path",
+        "read-only",
+        "readonly",
+        "read-only-preflight",
+        "preview-only",
+        "copy-only",
+        "provider-not-sent",
+        "task-cockpit-combined",
+        "cockpit-only",
+        "evaluated-top",
+        "matched-task-term",
+        "description-evidence",
+        "top-route-leads",
+        "one-visible-route-candidate",
+        "no-candidate-level-blockers",
+        "no-likely-wrong-pick-risk",
+        "skipped-by-filters",
+        "provider-observability-skipped",
+        "write-action",
+        "script-execution",
+        "snapshot",
+        "telemetry",
+        "cross-agent-analysis",
+        "duplicate-name",
+        "duplicate_name",
+        "cross-agent-duplicate",
+        "source-overlap",
+        "same-name",
+        "overlap-signals"
+    ]
+}
+
 struct TaskCockpitOperationState: Hashable {
     enum Phase: String, Hashable {
         case idle

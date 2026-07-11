@@ -60,13 +60,17 @@ This file captures UI and evidence standards.
   and full-access accessibility control when the policy is paged or summarized.
   Paged and summarized entries also declare the exact live member scope that
   contains both the source anchor and control; comments, strings, unrelated
-  members, and duplicate control IDs do not satisfy the verifier.
+  members, and duplicate control IDs do not satisfy the verifier. Every paged
+  entry also declares the exact target `control_anchor`; its status and
+  full-access action must bind the same anchored footer/helper invocation.
 - Run `pnpm test:list-completeness` while changing the verifier and `pnpm
   verify:list-completeness` for every list-surface change. New raw
-  `ForEach(...prefix(...))` and `List(...prefix(...))` presentations, including
-  prefix-defined aliases and computed properties, are rejected unless the
-  complete collection remains reachable through a canonical, verified
-  disclosure component.
+  prefix-defined collections passed to `ForEach`, `List`,
+  `DenseDisclosureList`, or `ExpandableSummaryList`, including multiline,
+  closure-initialized, wrapper, helper, and computed-property aliases, are
+  rejected unless the complete collection remains reachable through a
+  canonical, verified disclosure component. Taint propagation stays within the
+  owning Swift type/member/function scope.
 - The manifest verifier proves declaration, source-path, and reachable-control
   wiring. Native model/UI tests separately prove pagination state, Load More,
   Load All, cancellation, Show All, canonical-list routing, and accessibility
