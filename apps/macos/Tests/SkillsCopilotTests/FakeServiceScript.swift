@@ -4,6 +4,7 @@ import Foundation
 
 final class FakeServiceScript: ServiceProcessRunning {
     private static let processGate = FakeServiceProcessGate()
+    private static let delayedDetailProcessGate = FakeServiceProcessGate()
 
     private let directory: URL
     let executableURL: URL
@@ -13,6 +14,7 @@ final class FakeServiceScript: ServiceProcessRunning {
     private let delayedProviderSaveAReleaseURL: URL
     private let delayedProviderSaveBReleaseURL: URL
     private let responseReleaseURL: URL
+    private let delayedDetailCompletionURL: URL
     private let scenarioLock = NSLock()
     private var currentScenario = "normal"
 
@@ -25,6 +27,7 @@ final class FakeServiceScript: ServiceProcessRunning {
         delayedProviderSaveAReleaseURL = directory.appendingPathComponent("release-provider-save-a")
         delayedProviderSaveBReleaseURL = directory.appendingPathComponent("release-provider-save-b")
         responseReleaseURL = directory.appendingPathComponent("release-response")
+        delayedDetailCompletionURL = directory.appendingPathComponent("delayed-detail-complete")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: stateURL.path, contents: nil)
         try script.write(to: executableURL, atomically: true, encoding: .utf8)
@@ -67,13 +70,20 @@ final class FakeServiceScript: ServiceProcessRunning {
         FileManager.default.createFile(atPath: responseReleaseURL.path, contents: nil)
     }
 
+    func delayedDetailResponseCompleted() -> Bool {
+        FileManager.default.fileExists(atPath: delayedDetailCompletionURL.path)
+    }
+
     func serviceClient() -> ServiceClient {
         ServiceClient(processRunner: self, serviceURL: executableURL)
     }
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
         callRecorder.record(input, methodStateURL: stateURL)
-        return try await Self.processGate.run(
+        let processGate = scenario == "sessions-delayed-detail"
+            ? Self.delayedDetailProcessGate
+            : Self.processGate
+        return try await processGate.run(
             executableURL: self.executableURL,
             input: input,
             timeoutNanoseconds: timeoutNanoseconds,
@@ -83,7 +93,8 @@ final class FakeServiceScript: ServiceProcessRunning {
                 "SKILLS_COPILOT_FAKE_CONFIG_RELEASE": delayedConfigSaveReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE": delayedProviderSaveAReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE": delayedProviderSaveBReleaseURL.path,
-                "SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE": responseReleaseURL.path
+                "SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE": responseReleaseURL.path,
+                "SKILLS_COPILOT_FAKE_DELAYED_DETAIL_COMPLETED": delayedDetailCompletionURL.path
             ]
         )
     }
@@ -297,11 +308,30 @@ final class FakeServiceScript: ServiceProcessRunning {
           *\\"session.previewLocalSessions\\"*)
             case "$input" in
               *\\"session_id\\":\\"session-alpha\\"*)
+                session_call_count=$(grep -c '"method":"session.previewLocalSessions"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
                 if [ "$scenario" = "sessions-detail-failure" ]; then
                   respond '{"id":"test","ok":false,"result":null,"error":{"code":"detail_failed","message":"detail failed"}}'
                 fi
+                if [ "$session_call_count" -le 2 ]; then
+                  if [ "$scenario" = "sessions-detail-empty" ]; then
+                    respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":0,"total_candidate_count":2,"total_matched_count":0,"offset":0,"limit":1,"has_more":false,"session_rows":[]}}'
+                  fi
+                  if [ "$scenario" = "sessions-detail-wrong-id" ]; then
+                    respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-develop","title":"Wrong detail","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/develop.jsonl","excerpt":"Wrong stable id.","user_message_count":1,"total_message_count":2,"tool_call_count":0,"skill_call_count":0,"content_hash":"wrong","content_included":true,"content_items":[{"id":"wrong-item","kind":"agent_reply","title":"Agent","text":"WRONG DETAIL","char_count":12,"evidence_refs":[]}] }]}}'
+                  fi
+                  if [ "$scenario" = "sessions-detail-summary-only" ]; then
+                    respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-alpha","title":"Summary only","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/alpha.jsonl","excerpt":"No detail content.","user_message_count":1,"total_message_count":2,"tool_call_count":0,"skill_call_count":0,"content_hash":"summary-only","content_included":false,"content_items":[]}]}}'
+                  fi
+                  if [ "$scenario" = "sessions-detail-unavailable" ]; then
+                    respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: session.previewLocalSessions"}}'
+                  fi
+                fi
                 if [ "$scenario" = "sessions-delayed-detail" ]; then
                   wait_for_release "$SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE" || service_error
+                  : > "$SKILLS_COPILOT_FAKE_DELAYED_DETAIL_COMPLETED"
+                fi
+                if [ "$scenario" = "sessions-new-detail" ]; then
+                  respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-alpha","title":"Analyze repository CI","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/alpha.jsonl","excerpt":"Audit the current repository CI pipeline.","user_message_count":1,"total_message_count":2,"tool_call_count":1,"skill_call_count":0,"content_hash":"fresh-alpha","content_included":true,"content_items":[{"id":"fresh-alpha-item","kind":"agent_reply","title":"Agent","text":"FRESH ALPHA DETAIL","char_count":18,"evidence_refs":[]}]}]}}'
                 fi
                 respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":1,"has_more":false,"session_rows":[{"id":"session-alpha","title":"Analyze repository CI","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/alpha.jsonl","excerpt":"Audit the current repository CI pipeline.","user_message_count":1,"total_message_count":2,"tool_call_count":1,"skill_call_count":0,"content_hash":"alpha","content_included":true,"content_items":[{"id":"alpha-item","kind":"agent_reply","title":"Agent","text":"Bounded alpha detail","char_count":20,"evidence_refs":[]}]}]}}'
                 ;;
@@ -334,7 +364,7 @@ final class FakeServiceScript: ServiceProcessRunning {
             if [ "$scenario" = "sessions-delayed-summary" ]; then
               wait_for_release "$SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE" || service_error
             fi
-            if [ "$scenario" = "sessions" ] || [ "$scenario" = "sessions-detail-failure" ] || [ "$scenario" = "sessions-delayed-summary" ] || [ "$scenario" = "sessions-delayed-detail" ]; then
+            if [ "$scenario" = "sessions" ] || [ "$scenario" = "sessions-detail-failure" ] || [ "$scenario" = "sessions-detail-empty" ] || [ "$scenario" = "sessions-detail-wrong-id" ] || [ "$scenario" = "sessions-detail-summary-only" ] || [ "$scenario" = "sessions-detail-unavailable" ] || [ "$scenario" = "sessions-new-detail" ] || [ "$scenario" = "sessions-delayed-summary" ] || [ "$scenario" = "sessions-delayed-detail" ]; then
               case "$input" in
                 *\\"search\\":\\"develop\\"*)
                   respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":2,"total_matched_count":1,"offset":0,"limit":50,"has_more":false,"session_rows":[{"id":"session-develop","title":"Switch to develop branch","source_kind":"authorized-local-session","agent":"claude-code","scope":"project","project_root":"/tmp/project","redacted_path":"$HOME/.codex/sessions/develop.jsonl","excerpt":"Switch branch to develop and inspect status.","user_message_count":1,"total_message_count":2,"tool_call_count":1,"skill_call_count":0,"content_hash":"develop"}]}}'

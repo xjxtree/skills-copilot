@@ -491,9 +491,12 @@ struct SkillStoreTests {
         }
 
         store.selectLocalSession(summary)
-        try await waitUntil("Selecting a summary should request exactly one detail.") {
-            countMethodCalls("session.previewLocalSessions", in: fake.calls()) == 2
-                && store.selectedLocalSessionDetailState != nil
+        try await waitUntil("Selecting a summary should load exactly one bounded detail.") {
+            guard countMethodCalls("session.previewLocalSessions", in: fake.calls()) == 2,
+                  case .loaded(let detail) = store.selectedLocalSessionDetailState else { return false }
+            return detail.id == "session-alpha"
+                && detail.contentIncluded
+                && detail.contentItems.map(\.text) == ["Bounded alpha detail"]
         }
         let callsAfterDetail = fake.calls()
         try expectContains(callsAfterDetail, #""include_content_items":true"#, "Detail request should explicitly include content items.")
@@ -503,6 +506,8 @@ struct SkillStoreTests {
         store.selectLocalSession(summary)
         try? await Task.sleep(nanoseconds: 80_000_000)
         try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), 2, "Re-selecting a cached detail should not issue another RPC.")
+
+        try await staleDetailGenerationCannotMutatePublishedState()
     }
 
     private func sessionCriteriaChangesAndGlobalSearchUseNoRPC() async throws {
@@ -561,6 +566,103 @@ struct SkillStoreTests {
         }
         try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), summaryIDs, "Detail failure should not mutate the summary list.")
         try expectNil(store.errorMessage, "Detail failure should not publish to the global error banner.")
+
+        for scenario in [
+            "sessions-detail-empty",
+            "sessions-detail-wrong-id",
+            "sessions-detail-unavailable",
+            "sessions-detail-summary-only"
+        ] {
+            try await nonconformingDetailResponseFailsLocallyAndRetries(scenario: scenario)
+        }
+    }
+
+    private func nonconformingDetailResponseFailsLocallyAndRetries(scenario: String) async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: scenario)
+        let store = SkillStore(service: fake.serviceClient())
+        store.sidebarContentMode = .sessions
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        guard let summary = store.filteredLocalSessionRows.first(where: { $0.id == "session-alpha" }) else {
+            throw NativeModelTestFailure(description: "Malformed-response fixture should contain session-alpha.")
+        }
+        let summaryRows = store.localSessionPreviewResult.sessionRows
+        let summaryCounts = (
+            store.scopedLocalSessionUserMessageCount,
+            store.scopedLocalSessionTotalMessageCount,
+            store.scopedLocalSessionToolCallCount,
+            store.scopedLocalSessionSkillCallCount
+        )
+
+        store.selectLocalSession(summary)
+        try await waitUntil("\(scenario) should become a retryable detail-local failure.") {
+            if case .failed = store.selectedLocalSessionDetailState { return true }
+            return false
+        }
+        try expectEqual(store.selectedLocalSessionID, summary.id, "\(scenario) should preserve selection.")
+        try expectEqual(store.localSessionPreviewResult.sessionRows, summaryRows, "\(scenario) should preserve summary rows.")
+        try expectEqual(store.scopedLocalSessionUserMessageCount, summaryCounts.0, "\(scenario) should preserve user counts.")
+        try expectEqual(store.scopedLocalSessionTotalMessageCount, summaryCounts.1, "\(scenario) should preserve message counts.")
+        try expectEqual(store.scopedLocalSessionToolCallCount, summaryCounts.2, "\(scenario) should preserve tool counts.")
+        try expectEqual(store.scopedLocalSessionSkillCallCount, summaryCounts.3, "\(scenario) should preserve skill counts.")
+        try expectNil(store.errorMessage, "\(scenario) should not publish a global error.")
+
+        store.selectLocalSession(summary)
+        try await waitUntil("\(scenario) should issue a new RPC and load bounded detail on retry.") {
+            guard countMethodCalls("session.previewLocalSessions", in: fake.calls()) == 3,
+                  case .loaded(let detail) = store.selectedLocalSessionDetailState else { return false }
+            return detail.id == summary.id
+                && detail.contentIncluded
+                && detail.contentItems.map(\.text) == ["Bounded alpha detail"]
+        }
+    }
+
+    private func staleDetailGenerationCannotMutatePublishedState() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "sessions-delayed-detail")
+        let store = SkillStore(service: fake.serviceClient())
+        store.sidebarContentMode = .sessions
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        guard let summary = store.filteredLocalSessionRows.first(where: { $0.id == "session-alpha" }) else {
+            throw NativeModelTestFailure(description: "Delayed-detail fixture should contain session-alpha.")
+        }
+        let summaryResult = store.localSessionPreviewResult
+
+        store.selectLocalSession(summary)
+        try await waitUntil("The old detail generation should be in flight.") {
+            countMethodCalls("session.previewLocalSessions", in: fake.calls()) == 2
+                && store.selectedLocalSessionDetailState != nil
+        }
+
+        fake.setScenario("sessions-new-detail")
+        store.agentFilter = .codex
+        store.agentFilter = .claudeCode
+        guard let restoredSummary = store.filteredLocalSessionRows.first(where: { $0.id == summary.id }) else {
+            throw NativeModelTestFailure(description: "Returning to source A should restore its cached summary.")
+        }
+        store.selectLocalSession(restoredSummary)
+        try await waitUntil("The new detail generation should win before the old response is released.") {
+            guard countMethodCalls("session.previewLocalSessions", in: fake.calls()) == 3,
+                  case .loaded(let detail) = store.selectedLocalSessionDetailState else { return false }
+            return detail.contentItems.map(\.text) == ["FRESH ALPHA DETAIL"]
+        }
+        try expectEqual(store.localSessionPreviewResult, summaryResult, "Accepted raw detail should remain solely in the bounded detail cache.")
+
+        fake.releaseBlockedResponse()
+        try await waitUntil("The old detail response should complete after release.") {
+            fake.delayedDetailResponseCompleted()
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        guard case .loaded(let acceptedDetail) = store.selectedLocalSessionDetailState else {
+            throw NativeModelTestFailure(description: "The current detail generation should remain loaded.")
+        }
+        try expectEqual(acceptedDetail.contentItems.map(\.text), ["FRESH ALPHA DETAIL"], "Late old detail must not replace the accepted cache entry.")
+        try expectEqual(store.localSessionPreviewResult, summaryResult, "Late old detail must not mutate published summary state.")
+        try expectFalse(store.localSessionPreviewResult.sessionRows.contains { row in
+            row.contentItems.contains { $0.text == "Bounded alpha detail" }
+        }, "Late old raw content must not be retained in the published preview.")
     }
 
     private func localSessionScopeChangeRequestsServerPage() async throws {

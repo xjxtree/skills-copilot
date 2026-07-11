@@ -159,7 +159,7 @@ struct LocalSessionCacheTests {
         for index in 0...LocalSessionCache.maximumDetailEntries {
             let key = LocalSessionDetailKey(source: source, sessionID: "detail-\(index)")
             let generation = try required(cache.beginDetailLoad(for: key), "Detail load should begin.")
-            cache.publishDetail(row(id: key.sessionID), key: key, generation: generation)
+            _ = cache.publishDetail(row(id: key.sessionID), key: key, generation: generation)
         }
         try expectEqual(cache.detailStates.count, LocalSessionCache.maximumDetailEntries, "Detail cache should enforce its fixed bound.")
         try expectNil(cache.detailStates[LocalSessionDetailKey(source: source, sessionID: "detail-0")], "Least-recently-used detail should be evicted.")
@@ -195,12 +195,23 @@ struct LocalSessionCacheTests {
         cache.activateSource(other)
         cache.activateSource(source)
         let currentDetailGeneration = try required(cache.beginDetailLoad(for: detailKey), "Current detail load should begin.")
-        cache.publishDetail(row(id: "old-detail"), key: detailKey, generation: oldDetailGeneration)
-        cache.publishDetail(row(id: "detail"), key: detailKey, generation: currentDetailGeneration)
+        let oldAccepted = cache.publishDetail(
+            row(id: "detail", title: "Old detail generation"),
+            key: detailKey,
+            generation: oldDetailGeneration
+        )
+        let currentAccepted = cache.publishDetail(
+            row(id: "detail", title: "Current detail generation"),
+            key: detailKey,
+            generation: currentDetailGeneration
+        )
         guard case .loaded(let detail) = cache.detailStates[detailKey] else {
             throw NativeModelTestFailure(description: "Current detail generation should load.")
         }
         try expectEqual(detail.id, "detail", "Late detail generations should be ignored.")
+        try expectEqual(detail.title, "Current detail generation", "Generation, rather than row-id validation, should reject the late detail.")
+        try expectFalse(oldAccepted, "A stale detail generation should report rejection.")
+        try expectFalse(!currentAccepted, "The active detail generation should report acceptance.")
     }
 
     private func globalSearchIndexesSummariesOnly() throws {

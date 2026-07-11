@@ -129,13 +129,14 @@ final class LocalSessionCache {
         _ row: LocalSessionPreviewRow,
         key: LocalSessionDetailKey,
         generation: UInt64
-    ) {
+    ) -> Bool {
         guard row.id == key.sessionID,
               detailGenerations[key] == generation,
-              case .loading(generation) = detailStates[key] else { return }
+              case .loading(generation) = detailStates[key] else { return false }
         detailStates[key] = .loaded(row)
         touchDetail(key)
         trimDetails()
+        return true
     }
 
     func failDetail(key: LocalSessionDetailKey, generation: UInt64, displayError: String) {

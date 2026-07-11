@@ -2689,11 +2689,25 @@ final class SkillStore: ObservableObject {
                 sort: .recent,
                 direction: .descending
             )
-            guard activeLocalSessionSnapshotKey == source,
-                  let detail = result.sessionRows.first(where: { $0.id == sessionID }) else { return }
-            localSessionCache.publishDetail(detail, key: key, generation: generation)
+            guard activeLocalSessionSnapshotKey == source else { return }
+            guard let detail = result.sessionRows.first(where: { $0.id == sessionID }),
+                  detail.contentIncluded else {
+                localSessionCache.failDetail(
+                    key: key,
+                    generation: generation,
+                    displayError: "Session detail was unavailable. Retry to load it again."
+                )
+                if selectedLocalSessionID == sessionID {
+                    synchronizeSelectedLocalSessionDetailState()
+                }
+                return
+            }
+            guard localSessionCache.publishDetail(
+                detail,
+                key: key,
+                generation: generation
+            ) else { return }
             if selectedLocalSessionID == sessionID {
-                localSessionPreviewResult = localSessionPreviewResult.ensuringSession(detail)
                 synchronizeSelectedLocalSessionDetailState()
             }
         } catch {
