@@ -184,22 +184,31 @@ pages do not move when the clock advances. Explicit start/end bounds remain
 exactly filter-bound.
 
 Activity reads use a bounded, retrying before/after snapshot of the complete raw
-bytes for both app-local metadata sources. A page is returned only when the two
-sources were jointly stable during one read window. Prompt-run JSON and every
-non-empty provider-call JSONL row must parse completely; unreadable, oversized,
-truncated, or malformed sources fail closed with
+bytes for both app-local metadata sources. On Unix, each source is opened with
+no-follow and nonblocking descriptor flags, then validated as a regular file by
+the opened handle. Handle length and an 8 MiB+1 bounded read enforce the 8 MiB
+per-source limit even if a file grows or its path is replaced during the read.
+Symlinks and nonregular sources fail closed without blocking. A page is returned
+only when the two sources were jointly stable during one read window. Prompt-run
+JSON and every non-empty provider-call JSONL row must parse completely;
+unreadable, oversized, truncated, or malformed sources fail closed with
 `provider_activity_source_unreadable` or `provider_activity_source_invalid`
 without returning raw error text. The opaque `source_revision` hashes the
 presence and complete bounded raw bytes of both sources, including bytes that do
 not become display rows. Any later source-byte change returns `source_changed`.
 
 Row IDs derive from the prompt-run ID or provider-call confirmation ID, with a
-source-prefixed canonical metadata digest fallback for older records. They do
-not depend on filter position or array index, and remain distinct across the two
-source kinds. Only redacted titles, subtitles, status, stable IDs, and evidence
-references cross the service boundary. The method does not read credentials,
-send provider traffic, persist raw prompts/responses/traces, or expose write
-controls.
+source-prefixed `fallback-v1` digest for older records. Fallback digests use an
+explicit canonical field set with length-prefixed labels and values rather than
+typed-record serialization. They do not depend on filter position or array
+index, and remain distinct across the two source kinds. IDs are validated for
+global uniqueness across both complete sources before filtering, totals, or
+paging. Duplicate prompt IDs, provider confirmation IDs, or fallback identities
+fail closed as `provider_activity_source_invalid`; duplicate rows are never
+silently removed by the client. Only redacted titles, subtitles, status, stable
+IDs, and evidence references cross the service boundary. The method does not
+read credentials, send provider traffic, persist raw prompts/responses/traces,
+or expose write controls.
 
 ## Full-Access Local Lists
 

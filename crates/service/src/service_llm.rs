@@ -506,15 +506,35 @@ impl ServiceHost {
         let prompt_runs = parse_provider_activity_prompt_runs(&raw_snapshot.prompt_runs)?;
         let call_metadata = parse_provider_activity_provider_calls(&raw_snapshot.provider_calls)?;
 
+        let prompt_ids = prompt_runs
+            .iter()
+            .map(provider_activity_prompt_run_id)
+            .collect::<Result<Vec<_>, _>>()?;
+        let provider_call_ids = call_metadata
+            .iter()
+            .map(provider_activity_provider_call_id)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut unique_ids = BTreeSet::new();
+        if prompt_ids
+            .iter()
+            .chain(provider_call_ids.iter())
+            .any(|id| !unique_ids.insert(id.as_str()))
+        {
+            return Err(ServiceError::ProviderActivitySourceInvalid(
+                "activity-identifiers",
+            ));
+        }
+
         let mut rows = prompt_runs
             .iter()
-            .filter(|run| filters.matches_prompt_run(run))
+            .zip(prompt_ids)
+            .filter(|(run, _)| filters.matches_prompt_run(run))
             .enumerate()
             .map(
-                |(index, run)| -> Result<ProviderActivityRow, ServiceError> {
+                |(index, (run, stable_id))| -> Result<ProviderActivityRow, ServiceError> {
                     Ok(provider_activity_history_row(
                         provider_observability_history_row(run, index, &redaction_roots),
-                        provider_activity_prompt_run_id(run)?,
+                        stable_id,
                     ))
                 },
             )
@@ -522,13 +542,14 @@ impl ServiceHost {
         rows.extend(
             call_metadata
                 .iter()
-                .filter(|metadata| filters.matches_provider_call(metadata))
+                .zip(provider_call_ids)
+                .filter(|(metadata, _)| filters.matches_provider_call(metadata))
                 .enumerate()
                 .map(
-                    |(index, metadata)| -> Result<ProviderActivityRow, ServiceError> {
+                    |(index, (metadata, stable_id))| -> Result<ProviderActivityRow, ServiceError> {
                         Ok(provider_activity_call_row(
                             provider_observability_call_row(metadata, index, &redaction_roots),
-                            provider_activity_provider_call_id(metadata)?,
+                            stable_id,
                         ))
                     },
                 )
@@ -1567,7 +1588,7 @@ fn provider_activity_digest<T: Serialize>(domain: &str, value: &T) -> Result<Str
 }
 
 const PROVIDER_ACTIVITY_SNAPSHOT_READ_ATTEMPTS: usize = 3;
-const PROVIDER_ACTIVITY_MAX_SOURCE_BYTES: usize = 8 * 1_024 * 1_024;
+pub(crate) const PROVIDER_ACTIVITY_MAX_SOURCE_BYTES: usize = 8 * 1_024 * 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderActivitySource {
@@ -1639,29 +1660,75 @@ fn read_consistent_provider_activity_raw_snapshot(
     })
 }
 
-fn read_provider_activity_raw_source(
+pub(crate) fn read_provider_activity_raw_source(
     path: &Path,
     label: &'static str,
 ) -> Result<ProviderActivityRawSource, ServiceError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ProviderActivityRawSource::missing());
-        }
-        Err(_) => return Err(ServiceError::ProviderActivitySourceUnreadable(label)),
+    let mut file = match open_provider_activity_source(path) {
+        Ok(file) => file,
+        Err(_) => return classify_provider_activity_open_failure(path, label),
     };
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > PROVIDER_ACTIVITY_MAX_SOURCE_BYTES as u64
-    {
+    let metadata = file
+        .metadata()
+        .map_err(|_| ServiceError::ProviderActivitySourceUnreadable(label))?;
+    if !metadata.is_file() || metadata.len() > PROVIDER_ACTIVITY_MAX_SOURCE_BYTES as u64 {
         return Err(ServiceError::ProviderActivitySourceInvalid(label));
     }
-    let bytes =
-        fs::read(path).map_err(|_| ServiceError::ProviderActivitySourceUnreadable(label))?;
+    let bytes = read_provider_activity_bounded(&mut file, label)?;
+    Ok(ProviderActivityRawSource::present(bytes))
+}
+
+#[cfg(unix)]
+fn open_provider_activity_source(path: &Path) -> std::io::Result<fs::File> {
+    use rustix::fs::{open, Mode, OFlags};
+
+    let flags =
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    open(path, flags, Mode::empty())
+        .map(fs::File::from)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(not(unix))]
+fn open_provider_activity_source(path: &Path) -> std::io::Result<fs::File> {
+    fs::File::open(path)
+}
+
+fn classify_provider_activity_open_failure(
+    path: &Path,
+    label: &'static str,
+) -> Result<ProviderActivityRawSource, ServiceError> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(ProviderActivityRawSource::missing())
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(ServiceError::ProviderActivitySourceInvalid(label))
+        }
+        _ => Err(ServiceError::ProviderActivitySourceUnreadable(label)),
+    }
+}
+
+pub(crate) fn read_provider_activity_bounded<R: std::io::Read>(
+    reader: &mut R,
+    label: &'static str,
+) -> Result<Vec<u8>, ServiceError> {
+    let mut bytes = vec![0_u8; PROVIDER_ACTIVITY_MAX_SOURCE_BYTES + 1];
+    let mut length = 0;
+    while length < bytes.len() {
+        let count = reader
+            .read(&mut bytes[length..])
+            .map_err(|_| ServiceError::ProviderActivitySourceUnreadable(label))?;
+        if count == 0 {
+            break;
+        }
+        length += count;
+    }
+    bytes.truncate(length);
     if bytes.len() > PROVIDER_ACTIVITY_MAX_SOURCE_BYTES {
         return Err(ServiceError::ProviderActivitySourceInvalid(label));
     }
-    Ok(ProviderActivityRawSource::present(bytes))
+    Ok(bytes)
 }
 
 fn parse_provider_activity_prompt_runs(

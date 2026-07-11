@@ -1,8 +1,9 @@
 use super::dispatch_fixtures::*;
 use super::*;
 use crate::service_llm::{
-    read_consistent_provider_activity_raw_snapshot_with, ProviderActivityRawSource,
-    ProviderActivitySource,
+    read_consistent_provider_activity_raw_snapshot_with, read_provider_activity_bounded,
+    read_provider_activity_raw_source, ProviderActivityRawSource, ProviderActivitySource,
+    PROVIDER_ACTIVITY_MAX_SOURCE_BYTES,
 };
 
 #[test]
@@ -1474,6 +1475,90 @@ fn provider_activity_snapshot_retries_mixed_source_window_or_returns_source_chan
     assert_eq!(error.code(), "source_changed");
 }
 
+#[cfg(unix)]
+#[test]
+fn provider_activity_source_reader_rejects_symlinks_and_nonregular_files() {
+    use std::os::unix::{fs::symlink, net::UnixListener};
+
+    let root = env::temp_dir().join(format!(
+        "ac-pa-shape-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    fs::create_dir_all(&root).expect("create source-shape fixture root");
+    let target = root.join("target.json");
+    fs::write(&target, b"[]").expect("write symlink target");
+    let source = root.join("activity-source");
+    symlink(&target, &source).expect("create activity source symlink");
+
+    let symlink_error = read_provider_activity_raw_source(&source, "prompt-runs")
+        .expect_err("activity source symlinks must be rejected by the opened-handle reader");
+    assert_eq!(symlink_error.code(), "provider_activity_source_invalid");
+
+    fs::remove_file(&source).expect("remove activity source symlink");
+    let listener = UnixListener::bind(&source).expect("create nonregular source socket");
+    let nonregular_error = read_provider_activity_raw_source(&source, "prompt-runs")
+        .expect_err("nonregular activity sources must be rejected without blocking");
+    assert_eq!(nonregular_error.code(), "provider_activity_source_invalid");
+
+    drop(listener);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_activity_source_reader_rejects_files_over_eight_mib() {
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-source-size-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    fs::create_dir_all(&root).expect("create source-size fixture root");
+    let source = root.join("activity-source.json");
+    let file = fs::File::create(&source).expect("create oversized activity source");
+    file.set_len((PROVIDER_ACTIVITY_MAX_SOURCE_BYTES + 1) as u64)
+        .expect("declare oversized activity source length");
+    drop(file);
+
+    let error = read_provider_activity_raw_source(&source, "prompt-runs")
+        .expect_err("activity sources over eight MiB must fail closed");
+    assert_eq!(error.code(), "provider_activity_source_invalid");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_activity_bounded_reader_consumes_at_most_max_plus_one_bytes() {
+    use std::io::{self, Read};
+
+    struct CountingReader {
+        bytes_read: usize,
+        remaining: usize,
+    }
+
+    impl Read for CountingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = buffer.len().min(self.remaining);
+            buffer[..count].fill(b'x');
+            self.bytes_read += count;
+            self.remaining -= count;
+            Ok(count)
+        }
+    }
+
+    let mut reader = CountingReader {
+        bytes_read: 0,
+        remaining: PROVIDER_ACTIVITY_MAX_SOURCE_BYTES * 4,
+    };
+    let error = read_provider_activity_bounded(&mut reader, "prompt-runs")
+        .expect_err("MAX+1 bytes must reject a growing or oversized activity source");
+    assert_eq!(error.code(), "provider_activity_source_invalid");
+    assert_eq!(
+        reader.bytes_read,
+        PROVIDER_ACTIVITY_MAX_SOURCE_BYTES + 1,
+        "the reader must never consume an unbounded source after opening it"
+    );
+}
+
 #[test]
 fn provider_activity_corrupt_sources_fail_closed_without_enumerable_page() {
     for (label, seed) in [
@@ -1746,6 +1831,257 @@ fn provider_activity_ids_are_stable_across_filters_windows_and_front_inserts() {
         after_insert.len(),
         "unified activity IDs must be unique across both sources"
     );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+fn provider_activity_id_fixture_prompt(
+    id: &str,
+    action: &str,
+    task: &str,
+    completed_at: i64,
+) -> LlmPromptRunRecord {
+    LlmPromptRunRecord {
+        id: id.to_string(),
+        preview_id: format!("preview-{task}"),
+        confirmation_id: format!("confirm-{task}"),
+        action: action.to_string(),
+        request_kind: action.to_string(),
+        analysis_kind: None,
+        scope: Some("selected".to_string()),
+        instance_id: Some("fixture-skill".to_string()),
+        instance_ids: vec!["fixture-skill".to_string()],
+        definition_id: Some("fixture-definition".to_string()),
+        agent: Some("codex".to_string()),
+        task: Some(task.to_string()),
+        profile_id: "fixture-openai".to_string(),
+        provider: "openai-compatible".to_string(),
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 10,
+        estimated_input_tokens: 6,
+        estimated_output_tokens: 4,
+        estimated_total_tokens: 10,
+        estimated_cost_usd: 0.01,
+        draft_output: None,
+        draft_requires_user_copy: true,
+        provider_request_sent: true,
+        credential_accessed: true,
+        raw_secret_returned: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        redaction_summary: LlmPromptRunRedactionSummary {
+            status: "redacted-local-only".to_string(),
+            redacted_value_count: 0,
+            redacted_fields: Vec::new(),
+            placeholders: Vec::new(),
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+            raw_secret_returned: false,
+        },
+        created_at: completed_at - 10,
+        completed_at,
+        safety_flags: llm_prompt_run_safety_flags(true, true),
+    }
+}
+
+fn provider_activity_id_fixture_call(
+    confirmation_id: &str,
+    action: &str,
+    timestamp: i64,
+) -> ProviderCallMetadata {
+    ProviderCallMetadata {
+        timestamp,
+        action_type: action.to_string(),
+        profile_id: "fixture-openai".to_string(),
+        provider_type: provider::ProviderType::OpenAiCompatible,
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "succeeded".to_string(),
+        error_code: None,
+        error_message: None,
+        duration_ms: 8,
+        estimated_input_tokens: 5,
+        estimated_output_tokens: 3,
+        estimated_cost_usd: 0.01,
+        confirmation_id: confirmation_id.to_string(),
+        redaction_status: "metadata-only-no-raw-prompt-or-response".to_string(),
+        provider_request_sent: true,
+        credential_accessed: true,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+    }
+}
+
+fn write_provider_activity_id_fixture_calls(app_data_dir: &Path, rows: &[ProviderCallMetadata]) {
+    fs::create_dir_all(app_data_dir.join("llm")).expect("create provider call fixture parent");
+    let content = rows
+        .iter()
+        .map(|row| serde_json::to_string(row).expect("serialize provider call fixture"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        provider_call_metadata_path(app_data_dir),
+        format!("{content}\n"),
+    )
+    .expect("write provider call fixtures");
+}
+
+fn assert_provider_activity_duplicate_error(response: ServiceResponse, forbidden: &str) {
+    assert!(
+        !response.ok,
+        "duplicate activity identities must fail closed"
+    );
+    let error = response.error.expect("duplicate activity identity error");
+    assert_eq!(error.code, "provider_activity_source_invalid");
+    assert!(!error.message.contains(forbidden));
+}
+
+#[test]
+fn provider_activity_duplicate_prompt_intrinsic_ids_fail_before_filtering() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-duplicate-prompt-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let duplicate_id = "duplicate-prompt-private-id";
+    host.save_llm_prompt_runs(&[
+        provider_activity_id_fixture_prompt(duplicate_id, "recommend", "first", 2_000),
+        provider_activity_id_fixture_prompt(duplicate_id, "recommend", "second", 1_000),
+    ])
+    .expect("save duplicate prompt IDs");
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-activity-duplicate-prompt".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({ "action": "analyze", "limit": 100 }),
+    });
+    assert_provider_activity_duplicate_error(response, duplicate_id);
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_duplicate_provider_confirmation_ids_fail_closed() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-duplicate-call-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let duplicate_id = "duplicate-provider-private-id";
+    write_provider_activity_id_fixture_calls(
+        &app_data_dir,
+        &[
+            provider_activity_id_fixture_call(duplicate_id, "analyze", 2_000),
+            provider_activity_id_fixture_call(duplicate_id, "recommend", 1_000),
+        ],
+    );
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-activity-duplicate-call".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({ "limit": 100 }),
+    });
+    assert_provider_activity_duplicate_error(response, duplicate_id);
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_duplicate_fallback_identities_fail_closed() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-duplicate-fallback-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let row = provider_activity_id_fixture_prompt("", "analyze", "fallback-identity", 2_000);
+    host.save_llm_prompt_runs(&[row.clone(), row])
+        .expect("save duplicate fallback identities");
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-activity-duplicate-fallback".to_string()),
+        method: "llm.listProviderActivity".to_string(),
+        params: json!({ "limit": 100 }),
+    });
+    assert_provider_activity_duplicate_error(response, "fallback-identity");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_activity_versioned_fallback_ids_survive_filters_and_front_inserts() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-activity-fallback-stability-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let target_prompt =
+        provider_activity_id_fixture_prompt("", "analyze", "fallback-target", 2_000);
+    let target_call = provider_activity_id_fixture_call("", "analyze", 2_100);
+    host.save_llm_prompt_runs(std::slice::from_ref(&target_prompt))
+        .expect("save fallback prompt");
+    write_provider_activity_id_fixture_calls(&app_data_dir, std::slice::from_ref(&target_call));
+
+    let request_rows = |params: Value| {
+        let response = host.handle(ServiceRequest {
+            id: Some("provider-activity-fallback-stability".to_string()),
+            method: "llm.listProviderActivity".to_string(),
+            params,
+        });
+        assert!(response.ok, "{:?}", response.error);
+        response.result.expect("fallback activity result")["rows"]
+            .as_array()
+            .expect("fallback activity rows")
+            .clone()
+    };
+    let target_ids = |rows: &[Value]| {
+        let prompt = rows
+            .iter()
+            .find(|row| row["kind"] == "prompt_run" && row["timestamp"] == 2_000)
+            .and_then(|row| row["id"].as_str())
+            .expect("fallback prompt ID")
+            .to_string();
+        let call = rows
+            .iter()
+            .find(|row| row["kind"] == "provider_call" && row["timestamp"] == 2_100)
+            .and_then(|row| row["id"].as_str())
+            .expect("fallback provider-call ID")
+            .to_string();
+        (prompt, call)
+    };
+
+    let initial = target_ids(&request_rows(json!({ "limit": 100 })));
+    assert!(initial
+        .0
+        .starts_with("provider-activity-prompt-run-fallback-v1-"));
+    assert!(initial
+        .1
+        .starts_with("provider-activity-provider-call-fallback-v1-"));
+    assert_ne!(initial.0, initial.1, "fallback IDs must be source-prefixed");
+    assert_eq!(
+        target_ids(&request_rows(json!({
+            "action": "analyze",
+            "start_at": 1_900,
+            "end_at": 2_200,
+            "limit": 100
+        }))),
+        initial
+    );
+
+    let front_prompt = provider_activity_id_fixture_prompt("front", "analyze", "front", 4_000);
+    host.save_llm_prompt_runs(&[front_prompt, target_prompt])
+        .expect("insert prompt ahead of fallback row");
+    let front_call = provider_activity_id_fixture_call("front", "analyze", 4_100);
+    write_provider_activity_id_fixture_calls(&app_data_dir, &[front_call, target_call]);
+    assert_eq!(target_ids(&request_rows(json!({ "limit": 100 }))), initial);
 
     let _ = fs::remove_dir_all(app_data_dir);
 }

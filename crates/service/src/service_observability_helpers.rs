@@ -556,7 +556,28 @@ pub(crate) fn provider_activity_prompt_run_id(
             &[intrinsic_id],
         ));
     }
-    provider_activity_canonical_record_id("provider-activity-prompt-run", run)
+    let prefix = "provider-activity-prompt-run-fallback-v1";
+    let mut canonical = ProviderActivityCanonicalId::new(prefix);
+    canonical.field_str("preview_id", &run.preview_id);
+    canonical.field_str("confirmation_id", &run.confirmation_id);
+    canonical.field_str("action", &run.action);
+    canonical.field_str("request_kind", &run.request_kind);
+    canonical.field_optional_str("analysis_kind", run.analysis_kind.as_deref());
+    canonical.field_optional_str("scope", run.scope.as_deref());
+    canonical.field_optional_str("instance_id", run.instance_id.as_deref());
+    canonical.field_strings("instance_ids", &run.instance_ids);
+    canonical.field_optional_str("definition_id", run.definition_id.as_deref());
+    canonical.field_optional_str("agent", run.agent.as_deref());
+    canonical.field_optional_str("task", run.task.as_deref());
+    canonical.field_str("profile_id", &run.profile_id);
+    canonical.field_str("provider", &run.provider);
+    canonical.field_str("model", &run.model);
+    canonical.field_str("destination_host", &run.destination_host);
+    canonical.field_str("status", &run.status);
+    canonical.field_optional_str("error_code", run.error_code.as_deref());
+    canonical.field_i64("created_at", run.created_at);
+    canonical.field_i64("completed_at", run.completed_at);
+    Ok(canonical.finish(prefix))
 }
 
 pub(crate) fn provider_activity_provider_call_id(
@@ -569,18 +590,65 @@ pub(crate) fn provider_activity_provider_call_id(
             &[intrinsic_id],
         ));
     }
-    provider_activity_canonical_record_id("provider-activity-provider-call", metadata)
+    let prefix = "provider-activity-provider-call-fallback-v1";
+    let mut canonical = ProviderActivityCanonicalId::new(prefix);
+    canonical.field_i64("timestamp", metadata.timestamp);
+    canonical.field_str("action_type", &metadata.action_type);
+    canonical.field_str("profile_id", &metadata.profile_id);
+    canonical.field_str("provider_type", metadata.provider_type.as_str());
+    canonical.field_str("model", &metadata.model);
+    canonical.field_str("destination_host", &metadata.destination_host);
+    canonical.field_str("status", &metadata.status);
+    canonical.field_optional_str("error_code", metadata.error_code.as_deref());
+    canonical.field_str("redaction_status", &metadata.redaction_status);
+    Ok(canonical.finish(prefix))
 }
 
-fn provider_activity_canonical_record_id<T: Serialize>(
-    prefix: &str,
-    value: &T,
-) -> Result<String, ServiceError> {
-    let mut hasher = Sha256::new();
-    hasher.update(prefix.as_bytes());
-    hasher.update(b"\0canonical-record-v1\0");
-    hasher.update(serde_json::to_vec(value)?);
-    Ok(format!("{prefix}-{}", hex_prefix(&hasher.finalize(), 12)))
+struct ProviderActivityCanonicalId {
+    hasher: Sha256,
+}
+
+impl ProviderActivityCanonicalId {
+    fn new(domain: &str) -> Self {
+        let mut canonical = Self {
+            hasher: Sha256::new(),
+        };
+        canonical.field_bytes("domain", domain.as_bytes());
+        canonical
+    }
+
+    fn field_bytes(&mut self, label: &str, value: &[u8]) {
+        self.hasher.update((label.len() as u64).to_le_bytes());
+        self.hasher.update(label.as_bytes());
+        self.hasher.update((value.len() as u64).to_le_bytes());
+        self.hasher.update(value);
+    }
+
+    fn field_str(&mut self, label: &str, value: &str) {
+        self.field_bytes(label, value.as_bytes());
+    }
+
+    fn field_optional_str(&mut self, label: &str, value: Option<&str>) {
+        self.field_bytes(label, &[u8::from(value.is_some())]);
+        if let Some(value) = value {
+            self.field_str(label, value);
+        }
+    }
+
+    fn field_strings(&mut self, label: &str, values: &[String]) {
+        self.field_bytes(label, &(values.len() as u64).to_le_bytes());
+        for value in values {
+            self.field_str(label, value);
+        }
+    }
+
+    fn field_i64(&mut self, label: &str, value: i64) {
+        self.field_bytes(label, &value.to_le_bytes());
+    }
+
+    fn finish(self, prefix: &str) -> String {
+        format!("{prefix}-{}", hex_prefix(&self.hasher.finalize(), 32))
+    }
 }
 
 pub(crate) fn provider_observability_grouping_rows(
