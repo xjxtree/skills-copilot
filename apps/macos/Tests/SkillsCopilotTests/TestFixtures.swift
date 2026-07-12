@@ -1,6 +1,14 @@
 import Foundation
 @testable import SkillsCopilot
 
+final class WeakReference<Object: AnyObject> {
+    weak var value: Object?
+
+    init(_ value: Object?) {
+        self.value = value
+    }
+}
+
 func skill(
     id: String,
     agent: String = "claude-code",

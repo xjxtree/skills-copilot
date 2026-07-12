@@ -630,7 +630,7 @@ struct SkillManagerRequestGenerationTests {
         let runner = SkillManagerGenerationServiceRunner()
         await runner.suspend("search:hung-cancel")
         var store: SkillStore? = makeStore(runner)
-        weak let weakStore = store
+        let weakStore = WeakReference(store)
         store?.skillManagerSearchQuery = "hung-cancel"
         let completion = SkillManagerRequestCompletionFlag()
 
@@ -643,7 +643,7 @@ struct SkillManagerRequestGenerationTests {
         store = nil
 
         let completedBeforeServiceReturned = await waitForCompletion(completion)
-        let releasedBeforeServiceReturned = weakStore == nil
+        let releasedBeforeServiceReturned = weakStore.value == nil
         await runner.resumeSuccess("search:hung-cancel")
         await request.value
 
@@ -663,7 +663,7 @@ struct SkillManagerRequestGenerationTests {
         let runner = SkillManagerGenerationServiceRunner()
         await runner.suspend("search:internally-invalidated")
         var store: SkillStore? = makeStore(runner)
-        weak let weakStore = store
+        let weakStore = WeakReference(store)
         store?.skillManagerSearchQuery = "internally-invalidated"
         let completion = SkillManagerRequestCompletionFlag()
 
@@ -676,7 +676,7 @@ struct SkillManagerRequestGenerationTests {
         store = nil
 
         let completedBeforeServiceReturned = await waitForCompletion(completion)
-        let releasedBeforeServiceReturned = weakStore == nil
+        let releasedBeforeServiceReturned = weakStore.value == nil
         await runner.resumeSuccess("search:internally-invalidated")
         await request.value
 

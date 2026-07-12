@@ -2271,7 +2271,7 @@ struct SkillStoreTests {
     private func releasingStoreCancelsQueuedAutosaveWaiter() async throws {
         let runner = AutosaveControlServiceRunner()
         var store: SkillStore? = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        weak let releasedStore = store
+        let releasedStore = WeakReference(store)
         guard store != nil else {
             throw NativeModelTestFailure(description: "Store should exist for release testing.")
         }
@@ -2296,7 +2296,7 @@ struct SkillStoreTests {
         store = nil
         await runner.releaseNextProviderSave()
         try await waitUntil("Store should release or expose the old queued mutation.", timeout: 5) {
-            if releasedStore == nil { return true }
+            if releasedStore.value == nil { return true }
             return await runner.startedConfigSaveCount == 1
         }
         let unexpectedConfigCalls = await runner.startedConfigSaveCount
@@ -2304,7 +2304,7 @@ struct SkillStoreTests {
             await runner.releaseNextConfigSave()
         }
         try await waitUntil("Store should deinitialize after its active owner finishes.", timeout: 5) {
-            releasedStore == nil
+            releasedStore.value == nil
         }
 
         try expectEqual(unexpectedConfigCalls, 0, "Store release must cancel a queued autosave before it reaches the service.")
