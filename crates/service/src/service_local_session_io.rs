@@ -1,12 +1,15 @@
 use super::ServiceError;
 use serde_json::{Map, Value};
 use std::{
-    collections::{BinaryHeap, HashMap},
+    collections::HashMap,
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
+
+#[cfg(unix)]
+use std::collections::BinaryHeap;
 
 #[cfg(unix)]
 use std::{
@@ -17,11 +20,11 @@ use std::{
 
 const MAX_READ_CHUNK_BYTES: usize = 64 * 1024;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static SCHEDULED_SIDECAR_READ_FAULTS: std::sync::Mutex<Vec<(PathBuf, usize)>> =
     std::sync::Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn install_scheduled_sidecar_read_fault(path: PathBuf, bytes_before_error: usize) {
     let mut faults = SCHEDULED_SIDECAR_READ_FAULTS
         .lock()
@@ -34,7 +37,7 @@ pub(crate) fn install_scheduled_sidecar_read_fault(path: PathBuf, bytes_before_e
     faults.push((path, bytes_before_error));
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn take_scheduled_sidecar_read_fault(path: &Path) -> Option<usize> {
     let mut faults = SCHEDULED_SIDECAR_READ_FAULTS
         .lock()
@@ -43,13 +46,13 @@ fn take_scheduled_sidecar_read_fault(path: &Path) -> Option<usize> {
     Some(faults.swap_remove(index).1)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 struct ScheduledReadFault<R> {
     inner: R,
     bytes_before_error: usize,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl<R: Read> Read for ScheduledReadFault<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.bytes_before_error == 0 {
@@ -62,7 +65,7 @@ impl<R: Read> Read for ScheduledReadFault<R> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl<R: Seek> Seek for ScheduledReadFault<R> {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
         self.inner.seek(position)
@@ -835,7 +838,9 @@ pub(crate) struct SessionSidecarBudget {
 }
 
 pub(crate) struct LocalSessionInventoryBudget {
+    #[cfg(unix)]
     remaining_directories: usize,
+    #[cfg(unix)]
     remaining_entries: usize,
 }
 
@@ -882,12 +887,17 @@ where
 
 impl LocalSessionInventoryBudget {
     fn new(remaining_directories: usize, remaining_entries: usize) -> Self {
+        #[cfg(not(unix))]
+        let _ = (remaining_directories, remaining_entries);
         Self {
+            #[cfg(unix)]
             remaining_directories,
+            #[cfg(unix)]
             remaining_entries,
         }
     }
 
+    #[cfg(unix)]
     fn claim_directory(&mut self) -> bool {
         if self.remaining_directories == 0 {
             return false;
@@ -896,6 +906,7 @@ impl LocalSessionInventoryBudget {
         true
     }
 
+    #[cfg(unix)]
     fn claim_entry(&mut self) -> bool {
         if self.remaining_entries == 0 {
             return false;
@@ -904,12 +915,12 @@ impl LocalSessionInventoryBudget {
         true
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn remaining_entries(&self) -> usize {
         self.remaining_entries
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn remaining_directories(&self) -> usize {
         self.remaining_directories
     }
@@ -1402,7 +1413,7 @@ pub(crate) fn read_bounded_sidecar_text(
 ) -> Result<BoundedText, ServiceError> {
     let (mut file, metadata) = root.open_regular_file(path)?;
     let mut bounded = {
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         {
             if let Some(bytes_before_error) = take_scheduled_sidecar_read_fault(path) {
                 let mut fault = ScheduledReadFault {
@@ -1426,7 +1437,7 @@ pub(crate) fn read_bounded_sidecar_text(
                 )?
             }
         }
-        #[cfg(not(test))]
+        #[cfg(not(all(test, unix)))]
         {
             read_bounded_sidecar_from(
                 &mut file,
@@ -1815,6 +1826,7 @@ mod tests {
         assert_eq!(loads.get(), 1);
     }
 
+    #[cfg(unix)]
     fn bounded_file_test_spec() -> BoundedReadSpec {
         BoundedReadSpec {
             head_bytes: 256,

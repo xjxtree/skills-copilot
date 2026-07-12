@@ -56,7 +56,7 @@ impl ServiceHost {
         self.preview_local_sessions_with_io(params, &mut io)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn preview_local_sessions_with_test_limits(
         &self,
         params: LocalSessionPreviewParams,
@@ -469,18 +469,18 @@ struct LocalSessionRootRequest {
     source_kind: &'static str,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 struct ScheduledLocalSessionRootSwapTestHook {
     user_home: PathBuf,
     action: Box<dyn FnOnce() + Send>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static SCHEDULED_LOCAL_SESSION_ROOT_SWAP_TEST_HOOK: std::sync::Mutex<
     Option<ScheduledLocalSessionRootSwapTestHook>,
 > = std::sync::Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn install_scheduled_local_session_root_swap_test_hook(
     user_home: PathBuf,
     action: impl FnOnce() + Send + 'static,
@@ -495,7 +495,7 @@ pub(crate) fn install_scheduled_local_session_root_swap_test_hook(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn run_scheduled_local_session_root_swap_test_hook(user_home: &Path) {
     let action = {
         let mut hook = SCHEDULED_LOCAL_SESSION_ROOT_SWAP_TEST_HOOK
@@ -515,7 +515,7 @@ fn run_scheduled_local_session_root_swap_test_hook(user_home: &Path) {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(all(test, unix)))]
 fn run_scheduled_local_session_root_swap_test_hook(_user_home: &Path) {}
 
 #[derive(Debug, Clone)]
