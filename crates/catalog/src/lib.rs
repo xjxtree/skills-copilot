@@ -40,6 +40,11 @@ pub struct SkillRecord {
     pub name: String,
     pub state: String,
     pub enabled: bool,
+    pub publisher: Option<String>,
+    pub package_name: Option<String>,
+    pub package_version: Option<String>,
+    pub source_kind: Option<String>,
+    pub read_only_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -58,6 +63,60 @@ pub struct SkillDetailRecord {
     pub body: String,
     pub permissions: serde_json::Value,
     pub fingerprint: String,
+    pub publisher: Option<String>,
+    pub package_name: Option<String>,
+    pub package_version: Option<String>,
+    pub source_kind: Option<String>,
+    pub read_only_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+struct SkillSourceProvenance {
+    publisher: Option<String>,
+    package_name: Option<String>,
+    package_version: Option<String>,
+    source_kind: Option<String>,
+    read_only_reason: Option<String>,
+}
+
+fn skill_source_provenance(agent: &str, path: &Path) -> SkillSourceProvenance {
+    if agent != AgentId::Codex.as_str() {
+        return SkillSourceProvenance::default();
+    }
+    let components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let Some(cache_index) = components
+        .windows(2)
+        .position(|window| window == ["plugins", "cache"])
+    else {
+        return SkillSourceProvenance::default();
+    };
+    let package = cache_index + 2;
+    if components.get(package + 3) != Some(&"skills") {
+        return SkillSourceProvenance::default();
+    }
+    let (Some(publisher), Some(package_name), Some(package_version)) = (
+        components.get(package),
+        components.get(package + 1),
+        components.get(package + 2),
+    ) else {
+        return SkillSourceProvenance::default();
+    };
+    if [publisher, package_name, package_version]
+        .iter()
+        .any(|value| value.is_empty() || value.starts_with('.'))
+    {
+        return SkillSourceProvenance::default();
+    }
+    SkillSourceProvenance {
+        publisher: Some((*publisher).to_string()),
+        package_name: Some((*package_name).to_string()),
+        package_version: Some((*package_version).to_string()),
+        source_kind: Some("chatgpt-plugin-cache".to_string()),
+        read_only_reason: Some("Managed by the ChatGPT plugin cache".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -769,6 +828,46 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].name, "summarize-changes");
+    }
+
+    #[test]
+    fn codex_plugin_cache_records_expose_read_only_package_provenance() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let instance = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/home/.codex/plugins/cache/openai-bundled/browser/1.10.0/skills/control/SKILL.md",
+            "browser-control",
+            SkillState::Loaded,
+        );
+        let id = instance.id.clone();
+        catalog
+            .upsert_skill_instance(&instance)
+            .expect("plugin skill upserts");
+
+        let record = catalog
+            .get_skill_record(&id)
+            .expect("record query succeeds")
+            .expect("record exists");
+        assert_eq!(record.publisher.as_deref(), Some("openai-bundled"));
+        assert_eq!(record.package_name.as_deref(), Some("browser"));
+        assert_eq!(record.package_version.as_deref(), Some("1.10.0"));
+        assert_eq!(record.source_kind.as_deref(), Some("chatgpt-plugin-cache"));
+        assert_eq!(
+            record.read_only_reason.as_deref(),
+            Some("Managed by the ChatGPT plugin cache")
+        );
+
+        let detail = catalog
+            .get_skill_detail(&id)
+            .expect("detail query succeeds")
+            .expect("detail exists");
+        assert_eq!(detail.publisher, record.publisher);
+        assert_eq!(detail.package_name, record.package_name);
+        assert_eq!(detail.package_version, record.package_version);
+        assert_eq!(detail.source_kind, record.source_kind);
+        assert_eq!(detail.read_only_reason, record.read_only_reason);
     }
 
     #[test]

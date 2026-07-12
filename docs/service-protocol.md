@@ -231,6 +231,20 @@ or expose write controls.
   `incomplete_reason`. Clients should accumulate by stable record ID and retain
   accepted rows if loading is cancelled or a later page fails.
 
+## Catalog Skill Provenance
+
+- `catalog.listSkills`, `catalog.getSkill`, toggle responses, and batch-toggle
+  skill records include optional `publisher`, `package_name`,
+  `package_version`, `source_kind`, and `read_only_reason` fields.
+- For a validated Codex path beneath
+  `$CODEX_HOME/plugins/cache/<publisher>/<package>/<version>/skills`, the
+  service returns `source_kind="chatgpt-plugin-cache"` and identifies the
+  package as managed by the ChatGPT plugin cache. Native and legacy records
+  return null provenance fields.
+- Provenance is derived deterministically from the cataloged path at read time.
+  It does not persist plugin manifests, introduce a plugin-cache write path, or
+  merge ChatGPT plugin ownership with `skillManager.*` package ownership.
+
 ## Catalog Scan Diagnostics
 
 - `catalog.scanAll` returns `activity.agent_summaries[]` with separate
@@ -328,6 +342,13 @@ or expose write controls.
   later candidates remain is metadata-only and does not open or read the next
   primary file. No cursor, inventory, summary, detail, or raw session content is
   written to app data, SQLite, or another persistent cache.
+- The session `source_revision` binds the stable candidate identity set, while
+  each cursor also binds the identities in its processed prefix. An already
+  processed active session may grow or receive a newer modification timestamp
+  without aborting later pages. Adding/removing candidates, moving an
+  unprocessed candidate ahead of the cursor, or moving a processed candidate
+  behind it still returns `source_changed`; this prevents silent skips or
+  duplicates while allowing the current live Codex transcript to keep growing.
 - Keyset requests reject `session_id`, `offset`, `max_files`, and
   `include_content_items=true` instead of silently ignoring them. They require
   all-scope recent descending summaries without server search, and bind the
@@ -346,11 +367,14 @@ or expose write controls.
   content read. `total_candidate_count` is the number discovered within the
   bounded inventory, while `total_matched_count`, `has_more`, and `next_offset`
   describe the selected, filtered candidate set after sorting.
-- `candidate_set_truncated=true` means additional disk candidates or bounded
-  content were omitted by `max_files`, inventory directory/entry limits,
-  primary-file bounds, sidecar file/count/byte bounds, or aggregate request
-  bytes. Keyset inventory de-duplicates overlapping roots by stable row identity
-  before revision, total, order, and continuation metadata are calculated.
+- `candidate_set_truncated=true` means additional disk candidates or required
+  enrichment were omitted by `max_files`, inventory directory/entry limits,
+  sidecar file/count/byte bounds, or aggregate request bytes. Deliberately
+  retaining a bounded head/tail view of one large primary session file does not
+  by itself make the candidate inventory incomplete; a genuinely insufficient
+  request-level primary-read budget still reports the typed limitation. Keyset
+  inventory de-duplicates overlapping roots by stable row identity before
+  revision, total, order, and continuation metadata are calculated.
 - Any keyset inventory or read-budget stop retains accepted rows and reports
   `candidate_set_truncated=true`, `source_completeness=limited`, and
   `incomplete_reason=safety_budget`; it is terminal and does not offer an unsafe

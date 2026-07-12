@@ -369,6 +369,22 @@ struct SkillListModelTests {
             scope: "agent-project",
             path: "/repo/skills/foo/SKILL.md"
         )
+        let codexPluginSkill = SkillRecord(
+            id: "codex-plugin",
+            agent: "codex",
+            scope: "agent-global",
+            path: "/home/.codex/plugins/cache/openai-bundled/browser/1.10.0/skills/control/SKILL.md",
+            displayPath: "$HOME/.codex/plugins/cache/openai-bundled/browser/1.10.0/skills/control/SKILL.md",
+            definitionId: "browser-control",
+            name: "Browser Control",
+            state: "loaded",
+            enabled: true,
+            publisher: "openai-bundled",
+            packageName: "browser",
+            packageVersion: "1.10.0",
+            sourceKind: "chatgpt-plugin-cache",
+            readOnlyReason: "Managed by the ChatGPT plugin cache"
+        )
 
         try expectEqual(opencodeProject.provenance.rootKind, .native, "opencode project .opencode roots should be native.")
         try expectEqual(opencodeProject.provenance.scopeKind, .project, "opencode project .opencode roots should remain project scoped.")
@@ -394,6 +410,9 @@ struct SkillListModelTests {
         try expectEqual(hermesExternalSkill.provenance.scopeKind, .external, "Hermes external dirs should not be treated as project scope.")
         try expectEqual(hermesExternalSkill.provenance.label, "Hermes explicit external read-only", "Hermes external dirs should retain read-only provenance.")
         try expectEqual(openClawSkill.provenance.label, "OpenClaw workspace read-only", "OpenClaw should present project rows as workspace read-only provenance.")
+        try expectEqual(codexPluginSkill.provenance.rootKind, .readOnly, "ChatGPT plugin cache skills must be classified read-only.")
+        try expectEqual(codexPluginSkill.provenance.label, "Codex ChatGPT plugin · openai-bundled/browser 1.10.0", "Plugin provenance should identify its package.")
+        try expectEqual(codexPluginSkill.readOnlyReason, "Managed by the ChatGPT plugin cache", "Plugin cache ownership should remain visible.")
         try expectEqual(DisplayText.scope(for: openClawSkill), UIStrings.openClawWorkspaceScope, "OpenClaw project rows should display as workspace scope.")
     }
 

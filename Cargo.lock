@@ -817,6 +817,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "skills-copilot-adapters",
  "skills-copilot-catalog",
  "skills-copilot-commands",
  "skills-copilot-core",

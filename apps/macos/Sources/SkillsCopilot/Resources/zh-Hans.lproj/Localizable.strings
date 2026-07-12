@@ -1019,7 +1019,9 @@
 "batchToggle.capabilityMissing" = "此服务响应未验证 %@ 的可写能力。";
 "batchToggle.writableMissing" = "%@ root 未验证为可写。";
 "batchToggle.applied" = "预览确认后，已将 %@ 批量应用到 %d 个可写技能。";
-"message.codexRestartRequired" = "Codex runtime 可能需要重启才能读取 config.toml 变更。";
+"message.codexRestartRequired" = "ChatGPT 中的 Codex 或 Codex CLI 可能需要重启才能读取 config.toml 变更。";
+"detail.pluginPackage" = "插件包";
+"detail.readOnlyReason" = "只读原因";
 "message.rollbackRescanned" = "已回滚 agent 配置快照并重新扫描 %d 个技能。";
 "refresh.afterWrite" = "设置写入后 catalog 已刷新。";
 "refresh.afterRollback" = "agent 配置回滚后 catalog 已刷新，扫描了 %d 个技能。";

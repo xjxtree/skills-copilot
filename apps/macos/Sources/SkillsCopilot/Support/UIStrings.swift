@@ -1148,7 +1148,7 @@ enum UIStrings {
         return message
     }
 
-    static var codexRestartRequired: String { text("message.codexRestartRequired", "Codex runtime may need restart to read config.toml changes.") }
+    static var codexRestartRequired: String { text("message.codexRestartRequired", "ChatGPT Codex or the Codex CLI may need to restart to read config.toml changes.") }
 
     static func rollbackRescanned(_ count: Int) -> String {
         format("message.rollbackRescanned", "Rolled back agent config snapshot and rescanned %d skills.", count)

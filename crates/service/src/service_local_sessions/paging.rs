@@ -66,6 +66,7 @@ impl ServiceHost {
         root_requests: Vec<LocalSessionRootRequest>,
         requested_agent: Option<&str>,
         project_filter_roots: &[PathBuf],
+        codex_home: &Path,
         scope: LocalSessionScope,
         sort: LocalSessionSort,
         direction: SortDirection,
@@ -189,6 +190,12 @@ impl ServiceHost {
                 !local_session_candidate_is_after_cursor(candidate, cursor)
             })
         });
+        if let Some(cursor) = cursor.as_ref() {
+            let current_prefix_digest = local_session_processed_prefix_digest(&candidates[..start]);
+            if cursor.processed_prefix_digest.as_deref() != Some(&current_prefix_digest) {
+                return Err(ServiceError::SourceChanged);
+            }
+        }
         let accepted_before = match cursor.as_ref() {
             Some(cursor) => match cursor.accepted_count {
                 Some(accepted_count) if accepted_count <= start => accepted_count,
@@ -216,6 +223,7 @@ impl ServiceHost {
                 skill_matchers: &skill_matchers,
                 scope,
                 project_filter_roots,
+                codex_home,
                 search: None,
                 include_content_items,
             };
@@ -280,6 +288,9 @@ impl ServiceHost {
                         stable_id: candidate.row_id.clone(),
                         tie_breaker_digest: Some(candidate.path_digest.clone()),
                         accepted_count: Some(accepted_through),
+                        processed_prefix_digest: Some(local_session_processed_prefix_digest(
+                            &candidates[..next_index],
+                        )),
                         resolved_start_at: None,
                         resolved_end_at: None,
                     })
@@ -401,13 +412,35 @@ fn local_session_source_revision(
     scope: LocalSessionScope,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"session.previewLocalSessions.source.v1\0");
-    for candidate in candidates {
-        hasher.update(candidate.row_id.as_bytes());
+    hasher.update(b"session.previewLocalSessions.source.v2\0");
+    let mut identities = candidates
+        .iter()
+        .map(|candidate| (candidate.row_id.as_str(), candidate.path_digest.as_str()))
+        .collect::<Vec<_>>();
+    identities.sort_unstable();
+    for (row_id, path_digest) in identities {
+        hasher.update(row_id.as_bytes());
         hasher.update([0]);
-        hasher.update(candidate.file.modified_at.to_le_bytes());
-        hasher.update(candidate.file.file_size.to_le_bytes());
+        hasher.update(path_digest.as_bytes());
+        hasher.update([0]);
         hasher.update(scope.as_str().as_bytes());
+        hasher.update([0]);
+    }
+    format!("sha256:{}", hex_prefix(&hasher.finalize(), 64))
+}
+
+fn local_session_processed_prefix_digest(candidates: &[KeysetLocalSessionCandidate]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"session.previewLocalSessions.processed-prefix.v1\0");
+    let mut identities = candidates
+        .iter()
+        .map(|candidate| (candidate.row_id.as_str(), candidate.path_digest.as_str()))
+        .collect::<Vec<_>>();
+    identities.sort_unstable();
+    for (row_id, path_digest) in identities {
+        hasher.update(row_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(path_digest.as_bytes());
         hasher.update([0]);
     }
     format!("sha256:{}", hex_prefix(&hasher.finalize(), 64))

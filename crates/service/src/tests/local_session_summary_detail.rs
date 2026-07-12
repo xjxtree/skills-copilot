@@ -123,6 +123,44 @@ fn complete_inventory_reports_candidate_set_not_truncated() {
 }
 
 #[test]
+fn large_bounded_session_content_does_not_mark_candidate_inventory_truncated() {
+    let fixture = SummaryDetailFixture::new("large-bounded", 1);
+    let path = &fixture.paths[0];
+    let mut content = fs::read_to_string(path).expect("read base session");
+    let padding_record = format!(
+        "{}\n",
+        json!({
+            "type": "assistant",
+            "role": "assistant",
+            "text": "x".repeat(4_096),
+            "timestamp": 1_700_000_002_000_i64,
+        })
+    );
+    while content.len() < 1024 * 1024 {
+        content.push_str(&padding_record);
+    }
+    fs::write(path, content).expect("write large session");
+    let mut params = fixture.params();
+    params.include_content_items = Some(false);
+
+    let result = fixture
+        .host
+        .preview_local_sessions(params)
+        .expect("preview large bounded session");
+
+    assert_eq!(result.session_rows.len(), 1);
+    assert!(
+        !result.candidate_set_truncated,
+        "bounded per-file content is not an incomplete candidate inventory"
+    );
+    assert_eq!(
+        result.source_completeness,
+        ListSourceCompleteness::Enumerable
+    );
+    assert_eq!(result.incomplete_reason, None);
+}
+
+#[test]
 fn summary_rows_omit_content_items_and_mark_not_included() {
     let fixture = SummaryDetailFixture::new("summary", 2);
     let mut params = fixture.params();

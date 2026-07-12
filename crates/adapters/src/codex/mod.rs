@@ -9,6 +9,12 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
 
+mod paths;
+mod plugins;
+pub use paths::codex_home_dir;
+#[cfg(test)]
+use paths::resolved_codex_home;
+
 #[derive(Debug, Default)]
 pub struct CodexAdapter;
 
@@ -169,16 +175,6 @@ fn codex_user_config_path(ctx: &AdapterContext) -> PathBuf {
     codex_home_dir(ctx).join("config.toml")
 }
 
-fn codex_home_dir(ctx: &AdapterContext) -> PathBuf {
-    // AdapterContext does not yet expose a first-class Codex home override.
-    // Honor CODEX_HOME only when it stays within the context user home;
-    // otherwise use the verified default user config path.
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.starts_with(&ctx.user_home))
-        .unwrap_or_else(|| ctx.user_home.join(".codex"))
-}
-
 fn codex_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Vec<AdapterRoot> {
     let start = project_cwd
         .filter(|cwd| cwd.starts_with(project_root))
@@ -204,7 +200,7 @@ fn codex_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) ->
 }
 
 fn codex_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
-    let mut roots = Vec::new();
+    let mut roots = plugins::cached_plugin_skill_roots(&codex_home_dir(ctx));
     roots.extend(plugin_skill_roots_from_marketplace(
         &ctx.user_home.join(".agents/plugins/marketplace.json"),
         &ctx.user_home,
@@ -756,6 +752,30 @@ mod tests {
     }
 
     #[test]
+    fn codex_home_override_rejects_lexical_escape_and_relative_paths() {
+        let home = PathBuf::from("/tmp/codex-home-boundary/home");
+        let ctx = AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        assert_eq!(
+            resolved_codex_home(&ctx, Some(home.join("profiles/work"))),
+            home.join("profiles/work")
+        );
+        assert_eq!(
+            resolved_codex_home(&ctx, Some(home.join("../outside"))),
+            home.join(".codex")
+        );
+        assert_eq!(
+            resolved_codex_home(&ctx, Some(PathBuf::from("relative-codex-home"))),
+            home.join(".codex")
+        );
+    }
+
+    #[test]
     fn scans_local_plugin_marketplace_skill_roots_read_only() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-codex-plugin-roots-{}",
@@ -812,6 +832,66 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn plugin_cache_discovers_latest_valid_version_and_skips_unsafe_packages() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-codex-plugin-cache-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let cache = home.join(".codex/plugins/cache");
+        for version in ["1.9.0", "1.10.0"] {
+            let package = cache.join("openai-bundled/browser").join(version);
+            std::fs::create_dir_all(package.join(".codex-plugin"))
+                .expect("create plugin manifest dir");
+            std::fs::create_dir_all(package.join("skills/browser-control"))
+                .expect("create plugin skills dir");
+            std::fs::write(
+                package.join(".codex-plugin/plugin.json"),
+                format!(
+                    "{{\"name\":\"browser\",\"version\":\"{version}\",\"skills\":\"./skills/\"}}"
+                ),
+            )
+            .expect("write plugin manifest");
+        }
+        let escaping = cache.join("personal/escaping/1.0.0");
+        std::fs::create_dir_all(escaping.join(".codex-plugin"))
+            .expect("create escaping manifest dir");
+        std::fs::write(
+            escaping.join(".codex-plugin/plugin.json"),
+            r#"{"name":"escaping","skills":"../../../../outside"}"#,
+        )
+        .expect("write escaping manifest");
+        let staging = cache.join(".remote-plugin-install-staging/staged/9.0.0");
+        std::fs::create_dir_all(staging.join(".codex-plugin"))
+            .expect("create staging manifest dir");
+        std::fs::create_dir_all(staging.join("skills/staged")).expect("create staging skills dir");
+        std::fs::write(
+            staging.join(".codex-plugin/plugin.json"),
+            r#"{"name":"staged","skills":"./skills/"}"#,
+        )
+        .expect("write staging manifest");
+
+        let adapter = CodexAdapter;
+        let roots = adapter.roots(&AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        });
+        let plugin_roots = roots
+            .iter()
+            .filter(|root| root.source == RootSource::Plugin)
+            .map(|root| root.path.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(plugin_roots.len(), 1, "{plugin_roots:?}");
+        assert!(plugin_roots[0]
+            .to_string_lossy()
+            .contains("openai-bundled/browser/1.10.0/skills"));
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

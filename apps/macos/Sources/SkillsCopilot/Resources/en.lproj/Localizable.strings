@@ -1019,7 +1019,9 @@
 "batchToggle.capabilityMissing" = "%@ writable capability is not verified in this service response.";
 "batchToggle.writableMissing" = "%@ root is not verified writable.";
 "batchToggle.applied" = "%@ batch applied to %d writable skills after preview confirmation.";
-"message.codexRestartRequired" = "Codex runtime may need restart to read config.toml changes.";
+"message.codexRestartRequired" = "ChatGPT Codex or the Codex CLI may need to restart to read config.toml changes.";
+"detail.pluginPackage" = "Plugin package";
+"detail.readOnlyReason" = "Read-only reason";
 "message.rollbackRescanned" = "Rolled back agent config snapshot and rescanned %d skills.";
 "refresh.afterWrite" = "Catalog refreshed after the settings write.";
 "refresh.afterRollback" = "Catalog refreshed after agent config rollback with %d scanned skills.";

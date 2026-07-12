@@ -31,8 +31,14 @@ Agent Copilot 按 local-first 的桌面产品方式组织：
 
 ## App 产品功能
 
+OpenAI 当前的桌面体验已将 Codex 集成到 ChatGPT App 中。Agent Copilot 仍保留
+`codex` 作为稳定的 adapter 标识，继续读取同一套安全的 `$CODEX_HOME` 配置和
+本地会话目录，并识别 ChatGPT 本地插件缓存提供的技能。现有 Codex 项目和配置
+无需为了 Agent Copilot 改名。
+
 - **技能：** 扫描受支持的 Agent 根目录，按 Agent、范围和状态筛选，查看元数据、
-  问题项，并对受支持的本地技能执行启用或禁用。
+  问题项，并对受支持的本地技能执行启用或禁用。来自 ChatGPT 插件缓存的技能会
+  在详情中显示 publisher、包名、版本和只读归属。
 - **会话：** 浏览 Claude Code、Codex、opencode、Pi 的本地会话预览；在受支持
   的历史中搜索；打开选中会话查看消息摘要和技能调用摘要。
 - **全局搜索：** 从顶部工具栏搜索，并直接跳转到匹配的技能、会话、配置或详情页。
@@ -67,6 +73,10 @@ Apple Silicon Mac 请选择 `arm64`，Intel Mac 请选择 `x86_64`。
 技能包管理流程会使用本机的 `npx skills` 管理器，因此需要本机安装 Node/npm。
 App 从 Finder 启动时会自动探测 Homebrew、Volta、asdf、nvm 等常见路径；自定义
 安装位置可以设置 `SKILLS_COPILOT_NPX_PATH`。
+
+ChatGPT 的 Plugin Directory 与 Agent Copilot 的技能包管理是两个独立来源。
+Agent Copilot 只盘点 ChatGPT 已存在的插件缓存，不会安装、更新或移除 ChatGPT
+插件；可写的技能包操作仍只通过带命令预览和确认的 `npx skills` 流程执行。
 
 ## 源码构建指引
 

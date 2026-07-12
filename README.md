@@ -40,8 +40,16 @@ agent-specific parsing and workflow rules in shared project code.
 
 ## App Features
 
+OpenAI's current desktop experience hosts Codex inside the ChatGPT app. Agent
+Copilot keeps `codex` as the stable adapter identity, continues to read the
+same safe `$CODEX_HOME` configuration and local session stores, and recognizes
+skills delivered through ChatGPT's local plugin cache. Existing Codex projects
+and configuration do not need to be renamed for Agent Copilot.
+
 - **Skills:** scan supported agent roots, filter by agent/scope/status, inspect
   metadata, review findings, and enable or disable supported local skills.
+  ChatGPT plugin-cache skills show their publisher, package, version, and
+  read-only ownership in the detail view.
 - **Sessions:** browse local Claude Code, Codex, opencode, and Pi session
   previews; search within supported history; open a selected session with
   redacted message and skill-usage summaries.
@@ -87,6 +95,11 @@ Skill Package Manager workflows require a local Node/npm install because they
 use the local `npx skills` manager. The app detects common Homebrew, Volta,
 asdf, and nvm paths when launched from Finder. Custom installs can set
 `SKILLS_COPILOT_NPX_PATH`.
+
+ChatGPT's Plugin Directory and Agent Copilot's Skill Package Manager are
+separate sources. Agent Copilot only inventories ChatGPT's existing plugin
+cache; it does not install, update, or remove ChatGPT plugins. Writable package
+operations remain in the explicit, previewed `npx skills` workflow.
 
 ## Build From Source
 

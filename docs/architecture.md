@@ -102,3 +102,10 @@ The displayed product name is Agent Copilot. Some module names, crate names,
 sidecar names, AX identifiers, environment variables, or legacy app-data ids may
 retain `SkillsCopilot` / `skills-copilot` compatibility where migration or
 fixtures require it.
+
+`codex` is likewise a stable adapter and protocol identity even when the
+desktop runtime is hosted by `ChatGPT.app`. The adapter and local-session
+service resolve one guarded `$CODEX_HOME`; neither assumes the former
+`Codex.app` bundle name. ChatGPT plugin-cache skills are discovered as read-only
+adapter roots, while installation remains isolated in the separately confirmed
+`skillManager.*` command path.

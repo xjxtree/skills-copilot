@@ -1585,6 +1585,7 @@ fn config_snapshot_page_result(
                     stable_id: record.id.clone(),
                     tie_breaker_digest: None,
                     accepted_count: None,
+                    processed_prefix_digest: None,
                     resolved_start_at: None,
                     resolved_end_at: None,
                 })
@@ -1651,6 +1652,7 @@ fn skill_event_page_result(
                     stable_id: record.id.to_string(),
                     tie_breaker_digest: None,
                     accepted_count: None,
+                    processed_prefix_digest: None,
                     resolved_start_at: None,
                     resolved_end_at: None,
                 })

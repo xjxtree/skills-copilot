@@ -1489,6 +1489,11 @@ pub(super) struct WireSkillRecord {
     pub(super) name: String,
     pub(super) state: String,
     pub(super) enabled: bool,
+    pub(super) publisher: Option<String>,
+    pub(super) package_name: Option<String>,
+    pub(super) package_version: Option<String>,
+    pub(super) source_kind: Option<String>,
+    pub(super) read_only_reason: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -1572,6 +1577,11 @@ pub(super) struct WireSkillDetailRecord {
     pub(super) body: String,
     pub(super) permissions: Value,
     pub(super) fingerprint: String,
+    pub(super) publisher: Option<String>,
+    pub(super) package_name: Option<String>,
+    pub(super) package_version: Option<String>,
+    pub(super) source_kind: Option<String>,
+    pub(super) read_only_reason: Option<String>,
 }
 
 #[allow(dead_code)]

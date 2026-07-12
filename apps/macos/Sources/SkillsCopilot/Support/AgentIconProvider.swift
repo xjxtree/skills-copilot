@@ -20,13 +20,10 @@ enum AgentIconProvider {
                 .fileIcon("/opt/homebrew/bin/claude")
             ]
         case .codex:
-            return [
-                .appBundle("/Applications/Codex.app"),
-                .resource("/Applications/Codex.app/Contents/Resources/icon.icns"),
-                .resource("/Applications/Codex.app/Contents/Resources/app.icns"),
-                .resource("/Applications/Codex.app/Contents/Resources/default_app/icon.png"),
-                .fileIcon("/opt/homebrew/bin/codex")
-            ]
+            let bundlePath = NSWorkspace.shared
+                .urlForApplication(withBundleIdentifier: "com.openai.codex")?
+                .path
+            return AgentIconCandidates.codex(bundlePath: bundlePath)
         case .opencode:
             return [
                 .appBundle("/Applications/OpenCode.app"),
@@ -75,33 +72,5 @@ enum AgentIconProvider {
             }
             return NSImage(contentsOfFile: candidate.path)
         }
-    }
-}
-
-private struct AgentIconCandidate {
-    enum Kind {
-        case appBundle
-        case fileIcon
-        case bundledResource
-        case resource
-    }
-
-    let kind: Kind
-    let path: String
-
-    static func appBundle(_ path: String) -> AgentIconCandidate {
-        AgentIconCandidate(kind: .appBundle, path: path)
-    }
-
-    static func fileIcon(_ path: String) -> AgentIconCandidate {
-        AgentIconCandidate(kind: .fileIcon, path: path)
-    }
-
-    static func bundledResource(_ path: String) -> AgentIconCandidate {
-        AgentIconCandidate(kind: .bundledResource, path: path)
-    }
-
-    static func resource(_ path: String) -> AgentIconCandidate {
-        AgentIconCandidate(kind: .resource, path: path)
     }
 }

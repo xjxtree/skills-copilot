@@ -8,7 +8,9 @@ pub mod opencode;
 pub mod pi;
 
 pub use claude_code::ClaudeCodeAdapter;
-pub use codex::{parse_codex_skill_config_entries, CodexAdapter, CodexSkillConfigEntry};
+pub use codex::{
+    codex_home_dir, parse_codex_skill_config_entries, CodexAdapter, CodexSkillConfigEntry,
+};
 pub use hermes::{hermes_disabled_skill_names, HermesAdapter};
 pub use openclaw::{
     openclaw_config_key_from_frontmatter, openclaw_disabled_skill_keys, OpenclawAdapter,

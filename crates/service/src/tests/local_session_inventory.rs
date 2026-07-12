@@ -394,7 +394,44 @@ fn keyset_pages_continue_past_legacy_max_files_without_duplicates() {
 }
 
 #[test]
-fn keyset_continuation_rejects_source_change() {
+fn keyset_continuation_allows_an_already_processed_active_session_to_grow() {
+    let fixture = OrderedSessionFixture::new(
+        "keyset-active-growth",
+        &[("Alpha", 100), ("Bravo", 300), ("Charlie", 200)],
+    );
+    let first = ordered_result(
+        &fixture,
+        json!({"limit": 1, "max_files": null, "include_content_items": false, "paging_mode": "keyset"}),
+    );
+    fs::write(
+        fixture.root.join("bravo.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"type": "session", "title": "Bravo"}),
+            json!({"type": "user", "role": "user", "text": "active growth"})
+        ),
+    )
+    .expect("grow already processed active candidate");
+
+    let response = fixture.request(json!({
+        "limit": 1,
+        "max_files": null,
+        "include_content_items": false,
+        "paging_mode": "keyset",
+        "cursor": first["next_cursor"],
+        "source_revision": first["source_revision"],
+    }));
+    assert!(response.ok, "{:?}", response.error);
+    assert_eq!(
+        response.result.expect("active growth continuation")["session_rows"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn keyset_continuation_rejects_unprocessed_candidate_moving_before_cursor() {
     let fixture = OrderedSessionFixture::new(
         "keyset-source-change",
         &[("Alpha", 100), ("Bravo", 300), ("Charlie", 200)],
@@ -408,6 +445,36 @@ fn keyset_continuation_rejects_source_change() {
         json!({"type": "session", "title": "Alpha changed"}).to_string(),
     )
     .expect("mutate candidate after first page");
+
+    let response = fixture.request(json!({
+        "limit": 1,
+        "max_files": null,
+        "include_content_items": false,
+        "paging_mode": "keyset",
+        "cursor": first["next_cursor"],
+        "source_revision": first["source_revision"],
+    }));
+    assert_eq!(
+        response.error.map(|error| error.code),
+        Some("source_changed".to_string())
+    );
+}
+
+#[test]
+fn keyset_continuation_rejects_candidate_membership_change() {
+    let fixture = OrderedSessionFixture::new(
+        "keyset-membership-change",
+        &[("Alpha", 300), ("Bravo", 200), ("Charlie", 100)],
+    );
+    let first = ordered_result(
+        &fixture,
+        json!({"limit": 1, "max_files": null, "include_content_items": false, "paging_mode": "keyset"}),
+    );
+    fs::write(
+        fixture.root.join("delta.jsonl"),
+        json!({"type": "session", "title": "Delta"}).to_string(),
+    )
+    .expect("add candidate after first page");
 
     let response = fixture.request(json!({
         "limit": 1,
@@ -826,7 +893,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
         }))
         .expect("decode budget matrix params")
     };
-    for (name, limits) in [
+    for (name, limits, expected_request_limit) in [
         (
             "primary-byte",
             LocalSessionReadLimits {
@@ -834,6 +901,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 primary_tail_bytes: 0,
                 ..LocalSessionReadLimits::default()
             },
+            false,
         ),
         (
             "sidecar-file-count",
@@ -841,6 +909,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 max_sidecar_files: 0,
                 ..LocalSessionReadLimits::default()
             },
+            true,
         ),
         (
             "sidecar-session-bytes",
@@ -848,6 +917,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 max_sidecar_session_bytes: 0,
                 ..LocalSessionReadLimits::default()
             },
+            true,
         ),
         (
             "sidecar-file-bytes",
@@ -855,6 +925,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 max_sidecar_file_bytes: 8,
                 ..LocalSessionReadLimits::default()
             },
+            true,
         ),
     ] {
         let primary_content = if name == "primary-byte" {
@@ -870,15 +941,22 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
             .preview_local_sessions_with_test_limits(params(), limits)
             .unwrap_or_else(|error| panic!("{name} preview failed: {error}"));
         assert_eq!(result.session_rows.len(), 1, "{name} retains primary row");
-        assert!(result.candidate_set_truncated, "{name} marks limitation");
+        assert_eq!(
+            result.candidate_set_truncated, expected_request_limit,
+            "{name} request-level limitation"
+        );
         assert_eq!(
             result.source_completeness,
-            ListSourceCompleteness::Limited,
+            if expected_request_limit {
+                ListSourceCompleteness::Limited
+            } else {
+                ListSourceCompleteness::Enumerable
+            },
             "{name} completeness"
         );
         assert_eq!(
             result.incomplete_reason,
-            Some(ListIncompleteReason::SafetyBudget),
+            expected_request_limit.then_some(ListIncompleteReason::SafetyBudget),
             "{name} reason"
         );
         assert!(!result.has_more, "{name} must be terminal");

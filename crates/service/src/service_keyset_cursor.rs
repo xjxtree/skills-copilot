@@ -12,6 +12,8 @@ pub(crate) struct KeysetCursor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) accepted_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) processed_prefix_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resolved_start_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resolved_end_at: Option<i64>,
