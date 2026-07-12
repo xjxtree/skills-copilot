@@ -41,11 +41,32 @@ blocked operations. It is a current contract, not a version history.
 | Adapter | Scan roots | Guarded writes | Install targets | Blocked |
 | --- | --- | --- | --- | --- |
 | Claude Code | User/project `.claude/skills`; user `.agents/skills` is an explicit same-scope symlink-target root and is not walked directly | Private Claude settings toggle path | Verified native target paths | Shared project settings writes unless separately scoped |
-| Codex | User/project `.agents/skills`; read-only `$CODEX_HOME/skills`, local plugin marketplace roots, `/etc/codex/skills`, and project `.codex/config.toml` diagnostics | User config override for native `.agents/skills` instances | Native `.agents/skills` roots | Project `.codex/config.toml`, plugin/admin/system/compat writes |
+| Codex | User/project `.agents/skills`; read-only `$CODEX_HOME/skills`, bounded ChatGPT plugin-cache and local plugin marketplace roots, `/etc/codex/skills`, and project `.codex/config.toml` diagnostics | User config override for native `.agents/skills` instances | Native `.agents/skills` roots | Project `.codex/config.toml`, plugin/admin/system/compat writes |
 | opencode | Native roots, official `.claude` / `.agents` compatibility roots, and configured local `skills.paths` roots | Exact `permission.skill` overrides in verified config targets | Native opencode roots | `skills.urls` fetch, configured-root writes, compatibility-root installs |
 | Pi | Native `~/.pi/agent/skills`, project `.pi/skills`, and `.agents/skills` compatibility roots | Guarded settings toggle for native and `.agents` compatibility instances | Native Pi roots only | Package install/remove, `.agents` direct installs, scripts, credentials |
 | Hermes | Native `~/.hermes/skills` and explicit read-only `skills.external_dirs` | Global `skills.disabled` only | Native `~/.hermes/skills` | Project installs, `platform_disabled`, `external_dirs` writes, hub/URL/tap/update/uninstall/reset |
 | OpenClaw | Native `~/.openclaw/skills`, shared `~/.agents/skills`, bundled roots, confirmed workspace `<workspace>/skills`, and `<workspace>/.agents/skills` | `skills.entries.<key>.enabled` only | Native `~/.openclaw/skills` and confirmed workspace `<workspace>/skills` | `.agents` direct installs, allowlists, env/apiKey, install policy, load roots, ClawHub/Git/update/verify/workshop |
+
+### Codex In ChatGPT
+
+- `codex` remains the adapter ID even though the current desktop host is
+  `ChatGPT.app` (bundle identifier `com.openai.codex`). App branding does not
+  change the config, skill, session, or service protocol identities.
+- The adapter and local-session service share the same guarded Codex home.
+  `CODEX_HOME` must be an absolute, lexically normalized path beneath the active
+  user home; unsafe or relative overrides fall back to `$HOME/.codex`.
+- The adapter inventories
+  `$CODEX_HOME/plugins/cache/<publisher>/<package>/<version>/skills` as
+  read-only plugin roots. Enumeration is bounded, hidden/staging directories
+  are skipped, manifests are size-bounded, paths must remain inside the
+  canonical package root, and only the highest valid version per package is
+  selected.
+- Catalog list and detail records derive publisher, package, version,
+  `source_kind=chatgpt-plugin-cache`, and a read-only reason from the validated
+  persisted path. This adds no plugin state or raw manifest content to SQLite.
+- ChatGPT plugin discovery is inventory only. It never runs plugin scripts or
+  invokes plugin install/update/remove. Those cache roots remain blocked for
+  adapter writes.
 
 ## Skill Manager Tooling
 
@@ -79,6 +100,10 @@ blocked operations. It is a current contract, not a version history.
 - Agent enable/disable remains in `config.toggleSkill`,
   `batch.previewSkillToggles`, and `batch.applySkillToggles` outside the Skill
   Manager surface; package manager state and agent config state are separate.
+- ChatGPT's Plugin Directory is also separate from Skill Manager. Existing
+  ChatGPT cache content may appear in the catalog as read-only provenance, but
+  `skillManager.*` continues to operate only through its explicit supported
+  manager CLI, target selection, preview, and confirmation contract.
 
 ## Discovery Requirements
 

@@ -30,7 +30,11 @@ crates/AGENTS.md                  # Rust workspace/crate-specific rules
 
 ## Compatibility Notes
 
-- Codex reads `AGENTS.md` before work and supports global, project, and nested project instruction files.
+- Codex reads `AGENTS.md` before work and supports global, project, and nested
+  project instruction files. The current ChatGPT desktop app hosts Codex work,
+  but repository instructions, `$CODEX_HOME/config.toml`, project
+  `.codex/config.toml`, and the stable `codex` adapter identity remain the
+  compatibility boundary for this repository.
 - Claude Code reads `CLAUDE.md`; when a project also uses `AGENTS.md`, Claude's official recommendation is to import it from `CLAUDE.md`.
 - opencode reads `AGENTS.md` and falls back to `CLAUDE.md` only when `AGENTS.md` is absent.
 - Pi's default resource loader discovers context files named `AGENTS.md` from the current working directory and global agent directory.

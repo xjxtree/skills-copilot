@@ -112,7 +112,7 @@ git commit -m "fix: share safe Codex home across local data"
 - Modify: `crates/scanner/src/lib.rs`
 - Test: `crates/adapters/src/codex/mod.rs`
 - Test: `crates/scanner/src/lib.rs`
-- Create fixtures beneath: `fixtures/codex/plugin-cache/`
+- Test with disposable plugin-cache trees created by adapter unit tests.
 
 **Interfaces:**
 - Produces: `SkillSourceProvenance` with optional package name/version/publisher/source kind/read-only reason.
@@ -190,7 +190,7 @@ Expected: PASS; no staging/escaping roots appear.
 - [ ] **Step 7: Commit**
 
 ```sh
-git add crates/core crates/adapters crates/scanner fixtures/codex/plugin-cache
+git add crates/adapters/src/codex
 git commit -m "feat: discover ChatGPT plugin skills read only"
 ```
 
@@ -413,8 +413,8 @@ git commit -m "feat: present Codex inside the ChatGPT desktop app"
 - Modify: `docs/adapters/codex-adapter-spec.md`
 - Modify: `docs/adapters/agent-adapters.md`
 - Modify: `docs/ai-agent-workflow.md`
-- Modify: `README.md`
-- Modify: `README.zh-CN.md`
+- Modify: `../../../README.md`
+- Modify: `../../../README.zh-CN.md`
 
 **Interfaces:**
 - Documents optional wire provenance and exact read/write boundaries.
@@ -511,4 +511,3 @@ git commit -m "test: close ChatGPT Codex compatibility gates"
 ```
 
 Do not create an empty commit when no verifier-only fix is required.
-
