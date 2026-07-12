@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn codex_home_override_rejects_lexical_escape_and_relative_paths() {
-        let home = PathBuf::from("/tmp/codex-home-boundary/home");
+        let home = std::env::temp_dir().join("codex-home-boundary/home");
         let ctx = AdapterContext {
             user_home: home.clone(),
             project_root: None,
@@ -888,9 +888,12 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(plugin_roots.len(), 1, "{plugin_roots:?}");
-        assert!(plugin_roots[0]
-            .to_string_lossy()
-            .contains("openai-bundled/browser/1.10.0/skills"));
+        assert!(plugin_roots[0].ends_with(
+            Path::new("openai-bundled")
+                .join("browser")
+                .join("1.10.0")
+                .join("skills")
+        ));
         let _ = std::fs::remove_dir_all(temp_root);
     }
 
