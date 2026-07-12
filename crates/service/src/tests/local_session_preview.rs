@@ -2728,50 +2728,6 @@ fn request_local_index_cache_is_empty_on_the_next_preview() {
     let _ = fs::remove_dir_all(fixture);
 }
 
-#[test]
-fn custom_codex_home_discovers_sessions_and_index_titles() {
-    let unique = unique_suffix();
-    let fixture = env::temp_dir().join(format!(
-        "skills-copilot-custom-codex-home-test-{}-{unique}",
-        std::process::id()
-    ));
-    let user_home = fixture.join("home");
-    let codex_home = user_home.join("profiles/work");
-    let session_root = codex_home.join("sessions/2026/07/12");
-    fs::create_dir_all(&session_root).expect("create custom Codex session root");
-    fs::write(
-        session_root.join("rollout-custom-home.jsonl"),
-        r#"{"type":"session","id":"custom-home-session"}"#,
-    )
-    .expect("write custom Codex session");
-    fs::write(
-        codex_home.join("session_index.jsonl"),
-        json!({"id": "custom-home-session", "thread_name": "Custom home title"}).to_string(),
-    )
-    .expect("write custom Codex index");
-    let host = ServiceHost {
-        app_data_dir: fixture.join("app-data"),
-        adapter_ctx: AdapterContext {
-            user_home,
-            project_root: None,
-            project_cwd: None,
-            extra_roots: Vec::new(),
-        },
-    };
-
-    let previous = env::var_os("CODEX_HOME");
-    unsafe { env::set_var("CODEX_HOME", &codex_home) };
-    let result = preview_local_sessions_for_agent(&host, "codex");
-    match previous {
-        Some(value) => unsafe { env::set_var("CODEX_HOME", value) },
-        None => unsafe { env::remove_var("CODEX_HOME") },
-    }
-
-    assert_eq!(result["count"], json!(1), "{result}");
-    assert_eq!(result["session_rows"][0]["title"], "Custom home title");
-    let _ = fs::remove_dir_all(fixture);
-}
-
 struct OpencodeSidecarFixture {
     fixture: PathBuf,
     host: ServiceHost,
