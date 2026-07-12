@@ -342,6 +342,13 @@ or expose write controls.
   later candidates remain is metadata-only and does not open or read the next
   primary file. No cursor, inventory, summary, detail, or raw session content is
   written to app data, SQLite, or another persistent cache.
+- The session `source_revision` binds the stable candidate identity set, while
+  each cursor also binds the identities in its processed prefix. An already
+  processed active session may grow or receive a newer modification timestamp
+  without aborting later pages. Adding/removing candidates, moving an
+  unprocessed candidate ahead of the cursor, or moving a processed candidate
+  behind it still returns `source_changed`; this prevents silent skips or
+  duplicates while allowing the current live Codex transcript to keep growing.
 - Keyset requests reject `session_id`, `offset`, `max_files`, and
   `include_content_items=true` instead of silently ignoring them. They require
   all-scope recent descending summaries without server search, and bind the

@@ -597,6 +597,7 @@ impl ServiceHost {
                         stable_id: row.id.clone(),
                         tie_breaker_digest: None,
                         accepted_count: None,
+                        processed_prefix_digest: None,
                         resolved_start_at: query.resolved_start_at,
                         resolved_end_at: query.resolved_end_at,
                     })

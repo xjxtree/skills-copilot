@@ -394,7 +394,44 @@ fn keyset_pages_continue_past_legacy_max_files_without_duplicates() {
 }
 
 #[test]
-fn keyset_continuation_rejects_source_change() {
+fn keyset_continuation_allows_an_already_processed_active_session_to_grow() {
+    let fixture = OrderedSessionFixture::new(
+        "keyset-active-growth",
+        &[("Alpha", 100), ("Bravo", 300), ("Charlie", 200)],
+    );
+    let first = ordered_result(
+        &fixture,
+        json!({"limit": 1, "max_files": null, "include_content_items": false, "paging_mode": "keyset"}),
+    );
+    fs::write(
+        fixture.root.join("bravo.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"type": "session", "title": "Bravo"}),
+            json!({"type": "user", "role": "user", "text": "active growth"})
+        ),
+    )
+    .expect("grow already processed active candidate");
+
+    let response = fixture.request(json!({
+        "limit": 1,
+        "max_files": null,
+        "include_content_items": false,
+        "paging_mode": "keyset",
+        "cursor": first["next_cursor"],
+        "source_revision": first["source_revision"],
+    }));
+    assert!(response.ok, "{:?}", response.error);
+    assert_eq!(
+        response.result.expect("active growth continuation")["session_rows"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn keyset_continuation_rejects_unprocessed_candidate_moving_before_cursor() {
     let fixture = OrderedSessionFixture::new(
         "keyset-source-change",
         &[("Alpha", 100), ("Bravo", 300), ("Charlie", 200)],
@@ -408,6 +445,36 @@ fn keyset_continuation_rejects_source_change() {
         json!({"type": "session", "title": "Alpha changed"}).to_string(),
     )
     .expect("mutate candidate after first page");
+
+    let response = fixture.request(json!({
+        "limit": 1,
+        "max_files": null,
+        "include_content_items": false,
+        "paging_mode": "keyset",
+        "cursor": first["next_cursor"],
+        "source_revision": first["source_revision"],
+    }));
+    assert_eq!(
+        response.error.map(|error| error.code),
+        Some("source_changed".to_string())
+    );
+}
+
+#[test]
+fn keyset_continuation_rejects_candidate_membership_change() {
+    let fixture = OrderedSessionFixture::new(
+        "keyset-membership-change",
+        &[("Alpha", 300), ("Bravo", 200), ("Charlie", 100)],
+    );
+    let first = ordered_result(
+        &fixture,
+        json!({"limit": 1, "max_files": null, "include_content_items": false, "paging_mode": "keyset"}),
+    );
+    fs::write(
+        fixture.root.join("delta.jsonl"),
+        json!({"type": "session", "title": "Delta"}).to_string(),
+    )
+    .expect("add candidate after first page");
 
     let response = fixture.request(json!({
         "limit": 1,

@@ -849,7 +849,6 @@ pub(crate) struct LocalSessionInventoryBudget {
 pub(crate) struct LocalSessionFileCandidate {
     pub(crate) path: PathBuf,
     pub(crate) modified_at: i64,
-    pub(crate) file_size: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1193,7 +1192,6 @@ impl GuardedLocalSessionRoot {
                                             metadata.st_mtime,
                                             metadata.st_mtime_nsec,
                                         ),
-                                        file_size: metadata.st_size.max(0) as u64,
                                     });
                             }
                         }
@@ -1751,7 +1749,6 @@ mod tests {
         LocalSessionFileCandidate {
             path: PathBuf::from(path),
             modified_at,
-            file_size: 0,
         }
     }
 
