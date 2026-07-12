@@ -287,6 +287,36 @@ struct ServiceClientRPCTests {
 
 @MainActor
 extension SkillStoreTests {
+    func localSessionStoreAggregatesSkillUsageAcrossDelayedPages() async throws {
+        let runner = DelayedSkillUsageLocalSessionRunner()
+        let store = SkillStore(service: ServiceClient(
+            processRunner: runner,
+            serviceURL: URL(fileURLWithPath: "/tmp/delayed-skill-usage-session-service")
+        ))
+
+        let refresh = Task { @MainActor in
+            await store.refreshLocalSessionSnapshot(reason: .startup)
+        }
+        try await waitUntil("The second local-session skill page should be delayed.") {
+            await runner.requestCount() == 2
+        }
+        try expectEqual(
+            store.localSessionPreviewResult.skillUsageRows.map(\.skillId),
+            ["alpha"],
+            "The Store should publish the accepted first-page skill summary while page two is delayed."
+        )
+
+        await runner.releaseSecondPage()
+        await refresh.value
+
+        let rows = store.localSessionPreviewResult.skillUsageRows
+        try expectEqual(rows.map(\.skillId), ["alpha", "beta"], "The Store must retain and sort skills from both accepted pages.")
+        try expectEqual(rows.first?.callCount, Optional(4), "Repeated alpha calls must accumulate across Store pages.")
+        try expectEqual(rows.first?.sessionCount, Optional(2), "Repeated alpha sessions must accumulate across Store pages.")
+        try expectEqual(rows.first?.latestModifiedAt, Optional("300"), "Repeated alpha must retain the latest timestamp.")
+        try expectEqual(rows.first?.evidenceRefs, ["session:alpha:1", "session:alpha:2"], "Repeated alpha evidence must be deduplicated in stable order.")
+    }
+
     func localSessionPrewarmMoreAndAllUseCursorPages() async throws {
         let runner = PagedLocalSessionRunner(totalCount: 1_205)
         let store = SkillStore(service: ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/paged-session-service")))
@@ -433,6 +463,92 @@ extension SkillStoreTests {
         try expectEqual(await runner.requestCount(), 2, "A repeated continuation cursor must stop before a third request.")
         try expectEqual(store.localSessionPreviewResult.sessionRows.map(\.id), ["session-a"], "Rejecting a cursor loop must retain accepted rows.")
         try expectEqual(store.localSessionCompleteness.incompleteReason, .pageFailed, "A repeated cursor must surface a retryable page failure.")
+    }
+}
+
+actor DelayedSkillUsageLocalSessionRunner: ServiceProcessRunning {
+    private var requests = 0
+    private var secondPageReleased = false
+    private var secondPageWaiter: CheckedContinuation<Void, Never>?
+
+    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
+        let request = try JSONSerialization.jsonObject(with: input) as? [String: Any] ?? [:]
+        requests += 1
+        let pageIndex = requests - 1
+        guard pageIndex < 2 else { throw PagedSessionRunnerError.injected }
+        if pageIndex == 1, !secondPageReleased {
+            await withCheckedContinuation { secondPageWaiter = $0 }
+        }
+
+        let hasMore = pageIndex == 0
+        let sessionID = pageIndex == 0 ? "session-alpha" : "session-beta"
+        let skillRows: [[String: Any]] = pageIndex == 0
+            ? [[
+                "skill_id": "alpha",
+                "skill_name": "Alpha",
+                "agent": "codex",
+                "call_count": 1,
+                "session_count": 1,
+                "latest_modified_at": "100",
+                "evidence_refs": ["session:alpha:1"],
+            ]]
+            : [[
+                "skill_id": "beta",
+                "skill_name": "Beta",
+                "agent": "codex",
+                "call_count": 2,
+                "session_count": 1,
+                "latest_modified_at": "200",
+                "evidence_refs": ["session:beta:1"],
+            ], [
+                "skill_id": "alpha",
+                "skill_name": "Alpha",
+                "agent": "codex",
+                "call_count": 3,
+                "session_count": 1,
+                "latest_modified_at": "300",
+                "evidence_refs": ["session:alpha:1", "session:alpha:2"],
+            ]]
+        let result: [String: Any] = [
+            "generated_by": "local-v2.98",
+            "authorized": true,
+            "count": 1,
+            "total_candidate_count": 2,
+            "total_matched_count": 2,
+            "offset": 0,
+            "limit": 100,
+            "has_more": hasMore,
+            "next_cursor": hasMore ? "cursor-page-two" : NSNull(),
+            "source_revision": "sha256:skill-usage-pages",
+            "source_completeness": "enumerable",
+            "incomplete_reason": NSNull(),
+            "candidate_set_truncated": false,
+            "session_rows": [[
+                "id": sessionID,
+                "title": sessionID,
+                "source_kind": "authorized-local-session",
+                "scope": "all",
+                "redacted_path": "$HOME/.sessions/\(sessionID).jsonl",
+                "modified_at": pageIndex == 0 ? 300 : 200,
+                "excerpt": "Summary \(sessionID)",
+                "content_included": false,
+                "content_items": [],
+            ]],
+            "skill_usage_rows": skillRows,
+        ]
+        return try JSONSerialization.data(withJSONObject: [
+            "id": request["id"] ?? "test",
+            "ok": true,
+            "result": result,
+        ])
+    }
+
+    func requestCount() -> Int { requests }
+
+    func releaseSecondPage() {
+        secondPageReleased = true
+        secondPageWaiter?.resume()
+        secondPageWaiter = nil
     }
 }
 

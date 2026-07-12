@@ -600,6 +600,9 @@ final class SkillStore: ObservableObject {
         self.taskCockpitHistoryStore = taskCockpitHistoryStore
         self.autosaveDelayNanoseconds = autosaveDelayNanoseconds
         taskCockpitHistory = []
+        providerActivityController.setChangeHandler { [weak self] in
+            self?.objectWillChange.send()
+        }
         do {
             _ = try taskCockpitHistoryStore.purgeLegacyHistoryIfPresent()
         } catch {
@@ -2834,9 +2837,10 @@ final class SkillStore: ObservableObject {
             authorizationRequired: page.authorizationRequired,
             roots: page.roots.isEmpty ? (accumulated?.roots ?? []) : page.roots,
             sessionRows: rows,
-            skillUsageRows: page.skillUsageRows.isEmpty
-                ? (accumulated?.skillUsageRows ?? [])
-                : page.skillUsageRows,
+            skillUsageRows: LocalSessionSkillUsageRow.mergingPages(
+                accumulated?.skillUsageRows ?? [],
+                with: page.skillUsageRows
+            ),
             count: rows.count,
             totalCandidateCount: max(page.totalCandidateCount, accumulated?.totalCandidateCount ?? 0),
             totalMatchedCount: max(page.totalMatchedCount, rows.count),
@@ -3541,7 +3545,6 @@ final class SkillStore: ObservableObject {
             endAt: range.endAt
         )
         let activityGeneration = providerActivityController.beginRefresh(for: activityKey)
-        objectWillChange.send()
 
         do {
             providerObservabilityResult = try await service.providerObservability(
@@ -3559,7 +3562,6 @@ final class SkillStore: ObservableObject {
                 for: activityKey,
                 generation: activityGeneration
             )
-            objectWillChange.send()
         } catch {
             providerObservabilityResult = .unavailable(reason: error.localizedDescription)
             hasLoadedProviderObservability = true
@@ -3568,7 +3570,6 @@ final class SkillStore: ObservableObject {
                 for: activityKey,
                 generation: activityGeneration
             )
-            objectWillChange.send()
         }
     }
 

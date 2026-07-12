@@ -459,6 +459,63 @@ struct LocalSessionSkillUsageRow: Decodable, Hashable, Identifiable {
             .evidence
         ])
     }
+
+    static func mergingPages(
+        _ accumulatedRows: [LocalSessionSkillUsageRow],
+        with pageRows: [LocalSessionSkillUsageRow]
+    ) -> [LocalSessionSkillUsageRow] {
+        var rowsByID: [String: LocalSessionSkillUsageRow] = [:]
+        for row in accumulatedRows + pageRows {
+            guard let current = rowsByID[row.skillId] else {
+                rowsByID[row.skillId] = row
+                continue
+            }
+            var seenEvidence = Set<String>()
+            let evidenceRefs = (current.evidenceRefs + row.evidenceRefs).filter {
+                seenEvidence.insert($0).inserted
+            }
+            rowsByID[row.skillId] = LocalSessionSkillUsageRow(
+                skillId: current.skillId,
+                skillName: current.skillName.isEmpty ? row.skillName : current.skillName,
+                agent: current.agent.isEmpty ? row.agent : current.agent,
+                callCount: current.callCount + row.callCount,
+                sessionCount: current.sessionCount + row.sessionCount,
+                latestModifiedAt: latestTimestamp(current.latestModifiedAt, row.latestModifiedAt),
+                evidenceRefs: evidenceRefs
+            )
+        }
+        return rowsByID.values.sorted { left, right in
+            if left.callCount != right.callCount {
+                return left.callCount > right.callCount
+            }
+            if left.sessionCount != right.sessionCount {
+                return left.sessionCount > right.sessionCount
+            }
+            if left.latestModifiedAt != right.latestModifiedAt {
+                return timestampIsLater(left.latestModifiedAt, than: right.latestModifiedAt)
+            }
+            let nameOrder = left.skillName.localizedCaseInsensitiveCompare(right.skillName)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            return left.skillId < right.skillId
+        }
+    }
+
+    private static func latestTimestamp(_ left: String?, _ right: String?) -> String? {
+        guard let left else { return right }
+        guard let right else { return left }
+        return timestampIsLater(left, than: right) ? left : right
+    }
+
+    private static func timestampIsLater(_ left: String?, than right: String?) -> Bool {
+        guard let left else { return false }
+        guard let right else { return true }
+        if let leftValue = Int64(left), let rightValue = Int64(right) {
+            return leftValue > rightValue
+        }
+        return left > right
+    }
 }
 
 struct LocalSessionPreviewResult: Decodable, Hashable {
@@ -688,7 +745,10 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             authorizationRequired: page.authorizationRequired,
             roots: page.roots.isEmpty ? roots : page.roots,
             sessionRows: mergedRows,
-            skillUsageRows: mergingSkillUsageRows(page.skillUsageRows),
+            skillUsageRows: LocalSessionSkillUsageRow.mergingPages(
+                skillUsageRows,
+                with: page.skillUsageRows
+            ),
             count: mergedRows.count,
             totalCandidateCount: page.totalCandidateCount,
             totalMatchedCount: page.totalMatchedCount,
@@ -707,65 +767,6 @@ struct LocalSessionPreviewResult: Decodable, Hashable {
             safetyFlags: page.safetyFlags,
             fallbackReason: page.fallbackReason
         )
-    }
-
-    private func mergingSkillUsageRows(
-        _ pageRows: [LocalSessionSkillUsageRow]
-    ) -> [LocalSessionSkillUsageRow] {
-        var rowsByID = Dictionary(uniqueKeysWithValues: skillUsageRows.map { ($0.skillId, $0) })
-        for row in pageRows {
-            guard let current = rowsByID[row.skillId] else {
-                rowsByID[row.skillId] = row
-                continue
-            }
-            var seenEvidence = Set<String>()
-            let evidenceRefs = (current.evidenceRefs + row.evidenceRefs).filter {
-                seenEvidence.insert($0).inserted
-            }
-            rowsByID[row.skillId] = LocalSessionSkillUsageRow(
-                skillId: current.skillId,
-                skillName: current.skillName.isEmpty ? row.skillName : current.skillName,
-                agent: current.agent.isEmpty ? row.agent : current.agent,
-                callCount: current.callCount + row.callCount,
-                sessionCount: current.sessionCount + row.sessionCount,
-                latestModifiedAt: Self.latestTimestamp(
-                    current.latestModifiedAt,
-                    row.latestModifiedAt
-                ),
-                evidenceRefs: evidenceRefs
-            )
-        }
-        return rowsByID.values.sorted { left, right in
-            if left.callCount != right.callCount {
-                return left.callCount > right.callCount
-            }
-            if left.sessionCount != right.sessionCount {
-                return left.sessionCount > right.sessionCount
-            }
-            if left.latestModifiedAt != right.latestModifiedAt {
-                return Self.timestampIsLater(left.latestModifiedAt, than: right.latestModifiedAt)
-            }
-            let nameOrder = left.skillName.localizedCaseInsensitiveCompare(right.skillName)
-            if nameOrder != .orderedSame {
-                return nameOrder == .orderedAscending
-            }
-            return left.skillId < right.skillId
-        }
-    }
-
-    private static func latestTimestamp(_ left: String?, _ right: String?) -> String? {
-        guard let left else { return right }
-        guard let right else { return left }
-        return timestampIsLater(left, than: right) ? left : right
-    }
-
-    private static func timestampIsLater(_ left: String?, than right: String?) -> Bool {
-        guard let left else { return false }
-        guard let right else { return true }
-        if let leftValue = Int64(left), let rightValue = Int64(right) {
-            return leftValue > rightValue
-        }
-        return left > right
     }
 
     func ensuringSession(_ session: LocalSessionPreviewRow) -> LocalSessionPreviewResult {

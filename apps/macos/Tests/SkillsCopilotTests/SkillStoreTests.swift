@@ -32,6 +32,9 @@ struct SkillStoreTests {
         try await runCase("localSessionPrewarmMoreAndAllUseCursorPages") {
             try await localSessionPrewarmMoreAndAllUseCursorPages()
         }
+        try await runCase("localSessionStoreAggregatesSkillUsageAcrossDelayedPages") {
+            try await localSessionStoreAggregatesSkillUsageAcrossDelayedPages()
+        }
         try await runCase("cancelledAndStaleLocalSessionPagesCannotPublish") {
             try await cancelledAndStaleLocalSessionPagesCannotPublish()
         }
@@ -316,6 +319,9 @@ struct SkillStoreTests {
         }
         try await runCase("providerActivityAccumulatesAllPagesWithoutChangingSummary") {
             try await providerActivityAccumulatesAllPagesWithoutChangingSummary()
+        }
+        try await runCase("providerActivityNotifiesAfterEachAcceptedPage") {
+            try await providerActivityNotifiesAfterEachAcceptedPage()
         }
         try await runCase("providerActivityCancellationAndStaleGenerationPreserveAcceptedRows") {
             try await providerActivityCancellationAndStaleGenerationPreserveAcceptedRows()

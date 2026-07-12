@@ -10,6 +10,7 @@ final class ProviderActivityController {
     private var activeFilterKey: ProviderActivityFilterKey?
     private var pageTask: Task<ProviderActivityPageResult, Error>?
     private var pageRequestID: UUID?
+    private var changeHandler: (() -> Void)?
 
     private(set) var rows: [ProviderActivityRow] = []
     private(set) var completeness = ListPageAccumulator<ProviderActivityRow>().state
@@ -17,6 +18,10 @@ final class ProviderActivityController {
 
     init(service: ServiceClient) {
         self.service = service
+    }
+
+    func setChangeHandler(_ handler: @escaping () -> Void) {
+        changeHandler = handler
     }
 
     func loadMore(loadAll: Bool) async {
@@ -141,6 +146,7 @@ final class ProviderActivityController {
         guard activeFilterKey == key, let accumulator = accumulators[key] else { return }
         rows = accumulator.items
         completeness = accumulator.state
+        changeHandler?()
     }
 
     private static func incompleteReason(for error: Error) -> ListIncompleteReason {
@@ -173,13 +179,10 @@ extension SkillStore {
     }
 
     func loadMoreProviderActivity(loadAll: Bool) async {
-        objectWillChange.send()
         await providerActivityController.loadMore(loadAll: loadAll)
-        objectWillChange.send()
     }
 
     func cancelProviderActivityLoadAll() {
         providerActivityController.cancelLoadAll()
-        objectWillChange.send()
     }
 }

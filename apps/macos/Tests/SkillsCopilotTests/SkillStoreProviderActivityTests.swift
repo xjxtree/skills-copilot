@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 @testable import SkillsCopilot
 
@@ -113,6 +114,34 @@ extension SkillStoreTests {
             !staleStore.providerActivityRows.allSatisfy { $0.id.hasPrefix("g2-") },
             "Stale generation rows must never publish."
         )
+    }
+
+    func providerActivityNotifiesAfterEachAcceptedPage() async throws {
+        let runner = ProviderActivityPageRunner(totalCount: 130, delayedOffsets: [100])
+        let store = SkillStore(service: runner.serviceClient())
+        await store.loadProviderObservability()
+
+        var notifiedRowCounts: [Int] = []
+        let observation = store.objectWillChange.sink {
+            notifiedRowCounts.append(store.providerActivityRows.count)
+        }
+        defer { observation.cancel() }
+
+        let loadAll = Task { @MainActor in
+            await store.loadMoreProviderActivity(loadAll: true)
+        }
+        try await waitUntil("Provider activity should accept page two before page three is released.") {
+            runner.activityRequestCount() == 3
+                && store.providerActivityRows.count == 100
+        }
+        try expectFalse(
+            !notifiedRowCounts.contains(100),
+            "The Store must notify observers as soon as each intermediate provider page is accepted."
+        )
+
+        runner.release(offset: 100)
+        await loadAll.value
+        try expectEqual(store.providerActivityRows.count, 130, "The released final page should still reach complete EOF.")
     }
 }
 
