@@ -867,6 +867,19 @@ pub(crate) fn select_newest_candidates(
     candidates
 }
 
+#[cfg(unix)]
+fn stat_modified_at_millis<Seconds, Nanoseconds>(seconds: Seconds, nanoseconds: Nanoseconds) -> i64
+where
+    Seconds: TryInto<i64>,
+    Nanoseconds: TryInto<i64>,
+{
+    let seconds = seconds.try_into().unwrap_or(i64::MAX);
+    let nanoseconds = nanoseconds.try_into().unwrap_or(0).clamp(0, 999_999_999);
+    seconds
+        .saturating_mul(1_000)
+        .saturating_add(nanoseconds / 1_000_000)
+}
+
 impl LocalSessionInventoryBudget {
     fn new(remaining_directories: usize, remaining_entries: usize) -> Self {
         Self {
@@ -1164,10 +1177,10 @@ impl GuardedLocalSessionRoot {
                                     .candidates
                                     .push(LocalSessionFileCandidate {
                                         path,
-                                        modified_at: metadata
-                                            .st_mtime
-                                            .saturating_mul(1_000)
-                                            .saturating_add(metadata.st_mtime_nsec / 1_000_000),
+                                        modified_at: stat_modified_at_millis(
+                                            metadata.st_mtime,
+                                            metadata.st_mtime_nsec,
+                                        ),
                                         file_size: metadata.st_size.max(0) as u64,
                                     });
                             }
@@ -1757,6 +1770,23 @@ mod tests {
             candidate_paths(select_newest_candidates(candidates, 2)),
             vec![PathBuf::from("alpha.jsonl"), PathBuf::from("middle.jsonl")]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stat_timestamp_accepts_unsigned_nanoseconds_and_saturates() {
+        assert_eq!(stat_modified_at_millis(1_i64, 999_999_999_u64), 1_999);
+        assert_eq!(stat_modified_at_millis(i64::MAX, 0_u64), i64::MAX);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn guarded_session_roots_are_explicitly_unsupported_off_unix() {
+        let error = match GuardedLocalSessionRoot::open(Path::new(r"C:\session-root")) {
+            Ok(_) => panic!("non-Unix guarded roots must remain unavailable"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]

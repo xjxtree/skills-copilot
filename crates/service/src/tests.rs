@@ -13,9 +13,13 @@ mod config_consistency;
 mod dispatch_fixtures;
 mod list_page_local_catalog;
 mod llm_provider;
+#[cfg(unix)]
 mod local_session_inventory;
+#[cfg(unix)]
 mod local_session_preview;
+#[cfg(unix)]
 mod local_session_project_scope;
+#[cfg(unix)]
 mod local_session_summary_detail;
 mod method_effects;
 mod protocol_fixtures;
@@ -26,6 +30,7 @@ mod support_seed;
 use support_and_status::EnvVarGuard;
 use support_seed::*;
 
+#[cfg(unix)]
 fn encoded_project_session_dir(project: &Path) -> String {
     project
         .to_string_lossy()

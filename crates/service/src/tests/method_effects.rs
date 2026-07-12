@@ -230,6 +230,7 @@ fn manifest_declared_read_only_methods_leave_fresh_filesystem_unchanged() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn session_keyset_continuation_is_stateless_and_does_not_persist_paths() {
     let root = temp_test_dir("effects-session-cursor");
