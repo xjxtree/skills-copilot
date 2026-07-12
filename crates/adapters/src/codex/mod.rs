@@ -9,6 +9,11 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
 
+mod paths;
+pub use paths::codex_home_dir;
+#[cfg(test)]
+use paths::resolved_codex_home;
+
 #[derive(Debug, Default)]
 pub struct CodexAdapter;
 
@@ -167,16 +172,6 @@ fn parse_skill_content(content: &str) -> Result<ParsedSkill, String> {
 
 fn codex_user_config_path(ctx: &AdapterContext) -> PathBuf {
     codex_home_dir(ctx).join("config.toml")
-}
-
-fn codex_home_dir(ctx: &AdapterContext) -> PathBuf {
-    // AdapterContext does not yet expose a first-class Codex home override.
-    // Honor CODEX_HOME only when it stays within the context user home;
-    // otherwise use the verified default user config path.
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.starts_with(&ctx.user_home))
-        .unwrap_or_else(|| ctx.user_home.join(".codex"))
 }
 
 fn codex_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Vec<AdapterRoot> {
@@ -753,6 +748,30 @@ mod tests {
         assert_eq!(roots[5].path, PathBuf::from("/etc/codex/skills"));
         assert_eq!(roots[5].scope, Scope::AgentGlobal);
         assert_eq!(roots[5].source, RootSource::Admin);
+    }
+
+    #[test]
+    fn codex_home_override_rejects_lexical_escape_and_relative_paths() {
+        let home = PathBuf::from("/tmp/codex-home-boundary/home");
+        let ctx = AdapterContext {
+            user_home: home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        assert_eq!(
+            resolved_codex_home(&ctx, Some(home.join("profiles/work"))),
+            home.join("profiles/work")
+        );
+        assert_eq!(
+            resolved_codex_home(&ctx, Some(home.join("../outside"))),
+            home.join(".codex")
+        );
+        assert_eq!(
+            resolved_codex_home(&ctx, Some(PathBuf::from("relative-codex-home"))),
+            home.join(".codex")
+        );
     }
 
     #[test]

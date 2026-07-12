@@ -5,6 +5,7 @@ use super::service_local_session_io::{
     MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
+use skills_copilot_adapters::codex_home_dir;
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
@@ -100,6 +101,8 @@ impl ServiceHost {
         let requested_roots = normalize_string_list(params.authorized_roots.clone());
         let auto_discover = params.auto_discover.unwrap_or(requested_roots.is_empty());
         let adapter_ctx = self.effective_adapter_ctx()?;
+        let codex_home = codex_home_dir(&adapter_ctx);
+        let codex_home = codex_home.canonicalize().unwrap_or(codex_home);
         let scope = LocalSessionScope::from_param(params.scope.as_deref());
         let project_filter_roots = local_session_project_filter_roots(
             &adapter_ctx,
@@ -207,6 +210,7 @@ impl ServiceHost {
                 root_requests,
                 requested_agent,
                 &project_filter_roots,
+                &codex_home,
                 scope,
                 sort,
                 direction,
@@ -294,6 +298,7 @@ impl ServiceHost {
                     skill_matchers: &skill_matchers,
                     scope,
                     project_filter_roots: &project_filter_roots,
+                    codex_home: &codex_home,
                     search: search.as_deref(),
                     include_content_items,
                 };
@@ -532,6 +537,7 @@ struct LocalSessionPreviewRowOptions<'a> {
     skill_matchers: &'a [LocalSessionSkillMatcher],
     scope: LocalSessionScope,
     project_filter_roots: &'a [PathBuf],
+    codex_home: &'a Path,
     search: Option<&'a str>,
     include_content_items: bool,
 }
@@ -693,10 +699,11 @@ fn auto_local_session_roots(
     }
 
     if local_session_agent_matches(requested_agent, AgentId::Codex.as_str()) {
+        let codex_home = codex_home_dir(adapter_ctx);
         push_existing_session_root(
             &mut roots,
             home,
-            home.join(".codex/sessions"),
+            codex_home.join("sessions"),
             "auto-discovered-read-only",
             "auto-local-session",
         );
@@ -1004,7 +1011,7 @@ fn local_session_preview_row(
         metadata.title = metadata
             .session_id
             .as_deref()
-            .and_then(|session_id| codex_session_index_title(io, path, session_id));
+            .and_then(|session_id| codex_session_index_title(io, options.codex_home, session_id));
     }
     if !local_session_matches_scope(
         options.scope,
@@ -3243,15 +3250,14 @@ fn path_or_root_contains_session_marker(path_text: &str, root_text: &str, marker
 
 fn codex_session_index_title(
     io: &mut LocalSessionIoContext,
-    path: &Path,
+    codex_root: &Path,
     session_id: &str,
 ) -> Option<String> {
-    let codex_root = local_session_agent_store_root(path, ".codex")?;
     let limits = io.limits;
     let (cache, request_budget) = (&mut io.cache, &mut io.budget);
     cache
-        .codex_titles_or_load(codex_root.clone(), || {
-            load_codex_session_index_titles(&codex_root, limits, request_budget)
+        .codex_titles_or_load(codex_root.to_path_buf(), || {
+            load_codex_session_index_titles(codex_root, limits, request_budget)
         })
         .get(session_id)
         .cloned()
@@ -3339,14 +3345,6 @@ fn complete_bounded_index_lines(bounded: &BoundedText) -> Vec<String> {
         .filter(|line| !line.trim().is_empty())
         .map(str::to_string)
         .collect()
-}
-
-fn local_session_agent_store_root(path: &Path, directory_name: &str) -> Option<PathBuf> {
-    path.ancestors()
-        .find(|ancestor| {
-            ancestor.file_name().and_then(|name| name.to_str()) == Some(directory_name)
-        })
-        .map(Path::to_path_buf)
 }
 
 fn json_session_project_candidate(map: &serde_json::Map<String, Value>) -> Option<String> {

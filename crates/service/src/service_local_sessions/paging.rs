@@ -66,6 +66,7 @@ impl ServiceHost {
         root_requests: Vec<LocalSessionRootRequest>,
         requested_agent: Option<&str>,
         project_filter_roots: &[PathBuf],
+        codex_home: &Path,
         scope: LocalSessionScope,
         sort: LocalSessionSort,
         direction: SortDirection,
@@ -216,6 +217,7 @@ impl ServiceHost {
                 skill_matchers: &skill_matchers,
                 scope,
                 project_filter_roots,
+                codex_home,
                 search: None,
                 include_content_items,
             };
