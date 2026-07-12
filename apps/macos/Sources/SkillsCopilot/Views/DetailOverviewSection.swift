@@ -46,7 +46,7 @@ struct SkillSummaryCard: View {
     }
 
     private var diagnosticRows: [CompactMetadataRow] {
-        [
+        var rows = [
             CompactMetadataRow(label: UIStrings.agent, value: DisplayText.agent(skill.agent), systemImage: "person.crop.circle"),
             CompactMetadataRow(label: UIStrings.scope, value: DisplayText.scope(for: skill), systemImage: "folder"),
             CompactMetadataRow(label: UIStrings.provenanceKind, value: SkillProvenanceDisplay.kind(for: skill), systemImage: "tag"),
@@ -57,6 +57,17 @@ struct SkillSummaryCard: View {
                 isCopyable: true
             )
         ]
+        if let package = skill.pluginPackageSummary {
+            rows.insert(
+                CompactMetadataRow(
+                    label: UIStrings.text("detail.pluginPackage", "Plugin package"),
+                    value: package,
+                    systemImage: "shippingbox"
+                ),
+                at: 3
+            )
+        }
+        return rows
     }
 }
 

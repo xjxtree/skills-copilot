@@ -74,17 +74,25 @@ impl Catalog {
         "SELECT id, agent, scope, project_root, path, COALESCE(display_path, path), definition_id, name, state, enabled FROM skill_instance ORDER BY agent, scope, name",
     )?;
         let rows = stmt.query_map([], |row| {
+            let agent: String = row.get(1)?;
+            let path = PathBuf::from(row.get::<_, String>(4)?);
+            let provenance = skill_source_provenance(&agent, &path);
             Ok((
                 SkillRecord {
                     id: row.get(0)?,
-                    agent: row.get(1)?,
+                    agent,
                     scope: row.get(2)?,
-                    path: PathBuf::from(row.get::<_, String>(4)?),
+                    path,
                     display_path: PathBuf::from(row.get::<_, String>(5)?),
                     definition_id: row.get(6)?,
                     name: row.get(7)?,
                     state: row.get(8)?,
                     enabled: row.get::<_, i64>(9)? != 0,
+                    publisher: provenance.publisher,
+                    package_name: provenance.package_name,
+                    package_version: provenance.package_version,
+                    source_kind: provenance.source_kind,
+                    read_only_reason: provenance.read_only_reason,
                 },
                 row.get::<_, Option<String>>(3)?,
             ))
@@ -144,16 +152,24 @@ impl Catalog {
          FROM skill_instance WHERE id = ?1",
     )?;
         let mut rows = stmt.query_map(params![id], |row| {
+            let agent: String = row.get(1)?;
+            let path = PathBuf::from(row.get::<_, String>(3)?);
+            let provenance = skill_source_provenance(&agent, &path);
             Ok(SkillRecord {
                 id: row.get(0)?,
-                agent: row.get(1)?,
+                agent,
                 scope: row.get(2)?,
-                path: PathBuf::from(row.get::<_, String>(3)?),
+                path,
                 display_path: PathBuf::from(row.get::<_, String>(4)?),
                 definition_id: row.get(5)?,
                 name: row.get(6)?,
                 state: row.get(7)?,
                 enabled: row.get::<_, i64>(8)? != 0,
+                publisher: provenance.publisher,
+                package_name: provenance.package_name,
+                package_version: provenance.package_version,
+                source_kind: provenance.source_kind,
+                read_only_reason: provenance.read_only_reason,
             })
         })?;
         match rows.next() {
@@ -824,11 +840,14 @@ fn history_source_revision<T: Serialize>(domain: &str, value: &T) -> Result<Stri
 
 fn skill_detail_record_from_row(row: &Row<'_>) -> rusqlite::Result<SkillDetailRecord> {
     let permissions_raw: String = row.get(12)?;
+    let agent: String = row.get(1)?;
+    let path = PathBuf::from(row.get::<_, String>(3)?);
+    let provenance = skill_source_provenance(&agent, &path);
     Ok(SkillDetailRecord {
         id: row.get(0)?,
-        agent: row.get(1)?,
+        agent,
         scope: row.get(2)?,
-        path: PathBuf::from(row.get::<_, String>(3)?),
+        path,
         display_path: PathBuf::from(row.get::<_, String>(4)?),
         definition_id: row.get(5)?,
         name: row.get(6)?,
@@ -840,5 +859,10 @@ fn skill_detail_record_from_row(row: &Row<'_>) -> rusqlite::Result<SkillDetailRe
         permissions: serde_json::from_str(&permissions_raw)
             .unwrap_or_else(|_| serde_json::json!({})),
         fingerprint: row.get(13)?,
+        publisher: provenance.publisher,
+        package_name: provenance.package_name,
+        package_version: provenance.package_version,
+        source_kind: provenance.source_kind,
+        read_only_reason: provenance.read_only_reason,
     })
 }

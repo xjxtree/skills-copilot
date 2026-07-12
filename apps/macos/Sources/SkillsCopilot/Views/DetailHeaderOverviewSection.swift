@@ -364,6 +364,12 @@ struct SkillDetailCard: View {
                 MetadataRow(label: UIStrings.scope, value: DisplayText.scope(for: skill))
                 MetadataRow(label: UIStrings.provenanceRoot, value: SkillProvenanceDisplay.rootClass(for: skill))
                 MetadataRow(label: UIStrings.provenanceKind, value: SkillProvenanceDisplay.kind(for: skill))
+                if let package = skill.pluginPackageSummary {
+                    MetadataRow(label: UIStrings.text("detail.pluginPackage", "Plugin package"), value: package)
+                }
+                if let reason = skill.readOnlyReason, !reason.isEmpty {
+                    MetadataRow(label: UIStrings.text("detail.readOnlyReason", "Read-only reason"), value: reason)
+                }
                 MetadataRow(label: UIStrings.definition, value: skill.definitionId)
                 MetadataRow(label: UIStrings.catalogID, value: skill.id)
                 PrivacyPathRow(label: UIStrings.source, path: skill.displayPath)

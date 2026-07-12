@@ -10,6 +10,43 @@ struct SkillRecord: Codable, Identifiable, Hashable {
     let name: String
     let state: String
     let enabled: Bool
+    let publisher: String?
+    let packageName: String?
+    let packageVersion: String?
+    let sourceKind: String?
+    let readOnlyReason: String?
+
+    init(
+        id: String,
+        agent: String,
+        scope: String,
+        path: String,
+        displayPath: String,
+        definitionId: String,
+        name: String,
+        state: String,
+        enabled: Bool,
+        publisher: String? = nil,
+        packageName: String? = nil,
+        packageVersion: String? = nil,
+        sourceKind: String? = nil,
+        readOnlyReason: String? = nil
+    ) {
+        self.id = id
+        self.agent = agent
+        self.scope = scope
+        self.path = path
+        self.displayPath = displayPath
+        self.definitionId = definitionId
+        self.name = name
+        self.state = state
+        self.enabled = enabled
+        self.publisher = publisher
+        self.packageName = packageName
+        self.packageVersion = packageVersion
+        self.sourceKind = sourceKind
+        self.readOnlyReason = readOnlyReason
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -21,6 +58,11 @@ struct SkillRecord: Codable, Identifiable, Hashable {
         case name
         case state
         case enabled
+        case publisher
+        case packageName = "package_name"
+        case packageVersion = "package_version"
+        case sourceKind = "source_kind"
+        case readOnlyReason = "read_only_reason"
     }
 }
 
@@ -75,6 +117,15 @@ struct SkillDedupeExplanation: Hashable {
 }
 
 extension SkillRecord {
+    var pluginPackageSummary: String? {
+        guard sourceKind == "chatgpt-plugin-cache", let publisher, let packageName else {
+            return nil
+        }
+        let package = "\(publisher)/\(packageName)"
+        guard let packageVersion, !packageVersion.isEmpty else { return package }
+        return "\(package) \(packageVersion)"
+    }
+
     var provenance: SkillProvenance {
         let rootKind = inferredRootKind
         let scopeKind = inferredScopeKind
@@ -162,6 +213,9 @@ extension SkillRecord {
     }
 
     private var inferredRootKind: SkillProvenanceRootKind {
+        if sourceKind == "chatgpt-plugin-cache" {
+            return .readOnly
+        }
         if normalizedScopeContains("tool") || normalizedPathContains("/tool-global/") || normalizedPathContains("/skill-pool/") {
             return .toolGlobal
         }
@@ -217,7 +271,7 @@ extension SkillRecord {
     }
 
     private var isReadOnlyProvenance: Bool {
-        normalizedAgent == "hermes" || normalizedAgent == "openclaw"
+        sourceKind == "chatgpt-plugin-cache" || normalizedAgent == "hermes" || normalizedAgent == "openclaw"
     }
 
     private var stableDisplayName: String {
@@ -318,6 +372,9 @@ extension SkillRecord {
             scopeLabel = "scope"
         }
         if rootKind == .readOnly {
+            if sourceKind == "chatgpt-plugin-cache", let pluginPackageSummary {
+                return "\(agentLabel) ChatGPT plugin · \(pluginPackageSummary)"
+            }
             if normalizedAgent == "hermes" && scopeKind == .global {
                 return "\(agentLabel) home/profile read-only"
             }
@@ -398,6 +455,11 @@ struct SkillDetailRecord: Codable, Identifiable, Hashable {
     let body: String
     let permissions: JSONValue
     let fingerprint: String
+    let publisher: String?
+    let packageName: String?
+    let packageVersion: String?
+    let sourceKind: String?
+    let readOnlyReason: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -414,6 +476,11 @@ struct SkillDetailRecord: Codable, Identifiable, Hashable {
         case body
         case permissions
         case fingerprint
+        case publisher
+        case packageName = "package_name"
+        case packageVersion = "package_version"
+        case sourceKind = "source_kind"
+        case readOnlyReason = "read_only_reason"
     }
 }
 
