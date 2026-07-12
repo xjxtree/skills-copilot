@@ -15,12 +15,26 @@ struct LocalizationModelTests {
         try expectEqual(AppTheme.fromStorage("light"), .light, "Light theme storage should parse")
         try expectEqual(AppTheme.fromStorage("dark"), .dark, "Dark theme storage should parse")
         try expectEqual(AppTheme.fromStorage("blue"), .system, "Unsupported theme storage should follow the system")
+        try expectEqual(
+            AgentIconCandidates.codex(bundlePath: "/Applications/ChatGPT.app").prefix(3).map(\.path),
+            [
+                "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png",
+                "/Applications/ChatGPT.app/Contents/Resources/icon-codex-light.png",
+                "/Applications/ChatGPT.app"
+            ],
+            "Codex icon candidates should prefer ChatGPT's dedicated Codex artwork and app bundle."
+        )
 
         UIStrings.use(.english)
         try expectEqual(UIStrings.scan, "Scan", "English scan label should load from en resources")
         try expectEqual(UIStrings.appearanceSettings, "Appearance", "English appearance settings label should load")
         try expectEqual(UIStrings.themeFollowSystem, "Follow System", "English system theme label should load")
         try expectEqual(UIStrings.themeDark, "Dark", "English dark theme label should load")
+        try expectEqual(
+            UIStrings.codexRestartRequired,
+            "ChatGPT Codex or the Codex CLI may need to restart to read config.toml changes.",
+            "English Codex restart guidance should name both current runtimes."
+        )
         try expectEqual(UIStrings.scannedSkills(2), "Scanned 2 skills across supported adapters.", "English formatted scan summary should preserve arguments")
 
         UIStrings.use(.simplifiedChinese)
@@ -32,6 +46,11 @@ struct LocalizationModelTests {
         try expectEqual(UIStrings.appearanceSettings, "外观", "Chinese appearance settings label should load")
         try expectEqual(UIStrings.themeFollowSystem, "跟随系统", "Chinese system theme label should load")
         try expectEqual(UIStrings.themeDark, "黑色主题", "Chinese dark theme label should load")
+        try expectEqual(
+            UIStrings.codexRestartRequired,
+            "ChatGPT 中的 Codex 或 Codex CLI 可能需要重启才能读取 config.toml 变更。",
+            "Chinese Codex restart guidance should name both current runtimes."
+        )
         try expectEqual(UIStrings.aiProviderSettings, "AI 提供方", "Chinese provider settings label should load")
         try expectEqual(UIStrings.service, "服务", "Chinese service label should load")
         try expectEqual(UIStrings.scannedSkills(2), "已扫描受支持 adapter 中的 2 个技能。", "Chinese formatted scan summary should preserve arguments")
