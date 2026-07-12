@@ -826,7 +826,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
         }))
         .expect("decode budget matrix params")
     };
-    for (name, limits) in [
+    for (name, limits, expected_request_limit) in [
         (
             "primary-byte",
             LocalSessionReadLimits {
@@ -834,6 +834,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 primary_tail_bytes: 0,
                 ..LocalSessionReadLimits::default()
             },
+            false,
         ),
         (
             "sidecar-file-count",
@@ -841,6 +842,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 max_sidecar_files: 0,
                 ..LocalSessionReadLimits::default()
             },
+            true,
         ),
         (
             "sidecar-session-bytes",
@@ -848,6 +850,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 max_sidecar_session_bytes: 0,
                 ..LocalSessionReadLimits::default()
             },
+            true,
         ),
         (
             "sidecar-file-bytes",
@@ -855,6 +858,7 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
                 max_sidecar_file_bytes: 8,
                 ..LocalSessionReadLimits::default()
             },
+            true,
         ),
     ] {
         let primary_content = if name == "primary-byte" {
@@ -870,15 +874,22 @@ fn primary_and_sidecar_budget_exhaustion_are_visible_terminal_limits() {
             .preview_local_sessions_with_test_limits(params(), limits)
             .unwrap_or_else(|error| panic!("{name} preview failed: {error}"));
         assert_eq!(result.session_rows.len(), 1, "{name} retains primary row");
-        assert!(result.candidate_set_truncated, "{name} marks limitation");
+        assert_eq!(
+            result.candidate_set_truncated, expected_request_limit,
+            "{name} request-level limitation"
+        );
         assert_eq!(
             result.source_completeness,
-            ListSourceCompleteness::Limited,
+            if expected_request_limit {
+                ListSourceCompleteness::Limited
+            } else {
+                ListSourceCompleteness::Enumerable
+            },
             "{name} completeness"
         );
         assert_eq!(
             result.incomplete_reason,
-            Some(ListIncompleteReason::SafetyBudget),
+            expected_request_limit.then_some(ListIncompleteReason::SafetyBudget),
             "{name} reason"
         );
         assert!(!result.has_more, "{name} must be terminal");

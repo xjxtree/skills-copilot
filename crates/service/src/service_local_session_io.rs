@@ -90,6 +90,7 @@ pub(crate) struct BoundedText {
     pub(crate) record_provenance: Option<BoundedRecordProvenance>,
     pub(crate) modified_at_millis: Option<i64>,
     pub(crate) truncated: bool,
+    pub(crate) request_budget_exhausted: bool,
     pub(crate) bytes_read: usize,
 }
 
@@ -1502,6 +1503,7 @@ fn read_bounded_from<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
     let head_available = usize_from_u64(file_len).min(spec.head_bytes);
     let head_grant = budget.claim(head_available);
+    let mut request_budget_exhausted = head_grant < head_available;
     let head_raw = read_window(reader, head_grant)?;
     let head_end = head_raw.len() as u64;
 
@@ -1509,6 +1511,7 @@ fn read_bounded_from<R: Read + Seek>(
     let tail_available = usize_from_u64(file_len.saturating_sub(head_end));
     let tail_request = desired_tail_window.min(tail_available);
     let tail_grant = budget.claim(tail_request);
+    request_budget_exhausted |= tail_grant < tail_request;
     let tail_start = file_len.saturating_sub(tail_grant as u64).max(head_end);
     reader.seek(SeekFrom::Start(tail_start))?;
     let tail_raw = read_window(reader, tail_grant)?;
@@ -1551,8 +1554,11 @@ fn read_bounded_from<R: Read + Seek>(
     };
     let mut provenance_scanner = TopLevelProvenanceScanner::new();
     provenance_scanner.feed(head_fragment);
+    let should_scan_gap = unread_gap_len <= spec.line_fragment_bytes;
+    let gap_budget_granted = !should_scan_gap || budget.claim_exact(unread_gap_len);
+    request_budget_exhausted |= should_scan_gap && !gap_budget_granted;
     let (unread_gap_has_line_break, provenance_bytes_read) =
-        if unread_gap_len <= spec.line_fragment_bytes && budget.claim_exact(unread_gap_len) {
+        if should_scan_gap && gap_budget_granted {
             reader.seek(SeekFrom::Start(head_end))?;
             let scan = scan_window_for_line_break(reader, unread_gap_len, &mut provenance_scanner)?;
             (
@@ -1590,6 +1596,7 @@ fn read_bounded_from<R: Read + Seek>(
         record_provenance,
         modified_at_millis: None,
         truncated,
+        request_budget_exhausted,
         bytes_read,
     })
 }

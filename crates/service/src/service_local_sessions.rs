@@ -1129,7 +1129,7 @@ fn read_local_session_file_content(
     Ok(LocalSessionPrimaryRead {
         content: compact_bounded_local_session_content(&bounded, io.limits.max_line_fragment_bytes),
         modified_at: bounded.modified_at_millis,
-        budget_exhausted: bounded.truncated,
+        budget_exhausted: bounded.request_budget_exhausted,
     })
 }
 
@@ -2355,6 +2355,7 @@ mod bounded_content_tests {
             record_provenance: None,
             modified_at_millis: None,
             truncated: true,
+            request_budget_exhausted: false,
             bytes_read: 80,
         };
 
@@ -2377,6 +2378,7 @@ mod bounded_content_tests {
             record_provenance: None,
             modified_at_millis: None,
             truncated: true,
+            request_budget_exhausted: false,
             bytes_read: 128,
         };
 
