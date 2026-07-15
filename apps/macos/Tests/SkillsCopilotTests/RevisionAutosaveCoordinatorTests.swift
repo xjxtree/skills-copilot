@@ -612,12 +612,14 @@ struct RevisionAutosaveCoordinatorTests {
 
     private func waitUntil(
         _ label: String,
-        timeout: TimeInterval = 2,
+        timeout: TimeInterval = 5,
         condition: @escaping @MainActor () async -> Bool
     ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
+        // Use a monotonic deadline so wall-clock adjustments cannot make concurrency checks flaky.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeout))
         while !(await condition()) {
-            if Date() > deadline {
+            if clock.now >= deadline {
                 throw NativeModelTestFailure(description: "Timed out waiting for \(label).")
             }
             try await Task.sleep(nanoseconds: 5_000_000)

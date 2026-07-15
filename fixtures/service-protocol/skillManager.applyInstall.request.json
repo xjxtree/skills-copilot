@@ -6,6 +6,14 @@
     "skills": [
       "frontend-design"
     ],
+    "agents": [
+      "claude-code",
+      "pi",
+      "opencode",
+      "codex",
+      "hermes-agent",
+      "openclaw"
+    ],
     "scope": "project",
     "network_allowed": true,
     "confirmed": true,

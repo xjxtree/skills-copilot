@@ -37,6 +37,7 @@ pub struct ConfigSnapshotRecord {
     pub id: String,
     pub agent: String,
     pub scope: String,
+    pub project_root: Option<String>,
     pub target: String,
     pub content: String,
     pub reason: String,
@@ -51,6 +52,7 @@ pub struct ConfigSnapshotDraft<'a> {
     pub id: &'a str,
     pub agent: &'a str,
     pub scope: &'a str,
+    pub project_root: Option<&'a str>,
     pub target: &'a str,
     pub content: &'a str,
     pub reason: &'a str,
@@ -314,7 +316,7 @@ pub(crate) fn empty_string_as_none(value: String) -> Option<String> {
 }
 
 pub fn migration_count() -> usize {
-    5
+    6
 }
 
 pub(crate) fn finding_triage_key(finding: &RuleFindingDraft, triage_context: &str) -> String {

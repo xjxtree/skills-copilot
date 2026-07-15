@@ -31,6 +31,7 @@ impl ServiceHost {
         let mut total_matched_count = 0usize;
 
         if let Some(catalog) = self.open_existing_catalog_read_only()? {
+            let adapter_ctx = self.effective_adapter_ctx()?;
             let mut matched_skills = self
                 .list_visible_skill_records(&catalog)?
                 .into_iter()
@@ -57,12 +58,27 @@ impl ServiceHost {
             });
             total_matched_count += matched_skills.len();
             for skill in matched_skills.into_iter().take(limit_per_kind) {
+                let provenance = [
+                    skill.publisher.as_deref(),
+                    skill.package_name.as_deref(),
+                    skill.package_version.as_deref(),
+                    skill.source_kind.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+                let subtitle = std::iter::once(skill.agent.as_str())
+                    .chain(std::iter::once(skill.scope.as_str()))
+                    .chain(provenance)
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 items.push(AppSearchItem {
                     id: format!("skill:{}", skill.id),
                     kind: "skill".to_string(),
                     target_id: skill.id.clone(),
                     title: skill.name.clone(),
-                    subtitle: format!("{} · {}", skill.agent, skill.scope),
+                    subtitle,
                     agent: Some(skill.agent.clone()),
                     skill: Some(skill),
                     session: None,
@@ -71,9 +87,9 @@ impl ServiceHost {
             }
 
             let mut snapshots = if let Some(agent) = requested_agent {
-                list_agent_config_snapshots(&catalog, agent, None)?
+                list_agent_config_snapshots(&catalog, &adapter_ctx, agent, None)?
             } else {
-                list_snapshots(&catalog)?
+                list_snapshots(&catalog, &adapter_ctx)?
             };
             snapshots.retain(|snapshot| {
                 requested_agent.is_none_or(|agent| snapshot.agent == agent)
@@ -101,7 +117,10 @@ impl ServiceHost {
                     kind: "config_history".to_string(),
                     target_id: snapshot.id.clone(),
                     title: snapshot.reason.clone(),
-                    subtitle: format!("{} · {}", snapshot.scope, snapshot.target),
+                    subtitle: format!(
+                        "{} · {} · {} · {}",
+                        snapshot.agent, snapshot.scope, snapshot.target, snapshot.created_at
+                    ),
                     agent: Some(snapshot.agent.clone()),
                     skill: None,
                     session: None,
@@ -137,10 +156,23 @@ impl ServiceHost {
                 kind: "session".to_string(),
                 target_id: session.id.clone(),
                 title: session.title.clone(),
-                subtitle: session
-                    .project_root
-                    .clone()
-                    .unwrap_or_else(|| session.scope.clone()),
+                subtitle: [
+                    session.agent.clone().unwrap_or_default(),
+                    session
+                        .project_root
+                        .clone()
+                        .unwrap_or_else(|| session.scope.clone()),
+                    session
+                        .ended_at
+                        .or(session.started_at)
+                        .or(session.modified_at)
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                ]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · "),
                 agent: session.agent.clone(),
                 skill: None,
                 session: Some(session),

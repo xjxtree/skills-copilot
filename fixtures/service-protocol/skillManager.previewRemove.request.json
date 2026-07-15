@@ -3,6 +3,14 @@
   "method": "skillManager.previewRemove",
   "params": {
     "skill": "frontend-design",
+    "agents": [
+      "claude-code",
+      "pi",
+      "opencode",
+      "codex",
+      "hermes-agent",
+      "openclaw"
+    ],
     "scope": "project",
     "confirmed": false
   }

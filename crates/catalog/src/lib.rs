@@ -220,6 +220,8 @@ pub enum CatalogError {
     Json(#[from] serde_json::Error),
     #[error("list source changed during pagination")]
     SourceChanged,
+    #[error("catalog schema migration did not reach the current version")]
+    SchemaOutdated,
 }
 
 impl Catalog {
@@ -233,6 +235,27 @@ impl Catalog {
         Ok(Self {
             conn: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
         })
+    }
+
+    /// Open an existing catalog for read-only service use, applying any
+    /// required schema migration through a short-lived writable connection
+    /// before returning the read-only handle.
+    pub fn open_read_only_after_migration(path: &Path) -> Result<Self, CatalogError> {
+        let catalog = Self::open_read_only(path)?;
+        if schema::is_current(&catalog.conn)? {
+            return Ok(catalog);
+        }
+        drop(catalog);
+
+        let writable = Self::open(path)?;
+        schema::init_schema(&writable.conn)?;
+        drop(writable);
+
+        let catalog = Self::open_read_only(path)?;
+        if !schema::is_current(&catalog.conn)? {
+            return Err(CatalogError::SchemaOutdated);
+        }
+        Ok(catalog)
     }
 
     pub fn in_memory() -> Result<Self, CatalogError> {
@@ -380,7 +403,7 @@ impl Catalog {
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
         let scoped_roots = legacy_scoped_scan_roots(scanned_roots);
-        self.mark_missing_except_with_project_context(agent, None, &scoped_roots, seen)
+        self.mark_missing_except_with_project_context(agent, None, Some(&scoped_roots), seen)
     }
 
     /// Scope-aware missing sweep. A complete path in one scope must not make a
@@ -391,7 +414,7 @@ impl Catalog {
         scanned_roots: &[(Scope, PathBuf)],
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
-        self.mark_missing_except_with_project_context(agent, None, scanned_roots, seen)
+        self.mark_missing_except_with_project_context(agent, None, Some(scanned_roots), seen)
     }
 
     /// Project-aware variant of [`Catalog::mark_missing_except`]. AgentProject
@@ -410,7 +433,7 @@ impl Catalog {
         self.mark_missing_except_with_project_context(
             agent,
             Some(current_project_root),
-            &scoped_roots,
+            Some(&scoped_roots),
             seen,
         )
     }
@@ -426,16 +449,28 @@ impl Catalog {
         self.mark_missing_except_with_project_context(
             agent,
             Some(current_project_root),
-            scanned_roots,
+            Some(scanned_roots),
             seen,
         )
+    }
+
+    /// Agent-wide cleanup for an exact complete scan. Unlike the root-bounded
+    /// sweep, this also retires rows whose previously declared source root no
+    /// longer exists or is no longer selected by the adapter.
+    pub fn mark_missing_except_agent_for_project_context(
+        &self,
+        agent: &str,
+        current_project_root: Option<&Path>,
+        seen: &[(String, PathBuf)],
+    ) -> Result<usize, CatalogError> {
+        self.mark_missing_except_with_project_context(agent, Some(current_project_root), None, seen)
     }
 
     fn mark_missing_except_with_project_context(
         &self,
         agent: &str,
         project_context: Option<Option<&Path>>,
-        scanned_roots: &[(Scope, PathBuf)],
+        scanned_roots: Option<&[(Scope, PathBuf)]>,
         seen: &[(String, PathBuf)],
     ) -> Result<usize, CatalogError> {
         let seen_set: HashSet<(String, String)> = seen
@@ -487,6 +522,9 @@ impl Catalog {
                     ) {
                         return false;
                     }
+                    let Some(scanned_roots) = scanned_roots else {
+                        return true;
+                    };
                     let record_path = PathBuf::from(path);
                     scanned_roots.iter().any(|(root_scope, root)| {
                         scope == root_scope.as_str() && record_path.starts_with(root)
@@ -743,12 +781,14 @@ impl Catalog {
         draft: ConfigSnapshotDraft<'_>,
     ) -> Result<(), CatalogError> {
         self.conn.execute(
-            "INSERT INTO config_snapshot (id, agent, scope, target, content, reason, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO config_snapshot (
+                id, agent, scope, project_root, target, content, reason, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 draft.id,
                 draft.agent,
                 draft.scope,
+                draft.project_root,
                 draft.target,
                 draft.content,
                 draft.reason,
@@ -1111,6 +1151,78 @@ mod tests {
         assert_eq!(
             outside_record.state, "loaded",
             "records outside any scanned_root are not swept"
+        );
+    }
+
+    #[test]
+    fn exact_agent_sweep_retires_removed_roots_but_preserves_other_projects() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let current_project = PathBuf::from("/tmp/current-project");
+        let other_project = PathBuf::from("/tmp/other-project");
+        let mut retired_global = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/retired-plugin/version-1/skills/review/SKILL.md",
+            "review",
+            SkillState::Loaded,
+        );
+        retired_global.id = "retired-global".to_string();
+        let mut retired_current_project = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentProject,
+            "/tmp/current-project/.removed-skills/review/SKILL.md",
+            "review",
+            SkillState::Loaded,
+        );
+        retired_current_project.id = "retired-current-project".to_string();
+        retired_current_project.project_root = Some(current_project.clone());
+        let mut other_project_record = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentProject,
+            "/tmp/other-project/.agents/skills/review/SKILL.md",
+            "review",
+            SkillState::Loaded,
+        );
+        other_project_record.id = "other-project".to_string();
+        other_project_record.project_root = Some(other_project);
+        catalog
+            .upsert_skill_instances(&[
+                retired_global,
+                retired_current_project,
+                other_project_record,
+            ])
+            .expect("seed retired-root rows");
+
+        let marked = catalog
+            .mark_missing_except_agent_for_project_context("codex", Some(&current_project), &[])
+            .expect("exact agent sweep succeeds");
+        let records = catalog.list_skill_records().expect("records after sweep");
+
+        assert_eq!(marked, 2);
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.id == "retired-global")
+                .expect("global row")
+                .state,
+            "missing"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.id == "retired-current-project")
+                .expect("current project row")
+                .state,
+            "missing"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.id == "other-project")
+                .expect("other project row")
+                .state,
+            "loaded"
         );
     }
 
@@ -1689,6 +1801,58 @@ mod tests {
             assert_eq!(finding.triage_note.as_deref(), Some("checked"));
             assert_eq!(finding.triage_updated_at, Some(10));
         }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_only_open_migrates_legacy_config_snapshot_schema_before_querying() {
+        let path = std::env::temp_dir().join(format!(
+            "skills-copilot-read-migration-{}-{}.sqlite",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        {
+            let conn = Connection::open(&path).expect("legacy catalog opens");
+            conn.execute_batch(
+                "CREATE TABLE config_snapshot (
+                    id TEXT PRIMARY KEY,
+                    agent TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                 );
+                 INSERT INTO config_snapshot (
+                    id, agent, scope, target, content, reason, created_at
+                 ) VALUES (
+                    'legacy-snapshot', 'claude-code', 'agent-global',
+                    '/tmp/settings.json', '{}', 'pre-toggle', 1
+                 );",
+            )
+            .expect("legacy schema seeds");
+        }
+
+        let catalog = Catalog::open_read_only_after_migration(&path)
+            .expect("legacy catalog migrates before read");
+        let snapshots = catalog
+            .list_all_config_snapshots(None)
+            .expect("migrated snapshots list");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].id, "legacy-snapshot");
+        assert_eq!(snapshots[0].project_root, None);
+        assert!(
+            catalog
+                .conn
+                .execute("DELETE FROM config_snapshot", [])
+                .is_err(),
+            "returned connection must remain read-only"
+        );
+        drop(catalog);
+
+        let conn = Connection::open(&path).expect("migrated catalog reopens");
+        assert!(schema::is_current(&conn).expect("schema version reads"));
+        drop(conn);
         let _ = std::fs::remove_file(path);
     }
 

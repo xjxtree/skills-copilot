@@ -8,7 +8,9 @@ struct SkillListModelTests {
         try agentFiltersLimitResultsAndGroupsUseStableAdapterOrder()
         try stateFiltersUseEffectiveStatusFindingsAndConflicts()
         try issueIndicatorCountsUseVisibleProblemSemantics()
+        try problemAndConflictPresentationStayIndependent()
         try widespreadBaselineFindingsDoNotDrivePerSkillIssuePresentation()
+        try declarationBaselineWarningsStayIgnoredForEverySupportedAgent()
         try triagedAndSuppressedFindingsDoNotDriveVisibleIssuePresentation()
         try problemItemsUseCurrentAgentRuntimeSemantics()
         try scopeFiltersSeparateProjectAndGlobalSkills()
@@ -22,12 +24,17 @@ struct SkillListModelTests {
 
     private func detailWorkbenchSectionsExposeDiagnostics() throws {
         try expectEqual(
-            DetailSection.visibleCases,
-            [.overview, .findings, .history, .metadata],
-            "Skill detail switcher should expose overview, issues, history, and metadata while omitting retired work surfaces."
+            DetailSection.visibleCases.map(\.rawValue),
+            ["overview", "findings", "conflicts", "history", "metadata"],
+            "Skill detail switcher should expose skill issues and same-agent conflicts as independent sections."
         )
         try expectEqual(DetailSection.primaryWorkCases, [], "Sidebar Work surfaces should remain retired; Provider Observability lives in Settings.")
-        try expectEqual(DetailSection.findings.title, "Issues", "Findings tab should be renamed for user-facing issue review.")
+        try expectEqual(DetailSection.findings.title, "Skill Issues", "The single-skill issue tab should name its scope explicitly.")
+        try expectEqual(
+            DetailSection(rawValue: "conflicts")?.title,
+            "Same-Agent Conflicts",
+            "Same-agent conflicts should have a distinct detail destination."
+        )
         try expectEqual(DetailSection.history.title, "History", "History section title")
         try expectEqual(DetailSection.metadata.title, "Metadata", "Metadata section title")
         try expectEqual(DetailSection.overview.systemImage, "chart.pie", "Overview tab should use a unified icon.")
@@ -95,9 +102,9 @@ struct SkillListModelTests {
 
     private func stateFiltersUseEffectiveStatusFindingsAndConflicts() throws {
         try expectEqual(
-            SkillStateFilter.sidebarCases,
-            [.all, .enabled, .disabled, .withFindings],
-            "The sidebar filter should expose Issues as the user-facing risk bucket and avoid a duplicate Risky filter."
+            SkillStateFilter.sidebarCases.map(\.rawValue),
+            ["all", "enabled", "disabled", "withFindings", "withConflicts"],
+            "The sidebar filter should expose Issues and Conflicts as independent user-facing buckets."
         )
         try expectEqual(filtered(stateFilter: .enabled).map(\.id), ["alpha", "gamma", "omega"], "Enabled filter")
         try expectEqual(filtered(stateFilter: .disabled).map(\.id), ["beta"], "Disabled filter")
@@ -105,8 +112,8 @@ struct SkillListModelTests {
         try expectEqual(filtered(stateFilter: .missing).map(\.id), ["epsilon"], "Missing filter")
         try expectEqual(filtered(stateFilter: .shadowed).map(\.id), ["zeta"], "Shadowed filter")
         try expectEqual(filtered(stateFilter: .unknown).map(\.id), ["theta"], "Unknown filter")
-        try expectEqual(filtered(stateFilter: .withFindings).map(\.id), ["delta", "epsilon", "gamma", "theta"], "Problem item filter")
-        try expectEqual(filtered(stateFilter: .risky).map(\.id), ["gamma"], "Risky filter")
+        try expectEqual(filtered(stateFilter: .withFindings).map(\.id), ["delta", "epsilon", "theta"], "Problem item filter")
+        try expectEqual(filtered(stateFilter: .risky).map(\.id), [], "Risky filter")
     }
 
     private func issueIndicatorCountsUseVisibleProblemSemantics() throws {
@@ -122,16 +129,97 @@ struct SkillListModelTests {
             )
         })
 
-        try expectEqual(counts["gamma"], 2, "Rows should count instance findings and same-agent conflicts.")
-        try expectEqual(counts["epsilon"], 2, "Rows should count missing state plus same-agent conflicts.")
+        try expectEqual(counts["gamma"], 0, "Rows should ignore built-in declaration-baseline findings without folding in same-agent conflicts.")
+        try expectEqual(counts["epsilon"], 1, "Rows should count missing state without folding in same-agent conflicts.")
         try expectEqual(counts["delta"], 1, "Rows should count broken state as a visible issue.")
         try expectEqual(counts["theta"], 1, "Rows should count unknown/root-error state as a visible issue.")
         try expectEqual(counts["beta"], 0, "Rows should ignore cross-agent-only conflicts.")
         try expectEqual(counts["alpha"], 0, "Rows should ignore definition-only findings until they are attached to an instance.")
         try expectEqual(
+            SkillListModel.displayFindings(skills: Self.skills, findings: Self.findings).map(\.id),
+            [],
+            "The shared visible-finding collection should exclude records that cannot navigate to a current skill instance."
+        )
+        try expectEqual(
+            SkillListModel.displayIssueCount(skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts, agentFilter: .all),
+            3,
+            "The sidebar Issues metric should equal the navigable per-skill issue total, including catalog-state problems and excluding unattached or ignored findings."
+        )
+        try expectEqual(
+            SkillListModel.displayIssueCount(skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts, agentFilter: .claudeCode),
+            2,
+            "The selected-agent Issues metric should stay scoped to the same visible rows as the Issues filter."
+        )
+        try expectEqual(
+            SkillListModel.displayIssueCount(skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts, agentFilter: .codex),
+            1,
+            "Missing catalog-state records should contribute to the selected-agent Issues metric even without a finding row."
+        )
+        try expectEqual(
             Self.skills.map { SkillListModel.issueIndicatorCount(for: $0, skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts) },
             Self.skills.map { issueIndex.issueCount(for: $0.id) },
             "Precomputed issue index should preserve per-row issue semantics while avoiding repeated full-list work."
+        )
+    }
+
+    private func problemAndConflictPresentationStayIndependent() throws {
+        let skills = [
+            skill(id: "finding", agent: "codex", scope: "agent-global", path: "/skills/finding/SKILL.md", definitionId: "def.finding", name: "Finding"),
+            skill(id: "missing", agent: "codex", scope: "agent-global", path: "/skills/missing/SKILL.md", definitionId: "def.missing", name: "Missing", state: "missing", enabled: false),
+            skill(id: "conflict-a", agent: "codex", scope: "agent-global", path: "/skills/a/SKILL.md", definitionId: "def.conflict", name: "Conflict"),
+            skill(id: "conflict-b", agent: "codex", scope: "agent-project", path: "/project/skills/a/SKILL.md", definitionId: "def.conflict", name: "Conflict"),
+        ]
+        let findings = [
+            Self.finding(id: "finding-only", instanceId: "finding", ruleId: "body.too-long"),
+            Self.finding(id: "collision-a", instanceId: "conflict-a", ruleId: "name.collision", severity: "info"),
+            Self.finding(id: "collision-b", instanceId: "conflict-b", ruleId: "name.collision", severity: "info"),
+        ]
+        let conflicts = [
+            ConflictGroupRecord(
+                id: "same-agent-runtime-conflict",
+                definitionId: "def.conflict",
+                reason: "content-drift",
+                winnerId: nil,
+                instanceIds: ["conflict-a", "conflict-b"]
+            ),
+        ]
+
+        let problemSkills = SkillListModel.filteredAndSorted(
+            skills: skills,
+            findings: findings,
+            conflicts: conflicts,
+            searchText: "",
+            agentFilter: .codex,
+            stateFilter: .withFindings,
+            sortOrder: .name
+        )
+        guard let conflictFilter = SkillStateFilter(rawValue: "withConflicts") else {
+            throw NativeModelTestFailure(description: "The independent Conflicts filter should be available.")
+        }
+        let conflictSkills = SkillListModel.filteredAndSorted(
+            skills: skills,
+            findings: findings,
+            conflicts: conflicts,
+            searchText: "",
+            agentFilter: .codex,
+            stateFilter: conflictFilter,
+            sortOrder: .name
+        )
+        let issueIndex = SkillListModel.issueIndex(skills: skills, findings: findings, conflicts: conflicts)
+
+        try expectEqual(
+            problemSkills.map(\.id),
+            ["finding", "missing"],
+            "The Issues filter should contain only single-skill findings and catalog-state problems."
+        )
+        try expectEqual(issueIndex.issueCount(for: "conflict-a"), 0, "A pure multi-skill conflict should not increment the single-skill issue badge.")
+        try expectEqual(issueIndex.issueCount(for: "conflict-b"), 0, "Every member of a pure conflict should keep a zero single-skill issue badge.")
+        try expectEqual(issueIndex.conflictCount(for: "conflict-a"), 1, "A conflict member should expose its conflict-group count independently.")
+        try expectEqual(issueIndex.conflictCount(for: "conflict-b"), 1, "Every conflict member should expose the same independent group count.")
+        try expectEqual(
+            conflictSkills.map(\.id),
+            ["conflict-a", "conflict-b"],
+            "The Conflicts filter should contain every current-agent member of a same-agent runtime conflict."
         )
     }
 
@@ -155,12 +243,13 @@ struct SkillListModelTests {
             Self.finding(id: "network-gamma", instanceId: "gamma", ruleId: "permissions.network-declared"),
             Self.finding(id: "body-gamma", instanceId: "gamma", ruleId: "body.too-long"),
             Self.finding(id: "sparse-network", instanceId: "codex-alpha", ruleId: "permissions.network-declared"),
+            Self.finding(id: "error-network", instanceId: "codex-beta", ruleId: "permissions.network-declared", severity: "error"),
         ]
 
         try expectEqual(
             SkillListModel.displayFindings(skills: skills, findings: findings).map(\.id),
-            ["body-gamma", "sparse-network"],
-            "Widespread declaration-baseline findings should be omitted from per-skill issue presentation, while specific and sparse findings remain visible."
+            ["body-gamma", "error-network"],
+            "Built-in declaration-baseline warnings should be omitted at every coverage level, while specific findings and error-severity diagnostics remain visible."
         )
         try expectEqual(
             SkillListModel.issueIndicatorCount(for: skills[0], skills: skills, findings: findings, conflicts: []),
@@ -173,7 +262,7 @@ struct SkillListModelTests {
             "Rows should still count specific findings after widespread baseline findings are filtered out."
         )
         try expectEqual(
-            SkillListModel.displayFindingCount(skills: skills, findings: findings, agentFilter: .claudeCode),
+            SkillListModel.displayIssueCount(skills: skills, findings: findings, conflicts: [], agentFilter: .claudeCode),
             1,
             "Sidebar issue metrics should use the same per-skill presentation semantics as rows and filters."
         )
@@ -187,8 +276,8 @@ struct SkillListModelTests {
                 stateFilter: .withFindings,
                 sortOrder: .name
             ).map(\.id),
-            ["codex-alpha", "gamma"],
-            "The Issues filter should navigate to skills with specific or sparse findings, not skills that only share common baseline gaps."
+            ["codex-beta", "gamma"],
+            "The Issues filter should navigate only to specific or error-severity findings, not declaration-baseline warnings at any coverage level."
         )
     }
 
@@ -227,7 +316,7 @@ struct SkillListModelTests {
             "The Issues filter should exclude ignored, reviewed, and suppressed findings."
         )
         try expectEqual(
-            SkillListModel.displayFindingCount(skills: skills, findings: findings, agentFilter: .all),
+            SkillListModel.displayIssueCount(skills: skills, findings: findings, conflicts: [], agentFilter: .all),
             2,
             "Sidebar issue metrics should count only active, unsuppressed findings."
         )
@@ -238,6 +327,46 @@ struct SkillListModelTests {
         )
     }
 
+    private func declarationBaselineWarningsStayIgnoredForEverySupportedAgent() throws {
+        let rules = [
+            "frontmatter.tools-not-empty",
+            "permissions.network-declared",
+            "permissions.exec-needs-human",
+        ]
+        let skills = SkillAgentFilter.managementCases.enumerated().map { index, agent in
+            skill(
+                id: "skill-\(agent.rawValue)",
+                agent: agent.rawValue,
+                scope: "agent-global",
+                path: "/\(agent.rawValue)/skills/fixture/SKILL.md",
+                definitionId: "def.\(agent.rawValue)",
+                name: "Fixture \(index)"
+            )
+        }
+        var findings = skills.enumerated().map { index, skill in
+            Self.finding(
+                id: "baseline-\(skill.agent)",
+                instanceId: skill.id,
+                ruleId: rules[index % rules.count]
+            )
+        }
+        findings.append(Self.finding(id: "specific", instanceId: skills[0].id, ruleId: "body.too-long"))
+
+        try expectEqual(
+            SkillListModel.displayFindings(skills: skills, findings: findings).map(\.id),
+            ["specific"],
+            "Every supported agent should apply the same built-in declaration-baseline warning policy."
+        )
+        for agent in SkillAgentFilter.managementCases {
+            let expected = agent == .claudeCode ? 1 : 0
+            try expectEqual(
+                SkillListModel.displayIssueCount(skills: skills, findings: findings, conflicts: [], agentFilter: agent),
+                expected,
+                "Filtered issue totals should stay consistent for \(agent.rawValue)."
+            )
+        }
+    }
+
     private func problemItemsUseCurrentAgentRuntimeSemantics() throws {
         try expectEqual(
             filtered(agentFilter: .claudeCode, stateFilter: .withFindings).map(\.id),
@@ -246,13 +375,13 @@ struct SkillListModelTests {
         )
         try expectEqual(
             filtered(agentFilter: .codex, stateFilter: .withFindings).map(\.id),
-            ["epsilon", "gamma"],
-            "Problem items should include same-agent Codex runtime conflicts and missing/finding records."
+            ["epsilon"],
+            "Problem items should include missing records but exclude conflict-only and declaration-baseline findings."
         )
         try expectEqual(
             filtered(agentFilter: .all, stateFilter: .withFindings).map(\.id),
-            ["delta", "epsilon", "gamma", "theta"],
-            "The all-agent Problem Items filter should fold issue groups, same-agent conflicts, and broken/missing/unknown states together."
+            ["delta", "epsilon", "theta"],
+            "The all-agent Problem Items filter should include actionable findings and broken/missing/unknown states without conflict-only or declaration-baseline records."
         )
         try expectEqual(
             SkillListModel.sameAgentConflictGroupCount(skills: Self.skills, conflicts: Self.conflicts),

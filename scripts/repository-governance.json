@@ -4,6 +4,7 @@
     "README.md",
     "AGENTS.md",
     "CONTRIBUTING.md",
+    "docs/README.md",
     "docs/ai-agent-workflow.md",
     "docs/plans/roadmap.md",
     "docs/plans/development-tasks.md",
@@ -19,6 +20,7 @@
   "required_text": {
     "README.md": ["## App Features", "GitHub Releases"],
     "AGENTS.md": ["## Safety Boundaries"],
+    "docs/README.md": ["## Product And Architecture", "## Maintenance Rules"],
     "docs/plans/roadmap.md": ["## Near-Term Work"],
     "docs/plans/development-tasks.md": ["## Active Task Rules"],
     "docs/runbooks/distribution-runbook.md": [

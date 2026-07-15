@@ -68,7 +68,8 @@ enum UIStrings {
     static var openclaw: String { text("agent.openclaw", "OpenClaw") }
     static var detailSection: String { text("detail.section", "Detail Section") }
     static var overview: String { text("detail.overview", "Overview") }
-    static var findings: String { text("detail.findings", "Issues") }
+    static var findings: String { text("detail.findings", "Skill Issues") }
+    static var conflicts: String { text("detail.conflicts", "Same-Agent Conflicts") }
     static var batchToggleTitle: String { text("batchToggle.title", "Safe Batch") }
     static var batchToggleOpen: String { text("batchToggle.open", "Batch") }
     static var batchToggleOpenHelp: String { text("batchToggle.open.help", "Choose visible skills, preview the safe enable/disable plan, then apply confirmed writable changes.") }
@@ -100,6 +101,9 @@ enum UIStrings {
     static var projectChoosePrompt: String { text("project.choosePrompt", "Choose a project or OpenClaw workspace directory to scan project-scoped Claude, Codex, opencode, and workspace-scoped OpenClaw skills.") }
     static var projectSelectedSource: String { text("project.source.selected", "Selected project") }
     static var projectGlobalRootsOnly: String { text("project.source.globalOnly", "No project: global roots only") }
+    static func projectSwitching(_ name: String) -> String {
+        format("project.switching", "Switching to %@ and refreshing project data…", name)
+    }
     static var recentProjects: String { text("project.recent", "Recent Projects") }
     static var noRecentProjects: String { text("project.noRecent", "No Recent Projects") }
     static var projectValidation: String { text("project.validation", "Project Validation") }
@@ -896,7 +900,8 @@ enum UIStrings {
     static var menuSkills: String { text("menu.skills", "Skills") }
     static var menuShowTaskCockpit: String { text("menu.showTaskCockpit", "Show Task Preflight") }
     static var menuShowOverview: String { text("menu.showOverview", "Show Overview") }
-    static var menuShowFindings: String { text("menu.showFindings", "Show Issues") }
+    static var menuShowFindings: String { text("menu.showFindings", "Show Skill Issues") }
+    static var menuShowConflicts: String { text("menu.showConflicts", "Show Same-Agent Conflicts") }
     static var menuClearSearch: String { text("menu.clearSearch", "Clear Search") }
 
     static func enabledSummary(enabled: Int, total: Int) -> String {
@@ -994,11 +999,11 @@ enum UIStrings {
     }
 
     static func refreshReloaded(_ skills: Int, _ findings: Int, _ conflicts: Int) -> String {
-        format("refresh.reloaded", "Reloaded %d skills, %d findings, and %d same-agent conflicts.", skills, findings, conflicts)
+        format("refresh.reloaded", "Reloaded %d skills, %d visible issues, and %d same-agent conflicts.", skills, findings, conflicts)
     }
 
     static func refreshScanComplete(_ scanned: Int, _ skills: Int, _ findings: Int, _ conflicts: Int) -> String {
-        format("refresh.scanComplete", "Scan complete: %d scanned, %d in catalog, %d findings, %d same-agent conflicts.", scanned, skills, findings, conflicts)
+        format("refresh.scanComplete", "Scan complete: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts.", scanned, skills, findings, conflicts)
     }
 
     static func refreshScanPartial(
@@ -1011,7 +1016,7 @@ enum UIStrings {
     ) -> String {
         format(
             "refresh.scanPartial",
-            "Scan completed-partial: %d scanned, %d in catalog, %d findings, %d same-agent conflicts. First issue: %@. Recovery: %@",
+            "Scan completed-partial: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@",
             scanned,
             skills,
             findings,
@@ -1027,6 +1032,14 @@ enum UIStrings {
 
     static func refreshPartialIssue(kind: String, path: String, detail: String) -> String {
         format("refresh.partialIssue", "%@ at %@: %@", kind, path, detail)
+    }
+
+    static func refreshDanglingSymlink(_ path: String) -> String {
+        format(
+            "refresh.danglingSymlink",
+            "Dangling Agent skill link at %@ was skipped. The surrounding root was fully reconciled; confirm the source is unavailable before removing only this link.",
+            path
+        )
     }
 
     static var refreshPartialRecoveryDefault: String {

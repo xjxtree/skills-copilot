@@ -141,6 +141,7 @@ fn seed_catalog_with_snapshot(host: &ServiceHost, skill_path: &Path, target: &Pa
             id: "snapshot-id",
             agent: "claude-code",
             scope: "agent-global",
+            project_root: None,
             target: &target.to_string_lossy(),
             content: "{}\n",
             reason: "pre-toggle",

@@ -127,6 +127,7 @@ struct CompactMetadataGrid: View {
 struct CompactMetadataRowView: View {
     let row: CompactMetadataRow
     let labelWidth: CGFloat
+    @State private var didCopy = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -144,30 +145,55 @@ struct CompactMetadataRowView: View {
             }
             .frame(width: labelWidth, alignment: .leading)
 
-            Text(row.value)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .help(row.value)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if DisplayText.isLikelyPath(row.value) {
+                PrivacyPathText(path: row.value, font: .system(.caption, design: .monospaced), lineLimit: 1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(row.value)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(row.value)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             if row.isCopyable {
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(row.value, forType: .string)
+                    announceCopySuccess()
                 } label: {
-                    Image(systemName: "doc.on.doc")
+                    Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                        .foregroundStyle(didCopy ? .green : .primary)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .help(UIStrings.text("action.copy", "Copy"))
+                .help(didCopy ? UIStrings.text("action.copied", "Copied") : UIStrings.text("action.copy", "Copy"))
                 .accessibilityLabel("\(UIStrings.text("action.copy", "Copy")) \(row.label)")
+                .accessibilityValue(didCopy ? UIStrings.text("action.copied", "Copied") : "")
             }
         }
         .frame(minHeight: CGFloat(UIOptimizationPresentation.detailHeader.metadataRowHeight), alignment: .center)
         .contentShape(Rectangle())
+    }
+
+    private func announceCopySuccess() {
+        if let window = NSApp.mainWindow {
+            NSAccessibility.post(
+                element: window,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: UIStrings.text("action.copied", "Copied"),
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+        didCopy = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            didCopy = false
+        }
     }
 }
 
@@ -272,9 +298,13 @@ struct MetadataRow: View {
         GridRow {
             Text(label)
                 .foregroundStyle(.secondary)
-            Text(value)
-                .textSelection(.enabled)
-                .lineLimit(3)
+            if DisplayText.isLikelyPath(value) {
+                PrivacyPathText(path: value, lineLimit: 3)
+            } else {
+                Text(value)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+            }
         }
     }
 }
@@ -288,9 +318,13 @@ struct MetadataLine: View {
             Text(label)
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 80, alignment: .leading)
-            Text(value)
-                .textSelection(.enabled)
-                .lineLimit(3)
+            if DisplayText.isLikelyPath(value) {
+                PrivacyPathText(path: value, lineLimit: 3)
+            } else {
+                Text(value)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+            }
         }
     }
 }
@@ -380,6 +414,7 @@ struct LongTextDetailSheet: View {
     let text: String
     let renderMode: LongTextRenderMode
     @Environment(\.dismiss) private var dismiss
+    @State private var didCopy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -390,9 +425,15 @@ struct LongTextDetailSheet: View {
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
+                    announceCopySuccess()
                 } label: {
-                    Label(UIStrings.llmPromptCopyFullText, systemImage: "doc.on.doc")
+                    Label(
+                        didCopy ? UIStrings.text("action.copied", "Copied") : UIStrings.llmPromptCopyFullText,
+                        systemImage: didCopy ? "checkmark" : "doc.on.doc"
+                    )
                 }
+                .foregroundStyle(didCopy ? .green : .primary)
+                .accessibilityValue(didCopy ? UIStrings.text("action.copied", "Copied") : "")
                 Button(UIStrings.llmPromptCloseDetails) {
                     dismiss()
                 }
@@ -413,6 +454,23 @@ struct LongTextDetailSheet: View {
         }
         .padding()
         .frame(minWidth: 680, minHeight: 460)
+    }
+
+    private func announceCopySuccess() {
+        if let window = NSApp.mainWindow {
+            NSAccessibility.post(
+                element: window,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: UIStrings.text("action.copied", "Copied"),
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+        didCopy = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            didCopy = false
+        }
     }
 }
 
@@ -513,6 +571,7 @@ struct RenderedMarkdownDocument: View {
             )
         }
     }
+
 }
 
 struct MarkdownCodeBlockView: View {

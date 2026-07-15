@@ -82,7 +82,7 @@
       "owner": "SkillManagerPanel",
       "source": "skillManagerVisibleSearchResults",
       "policy": "paged",
-      "control_scope": "searchResultsSection",
+      "control_scope": "searchSection",
       "control_anchor": "status",
       "total_count_source": "external manager total_count when defensible",
       "status_id": "skill-manager.search.completeness",
@@ -90,31 +90,13 @@
       "allowed_limitations": ["source_limited", "unsupported_protocol"]
     },
     {
-      "id": "skill-manager.installed",
+      "id": "skill-manager.inventory",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
       "owner": "SkillManagerPanel",
-      "source": "skillManagerVisibleInstalledRecords",
+      "source": "skillManagerInventoryItems",
       "policy": "complete",
-      "total_count_source": "installed result total_count",
+      "total_count_source": "merged manager and app-owned inventory count",
       "allowed_limitations": ["source_limited", "unsupported_protocol"]
-    },
-    {
-      "id": "skill-manager.local-library",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
-      "owner": "SkillManagerPanel",
-      "source": "localSkillLibrarySkills",
-      "policy": "complete",
-      "total_count_source": "local library collection count",
-      "allowed_limitations": []
-    },
-    {
-      "id": "skill-manager.suggestions",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
-      "owner": "SkillManagerPanel",
-      "source": "skillManagerSearchSuggestions",
-      "policy": "complete",
-      "total_count_source": "skillManagerSearchSuggestions.count",
-      "allowed_limitations": []
     },
     {
       "id": "provider.activity",
@@ -381,12 +363,10 @@
     {
       "id": "skill-manager.agents",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
-      "owner": "SkillManagerTargetSummary",
-      "source": "agents",
-      "policy": "summary_with_expand",
-      "control_scope": "body",
+      "owner": "SkillManagerPanel",
+      "source": "actionAgentIDs",
+      "policy": "complete",
       "total_count_source": "manager target agent count",
-      "full_access_id": "skill-manager-agents.show-all",
       "allowed_limitations": []
     },
     {

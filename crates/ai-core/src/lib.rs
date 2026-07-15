@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use skills_copilot_core::{Scope, SkillInstance};
+use skills_copilot_core::{Scope, SkillInstance, SkillState};
+
+pub const NATIVE_RUNTIME_NAMESPACE: &str = "native";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Severity {
@@ -53,6 +55,7 @@ pub struct ConflictSummary {
 #[derive(Debug, Default)]
 pub struct RuleContext {
     pub previous_fingerprints: HashMap<String, String>,
+    pub runtime_conflict_namespaces: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Default)]
@@ -84,7 +87,7 @@ pub fn evaluate_mvp_rules(instances: &[SkillInstance], ctx: &RuleContext) -> Rul
         }
     }
 
-    append_name_collision_results(instances, &mut report);
+    append_name_collision_results(instances, ctx, &mut report);
     report
 }
 
@@ -218,7 +221,11 @@ impl Rule for FingerprintChanged {
     }
 }
 
-fn append_name_collision_results(instances: &[SkillInstance], report: &mut RuleReport) {
+fn append_name_collision_results(
+    instances: &[SkillInstance],
+    ctx: &RuleContext,
+    report: &mut RuleReport,
+) {
     let mut groups: BTreeMap<&str, Vec<&SkillInstance>> = BTreeMap::new();
     for inst in instances {
         groups
@@ -242,7 +249,7 @@ fn append_name_collision_results(instances: &[SkillInstance], report: &mut RuleR
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let runtime_conflicts = runtime_name_collision_groups(&group);
+        let runtime_conflicts = runtime_name_collision_groups(&group, ctx);
         let has_multiple_instances = instances.len() > 1;
         let has_conflict = !runtime_conflicts.is_empty();
 
@@ -252,7 +259,7 @@ fn append_name_collision_results(instances: &[SkillInstance], report: &mut RuleR
             description,
             active_instance: group
                 .iter()
-                .find(|inst| inst.enabled)
+                .find(|inst| inst.state == SkillState::Loaded && inst.enabled)
                 .map(|inst| inst.id.clone())
                 .or_else(|| group.first().map(|inst| inst.id.clone())),
             instances: instances.clone(),
@@ -261,7 +268,7 @@ fn append_name_collision_results(instances: &[SkillInstance], report: &mut RuleR
             fingerprint_set: fingerprint_set.clone(),
         });
 
-        for (agent, collision_group) in runtime_conflicts {
+        for (agent, runtime_namespace, collision_group) in runtime_conflicts {
             let collision_instances: Vec<String> =
                 collision_group.iter().map(|inst| inst.id.clone()).collect();
             let collision_fingerprints: Vec<String> = collision_group
@@ -277,8 +284,15 @@ fn append_name_collision_results(instances: &[SkillInstance], report: &mut RuleR
             } else {
                 "name-collision"
             };
+            let id = if runtime_namespace == NATIVE_RUNTIME_NAMESPACE
+                || runtime_namespace == "native-plus-plugin"
+            {
+                format!("{definition_id}:{agent}:{reason}")
+            } else {
+                format!("{definition_id}:{agent}:{runtime_namespace}:{reason}")
+            };
             report.conflicts.push(ConflictSummary {
-                id: format!("{definition_id}:{agent}:{reason}"),
+                id,
                 definition_id: definition_id.to_string(),
                 reason: reason.to_string(),
                 winner_id: None,
@@ -318,29 +332,64 @@ fn append_name_collision_results(instances: &[SkillInstance], report: &mut RuleR
 
 fn runtime_name_collision_groups<'a>(
     group: &[&'a SkillInstance],
-) -> Vec<(String, Vec<&'a SkillInstance>)> {
-    let mut by_agent: BTreeMap<String, Vec<&SkillInstance>> = BTreeMap::new();
+    ctx: &RuleContext,
+) -> Vec<(String, String, Vec<&'a SkillInstance>)> {
+    let mut by_agent: BTreeMap<String, BTreeMap<String, Vec<&SkillInstance>>> = BTreeMap::new();
     for inst in group {
+        if inst.state != SkillState::Loaded || !inst.enabled {
+            continue;
+        }
+        let runtime_namespace = match &ctx.runtime_conflict_namespaces {
+            Some(namespaces) => {
+                let Some(namespace) = namespaces.get(&inst.id) else {
+                    continue;
+                };
+                namespace.clone()
+            }
+            None => NATIVE_RUNTIME_NAMESPACE.to_string(),
+        };
         by_agent
             .entry(inst.agent.as_str().to_string())
+            .or_default()
+            .entry(runtime_namespace)
             .or_default()
             .push(*inst);
     }
 
-    by_agent
-        .into_iter()
-        .filter_map(|(agent, members)| {
-            let distinct_paths = members
-                .iter()
-                .map(|inst| inst.path.to_string_lossy().to_string())
-                .collect::<BTreeSet<_>>();
-            if members.len() > 1 && distinct_paths.len() > 1 {
-                Some((agent, members))
-            } else {
-                None
+    let mut conflicts = Vec::new();
+    for (agent, mut by_namespace) in by_agent {
+        let native = by_namespace
+            .remove(NATIVE_RUNTIME_NAMESPACE)
+            .unwrap_or_default();
+        if !native.is_empty() && !by_namespace.is_empty() {
+            let mut members = native;
+            members.extend(by_namespace.into_values().flatten());
+            if has_distinct_runtime_paths(&members) {
+                conflicts.push((agent, "native-plus-plugin".to_string(), members));
             }
-        })
-        .collect()
+            continue;
+        }
+
+        if has_distinct_runtime_paths(&native) {
+            conflicts.push((agent.clone(), NATIVE_RUNTIME_NAMESPACE.to_string(), native));
+        }
+        for (runtime_namespace, members) in by_namespace {
+            if has_distinct_runtime_paths(&members) {
+                conflicts.push((agent.clone(), runtime_namespace, members));
+            }
+        }
+    }
+    conflicts
+}
+
+fn has_distinct_runtime_paths(members: &[&SkillInstance]) -> bool {
+    members.len() > 1
+        && members
+            .iter()
+            .map(|inst| inst.path.to_string_lossy().to_string())
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1
 }
 
 #[cfg(test)]
@@ -478,6 +527,131 @@ mod tests {
 
         let report = evaluate_mvp_rules(&[first, second], &RuleContext::default());
         assert!(report.conflicts.is_empty());
+    }
+
+    #[test]
+    fn disabled_and_missing_instances_do_not_create_runtime_conflicts() {
+        let first = skill(
+            "loaded",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Loaded\n---\n",
+            "loaded body",
+        );
+        let mut disabled = skill(
+            "disabled",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Disabled\n---\n",
+            "disabled body",
+        );
+        disabled.state = SkillState::Disabled;
+        disabled.enabled = false;
+        let mut missing = skill(
+            "missing",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Missing\n---\n",
+            "missing body",
+        );
+        missing.state = SkillState::Missing;
+
+        let report = evaluate_mvp_rules(&[first, disabled, missing], &RuleContext::default());
+
+        assert!(report.conflicts.is_empty());
+        assert!(report
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id != "name.collision"));
+    }
+
+    #[test]
+    fn distinct_plugin_namespaces_do_not_collide_on_raw_skill_name() {
+        let first = skill(
+            "plugin-a",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Plugin A\n---\n",
+            "plugin a body",
+        );
+        let second = skill(
+            "plugin-b",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Plugin B\n---\n",
+            "plugin b body",
+        );
+        let ctx = RuleContext {
+            runtime_conflict_namespaces: Some(HashMap::from([
+                (first.id.clone(), "plugin:package-a@publisher".to_string()),
+                (second.id.clone(), "plugin:package-b@publisher".to_string()),
+            ])),
+            ..Default::default()
+        };
+
+        let report = evaluate_mvp_rules(&[first, second], &ctx);
+
+        assert!(report.conflicts.is_empty());
+    }
+
+    #[test]
+    fn native_and_active_plugin_instances_with_same_name_still_conflict() {
+        let native = skill(
+            "native",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Native\n---\n",
+            "native body",
+        );
+        let plugin = skill(
+            "plugin",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Plugin\n---\n",
+            "plugin body",
+        );
+        let ctx = RuleContext {
+            runtime_conflict_namespaces: Some(HashMap::from([
+                (native.id.clone(), NATIVE_RUNTIME_NAMESPACE.to_string()),
+                (plugin.id.clone(), "plugin:same@publisher".to_string()),
+            ])),
+            ..Default::default()
+        };
+
+        let report = evaluate_mvp_rules(&[native, plugin], &ctx);
+
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].reason, "content-drift");
+    }
+
+    #[test]
+    fn duplicate_paths_inside_one_plugin_namespace_still_conflict() {
+        let first = skill(
+            "plugin-a-first",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Plugin A\n---\n",
+            "same body",
+        );
+        let second = skill(
+            "plugin-a-second",
+            "same",
+            "same",
+            "---\nname: same\ndescription: Plugin A\n---\n",
+            "same body",
+        );
+        let ctx = RuleContext {
+            runtime_conflict_namespaces: Some(HashMap::from([
+                (first.id.clone(), "plugin:package-a@publisher".to_string()),
+                (second.id.clone(), "plugin:package-a@publisher".to_string()),
+            ])),
+            ..Default::default()
+        };
+
+        let report = evaluate_mvp_rules(&[first, second], &ctx);
+
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].reason, "name-collision");
     }
 
     #[test]

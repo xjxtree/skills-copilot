@@ -450,15 +450,11 @@ fn dedup_roots(roots: Vec<AdapterRoot>) -> Vec<AdapterRoot> {
     let mut seen = HashSet::new();
     let mut deduped = Vec::new();
     for root in roots {
-        let key_path = root
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| root.path.clone());
         let key = format!(
             "{}|{}|{}",
             root.scope.as_str(),
             root_source_key(&root.source),
-            key_path.to_string_lossy()
+            root.path.to_string_lossy()
         );
         if seen.insert(key) {
             deduped.push(root);
@@ -719,6 +715,39 @@ mod tests {
                 .all(|root| !root.path.starts_with("/tmp/unverified")),
             "opencode must not scan unverified extra roots"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn keeps_project_compatibility_root_that_authorizes_native_symlink() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-opencode-project-link-roots-{}",
+            std::process::id()
+        ));
+        let project = temp_root.join("project");
+        std::fs::create_dir_all(project.join(".agents/skills"))
+            .expect("create project compatibility root");
+        std::fs::create_dir_all(project.join(".claude")).expect("create Claude project dir");
+        std::os::unix::fs::symlink("../.agents/skills", project.join(".claude/skills"))
+            .expect("link Claude project skills");
+        let adapter = OpencodeAdapter;
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: Some(project.clone()),
+            project_cwd: Some(project.clone()),
+            extra_roots: vec![],
+        };
+
+        let roots = adapter.roots(&ctx);
+
+        assert!(roots.iter().any(|root| {
+            root.source == RootSource::Project && root.path == project.join(".claude/skills")
+        }));
+        assert!(roots.iter().any(|root| {
+            root.source == RootSource::Project && root.path == project.join(".agents/skills")
+        }));
+
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

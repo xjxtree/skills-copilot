@@ -1,0 +1,9 @@
+{
+  "id": "fixture-skill-manager-preview-local-archive-update",
+  "method": "skillManager.previewLocalArchiveUpdate",
+  "params": {
+    "instance_id": "fixture-local-tool-global",
+    "archive_path": "/tmp/local-review-helper.zip",
+    "confirmed": false
+  }
+}

@@ -2,10 +2,12 @@ import Foundation
 
 enum SkillManagerRequestKey: Hashable {
     case search(query: String, owner: String?, networkAllowed: Bool)
-    case installed(agents: [String], scope: SkillManagerScope)
+    case installedInventory
     case mutation(SkillManagerMutationInputs)
     case localCreate(name: String)
     case localDelete(instanceID: String)
+    case localArchiveImport(archivePath: String)
+    case localArchiveUpdate(instanceID: String, archivePath: String)
 }
 
 struct SkillManagerMutationInputs: Hashable {
@@ -22,6 +24,7 @@ struct SkillManagerMutationInputs: Hashable {
     let scope: SkillManagerScope
     let distribution: SkillManagerDistribution?
     let networkAllowed: Bool
+    let cleanupLocalInstanceID: String?
 
     init(
         kind: Kind,
@@ -30,7 +33,8 @@ struct SkillManagerMutationInputs: Hashable {
         agents: [String],
         scope: SkillManagerScope,
         distribution: SkillManagerDistribution?,
-        networkAllowed: Bool
+        networkAllowed: Bool,
+        cleanupLocalInstanceID: String? = nil
     ) {
         self.kind = kind
         self.source = source?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,6 +43,7 @@ struct SkillManagerMutationInputs: Hashable {
         self.scope = scope
         self.distribution = distribution
         self.networkAllowed = networkAllowed
+        self.cleanupLocalInstanceID = cleanupLocalInstanceID
     }
 
     private static func canonicalValues(_ values: [String]) -> [String] {
@@ -72,6 +77,19 @@ struct SkillManagerLocalDeleteConfirmation: Hashable {
     let generation: SkillManagerRequestGeneration
     let instanceID: String
     let result: SkillManagerLocalDeleteRecord
+}
+
+struct SkillManagerLocalArchiveUpdateConfirmation: Hashable {
+    let generation: SkillManagerRequestGeneration
+    let instanceID: String
+    let archivePath: String
+    let result: SkillManagerLocalArchiveUpdateRecord
+}
+
+struct SkillManagerLocalArchiveImportConfirmation: Hashable {
+    let generation: SkillManagerRequestGeneration
+    let archivePath: String
+    let result: SkillManagerLocalArchiveImportRecord
 }
 
 struct SkillManagerRequestGeneration: Hashable {

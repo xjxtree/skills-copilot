@@ -313,7 +313,7 @@ fn openclaw_bundled_skill_roots() -> Vec<AdapterRoot> {
     .map(|path| AdapterRoot {
         scope: Scope::AgentGlobal,
         path: PathBuf::from(path),
-        source: RootSource::Extra,
+        source: RootSource::System,
     })
     .collect()
 }
@@ -441,6 +441,10 @@ mod tests {
                 .all(|root| !root.path.starts_with("/tmp/unverified")),
             "OpenClaw must not consume generic extra roots as configured extraDirs"
         );
+        assert!(roots
+            .iter()
+            .filter(|root| { root.path.starts_with("/usr") || root.path.starts_with("/opt") })
+            .all(|root| root.source == RootSource::System));
     }
 
     #[test]

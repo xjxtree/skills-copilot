@@ -129,6 +129,10 @@ conditional on the exact local state that the client reviewed.
 | `skillManager.previewLocalCreate` | None | Never | Never | None |
 | `skillManager.applyLocalCreate` | App-local data, External manager state may change when invoked | Always | Never | Required |
 | `skillManager.deleteLocal` | App-local data | Never | Never | Required |
+| `skillManager.previewLocalArchiveImport` | None | Never | Never | None |
+| `skillManager.applyLocalArchiveImport` | App-local data | Never | Never | Required |
+| `skillManager.previewLocalArchiveUpdate` | None | Never | Never | None |
+| `skillManager.applyLocalArchiveUpdate` | App-local data | Never | Never | Required |
 | `project.getContext` | None | Never | Never | None |
 | `project.setContext` | App-local data | Never | Never | None |
 | `project.clearContext` | App-local data | Never | Never | None |
@@ -222,6 +226,11 @@ or expose write controls.
 - `snapshot.listAgentConfigPage` and `skill.listEventsPage` provide complete,
   additive paged access while the legacy unpaged methods and response shapes
   remain supported. Page limits are clamped to `1...100`.
+- Config snapshot records include optional `project_root`. Project-scoped
+  records are returned only when that canonical root matches the active
+  service project context; legacy project rows without a binding are hidden.
+  Preview and rollback repeat the same binding check and include it in the
+  confirmation token, so a snapshot from project A cannot be used in project B.
 - Config pages use `(created_at DESC, id DESC)` and event pages use
   `(occurred_at DESC, id DESC)` stable keyset order. Continuations carry an
   opaque `v1:` cursor and the first page's `source_revision`; a changed ordered
@@ -244,6 +253,16 @@ or expose write controls.
 - Provenance is derived deterministically from the cataloged path at read time.
   It does not persist plugin manifests, introduce a plugin-cache write path, or
   merge ChatGPT plugin ownership with `skillManager.*` package ownership.
+- Plugin-cache provenance is inventory, not activation. Same-name cache rows
+  from different packages do not create runtime conflicts. Only loaded/enabled
+  packages explicitly enabled in the guarded Codex config participate in their
+  package namespace; native and active-plugin rows of the same name conflict.
+- Read-only startup/reload, list, detail, analysis, conflict, app-search, and
+  LLM skill-selection paths project current guarded Codex `[[skills.config]]`
+  `enabled=false` entries over cached native records. Removing an override
+  restores cached `loaded`/`disabled` records to loaded; broken, missing, and
+  shadowed states remain unchanged. The projection does not scan directories,
+  write config, or mutate the catalog.
 
 ## Catalog Scan Diagnostics
 
@@ -256,10 +275,28 @@ or expose write controls.
   `completed-with-skipped-roots`, and `completed-no-roots-scanned` distinguish
   degraded outcomes; the enclosing activity is `completed-partial` when any
   adapter has a partial root.
+- Missing implicit built-in root candidates do not populate `roots_skipped` or
+  `scan_issues` and do not degrade status. Missing explicit roots, existing
+  invalid roots, and authorized traversal failures retain typed diagnostics.
+- Unavailable skill symlink targets are reported as `dangling_symlink` without
+  making the surrounding root partial. The single link is skipped, the rest of
+  the root remains eligible for exact stale-row reconciliation, and recovery
+  text tells the user to confirm the source is unavailable before removing only
+  that link. Resolvable targets outside the same-scope allowlist remain
+  `root_outside_allowlist`.
+- Native catalog completeness is exact when the enclosing activity is
+  `completed` and every summary has empty `roots_partial` and `roots_skipped`.
+  A `completed-no-roots-scanned` adapter is an exact empty source, and
+  non-degrading issues such as rejected outside-allowlist entries do not turn
+  the authorized catalog into an unknown or incomplete list.
+- After an exact adapter scan, unseen rows for that agent and current project
+  context transition to `missing`, including rows beneath roots that no longer
+  exist or are no longer selected. A partial or skipped scan performs only
+  complete-root-bounded cleanup and preserves uncertain rows.
 - `scan_issues[]` contains typed `kind`, redacted `path`, and a stable
   privacy-safe `detail` field; raw filesystem error text does not cross the
   service boundary. Stable kinds are `root_unavailable`,
-  `root_outside_allowlist`, `directory_unreadable`, `entry_unreadable`,
+  `root_outside_allowlist`, `dangling_symlink`, `directory_unreadable`, `entry_unreadable`,
   `file_unreadable`, `file_too_large`, and `budget_exceeded`.
 - Paths under the active home, project, project CWD, or app-data roots use
   placeholders such as `$HOME` and `<project-root>`. Explicit adapter roots
@@ -277,6 +314,28 @@ or expose write controls.
   pre-diagnostics service, while all pre-existing summary fields remain
   required and keep their original wire keys.
 
+## Finding Visibility Semantics
+
+- `catalog.listFindings`, `catalog.getStateSnapshot.findings`, and scan
+  `activity.finding_count` expose retained current catalog records. These raw
+  records support local audit and compatibility and are not user-visible issue
+  totals.
+- The derived user-visible rule-finding projection excludes suppressed records,
+  reviewed/ignored triage, records without a current `instance_id`, and
+  `name.collision`. It also excludes warning/information records for
+  `frontmatter.tools-not-empty`, `permissions.network-declared`, and
+  `permissions.exec-needs-human`; error/critical records for those rules remain
+  visible. Open and `needs-follow-up` findings remain active.
+- `skill.getHealth` finding counts and agent summaries, plus related findings
+  included by `llm.previewPrompt`, use the derived projection. Runtime
+  collisions remain available through conflict groups and conflict summaries,
+  without duplicating generated `name.collision` findings.
+- Native issue totals, the Issues filter, row/header counts, detail issue cards,
+  and refresh feedback use the same projection and separately include
+  missing/broken/unknown catalog-state problems. The independent Conflicts
+  filter and conflict counts use loaded/enabled same-agent runtime conflict
+  groups, with Codex plugin package namespaces applied as described above.
+
 ## Skill Manager
 
 - `npx skills` is the first writable manager. `skills-npm` is listed as a
@@ -284,11 +343,11 @@ or expose write controls.
 - Default targets are exactly the supported app agents: `claude-code`, `pi`,
   `opencode`, `codex`, `hermes-agent`, and `openclaw`. The service never uses
   wildcard agent targeting.
-- Install defaults to symlink distribution. `--copy` is sent only when the user
-  explicitly selects copy.
+- Install uses symlink distribution. The native Skill Manager does not expose a
+  copy-mode choice.
 - Search, install, and update may require external network access through the
-  manager CLI. Requests must carry `network_allowed`; previews show whether a
-  command will run.
+  manager CLI. The native client allows those scoped operations by default;
+  previews still show the destination command before any confirmed write.
 - `skillManager.search` returns every row emitted by the invoked manager and
   flattens list metadata into the response. Because the current manager output
   does not advertise an authoritative total or continuation token, search uses
@@ -296,16 +355,39 @@ or expose write controls.
   `incomplete_reason=source_limited`; `returned_count` is only the number of
   rows actually returned and is never presented as the source total. A
   network-blocked preview uses the same source semantics with zero rows.
-- `skillManager.listInstalled` consumes the manager's complete JSON list and
+- `skillManager.listInstalled` runs once per project/global scope rather than
+  once per agent, consumes the CLI's complete JSON inventory, and
   reports `returned_count=total_count`, `source_completeness=enumerable`, and
-  no incomplete reason. The bounded, redacted command capture must decode as a
-  recognized JSON list shape; truncated, malformed, or unrecognized output
-  fails closed with a stable error instead of becoming an exact empty list.
-  No raw manager payload is included in that error. No pagination flags or
+  no incomplete reason. Machine-readable output is parsed in full behind a
+  4 MiB fail-closed limit; only bounded diagnostic output is returned. A
+  truncated, malformed, or unrecognized list fails closed with a stable error
+  instead of becoming an exact empty list.
+  Because the Node CLI can lose bytes when a large `console.log` exits while
+  stdout is a pipe, installed JSON is captured through a private `0600`
+  temporary regular file, bounded before reading, and removed on every return
+  path. This prevents the observed 64 KiB pipe-buffer truncation without
+  persisting inventory output.
+  A row is `source_kind=manager` only when the matching scope lock file proves
+  a managed source. Unlocked `.agents/skills` rows are `source_kind=local` and
+  retain a redacted local source path; every row also retains a dedicated,
+  redacted `path` identity so the native cache can associate the CLI row with
+  its scanned canonical source without treating that source as another package.
+  Appearing in `skills list` alone is not manager ownership evidence. No raw
+  manager payload is included in that
+  error. No pagination flags or
   tokens are invented for either command. The native client may reveal an
   already-returned search collection in 20-row steps without issuing another
   manager or network request, while installed JSON and the app-owned local
   library remain fully accessible.
+- The native inventory emits one row per installed package source. A matching
+  catalog row enriches the CLI row and is consumed rather than appended again.
+  Catalog-only fallback rows are limited to skill sources beneath the selected
+  project/global `.agents/skills` root (including nested package layouts);
+  plugin caches, configured read-only roots, and other catalog discovery paths
+  never become editable local-package rows.
+  Installed local rows outside those guarded roots remain visible as external
+  local sources, but do not expose ZIP replacement; only their manager-backed
+  agent unlink/removal action remains available.
 - Native clients validate method-specific metadata, not only generic page
   invariants. Search accepts only terminal unknown/source-limited metadata;
   installed accepts only terminal exact enumerable metadata. Invalid refresh
@@ -318,6 +400,28 @@ or expose write controls.
 - Enable/disable remains in `config.toggleSkill`,
   `batch.previewSkillToggles`, and `batch.applySkillToggles` because it is
   agent config state, not manager package state.
+- The native client prewarms project and global skill inventories during app
+  startup. Opening the Skill Manager performs no read; its Load Data button is
+  the only page-local refresh trigger. Local app-owned skills are merged into
+  the same skill-centric inventory.
+- Search starts with a keyword and result selection. Install/remove agent
+  targets and the shared install scope are chosen only after a skill is
+  selected. Manager update changes a shared source and therefore reports all
+  linked supported agents instead of accepting a misleading per-agent target.
+- Remote search also exposes a local ZIP import entry. Import validates one
+  skill and copies it into the app-owned local library after confirmation; the
+  imported skill then uses the normal project/global and agent install flow.
+- Local app-owned and guarded descendant project/global `.agents/skills`
+  sources use a replacement ZIP selected after the skill. The
+  service requires an absolute regular archive with exactly one matching
+  `SKILL.md`, rejects path traversal, symlinks, special files, oversize entries,
+  and files outside the skill root, and binds apply to the archive and current
+  source digest through a preview token. Imported scripts are never executed.
+- When a removal selects every linked Agent target for an app-owned local
+  source, the native confirmation identifies it as a full uninstall. After the
+  confirmed manager unlink succeeds, the same guarded mutation flow previews
+  and deletes the app-owned source; the manager removes its matching lock
+  entry. Partial target removal keeps the shared source.
 
 ## Session Preview
 
@@ -360,6 +464,10 @@ or expose write controls.
   native legacy wrapper retains `offset=0` and `max_files=800`. New paged summary
   clients explicitly select keyset, omit `offset` and `max_files`, and
   apply scope, search, and sort locally over accepted summaries.
+- A legacy request with one exact non-empty `session_id` is a bounded detail
+  read, not a fan-out summary scan. It may use up to a 4 MiB primary head and a
+  512 KiB tail within the unchanged aggregate request budget so large Codex
+  JSONL wrappers do not hide early user/tool events beyond the summary window.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
   ascending.
@@ -425,6 +533,9 @@ or expose write controls.
   use the embedded record to insert the result into the corresponding list page,
   select it, and show its detail even when that item was not present in the
   currently loaded frontend page.
+- Result subtitles carry stable disambiguation context: skill Agent/scope and
+  package provenance, session Agent/project/time, and config Agent/scope/target
+  time. Search remains local and does not read skill files on each keystroke.
 
 ## LLM Prompt Actions
 
@@ -435,6 +546,16 @@ or expose write controls.
   bodies, frontmatter, config contents, paths, credentials, raw prompts, raw
   responses, traces, writes, scripts, snapshots, and rollback commands are
   excluded.
+- Task Preflight first ranks cached effective skills against the task, includes
+  at most 24 candidates, and blocks confirmation when the estimated request
+  exceeds the 12,000-token safety budget (in addition to the provider profile
+  limit).
+- A successful HTTP transport is not sufficient for a successful Task
+  Preflight. The provider output must be valid JSON with the required business
+  result sections; otherwise prompt-run and provider-call metadata use
+  `parse_failed` with `response_schema_invalid`. Provider metadata timestamps
+  are epoch milliseconds; plausible legacy epoch-second records are normalized
+  on read.
 
 ## Environment Overrides
 

@@ -1,0 +1,16 @@
+{
+  "id": "fixture-skill-manager-preview-local-archive-update",
+  "ok": true,
+  "result": {
+    "instance_id": "fixture-local-tool-global",
+    "skill_name": "local-review-helper",
+    "archive_path": "/tmp/local-review-helper.zip",
+    "archive_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "file_count": 3,
+    "uncompressed_bytes": 4096,
+    "preview_token": "skill-manager-local-archive:fixture-preview",
+    "confirmed": false,
+    "applied": false,
+    "summary": "The ZIP contains one matching local skill and can replace the app-owned source after confirmation."
+  }
+}

@@ -8,9 +8,17 @@ struct SkillManagerModelTests {
         try visibleResultsRevealReturnedRowsInTwentyRowSteps()
         try searchRecordSeparatesNetworkBlockedFromEmptyResults()
         try methodSpecificPageMetadataRejectsCrossMethodSemantics()
+        try installedSourceOwnershipDecodesIndependentlyFromInventoryDiscovery()
+        try localArchiveImportPreviewDecodes()
+        try managerInventoryConsumesItsMatchingCatalogSource()
+        try inventoryExcludesReadOnlyPluginCacheSources()
+        try installedLocalSourceWinsOverSameNameAppLibraryEntry()
+        try installedAppLibrarySourceRetainsCleanupIdentity()
+        try nestedSharedLocalSourceSupportsZipUpdate()
+        try externalLocalSourceHasNoArchiveUpdateTarget()
+        try duplicateInstalledRowsMergeAgentLinks()
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
-        try suggestionsRemainCompleteStableAndUnique()
         try duplicateSearchAndInstalledIDsKeepEveryDisplayOccurrence()
     }
 
@@ -24,27 +32,6 @@ struct SkillManagerModelTests {
         search.reset()
         search.loadAll(totalReturned: 35)
         try expectEqual(search.visibleItems(in: rows).count, 35, "Search Load All")
-    }
-
-    private func suggestionsRemainCompleteStableAndUnique() throws {
-        let local = (0..<12).map { "local-\($0)" }
-        let installed = (0..<9).map { "installed-\($0)" } + ["LOCAL-0"]
-        let fallback = ["security", "review", "diagnostics"]
-        let first = SkillManagerSuggestionModel.suggestions(
-            localNames: local,
-            installedNames: installed,
-            fallback: fallback
-        )
-        let second = SkillManagerSuggestionModel.suggestions(
-            localNames: local,
-            installedNames: installed,
-            fallback: fallback
-        )
-
-        try expectEqual(first.count, 24, "Suggestion presentation must keep every case-insensitively unique item.")
-        try expectEqual(first, second, "Suggestion ordering must remain stable across identical inputs.")
-        try expectEqual(Set(first.map { $0.lowercased() }).count, first.count, "Suggestion values must remain case-insensitively unique.")
-        try expectEqual(first.last, "diagnostics", "Suggestion presentation must retain the final fallback item.")
     }
 
     private func duplicateSearchAndInstalledIDsKeepEveryDisplayOccurrence() throws {
@@ -109,23 +96,8 @@ struct SkillManagerModelTests {
     private func workflowsSeparatePackageOperations() throws {
         try expectEqual(
             SkillManagerWorkflow.allCases.map(\.id),
-            ["search-install", "installed-updates", "local-library"],
-            "Skill Manager should expose exactly the three planned workflow tabs."
-        )
-        try expectEqual(
-            SkillManagerWorkflow.searchInstall.allowsExternalManagerMutation,
-            true,
-            "Search & Install should use the external manager gate."
-        )
-        try expectEqual(
-            SkillManagerWorkflow.installedUpdates.allowsExternalManagerMutation,
-            true,
-            "Installed & Updates should use the external manager gate."
-        )
-        try expectEqual(
-            SkillManagerWorkflow.localLibrary.allowsExternalManagerMutation,
-            false,
-            "Local Library should remain available as an app-local workflow when the external manager is unavailable."
+            ["search-install", "installed-updates"],
+            "Skill Manager should expose search and a unified installed/local inventory."
         )
     }
 
@@ -241,6 +213,263 @@ struct SkillManagerModelTests {
             )
             try expectEqual(invalid.hasValidPageMetadata, false, "Installed invalid metadata case \(index) must be rejected.")
         }
+    }
+
+    private func installedSourceOwnershipDecodesIndependentlyFromInventoryDiscovery() throws {
+        let payload = """
+        {
+          "name": "bug-fix",
+          "source": "<project-root>/.agents/skills/bug-fix",
+          "source_kind": "local",
+          "agents": ["Claude Code", "Codex", "OpenCode"],
+          "scope": "project",
+          "path": "<project-root>/.agents/skills/bug-fix",
+          "raw": {}
+        }
+        """.data(using: .utf8)!
+
+        let installed = try JSONDecoder().decode(SkillManagerInstalledRecord.self, from: payload)
+
+        try expectEqual(installed.isLocalSource, true, "An unlocked discovered skill should decode as a local source.")
+        try expectEqual(installed.name, "bug-fix", "Local ownership must preserve the discovered skill identity.")
+        try expectEqual(installed.source, "<project-root>/.agents/skills/bug-fix", "Local source paths should remain redacted but useful.")
+        try expectEqual(installed.path, "<project-root>/.agents/skills/bug-fix", "Installed records should retain a dedicated source path for identity matching.")
+    }
+
+    private func localArchiveImportPreviewDecodes() throws {
+        let payload = """
+        {
+          "skill_name": "local-review",
+          "archive_path": "<user-home>/Downloads/local-review.zip",
+          "archive_sha256": "sha256:fixture",
+          "file_count": 2,
+          "uncompressed_bytes": 512,
+          "preview_token": "skill-manager-local-archive-import:fixture",
+          "confirmed": false,
+          "applied": false,
+          "summary": "Validated local ZIP.",
+          "imported_skill": null,
+          "instance_id": null
+        }
+        """.data(using: .utf8)!
+
+        let preview = try JSONDecoder().decode(SkillManagerLocalArchiveImportRecord.self, from: payload)
+
+        try expectEqual(preview.skillName, "local-review", "Local ZIP preview should expose the contained skill name.")
+        try expectEqual(preview.fileCount, 2, "Local ZIP preview should expose bounded archive metadata.")
+        try expectEqual(preview.applied, false, "Previewing a local ZIP must remain non-mutating.")
+        try expectNil(preview.instanceID, "A preview should not invent an imported catalog instance.")
+    }
+
+    private func managerInventoryConsumesItsMatchingCatalogSource() throws {
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "managed-skill",
+                source: "owner/repository",
+                sourceKind: "manager",
+                agents: ["Codex"],
+                path: "$HOME/.agents/skills/managed-skill"
+            )],
+            catalogSkills: [catalogSkill(
+                id: "managed-catalog",
+                name: "managed-skill",
+                path: "/home/test/.agents/skills/managed-skill/SKILL.md"
+            )],
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "A manager row and its scanned canonical source must collapse into one inventory item.")
+        try expectEqual(items[0].origin, .manager, "Lock-proven ownership must remain manager-owned after catalog association.")
+        try expectNil(items[0].localInstanceID, "A manager-owned item must not expose local ZIP replacement.")
+    }
+
+    private func inventoryExcludesReadOnlyPluginCacheSources() throws {
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [],
+            catalogSkills: [catalogSkill(
+                id: "plugin-cache",
+                name: "cached-plugin-skill",
+                path: "/home/test/.codex/plugins/cache/example/skills/cached-plugin-skill/SKILL.md"
+            )],
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.isEmpty, true, "Read-only plugin caches must not appear as editable local packages.")
+    }
+
+    private func installedLocalSourceWinsOverSameNameAppLibraryEntry() throws {
+        let installedPath = "/home/test/.agents/skills/local-review"
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "local-review",
+                source: installedPath,
+                sourceKind: "local",
+                agents: ["Claude Code", "Codex"],
+                path: installedPath
+            )],
+            catalogSkills: [catalogSkill(
+                id: "installed-local",
+                name: "local-review",
+                path: "\(installedPath)/SKILL.md"
+            )],
+            localLibrarySkills: [catalogSkill(
+                id: "app-library-copy",
+                agent: "tool-global",
+                scope: "tool-global",
+                name: "local-review",
+                path: "/app-data/tool-global/skills/local-review/SKILL.md"
+            )],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "An installed local package and its same-name library copy should present one actionable row.")
+        try expectEqual(items[0].localInstanceID, "installed-local", "ZIP update must target the active shared install source.")
+        try expectEqual(items[0].localPath, installedPath, "The active shared source path should drive local update details.")
+    }
+
+    private func installedAppLibrarySourceRetainsCleanupIdentity() throws {
+        let libraryPath = "/app-data/tool-global/skills/local-review/SKILL.md"
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "local-review",
+                source: "/app-data/tool-global/skills/local-review",
+                sourceKind: "local",
+                agents: ["Claude Code"],
+                path: "/project/.claude/skills/local-review"
+            )],
+            catalogSkills: [],
+            localLibrarySkills: [catalogSkill(
+                id: "app-library-source",
+                agent: "tool-global",
+                scope: "tool-global",
+                name: "local-review",
+                path: libraryPath
+            )],
+            scope: .project
+        )
+
+        try expectEqual(items.count, 1, "An installed app-library source should remain one inventory row.")
+        try expectEqual(items[0].localOwnership, .appOwned, "Full uninstall must recognize app-owned source cleanup.")
+        try expectEqual(items[0].localInstanceID, "app-library-source", "Full uninstall must retain the guarded local source identity.")
+        try expectEqual(items[0].agents, ["claude-code"], "The linked Agent target must remain explicit in preview state.")
+    }
+
+    private func nestedSharedLocalSourceSupportsZipUpdate() throws {
+        let installedPath = "/home/test/.agents/skills/minimax-skills/minimax-docx"
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "minimax-docx",
+                source: installedPath,
+                sourceKind: "local",
+                agents: ["OpenCode"],
+                path: installedPath
+            )],
+            catalogSkills: [catalogSkill(
+                id: "nested-local",
+                agent: "opencode",
+                name: "minimax-docx",
+                path: "\(installedPath)/SKILL.md"
+            )],
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "A nested shared skill should remain one inventory source.")
+        try expectEqual(items[0].localOwnership, .global, "Nested .agents skills should be recognized as guarded global sources.")
+        try expectEqual(items[0].localInstanceID, "nested-local", "Nested local updates must retain an exact catalog target.")
+        try expectEqual(items[0].localPath, installedPath, "Nested local updates must use the containing skill directory.")
+    }
+
+    private func externalLocalSourceHasNoArchiveUpdateTarget() throws {
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "external-local",
+                source: "/home/test/.config/opencode/skills/external-local",
+                sourceKind: "local",
+                agents: ["OpenCode"],
+                path: "/home/test/.config/opencode/skills/external-local"
+            )],
+            catalogSkills: [catalogSkill(
+                id: "external-catalog",
+                agent: "opencode",
+                name: "external-local",
+                path: "/home/test/.config/opencode/skills/external-local/SKILL.md"
+            )],
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "External local sources should remain visible.")
+        try expectEqual(items[0].localOwnership, .external, "Sources outside guarded .agents roots must be labeled external.")
+        try expectNil(items[0].localInstanceID, "External local sources must not expose a ZIP replacement target.")
+        try expectNil(items[0].localPath, "External local paths must not be passed to the guarded replacement flow.")
+    }
+
+    private func duplicateInstalledRowsMergeAgentLinks() throws {
+        let first = installedRecord(
+            name: "shared-skill",
+            source: "owner/repository",
+            sourceKind: "manager",
+            agents: ["Codex"],
+            path: "$HOME/.agents/skills/shared-skill"
+        )
+        let second = installedRecord(
+            name: "shared-skill",
+            source: "owner/repository",
+            sourceKind: "manager",
+            agents: ["Claude Code"],
+            path: "$HOME/.agents/skills/shared-skill"
+        )
+
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [first, second],
+            catalogSkills: [],
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "Duplicate CLI rows for one source should collapse into one inventory item.")
+        try expectEqual(items[0].agents, ["claude-code", "codex"], "Collapsed rows should preserve the union of supported agent links.")
+    }
+
+    private func installedRecord(
+        name: String,
+        source: String,
+        sourceKind: String,
+        agents: [String],
+        path: String
+    ) -> SkillManagerInstalledRecord {
+        SkillManagerInstalledRecord(
+            name: name,
+            source: source,
+            sourceKind: sourceKind,
+            agents: agents,
+            scope: "global",
+            path: path,
+            raw: nil
+        )
+    }
+
+    private func catalogSkill(
+        id: String,
+        agent: String = "codex",
+        scope: String = "agent-global",
+        name: String,
+        path: String
+    ) -> SkillRecord {
+        SkillRecord(
+            id: id,
+            agent: agent,
+            scope: scope,
+            path: path,
+            displayPath: path,
+            definitionId: name,
+            name: name,
+            state: "loaded",
+            enabled: true
+        )
     }
 
     private func mutatingPayload(

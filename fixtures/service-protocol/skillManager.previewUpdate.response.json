@@ -10,18 +10,6 @@
         "skills",
         "update",
         "frontend-design",
-        "--agent",
-        "claude-code",
-        "--agent",
-        "pi",
-        "--agent",
-        "opencode",
-        "--agent",
-        "codex",
-        "--agent",
-        "hermes-agent",
-        "--agent",
-        "openclaw",
         "-y"
       ],
       "cwd": "/tmp/skills-copilot-project",
@@ -34,10 +22,10 @@
       "requires_confirmation": true,
       "confirmed": false,
       "network_required": true,
-      "network_allowed": false,
+      "network_allowed": true,
       "will_run": false,
       "preview_token": "skill-manager:fixture-update",
-      "summary": "Update managed skills for 6 supported agent target(s).",
+      "summary": "Update the selected managed skill source for every linked agent.",
       "risks": [
         "Update may contact remote source repositories or indexes through the external CLI."
       ]

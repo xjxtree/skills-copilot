@@ -37,11 +37,19 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
-        vec![AdapterRoot {
+        let mut roots = vec![AdapterRoot {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::Compatibility,
-        }]
+        }];
+        if let Some(project_root) = &ctx.project_root {
+            roots.push(AdapterRoot {
+                scope: Scope::AgentProject,
+                path: project_root.join(".agents/skills"),
+                source: RootSource::Compatibility,
+            });
+        }
+        roots
     }
 
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
@@ -288,6 +296,25 @@ mod tests {
             parse_skill_content("---\nname: [unterminated\ndescription: Sample\n---\nBody.\n");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn project_agents_root_authorizes_same_scope_claude_skill_links() {
+        let adapter = ClaudeCodeAdapter;
+        let ctx = AdapterContext {
+            user_home: PathBuf::from("/tmp/home"),
+            project_root: Some(PathBuf::from("/tmp/project")),
+            project_cwd: Some(PathBuf::from("/tmp/project")),
+            extra_roots: vec![],
+        };
+
+        let roots = adapter.link_target_roots(&ctx);
+
+        assert!(roots.iter().any(|root| {
+            root.scope == Scope::AgentProject
+                && root.source == RootSource::Compatibility
+                && root.path == Path::new("/tmp/project/.agents/skills")
+        }));
     }
 
     #[test]

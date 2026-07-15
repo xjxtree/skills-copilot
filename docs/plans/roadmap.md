@@ -6,11 +6,16 @@ Releases.
 
 ## Near-Term Work
 
-- Keep documentation lean: entry docs should describe product purpose,
-  boundaries, commands, and navigation rather than version history.
+- Add an in-app preview/confirmation action that removes only a proven dangling
+  Agent skill link; do not add a general filesystem delete surface.
+- Strengthen full-uninstall recovery across the external manager, lock state,
+  Agent links, and app-owned source cleanup. The existing single-confirmation
+  sequence is guarded but cannot provide a cross-process atomic rollback.
+- Replace or remove UI evidence only after a fresh app-window-only capture
+  proves the corresponding surface. Fixture smoke remains supporting evidence,
+  not a substitute for required real-local validation.
 - Add focused tests when view models, RPC wrappers, or adapter helpers gain
   behavior beyond type-safe forwarding.
-- Keep screenshot and UI artifact indexes limited to durable evidence files.
 - Keep service protocol, fixtures, and drift verification synchronized whenever
   service behavior changes.
 

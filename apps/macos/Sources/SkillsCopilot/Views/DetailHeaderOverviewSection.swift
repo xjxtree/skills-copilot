@@ -6,6 +6,7 @@ struct HeaderView: View {
     let adoptingAgentSummary: String
     let sessionUsage: LocalSessionSkillUsageRow?
     let issueCount: Int
+    let conflictCount: Int
     let isWriting: Bool
     let adapterCapability: AdapterCapabilityRecord?
     let onSelectSection: (DetailSection) -> Void
@@ -78,6 +79,8 @@ struct HeaderView: View {
                     .frame(width: 220)
                 issueBadge
                     .frame(width: 220)
+                conflictBadge
+                    .frame(width: 220)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -87,6 +90,7 @@ struct HeaderView: View {
                     }
                     SummaryChip(title: UIStrings.scope, value: DisplayText.scope(for: skill), systemImage: "folder")
                     issueBadge
+                    conflictBadge
                 }
             }
         }
@@ -94,11 +98,21 @@ struct HeaderView: View {
 
     private var issueBadge: some View {
         CountBadge(
-            label: UIStrings.text("detail.issueGroups", "Issue groups"),
+            label: UIStrings.text("detail.issueGroups", "Skill issues"),
             value: issueCount,
             systemImage: "exclamationmark.triangle",
             tint: .orange,
             action: { onSelectSection(.findings) }
+        )
+    }
+
+    private var conflictBadge: some View {
+        CountBadge(
+            label: UIStrings.text("detail.conflictGroups", "Same-agent conflicts"),
+            value: conflictCount,
+            systemImage: "rectangle.stack.badge.exclamationmark",
+            tint: .red,
+            action: { onSelectSection(.conflicts) }
         )
     }
 
@@ -255,6 +269,7 @@ struct HistorySection: View {
 
 struct SkillActivityRow: View {
     let event: SkillEventRecord
+    @AppStorage(DisplayText.screenshotPrivacyModeStorageKey) private var privacyModeEnabled = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -290,7 +305,8 @@ struct SkillActivityRow: View {
     }
 
     private var payloadSummary: String? {
-        let summary = event.payload.compactDisplayString
+        let rawSummary = event.payload.compactDisplayString
+        let summary = privacyModeEnabled ? DisplayText.redactLocalPath(rawSummary) : rawSummary
         return summary.isEmpty ? nil : "\(UIStrings.activityPayload): \(summary)"
     }
 }

@@ -16,6 +16,8 @@ mod llm_provider;
 #[cfg(unix)]
 mod local_session_codex_home;
 #[cfg(unix)]
+mod local_session_codex_wrappers;
+#[cfg(unix)]
 mod local_session_inventory;
 #[cfg(unix)]
 mod local_session_preview;

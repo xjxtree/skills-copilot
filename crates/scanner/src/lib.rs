@@ -16,6 +16,7 @@ use thiserror::Error;
 pub enum ScanIssueKind {
     RootUnavailable,
     RootOutsideAllowlist,
+    DanglingSymlink,
     DirectoryUnreadable,
     EntryUnreadable,
     FileUnreadable,
@@ -208,6 +209,12 @@ where
     for declared in roots {
         let declared_is_symlink = match inspect_declared_symlink(&declared.path) {
             Ok(declared_is_symlink) => declared_is_symlink,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && root_source_is_optional(&declared.source) =>
+            {
+                continue;
+            }
             Err(error) => {
                 report.skipped_roots.push(declared.path.clone());
                 report.issues.push(ScanIssue {
@@ -375,11 +382,80 @@ fn root_source_self_authorizes(source: &RootSource) -> bool {
     )
 }
 
+fn root_source_is_optional(source: &RootSource) -> bool {
+    matches!(
+        source,
+        RootSource::UserHome
+            | RootSource::Project
+            | RootSource::Compatibility
+            | RootSource::Admin
+            | RootSource::System
+    )
+}
+
 fn target_is_allowlisted(path: &Path, scope: Scope, roots: &[ResolvedAllowedRoot]) -> bool {
     roots
         .iter()
         .filter(|root| root.scope == scope)
         .any(|root| path.starts_with(&root.canonical))
+}
+
+fn unavailable_symlink_target_outside_allowlist(
+    link: &Path,
+    scope: Scope,
+    roots: &[ResolvedAllowedRoot],
+) -> Option<PathBuf> {
+    let raw_target = fs::read_link(link).ok()?;
+    let target = if raw_target.is_absolute() {
+        raw_target
+    } else {
+        link.parent()?.join(raw_target)
+    };
+    let comparable_target = canonicalize_missing_path_for_comparison(&target)?;
+    (!target_is_allowlisted(&comparable_target, scope, roots)).then_some(comparable_target)
+}
+
+fn canonicalize_missing_path_for_comparison(path: &Path) -> Option<PathBuf> {
+    let normalized = normalize_path_lexically(path);
+    let mut ancestor = normalized.clone();
+    let mut suffix = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut canonical) => {
+                for component in suffix.iter().rev() {
+                    canonical.push(component);
+                }
+                return Some(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(ancestor.file_name()?.to_os_string());
+                if !ancestor.pop() {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 fn is_allowed_canonical_root(
@@ -520,11 +596,29 @@ fn visit_root(
                 let resolved = match path.canonicalize() {
                     Ok(resolved) => resolved,
                     Err(error) => {
-                        partial = true;
+                        if let Some(unavailable_target) =
+                            unavailable_symlink_target_outside_allowlist(
+                                &path,
+                                root.declared.scope,
+                                allowed_roots,
+                            )
+                        {
+                            report.issues.push(ScanIssue {
+                                path,
+                                kind: ScanIssueKind::DanglingSymlink,
+                                detail: format!(
+                                    "unavailable symlink target {} is outside declared roots with the same scope",
+                                    unavailable_target.display()
+                                ),
+                            });
+                            continue;
+                        }
                         report.issues.push(ScanIssue {
                             path,
-                            kind: ScanIssueKind::EntryUnreadable,
-                            detail: format!("failed to canonicalize entry: {error}"),
+                            kind: ScanIssueKind::DanglingSymlink,
+                            detail: format!(
+                                "symlink target is unavailable; skipped this link without degrading the surrounding root: {error}"
+                            ),
                         });
                         continue;
                     }
@@ -2081,6 +2175,85 @@ mod tests {
     }
 
     #[test]
+    fn missing_optional_project_root_does_not_degrade_scan() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-missing-optional-project-root-{}",
+            std::process::id()
+        ));
+        let missing_project_root = temp_root.join("project/.opencode/skills");
+        let valid_root = temp_root.join("valid-skills");
+        let valid_skill_dir = valid_root.join("valid-review");
+        std::fs::create_dir_all(&valid_skill_dir).expect("create valid skill dir");
+        std::fs::write(
+            valid_skill_dir.join("SKILL.md"),
+            "---\nname: valid-review\ndescription: valid Claude fixture\n---\nBody.",
+        )
+        .expect("write valid SKILL.md");
+        let adapter = TestAdapter {
+            roots: vec![
+                AdapterRoot {
+                    scope: Scope::AgentProject,
+                    path: missing_project_root,
+                    source: RootSource::Project,
+                },
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: valid_root,
+                    source: RootSource::Extra,
+                },
+            ],
+            link_target_roots: Vec::new(),
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: Some(temp_root.join("project")),
+            project_cwd: Some(temp_root.join("project")),
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].name, "valid-review");
+        assert!(report.skipped_roots.is_empty());
+        assert!(report.issues.is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn missing_explicit_root_is_reported() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-missing-explicit-root-{}",
+            std::process::id()
+        ));
+        let missing_root = temp_root.join("configured-skills");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: missing_root.clone(),
+                source: RootSource::Extra,
+            }],
+            link_target_roots: Vec::new(),
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan degrades missing explicit root");
+
+        assert_eq!(report.skipped_roots, vec![missing_root.clone()]);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(report.issues[0].path, missing_root);
+        assert_eq!(report.issues[0].kind, ScanIssueKind::RootUnavailable);
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn declared_root_inspection_error_is_reported_and_other_roots_continue() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-root-inspection-error-{}",
@@ -2193,6 +2366,98 @@ mod tests {
             report.instances.is_empty(),
             "scanner must reject SKILL.md files whose canonical path escapes the scanned root"
         );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dangling_symlink_outside_allowlist_does_not_make_root_partial() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-dangling-outside-root-{}",
+            std::process::id()
+        ));
+        let scan_root = temp_root.join("skills");
+        let dangling_link = scan_root.join("removed-external-skill");
+        let missing_target = temp_root.join("external/removed-skill");
+        std::fs::create_dir_all(&scan_root).expect("create scan root");
+        std::os::unix::fs::symlink(&missing_target, &dangling_link)
+            .expect("create dangling external skill link");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: scan_root.clone(),
+                source: RootSource::Extra,
+            }],
+            link_target_roots: Vec::new(),
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+        let reported_link = scan_root
+            .canonicalize()
+            .expect("canonical scan root")
+            .join("removed-external-skill");
+
+        assert_eq!(
+            report.scanned_roots,
+            vec![scan_root.canonicalize().expect("canonical scan root")]
+        );
+        assert!(report.partial_roots.is_empty());
+        assert!(report.issues.iter().any(|issue| {
+            issue.path == reported_link && issue.kind == ScanIssueKind::DanglingSymlink
+        }));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dangling_symlink_inside_allowlist_does_not_make_root_partial() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-dangling-inside-root-{}",
+            std::process::id()
+        ));
+        let scan_root = temp_root.join("skills");
+        let dangling_link = scan_root.join("removed-local-skill");
+        let missing_target = scan_root.join("removed-target");
+        std::fs::create_dir_all(&scan_root).expect("create scan root");
+        std::os::unix::fs::symlink(&missing_target, &dangling_link)
+            .expect("create dangling local skill link");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: scan_root.clone(),
+                source: RootSource::Extra,
+            }],
+            link_target_roots: Vec::new(),
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+        let reported_link = scan_root
+            .canonicalize()
+            .expect("canonical scan root")
+            .join("removed-local-skill");
+
+        assert!(report.partial_roots.is_empty());
+        assert_eq!(
+            report.scanned_roots,
+            vec![scan_root.canonicalize().expect("canonical scan root")]
+        );
+        assert!(report.issues.iter().any(|issue| {
+            issue.path == reported_link && issue.kind == ScanIssueKind::DanglingSymlink
+        }));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

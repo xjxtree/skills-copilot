@@ -147,10 +147,19 @@ private struct AgentConfigOverviewDetailPanel: View {
                 } else {
                     currentAgentConfigSection(documents: [selectedDocument])
                 }
+            } else if store.visibleConfigDocuments.isEmpty && !store.isLoadingAgentConfigDocuments {
+                EmptyState(
+                    title: UIStrings.text("agentConfig.noMatchingDocuments", "No matching config documents"),
+                    systemImage: "doc.text.magnifyingglass",
+                    message: UIStrings.text(
+                        "agentConfig.noMatchingDocuments.message",
+                        "The selected agent, scope, and search filters do not include a config document."
+                    )
+                )
             } else if store.agentFilter == .claudeCode {
                 claudeCurrentConfigSection
             } else {
-                currentAgentConfigSection(documents: store.currentAgentConfigDocuments)
+                currentAgentConfigSection(documents: store.visibleConfigDocuments)
             }
         }
         .task(id: store.selectedAgentConfigRefreshKey) {
@@ -161,6 +170,14 @@ private struct AgentConfigOverviewDetailPanel: View {
         }
         .onChange(of: store.claudeSettings) { _ in
             hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
+        }
+        .onChange(of: store.selectedAgentConfigRefreshKey) { _ in
+            revealsSensitiveConfig = false
+            hydrateConfigDraftFromStore()
+        }
+        .onChange(of: selectedDocument?.target) { _ in
+            revealsSensitiveConfig = false
+            hydrateConfigDraftFromStore()
         }
         .onChange(of: store.configAutosaveDraft) { _ in
             hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
@@ -408,6 +425,7 @@ private struct AgentConfigSnapshotDetailPanel: View {
     @State private var previewPresentation = RollbackPreviewPresentationState<SnapshotRollbackPreviewRecord>()
     @State private var previewLoadTask: Task<Void, Never>?
     @State private var confirmationToApply: RollbackConfirmation?
+    @State private var revealsSnapshotContent = false
 
     private var preview: SnapshotRollbackPreviewRecord? {
         previewPresentation.preview
@@ -443,6 +461,14 @@ private struct AgentConfigSnapshotDetailPanel: View {
                             .font(.headline)
                     }
                     Spacer()
+                    Button {
+                        revealsSnapshotContent.toggle()
+                    } label: {
+                        Label(
+                            revealsSnapshotContent ? UIStrings.agentConfigHideSensitive : UIStrings.agentConfigShowSensitiveValues,
+                            systemImage: revealsSnapshotContent ? "eye.slash" : "eye"
+                        )
+                    }
                     Button {
                         loadPreview()
                     } label: {
@@ -490,11 +516,11 @@ private struct AgentConfigSnapshotDetailPanel: View {
                         HStack(alignment: .top, spacing: 14) {
                             SnapshotTextPane(
                                 title: UIStrings.current,
-                                content: preview.currentContent.isEmpty ? UIStrings.emptyPlaceholder : preview.currentContent
+                                content: snapshotDisplayContent(preview.currentContent)
                             )
                             SnapshotTextPane(
                                 title: UIStrings.snapshot,
-                                content: preview.snapshot.content.isEmpty ? UIStrings.emptyPlaceholder : preview.snapshot.content
+                                content: snapshotDisplayContent(preview.snapshot.content)
                             )
                         }
                         .frame(minHeight: 420)
@@ -502,11 +528,11 @@ private struct AgentConfigSnapshotDetailPanel: View {
                         VStack(alignment: .leading, spacing: 12) {
                             SnapshotTextPane(
                                 title: UIStrings.current,
-                                content: preview.currentContent.isEmpty ? UIStrings.emptyPlaceholder : preview.currentContent
+                                content: snapshotDisplayContent(preview.currentContent)
                             )
                             SnapshotTextPane(
                                 title: UIStrings.snapshot,
-                                content: preview.snapshot.content.isEmpty ? UIStrings.emptyPlaceholder : preview.snapshot.content
+                                content: snapshotDisplayContent(preview.snapshot.content)
                             )
                         }
                         .frame(minHeight: 360, idealHeight: 460)
@@ -515,7 +541,7 @@ private struct AgentConfigSnapshotDetailPanel: View {
             } else {
                 SnapshotTextPane(
                     title: UIStrings.snapshot,
-                    content: snapshot.content.isEmpty ? UIStrings.emptyPlaceholder : snapshot.content
+                    content: snapshotDisplayContent(snapshot.content)
                 )
                 .frame(minHeight: 360)
             }
@@ -553,11 +579,17 @@ private struct AgentConfigSnapshotDetailPanel: View {
             ))
         }
         .onChange(of: snapshot.id) { _ in
+            revealsSnapshotContent = false
             invalidatePreviewLoad(selectedSnapshotID: snapshot.id)
         }
         .onDisappear {
             invalidatePreviewLoad(selectedSnapshotID: nil)
         }
+    }
+
+    private func snapshotDisplayContent(_ content: String) -> String {
+        let value = content.isEmpty ? UIStrings.emptyPlaceholder : content
+        return revealsSnapshotContent ? value : ConfigContentRedactor.redactedForDisplay(value)
     }
 
     private func loadPreview() {

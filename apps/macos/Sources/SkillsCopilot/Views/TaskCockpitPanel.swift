@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -56,6 +57,7 @@ private struct TaskPreflightEditorPane: View {
             promptConfirmation: displayedPromptConfirmation,
             isPreviewingPrompt: displayedIsPreviewingPrompt,
             result: displayedResult,
+            failedProviderOutput: isDraftSyncedWithStore ? store.taskCockpitFailedProviderOutput : nil,
             isBuilding: displayedIsBuilding,
             operationState: displayedOperationState,
             providerGateMessage: providerGateMessage,
@@ -305,6 +307,7 @@ struct TaskCockpitPanel: View {
     let promptConfirmation: TaskCockpitPromptConfirmation?
     let isPreviewingPrompt: Bool
     let result: TaskCockpitResult?
+    let failedProviderOutput: String?
     let isBuilding: Bool
     let operationState: TaskCockpitOperationState
     let providerGateMessage: String?
@@ -380,6 +383,9 @@ struct TaskCockpitPanel: View {
                     operationState: operationState,
                     isBuilding: isBuilding
                 )
+                if let failedProviderOutput {
+                    TaskCockpitFailedProviderOutputButton(text: failedProviderOutput)
+                }
             } else if !isBuilding {
                 Label(UIStrings.taskCockpitNoResult, systemImage: "info.circle")
                     .font(.callout)
@@ -996,6 +1002,47 @@ private struct TaskCockpitStageTile: View {
         case .idle, .queued, .completed, .empty, .fallback, .skipped, .cancelled:
             return AnyShapeStyle(.secondary)
         }
+    }
+}
+
+private struct TaskCockpitFailedProviderOutputButton: View {
+    let text: String
+    @State private var didCopy = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            if let window = NSApp.mainWindow {
+                NSAccessibility.post(
+                    element: window,
+                    notification: .announcementRequested,
+                    userInfo: [
+                        .announcement: UIStrings.text("action.copied", "Copied"),
+                        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                    ]
+                )
+            }
+            didCopy = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                didCopy = false
+            }
+        } label: {
+            Label(
+                didCopy
+                    ? UIStrings.text("action.copied", "Copied")
+                    : UIStrings.text("taskCockpit.provider.copyFailedOutput", "Copy untrusted provider response"),
+                systemImage: didCopy ? "checkmark" : "doc.on.doc"
+            )
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .foregroundStyle(didCopy ? .green : .secondary)
+        .help(UIStrings.text(
+            "taskCockpit.provider.copyFailedOutput.help",
+            "Copies the in-memory provider response for diagnosis. It is untrusted and is not persisted by the app."
+        ))
+        .accessibilityValue(didCopy ? UIStrings.text("action.copied", "Copied") : "")
     }
 }
 

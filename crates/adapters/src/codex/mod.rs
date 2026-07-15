@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -22,6 +22,80 @@ pub struct CodexAdapter;
 pub struct CodexSkillConfigEntry {
     pub path: Option<String>,
     pub enabled: Option<bool>,
+}
+
+pub fn codex_plugin_cache_id(codex_home: &Path, skill_path: &Path) -> Option<String> {
+    let cache_root = codex_home.join("plugins/cache");
+    let relative = match skill_path.strip_prefix(&cache_root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => {
+            let canonical_cache_root = cache_root.canonicalize().ok()?;
+            let canonical_skill_path = skill_path.canonicalize().ok()?;
+            canonical_skill_path
+                .strip_prefix(canonical_cache_root)
+                .ok()?
+                .to_path_buf()
+        }
+    };
+    let mut components = relative.components();
+    let publisher = normal_component(components.next()?)?;
+    let package = normal_component(components.next()?)?;
+    normal_component(components.next()?)?;
+    if normal_component(components.next()?)? != "skills" || components.next().is_none() {
+        return None;
+    }
+    Some(format!("{package}@{publisher}"))
+}
+
+fn normal_component(component: std::path::Component<'_>) -> Option<&str> {
+    match component {
+        std::path::Component::Normal(value) => value.to_str(),
+        _ => None,
+    }
+}
+
+pub fn parse_codex_enabled_plugin_ids(text: &str) -> BTreeSet<String> {
+    let mut plugin_states = BTreeMap::new();
+    let mut current_plugin = None;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') {
+            current_plugin = parse_codex_plugin_section_id(line);
+            continue;
+        }
+        let Some(plugin_id) = current_plugin.as_ref() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "enabled" {
+            if let Ok(enabled) = parse_toml_bool(value.trim()) {
+                plugin_states.insert(plugin_id.clone(), enabled);
+            }
+        }
+    }
+
+    plugin_states
+        .into_iter()
+        .filter_map(|(plugin_id, enabled)| enabled.then_some(plugin_id))
+        .collect()
+}
+
+fn parse_codex_plugin_section_id(line: &str) -> Option<String> {
+    let inner = line.strip_prefix("[plugins.")?.strip_suffix(']')?.trim();
+    if inner.starts_with('\'') || inner.starts_with('"') {
+        parse_toml_string(inner).ok()
+    } else if !inner.is_empty()
+        && inner
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        Some(inner.to_string())
+    } else {
+        None
+    }
 }
 
 impl AgentAdapter for CodexAdapter {
@@ -708,6 +782,60 @@ mod tests {
             parse_skill_content("---\nname: [unterminated\ndescription: Sample\n---\nBody.\n");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_explicitly_enabled_codex_plugin_ids() {
+        let enabled = parse_codex_enabled_plugin_ids(
+            r#"
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins.'browser@openai-bundled']
+enabled = false
+
+[plugins.local_plugin]
+enabled = true # comment
+
+[mcp_servers.browser]
+enabled = true
+"#,
+        );
+
+        assert_eq!(
+            enabled,
+            BTreeSet::from([
+                "local_plugin".to_string(),
+                "pdf@openai-primary-runtime".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn derives_plugin_cache_id_only_from_valid_cache_skill_paths() {
+        let codex_home = Path::new("/tmp/home/.codex");
+        assert_eq!(
+            codex_plugin_cache_id(
+                codex_home,
+                Path::new(
+                    "/tmp/home/.codex/plugins/cache/openai-primary-runtime/pdf/1.2.3/skills/pdf/SKILL.md",
+                ),
+            )
+            .as_deref(),
+            Some("pdf@openai-primary-runtime")
+        );
+        assert!(codex_plugin_cache_id(
+            codex_home,
+            Path::new(
+                "/tmp/home/.codex/plugins/cache/openai-primary-runtime/pdf/1.2.3/docs/readme.md"
+            ),
+        )
+        .is_none());
+        assert!(codex_plugin_cache_id(
+            codex_home,
+            Path::new("/tmp/home/.agents/plugins/pdf/skills/pdf/SKILL.md"),
+        )
+        .is_none());
     }
 
     #[test]

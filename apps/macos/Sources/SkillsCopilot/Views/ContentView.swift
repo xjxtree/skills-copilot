@@ -21,6 +21,14 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
+            if store.startupLoadingState == nil, store.isProjectUpdating {
+                ProjectTransitionLoadingView(
+                    projectName: store.projectTransitionName ?? UIStrings.projectSelectedSource
+                )
+                .transition(.opacity)
+                .zIndex(9)
+            }
+
             if shouldShowGlobalSearchResultsOverlay {
                 globalSearchResultsOverlay
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -761,7 +769,7 @@ private struct WindowChromeTrailingControls: View {
                 onSubmit: onSubmit
             )
 
-            WindowChromeAboutButton()
+            WindowChromeHelpButton()
             WindowChromeSettingsControl()
         }
         .fixedSize()
@@ -926,10 +934,12 @@ private final class FirstMouseNSTextField: NSTextField {
     }
 }
 
-private struct WindowChromeAboutButton: View {
+private struct WindowChromeHelpButton: View {
+    @State private var isShowingHelp = false
+
     var body: some View {
         Button {
-            NSApp.orderFrontStandardAboutPanel(nil)
+            isShowingHelp.toggle()
         } label: {
             Image(systemName: "questionmark.circle")
                 .font(.system(size: 16, weight: .semibold))
@@ -940,6 +950,48 @@ private struct WindowChromeAboutButton: View {
         .windowChromeGlassCircle()
         .help(UIStrings.text("toolbar.help", "Help"))
         .accessibilityLabel(UIStrings.text("toolbar.help", "Help"))
+        .popover(isPresented: $isShowingHelp, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(UIStrings.text("help.title", "Skills Copilot Help"), systemImage: "questionmark.circle.fill")
+                    .font(.headline)
+                Text(UIStrings.text(
+                    "help.summary",
+                    "Choose an agent and project in the sidebar, scan to refresh local data, then review skills, sessions, configuration, and diagnostics. Writes always require an explicit preview or confirmation."
+                ))
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Text(UIStrings.text(
+                    "help.privacy",
+                    "Privacy Mode redacts local paths and sensitive configuration values until you reveal them."
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    if #available(macOS 14.0, *) {
+                        SettingsLink {
+                            Label(UIStrings.text("settings.serviceDiagnostics", "Service Diagnostics"), systemImage: "wrench.and.screwdriver")
+                        }
+                    } else {
+                        Button(action: openSettingsFallback) {
+                            Label(UIStrings.text("settings.serviceDiagnostics", "Service Diagnostics"), systemImage: "wrench.and.screwdriver")
+                        }
+                    }
+                    Link(destination: URL(string: "https://github.com/xjxtree/agent-copilot/tree/main/docs")!) {
+                        Label(UIStrings.text("help.documentation", "Documentation"), systemImage: "book")
+                    }
+                }
+                .controlSize(.small)
+            }
+            .padding(16)
+            .frame(width: 360)
+        }
+    }
+
+    private func openSettingsFallback() {
+        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
     }
 }
 
@@ -1099,6 +1151,27 @@ private struct AppStartupLoadingView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(state.message)
         .accessibilityValue("\(Int((state.progress * 100).rounded()))%")
+    }
+}
+
+private struct ProjectTransitionLoadingView: View {
+    let projectName: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+            Text(UIStrings.projectSwitching(projectName))
+                .font(.headline)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.agentCopilotWindowBackground.opacity(0.94))
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(UIStrings.projectSwitching(projectName))
     }
 }
 

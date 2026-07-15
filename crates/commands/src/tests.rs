@@ -11,6 +11,7 @@ use skills_copilot_core::{
 
 use super::*;
 
+mod runtime_conflict_regressions;
 mod scanner_regressions;
 
 #[test]
@@ -1191,7 +1192,7 @@ fn scan_all_project_context_sweeps_only_current_boundary() {
 
 #[cfg(unix)]
 #[test]
-fn partial_scan_upserts_seen_rows_without_marking_unseen_rows_missing() {
+fn dangling_link_scan_reconciles_stale_rows_without_degrading_root() {
     let temp_root = temp_test_dir("partial-cache-refresh");
     let scan_root = temp_root.join("skills");
     let observed_path = write_command_scan_fixture(&scan_root, "observed");
@@ -1242,18 +1243,20 @@ fn partial_scan_upserts_seen_rows_without_marking_unseen_rows_missing() {
 
     assert!(observed.last_seen > 0, "seen row should advance last_seen");
     assert_eq!(observed.state, SkillState::Loaded);
-    assert_eq!(unobserved_after.state, SkillState::Loaded);
-    assert!(claude_report.partial_roots.contains(&canonical_root));
+    assert_eq!(unobserved_after.state, SkillState::Missing);
+    assert!(claude_report.partial_roots.is_empty());
+    assert!(claude_report.scanned_roots.contains(&canonical_root));
     assert!(claude_report
         .issues
         .iter()
-        .any(|issue| issue.kind == "entry_unreadable"));
+        .any(|issue| issue.kind == "dangling_symlink"));
     assert!(
         catalog
             .list_skill_events(&unobserved.id, None)
             .expect("unobserved events")
-            .is_empty(),
-        "partial refresh must not create a missing event"
+            .iter()
+            .any(|event| event.kind == "missing"),
+        "a complete refresh must reconcile the stale row"
     );
 
     let _ = std::fs::remove_dir_all(temp_root);
@@ -2743,7 +2746,7 @@ fn rollback_snapshot_restores_settings_and_rescans() {
     let skill_id = catalog.list_skill_records().expect("records")[0].id.clone();
     toggle_skill(&catalog, &ctx, &skill_id, false).expect("toggle off");
 
-    let snapshots = list_snapshots(&catalog).expect("snapshots");
+    let snapshots = list_snapshots(&catalog, &ctx).expect("snapshots");
     assert_eq!(snapshots.len(), 1);
     let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
         .expect("rollback preview");
@@ -2769,6 +2772,62 @@ fn rollback_snapshot_restores_settings_and_rescans() {
 }
 
 #[test]
+fn project_snapshots_are_hidden_and_not_previewable_across_projects() {
+    let temp_root = temp_test_dir("project-snapshot-isolation");
+    let home = temp_root.join("home");
+    let project_a = temp_root.join("project-a");
+    let project_b = temp_root.join("project-b");
+    let target_a = project_a.join(".claude/settings.local.json");
+    let target_b = project_b.join(".claude/settings.local.json");
+    std::fs::create_dir_all(target_a.parent().expect("project A config parent"))
+        .expect("create project A config");
+    std::fs::create_dir_all(target_b.parent().expect("project B config parent"))
+        .expect("create project B config");
+    std::fs::write(&target_a, "{}\n").expect("write project A config");
+    std::fs::write(&target_b, "{}\n").expect("write project B config");
+    let canonical_a = project_a.canonicalize().expect("canonical project A");
+    let canonical_b = project_b.canonicalize().expect("canonical project B");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    for (id, project_root, target) in [
+        ("project-a-snapshot", &canonical_a, &target_a),
+        ("project-b-snapshot", &canonical_b, &target_b),
+    ] {
+        let project_root_text = project_root.to_string_lossy();
+        catalog
+            .create_config_snapshot(ConfigSnapshotDraft {
+                id,
+                agent: "claude-code",
+                scope: "agent-project",
+                project_root: Some(&project_root_text),
+                target: &target.to_string_lossy(),
+                content: "{}\n",
+                reason: "pre-config-edit",
+                created_at_ms: current_time_ms(),
+            })
+            .expect("create project snapshot");
+    }
+    let ctx_a = AdapterContext {
+        user_home: home,
+        project_root: Some(project_a),
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+
+    let visible = list_snapshots(&catalog, &ctx_a).expect("list project A snapshots");
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, "project-a-snapshot");
+    let cross_project =
+        preview_snapshot_rollback_with_context(&catalog, &ctx_a, "project-b-snapshot");
+    assert!(matches!(
+        cross_project,
+        Err(CommandError::UnsafeConfigPath(_))
+    ));
+
+    let _ = std::fs::remove_dir_all(temp_root);
+}
+
+#[test]
 fn stale_rollback_preview_token_rejects_external_change_without_writes() {
     let temp_root = temp_test_dir("stale-rollback-preview");
     let home = temp_root.join("home");
@@ -2783,6 +2842,7 @@ fn stale_rollback_preview_token_rejects_external_change_without_writes() {
             id: "stale-preview-snapshot",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -2802,7 +2862,7 @@ fn stale_rollback_preview_token_rejects_external_change_without_writes() {
     let external_content = "{\n  \"external\": true\n}\n";
     std::fs::write(&settings_path, external_content).expect("write external change");
     let snapshots_before = catalog
-        .list_all_config_snapshots()
+        .list_all_config_snapshots(None)
         .expect("list snapshots before");
 
     let result = rollback_snapshot(
@@ -2819,7 +2879,7 @@ fn stale_rollback_preview_token_rejects_external_change_without_writes() {
     );
     assert_eq!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("list snapshots after"),
         snapshots_before
     );
@@ -2856,6 +2916,7 @@ fn rollback_deleted_before_invocation_returns_stale_without_writes() {
             id: "deleted-before-call",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -2919,6 +2980,7 @@ fn rollback_preview_to_call_snapshot_identity_drift_returns_stale_without_writes
                 id: "identity-drift-before-call",
                 agent: ClaudeCodeAdapter.id().as_str(),
                 scope: Scope::AgentGlobal.as_str(),
+                project_root: None,
                 target: &settings_path.to_string_lossy(),
                 content: "{}\n",
                 reason: "pre-config-edit",
@@ -2989,6 +3051,7 @@ fn rollback_rechecks_state_after_lock() {
             id: "lock-recheck-snapshot",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -3005,7 +3068,7 @@ fn rollback_rechecks_state_after_lock() {
         .expect("preview rollback");
     let external_content = "{\n  \"changedAfterLock\": true\n}\n";
     let snapshots_before = catalog
-        .list_all_config_snapshots()
+        .list_all_config_snapshots(None)
         .expect("list snapshots before");
 
     let result = rollback_snapshot_with_after_lock(
@@ -3026,7 +3089,7 @@ fn rollback_rechecks_state_after_lock() {
     );
     assert_eq!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("list snapshots after"),
         snapshots_before
     );
@@ -3059,6 +3122,7 @@ fn rollback_maps_unreadable_target_shape_after_lock_to_stale() {
             id: "directory-after-lock",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -3111,6 +3175,7 @@ fn rollback_revalidates_symlinked_target_after_lock_before_reading_it() {
             id: "symlink-after-lock",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -3170,6 +3235,7 @@ fn rollback_reloaded_snapshot_target_or_content_changes_invalidate_token() {
                 id: "reloaded-snapshot",
                 agent: ClaudeCodeAdapter.id().as_str(),
                 scope: Scope::AgentGlobal.as_str(),
+                project_root: None,
                 target: &settings_path.to_string_lossy(),
                 content: "{}\n",
                 reason: "pre-config-edit",
@@ -3386,7 +3452,7 @@ fn stale_claude_settings_save_is_rejected_without_snapshot_or_write() {
     );
     assert!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("list snapshots")
             .is_empty(),
         "stale rejection must happen before snapshot creation"
@@ -3581,7 +3647,7 @@ fn install_preview_from_tool_global_does_not_write_disk() {
     );
     assert!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("snapshots")
             .is_empty(),
         "preview must not create audit snapshots"
@@ -4331,6 +4397,7 @@ fn rollback_snapshot_maps_target_outside_expected_config_path_to_stale_preview()
             id: "tampered-snapshot",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &outside_target.to_string_lossy(),
             content: "{}\n",
             reason: "tampered",
@@ -4376,6 +4443,7 @@ fn preview_snapshot_rejects_target_outside_expected_config_path() {
             id: "tampered-preview",
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &outside_target.to_string_lossy(),
             content: "{}\n",
             reason: "tampered",
@@ -4848,148 +4916,5 @@ fn assert_rule_absent(report: &RuleReport, rule_id: &str) {
 mod v219_skill_health_tests;
 
 #[cfg(test)]
-mod v218_cross_agent_analysis_tests {
-    use super::*;
-
-    #[test]
-    fn cross_agent_analysis_groups_duplicates_overlap_mismatch_and_broken_rows() {
-        let shared_path = PathBuf::from("/tmp/shared/SKILL.md");
-        let claude = analysis_skill(
-            "claude-alpha",
-            AgentId::ClaudeCode,
-            Scope::AgentGlobal,
-            "review-diff",
-            true,
-            SkillState::Loaded,
-            shared_path.clone(),
-        );
-        let mut codex = analysis_skill(
-            "codex-alpha",
-            AgentId::Codex,
-            Scope::AgentGlobal,
-            "review-diff",
-            false,
-            SkillState::Disabled,
-            shared_path.clone(),
-        );
-        codex.display_path = PathBuf::from("/tmp/codex/shared/SKILL.md");
-        let canonical_variant = analysis_skill(
-            "pi-alpha",
-            AgentId::Pi,
-            Scope::AgentGlobal,
-            "Review Diff",
-            true,
-            SkillState::Loaded,
-            PathBuf::from("/tmp/pi/review/SKILL.md"),
-        );
-        let broken = analysis_skill(
-            "broken-alpha",
-            AgentId::Hermes,
-            Scope::AgentGlobal,
-            "broken-skill",
-            false,
-            SkillState::Broken,
-            PathBuf::from("/tmp/hermes/broken/SKILL.md"),
-        );
-
-        let analysis = analyze_skill_instances(&[claude, codex, canonical_variant, broken]);
-
-        assert_eq!(analysis.summary.duplicate_name_groups, 1);
-        assert_eq!(analysis.summary.canonical_name_groups, 1);
-        assert_eq!(analysis.summary.path_overlap_groups, 1);
-        assert_eq!(analysis.summary.enabled_mismatch_groups, 1);
-        assert_eq!(analysis.summary.malformed_groups, 1);
-        assert!(analysis.summary.affected_skill_count >= 4);
-        assert!(analysis.groups.iter().any(|group| {
-            group.kind == "source_path_overlap"
-                && group.instance_ids == vec!["claude-alpha".to_string(), "codex-alpha".to_string()]
-        }));
-        assert!(analysis
-            .groups
-            .iter()
-            .any(|group| { group.kind == "malformed_or_broken" && group.severity == "error" }));
-    }
-
-    #[test]
-    fn precedence_analysis_only_selects_same_agent_loaded_project_winner() {
-        let global = analysis_skill(
-            "codex-global",
-            AgentId::Codex,
-            Scope::AgentGlobal,
-            "ship-helper",
-            true,
-            SkillState::Loaded,
-            PathBuf::from("/tmp/home/.agents/skills/ship-helper/SKILL.md"),
-        );
-        let project = analysis_skill(
-            "codex-project",
-            AgentId::Codex,
-            Scope::AgentProject,
-            "ship-helper",
-            true,
-            SkillState::Loaded,
-            PathBuf::from("/tmp/project/.agents/skills/ship-helper/SKILL.md"),
-        );
-        let other_agent = analysis_skill(
-            "claude-project",
-            AgentId::ClaudeCode,
-            Scope::AgentProject,
-            "ship-helper",
-            true,
-            SkillState::Loaded,
-            PathBuf::from("/tmp/project/.claude/skills/ship-helper/SKILL.md"),
-        );
-
-        let analysis = analyze_skill_instances(&[global, project, other_agent]);
-        let precedence = analysis
-            .groups
-            .iter()
-            .find(|group| group.kind == "precedence_shadowing")
-            .expect("same-agent precedence group");
-
-        assert_eq!(analysis.summary.precedence_groups, 1);
-        assert_eq!(precedence.winner_id.as_deref(), Some("codex-project"));
-        assert_eq!(precedence.agents, vec!["codex".to_string()]);
-        assert!(precedence
-            .explanation
-            .contains("Cross-agent duplicates do not share runtime precedence"));
-    }
-
-    fn analysis_skill(
-        id: &str,
-        agent: AgentId,
-        scope: Scope,
-        name: &str,
-        enabled: bool,
-        state: SkillState,
-        path: PathBuf,
-    ) -> SkillInstance {
-        SkillInstance {
-            id: id.to_string(),
-            agent,
-            scope,
-            project_root: if scope == Scope::AgentProject {
-                Some(PathBuf::from("/tmp/project"))
-            } else {
-                None
-            },
-            path: path.clone(),
-            display_path: path,
-            definition_id: hash_string(&canonical_skill_name_suggestion(name)),
-            name: name.to_string(),
-            display_name: name.to_string(),
-            description: "fixture skill".to_string(),
-            version: None,
-            state,
-            enabled,
-            frontmatter_raw: format!("name: {name}\ndescription: fixture"),
-            body: "fixture body".to_string(),
-            scripts: Vec::new(),
-            permissions: PermissionRequest::default(),
-            fingerprint: format!("{id}-fingerprint"),
-            mtime: 0,
-            first_seen: 0,
-            last_seen: 0,
-        }
-    }
-}
+#[path = "tests/v218_cross_agent_analysis_tests.rs"]
+mod v218_cross_agent_analysis_tests;

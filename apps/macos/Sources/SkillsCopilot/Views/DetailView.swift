@@ -5,6 +5,7 @@ struct DetailView: View {
     @EnvironmentObject private var store: SkillStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let skill: SkillRecord?
+    @State private var isSingleTogglePreviewPresented = false
 
     private static let topAnchorID = "skills-copilot.detail.top"
 
@@ -32,7 +33,13 @@ struct DetailView: View {
                         } else if store.selectedSidebarSelection?.isSkill == true, let skill {
                                 SkillDetailContentView(
                                     skill: skill,
-                                    sessionUsage: sessionUsage(for: skill)
+                                    sessionUsage: sessionUsage(for: skill),
+                                    onToggle: { on in
+                                        Task {
+                                            await store.prepareSingleSkillTogglePreview(skill: skill, on: on)
+                                            isSingleTogglePreviewPresented = true
+                                        }
+                                    }
                                 )
                         } else {
                             EmptyDetailView(
@@ -56,6 +63,10 @@ struct DetailView: View {
             }
         }
         .navigationTitle("")
+        .sheet(isPresented: $isSingleTogglePreviewPresented) {
+            BatchSkillOperationSheet()
+                .environmentObject(store)
+        }
         .transaction { transaction in
             if reduceMotion {
                 transaction.animation = nil
@@ -154,6 +165,7 @@ private struct SkillDetailContentView: View {
     @EnvironmentObject private var store: SkillStore
     let skill: SkillRecord
     let sessionUsage: LocalSessionSkillUsageRow?
+    let onToggle: (Bool) -> Void
 
     var body: some View {
         let selectedDetailSection = store.selectedDetailSection.visibleSkillDetailSection
@@ -163,18 +175,20 @@ private struct SkillDetailContentView: View {
                 severityFilter: FindingDisplayModel.allFilterValue,
                 ruleFilter: FindingDisplayModel.allFilterValue
             )
+            let catalogStatusIssueCount = SkillListModel.catalogStatusIssueKind(for: skill) == nil ? 0 : 1
             HeaderView(
                 skill: skill,
                 adoptingAgentSummary: store.adoptingAgentSummary(for: skill),
                 sessionUsage: sessionUsage,
-                issueCount: selectedFindingGroups.count + store.selectedConflicts.count,
+                issueCount: selectedFindingGroups.count + catalogStatusIssueCount,
+                conflictCount: store.selectedConflicts.count,
                 isWriting: store.isWriting,
                 adapterCapability: store.adapterCapabilities.first { $0.agent == skill.agent },
                 onSelectSection: { section in
                     store.selectedDetailSection = section
                 },
                 onToggle: { on in
-                    Task { await store.toggleSelectedSkill(on: on) }
+                    onToggle(on)
                 }
             )
 
@@ -201,6 +215,10 @@ private struct SkillDetailContentView: View {
             FindingsSection(
                 skill: skill,
                 findings: store.selectedDisplayFindings,
+                catalogCompleteness: store.catalogListCompleteness
+            )
+        case .conflicts:
+            ConflictsSection(
                 conflicts: store.selectedConflicts,
                 selectedSkillID: skill.id,
                 currentAgentSkillIDs: Set(store.skills.filter { $0.agent == skill.agent }.map(\.id)),

@@ -3,6 +3,9 @@
 This directory stores durable UI evidence: completed app-window screenshots
 used by screenshot validation. It is not a release-history record.
 
+An artifact proves the reviewed surface at the commit that introduced it; it
+must not be cited as evidence for later UI changes without a fresh capture.
+
 Rules:
 
 - Completed screenshots must be complete app-window-only captures.

@@ -11,17 +11,10 @@ extension SkillStore {
             || isSavingAIProvider
             || isTestingAIProvider
             || isApplyingBatchToggle
-            || isSkillManagerBusy
+            // Skill Manager reads/previews use surface-local busy state and may run in the background.
+            || isApplyingSkillManagerMutation
             || isBuildingTaskCockpit
             || isLLMPromptBusy
-    }
-
-    private var isSkillManagerBusy: Bool {
-        isLoadingSkillManagerTools
-            || isSearchingSkillManager
-            || isListingSkillManagerInstalled
-            || isPreviewingSkillManagerMutation
-            || isApplyingSkillManagerMutation
     }
 
     private var isLLMPromptBusy: Bool {
@@ -70,6 +63,10 @@ extension SkillStore {
         return result.displayResults(visibleCount: skillManagerSearchVisibility.visibleCount)
     }
 
+    var skillManagerInstalled: SkillManagerInstalledListRecord? {
+        skillManagerInstalledByScope[skillManagerScope]
+    }
+
     var skillManagerVisibleInstalledRecords: [OccurrenceIdentifiedItem<SkillManagerInstalledRecord>] {
         skillManagerInstalled?.displayRecords ?? []
     }
@@ -82,6 +79,15 @@ extension SkillStore {
     var skillManagerInstalledStatus: ListCompletenessState? {
         guard let result = skillManagerInstalled else { return nil }
         return result.listStatus(visibleCount: skillManagerVisibleInstalledRecords.count)
+    }
+
+    var skillManagerInventoryItems: [SkillManagerInventoryItem] {
+        SkillManagerInventoryBuilder.build(
+            installed: skillManagerInstalled?.installed ?? [],
+            catalogSkills: skills,
+            localLibrarySkills: localSkillLibrarySkills,
+            scope: skillManagerScope
+        )
     }
 
     var skillManagerSelectedAgents: [String] {
@@ -199,7 +205,8 @@ extension SkillStore {
         )
         let result = FilteredSkillListResult(
             skills: visibleSkills,
-            issueCountsBySkillID: issueIndex.issueCountsBySkillID
+            issueCountsBySkillID: issueIndex.issueCountsBySkillID,
+            conflictCountsBySkillID: issueIndex.conflictCountsBySkillID
         )
         filteredSkillListCache = FilteredSkillListCache(key: cacheKey, result: result)
         return result
@@ -211,6 +218,10 @@ extension SkillStore {
 
     func issueIndicatorCount(for skill: SkillRecord) -> Int {
         filteredSkillListResult.issueCount(for: skill.id)
+    }
+
+    func conflictIndicatorCount(for skill: SkillRecord) -> Int {
+        filteredSkillListResult.conflictCount(for: skill.id)
     }
 
     var filteredSkillGroups: [SkillAgentGroup] {
@@ -266,6 +277,15 @@ extension SkillStore {
 
     var sameAgentRuntimeConflictCount: Int {
         SkillListModel.sameAgentConflictGroupCount(skills: skills, conflicts: conflicts)
+    }
+
+    var visibleIssueCount: Int {
+        SkillListModel.displayIssueCount(
+            skills: skills,
+            findings: findings,
+            conflicts: conflicts,
+            agentFilter: .all
+        )
     }
 
     var selectedSkillEvents: [SkillEventRecord] {

@@ -70,6 +70,7 @@ the same file.
 | `AGENTS.md` | AI coding agents | Shared rules, current hard boundaries, validation expectations, compact gate anchors | Long changelog entries, full roadmap history, release notes |
 | `CLAUDE.md` | Claude Code | Claude-specific behavior, Computer Use defaults | Shared project rules already in `AGENTS.md` |
 | `README.md` | Humans | Product overview, app features, download/build guide, document map | Version-by-version evidence dumps or task ledgers |
+| `docs/README.md` | Humans + agents | Focused documentation index and ownership navigation | Product marketing, task history, or duplicated contracts |
 | `docs/plans/roadmap.md` | Humans + agents | Future work, deferred scope, and non-goals | Per-command validation logs or implementation scratch notes |
 | `docs/plans/development-tasks.md` | Agents + maintainers | Active task rules and task routing | Marketing copy, full release notes |
 | GitHub Releases/tags | Humans + maintainers | Release versions, user-facing release notes, downloadable assets, checksums | Planning, task routing, detailed validation logs |

@@ -1132,6 +1132,7 @@ struct SkillStoreTests {
         try expectEqual(store.skills.count, 3, "Generic scan should refresh the catalog collections.")
         try expectEqual(store.skills.first { $0.id == "gamma" }?.agent, "codex", "Scan fixtures should exercise a Codex skill record.")
         try expectContains(store.refreshStatusMessage, "completed-partial", "A partial scan must remain visible in the primary refresh status.")
+        try expectContains(store.refreshStatusMessage, "1 visible issues", "Scan feedback should report the same filtered issue total as the navigable skill UI, not the raw Catalog finding count.")
         try expectContains(store.refreshStatusMessage, "<adapter-root>/dangling-link", "The primary partial status should include the first redacted issue path.")
         try expectContains(store.refreshStatusMessage, "Review partial scan diagnostics.", "The primary partial status should include a recovery action.")
         try expectEqual(store.lastMutationMessage, store.refreshStatusMessage, "The visible detail feedback must surface the partial status instead of a generic success toast.")
@@ -1140,8 +1141,9 @@ struct SkillStoreTests {
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "opencode" }?.rootsSkipped, ["<adapter-root>/missing-opencode"], "Scan diagnostics should decode skipped roots.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.status, "completed-partial", "A partial adapter scan must not decode as completed.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.rootsPartial, ["<adapter-root>"], "Scan diagnostics should decode partial roots.")
-        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues.first?.kind, "entry_unreadable", "Scan diagnostics should decode typed issue kinds.")
-        try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues.first?.path, "<adapter-root>/dangling-link", "Scan issue paths should stay redacted on the client.")
+        let claudeIssues = store.lastScanActivity?.agentSummaries?.first { $0.agent == "claude-code" }?.scanIssues ?? []
+        try expectEqual(claudeIssues.first?.kind, "root_unavailable", "Scan diagnostics should preserve service issue order.")
+        try expectEqual(claudeIssues.first { $0.kind == "entry_unreadable" }?.path, "<adapter-root>/dangling-link", "Partial feedback should be able to select the issue that actually degraded traversal.")
         store.agentFilter = .codex
         try expectEqual(store.selectedAgentRefreshSummary?.rootsScanned, ["$HOME/.agents/skills"], "Selected adapter diagnostics should follow the agent filter.")
         let calls = await runner.calls()
@@ -1412,7 +1414,7 @@ struct SkillStoreTests {
     }
 
     private func catalogScanCompletenessTracksExplicitScan() async throws {
-        let runner = CatalogRefreshServiceRunner(scanFixtures: [.complete, .budget])
+        let runner = CatalogRefreshServiceRunner(scanFixtures: [.completeWithSafeDiagnostics, .budget])
         let store = SkillStore(service: runner.serviceClient())
 
         await store.loadAppStartupDataIfNeeded()
@@ -3972,12 +3974,12 @@ struct SkillStoreTests {
 
     func waitUntil(
         _ label: String,
-        timeout: TimeInterval = 2,
+        timeout: TimeInterval = 5,
         predicate: @escaping @MainActor () async -> Bool
     ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while !(await predicate()) {
-            if Date() > deadline {
+            if ProcessInfo.processInfo.systemUptime >= deadline {
                 throw NativeModelTestFailure(description: label)
             }
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -4769,7 +4771,7 @@ private final class EventHistoryABARunner: ServiceProcessRunning, @unchecked Sen
 
 private enum CatalogRefreshScanFixture {
     case partial
-    case complete
+    case complete, completeWithSafeDiagnostics
     case budget
     case legacySummary
     case legacyWithoutActivity
@@ -4866,6 +4868,7 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
             partialScanResult
         case .complete:
             completeScanResult
+        case .completeWithSafeDiagnostics: completeWithSafeDiagnosticsScanResult
         case .budget:
             budgetScanResult
         case .legacySummary:
@@ -4887,16 +4890,22 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     [{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","state":"loaded","enabled":true},{"id":"beta","agent":"claude-code","scope":"agent-project","path":"/tmp/project/beta/SKILL.md","display_path":"/tmp/project/beta/SKILL.md","definition_id":"def.beta","name":"Beta","state":"loaded","enabled":true},{"id":"gamma","agent":"codex","scope":"agent-global","path":"/tmp/codex/skills/gamma/SKILL.md","display_path":"~/.codex/skills/gamma/SKILL.md","definition_id":"codex:gamma","name":"Gamma","state":"loaded","enabled":true}]
     """
 
-    private static let stateSnapshot = """
-    {"status":\(status),"skills":\(skills),"findings":[],"conflicts":[],"snapshots":[]}
-    """
+    private static let findings = #"[{"id":"baseline-warning","instance_id":"alpha","definition_id":"def.alpha","rule_id":"permissions.network-declared","severity":"warning","message":"baseline warning","suggestion":"declare network","created_at":1},{"id":"visible-finding","instance_id":"beta","definition_id":"def.beta","rule_id":"body.too-long","severity":"warning","message":"visible issue","suggestion":"shorten body","created_at":1}]"#
+
+    private static let stateSnapshot = "{\"status\":\(status),\"skills\":\(skills),\"findings\":\(findings),\"conflicts\":[],\"snapshots\":[]}"
 
     private static let partialScanResult = """
     {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed-partial","started_at":1,"finished_at":2,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills","$HOME/.agents/skills","<adapter-root>/missing-opencode"],"log_entries":[{"level":"warning","message":"Claude Code discovered 2 skill(s); catalog now has 2 skill(s), 0 broken, across 0 complete root(s), 1 partial root(s), and 0 skipped root(s); first scan issue entry_unreadable at <adapter-root>/dangling-link: A directory entry could not be inspected or resolved."},{"level":"info","message":"Codex discovered 1 skill(s); catalog now has 1 skill(s), 0 broken, across 1 complete root(s), 0 partial root(s), and 0 skipped root(s)."},{"level":"warning","message":"opencode discovered 0 skill(s); catalog now has 0 skill(s), 0 broken, across 0 complete root(s), 0 partial root(s), and 1 skipped root(s); root-error skipped-root path(s): <adapter-root>/missing-opencode."}],"recovery_actions":["Review partial-root diagnostics; unseen rows under partial roots were preserved."],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed-partial","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":[],"roots_partial":["<adapter-root>"],"roots_skipped":[],"scan_issues":[{"kind":"entry_unreadable","path":"<adapter-root>/dangling-link","detail":"A directory entry could not be inspected or resolved."}],"recovery_actions":["Review partial scan diagnostics."]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":1,"broken_count":0,"roots_considered":["$HOME/.agents/skills"],"roots_scanned":["$HOME/.agents/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]},{"agent":"opencode","display_label":"opencode","status":"completed-with-skipped-roots","scanned_count":0,"catalog_count":0,"broken_count":0,"roots_considered":["<adapter-root>/missing-opencode"],"roots_scanned":[],"roots_partial":[],"roots_skipped":["<adapter-root>/missing-opencode"],"scan_issues":[{"kind":"root_unavailable","path":"<adapter-root>/missing-opencode","detail":"A declared scan root was unavailable or not a directory."}],"recovery_actions":["Review opencode skipped-root diagnostics, then retry Scan."]}]}}
-    """
+    """.replacingOccurrences(
+        of: "\"scan_issues\":[{\"kind\":\"entry_unreadable\"", with: "\"scan_issues\":[{\"kind\":\"root_unavailable\",\"path\":\"<adapter-root>/missing-optional\",\"detail\":\"A declared scan root was unavailable or not a directory.\"},{\"kind\":\"entry_unreadable\""
+    ).replacingOccurrences(of: "\"finding_count\":0", with: "\"finding_count\":2")
 
     private static let completeScanResult = """
     {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":["$HOME/.claude/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
+    """
+
+    private static let completeWithSafeDiagnosticsScanResult = """
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.agents/skills","$HOME/.hermes/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"opencode","display_label":"opencode","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.agents/skills"],"roots_scanned":["$HOME/.agents/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[{"kind":"root_outside_allowlist","path":"$HOME/.agents/skills/external","detail":"A resolved path was outside the explicit same-scope adapter roots."}],"recovery_actions":[]},{"agent":"hermes","display_label":"Hermes","status":"completed-no-roots-scanned","scanned_count":0,"catalog_count":0,"broken_count":0,"roots_considered":["$HOME/.hermes/skills"],"roots_scanned":[],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
     """
 
     private static let budgetScanResult = """

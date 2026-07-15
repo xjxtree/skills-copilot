@@ -18,9 +18,9 @@ This file describes security and privacy boundaries.
 - No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
   outbound network calls.
 - Skill Manager search/install/update may make outbound network calls only
-  through a supported external manager CLI after command preview, target
-  visibility, network posture, and explicit user confirmation are represented
-  in the typed service request.
+  through a supported external manager CLI. The UI enables that scoped path by
+  default; write commands still expose destination, scope, affected targets,
+  and a confirmation-bound preview in typed service requests.
 - Provider calls made by Agent Copilot's optional AI features require user
   enablement, prompt preview, redaction, destination visibility, and explicit
   confirmation.
@@ -50,9 +50,26 @@ This file describes security and privacy boundaries.
   operation. The service may run `npx skills` with argv-only commands,
   telemetry-off env, redacted logs, and read-back catalog refresh; enable/
   disable still uses the existing guarded agent-config toggle APIs.
+  Large installed-inventory stdout is captured only in a private `0600`
+  temporary regular file, size-checked before reading, and removed by scoped
+  cleanup on success and failure; it is never cataloged or retained.
+- Local ZIP import and updates are the explicitly scoped ZIP exception. Import
+  writes only to the app-owned local library. Update may replace either an
+  app-owned source or one canonical descendant of the active project/global
+  `.agents/skills` root after the catalog proves the selected instance and
+  scope. Preview
+  validates a regular bounded archive, one matching `SKILL.md`, safe paths,
+  file types, counts, and expanded sizes; apply is bound to both ZIP and current
+  source digests and uses staged replacement with rollback. Imported scripts
+  remain data and are never run.
+- Catalog discovery never grants package-manager write authority: plugin
+  caches, configured read-only roots, and native roots outside the guarded
+  selected `.agents/skills` roots are excluded from editable inventory.
+  Installed local sources outside those roots remain visible but are
+  unlink-only; they never receive a ZIP replacement action.
 - Hidden apply/write paths, hidden task state, raw prompt/response/trace
   persistence, public distribution automation, signing, notarization, DMG, and
-  ZIP work require explicit new scope.
+  other ZIP creation/distribution work require explicit new scope.
 
 ## Screenshot Evidence
 

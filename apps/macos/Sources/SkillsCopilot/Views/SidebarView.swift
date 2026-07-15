@@ -106,9 +106,10 @@ struct SidebarView: View {
     }
 
     private var agentFindingCount: Int {
-        SkillListModel.displayFindingCount(
+        SkillListModel.displayIssueCount(
             skills: store.skills,
             findings: store.findings,
+            conflicts: store.conflicts,
             agentFilter: store.agentFilter
         )
     }
@@ -298,32 +299,42 @@ struct SecondarySidebarView: View {
     @State private var isBatchOperationPresented = false
 
     var body: some View {
-        List(selection: $store.selectedSidebarSelection) {
-            switch store.sidebarContentMode {
-            case .sessions:
-                SessionSidebarPanel()
-            case .skills:
-                SkillSidebarPanel(isBatchOperationPresented: $isBatchOperationPresented)
-            case .config:
-                ConfigSidebarPanel()
+        ScrollViewReader { proxy in
+            List(selection: $store.selectedSidebarSelection) {
+                switch store.sidebarContentMode {
+                case .sessions:
+                    SessionSidebarPanel()
+                case .skills:
+                    SkillSidebarPanel(isBatchOperationPresented: $isBatchOperationPresented)
+                case .config:
+                    ConfigSidebarPanel()
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .padding(.top, 50)
+            .ignoresSafeArea(.container, edges: .top)
+            .secondarySidebarPaneBackground()
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(
+                            key: SecondarySidebarHeaderWidthPreferenceKey.self,
+                            value: proxy.size.width
+                        )
+                }
+                .allowsHitTesting(false)
+            }
+            .navigationTitle("")
+            .onChange(of: store.skillListScrollRequest) { request in
+                guard let request else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo(request.skillID, anchor: .center)
+                    }
+                }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .padding(.top, 50)
-        .ignoresSafeArea(.container, edges: .top)
-        .secondarySidebarPaneBackground()
-        .background {
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(
-                        key: SecondarySidebarHeaderWidthPreferenceKey.self,
-                        value: proxy.size.width
-                    )
-            }
-            .allowsHitTesting(false)
-        }
-        .navigationTitle("")
         .sheet(isPresented: $isBatchOperationPresented) {
             BatchSkillOperationSheet()
                 .environmentObject(store)
@@ -459,6 +470,7 @@ private struct SecondarySidebarAgentSelectorMenu: View {
                 filter: store.agentFilter,
                 title: shortTitle(for: store.agentFilter)
             )
+            .accessibilityHidden(true)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -598,6 +610,7 @@ private struct SecondarySidebarProjectPickerMenu: View {
                 isWarning: statusImage == "exclamationmark.triangle.fill",
                 isCompact: isCompact
             )
+            .accessibilityHidden(true)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -1599,73 +1612,59 @@ private struct SkillSidebarPanel: View {
     var body: some View {
         let visibleSkills = store.filteredSkills
 
-        ScrollViewReader { proxy in
-            Group {
-                Section {
-                    skillToolbar(visibleSkills: visibleSkills)
-                }
-                .listPageChromeRow()
+        Group {
+            Section {
+                skillToolbar(visibleSkills: visibleSkills)
+            }
+            .listPageChromeRow()
 
-                if store.skills.isEmpty {
-                    Section(UIStrings.skills) {
-                        SidebarEmptyMessage(message: store.isLoading ? UIStrings.loading : emptyCatalogMessage)
-                    }
-                } else if visibleSkills.isEmpty {
-                    Section(UIStrings.skills) {
-                        SidebarEmptyMessage(message: emptyFilteredMessage)
-                    }
-                } else {
-                    Section {
-                        ForEach(visibleSkills) { skill in
-                            SkillRow(
-                                skill: skill,
-                                issueCount: store.issueIndicatorCount(for: skill),
-                                isSelected: store.selectedSidebarSelection == .skill(skill.id)
-                            ) {
-                                store.selectedSidebarSelection = .skill(skill.id)
-                            }
-                            .equatable()
-                            .id(skill.id)
-                            .listPageCardRow()
+            if store.skills.isEmpty {
+                Section(UIStrings.skills) {
+                    SidebarEmptyMessage(message: store.isLoading ? UIStrings.loading : emptyCatalogMessage)
+                }
+            } else if visibleSkills.isEmpty {
+                Section(UIStrings.skills) {
+                    SidebarEmptyMessage(message: emptyFilteredMessage)
+                }
+            } else {
+                Section(UIStrings.text("sidebar.skills.list", "Skill List")) {
+                    ForEach(visibleSkills) { skill in
+                        SkillRow(
+                            skill: skill,
+                            issueCount: store.issueIndicatorCount(for: skill),
+                            conflictCount: store.conflictIndicatorCount(for: skill),
+                            isSelected: store.selectedSidebarSelection == .skill(skill.id)
+                        ) {
+                            store.selectedSidebarSelection = .skill(skill.id)
                         }
-                    } header: {
-                        SkillListSectionHeader(
-                            title: skillListSectionTitle(visibleCount: visibleSkills.count),
-                            visibleCount: visibleSkills.count
-                        )
+                        .equatable()
+                        .id(skill.id)
+                        .listPageCardRow()
                     }
-                    .id(skillListRefreshID(visibleCount: visibleSkills.count))
                 }
+                .id(skillListRefreshID(visibleCount: visibleSkills.count))
+            }
 
-                if store.catalogListCompleteness.completeness != .complete {
-                    Section {
-                        ListCompletenessFooter(
-                            state: store.catalogListCompleteness,
-                            onLoadMore: {},
-                            onLoadAll: {},
-                            onCancel: {}
-                        )
-                    }
+            if store.catalogListCompleteness.completeness != .complete {
+                Section {
+                    ListCompletenessFooter(
+                        state: store.catalogListCompleteness,
+                        onLoadMore: {},
+                        onLoadAll: {},
+                        onCancel: {}
+                    )
                 }
             }
-            .onAppear {
-                synchronizeSearchDraft(with: store.searchText)
-            }
-            .onChange(of: store.searchText) { committedText in
-                synchronizeSearchDraft(with: committedText)
-            }
-            .onChange(of: store.skillListScrollRequest) { request in
-                guard let request else { return }
-                DispatchQueue.main.async {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        proxy.scrollTo(request.skillID, anchor: .center)
-                    }
-                }
-            }
-            .onDisappear {
-                searchCommitTask?.cancel()
-                searchCommitTask = nil
-            }
+        }
+        .onAppear {
+            synchronizeSearchDraft(with: store.searchText)
+        }
+        .onChange(of: store.searchText) { committedText in
+            synchronizeSearchDraft(with: committedText)
+        }
+        .onDisappear {
+            searchCommitTask?.cancel()
+            searchCommitTask = nil
         }
     }
 
@@ -1777,15 +1776,6 @@ private struct SkillSidebarPanel: View {
         .accessibilityLabel(UIStrings.batchToggleOpen)
     }
 
-    private func skillListSectionTitle(visibleCount: Int) -> String {
-        if store.stateFilter == .all,
-           store.skillScopeFilter == .all,
-           store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return UIStrings.text("sidebar.currentAgentSkills", "\(store.agentFilter.title) Skills")
-        }
-        return UIStrings.text("sidebar.filteredAgentSkills", "\(store.agentFilter.title) Skills · \(visibleCount) shown")
-    }
-
     private func skillListRefreshID(visibleCount: Int) -> String {
         [
             store.agentFilter.rawValue,
@@ -1864,6 +1854,7 @@ private struct SkillFilterMenuPicker<Option: Identifiable>: View where Option.ID
             }
         } label: {
             pickerLabel
+                .accessibilityHidden(true)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -1969,34 +1960,6 @@ private struct SidebarMenuButtonLabel: View {
                 .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
         )
         .contentShape(Capsule())
-    }
-}
-
-private struct SkillListSectionHeader: View {
-    let title: String
-    let visibleCount: Int
-
-    private static let trailingControlInset: CGFloat = 14
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(UIStrings.batchToggleSelectedCount(visibleCount))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-        }
-        .textCase(nil)
-        .padding(.trailing, Self.trailingControlInset)
-        .padding(.top, 7)
-        .padding(.bottom, 5)
     }
 }
 
@@ -2626,12 +2589,14 @@ private struct AgentStatTile: View {
 private struct SkillRow: View, Equatable {
     let skill: SkillRecord
     let issueCount: Int
+    let conflictCount: Int
     let isSelected: Bool
     let onSelect: () -> Void
 
     static func == (lhs: SkillRow, rhs: SkillRow) -> Bool {
         lhs.skill == rhs.skill
             && lhs.issueCount == rhs.issueCount
+            && lhs.conflictCount == rhs.conflictCount
             && lhs.isSelected == rhs.isSelected
     }
 
@@ -2674,6 +2639,22 @@ private struct SkillRow: View, Equatable {
                     .accessibilityValue("\(issueCount)")
                 }
 
+                if conflictCount > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "rectangle.stack.badge.exclamationmark")
+                            .font(.caption2.weight(.semibold))
+                        Text("\(conflictCount)")
+                            .font(.caption2.bold().monospacedDigit())
+                    }
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.red.opacity(0.12), in: Capsule())
+                    .help(UIStrings.text("sidebar.skillRow.conflictCount.help", "Same-agent conflicts associated with this skill"))
+                    .accessibilityLabel(UIStrings.text("sidebar.skillRow.conflictCount", "Conflicts"))
+                    .accessibilityValue("\(conflictCount)")
+                }
+
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary.opacity(0.65))
@@ -2706,22 +2687,37 @@ private struct SkillRow: View, Equatable {
     }
 
     private var accessibilityValue: String {
+        var metrics: [String] = []
         if issueCount > 0 {
-            return "\(secondaryText), \(issueCount) \(UIStrings.findings)"
+            metrics.append("\(issueCount) \(UIStrings.findings)")
         }
-        return secondaryText
+        if conflictCount > 0 {
+            metrics.append("\(conflictCount) \(UIStrings.text("filter.conflicts", "Conflicts"))")
+        }
+        return ([secondaryText] + metrics).joined(separator: ", ")
     }
 
     private var secondaryText: String {
+        let packageContext = skill.pluginPackageSummary
+            ?? skill.packageVersion.map { "v\($0)" }
+            ?? skill.sourceKind
         if DisplayText.isToolGlobal(skill) {
-            return "\(DisplayText.scope(for: skill)) · \(UIStrings.readOnlyPreview)"
+            return [DisplayText.scope(for: skill), UIStrings.readOnlyPreview, packageContext ?? skill.provenance.label]
+                .joined(separator: " · ")
         }
         if skill.agent == "hermes", DisplayText.isReadOnlyPreview(skill) {
             return "\(DisplayText.scope(for: skill)) · \(skill.provenance.label)"
         }
         if DisplayText.isReadOnlyPreview(skill) {
-            return "\(DisplayText.scope(for: skill)) · \(UIStrings.readOnly)"
+            return [DisplayText.scope(for: skill), UIStrings.readOnly, packageContext ?? skill.provenance.label]
+                .joined(separator: " · ")
         }
-        return "\(DisplayText.scope(for: skill)) · \(DisplayText.state(skill.state, enabled: skill.enabled))"
+        var parts = [DisplayText.scope(for: skill), DisplayText.state(skill.state, enabled: skill.enabled)]
+        if let packageContext {
+            parts.append(packageContext)
+        } else {
+            parts.append(skill.provenance.label)
+        }
+        return parts.joined(separator: " · ")
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(unix)]
 #[test]
-fn scan_claude_report_preserves_partial_roots_and_typed_issues() {
+fn scan_claude_report_keeps_dangling_link_diagnostic_without_partial_root() {
     let temp_root = temp_test_dir("scan-claude-partial-report");
     let scan_root = temp_root.join("skills");
     write_command_scan_fixture(&scan_root, "observed");
@@ -28,12 +28,12 @@ fn scan_claude_report_preserves_partial_roots_and_typed_issues() {
     let canonical_root = scan_root.canonicalize().expect("canonical root");
 
     assert_eq!(report.agent, AgentId::ClaudeCode);
-    assert!(report.partial_roots.contains(&canonical_root));
+    assert!(report.partial_roots.is_empty());
     assert!(report
         .issues
         .iter()
-        .any(|issue| issue.kind == "entry_unreadable"));
-    assert!(report.scanned_roots.is_empty());
+        .any(|issue| issue.kind == "dangling_symlink"));
+    assert!(report.scanned_roots.contains(&canonical_root));
 
     let _ = std::fs::remove_dir_all(temp_root);
 }

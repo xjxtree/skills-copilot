@@ -1,6 +1,9 @@
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor_for_method, encode_cursor, KeysetCursor};
 
+const TASK_COCKPIT_MAX_EFFECTIVE_SKILLS: usize = 24;
+const TASK_COCKPIT_MAX_PROMPT_TOKENS: u32 = 12_000;
+
 impl ServiceHost {
     pub fn llm_status(&self) -> LlmStatus {
         let profiles = self.list_llm_provider_profiles().ok();
@@ -100,6 +103,8 @@ impl ServiceHost {
         let estimated_input_tokens = estimate_tokens(&[&built.prompt_preview]);
         let estimated_output_tokens = built.estimated_output_tokens;
         let estimated_total_tokens = estimated_input_tokens.saturating_add(estimated_output_tokens);
+        let task_cockpit_budget_exceeded = params.action == LlmPromptActionKind::TaskCockpit
+            && estimated_total_tokens > TASK_COCKPIT_MAX_PROMPT_TOKENS;
         let estimated_cost_usd = profile
             .as_ref()
             .map(|profile| estimate_prompt_cost_usd(profile.provider_type, estimated_total_tokens))
@@ -117,6 +122,13 @@ impl ServiceHost {
             Some(profile) if profile.monthly_budget_usd <= 0.0 => (
                 false,
                 "Monthly provider budget is 0; provider requests are disabled.".to_string(),
+            ),
+            Some(_) if task_cockpit_budget_exceeded => (
+                false,
+                format!(
+                    "Task Preflight prompt estimate exceeds the {} token safety budget; narrow the selected agents or skills.",
+                    TASK_COCKPIT_MAX_PROMPT_TOKENS
+                ),
             ),
             Some(profile) if profile.single_request_token_limit < estimated_total_tokens => (
                 false,
@@ -1162,15 +1174,25 @@ impl ServiceHost {
             .collect::<BTreeSet<_>>();
 
         let mut effective_skills = Vec::new();
+        let mut eligible_skills = visible_skills
+            .iter()
+            .filter(|skill| selected_agent_set.contains(skill.agent.as_str()))
+            .filter(|skill| {
+                candidate_id_set.is_empty() || candidate_id_set.contains(skill.id.as_str())
+            })
+            .filter(|skill| skill.enabled && skill.state == "loaded")
+            .collect::<Vec<_>>();
+        eligible_skills.sort_by(|left, right| {
+            task_cockpit_skill_relevance(task, right)
+                .cmp(&task_cockpit_skill_relevance(task, left))
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let eligible_skill_count = eligible_skills.len();
         if let Some(catalog) = catalog.as_ref() {
-            for skill in visible_skills
-                .iter()
-                .filter(|skill| selected_agent_set.contains(skill.agent.as_str()))
-                .filter(|skill| {
-                    candidate_id_set.is_empty() || candidate_id_set.contains(skill.id.as_str())
-                })
-                .filter(|skill| skill.enabled && skill.state == "loaded")
-                .take(320)
+            for skill in eligible_skills
+                .into_iter()
+                .take(TASK_COCKPIT_MAX_EFFECTIVE_SKILLS)
             {
                 let description = catalog
                     .get_skill_detail(&skill.id)?
@@ -1184,7 +1206,7 @@ impl ServiceHost {
                     "scope": redactor.redact(&skill.scope),
                     "state": redactor.redact(&skill.state),
                     "enabled": skill.enabled,
-                    "description": truncate_chars(&redactor.redact(&description), 500),
+                    "description": truncate_chars(&redactor.redact(&description), 320),
                 }));
             }
         }
@@ -1243,6 +1265,12 @@ impl ServiceHost {
             "task": redactor.redact(task),
             "selected_agents": selected_agents.iter().map(|agent| redactor.redact(agent)).collect::<Vec<_>>(),
             "catalog_available": catalog_available,
+            "candidate_selection": {
+                "eligible_skill_count": eligible_skill_count,
+                "included_skill_count": effective_skills.len(),
+                "limit": TASK_COCKPIT_MAX_EFFECTIVE_SKILLS,
+                "strategy": if candidate_id_set.is_empty() { "task-relevance" } else { "explicit-instance-selection" }
+            },
             "agent_summaries": agent_summaries,
             "effective_skills": effective_skills,
             "output_schema": {
@@ -1347,13 +1375,10 @@ impl ServiceHost {
         let Some(catalog) = self.open_existing_catalog_read_only()? else {
             return Ok(Vec::new());
         };
-        Ok(catalog
-            .list_rule_findings()?
+        let findings = catalog.list_rule_findings()?;
+        Ok(user_visible_rule_findings(&findings)
             .into_iter()
-            .filter(|finding| {
-                finding.instance_id.as_deref() == Some(skill.id.as_str())
-                    || finding.definition_id.as_deref() == Some(skill.definition_id.as_str())
-            })
+            .filter(|finding| finding.instance_id.as_deref() == Some(skill.id.as_str()))
             .collect())
     }
 
@@ -1468,9 +1493,12 @@ impl ServiceHost {
         let Some(catalog) = self.open_existing_catalog_read_only()? else {
             return Err(ServiceError::SkillNotFound(instance_id.to_string()));
         };
-        catalog
+        let adapter_ctx = self.effective_adapter_ctx()?;
+        let mut detail = catalog
             .get_skill_detail(instance_id)?
-            .ok_or_else(|| ServiceError::SkillNotFound(instance_id.to_string()))
+            .ok_or_else(|| ServiceError::SkillNotFound(instance_id.to_string()))?;
+        apply_current_config_overrides_to_skill_detail(&adapter_ctx, &mut detail)?;
+        Ok(detail)
     }
 
     pub(crate) fn llm_conflict_summary(&self) -> Result<String, ServiceError> {
@@ -1479,8 +1507,9 @@ impl ServiceHost {
                 "No catalog is available; no conflicts or findings were loaded.".to_string(),
             );
         };
-        let conflicts = catalog.list_conflict_groups()?;
-        let findings = catalog.list_rule_findings()?;
+        let adapter_ctx = self.effective_adapter_ctx()?;
+        let conflicts = list_conflicts_for_context(&catalog, &adapter_ctx)?;
+        let findings = user_visible_rule_findings(&catalog.list_rule_findings()?);
         let mut lines = Vec::new();
         for conflict in conflicts.iter().take(20) {
             lines.push(format!(
@@ -1758,11 +1787,10 @@ fn parse_provider_activity_provider_calls(
         if trimmed.is_empty() {
             continue;
         }
-        rows.push(
-            serde_json::from_str::<ProviderCallMetadata>(trimmed).map_err(|_| {
-                ServiceError::ProviderActivitySourceInvalid("provider-call-metadata")
-            })?,
-        );
+        let mut metadata = serde_json::from_str::<ProviderCallMetadata>(trimmed)
+            .map_err(|_| ServiceError::ProviderActivitySourceInvalid("provider-call-metadata"))?;
+        metadata.timestamp = crate::provider::normalize_epoch_millis(metadata.timestamp);
+        rows.push(metadata);
     }
     rows.sort_by(|left, right| {
         right
@@ -1936,6 +1964,32 @@ fn selected_task_cockpit_agents(
         ordered.push(agent.to_string());
     }
     ordered
+}
+
+fn task_cockpit_skill_relevance(task: &str, skill: &SkillRecord) -> u32 {
+    let task = task.to_lowercase();
+    let name = skill.name.to_lowercase();
+    let definition = skill.definition_id.to_lowercase();
+    let mut score = 0u32;
+    if !name.trim().is_empty() && task.contains(name.trim()) {
+        score = score.saturating_add(100);
+    }
+    let task_terms = task
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .collect::<BTreeSet<_>>();
+    for term in task_terms {
+        if name.contains(term) {
+            score = score.saturating_add(12);
+        }
+        if definition.contains(term) {
+            score = score.saturating_add(8);
+        }
+        if skill.agent.to_lowercase().contains(term) {
+            score = score.saturating_add(3);
+        }
+    }
+    score
 }
 
 fn redacted_model_task_record(

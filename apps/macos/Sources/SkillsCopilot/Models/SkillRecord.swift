@@ -938,6 +938,7 @@ struct ConfigSnapshotRecord: Codable, Identifiable, Hashable {
     let id: String
     let agent: String
     let scope: String
+    let projectRoot: String?
     let target: String
     let content: String
     let reason: String
@@ -947,10 +948,31 @@ struct ConfigSnapshotRecord: Codable, Identifiable, Hashable {
         case id
         case agent
         case scope
+        case projectRoot = "project_root"
         case target
         case content
         case reason
         case createdAt = "created_at"
+    }
+
+    init(
+        id: String,
+        agent: String,
+        scope: String,
+        projectRoot: String? = nil,
+        target: String,
+        content: String,
+        reason: String,
+        createdAt: Int64
+    ) {
+        self.id = id
+        self.agent = agent
+        self.scope = scope
+        self.projectRoot = projectRoot
+        self.target = target
+        self.content = content
+        self.reason = reason
+        self.createdAt = createdAt
     }
 }
 
@@ -1174,6 +1196,14 @@ struct AgentRefreshSummary: Codable, Hashable, Identifiable {
     let recoveryActions: [String]
 
     var id: String { agent }
+
+    var primaryPartialIssue: AgentRefreshScanIssue? {
+        let partialKinds: Set<String> = [
+            "directory_unreadable", "entry_unreadable", "file_unreadable",
+            "file_too_large", "budget_exceeded",
+        ]
+        return scanIssues.first { partialKinds.contains($0.kind) } ?? scanIssues.first
+    }
 
     enum CodingKeys: String, CodingKey {
         case agent

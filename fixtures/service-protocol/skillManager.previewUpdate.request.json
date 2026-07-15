@@ -6,7 +6,7 @@
       "frontend-design"
     ],
     "scope": "project",
-    "network_allowed": false,
+    "network_allowed": true,
     "confirmed": false
   }
 }

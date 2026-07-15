@@ -10,13 +10,14 @@ pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
             json!({
                 "source": "vercel-labs/agent-skills",
                 "skills": ["frontend-design"],
+                "agents": ["claude-code", "codex"],
                 "scope": "project",
                 "network_allowed": false,
                 "confirmed": false
             })
         }
         "skillManager.previewRemove" | "skillManager.applyRemove" => {
-            json!({ "skill": "frontend-design", "scope": "project", "confirmed": false })
+            json!({ "skill": "frontend-design", "agents": ["claude-code", "codex"], "scope": "project", "confirmed": false })
         }
         "skillManager.previewUpdate" | "skillManager.applyUpdate" => {
             json!({
@@ -31,6 +32,19 @@ pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
         }
         "skillManager.deleteLocal" => {
             json!({ "instance_id": "missing-skill", "confirmed": false })
+        }
+        "skillManager.previewLocalArchiveImport" | "skillManager.applyLocalArchiveImport" => {
+            json!({
+                "archive_path": "/tmp/missing-local-skill.zip",
+                "confirmed": false
+            })
+        }
+        "skillManager.previewLocalArchiveUpdate" | "skillManager.applyLocalArchiveUpdate" => {
+            json!({
+                "instance_id": "missing-skill",
+                "archive_path": "/tmp/missing-local-skill.zip",
+                "confirmed": false
+            })
         }
         _ => Value::Null,
     }

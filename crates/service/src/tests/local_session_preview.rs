@@ -4869,7 +4869,7 @@ fn opencode_primary_and_sidecars_suppress_unproven_only_content() {
     }
 }
 
-fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
+pub(super) fn preview_codex_session_fixture(test_name: &str, content: &str) -> Value {
     preview_codex_session_fixture_with_extension(test_name, "jsonl", content)
 }
 

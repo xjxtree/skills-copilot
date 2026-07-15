@@ -1,77 +1,5 @@
 import Foundation
 
-struct FilteredSkillListCacheKey: Equatable {
-    let dataRevision: Int
-    let searchText: String
-    let agentFilter: String
-    let stateFilter: String
-    let scopeFilter: String
-    let sortOrder: String
-    let sortDirection: String
-}
-
-struct FilteredSkillListCache {
-    let key: FilteredSkillListCacheKey
-    let result: FilteredSkillListResult
-}
-
-struct FilteredSkillListResult {
-    let skills: [SkillRecord]
-    let issueCountsBySkillID: [SkillRecord.ID: Int]
-
-    func issueCount(for skillID: SkillRecord.ID) -> Int {
-        issueCountsBySkillID[skillID] ?? 0
-    }
-}
-
-struct ScopedLocalSessionSummary {
-    let rows: [LocalSessionPreviewRow]
-    let userMessageCount: Int
-    let totalMessageCount: Int
-    let toolCallCount: Int
-    let skillCallCount: Int
-}
-
-struct ScopedLocalSessionSummaryCache {
-    let revision: Int
-    let summary: ScopedLocalSessionSummary
-}
-
-struct AppStartupLoadingState: Equatable {
-    let message: String
-    let progress: Double
-
-    init(message: String, progress: Double) {
-        self.message = message
-        self.progress = min(max(progress, 0), 1)
-    }
-}
-
-struct SkillListScrollRequest: Equatable {
-    let skillID: SkillRecord.ID
-    let token = UUID()
-}
-
-struct TaskCockpitPromptConfirmation: Identifiable, Hashable {
-    let preview: LLMPromptPreview
-    let taskText: String
-    let agentIDs: [String]
-    let instanceIDs: [String]
-
-    var id: String {
-        preview.previewID.isEmpty ? taskText : preview.previewID
-    }
-}
-
-struct ProviderActivityFilterKey: Hashable {
-    let provider: String?
-    let model: String?
-    let action: String?
-    let windowDays: Int?
-    let startAt: Int?
-    let endAt: Int?
-}
-
 @MainActor
 final class SkillStore: ObservableObject {
     private static let lastMutationMessageDismissDelayNanoseconds: UInt64 = 3_500_000_000
@@ -158,6 +86,7 @@ final class SkillStore: ObservableObject {
         }
     }
     @Published private(set) var taskCockpitResult: TaskCockpitResult?
+    @Published private(set) var taskCockpitFailedProviderOutput: String?
     @Published private(set) var taskCockpitHistory: [TaskCockpitHistoryRecord] = []
     @Published private(set) var selectedTaskCockpitHistoryID: TaskCockpitHistoryRecord.ID?
     @Published private(set) var taskCockpitHistoryCleanupMessage: String?
@@ -173,19 +102,23 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isApplyingBatchToggle = false
     @Published private(set) var skillManagerTools: [SkillManagerToolRecord] = []
     @Published private(set) var skillManagerSearchResult: SkillManagerSearchRecord?
-    @Published private(set) var skillManagerInstalled: SkillManagerInstalledListRecord?
+    @Published var skillManagerInstalledByScope: [SkillManagerScope: SkillManagerInstalledListRecord] = [:]
     @Published private(set) var skillManagerSearchVisibility = SkillManagerVisibleResults<String>()
     @Published private(set) var skillManagerMutationConfirmation: SkillManagerMutationConfirmation?
     @Published private(set) var skillManagerLocalCreateConfirmation: SkillManagerLocalCreateConfirmation?
     @Published private(set) var skillManagerLocalDeleteConfirmation: SkillManagerLocalDeleteConfirmation?
+    @Published var skillManagerLocalArchiveImportConfirmation: SkillManagerLocalArchiveImportConfirmation?
+    @Published var skillManagerLocalArchiveUpdateConfirmation: SkillManagerLocalArchiveUpdateConfirmation?
     @Published private(set) var skillManagerErrorMessage: String?
-    @Published private(set) var skillManagerMessage: String?
+    @Published var skillManagerMessage: String?
     @Published private(set) var isLoadingSkillManagerTools = false
     @Published private(set) var isSearchingSkillManager = false
-    @Published private(set) var isListingSkillManagerInstalled = false
+    @Published var isListingSkillManagerInstalled = false
     @Published private(set) var isPreviewingSkillManagerMutation = false
     @Published private(set) var isPreviewingSkillManagerLocalCreate = false
     @Published private(set) var isPreviewingSkillManagerLocalDelete = false
+    @Published var isPreviewingSkillManagerLocalArchiveImport = false
+    @Published var isPreviewingSkillManagerLocalArchiveUpdate = false
     @Published private(set) var isApplyingSkillManagerMutation = false
     @Published var skillManagerSearchQuery = "" {
         didSet {
@@ -229,7 +162,7 @@ final class SkillStore: ObservableObject {
             invalidateSkillManagerLocalCreatePreview()
         }
     }
-    @Published var skillManagerNetworkAllowed = false {
+    @Published var skillManagerNetworkAllowed = true {
         didSet {
             guard oldValue != skillManagerNetworkAllowed else { return }
             invalidateSkillManagerSearch()
@@ -239,7 +172,6 @@ final class SkillStore: ObservableObject {
     @Published var skillManagerScope: SkillManagerScope = .project {
         didSet {
             guard oldValue != skillManagerScope else { return }
-            invalidateSkillManagerInstalledList()
             invalidateSkillManagerMutationPreview()
         }
     }
@@ -252,7 +184,6 @@ final class SkillStore: ObservableObject {
     @Published var skillManagerSelectedAgentIDs: Set<String> = Set(SkillManagerAgent.defaultTargets.map(\.rawValue)) {
         didSet {
             guard oldValue != skillManagerSelectedAgentIDs else { return }
-            invalidateSkillManagerInstalledList()
             invalidateSkillManagerMutationPreview()
         }
     }
@@ -260,6 +191,11 @@ final class SkillStore: ObservableObject {
         didSet {
             invalidateScopedLocalSessionSummaryCache()
             activateLocalSessionSourceCache()
+            guard oldValue?.active?.rootPath != projectContextState?.active?.rootPath else { return }
+            invalidateSkillManagerInstalledList()
+            skillManagerInstalledByScope = [:]
+            invalidateSkillManagerSearch()
+            clearSkillManagerWorkflowPreviews()
         }
     }
     @Published private(set) var startupLoadingState: AppStartupLoadingState? = AppStartupLoadingState(
@@ -273,6 +209,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var isWriting = false
     @Published private(set) var isProjectUpdating = false
+    @Published private(set) var projectTransitionName: String?
     @Published private(set) var isLoadingSettings = false
     @Published private(set) var isSavingSettings = false
     @Published private(set) var isLoadingAIProvider = false
@@ -472,20 +409,26 @@ final class SkillStore: ObservableObject {
     private var loadedClaudeSettingsRequestKey: String?
     private var activeClaudeSettingsRequestKey: String?
     private var skillManagerSearchGenerationValue: UInt64 = 0
-    private var skillManagerInstalledGenerationValue: UInt64 = 0
+    var skillManagerInstalledGenerationValue: UInt64 = 0
     private var skillManagerMutationGenerationValue: UInt64 = 0
     private var skillManagerLocalCreateGenerationValue: UInt64 = 0
     private var skillManagerLocalDeleteGenerationValue: UInt64 = 0
+    var skillManagerLocalArchiveImportGenerationValue: UInt64 = 0
+    var skillManagerLocalArchiveUpdateGenerationValue: UInt64 = 0
     private var currentSkillManagerSearchGeneration: SkillManagerRequestGeneration?
-    private var currentSkillManagerInstalledGeneration: SkillManagerRequestGeneration?
+    var currentSkillManagerInstalledGeneration: SkillManagerRequestGeneration?
     private var currentSkillManagerMutationGeneration: SkillManagerRequestGeneration?
     private var currentSkillManagerLocalCreateGeneration: SkillManagerRequestGeneration?
     private var currentSkillManagerLocalDeleteGeneration: SkillManagerRequestGeneration?
+    var currentSkillManagerLocalArchiveImportGeneration: SkillManagerRequestGeneration?
+    var currentSkillManagerLocalArchiveUpdateGeneration: SkillManagerRequestGeneration?
     private var skillManagerSearchTask: SkillManagerRequestTaskHandle?
-    private var skillManagerInstalledTask: SkillManagerRequestTaskHandle?
+    var skillManagerInstalledTask: SkillManagerRequestTaskHandle?
     private var skillManagerMutationTask: SkillManagerRequestTaskHandle?
     private var skillManagerLocalCreateTask: SkillManagerRequestTaskHandle?
     private var skillManagerLocalDeleteTask: SkillManagerRequestTaskHandle?
+    var skillManagerLocalArchiveImportTask: SkillManagerRequestTaskHandle?
+    var skillManagerLocalArchiveUpdateTask: SkillManagerRequestTaskHandle?
     // A confirmed write owns the Store until its result is known; caller cancellation must not
     // interrupt an external mutation after the service RPC has started.
     private var skillManagerApplyTask: Task<Void, Never>?
@@ -504,7 +447,7 @@ final class SkillStore: ObservableObject {
     private var postRefreshSupplementalLoadTask: Task<Void, Never>?
     private var appSearchQuery = ""
     private var taskCockpitTimeoutTask: Task<Void, Never>?
-    private var taskCockpitServiceTask: Task<TaskCockpitResult, Error>?
+    private var taskCockpitServiceTask: Task<(TaskCockpitResult, String?), Error>?
     private var isSynchronizingSidebarSelection = false
     var filteredSkillListDataRevision = 0
     var filteredSkillListCache: FilteredSkillListCache?
@@ -616,6 +559,8 @@ final class SkillStore: ObservableObject {
         skillManagerMutationTask?.cancel()
         skillManagerLocalCreateTask?.cancel()
         skillManagerLocalDeleteTask?.cancel()
+        skillManagerLocalArchiveImportTask?.cancel()
+        skillManagerLocalArchiveUpdateTask?.cancel()
         localSessionDetailTask?.cancel()
         localSessionLoadAllTask?.cancel()
         let activityController = providerActivityController
@@ -725,6 +670,10 @@ final class SkillStore: ObservableObject {
         postRefreshSupplementalLoadTask?.cancel()
         postRefreshSupplementalLoadTask = Task { @MainActor [weak self, requestedAgentFilter] in
             guard let self, !Task.isCancelled else { return }
+            await self.loadSkillManagerTools()
+            guard !Task.isCancelled else { return }
+            await self.loadSkillManagerInventory()
+            guard !Task.isCancelled else { return }
             if forceAIProviderStatus {
                 await self.loadAIProviderStatus()
             } else {
@@ -1134,7 +1083,7 @@ final class SkillStore: ObservableObject {
             await loadSelectedDetail()
 
             setStartupLoading(UIStrings.startupReadyLoading, progress: 1.0)
-            refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
+            refreshStatusMessage = UIStrings.refreshReloaded(skills.count, visibleIssueCount, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
             scheduleStartupSupplementalLoads(
@@ -1161,7 +1110,7 @@ final class SkillStore: ObservableObject {
 
         do {
             try await refreshCollections(includeSupplementalData: false, includeAIProviderStatus: true)
-            refreshStatusMessage = UIStrings.refreshReloaded(skills.count, findings.count, sameAgentRuntimeConflictCount)
+            refreshStatusMessage = UIStrings.refreshReloaded(skills.count, visibleIssueCount, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
             await loadSelectedDetail()
@@ -1201,20 +1150,24 @@ final class SkillStore: ObservableObject {
 
     func setProject(rootPath: String, currentCWD: String? = nil, name: String? = nil) async {
         guard !isRefreshBusy else { return }
+        let resolvedName = name ?? URL(fileURLWithPath: rootPath).lastPathComponent
         isProjectUpdating = true
+        projectTransitionName = resolvedName.isEmpty ? UIStrings.projectSelectedSource : resolvedName
         errorMessage = nil
         lastMutationMessage = nil
-        defer { isProjectUpdating = false }
+        defer {
+            isProjectUpdating = false
+            projectTransitionName = nil
+        }
 
         do {
-            let resolvedName = name ?? URL(fileURLWithPath: rootPath).lastPathComponent
             let state = try await service.setProjectContext(
                 rootPath: rootPath,
                 currentCWD: currentCWD ?? rootPath,
                 name: resolvedName.isEmpty ? nil : resolvedName
             )
+            clearProjectScopedPresentationState()
             projectContextState = state
-            detailsByID.removeAll()
 
             if let validationMessage = projectValidationMessage {
                 errorMessage = UIStrings.projectValidationFailed(validationMessage)
@@ -1235,13 +1188,18 @@ final class SkillStore: ObservableObject {
     func clearProject() async {
         guard !isRefreshBusy else { return }
         isProjectUpdating = true
+        projectTransitionName = UIStrings.projectGlobalRootsOnly
         errorMessage = nil
         lastMutationMessage = nil
-        defer { isProjectUpdating = false }
+        defer {
+            isProjectUpdating = false
+            projectTransitionName = nil
+        }
 
         do {
-            projectContextState = try await service.clearProjectContext()
-            detailsByID.removeAll()
+            let state = try await service.clearProjectContext()
+            clearProjectScopedPresentationState()
+            projectContextState = state
             await scanAll(allowDuringProjectUpdate: true)
             if errorMessage == nil {
                 lastMutationMessage = UIStrings.projectClearedAndScanned
@@ -1249,6 +1207,21 @@ final class SkillStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func clearProjectScopedPresentationState() {
+        skills = []
+        findings = []
+        conflicts = []
+        detailsByID.removeAll()
+        skillEventsByID.removeAll()
+        selectedSkillID = nil
+        selectedSidebarSelection = nil
+        currentAgentConfigDocuments = []
+        loadedAgentConfigDocumentRequestKey = nil
+        resetAgentConfigSnapshotPaging(clearRows: true)
+        selectedLocalSessionID = nil
+        invalidateScopedLocalSessionSummaryCache()
     }
 
     func retryLastRefresh() async {
@@ -1317,6 +1290,14 @@ final class SkillStore: ObservableObject {
             errorMessage = error.localizedDescription
             batchTogglePreview = nil
         }
+    }
+
+    func prepareSingleSkillTogglePreview(skill: SkillRecord, on: Bool) async {
+        guard selectedSkill?.id == skill.id else { return }
+        batchToggleAction = on ? .enable : .disable
+        isBatchToggleSelectionExplicit = true
+        batchToggleSelectedSkillIDs = [skill.id]
+        await previewVisibleBatchToggle()
     }
 
     func resetBatchToggleSelectionToVisibleSkills() {
@@ -1411,13 +1392,10 @@ final class SkillStore: ObservableObject {
             setSkillManagerError(UIStrings.text("skillManager.search.required", "Enter a skill search query."))
             return
         }
-        let trimmedOwner = skillManagerOwner.trimmingCharacters(in: .whitespacesAndNewlines)
-        let owner = trimmedOwner.isEmpty ? nil : trimmedOwner
-        let networkAllowed = skillManagerNetworkAllowed
         let key = SkillManagerRequestKey.search(
             query: query,
-            owner: owner,
-            networkAllowed: networkAllowed
+            owner: nil,
+            networkAllowed: true
         )
         let generation = beginSkillManagerSearch(for: key)
         isSearchingSkillManager = true
@@ -1427,9 +1405,7 @@ final class SkillStore: ObservableObject {
         let task = Task { @MainActor [weak self, service] in
             do {
                 let result = try await service.searchSkillManager(
-                    query: query,
-                    owner: owner,
-                    networkAllowed: networkAllowed
+                    query: query
                 )
                 guard let self else { return }
                 defer { self.finishSkillManagerSearch(generation) }
@@ -1449,40 +1425,6 @@ final class SkillStore: ObservableObject {
         await handle.wait()
         if Task.isCancelled, currentSkillManagerSearchGeneration == generation {
             invalidateSkillManagerSearch()
-        }
-    }
-
-    func listSkillManagerInstalled() async {
-        let agents = canonicalSkillManagerAgentIDs(selectedSkillManagerAgentIDsForRead())
-        let scope = skillManagerScope
-        let key = SkillManagerRequestKey.installed(agents: agents, scope: scope)
-        let generation = beginSkillManagerInstalledList(for: key)
-        clearSkillManagerFeedback()
-
-        let service = service
-        let task = Task { @MainActor [weak self, service] in
-            do {
-                let result = try await service.listSkillManagerInstalled(
-                    agents: agents,
-                    scope: scope
-                )
-                guard let self else { return }
-                defer { self.finishSkillManagerInstalledList(generation) }
-                guard self.currentSkillManagerInstalledGeneration == generation else { return }
-                self.skillManagerInstalled = result
-            } catch {
-                guard let self else { return }
-                defer { self.finishSkillManagerInstalledList(generation) }
-                guard self.currentSkillManagerInstalledGeneration == generation else { return }
-                guard !(error is CancellationError), !Task.isCancelled else { return }
-                self.setSkillManagerError(error.localizedDescription)
-            }
-        }
-        let handle = SkillManagerRequestTaskHandle(task: task)
-        skillManagerInstalledTask = handle
-        await handle.wait()
-        if Task.isCancelled, currentSkillManagerInstalledGeneration == generation {
-            invalidateSkillManagerInstalledList()
         }
     }
 
@@ -1508,14 +1450,24 @@ final class SkillStore: ObservableObject {
 
     func showAllReturnedSkillManagerSearchResults() { if let result = skillManagerSearchResult { skillManagerSearchVisibility.loadAll(totalReturned: result.results.count) } }
 
-    func previewSkillManagerInstall(source: String? = nil, skillName: String? = nil) async {
+    func previewSkillManagerInstall(
+        source: String? = nil,
+        skillName: String? = nil,
+        agents explicitAgents: [String]? = nil,
+        scope explicitScope: SkillManagerScope? = nil
+    ) async {
         if let source {
             skillManagerSource = source
         }
         if let skillName {
             skillManagerInstallSkillName = skillName
         }
-        guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
+        let agents = canonicalSkillManagerAgentIDs(explicitAgents ?? skillManagerSelectedAgents)
+        guard !agents.isEmpty else {
+            setSkillManagerError(UIStrings.text("skillManager.agents.required", "Select at least one target agent."))
+            return
+        }
+        let scope = explicitScope ?? skillManagerScope
         let source = skillManagerSource.trimmingCharacters(in: .whitespacesAndNewlines)
         let skills = parsedSkillManagerSkillNames(from: skillManagerInstallSkillName)
         guard !source.isEmpty else {
@@ -1532,18 +1484,16 @@ final class SkillStore: ObservableObject {
             source: source,
             skills: skills,
             agents: agents,
-            scope: skillManagerScope,
-            distribution: skillManagerDistribution,
-            networkAllowed: skillManagerNetworkAllowed
+            scope: scope,
+            distribution: .symlink,
+            networkAllowed: true
         )
         await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerInstall(
                 source: inputs.source ?? "",
                 skills: inputs.skills,
                 agents: inputs.agents,
-                scope: inputs.scope,
-                distribution: inputs.distribution ?? .symlink,
-                networkAllowed: inputs.networkAllowed
+                scope: inputs.scope
             )
         }
     }
@@ -1554,11 +1504,21 @@ final class SkillStore: ObservableObject {
         await applySkillManagerMutation(confirmation)
     }
 
-    func previewSkillManagerRemove(skillName: String? = nil) async {
+    func previewSkillManagerRemove(
+        skillName: String? = nil,
+        agents explicitAgents: [String]? = nil,
+        scope explicitScope: SkillManagerScope? = nil,
+        cleanupLocalInstanceID: String? = nil
+    ) async {
         if let skillName {
             skillManagerRemoveSkillName = skillName
         }
-        guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
+        let agents = canonicalSkillManagerAgentIDs(explicitAgents ?? skillManagerSelectedAgents)
+        guard !agents.isEmpty else {
+            setSkillManagerError(UIStrings.text("skillManager.agents.required", "Select at least one target agent."))
+            return
+        }
+        let scope = explicitScope ?? skillManagerScope
         let skill = skillManagerRemoveSkillName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !skill.isEmpty else {
             setSkillManagerError(UIStrings.text("skillManager.skill.required", "Enter at least one skill name."))
@@ -1570,9 +1530,10 @@ final class SkillStore: ObservableObject {
             source: nil,
             skills: [skill],
             agents: agents,
-            scope: skillManagerScope,
+            scope: scope,
             distribution: nil,
-            networkAllowed: false
+            networkAllowed: false,
+            cleanupLocalInstanceID: cleanupLocalInstanceID
         )
         await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerRemove(
@@ -1589,27 +1550,30 @@ final class SkillStore: ObservableObject {
         await applySkillManagerMutation(confirmation)
     }
 
-    func previewSkillManagerUpdate(skillName: String? = nil) async {
+    func previewSkillManagerUpdate(
+        skillName: String? = nil,
+        affectedAgents: [String]? = nil,
+        scope explicitScope: SkillManagerScope? = nil
+    ) async {
         if let skillName {
             skillManagerRemoveSkillName = skillName
         }
-        guard let agents = selectedSkillManagerAgentIDsForMutation() else { return }
+        let agents = canonicalSkillManagerAgentIDs(affectedAgents ?? skillManagerSelectedAgents)
+        let scope = explicitScope ?? skillManagerScope
 
         let inputs = SkillManagerMutationInputs(
             kind: .update,
             source: nil,
             skills: parsedSkillManagerSkillNames(from: skillManagerRemoveSkillName),
             agents: agents,
-            scope: skillManagerScope,
+            scope: scope,
             distribution: nil,
-            networkAllowed: skillManagerNetworkAllowed
+            networkAllowed: true
         )
         await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerUpdate(
                 skills: inputs.skills,
-                agents: inputs.agents,
-                scope: inputs.scope,
-                networkAllowed: inputs.networkAllowed
+                scope: inputs.scope
             )
         }
     }
@@ -1786,6 +1750,8 @@ final class SkillStore: ObservableObject {
         invalidateSkillManagerMutationPreview()
         invalidateSkillManagerLocalCreatePreview()
         invalidateSkillManagerLocalDeletePreview()
+        invalidateSkillManagerLocalArchiveImportPreview()
+        invalidateSkillManagerLocalArchiveUpdatePreview()
     }
 
     private func retireSkillManagerMutationConfirmation(_ confirmation: SkillManagerMutationConfirmation) {
@@ -1803,12 +1769,12 @@ final class SkillStore: ObservableObject {
         invalidateSkillManagerLocalDeletePreview()
     }
 
-    private func clearSkillManagerFeedback() {
+    func clearSkillManagerFeedback() {
         skillManagerErrorMessage = nil
         skillManagerMessage = nil
     }
 
-    private func setSkillManagerError(_ message: String) {
+    func setSkillManagerError(_ message: String) {
         skillManagerErrorMessage = UIStrings.localizedServiceMessage(message)
         skillManagerMessage = nil
     }
@@ -1848,7 +1814,7 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func runSkillManagerConfirmedWrite(
+    func runSkillManagerConfirmedWrite(
         _ operation: @escaping @MainActor () async -> Void
     ) async {
         guard !isApplyingSkillManagerMutation else { return }
@@ -1876,8 +1842,7 @@ final class SkillStore: ObservableObject {
                 switch confirmation.inputs.kind {
                 case .install:
                     guard let source = confirmation.inputs.source,
-                          !source.isEmpty,
-                          let distribution = confirmation.inputs.distribution else {
+                          !source.isEmpty else {
                         setSkillManagerError(UIStrings.text("skillManager.preview.invalid", "The Skill Manager preview is no longer valid."))
                         return
                     }
@@ -1886,9 +1851,7 @@ final class SkillStore: ObservableObject {
                         source: source,
                         skills: confirmation.inputs.skills,
                         agents: confirmation.inputs.agents,
-                        scope: confirmation.inputs.scope,
-                        distribution: distribution,
-                        networkAllowed: confirmation.inputs.networkAllowed
+                        scope: confirmation.inputs.scope
                     )
                 case .remove:
                     guard let skill = confirmation.inputs.skills.first else {
@@ -1901,20 +1864,29 @@ final class SkillStore: ObservableObject {
                         agents: confirmation.inputs.agents,
                         scope: confirmation.inputs.scope
                     )
+                    if let instanceID = confirmation.inputs.cleanupLocalInstanceID {
+                        let cleanupPreview = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
+                        guard cleanupPreview.physicalDeleteAllowed else {
+                            setSkillManagerError(UIStrings.text(
+                                "skillManager.remove.cleanupBlocked",
+                                "Agent links were removed, but the local source is still referenced and could not be deleted. Refresh and review the remaining references."
+                            ))
+                            return
+                        }
+                        _ = try await service.applySkillManagerLocalDelete(instanceID: instanceID)
+                    }
                 case .update:
                     result = try await service.applySkillManagerUpdate(
                         preview: confirmation.result,
                         skills: confirmation.inputs.skills,
-                        agents: confirmation.inputs.agents,
-                        scope: confirmation.inputs.scope,
-                        networkAllowed: confirmation.inputs.networkAllowed
+                        scope: confirmation.inputs.scope
                     )
                 }
                 retireSkillManagerMutationConfirmation(confirmation)
                 invalidateDetailCaches(for: result.updatedSkills.map(\.id))
                 try await refreshCollections()
                 pruneDetailCaches(to: Set(skills.map(\.id)))
-                await listSkillManagerInstalled()
+                await loadSkillManagerInventory()
                 skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
                 await loadSelectedDetail()
@@ -1948,31 +1920,6 @@ final class SkillStore: ObservableObject {
         skillManagerSearchVisibility.reset()
         skillManagerSearchResult = nil
         isSearchingSkillManager = false
-    }
-
-    private func beginSkillManagerInstalledList(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
-        skillManagerInstalledTask?.cancel()
-        skillManagerInstalledTask = nil
-        skillManagerInstalledGenerationValue &+= 1
-        let generation = SkillManagerRequestGeneration(value: skillManagerInstalledGenerationValue, key: key)
-        currentSkillManagerInstalledGeneration = generation
-        isListingSkillManagerInstalled = true
-        return generation
-    }
-
-    private func finishSkillManagerInstalledList(_ generation: SkillManagerRequestGeneration) {
-        guard currentSkillManagerInstalledGeneration == generation else { return }
-        skillManagerInstalledTask = nil
-        isListingSkillManagerInstalled = false
-    }
-
-    private func invalidateSkillManagerInstalledList() {
-        skillManagerInstalledTask?.cancel()
-        skillManagerInstalledTask = nil
-        skillManagerInstalledGenerationValue &+= 1
-        currentSkillManagerInstalledGeneration = nil
-        skillManagerInstalled = nil
-        isListingSkillManagerInstalled = false
     }
 
     private func beginSkillManagerMutationPreview(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
@@ -2068,7 +2015,7 @@ final class SkillStore: ObservableObject {
         return canonicalSkillManagerAgentIDs(resolved)
     }
 
-    private func canonicalSkillManagerAgentIDs(_ agents: [String]) -> [String] {
+    func canonicalSkillManagerAgentIDs(_ agents: [String]) -> [String] {
         Array(
             Set(
                 agents
@@ -2272,6 +2219,7 @@ final class SkillStore: ObservableObject {
 
     func buildTaskCockpit() async {
         let taskText = selectedTaskCockpitInput
+        taskCockpitFailedProviderOutput = nil
         guard !taskText.isEmpty else {
             taskCockpitResult = .unavailable(taskText: "", reason: UIStrings.taskCockpitTaskRequired)
             taskCockpitPromptConfirmation = nil
@@ -2307,6 +2255,7 @@ final class SkillStore: ObservableObject {
         }
 
         taskCockpitResult = nil
+        taskCockpitFailedProviderOutput = nil
         taskCockpitPromptConfirmation = nil
         isPreviewingTaskCockpitPrompt = true
         taskCockpitOperationState = .preparing(
@@ -2387,6 +2336,7 @@ final class SkillStore: ObservableObject {
         isBuildingTaskCockpit = true
         taskCockpitPromptConfirmation = nil
         taskCockpitResult = nil
+        taskCockpitFailedProviderOutput = nil
         taskCockpitOperationState = .preparing(
             taskText: taskText,
             timeoutSeconds: roundedTaskCockpitTimeoutSeconds
@@ -2401,20 +2351,32 @@ final class SkillStore: ObservableObject {
                 instanceIDs: candidateSkillIDs
             )
             guard sendResult.success else {
-                return TaskCockpitResult.unavailable(taskText: taskText, reason: UIStrings.localizedServiceMessage(sendResult.message))
+                let output = sendResult.outputText?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (
+                    TaskCockpitResult.unavailable(
+                        taskText: taskText,
+                        reason: UIStrings.localizedServiceMessage(sendResult.message)
+                    ),
+                    output?.isEmpty == false ? sendResult.outputText : nil
+                )
             }
-            return TaskCockpitProviderOutputParser.result(
-                from: sendResult.outputText,
-                taskText: taskText,
-                agentIDs: selectedAgents
+            return (
+                TaskCockpitProviderOutputParser.result(
+                    from: sendResult.outputText,
+                    taskText: taskText,
+                    agentIDs: selectedAgents
+                ),
+                nil
             )
         }
         taskCockpitServiceTask = serviceTask
 
         do {
-            let result = try await serviceTask.value
+            let outcome = try await serviceTask.value
             guard isCurrentTaskCockpitOperation(operationID) else { return }
+            let result = outcome.0
             taskCockpitResult = result
+            taskCockpitFailedProviderOutput = outcome.1
             if let diagnosticReason = result.recoveryDiagnosticReason {
                 finishTaskCockpitOperation(
                     operationID,
@@ -2433,6 +2395,7 @@ final class SkillStore: ObservableObject {
             guard isCurrentTaskCockpitOperation(operationID) else { return }
             let message = UIStrings.localizedServiceMessage(error.localizedDescription)
             taskCockpitResult = .unavailable(taskText: taskText, reason: message)
+            taskCockpitFailedProviderOutput = nil
             finishTaskCockpitOperation(
                 operationID,
                 phase: .failed,
@@ -2464,6 +2427,7 @@ final class SkillStore: ObservableObject {
         taskCockpitOperationID = nil
         isBuildingTaskCockpit = false
         taskCockpitPromptConfirmation = nil
+        taskCockpitFailedProviderOutput = nil
         if publishFallbackResult {
             taskCockpitResult = .unavailable(taskText: taskText, reason: message)
         }
@@ -4047,7 +4011,7 @@ final class SkillStore: ObservableObject {
         errorMessage = error.localizedDescription
     }
 
-    private func refreshCollections(
+    func refreshCollections(
         includeSupplementalData: Bool = true,
         includeAIProviderStatus: Bool = true
     ) async throws {
@@ -4150,10 +4114,7 @@ final class SkillStore: ObservableObject {
         let issues = summaries.flatMap(\.scanIssues)
         let complete = activity.status == "completed"
             && summaries.allSatisfy { summary in
-                summary.status == "completed"
-                    && summary.rootsPartial.isEmpty
-                    && summary.rootsSkipped.isEmpty
-                    && summary.scanIssues.isEmpty
+                summary.rootsPartial.isEmpty && summary.rootsSkipped.isEmpty
             }
         if complete {
             return ListCompletenessState(
@@ -4395,6 +4356,7 @@ final class SkillStore: ObservableObject {
 
     private func clearTaskCockpitTransientState() {
         taskCockpitResult = nil
+        taskCockpitFailedProviderOutput = nil
         taskCockpitPromptConfirmation = nil
         isPreviewingTaskCockpitPrompt = false
         selectedTaskCockpitHistoryID = nil
@@ -4483,6 +4445,7 @@ final class SkillStore: ObservableObject {
         taskCockpitServiceTask = nil
         isBuildingTaskCockpit = false
         taskCockpitResult = .unavailable(taskText: taskText, reason: message)
+        taskCockpitFailedProviderOutput = nil
         taskCockpitOperationState = taskCockpitOperationState.finished(
             phase: .timedOut,
             message: message
@@ -4901,7 +4864,7 @@ final class SkillStore: ObservableObject {
                 let partialSummary = activity.agentSummaries?.first { summary in
                     summary.status == "completed-partial"
                 }
-                let issue = partialSummary?.scanIssues.first
+                let issue = partialSummary?.primaryPartialIssue
                 let issueText = issue.map { issue in
                     UIStrings.refreshPartialIssue(
                         kind: issue.kind,
@@ -4915,7 +4878,7 @@ final class SkillStore: ObservableObject {
                 refreshStatusMessage = UIStrings.refreshScanPartial(
                     activity.scannedCount,
                     activity.skillCount,
-                    activity.findingCount,
+                    visibleIssueCount,
                     sameAgentRuntimeConflictCount,
                     issue: issueText,
                     recovery: recovery
@@ -4925,13 +4888,20 @@ final class SkillStore: ObservableObject {
                 // as a warning instead of replacing it with a generic success.
                 lastMutationMessage = refreshStatusMessage
             } else {
-                partialScanWarningMessage = nil
                 refreshStatusMessage = UIStrings.refreshScanComplete(
                     activity.scannedCount,
                     activity.skillCount,
-                    activity.findingCount,
+                    visibleIssueCount,
                     sameAgentRuntimeConflictCount
                 )
+                if let danglingIssue = activity.agentSummaries?
+                    .flatMap(\.scanIssues)
+                    .first(where: { $0.kind == "dangling_symlink" })
+                {
+                    partialScanWarningMessage = UIStrings.refreshDanglingSymlink(danglingIssue.path)
+                } else {
+                    partialScanWarningMessage = nil
+                }
             }
             refreshLogEntries = activity.logEntries + refreshLogEntries
             trimRefreshLog()
@@ -4940,7 +4910,7 @@ final class SkillStore: ObservableObject {
             refreshStatusMessage = UIStrings.refreshScanComplete(
                 skills.count,
                 skills.count,
-                findings.count,
+                visibleIssueCount,
                 sameAgentRuntimeConflictCount
             )
             appendRefreshLog(level: "info", message: refreshStatusMessage)
@@ -4948,7 +4918,7 @@ final class SkillStore: ObservableObject {
         canRetryLastRefresh = false
     }
 
-    private func recordLocalRefresh(message: String) {
+    func recordLocalRefresh(message: String) {
         refreshStatusMessage = message
         appendRefreshLog(level: "info", message: message)
         canRetryLastRefresh = false

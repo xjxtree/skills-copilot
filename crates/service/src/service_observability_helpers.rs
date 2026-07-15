@@ -1012,12 +1012,14 @@ pub(crate) fn provider_observability_summary(
                 .map(|row| u64::from(row.estimated_total_tokens)),
         )
         .sum::<u64>();
-    let estimated_cost_usd = input
-        .history_rows
-        .iter()
-        .map(|row| row.estimated_cost_usd)
-        .chain(input.call_rows.iter().map(|row| row.estimated_cost_usd))
-        .sum::<f64>();
+    let estimated_cost_usd = normalize_signed_zero(
+        input
+            .history_rows
+            .iter()
+            .map(|row| row.estimated_cost_usd)
+            .chain(input.call_rows.iter().map(|row| row.estimated_cost_usd))
+            .sum::<f64>(),
+    );
     let latest_activity_at = input
         .history_rows
         .iter()
@@ -1260,8 +1262,22 @@ pub(crate) fn observability_status_succeeded(status: &str) -> bool {
 pub(crate) fn observability_status_failed(status: &str) -> bool {
     matches!(
         status.to_ascii_lowercase().as_str(),
-        "failed" | "error" | "blocked" | "timeout" | "network_error"
+        "failed"
+            | "error"
+            | "blocked"
+            | "timeout"
+            | "network_error"
+            | "parse_failed"
+            | "completed_with_error"
     )
+}
+
+fn normalize_signed_zero(value: f64) -> f64 {
+    if value.abs() < f64::EPSILON {
+        0.0
+    } else {
+        value
+    }
 }
 
 pub(crate) fn observability_redact(

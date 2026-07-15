@@ -46,27 +46,19 @@
     "output": {
       "status": "completed",
       "exit_code": 0,
-      "stdout": "{\"skills\":[{\"name\":\"frontend-design\",\"source\":\"vercel-labs/agent-skills\",\"agents\":[\"codex\"]}]}",
+      "stdout": "",
       "stderr": ""
     },
     "installed": [
       {
         "name": "frontend-design",
         "source": "vercel-labs/agent-skills",
+        "source_kind": "manager",
+        "path": "<project-root>/.agents/skills/frontend-design",
         "agents": [
           "codex"
         ],
-        "scope": "project",
-        "path": "/tmp/skills-copilot-project/.codex/skills/frontend-design/SKILL.md",
-        "raw": {
-          "name": "frontend-design",
-          "source": "vercel-labs/agent-skills",
-          "agents": [
-            "codex"
-          ],
-          "scope": "project",
-          "path": "/tmp/skills-copilot-project/.codex/skills/frontend-design/SKILL.md"
-        }
+        "scope": "project"
       }
     ],
     "returned_count": 1,

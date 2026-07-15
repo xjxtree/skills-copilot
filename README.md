@@ -140,6 +140,7 @@ pnpm check:privacy
 
 | File | Use |
 | --- | --- |
+| `docs/README.md` | Documentation index and ownership guide |
 | `docs/architecture.md` | Repository architecture and code ownership |
 | `docs/data-model.md` | Persisted and transient data overview |
 | `docs/adapters/agent-adapters.md` | Supported agent roots, config behavior, and adapter scope |

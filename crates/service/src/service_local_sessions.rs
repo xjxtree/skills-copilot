@@ -9,7 +9,10 @@ use skills_copilot_adapters::codex_home_dir;
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+mod classification;
 mod paging;
+
+use classification::{local_session_role_classification, local_session_type_name_classification};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum LocalSessionSort {
@@ -53,7 +56,19 @@ impl ServiceHost {
         &self,
         params: LocalSessionPreviewParams,
     ) -> Result<LocalSessionPreviewResult, ServiceError> {
-        let mut io = LocalSessionIoContext::new(LocalSessionReadLimits::default());
+        let mut limits = LocalSessionReadLimits::default();
+        if params
+            .session_id
+            .as_deref()
+            .is_some_and(|session_id| !session_id.trim().is_empty())
+        {
+            // A selected detail reads one exact candidate, so it can spend more
+            // of the existing request budget on a representative Codex JSONL
+            // head without multiplying work across the summary inventory.
+            limits.primary_head_bytes = 4 * 1024 * 1024;
+            limits.primary_tail_bytes = 512 * 1024;
+        }
+        let mut io = LocalSessionIoContext::new(limits);
         self.preview_local_sessions_with_io(params, &mut io)
     }
 
@@ -1436,36 +1451,6 @@ fn local_session_type_classification(value: Option<&Value>) -> LocalSessionRecor
         return LocalSessionRecordClassification::Unproven;
     };
     local_session_type_name_classification(record_type)
-}
-
-fn local_session_type_name_classification(record_type: &str) -> LocalSessionRecordClassification {
-    let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
-    if is_hidden_local_session_record_type(record_type) || is_json_non_message_type(&normalized) {
-        LocalSessionRecordClassification::Deny
-    } else if is_json_tool_type(&normalized) {
-        LocalSessionRecordClassification::Tool
-    } else if is_json_thinking_type(&normalized) {
-        LocalSessionRecordClassification::Thinking
-    } else {
-        match normalized.as_str() {
-            "user" | "human" => LocalSessionRecordClassification::User,
-            "assistant" | "agent" | "model" => LocalSessionRecordClassification::Assistant,
-            "session" | "sessionmeta" | "responseitem" | "message" | "inputtext" | "outputtext"
-            | "text" => LocalSessionRecordClassification::KnownStructure,
-            _ => LocalSessionRecordClassification::Unproven,
-        }
-    }
-}
-
-fn local_session_role_classification(role: &str) -> LocalSessionRecordClassification {
-    let normalized = role.to_ascii_lowercase().replace(['_', '-'], "");
-    match normalized.as_str() {
-        "user" | "human" | "customer" => LocalSessionRecordClassification::User,
-        "assistant" | "agent" | "model" => LocalSessionRecordClassification::Assistant,
-        "tool" | "function" | "toolresult" => LocalSessionRecordClassification::Tool,
-        "system" | "developer" | "summary" => LocalSessionRecordClassification::Deny,
-        _ => LocalSessionRecordClassification::Unproven,
-    }
 }
 
 fn local_session_classification_is_rejected(
@@ -3939,6 +3924,12 @@ fn collect_json_session_content_drafts(
         }
         Value::Object(map) => {
             let timestamp = json_session_timestamp_millis(value).or(inherited_timestamp);
+            if is_codex_session_wrapper(map) {
+                if let Some(payload) = map.get("payload") {
+                    collect_nested_json_session_content_drafts(payload, timestamp, drafts);
+                }
+                return;
+            }
             if local_session_object_is_denied(map) {
                 return;
             }
@@ -4699,7 +4690,16 @@ fn is_json_tool_type(normalized: &str) -> bool {
             | "tooluseresult"
             | "tooluseerror"
             | "functionresult"
+            | "customtoolcall"
+            | "customtoolcalloutput"
     )
+}
+
+fn is_codex_session_wrapper(map: &serde_json::Map<String, Value>) -> bool {
+    matches!(
+        map.get("type").and_then(Value::as_str),
+        Some("response_item" | "event_msg")
+    ) && map.get("payload").is_some_and(Value::is_object)
 }
 
 fn is_json_non_message_type(normalized: &str) -> bool {

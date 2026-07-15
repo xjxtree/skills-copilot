@@ -117,6 +117,7 @@ pnpm check:privacy
 
 | 文件 | 用途 |
 | --- | --- |
+| `docs/README.md` | 文档索引与职责导航 |
 | `docs/architecture.md` | 仓库架构和代码职责边界 |
 | `docs/data-model.md` | 持久化与临时数据概览 |
 | `docs/adapters/agent-adapters.md` | 支持的 Agent 根目录、配置行为和 adapter 范围 |

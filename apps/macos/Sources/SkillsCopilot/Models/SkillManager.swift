@@ -1,21 +1,5 @@
 import Foundation
 
-enum SkillManagerSuggestionModel {
-    static func suggestions(
-        localNames: [String],
-        installedNames: [String],
-        fallback: [String]
-    ) -> [String] {
-        var seen = Set<String>()
-        return (localNames + installedNames + fallback).compactMap { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = trimmed.lowercased()
-            guard !trimmed.isEmpty, seen.insert(key).inserted else { return nil }
-            return trimmed
-        }
-    }
-}
-
 enum SkillManagerAgent: String, CaseIterable, Identifiable, Hashable {
     case claudeCode = "claude-code"
     case pi
@@ -88,7 +72,6 @@ enum SkillManagerDistribution: String, CaseIterable, Identifiable, Codable, Hash
 enum SkillManagerWorkflow: String, CaseIterable, Identifiable, Hashable {
     case searchInstall = "search-install"
     case installedUpdates = "installed-updates"
-    case localLibrary = "local-library"
 
     var id: String { rawValue }
 
@@ -98,8 +81,6 @@ enum SkillManagerWorkflow: String, CaseIterable, Identifiable, Hashable {
             return UIStrings.text("skillManager.workflow.searchInstall", "Search & Install")
         case .installedUpdates:
             return UIStrings.text("skillManager.workflow.installedUpdates", "Installed & Updates")
-        case .localLibrary:
-            return UIStrings.text("skillManager.workflow.localLibrary", "Local Library")
         }
     }
 
@@ -109,17 +90,6 @@ enum SkillManagerWorkflow: String, CaseIterable, Identifiable, Hashable {
             return "magnifyingglass"
         case .installedUpdates:
             return "list.bullet.rectangle"
-        case .localLibrary:
-            return "folder"
-        }
-    }
-
-    var allowsExternalManagerMutation: Bool {
-        switch self {
-        case .searchInstall, .installedUpdates:
-            return true
-        case .localLibrary:
-            return false
         }
     }
 }
@@ -371,13 +341,304 @@ struct SkillManagerListInstalledParams: Encodable {
 struct SkillManagerInstalledRecord: Codable, Identifiable, Hashable {
     let name: String
     let source: String?
+    let sourceKind: String?
     let agents: [String]
     let scope: String?
     let path: String?
-    let raw: JSONValue
+    let raw: JSONValue?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case source
+        case sourceKind = "source_kind"
+        case agents
+        case scope
+        case path
+        case raw
+    }
 
     var id: String {
         [source ?? "", name, scope ?? "", path ?? ""].joined(separator: "|")
+    }
+
+    var isLocalSource: Bool {
+        sourceKind?.caseInsensitiveCompare("local") == .orderedSame
+    }
+}
+
+struct SkillManagerInventoryItem: Identifiable, Hashable {
+    enum Origin: String, Hashable {
+        case manager
+        case local
+    }
+
+    enum LocalOwnership: String, Hashable {
+        case appOwned
+        case project
+        case global
+        case external
+    }
+
+    let name: String
+    let source: String?
+    let scope: SkillManagerScope
+    let agents: [String]
+    let origin: Origin
+    let localOwnership: LocalOwnership?
+    let localInstanceID: String?
+    let localPath: String?
+
+    var id: String {
+        [scope.rawValue, origin.rawValue, name, localInstanceID ?? source ?? ""].joined(separator: "|")
+    }
+
+    var isInstalled: Bool { !agents.isEmpty }
+}
+
+enum SkillManagerInventoryBuilder {
+    private struct CatalogSource {
+        let path: String
+        let nameKey: String
+        let representative: SkillRecord
+        let agents: [String]
+    }
+
+    static func build(
+        installed: [SkillManagerInstalledRecord],
+        catalogSkills: [SkillRecord],
+        localLibrarySkills: [SkillRecord],
+        scope: SkillManagerScope
+    ) -> [SkillManagerInventoryItem] {
+        let catalogSources = editableCatalogSources(from: catalogSkills, scope: scope)
+        let sourcesByName = Dictionary(grouping: catalogSources, by: \.nameKey)
+        let libraryByName = Dictionary(grouping: localLibrarySkills, by: { normalizedName($0.name) })
+        var consumedSourcePaths = Set<String>()
+        var consumedLibraryIDs = Set<String>()
+        var installedNameKeys = Set<String>()
+        var items = deduplicatedInstalled(installed).map { record in
+            let nameKey = normalizedName(record.name)
+            installedNameKeys.insert(nameKey)
+            let catalogSource = matchingCatalogSource(
+                for: record,
+                candidates: sourcesByName[nameKey] ?? []
+            )
+            if let catalogSource {
+                consumedSourcePaths.insert(catalogSource.path)
+            }
+            let localSource = record.isLocalSource ? catalogSource : nil
+            let appOwnedSource = record.isLocalSource && localSource == nil
+                ? matchingLocalLibrarySource(for: record, candidates: libraryByName[nameKey] ?? [])
+                : nil
+            if let appOwnedSource {
+                consumedLibraryIDs.insert(appOwnedSource.id)
+            }
+            return SkillManagerInventoryItem(
+                name: record.name,
+                source: localSource?.path ?? appOwnedSource.map(sourceDirectory) ?? record.source,
+                scope: scope,
+                agents: canonicalAgentIDs(record.agents),
+                origin: record.isLocalSource ? .local : .manager,
+                localOwnership: record.isLocalSource
+                    ? (localSource != nil ? localOwnership(for: scope) : (appOwnedSource == nil ? .external : .appOwned))
+                    : nil,
+                localInstanceID: localSource?.representative.id ?? appOwnedSource?.id,
+                localPath: localSource?.path ?? appOwnedSource.map(sourceDirectory)
+            )
+        }
+
+        items.append(contentsOf: catalogSources.compactMap { source in
+            guard !consumedSourcePaths.contains(source.path) else { return nil }
+            installedNameKeys.insert(source.nameKey)
+            return SkillManagerInventoryItem(
+                name: source.representative.name,
+                source: source.path,
+                scope: scope,
+                agents: source.agents,
+                origin: .local,
+                localOwnership: localOwnership(for: scope),
+                localInstanceID: source.representative.id,
+                localPath: source.path
+            )
+        })
+
+        let uniqueLibrarySkills = Dictionary(grouping: localLibrarySkills, by: { normalizedName($0.name) })
+            .compactMap { nameKey, skills -> SkillRecord? in
+                guard !installedNameKeys.contains(nameKey) else { return nil }
+                return skills.sorted { $0.id < $1.id }.first { !consumedLibraryIDs.contains($0.id) }
+            }
+        items.append(contentsOf: uniqueLibrarySkills.map { skill in
+            let path = sourceDirectory(for: skill)
+            return SkillManagerInventoryItem(
+                name: skill.name,
+                source: path,
+                scope: scope,
+                agents: [],
+                origin: .local,
+                localOwnership: .appOwned,
+                localInstanceID: skill.id,
+                localPath: path
+            )
+        })
+
+        return items.sorted {
+            let comparison = $0.name.localizedCaseInsensitiveCompare($1.name)
+            if comparison != .orderedSame { return comparison == .orderedAscending }
+            return $0.id < $1.id
+        }
+    }
+
+    private static func editableCatalogSources(
+        from skills: [SkillRecord],
+        scope: SkillManagerScope
+    ) -> [CatalogSource] {
+        let eligible = skills.compactMap { skill -> (String, SkillRecord)? in
+            guard skill.state != "missing",
+                  !DisplayText.isToolGlobal(skill),
+                  scopeMatches(skill.scope, scope: scope),
+                  agentID(for: skill.agent) != nil,
+                  let path = sharedAgentsSourceDirectory(for: skill) else {
+                return nil
+            }
+            return (path, skill)
+        }
+        return Dictionary(grouping: eligible, by: { $0.0 }).compactMap { path, rows in
+            let skills = rows.map(\.1).sorted { $0.id < $1.id }
+            guard let representative = skills.first else { return nil }
+            return CatalogSource(
+                path: path,
+                nameKey: normalizedName(representative.name),
+                representative: representative,
+                agents: canonicalAgentIDs(skills.map(\.agent))
+            )
+        }
+    }
+
+    private static func matchingCatalogSource(
+        for record: SkillManagerInstalledRecord,
+        candidates: [CatalogSource]
+    ) -> CatalogSource? {
+        if let pathSuffix = sharedAgentsPathSuffix(record.path ?? record.source),
+           let exact = candidates.first(where: { sharedAgentsPathSuffix($0.path) == pathSuffix }) {
+            return exact
+        }
+        if candidates.count == 1 { return candidates[0] }
+        return candidates.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }.first
+    }
+
+    private static func matchingLocalLibrarySource(
+        for record: SkillManagerInstalledRecord,
+        candidates: [SkillRecord]
+    ) -> SkillRecord? {
+        guard !candidates.isEmpty else { return nil }
+        let source = record.path ?? record.source
+        if let source {
+            let normalizedSource = URL(fileURLWithPath: source).standardized.path
+            if let exact = candidates.first(where: {
+                let candidate = URL(fileURLWithPath: sourceDirectory(for: $0)).standardized.path
+                return candidate == normalizedSource || normalizedSource.hasSuffix(candidate)
+            }) {
+                return exact
+            }
+        }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private static func deduplicatedInstalled(
+        _ records: [SkillManagerInstalledRecord]
+    ) -> [SkillManagerInstalledRecord] {
+        var order: [String] = []
+        var recordsByKey: [String: SkillManagerInstalledRecord] = [:]
+        for record in records {
+            let key = [
+                normalizedName(record.name),
+                record.sourceKind?.lowercased() ?? "",
+                sharedAgentsPathSuffix(record.path) ?? record.path ?? record.source ?? "",
+                record.scope ?? ""
+            ].joined(separator: "|")
+            guard let existing = recordsByKey[key] else {
+                order.append(key)
+                recordsByKey[key] = record
+                continue
+            }
+            recordsByKey[key] = SkillManagerInstalledRecord(
+                name: existing.name,
+                source: existing.source ?? record.source,
+                sourceKind: existing.sourceKind ?? record.sourceKind,
+                agents: canonicalAgentIDs(existing.agents + record.agents),
+                scope: existing.scope ?? record.scope,
+                path: existing.path ?? record.path,
+                raw: existing.raw ?? record.raw
+            )
+        }
+        return order.compactMap { recordsByKey[$0] }
+    }
+
+    private static func sharedAgentsSourceDirectory(for skill: SkillRecord) -> String? {
+        let path = URL(fileURLWithPath: skill.path).standardized.path
+        let components = URL(fileURLWithPath: path).pathComponents
+        guard components.last?.caseInsensitiveCompare("SKILL.md") == .orderedSame else { return nil }
+        for index in components.indices where components[index] == ".agents" {
+            guard components.indices.contains(index + 2),
+                  components[index + 1] == "skills",
+                  index + 2 < components.index(before: components.endIndex) else {
+                continue
+            }
+            return URL(fileURLWithPath: path).deletingLastPathComponent().path
+        }
+        return nil
+    }
+
+    private static func sharedAgentsPathSuffix(_ path: String?) -> String? {
+        guard let path,
+              let range = path.range(of: "/.agents/skills/", options: [.caseInsensitive]) else {
+            return nil
+        }
+        let suffix = String(path[range.upperBound...])
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+        return suffix.hasSuffix("/skill.md")
+            ? String(suffix.dropLast("/skill.md".count))
+            : suffix
+    }
+
+    private static func sourceDirectory(for skill: SkillRecord) -> String {
+        let url = URL(fileURLWithPath: skill.path)
+        return url.lastPathComponent.caseInsensitiveCompare("SKILL.md") == .orderedSame
+            ? url.deletingLastPathComponent().path
+            : skill.path
+    }
+
+    private static func scopeMatches(_ value: String, scope: SkillManagerScope) -> Bool {
+        let normalized = value.lowercased()
+        switch scope {
+        case .project: return normalized.contains("project")
+        case .global: return normalized.contains("global") || normalized.contains("user")
+        }
+    }
+
+    private static func localOwnership(for scope: SkillManagerScope) -> SkillManagerInventoryItem.LocalOwnership {
+        scope == .project ? .project : .global
+    }
+
+    private static func normalizedName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func canonicalAgentIDs(_ agents: [String]) -> [String] {
+        let selected = Set(agents.compactMap(agentID))
+        return SkillManagerAgent.defaultTargets.map(\.rawValue).filter(selected.contains)
+    }
+
+    private static func agentID(for agent: String) -> String? {
+        switch agent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "claude", "claude code", "claude-code": return SkillManagerAgent.claudeCode.rawValue
+        case "codex": return SkillManagerAgent.codex.rawValue
+        case "opencode", "open code", "open-code": return SkillManagerAgent.opencode.rawValue
+        case "pi": return SkillManagerAgent.pi.rawValue
+        case "hermes", "hermes agent", "hermes-agent": return SkillManagerAgent.hermesAgent.rawValue
+        case "openclaw", "open claw", "open-claw": return SkillManagerAgent.openclaw.rawValue
+        default: return nil
+        }
     }
 }
 
@@ -545,6 +806,32 @@ struct SkillManagerDeleteLocalParams: Encodable {
     }
 }
 
+struct SkillManagerLocalArchiveUpdateParams: Encodable {
+    let instanceId: String
+    let archivePath: String
+    let confirmed: Bool
+    let previewToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case instanceId = "instance_id"
+        case archivePath = "archive_path"
+        case confirmed
+        case previewToken = "preview_token"
+    }
+}
+
+struct SkillManagerLocalArchiveImportParams: Encodable {
+    let archivePath: String
+    let confirmed: Bool
+    let previewToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case archivePath = "archive_path"
+        case confirmed
+        case previewToken = "preview_token"
+    }
+}
+
 struct SkillManagerMutationRecord: Codable, Hashable {
     let preview: SkillManagerCommandPreview
     let output: SkillManagerCommandOutput?
@@ -576,6 +863,34 @@ struct SkillManagerLocalCreateRecord: Codable, Hashable {
         case instanceId = "instance_id"
         case sourcePath = "source_path"
         case applied
+    }
+}
+
+struct SkillManagerLocalArchiveImportRecord: Codable, Hashable {
+    let skillName: String
+    let archivePath: String
+    let archiveSha256: String
+    let fileCount: Int
+    let uncompressedBytes: UInt64
+    let previewToken: String
+    let confirmed: Bool
+    let applied: Bool
+    let summary: String
+    let importedSkill: SkillRecord?
+    let instanceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case skillName = "skill_name"
+        case archivePath = "archive_path"
+        case archiveSha256 = "archive_sha256"
+        case fileCount = "file_count"
+        case uncompressedBytes = "uncompressed_bytes"
+        case previewToken = "preview_token"
+        case confirmed
+        case applied
+        case summary
+        case importedSkill = "imported_skill"
+        case instanceID = "instance_id"
     }
 }
 
@@ -618,5 +933,33 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
         case confirmed
         case deleted
         case summary
+    }
+}
+
+struct SkillManagerLocalArchiveUpdateRecord: Codable, Hashable {
+    let instanceId: String
+    let skillName: String
+    let archivePath: String
+    let archiveSha256: String
+    let fileCount: Int
+    let uncompressedBytes: UInt64
+    let previewToken: String
+    let confirmed: Bool
+    let applied: Bool
+    let summary: String
+    let updatedSkill: SkillRecord?
+
+    enum CodingKeys: String, CodingKey {
+        case instanceId = "instance_id"
+        case skillName = "skill_name"
+        case archivePath = "archive_path"
+        case archiveSha256 = "archive_sha256"
+        case fileCount = "file_count"
+        case uncompressedBytes = "uncompressed_bytes"
+        case previewToken = "preview_token"
+        case confirmed
+        case applied
+        case summary
+        case updatedSkill = "updated_skill"
     }
 }

@@ -32,6 +32,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 keyring = { version = "3", features = ["apple-native"] }
 ureq = { version = "2", features = ["json"] }
 url = "2"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 skills-copilot-core = { path = "crates/core" }
 skills-copilot-adapters = { path = "crates/adapters" }
 skills-copilot-scanner = { path = "crates/scanner" }

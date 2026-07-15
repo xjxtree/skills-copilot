@@ -1,8 +1,10 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,11 +21,21 @@ use crate::{
     CommandError,
 };
 
+mod archive;
+pub use archive::{
+    apply_local_archive_import, apply_local_archive_update, preview_local_archive_import,
+    preview_local_archive_update, SkillManagerLocalArchiveImportParams,
+    SkillManagerLocalArchiveImportRecord, SkillManagerLocalArchiveUpdateParams,
+    SkillManagerLocalArchiveUpdateRecord,
+};
+
 const DEFAULT_MANAGER_TOOL: &str = "npx-skills";
 const SKILLS_NPM_TOOL: &str = "skills-npm";
 const SKILLS_CLI_BINARY: &str = "skills";
 const NPX_BINARY: &str = "npx";
 const MAX_CAPTURE_BYTES: usize = 32_000;
+const MAX_MACHINE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MANAGER_LOCK_BYTES: u64 = 2 * 1024 * 1024;
 
 pub const SUPPORTED_MANAGER_AGENTS: [&str; 6] = [
     "claude-code",
@@ -118,9 +130,11 @@ pub struct SkillManagerListInstalledParams {
 pub struct SkillManagerInstalledRecord {
     pub name: String,
     pub source: Option<String>,
+    pub source_kind: String,
     pub agents: Vec<String>,
     pub scope: Option<String>,
     pub path: Option<String>,
+    #[serde(default, skip_serializing)]
     pub raw: Value,
 }
 
@@ -262,6 +276,10 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
                 "previewLocalCreate",
                 "applyLocalCreate",
                 "deleteLocal",
+                "previewLocalArchiveImport",
+                "applyLocalArchiveImport",
+                "previewLocalArchiveUpdate",
+                "applyLocalArchiveUpdate",
             ]
             .into_iter()
             .map(ToOwned::to_owned)
@@ -338,9 +356,13 @@ pub fn search_skills_with_manager(
     if !params.network_allowed {
         return Ok(skill_manager_search_record(preview, None, Vec::new()));
     }
-    let output = run_previewed_command(ctx, &preview)?;
-    let results = parse_search_results(&output.stdout);
-    Ok(skill_manager_search_record(preview, Some(output), results))
+    let execution = run_previewed_command(ctx, &preview)?;
+    let results = parse_search_results(&execution.machine_stdout);
+    Ok(skill_manager_search_record(
+        preview,
+        Some(execution.output.without_machine_stdout()),
+        results,
+    ))
 }
 
 pub fn list_installed_skills_with_manager(
@@ -352,8 +374,12 @@ pub fn list_installed_skills_with_manager(
         "list".to_string(),
         "--json".to_string(),
     ];
+    // The CLI otherwise enumerates every agent it knows about. Its JSON writer
+    // currently clips stdout at 64 KiB, so unrelated agent metadata can turn a
+    // successful list into invalid JSON. Keep the UI skill-centric while
+    // constraining this internal read to the adapters the app actually supports.
+    append_agent_args(&mut args, &default_agent_targets());
     append_scope_args(&mut args, params.scope.as_deref())?;
-    append_agent_args(&mut args, &normalize_manager_agents(&params.agents)?);
     let preview = command_preview(
         ctx,
         CommandPreviewDraft {
@@ -369,9 +395,14 @@ pub fn list_installed_skills_with_manager(
             skills: Vec::new(),
         },
     )?;
-    let output = run_previewed_command(ctx, &preview)?;
-    let installed = parse_installed_records(&output.stdout)?;
-    Ok(skill_manager_installed_record(preview, output, installed))
+    let execution = run_previewed_command(ctx, &preview)?;
+    let mut installed = parse_installed_records(&execution.machine_stdout)?;
+    enrich_installed_records(ctx, params.scope.as_deref(), &mut installed);
+    Ok(skill_manager_installed_record(
+        preview,
+        execution.output.without_machine_stdout(),
+        installed,
+    ))
 }
 
 fn skill_manager_search_record(
@@ -430,7 +461,7 @@ pub fn apply_install_with_manager(
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let preview = build_install_preview(ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
-    let output = run_previewed_command(ctx, &preview)?;
+    let output = run_previewed_command(ctx, &preview)?.output;
     let scan = scan_all_catalog_report(ctx, catalog)?;
     let updated_skills = catalog.list_skill_records()?;
     Ok(SkillManagerMutationRecord {
@@ -463,7 +494,7 @@ pub fn apply_remove_with_manager(
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let preview = build_remove_preview(ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
-    let output = run_previewed_command(ctx, &preview)?;
+    let output = run_previewed_command(ctx, &preview)?.output;
     let scan = scan_all_catalog_report(ctx, catalog)?;
     let updated_skills = catalog.list_skill_records()?;
     Ok(SkillManagerMutationRecord {
@@ -496,7 +527,7 @@ pub fn apply_update_with_manager(
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let preview = build_update_preview(ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
-    let output = run_previewed_command(ctx, &preview)?;
+    let output = run_previewed_command(ctx, &preview)?.output;
     let scan = scan_all_catalog_report(ctx, catalog)?;
     let updated_skills = catalog.list_skill_records()?;
     Ok(SkillManagerMutationRecord {
@@ -533,7 +564,7 @@ pub fn apply_local_create_with_manager(
 ) -> Result<SkillManagerLocalCreateRecord, CommandError> {
     let preview = build_local_create_preview(app_data_dir, ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
-    let output = run_previewed_command(ctx, &preview)?;
+    let output = run_previewed_command(ctx, &preview)?.output;
     let source_path = local_create_source_path(app_data_dir, &params.name)?;
     let imported = import_local_skill_to_tool_global(
         catalog,
@@ -652,7 +683,7 @@ fn build_install_preview(
     if !skill_names.is_empty() {
         args.push("--full-depth".to_string());
     }
-    let agents = normalize_manager_agents(&params.agents)?;
+    let agents = required_manager_agents(&params.agents)?;
     append_agent_args(&mut args, &agents);
     append_scope_args(&mut args, params.scope.as_deref())?;
     if params
@@ -699,7 +730,7 @@ fn build_remove_preview(
         "remove".to_string(),
         skill.to_string(),
     ];
-    let agents = normalize_manager_agents(&params.agents)?;
+    let agents = required_manager_agents(&params.agents)?;
     append_agent_args(&mut args, &agents);
     append_scope_args(&mut args, params.scope.as_deref())?;
     args.push("-y".to_string());
@@ -735,8 +766,6 @@ fn build_update_preview(
     for skill in &skill_names {
         args.push(skill.clone());
     }
-    let agents = normalize_manager_agents(&params.agents)?;
-    append_agent_args(&mut args, &agents);
     append_scope_args(&mut args, params.scope.as_deref())?;
     args.push("-y".to_string());
     command_preview(
@@ -748,10 +777,7 @@ fn build_update_preview(
             network_required: true,
             network_allowed: params.network_allowed,
             confirmed: params.confirmed,
-            summary: format!(
-                "Update managed skills for {} supported agent target(s).",
-                agents.len()
-            ),
+            summary: "Update the selected managed skill source for every linked agent.".to_string(),
             risks: vec![
                 "Update may contact remote source repositories or indexes through the external CLI."
                     .to_string(),
@@ -807,6 +833,86 @@ struct CommandPreviewDraft {
     skills: Vec<String>,
 }
 
+struct SkillManagerCommandExecution {
+    output: SkillManagerCommandOutput,
+    machine_stdout: String,
+}
+
+struct MachineStdoutCapture {
+    path: PathBuf,
+    file: File,
+}
+
+impl MachineStdoutCapture {
+    fn create() -> Result<Self, CommandError> {
+        let temp_dir = env::temp_dir();
+        for attempt in 0..32 {
+            let path = temp_dir.join(format!(
+                "agent-copilot-skill-manager-{}-{}-{attempt}.json",
+                std::process::id(),
+                unix_timestamp_millis()
+            ));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+                    }
+                    return Ok(Self { path, file });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(CommandError::SkillManagerCommandFailed(
+            "could not allocate a private installed-inventory capture".to_string(),
+        ))
+    }
+
+    fn child_stdout(&self) -> Result<Stdio, CommandError> {
+        Ok(Stdio::from(self.file.try_clone()?))
+    }
+
+    fn read(&mut self) -> Result<Vec<u8>, CommandError> {
+        if self.file.metadata()?.len() > MAX_MACHINE_OUTPUT_BYTES as u64 {
+            return Err(CommandError::SkillManagerCommandFailed(
+                "listInstalled output exceeded the safe capture limit".to_string(),
+            ));
+        }
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut output = Vec::new();
+        self.file
+            .by_ref()
+            .take((MAX_MACHINE_OUTPUT_BYTES + 1) as u64)
+            .read_to_end(&mut output)?;
+        if output.len() > MAX_MACHINE_OUTPUT_BYTES {
+            return Err(CommandError::SkillManagerCommandFailed(
+                "listInstalled output exceeded the safe capture limit".to_string(),
+            ));
+        }
+        Ok(output)
+    }
+}
+
+impl Drop for MachineStdoutCapture {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+impl SkillManagerCommandOutput {
+    fn without_machine_stdout(mut self) -> Self {
+        self.stdout.clear();
+        self
+    }
+}
+
 fn command_preview(
     ctx: &AdapterContext,
     mut draft: CommandPreviewDraft,
@@ -847,7 +953,7 @@ fn command_preview(
 fn run_previewed_command(
     ctx: &AdapterContext,
     preview: &SkillManagerCommandPreview,
-) -> Result<SkillManagerCommandOutput, CommandError> {
+) -> Result<SkillManagerCommandExecution, CommandError> {
     if preview.requires_confirmation && !preview.confirmed {
         return Err(CommandError::InvalidSkillManagerRequest(format!(
             "{} requires confirmed=true",
@@ -872,18 +978,43 @@ fn run_previewed_command(
     for env_var in manager_command_env(ctx, executable) {
         command.env(env_var.key, env_var.value);
     }
+    // Node's console writes asynchronously when stdout is a pipe. The external
+    // manager exits immediately after printing large JSON, which can drop
+    // everything beyond the 64 KiB pipe buffer. A private regular file makes
+    // that write synchronous; it is bounded, read only after exit, and removed
+    // by RAII on every return path.
+    let mut machine_capture = if preview.operation == "listInstalled" {
+        Some(MachineStdoutCapture::create()?)
+    } else {
+        None
+    };
+    if let Some(capture) = &machine_capture {
+        command.stdout(capture.child_stdout()?);
+    }
     let output = command.output().map_err(|error| {
         CommandError::SkillManagerCommandFailed(format!(
             "failed to run {}: {error}",
             preview.command.join(" ")
         ))
     })?;
+    let machine_stdout = match &mut machine_capture {
+        Some(capture) => capture.read()?,
+        None => output.stdout,
+    };
+    if machine_stdout.len() > MAX_MACHINE_OUTPUT_BYTES
+        || output.stderr.len() > MAX_MACHINE_OUTPUT_BYTES
+    {
+        return Err(CommandError::SkillManagerCommandFailed(format!(
+            "{} output exceeded the safe capture limit",
+            preview.operation
+        )));
+    }
     let status = if output.status.success() {
         "completed"
     } else {
         "failed"
     };
-    let stdout = redact_command_output(ctx, &String::from_utf8_lossy(&output.stdout));
+    let stdout = redact_command_output(ctx, &String::from_utf8_lossy(&machine_stdout));
     let stderr = redact_command_output(ctx, &String::from_utf8_lossy(&output.stderr));
     let record = SkillManagerCommandOutput {
         status: status.to_string(),
@@ -898,7 +1029,10 @@ fn run_previewed_command(
             preview.operation, record.exit_code, detail
         )));
     }
-    Ok(record)
+    Ok(SkillManagerCommandExecution {
+        output: record,
+        machine_stdout: stdout,
+    })
 }
 
 fn ensure_confirmed(
@@ -1103,8 +1237,17 @@ fn normalize_manager_agents(agents: &[String]) -> Result<Vec<String>, CommandErr
         .collect())
 }
 
+fn required_manager_agents(agents: &[String]) -> Result<Vec<String>, CommandError> {
+    if agents.is_empty() {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "skill manager mutation requires at least one explicit agent target".to_string(),
+        ));
+    }
+    normalize_manager_agents(agents)
+}
+
 fn manager_agent_alias(agent: &str) -> Result<String, CommandError> {
-    let normalized = agent.trim().to_ascii_lowercase();
+    let normalized = agent.trim().to_ascii_lowercase().replace([' ', '_'], "-");
     let mapped = match normalized.as_str() {
         "claude" | "claude-code" => "claude-code",
         "pi" => "pi",
@@ -1298,7 +1441,17 @@ fn parse_installed_records(stdout: &str) -> Result<Vec<SkillManagerInstalledReco
             "listInstalled returned invalid or truncated JSON".to_string(),
         ));
     }
-    Ok(records_from_json_value(&value))
+    let mut records = records_from_json_value(&value);
+    for record in &mut records {
+        record.agents = record
+            .agents
+            .iter()
+            .filter_map(|agent| manager_agent_alias(agent).ok())
+            .collect();
+        record.agents.sort();
+        record.agents.dedup();
+    }
+    Ok(records)
 }
 
 fn records_from_json_value(value: &Value) -> Vec<SkillManagerInstalledRecord> {
@@ -1318,16 +1471,97 @@ fn records_from_json_value(value: &Value) -> Vec<SkillManagerInstalledRecord> {
         .map(|item| {
             let name = string_field(&item, &["name", "skill", "id"])
                 .unwrap_or_else(|| "unknown".to_string());
+            let path = string_field(&item, &["path"]);
             SkillManagerInstalledRecord {
                 name,
-                source: string_field(&item, &["source", "package", "repository", "repo", "url"]),
+                source: string_field(&item, &["source", "package", "repository", "repo", "url"])
+                    .or_else(|| path.clone()),
+                // `skills list` inventories local directories too. A row is
+                // manager-backed only after the matching scope lock proves it.
+                source_kind: "local".to_string(),
                 agents: string_array_field(&item, &["agents", "agent_targets", "agentTargets"]),
                 scope: string_field(&item, &["scope"]),
-                path: string_field(&item, &["path", "target", "target_path", "targetPath"]),
+                path,
                 raw: item,
             }
         })
         .collect()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ManagerLockFile {
+    #[serde(default)]
+    skills: BTreeMap<String, ManagerLockEntry>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ManagerLockEntry {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default, rename = "sourceType")]
+    source_type: Option<String>,
+}
+
+fn enrich_installed_records(
+    ctx: &AdapterContext,
+    scope: Option<&str>,
+    records: &mut [SkillManagerInstalledRecord],
+) {
+    let lock = read_manager_lock(ctx, scope);
+    for record in records {
+        record.path = record
+            .path
+            .as_deref()
+            .map(|path| redact_command_output(ctx, path));
+        record.source = record
+            .source
+            .as_deref()
+            .map(|source| redact_command_output(ctx, source));
+        record.source_kind = "local".to_string();
+        let entry = lock.as_ref().and_then(|lock| {
+            lock.skills.get(&record.name).or_else(|| {
+                lock.skills
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(&record.name))
+                    .map(|(_, entry)| entry)
+            })
+        });
+        let Some(entry) = entry else { continue };
+        record.source = entry
+            .source
+            .as_deref()
+            .map(|source| redact_command_output(ctx, source));
+        record.source_kind = if entry
+            .source_type
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("local"))
+            || entry.source.as_deref().is_some_and(manager_source_is_local)
+        {
+            "local"
+        } else {
+            "manager"
+        }
+        .to_string();
+    }
+}
+
+fn read_manager_lock(ctx: &AdapterContext, scope: Option<&str>) -> Option<ManagerLockFile> {
+    let normalized_scope = normalize_manager_scope(scope).ok()?;
+    let path = if normalized_scope.as_deref() == Some("global") {
+        ctx.user_home.join(".agents/.skill-lock.json")
+    } else {
+        manager_cwd(ctx, scope).ok()?.join("skills-lock.json")
+    };
+    let metadata = fs::metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_MANAGER_LOCK_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+fn manager_source_is_local(source: &str) -> bool {
+    let source = source.trim();
+    source.starts_with('.') || source.starts_with('/') || source.starts_with("file://")
 }
 
 fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
@@ -1413,7 +1647,11 @@ fn truncate_capture(value: &str) -> String {
     if value.len() <= MAX_CAPTURE_BYTES {
         return value.to_string();
     }
-    let mut truncated = value.chars().take(MAX_CAPTURE_BYTES).collect::<String>();
+    let mut boundary = MAX_CAPTURE_BYTES;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let mut truncated = value[..boundary].to_string();
     truncated.push_str("\n<truncated>");
     truncated
 }
@@ -1443,6 +1681,29 @@ mod effects_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_stdout_capture_is_private_and_removed_on_drop() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = {
+            let capture = MachineStdoutCapture::create().expect("private machine capture");
+            let path = capture.path.clone();
+            #[cfg(unix)]
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("capture metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert!(path.is_file());
+            path
+        };
+        assert!(!path.exists(), "capture should be removed by RAII");
+    }
 
     #[test]
     fn resolve_binary_prefers_explicit_override_without_validation() {
@@ -1560,7 +1821,10 @@ mod tests {
         let params = SkillManagerInstallParams {
             source: "vercel-labs/agent-skills".to_string(),
             skills: vec!["frontend-design".to_string()],
-            agents: Vec::new(),
+            agents: SUPPORTED_MANAGER_AGENTS
+                .iter()
+                .map(|agent| (*agent).to_string())
+                .collect(),
             scope: Some("project".to_string()),
             distribution: None,
             network_allowed: true,

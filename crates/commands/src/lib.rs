@@ -34,6 +34,7 @@ mod analysis;
 mod config_consistency;
 mod config_support;
 mod history;
+mod local_skill_import;
 mod script_execution;
 mod skill_manager;
 
@@ -43,8 +44,9 @@ use analysis::{
     validate_rule_tuning_key,
 };
 use config_consistency::{
-    ensure_expected_revision, ensure_rollback_preview_token, read_config_state,
-    rollback_preview_token,
+    canonical_snapshot_project_root, ensure_expected_revision, ensure_rollback_preview_token,
+    read_config_state, rollback_preview_token, snapshot_project_root_for_scope,
+    validate_snapshot_project_binding,
 };
 use config_support::{
     agent_from_snapshot, batch_capability_label, batch_capability_labels, batch_skip_reason,
@@ -55,6 +57,9 @@ use config_support::{
 pub use analysis::*;
 pub use config_support::read_agent_config;
 pub use history::*;
+pub(crate) use local_skill_import::{
+    register_tool_global_staged_skill, tool_global_skill_name_from_content,
+};
 pub use script_execution::*;
 pub use skill_manager::*;
 
@@ -469,6 +474,7 @@ fn scan_issue_kind_key(kind: ScanIssueKind) -> &'static str {
     match kind {
         ScanIssueKind::RootUnavailable => "root_unavailable",
         ScanIssueKind::RootOutsideAllowlist => "root_outside_allowlist",
+        ScanIssueKind::DanglingSymlink => "dangling_symlink",
         ScanIssueKind::DirectoryUnreadable => "directory_unreadable",
         ScanIssueKind::EntryUnreadable => "entry_unreadable",
         ScanIssueKind::FileUnreadable => "file_unreadable",
@@ -552,7 +558,17 @@ fn update_catalog_from_scan_report(
         .iter()
         .map(|inst| (inst.scope.as_str().to_string(), inst.path.clone()))
         .collect();
-    if !report.scoped_scanned_roots.is_empty() {
+    let exact_agent_scan = report.partial_roots.is_empty()
+        && report.scoped_partial_roots.is_empty()
+        && report.skipped_roots.is_empty()
+        && !report.stats.budget_exhausted;
+    if exact_agent_scan {
+        catalog.mark_missing_except_agent_for_project_context(
+            adapter.id().as_str(),
+            ctx.project_root.as_deref(),
+            &seen,
+        )?;
+    } else if !report.scoped_scanned_roots.is_empty() {
         let scoped_roots = report
             .scoped_scanned_roots
             .iter()
@@ -1066,16 +1082,22 @@ pub fn clear_rule_suppression(
     Ok(catalog.clear_rule_suppression(rule_id, agent, scope, current_time_ms())?)
 }
 
-pub fn list_snapshots(catalog: &Catalog) -> Result<Vec<ConfigSnapshotRecord>, CommandError> {
-    Ok(catalog.list_all_config_snapshots()?)
+pub fn list_snapshots(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+) -> Result<Vec<ConfigSnapshotRecord>, CommandError> {
+    let project_root = canonical_snapshot_project_root(ctx)?;
+    Ok(catalog.list_all_config_snapshots(project_root.as_deref())?)
 }
 
 pub fn list_agent_config_snapshots(
     catalog: &Catalog,
+    ctx: &AdapterContext,
     agent: &str,
     scope: Option<&str>,
 ) -> Result<Vec<ConfigSnapshotRecord>, CommandError> {
-    Ok(catalog.list_agent_config_snapshots(agent, scope)?)
+    let project_root = canonical_snapshot_project_root(ctx)?;
+    Ok(catalog.list_agent_config_snapshots(agent, scope, project_root.as_deref())?)
 }
 
 pub fn list_skill_events(
@@ -1550,63 +1572,7 @@ pub fn import_local_skill_to_tool_global(
         &canonical_staging_skills_root,
         "staged skill path",
     )?;
-    let staged_content = fs::read_to_string(&staged_skill_path)?;
-    let staged = parse_tool_global_skill(&staged_content, &parsed.name);
-    let metadata = fs::metadata(&staged_skill_path)?;
-    let mtime = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default();
-    let instance = SkillInstance {
-        id: stable_tool_global_instance_id(&staged_skill_path),
-        agent: AgentId::ToolGlobal,
-        scope: Scope::ToolGlobal,
-        project_root: None,
-        path: staged_skill_path.clone(),
-        display_path: staged_skill_path.clone(),
-        definition_id: hash_string(&staged.name.to_ascii_lowercase()),
-        name: staged.name.clone(),
-        display_name: staged.name.clone(),
-        description: staged.description.clone(),
-        version: staged.version.clone(),
-        state: staged.state,
-        enabled: true,
-        frontmatter_raw: staged.frontmatter_raw.clone(),
-        body: staged.body.clone(),
-        scripts: Vec::new(),
-        permissions: staged.permissions.clone(),
-        fingerprint: hash_string(&format!("{}\n---\n{}", staged.frontmatter_raw, staged.body)),
-        mtime,
-        first_seen: mtime,
-        last_seen: mtime,
-    };
-    let previous_fingerprints = catalog.instance_fingerprints()?;
-    catalog.upsert_skill_instance(&instance)?;
-    refresh_catalog_rule_outputs(catalog, ctx, previous_fingerprints)?;
-
-    let imported = catalog
-        .get_skill_record(&instance.id)?
-        .ok_or_else(|| CommandError::InstanceNotFound(instance.id.clone()))?;
-    let all_findings = list_findings(catalog)?;
-    let findings: Vec<RuleFindingRecord> = all_findings
-        .into_iter()
-        .filter(|finding| {
-            finding.instance_id.as_deref() == Some(instance.id.as_str())
-                || finding.definition_id.as_deref() == Some(instance.definition_id.as_str())
-        })
-        .collect();
-    let conflicts = list_conflicts(catalog)?;
-    let audit = import_audit_summary(&findings, conflicts.len());
-    Ok(ToolGlobalImportResult {
-        imported,
-        instance_id: instance.id,
-        source_path: source_dir.to_string_lossy().to_string(),
-        staging_path: staged_skill_path.to_string_lossy().to_string(),
-        findings,
-        audit,
-    })
+    register_tool_global_staged_skill(catalog, ctx, &source_dir, &staged_skill_path)
 }
 
 pub fn import_github_skill_to_tool_global_deferred(url: &str) -> Result<(), CommandError> {
@@ -2196,6 +2162,7 @@ pub fn commit_prepared_claude_settings_save(
             id: &snapshot_id,
             agent: ClaudeCodeAdapter.id().as_str(),
             scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
             target: &target_text,
             content: &snapshot_content,
             reason: "pre-config-edit",
@@ -2253,6 +2220,7 @@ pub fn preview_snapshot_rollback(
         .get_config_snapshot(snapshot_id)?
         .ok_or_else(|| CommandError::SnapshotNotFound(snapshot_id.to_string()))?;
     let ctx = preview_context_from_snapshot(&snapshot)?;
+    validate_snapshot_project_binding(&ctx, &snapshot)?;
     preview_snapshot_rollback_for_record(&ctx, snapshot)
 }
 
@@ -2264,6 +2232,7 @@ pub fn preview_snapshot_rollback_with_context(
     let snapshot = catalog
         .get_config_snapshot(snapshot_id)?
         .ok_or_else(|| CommandError::SnapshotNotFound(snapshot_id.to_string()))?;
+    validate_snapshot_project_binding(ctx, &snapshot)?;
     preview_snapshot_rollback_for_record(ctx, snapshot)
 }
 
@@ -2313,6 +2282,8 @@ fn rollback_snapshot_with_after_lock(
     let snapshot = catalog
         .get_config_snapshot(snapshot_id)?
         .ok_or(CommandError::StalePreviewToken)?;
+    validate_snapshot_project_binding(ctx, &snapshot)
+        .map_err(|_| CommandError::StalePreviewToken)?;
     let target = PathBuf::from(&snapshot.target);
     let scope =
         scope_from_snapshot(&snapshot.scope).map_err(|_| CommandError::StalePreviewToken)?;
@@ -2358,6 +2329,10 @@ fn rollback_snapshot_with_after_lock(
         }
     };
     if locked_agent != agent || locked_scope != scope {
+        lock_file.unlock()?;
+        return Err(CommandError::StalePreviewToken);
+    }
+    if validate_snapshot_project_binding(ctx, &locked_snapshot).is_err() {
         lock_file.unlock()?;
         return Err(CommandError::StalePreviewToken);
     }
@@ -2422,6 +2397,7 @@ fn refresh_catalog_rule_outputs(
         &instances,
         &RuleContext {
             previous_fingerprints,
+            runtime_conflict_namespaces: Some(runtime_conflict_namespaces(&instances, ctx)),
         },
     );
     append_v28_local_rule_findings(&instances, &mut rule_report);
@@ -2994,10 +2970,12 @@ pub fn toggle_skill(
     let snapshot_id = generate_snapshot_id();
     let now_ms = current_time_ms();
     let snapshot_content = redact_snapshot_content(&original_text);
+    let snapshot_project_root = snapshot_project_root_for_scope(ctx, config_target.scope)?;
     catalog.create_config_snapshot(ConfigSnapshotDraft {
         id: &snapshot_id,
         agent: meta.agent.as_str(),
         scope: config_target.scope.as_str(),
+        project_root: snapshot_project_root.as_deref(),
         target: &config_target.path.to_string_lossy(),
         content: &snapshot_content,
         reason: "pre-toggle",
@@ -3274,10 +3252,12 @@ fn apply_skill_toggle_group(
     let snapshot_id = generate_snapshot_id();
     let now_ms = current_time_ms();
     let snapshot_content = redact_snapshot_content(&original_text);
+    let snapshot_project_root = snapshot_project_root_for_scope(ctx, config_target.scope)?;
     catalog.create_config_snapshot(ConfigSnapshotDraft {
         id: &snapshot_id,
         agent: config_target.agent.as_str(),
         scope: config_target.scope.as_str(),
+        project_root: snapshot_project_root.as_deref(),
         target: &config_target.path.to_string_lossy(),
         content: &snapshot_content,
         reason: "pre-batch-toggle",
@@ -4764,14 +4744,15 @@ fn apply_codex_config_overrides(
     instances: &mut [SkillInstance],
 ) -> Result<(), CommandError> {
     let disabled_paths = codex_disabled_skill_paths(&codex_user_config_path(ctx))?;
-    if disabled_paths.is_empty() {
-        return Ok(());
-    }
     for instance in instances.iter_mut() {
-        if disabled_paths
-            .iter()
-            .any(|disabled_path| disabled_path == &instance.path)
-        {
+        if instance.agent != AgentId::Codex {
+            continue;
+        }
+        if instance.state == SkillState::Disabled {
+            instance.enabled = true;
+            instance.state = SkillState::Loaded;
+        }
+        if instance.state == SkillState::Loaded && disabled_paths.contains(&instance.path) {
             instance.enabled = false;
             instance.state = SkillState::Disabled;
         }
@@ -4830,10 +4811,10 @@ fn pi_config_path_for_skill_instance(
     pi_config_path_for_skill_path(ctx, instance.scope, &instance.path)
 }
 
-fn codex_disabled_skill_paths(path: &Path) -> Result<Vec<PathBuf>, CommandError> {
+fn codex_disabled_skill_paths(path: &Path) -> Result<BTreeSet<PathBuf>, CommandError> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
         Err(err) => return Err(err.into()),
     };
     Ok(parse_codex_skill_config_entries(&content)

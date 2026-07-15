@@ -50,6 +50,7 @@ fn seed_agent_config_snapshot(
         id,
         agent: "claude-code",
         scope: "agent-global",
+        project_root: None,
         target: "/tmp/home/.claude/settings.json",
         content: "{}\n",
         reason: "pre-toggle",
@@ -146,7 +147,9 @@ fn config_and_event_pages_match_legacy_order() -> Result<(), ServiceError> {
         })?;
     }
 
-    let legacy_snapshots = list_agent_config_snapshots(&catalog, "claude-code", None)?;
+    let adapter_ctx = host.effective_adapter_ctx()?;
+    let legacy_snapshots =
+        list_agent_config_snapshots(&catalog, &adapter_ctx, "claude-code", None)?;
     let paged_snapshots = collect_config_pages(&host, "claude-code", 2)?;
     assert_eq!(
         paged_snapshots
@@ -251,6 +254,7 @@ fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), Service
                 id: "snapshot-concurrent",
                 agent: "claude-code",
                 scope: "agent-global",
+                project_root: None,
                 target: "/tmp/home/.claude/settings.json",
                 content: "{}\n",
                 reason: "pre-toggle",
@@ -262,6 +266,7 @@ fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), Service
 
     let atomic = reader.list_agent_config_snapshot_page_snapshot(
         "claude-code",
+        None,
         None,
         None,
         2,

@@ -54,13 +54,27 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 6. The app reads typed service results for list, detail, config, session, and
    report surfaces.
 
+Startup and manual reload reuse the catalog inventory, but read-only skill
+responses project the current guarded Codex `[[skills.config]]` overrides onto
+cached list, detail, analysis, conflict, and health records in memory. This
+keeps external ChatGPT enable/disable changes current without a directory scan
+or catalog write; filesystem inventory changes still require an explicit scan.
+
 ### Scanner Bounds And Catalog Completeness
 
 - A scan follows only explicit canonical adapter roots and explicitly declared
   same-scope link-target roots. It does not treat the whole home or project
   directory as an implicit symlink allowlist.
+- Built-in user, project, compatibility, admin, and system root candidates are
+  optional until their directory exists. A candidate that was never created is
+  omitted without degrading the scan; explicit configured, plugin, and extra
+  roots still report unavailability.
 - Scanner links may resolve only beneath those explicit roots with the same
   scope; link discovery never expands authorization to a neighboring scope.
+- An unavailable symlink target is reported as a per-entry
+  `dangling_symlink` diagnostic and skipped without making the surrounding
+  authorized root partial. Resolvable targets outside the same-scope allowlist
+  remain rejected as `root_outside_allowlist`.
 - Production scans are bounded to depth 64, 50,000 directories, 200,000
   entries, 25,000 skill files, 2 MiB per `SKILL.md`, and 256 MiB of aggregate
   skill content. Skill content is read through the bounded scanner reader
@@ -86,6 +100,48 @@ belongs in Rust crates; the UI presents state and sends typed requests.
   Service diagnostics lexically normalize and redact those immutable aliases
   longest-path-first without resolving the filesystem again after a scan.
 
+### Raw Findings And User-Visible Issues
+
+- The catalog retains current rule-finding records for local audit, including
+  declaration-baseline warnings, collision-member records, local triage state,
+  and rule-tuning suppressions. Raw catalog totals therefore are not UI issue
+  totals.
+- Rust owns the shared derived-finding policy used by health summaries and LLM
+  prompt context. The native shell mirrors that policy for cached list/detail
+  presentation: suppressions, reviewed/ignored triage, records without a
+  current skill instance, and `name.collision` are excluded. Built-in
+  declaration-baseline findings are excluded at warning/information severity
+  but remain visible when raised to error/critical.
+- Multi-skill runtime collisions appear only through the independent conflict
+  projection. Missing, broken, and unknown catalog states remain navigable
+  single-skill issues even when no rule finding is attached.
+- Runtime collision membership is limited to loaded, enabled instances that
+  share an agent and an effective runtime namespace. Codex plugin-cache rows are
+  inventory by default; only plugin ids explicitly enabled in the guarded
+  Codex config participate, and different plugin packages keep independent
+  namespaces. A native Codex skill still conflicts with an enabled plugin skill
+  of the same raw name.
+- Skill detail preserves the same boundary through independent `Skill Issues`
+  and `Same-Agent Conflicts` sections; neither section renders the other's
+  projection, and each header metric routes to its matching section.
+- Sidebar totals, filters, row/header badges, detail cards, refresh feedback,
+  health summaries, and LLM related-finding context must use these derived
+  projections instead of raw catalog counts.
+
+Skill Manager follows a skill-first cache model. Startup and explicit manual
+refresh load project/global package inventories; opening the panel and changing
+its display scope or action targets perform no scan. Rust parses full bounded
+manager JSON into compact skill rows and owns local archive validation and
+replacement. Swift renders cached rows and sends typed, confirmation-bound
+actions only after a skill is selected. Manager CLI rows are the primary
+installed-package identity; matching catalog instances enrich and are consumed
+by that row. Only guarded sources beneath the selected shared `.agents/skills`
+root participate in the editable catalog fallback, including nested package
+layouts. Plugin caches and other read-only discovery roots remain outside
+package operations. Skill Manager loading, search, inventory, and preview use
+surface-local busy state and do not block unrelated app actions; only a
+confirmed Skill Manager write participates in the app-wide mutation gate.
+
 ## Extension Points
 
 | Change | Add it here |
@@ -107,5 +163,7 @@ fixtures require it.
 desktop runtime is hosted by `ChatGPT.app`. The adapter and local-session
 service resolve one guarded `$CODEX_HOME`; neither assumes the former
 `Codex.app` bundle name. ChatGPT plugin-cache skills are discovered as read-only
-adapter roots, while installation remains isolated in the separately confirmed
-`skillManager.*` command path.
+adapter roots. Cache inventory does not imply runtime activation; explicit
+`[plugins."<package>@<publisher>"] enabled = true` config controls participation
+in Codex runtime-conflict analysis. Installation remains isolated in the
+separately confirmed `skillManager.*` command path.

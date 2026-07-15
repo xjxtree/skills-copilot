@@ -18,7 +18,11 @@
         "applyUpdate",
         "previewLocalCreate",
         "applyLocalCreate",
-        "deleteLocal"
+        "deleteLocal",
+        "previewLocalArchiveImport",
+        "applyLocalArchiveImport",
+        "previewLocalArchiveUpdate",
+        "applyLocalArchiveUpdate"
       ],
       "default_agents": [
         "claude-code",
@@ -30,7 +34,7 @@
       ],
       "notes": [
         "Network-backed search/install/update run only after explicit app confirmation.",
-        "Symlink distribution is the default; copy is opt-in."
+        "The native Skill Manager uses symlink distribution."
       ]
     },
     {

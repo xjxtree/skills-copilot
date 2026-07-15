@@ -212,7 +212,7 @@ fn fresh_successful_save_initializes_catalog_snapshots_writes_and_rescans() {
     let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
     assert_eq!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("list snapshots")
             .len(),
         1
@@ -250,6 +250,7 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
             id: "service-rollback-snapshot",
             agent: "claude-code",
             scope: "agent-global",
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -257,7 +258,7 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
         })
         .expect("create snapshot");
     let snapshots_before = catalog
-        .list_all_config_snapshots()
+        .list_all_config_snapshots(None)
         .expect("list snapshots before");
     let skills_before = catalog.list_skill_records().expect("list skills before");
     drop(catalog);
@@ -307,7 +308,7 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
     let catalog = Catalog::open(&host.catalog_path()).expect("reopen catalog");
     assert_eq!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("list snapshots after"),
         snapshots_before
     );
@@ -344,6 +345,7 @@ fn stale_preview_token_maps_deleted_snapshot_to_json_rpc_without_writes() {
             id: "deleted-service-snapshot",
             agent: "claude-code",
             scope: "agent-global",
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",
@@ -426,6 +428,7 @@ fn stale_preview_token_maps_unsafe_target_drift_without_accessing_drifted_target
             id: "unsafe-target-service-snapshot",
             agent: "claude-code",
             scope: "agent-global",
+            project_root: None,
             target: &settings_path.to_string_lossy(),
             content: "{}\n",
             reason: "pre-config-edit",

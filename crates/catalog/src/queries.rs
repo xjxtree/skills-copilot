@@ -571,23 +571,13 @@ impl Catalog {
         target: &str,
     ) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent, scope, target, content, reason, created_at
+            "SELECT id, agent, scope, project_root, target, content, reason, created_at
          FROM config_snapshot
          WHERE agent = ?1 AND target = ?2
            AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
          ORDER BY created_at DESC, id DESC",
         )?;
-        let rows = stmt.query_map(params![agent, target], |row| {
-            Ok(ConfigSnapshotRecord {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                scope: row.get(2)?,
-                target: row.get(3)?,
-                content: row.get(4)?,
-                reason: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![agent, target], config_snapshot_from_row)?;
         let mut snapshots = Vec::new();
         for row in rows {
             snapshots.push(row?);
@@ -599,26 +589,22 @@ impl Catalog {
         &self,
         agent: &str,
         scope: Option<&str>,
+        current_project_root: Option<&Path>,
     ) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
+        let project_root = current_project_root.and_then(Path::to_str);
         if let Some(scope) = scope {
             let mut stmt = self.conn.prepare(
-                "SELECT id, agent, scope, target, content, reason, created_at
+                "SELECT id, agent, scope, project_root, target, content, reason, created_at
              FROM config_snapshot
              WHERE agent = ?1 AND scope = ?2
+               AND (scope != 'agent-project' OR (?3 IS NOT NULL AND project_root = ?3))
                AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
              ORDER BY created_at DESC, id DESC",
             )?;
-            let rows = stmt.query_map(params![agent, scope], |row| {
-                Ok(ConfigSnapshotRecord {
-                    id: row.get(0)?,
-                    agent: row.get(1)?,
-                    scope: row.get(2)?,
-                    target: row.get(3)?,
-                    content: row.get(4)?,
-                    reason: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            })?;
+            let rows = stmt.query_map(
+                params![agent, scope, project_root],
+                config_snapshot_from_row,
+            )?;
             let mut snapshots = Vec::new();
             for row in rows {
                 snapshots.push(row?);
@@ -626,23 +612,14 @@ impl Catalog {
             Ok(snapshots)
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, agent, scope, target, content, reason, created_at
+                "SELECT id, agent, scope, project_root, target, content, reason, created_at
              FROM config_snapshot
              WHERE agent = ?1
+               AND (scope != 'agent-project' OR (?2 IS NOT NULL AND project_root = ?2))
                AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
              ORDER BY created_at DESC, id DESC",
             )?;
-            let rows = stmt.query_map(params![agent], |row| {
-                Ok(ConfigSnapshotRecord {
-                    id: row.get(0)?,
-                    agent: row.get(1)?,
-                    scope: row.get(2)?,
-                    target: row.get(3)?,
-                    content: row.get(4)?,
-                    reason: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            })?;
+            let rows = stmt.query_map(params![agent, project_root], config_snapshot_from_row)?;
             let mut snapshots = Vec::new();
             for row in rows {
                 snapshots.push(row?);
@@ -655,15 +632,28 @@ impl Catalog {
         &self,
         agent: &str,
         scope: Option<&str>,
+        current_project_root: Option<&Path>,
         before: Option<(i64, &str)>,
         limit: usize,
         validate_revision: impl FnOnce(&str) -> Result<(), CatalogError>,
     ) -> Result<CatalogPageSnapshot<ConfigSnapshotRecord>, CatalogError> {
         let transaction = self.conn.unchecked_transaction()?;
-        let metadata = query_agent_config_snapshot_revision_metadata(&transaction, agent, scope)?;
+        let metadata = query_agent_config_snapshot_revision_metadata(
+            &transaction,
+            agent,
+            scope,
+            current_project_root,
+        )?;
         let source_revision = history_source_revision("snapshot.listAgentConfigPage", &metadata)?;
         validate_revision(&source_revision)?;
-        let records = query_agent_config_snapshot_page(&transaction, agent, scope, before, limit)?;
+        let records = query_agent_config_snapshot_page(
+            &transaction,
+            agent,
+            scope,
+            current_project_root,
+            before,
+            limit,
+        )?;
         transaction.commit()?;
         Ok(CatalogPageSnapshot {
             records,
@@ -672,24 +662,19 @@ impl Catalog {
         })
     }
 
-    pub fn list_all_config_snapshots(&self) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
+    pub fn list_all_config_snapshots(
+        &self,
+        current_project_root: Option<&Path>,
+    ) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
+        let project_root = current_project_root.and_then(Path::to_str);
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent, scope, target, content, reason, created_at
+            "SELECT id, agent, scope, project_root, target, content, reason, created_at
          FROM config_snapshot
-         WHERE reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
+         WHERE (scope != 'agent-project' OR (?1 IS NOT NULL AND project_root = ?1))
+           AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
          ORDER BY created_at DESC, id DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ConfigSnapshotRecord {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                scope: row.get(2)?,
-                target: row.get(3)?,
-                content: row.get(4)?,
-                reason: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![project_root], config_snapshot_from_row)?;
         let mut snapshots = Vec::new();
         for row in rows {
             snapshots.push(row?);
@@ -702,21 +687,11 @@ impl Catalog {
         id: &str,
     ) -> Result<Option<ConfigSnapshotRecord>, CatalogError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent, scope, target, content, reason, created_at
+            "SELECT id, agent, scope, project_root, target, content, reason, created_at
          FROM config_snapshot
          WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(ConfigSnapshotRecord {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                scope: row.get(2)?,
-                target: row.get(3)?,
-                content: row.get(4)?,
-                reason: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![id], config_snapshot_from_row)?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
@@ -773,34 +748,33 @@ fn query_agent_config_snapshot_page(
     connection: &Connection,
     agent: &str,
     scope: Option<&str>,
+    current_project_root: Option<&Path>,
     before: Option<(i64, &str)>,
     limit: usize,
 ) -> Result<Vec<ConfigSnapshotRecord>, CatalogError> {
     let (before_created_at, before_id) = before.unzip();
     let limit_i64 = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
     let mut stmt = connection.prepare(
-        "SELECT id, agent, scope, target, content, reason, created_at
+        "SELECT id, agent, scope, project_root, target, content, reason, created_at
          FROM config_snapshot
          WHERE agent = ?1
            AND (?2 IS NULL OR scope = ?2)
+           AND (scope != 'agent-project' OR (?3 IS NOT NULL AND project_root = ?3))
            AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
-           AND (?3 IS NULL OR created_at < ?3 OR (created_at = ?3 AND id < ?4))
+           AND (?4 IS NULL OR created_at < ?4 OR (created_at = ?4 AND id < ?5))
          ORDER BY created_at DESC, id DESC
-         LIMIT ?5",
+         LIMIT ?6",
     )?;
     let rows = stmt.query_map(
-        params![agent, scope, before_created_at, before_id, limit_i64],
-        |row| {
-            Ok(ConfigSnapshotRecord {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                scope: row.get(2)?,
-                target: row.get(3)?,
-                content: row.get(4)?,
-                reason: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        },
+        params![
+            agent,
+            scope,
+            current_project_root.and_then(Path::to_str),
+            before_created_at,
+            before_id,
+            limit_i64
+        ],
+        config_snapshot_from_row,
     )?;
     let mut snapshots = Vec::new();
     for row in rows {
@@ -813,21 +787,39 @@ fn query_agent_config_snapshot_revision_metadata(
     connection: &Connection,
     agent: &str,
     scope: Option<&str>,
+    current_project_root: Option<&Path>,
 ) -> Result<Vec<(String, i64)>, CatalogError> {
     let mut stmt = connection.prepare(
         "SELECT id, created_at
          FROM config_snapshot
          WHERE agent = ?1
            AND (?2 IS NULL OR scope = ?2)
+           AND (scope != 'agent-project' OR (?3 IS NOT NULL AND project_root = ?3))
            AND reason IN ('pre-toggle', 'pre-batch-toggle', 'pre-config-edit')
          ORDER BY created_at DESC, id DESC",
     )?;
-    let rows = stmt.query_map(params![agent, scope], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let rows = stmt.query_map(
+        params![agent, scope, current_project_root.and_then(Path::to_str)],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     let mut metadata = Vec::new();
     for row in rows {
         metadata.push(row?);
     }
     Ok(metadata)
+}
+
+fn config_snapshot_from_row(row: &Row<'_>) -> rusqlite::Result<ConfigSnapshotRecord> {
+    Ok(ConfigSnapshotRecord {
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        scope: row.get(2)?,
+        project_root: row.get(3)?,
+        target: row.get(4)?,
+        content: row.get(5)?,
+        reason: row.get(6)?,
+        created_at: row.get(7)?,
+    })
 }
 
 fn history_source_revision<T: Serialize>(domain: &str, value: &T) -> Result<String, CatalogError> {

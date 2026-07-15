@@ -330,6 +330,58 @@ impl ServiceHost {
                 )?)
                 .map_err(Into::into)
             }
+            "skillManager.previewLocalArchiveImport" => {
+                let params: SkillManagerLocalArchiveImportParams =
+                    serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog_for_read()?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                serde_json::to_value(preview_local_archive_import(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
+            }
+            "skillManager.applyLocalArchiveImport" => {
+                let params: SkillManagerLocalArchiveImportParams =
+                    serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog()?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                serde_json::to_value(apply_local_archive_import(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
+            }
+            "skillManager.previewLocalArchiveUpdate" => {
+                let params: SkillManagerLocalArchiveUpdateParams =
+                    serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog_for_read()?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                serde_json::to_value(preview_local_archive_update(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
+            }
+            "skillManager.applyLocalArchiveUpdate" => {
+                let params: SkillManagerLocalArchiveUpdateParams =
+                    serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog()?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                serde_json::to_value(apply_local_archive_update(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
+            }
             "skillManager.deleteLocal" => {
                 let params: SkillManagerDeleteLocalParams = serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog()?;
@@ -365,7 +417,9 @@ impl ServiceHost {
             "catalog.getSkill" => {
                 let params: GetSkillParams = serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog_for_read()?;
-                let detail: SkillDetailRecord = get_skill(&catalog, &params.instance_id)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                let mut detail: SkillDetailRecord = get_skill(&catalog, &params.instance_id)?;
+                apply_current_config_overrides_to_skill_detail(&adapter_ctx, &mut detail)?;
                 serde_json::to_value(detail).map_err(Into::into)
             }
             "catalog.analysis" => {
@@ -416,7 +470,9 @@ impl ServiceHost {
             }
             "catalog.listConflicts" => {
                 let catalog = self.open_catalog_for_read()?;
-                let conflicts: Vec<ConflictGroupRecord> = list_conflicts(&catalog)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                let conflicts: Vec<ConflictGroupRecord> =
+                    list_conflicts_for_context(&catalog, &adapter_ctx)?;
                 serde_json::to_value(conflicts).map_err(Into::into)
             }
             "catalog.importSkill" => {
@@ -447,8 +503,9 @@ impl ServiceHost {
                 let scanned_count = scan_report.scanned_count;
                 let skills = self.list_visible_skill_records(&catalog)?;
                 let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
-                let conflicts: Vec<ConflictGroupRecord> = list_conflicts(&catalog)?;
-                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog)?;
+                let conflicts: Vec<ConflictGroupRecord> =
+                    list_conflicts_for_context(&catalog, &adapter_ctx)?;
+                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
                 let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
                 let agent_summaries = self.agent_refresh_summaries(
                     std::slice::from_ref(&scan_report),
@@ -484,8 +541,9 @@ impl ServiceHost {
                 let scanned_count = scan_report.scanned_count;
                 let skills = self.list_visible_skill_records(&catalog)?;
                 let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
-                let conflicts: Vec<ConflictGroupRecord> = list_conflicts(&catalog)?;
-                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog)?;
+                let conflicts: Vec<ConflictGroupRecord> =
+                    list_conflicts_for_context(&catalog, &adapter_ctx)?;
+                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
                 let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
                 let agent_summaries = self.agent_refresh_summaries(
                     &scan_report.agents,
@@ -594,29 +652,37 @@ impl ServiceHost {
             }
             "snapshot.list" => {
                 let catalog = self.open_catalog_for_read()?;
-                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
                 serde_json::to_value(snapshots).map_err(Into::into)
             }
             "snapshot.listAgentConfig" => {
                 let params: ListAgentConfigSnapshotsParams =
                     serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog_for_read()?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
                 let scope = params.scope.as_deref().filter(|scope| !scope.is_empty());
                 let snapshots: Vec<ConfigSnapshotRecord> =
-                    list_agent_config_snapshots(&catalog, &params.agent, scope)?;
+                    list_agent_config_snapshots(&catalog, &adapter_ctx, &params.agent, scope)?;
                 serde_json::to_value(snapshots).map_err(Into::into)
             }
             "snapshot.listAgentConfigPage" => {
                 let params: ListAgentConfigPageParams = serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog_for_read()?;
-                let result = config_snapshot_page_result(&catalog, params)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                let result = config_snapshot_page_result(&catalog, &adapter_ctx, params)?;
                 serde_json::to_value(result).map_err(Into::into)
             }
             "snapshot.previewRollback" => {
                 let params: SnapshotParams = serde_json::from_value(request.params)?;
                 let catalog = self.open_catalog_for_read()?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
                 let preview: SnapshotRollbackPreviewRecord =
-                    preview_snapshot_rollback(&catalog, &params.snapshot_id)?;
+                    preview_snapshot_rollback_with_context(
+                        &catalog,
+                        &adapter_ctx,
+                        &params.snapshot_id,
+                    )?;
                 serde_json::to_value(preview).map_err(Into::into)
             }
             "snapshot.rollback" => {
@@ -647,7 +713,7 @@ impl ServiceHost {
         let adapter_ctx = self.effective_adapter_ctx()?;
         let skills = self.list_visible_skill_records(&catalog)?;
         let findings = list_findings(&catalog)?;
-        let conflicts = list_conflicts(&catalog)?;
+        let conflicts = list_conflicts_for_context(&catalog, &adapter_ctx)?;
         let analysis = analyze_catalog(&catalog, &adapter_ctx)?;
         let health = skill_health_summary(&catalog, &adapter_ctx)?;
         Ok(AppStateSnapshot {
@@ -657,7 +723,7 @@ impl ServiceHost {
             conflicts,
             analysis,
             health,
-            snapshots: list_snapshots(&catalog)?,
+            snapshots: list_snapshots(&catalog, &adapter_ctx)?,
         })
     }
 
@@ -666,8 +732,9 @@ impl ServiceHost {
         catalog: &Catalog,
     ) -> Result<Vec<SkillRecord>, ServiceError> {
         let adapter_ctx = self.effective_adapter_ctx()?;
-        let skills =
+        let mut skills =
             catalog.list_skill_records_for_project_context(adapter_ctx.project_root.as_deref())?;
+        apply_current_config_overrides_to_skill_records(&adapter_ctx, &mut skills)?;
         Ok(skills
             .into_iter()
             .filter(|skill| !is_pi_plain_markdown_catalog_noise(skill))
@@ -707,7 +774,7 @@ impl ServiceHost {
     pub(crate) fn open_catalog_for_read(&self) -> Result<Catalog, ServiceError> {
         let path = self.catalog_path();
         if path.exists() {
-            return Catalog::open_read_only(&path).map_err(Into::into);
+            return Catalog::open_read_only_after_migration(&path).map_err(Into::into);
         }
         let catalog = Catalog::in_memory()?;
         catalog.init()?;
@@ -719,7 +786,9 @@ impl ServiceHost {
         if !catalog_path.exists() {
             return Ok(None);
         }
-        Ok(Some(Catalog::open_read_only(&catalog_path)?))
+        Ok(Some(Catalog::open_read_only_after_migration(
+            &catalog_path,
+        )?))
     }
 
     pub(crate) fn catalog_path(&self) -> PathBuf {
@@ -903,7 +972,10 @@ impl ServiceHost {
                 continue;
             }
             match serde_json::from_str::<ProviderCallMetadata>(trimmed) {
-                Ok(metadata) => rows.push(metadata),
+                Ok(mut metadata) => {
+                    metadata.timestamp = provider::normalize_epoch_millis(metadata.timestamp);
+                    rows.push(metadata);
+                }
                 Err(_) => {
                     parse_error_count += 1;
                 }
@@ -1219,8 +1291,8 @@ impl ServiceHost {
             RefreshLogEntry {
                 level: "info",
                 message: format!(
-                    "Catalog refresh completed with {} skill(s), {} finding(s), and {} conflict group(s).",
-                    counts.skill_count, counts.finding_count, counts.conflict_count
+                    "Catalog refresh completed with {} skill(s) and {} runtime conflict group(s).",
+                    counts.skill_count, counts.conflict_count
                 ),
             },
         ];
@@ -1334,6 +1406,15 @@ impl ServiceHost {
                 let recovery_actions = if !agent_report.partial_roots.is_empty() {
                     vec![format!(
                         "Review {} partial-root diagnostics, then retry Scan; unseen catalog rows under partial roots were preserved.",
+                        agent_report.display_name
+                    )]
+                } else if agent_report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "dangling_symlink")
+                {
+                    vec![format!(
+                        "Review the {} dangling Agent link and remove only that link after confirming its source is unavailable; the remaining root was fully reconciled.",
                         agent_report.display_name
                     )]
                 } else if agent_report.scanned_roots.is_empty() {
@@ -1493,6 +1574,9 @@ fn public_scan_issue_detail(kind: &str) -> &'static str {
         "root_outside_allowlist" => {
             "A resolved path was outside the explicit same-scope adapter roots."
         }
+        "dangling_symlink" => {
+            "An Agent skill link points to an unavailable source; the link was skipped and the rest of the root was reconciled."
+        }
         "directory_unreadable" => "A scan directory could not be read.",
         "entry_unreadable" => "A directory entry could not be inspected or resolved.",
         "file_unreadable" => "A skill file could not be inspected or read.",
@@ -1538,12 +1622,25 @@ fn normalized_redaction_path_text(value: &str) -> String {
 
 fn config_snapshot_page_result(
     catalog: &Catalog,
+    adapter_ctx: &AdapterContext,
     params: ListAgentConfigPageParams,
 ) -> Result<ConfigSnapshotPageResult, ServiceError> {
     const METHOD: &str = "snapshot.listAgentConfigPage";
     let scope = params.scope.as_deref().filter(|scope| !scope.is_empty());
+    let project_root = adapter_ctx
+        .project_root
+        .as_deref()
+        .map(Path::canonicalize)
+        .transpose()?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
-    let query_digest = tagged_digest(METHOD, &(params.agent.as_str(), scope))?;
+    let query_digest = tagged_digest(
+        METHOD,
+        &(
+            params.agent.as_str(),
+            scope,
+            project_root.as_deref().map(|path| path.to_string_lossy()),
+        ),
+    )?;
     let cursor = params
         .cursor
         .as_deref()
@@ -1560,6 +1657,7 @@ fn config_snapshot_page_result(
         catalog,
         &params.agent,
         scope,
+        project_root.as_deref(),
         before,
         limit,
         |current| validate_catalog_source_revision(requested_revision, cursor_revision, current),

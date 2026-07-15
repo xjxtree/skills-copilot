@@ -286,7 +286,7 @@ pub fn save_provider_profile(
     app_data_dir: &Path,
     params: SaveProviderProfileParams,
 ) -> Result<SaveProviderProfileResult, ProviderError> {
-    let now = unix_timestamp();
+    let now = unix_timestamp_millis();
     let mut store = load_store(app_data_dir)?;
     let profile_id = params
         .id
@@ -716,21 +716,34 @@ pub fn send_provider_prompt(
     drop(secret);
 
     match call_result {
-        Ok(success) if (200..300).contains(&success.status) => finish_prompt(
-            app_data_dir,
-            &profile,
-            &destination_host,
-            &params,
-            started,
-            ProviderPromptFinish {
-                status: "succeeded".to_string(),
-                provider_request_sent: true,
-                credential_accessed: true,
-                error_code: None,
-                error_message: None,
-                output_text: extract_output_text(profile.provider_type, &success.body),
-            },
-        ),
+        Ok(success) if (200..300).contains(&success.status) => {
+            let output_text = extract_output_text(profile.provider_type, &success.body);
+            let response_validation =
+                validate_prompt_business_output(&params.action_type, output_text.as_deref());
+            let (status, error_code, error_message) = match response_validation {
+                Ok(()) => ("succeeded".to_string(), None, None),
+                Err(message) => (
+                    "parse_failed".to_string(),
+                    Some("response_schema_invalid".to_string()),
+                    Some(message),
+                ),
+            };
+            finish_prompt(
+                app_data_dir,
+                &profile,
+                &destination_host,
+                &params,
+                started,
+                ProviderPromptFinish {
+                    status,
+                    provider_request_sent: true,
+                    credential_accessed: true,
+                    error_code,
+                    error_message,
+                    output_text,
+                },
+            )
+        }
         Ok(success) => finish_prompt(
             app_data_dir,
             &profile,
@@ -796,7 +809,7 @@ fn finish_test(
     finish: ProviderTestFinish<'_>,
 ) -> Result<TestProviderConnectionResult, ProviderError> {
     let audit = ProviderCallMetadata {
-        timestamp: unix_timestamp(),
+        timestamp: unix_timestamp_millis(),
         action_type: "test_connection".to_string(),
         profile_id: profile.id.clone(),
         provider_type: profile.provider_type,
@@ -845,7 +858,7 @@ fn finish_prompt(
     finish: ProviderPromptFinish,
 ) -> Result<SendProviderPromptResult, ProviderError> {
     let audit = ProviderCallMetadata {
-        timestamp: unix_timestamp(),
+        timestamp: unix_timestamp_millis(),
         action_type: params.action_type.clone(),
         profile_id: profile.id.clone(),
         provider_type: profile.provider_type,
@@ -891,7 +904,11 @@ fn load_store(app_data_dir: &Path) -> Result<ProviderProfileStore, ProviderError
         return Ok(ProviderProfileStore::default());
     }
     let content = fs::read_to_string(path)?;
-    let store: ProviderProfileStore = serde_json::from_str(&content)?;
+    let mut store: ProviderProfileStore = serde_json::from_str(&content)?;
+    for profile in &mut store.profiles {
+        profile.created_at = normalize_epoch_millis(profile.created_at);
+        profile.updated_at = normalize_epoch_millis(profile.updated_at);
+    }
     Ok(store)
 }
 
@@ -1182,7 +1199,7 @@ fn persist_profile_credential_status(
     {
         stored_profile.credential_reference = profile.credential_reference.clone();
         stored_profile.credential_status = profile.credential_status.clone();
-        stored_profile.updated_at = unix_timestamp();
+        stored_profile.updated_at = unix_timestamp_millis();
         save_store(app_data_dir, &store)?;
     }
     Ok(())
@@ -1344,11 +1361,66 @@ fn redact_error(error: &UreqError) -> String {
     }
 }
 
-fn unix_timestamp() -> i64 {
-    SystemTime::now()
+fn unix_timestamp_millis() -> i64 {
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64
+        .as_millis();
+    i64::try_from(millis).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn normalize_epoch_millis(value: i64) -> i64 {
+    let magnitude = value.checked_abs().unwrap_or(i64::MAX);
+    // Persisted production values in epoch seconds are currently ten digits.
+    // Keep tiny synthetic/relative fixture clocks unchanged and only migrate a
+    // plausible wall-clock seconds value; millisecond epochs are already 13 digits.
+    if (1_000_000_000..10_000_000_000).contains(&magnitude) {
+        value.saturating_mul(1_000)
+    } else {
+        value
+    }
+}
+
+pub(crate) fn validate_prompt_business_output(
+    action_type: &str,
+    output_text: Option<&str>,
+) -> Result<(), String> {
+    if action_type != "task_cockpit" {
+        return Ok(());
+    }
+    let output = output_text
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Provider returned no Task Preflight output.".to_string())?;
+    let value: Value = serde_json::from_str(output).map_err(|_| {
+        "Provider returned Task Preflight output that is not valid JSON.".to_string()
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        "Provider returned Task Preflight JSON with an invalid top-level shape.".to_string()
+    })?;
+    for key in [
+        "summary",
+        "agent_candidates",
+        "skill_candidates",
+        "safety_flags",
+    ] {
+        if !object.contains_key(key) {
+            return Err(format!(
+                "Provider Task Preflight JSON is missing required field `{key}`."
+            ));
+        }
+    }
+    if !object.get("summary").is_some_and(Value::is_object)
+        || !object.get("agent_candidates").is_some_and(Value::is_array)
+        || !object.get("skill_candidates").is_some_and(Value::is_array)
+        || !object.get("safety_flags").is_some_and(Value::is_object)
+    {
+        return Err(
+            "Provider Task Preflight JSON contains fields with incompatible schema types."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn default_enabled() -> bool {

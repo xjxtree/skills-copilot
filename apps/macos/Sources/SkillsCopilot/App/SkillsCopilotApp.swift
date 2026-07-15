@@ -111,6 +111,12 @@ struct SkillsCopilotApp: App {
                 }
                 .keyboardShortcut("3", modifiers: [.command])
 
+                Button(UIStrings.menuShowConflicts) {
+                    store.selectedSidebarSelection = store.selectedSkillID.map(SidebarSelection.skill)
+                    store.selectedDetailSection = .conflicts
+                }
+                .keyboardShortcut("4", modifiers: [.command])
+
                 Divider()
 
                 Button(UIStrings.menuClearSearch) {

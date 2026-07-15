@@ -53,7 +53,7 @@ This checklist is a reusable PR template. Unchecked items here are intentional a
 
 Before opening a PR:
 
-- [ ] I read `README.md`, `CLAUDE.md`, and all files under `docs/`
+- [ ] I read `README.md`, `CLAUDE.md`, and the relevant documents linked from `docs/README.md`
 - [ ] I kept implementation changes narrowly scoped and covered by tests where risk warrants it
 - [ ] Any new agent behavior is backed by a source or fixture
 - [ ] I updated related docs when changing scope, lifecycle, or security behavior

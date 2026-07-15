@@ -1,0 +1,15 @@
+{
+  "id": "fixture-skill-manager-preview-local-archive-import",
+  "ok": true,
+  "result": {
+    "skill_name": "local-review-helper",
+    "archive_path": "/tmp/local-review-helper.zip",
+    "archive_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "file_count": 3,
+    "uncompressed_bytes": 4096,
+    "preview_token": "skill-manager-local-archive-import:fixture-preview",
+    "confirmed": false,
+    "applied": false,
+    "summary": "The ZIP contains one local skill and can be imported into the app-owned library after confirmation."
+  }
+}

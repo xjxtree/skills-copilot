@@ -134,6 +134,91 @@ fn installed_parser_rejects_truncated_json_instead_of_claiming_exact_empty() {
 }
 
 #[test]
+fn installed_parser_accepts_complete_json_larger_than_diagnostic_capture_limit() {
+    let stdout = serde_json::to_string(&serde_json::json!({
+        "skills": (0..400)
+            .map(|index| serde_json::json!({
+                "name": format!("installed-{index}"),
+                "source": format!("owner/repository-with-a-long-name-{index}"),
+                "path": format!("/tmp/installed/{index}/SKILL.md"),
+                "scope": "global",
+                "agents": ["codex", "claude-code", "unsupported-agent"]
+            }))
+            .collect::<Vec<_>>()
+    }))
+    .expect("large installed JSON");
+    assert!(stdout.len() > MAX_CAPTURE_BYTES);
+
+    let mut installed = parse_installed_records(&stdout).expect("complete machine JSON");
+    enrich_installed_records(
+        &AdapterContext {
+            user_home: PathBuf::from("/tmp"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+        Some("global"),
+        &mut installed,
+    );
+
+    assert_eq!(installed.len(), 400);
+    assert_eq!(installed[0].agents, vec!["claude-code", "codex"]);
+    let wire = serde_json::to_value(&installed[0]).expect("serialized installed record");
+    assert!(wire.get("raw").is_none(), "raw manager rows stay internal");
+    assert_eq!(
+        wire.get("path").and_then(Value::as_str),
+        Some("$HOME/installed/0/SKILL.md"),
+        "the dedicated identity path is retained in redacted form"
+    );
+}
+
+#[test]
+fn installed_parser_normalizes_cli_agent_display_names_to_supported_ids() {
+    let installed = parse_installed_records(
+        r#"[{"name":"shared-skill","agents":["Claude Code","Codex","OpenCode","Pi","Hermes Agent","OpenClaw","Windsurf"]}]"#,
+    )
+    .expect("CLI display-name agents");
+
+    assert_eq!(
+        installed[0].agents,
+        vec![
+            "claude-code",
+            "codex",
+            "hermes-agent",
+            "openclaw",
+            "opencode",
+            "pi",
+        ]
+    );
+}
+
+#[test]
+fn unlocked_installed_inventory_rows_remain_local_sources() {
+    let ctx = AdapterContext {
+        user_home: PathBuf::from("/home/example"),
+        project_root: Some(PathBuf::from("/workspace/project")),
+        project_cwd: Some(PathBuf::from("/workspace/project")),
+        extra_roots: Vec::new(),
+    };
+    let mut installed = parse_installed_records(
+        r#"[{"name":"bug-fix","path":"/workspace/project/.agents/skills/bug-fix","agents":["Codex"]}]"#,
+    )
+    .expect("local inventory row");
+
+    enrich_installed_records(&ctx, Some("project"), &mut installed);
+
+    assert_eq!(installed[0].source_kind, "local");
+    assert_eq!(
+        installed[0].path.as_deref(),
+        Some("<project-root>/.agents/skills/bug-fix")
+    );
+    assert_eq!(
+        installed[0].source.as_deref(),
+        Some("<project-root>/.agents/skills/bug-fix")
+    );
+}
+
+#[test]
 fn installed_parser_rejects_malformed_or_unrecognized_json_instead_of_exact_empty() {
     for stdout in ["{not-json", r#"{"unexpected":[]}"#] {
         let result = parse_installed_records(stdout);

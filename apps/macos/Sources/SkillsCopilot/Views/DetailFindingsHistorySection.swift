@@ -4,9 +4,6 @@ import SwiftUI
 struct FindingsSection: View {
     let skill: SkillRecord
     let findings: [RuleFindingRecord]
-    let conflicts: [ConflictGroupRecord]
-    let selectedSkillID: String
-    let currentAgentSkillIDs: Set<String>
     let catalogCompleteness: ListCompletenessState
     @State private var ruleFilter = FindingDisplayModel.allFilterValue
 
@@ -22,9 +19,13 @@ struct FindingsSection: View {
         )
     }
 
+    private var catalogStatusIssueKind: SkillStatusKind? {
+        SkillListModel.catalogStatusIssueKind(for: skill)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if findings.isEmpty && conflicts.isEmpty {
+            if findings.isEmpty && catalogStatusIssueKind == nil {
                 if catalogCompleteness.completeness == .complete {
                     EmptyState(
                         title: UIStrings.noFindings,
@@ -33,49 +34,45 @@ struct FindingsSection: View {
                     )
                 }
             } else {
-                FindingsControlPanel(
-                    showsFilters: !findings.isEmpty,
-                    ruleFilter: $ruleFilter,
-                    ruleIDOptions: ruleIDOptions
-                )
+                if let catalogStatusIssueKind {
+                    CatalogStatusIssueCard(skill: skill, status: catalogStatusIssueKind)
+                }
 
-                if visibleGroups.isEmpty && conflicts.isEmpty {
-                    EmptyState(
-                        title: UIStrings.noMatchingFindings,
-                        systemImage: "line.3.horizontal.decrease.circle",
-                        message: UIStrings.noMatchingFindingsMessage
+                if !findings.isEmpty {
+                    FindingsControlPanel(
+                        showsFilters: true,
+                        ruleFilter: $ruleFilter,
+                        ruleIDOptions: ruleIDOptions
                     )
-                } else {
-                    ForEach(visibleGroups) { group in
-                        VStack(alignment: .leading, spacing: 10) {
-                            FindingSeverityHeader(group: group)
 
-                            ForEach(group.issues) { issue in
-                                FindingIssueCard(
-                                    issue: issue,
-                                    severityTitle: group.title
-                                )
+                    if visibleGroups.isEmpty {
+                        EmptyState(
+                            title: UIStrings.noMatchingFindings,
+                            systemImage: "line.3.horizontal.decrease.circle",
+                            message: UIStrings.noMatchingFindingsMessage
+                        )
+                    } else {
+                        ForEach(visibleGroups) { group in
+                            VStack(alignment: .leading, spacing: 10) {
+                                FindingSeverityHeader(group: group)
+
+                                ForEach(group.issues) { issue in
+                                    FindingIssueCard(
+                                        issue: issue,
+                                        severityTitle: group.title
+                                    )
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-
-                    SameAgentConflictIssuesView(
-                        conflicts: conflicts,
-                        selectedSkillID: selectedSkillID,
-                        currentAgentSkillIDs: currentAgentSkillIDs
-                    )
                 }
             }
 
             if catalogCompleteness.completeness != .complete {
                 catalogCoverageFooter(
-                    label: UIStrings.text("findings.catalogCoverage", "Findings scan coverage"),
+                    label: UIStrings.text("findings.catalogCoverage", "Visible issue scan coverage"),
                     state: catalogCompletenessState(loadedCount: findings.count)
-                )
-                catalogCoverageFooter(
-                    label: UIStrings.text("conflicts.catalogCoverage", "Conflict scan coverage"),
-                    state: catalogCompletenessState(loadedCount: conflicts.count)
                 )
             }
         }
@@ -118,6 +115,85 @@ struct FindingsSection: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativePanelSurface()
+    }
+}
+
+private struct CatalogStatusIssueCard: View {
+    let skill: SkillRecord
+    let status: SkillStatusKind
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(title, systemImage: DisplayText.stateSystemImage(skill.state, enabled: skill.enabled))
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+                Spacer()
+                Text(UIStrings.text("issues.catalogStatus.badge", "Catalog status"))
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.agentCopilotPanelBackground, in: Capsule())
+            }
+
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(UIStrings.findingRemediation)
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Text(remediation)
+                    .font(.callout)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .nativePanelSurface()
+    }
+
+    private var title: String {
+        switch status {
+        case .missing:
+            return UIStrings.text("issues.catalogStatus.missing.title", "Skill source is missing")
+        case .broken:
+            return UIStrings.text("issues.catalogStatus.broken.title", "Skill could not be loaded")
+        case .unknown:
+            return UIStrings.text("issues.catalogStatus.unknown.title", "Skill state needs review")
+        case .enabled, .disabled, .shadowed:
+            return UIStrings.text("issues.catalogStatus.title", "Catalog status issue")
+        }
+    }
+
+    private var message: String {
+        switch status {
+        case .missing:
+            return UIStrings.text("issues.catalogStatus.missing.message", "The source file was not found during the last complete scan. The catalog keeps this historical record, but the skill cannot be used or toggled.")
+        case .broken:
+            return UIStrings.text("issues.catalogStatus.broken.message", "The source was found, but the skill could not be parsed or loaded as a usable skill.")
+        case .unknown:
+            return UIStrings.text("issues.catalogStatus.unknown.message", "The catalog returned a state this app cannot classify as enabled, disabled, broken, missing, or shadowed.")
+        case .enabled, .disabled, .shadowed:
+            return UIStrings.text("issues.catalogStatus.message", "Review the current catalog state before relying on this skill.")
+        }
+    }
+
+    private var remediation: String {
+        switch status {
+        case .missing:
+            return UIStrings.text("issues.catalogStatus.missing.remediation", "Restore SKILL.md at the recorded source path if the skill should still exist. If it was intentionally removed, keep this historical record as missing.")
+        case .broken:
+            return UIStrings.text("issues.catalogStatus.broken.remediation", "Repair the SKILL.md frontmatter or source content, then run Scan again.")
+        case .unknown:
+            return UIStrings.text("issues.catalogStatus.unknown.remediation", "Inspect the source and scan diagnostics, then run Scan again after correcting the underlying state.")
+        case .enabled, .disabled, .shadowed:
+            return UIStrings.text("issues.catalogStatus.remediation", "Inspect the skill source and scan again before relying on this record.")
+        }
     }
 }
 
@@ -351,9 +427,9 @@ struct SameAgentConflictIssuesView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                Label(UIStrings.text("conflicts.issueSection", "Same-agent conflict issues"), systemImage: "person.crop.circle.badge.exclamationmark")
+                Label(UIStrings.text("conflicts.issueSection", "Same-agent conflicts"), systemImage: "person.crop.circle.badge.exclamationmark")
                     .font(.headline)
-                Text(UIStrings.text("conflicts.issueSection.summary", "Current-agent runtime/name collisions are listed here with other issues because they can affect reliable skill selection."))
+                Text(UIStrings.text("conflicts.issueSection.summary", "Current-agent runtime/name collisions are shown separately from single-skill issues because each conflict spans multiple skill instances."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -416,13 +492,47 @@ struct ConflictsSection: View {
     let conflicts: [ConflictGroupRecord]
     let selectedSkillID: String
     let currentAgentSkillIDs: Set<String>
+    let catalogCompleteness: ListCompletenessState
 
     var body: some View {
-        SameAgentConflictIssuesView(
-            conflicts: conflicts,
-            selectedSkillID: selectedSkillID,
-            currentAgentSkillIDs: currentAgentSkillIDs,
-            showsEmptyState: true
+        VStack(alignment: .leading, spacing: 12) {
+            SameAgentConflictIssuesView(
+                conflicts: conflicts,
+                selectedSkillID: selectedSkillID,
+                currentAgentSkillIDs: currentAgentSkillIDs,
+                showsEmptyState: catalogCompleteness.completeness == .complete
+            )
+
+            if catalogCompleteness.completeness != .complete {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(UIStrings.text("conflicts.catalogCoverage", "Conflict scan coverage"))
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    ListCompletenessFooter(
+                        state: catalogCompletenessState,
+                        onLoadMore: {},
+                        onLoadAll: {},
+                        onCancel: {}
+                    )
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .nativePanelSurface()
+            }
+        }
+    }
+
+    private var catalogCompletenessState: ListCompletenessState {
+        ListCompletenessState(
+            loadedCount: conflicts.count,
+            totalCount: catalogCompleteness.completeness == .complete ? conflicts.count : nil,
+            hasMore: false,
+            isComplete: catalogCompleteness.isComplete,
+            completeness: catalogCompleteness.completeness,
+            incompleteReason: catalogCompleteness.incompleteReason,
+            loadingPhase: catalogCompleteness.loadingPhase,
+            canLoadMore: false,
+            canLoadAll: false
         )
     }
 }
@@ -528,6 +638,7 @@ struct AgentConfigHistorySection: View {
 struct SnapshotPreviewSheet: View {
     let preview: SnapshotRollbackPreviewRecord
     @Environment(\.dismiss) private var dismiss
+    @State private var revealsSnapshotContent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -540,6 +651,14 @@ struct SnapshotPreviewSheet: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                Button {
+                    revealsSnapshotContent.toggle()
+                } label: {
+                    Label(
+                        revealsSnapshotContent ? UIStrings.agentConfigHideSensitive : UIStrings.agentConfigShowSensitiveValues,
+                        systemImage: revealsSnapshotContent ? "eye.slash" : "eye"
+                    )
+                }
                 Button(UIStrings.done) {
                     dismiss()
                 }
@@ -557,13 +676,18 @@ struct SnapshotPreviewSheet: View {
             }
 
             HStack(alignment: .top, spacing: 14) {
-                SnapshotTextPane(title: UIStrings.current, content: preview.currentContent.isEmpty ? UIStrings.emptyPlaceholder : preview.currentContent)
-                SnapshotTextPane(title: UIStrings.snapshot, content: preview.snapshot.content.isEmpty ? UIStrings.emptyPlaceholder : preview.snapshot.content)
+                SnapshotTextPane(title: UIStrings.current, content: displayContent(preview.currentContent))
+                SnapshotTextPane(title: UIStrings.snapshot, content: displayContent(preview.snapshot.content))
             }
             .frame(minHeight: 420)
         }
         .padding(24)
         .frame(width: 980, height: 680)
+    }
+
+    private func displayContent(_ content: String) -> String {
+        let value = content.isEmpty ? UIStrings.emptyPlaceholder : content
+        return revealsSnapshotContent ? value : ConfigContentRedactor.redactedForDisplay(value)
     }
 }
 

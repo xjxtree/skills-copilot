@@ -1,13 +1,14 @@
 enum DetailSection: String, CaseIterable, Identifiable {
     case overview
     case findings
+    case conflicts
     case history
     case metadata
 
     var id: String { rawValue }
 
     static var visibleCases: [DetailSection] {
-        [.overview, .findings, .history, .metadata]
+        [.overview, .findings, .conflicts, .history, .metadata]
     }
 
     static var primaryWorkCases: [DetailSection] {
@@ -28,6 +29,8 @@ enum DetailSection: String, CaseIterable, Identifiable {
             return UIStrings.overview
         case .findings:
             return UIStrings.findings
+        case .conflicts:
+            return UIStrings.conflicts
         case .history:
             return UIStrings.text("detail.history", "History")
         case .metadata:
@@ -41,6 +44,8 @@ enum DetailSection: String, CaseIterable, Identifiable {
             return "chart.pie"
         case .findings:
             return "exclamationmark.triangle"
+        case .conflicts:
+            return "rectangle.stack.badge.exclamationmark"
         case .history:
             return "clock.arrow.circlepath"
         case .metadata:
@@ -54,6 +59,8 @@ enum DetailSection: String, CaseIterable, Identifiable {
             return UIStrings.text("detail.section.overview.summary", "Inspect the selected skill metadata, permissions, provenance, and raw catalog details.")
         case .findings:
             return UIStrings.text("detail.section.findings.summary", "Explain selected-skill issues with rules, suggestions, and evidence.")
+        case .conflicts:
+            return UIStrings.text("detail.section.conflicts.summary", "Review same-agent runtime conflicts separately from this skill's own issues.")
         case .history:
             return UIStrings.text("detail.section.history.summary", "Review selected-skill toggle and config history.")
         case .metadata:

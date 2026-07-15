@@ -270,6 +270,7 @@ private struct LocalSessionContentItemRow: View {
 
     @State private var isShowingFullText = false
     @State private var isHoveringActions = false
+    @State private var didCopy = false
 
     private var isLongMessage: Bool {
         item.charCount > 600 || item.text.split(whereSeparator: \.isNewline).count > 8
@@ -298,6 +299,12 @@ private struct LocalSessionContentItemRow: View {
                 Text(UIStrings.localSessionContentCharacters(item.charCount))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
+                if didCopy {
+                    Label(UIStrings.text("action.copied", "Copied"), systemImage: "checkmark")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
                 HStack(spacing: 4) {
                     if isLongMessage {
                         detailButton
@@ -369,11 +376,30 @@ private struct LocalSessionContentItemRow: View {
         .controlSize(.small)
         .buttonStyle(.borderless)
         .help(UIStrings.llmPromptCopyFullText)
+        .accessibilityValue(didCopy ? UIStrings.text("action.copied", "Copied") : "")
     }
 
     private func copyToPasteboard(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+        if let window = NSApp.mainWindow {
+            NSAccessibility.post(
+                element: window,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: UIStrings.text("action.copied", "Copied"),
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+        withAnimation(.easeInOut(duration: 0.12)) {
+            didCopy = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation(.easeInOut(duration: 0.12)) {
+                didCopy = false
+            }
+        }
     }
 }
 

@@ -21,23 +21,30 @@ struct AppSearchIndex {
         }
 
         let skillItems = matchingSkills.prefix(limit).map { skill in
-            AppSearchItem(
+            let provenance = [skill.publisher, skill.packageName, skill.packageVersion.map { "v\($0)" }, skill.sourceKind]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+            return AppSearchItem(
                 id: "skill:\(skill.id)",
                 kind: .skill,
                 targetID: skill.id,
                 title: skill.name,
-                subtitle: "\(DisplayText.agent(skill.agent)) · \(skill.scope)",
+                subtitle: ([DisplayText.agent(skill.agent), DisplayText.scope(skill.scope)] + provenance)
+                    .joined(separator: " · "),
                 agent: skill.agent,
                 skill: skill
             )
         }
         let sessionItems = matchingSessions.prefix(limit).map { session in
-            AppSearchItem(
+            let time = session.endedAt ?? session.startedAt
+            let context = [session.agent.map(DisplayText.agent), session.projectRoot ?? session.scope, time.map(DisplayText.timestamp)]
+                .compactMap { $0 }
+            return AppSearchItem(
                 id: "session:\(session.id)",
                 kind: .session,
                 targetID: session.id,
                 title: session.title,
-                subtitle: session.projectRoot ?? session.scope,
+                subtitle: context.joined(separator: " · "),
                 agent: session.agent,
                 session: session
             )
@@ -48,7 +55,12 @@ struct AppSearchIndex {
                 kind: .configHistory,
                 targetID: snapshot.id,
                 title: snapshot.reason,
-                subtitle: DisplayText.configPathSummary(snapshot.target),
+                subtitle: [
+                    DisplayText.agent(snapshot.agent),
+                    DisplayText.scope(snapshot.scope),
+                    DisplayText.configPathSummary(snapshot.target),
+                    DisplayText.timestamp(snapshot.createdAt),
+                ].joined(separator: " · "),
                 agent: snapshot.agent,
                 configSnapshot: snapshot
             )

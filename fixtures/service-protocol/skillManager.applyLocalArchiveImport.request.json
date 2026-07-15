@@ -1,0 +1,9 @@
+{
+  "id": "fixture-skill-manager-apply-local-archive-import",
+  "method": "skillManager.applyLocalArchiveImport",
+  "params": {
+    "archive_path": "/tmp/local-review-helper.zip",
+    "confirmed": true,
+    "preview_token": "skill-manager-local-archive-import:fixture-preview"
+  }
+}

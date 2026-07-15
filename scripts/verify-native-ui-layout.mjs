@@ -43,6 +43,7 @@ const files = {
   localSessionCache: await read("apps/macos/Sources/SkillsCopilot/Models/LocalSessionCache.swift"),
   listCompletenessControls: await read("apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
+  storePresentationModels: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStorePresentationModels.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
   storeWorkflow: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreWorkflowSelectors.swift"),
@@ -115,9 +116,12 @@ const checks = [
     text: files.detail + "\n" + files.detailFindingsHistory,
     passed: /FindingsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogListCompleteness/.test(files.detail)
       && /struct FindingsSection:[\s\S]*?let catalogCompleteness:\s*ListCompletenessState[\s\S]*?ListCompletenessFooter/.test(files.detailFindingsHistory)
-      && /if findings\.isEmpty && conflicts\.isEmpty\s*\{\s*if catalogCompleteness\.completeness == \.complete\s*\{[\s\S]*?UIStrings\.noFindings/.test(files.detailFindingsHistory)
+      && /if findings\.isEmpty && catalogStatusIssueKind == nil\s*\{\s*if catalogCompleteness\.completeness == \.complete\s*\{[\s\S]*?UIStrings\.noFindings/.test(files.detailFindingsHistory)
+      && /CatalogStatusIssueCard\(skill:\s*skill,\s*status:\s*catalogStatusIssueKind\)/.test(files.detailFindingsHistory)
       && /catalogCompletenessState\([\s\S]*?loadedCount:\s*findings\.count/.test(files.detailFindingsHistory)
-      && /catalogCompletenessState\([\s\S]*?loadedCount:\s*conflicts\.count/.test(files.detailFindingsHistory),
+      && /ConflictsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogListCompleteness/.test(files.detail)
+      && /struct ConflictsSection:[\s\S]*?let catalogCompleteness:\s*ListCompletenessState[\s\S]*?showsEmptyState:\s*catalogCompleteness\.completeness == \.complete[\s\S]*?ListCompletenessFooter/.test(files.detailFindingsHistory)
+      && /private var catalogCompletenessState:[\s\S]*?loadedCount:\s*conflicts\.count/.test(files.detailFindingsHistory),
   },
   {
     label: "app window defines stable minimum size and user-selectable appearance",
@@ -183,7 +187,6 @@ const checks = [
       "permission-summary.show-all",
       "task-cockpit-candidates.show-all",
       "task-cockpit-context.show-all",
-      "skill-manager-agents.show-all",
       "markdown-table.show-all",
       "global-search.skills.view-all",
       "global-search.sessions.view-all",
@@ -198,7 +201,7 @@ const checks = [
       files.content,
     ].some((source) => source.includes(identifier)))
       && /private struct TaskCockpitTechnicalDiagnosticsView:[\s\S]*?TaskCockpitCandidateList\([\s\S]*?routeCandidates[\s\S]*?TaskCockpitCandidateList\([\s\S]*?agentCandidates[\s\S]*?TaskCockpitCandidateList\([\s\S]*?skillCandidates[\s\S]*?TaskCockpitContextList\([\s\S]*?gapRows[\s\S]*?TaskCockpitContextList\([\s\S]*?blockerRows[\s\S]*?TaskCockpitEvidenceList\([\s\S]*?evidenceReferences[\s\S]*?TaskCockpitSafetyList\(/.test(files.taskCockpit)
-      && /private struct SkillManagerTargetSummary:[\s\S]*?ExpandableSummaryList\([\s\S]*?columns:\s*\[GridItem\(\.adaptive/.test(files.skillManager),
+      && /private struct SkillManagerSelectableRow:[\s\S]*?\.accessibilityLabel\(title\)[\s\S]*?\.accessibilityValue/.test(files.skillManager),
   },
   {
     label: "main shell uses NavigationSplitView",
@@ -239,7 +242,7 @@ const checks = [
       && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(""\)/.test(files.sidebar)
       && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
       && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
-      && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeAboutButton\(\)[\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
+      && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeHelpButton\(\)[\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
       && /private struct GlobalWindowSearchControl:[\s\S]*?@Binding var isSearchFocused:[\s\S]*?@Binding var showsResults:[\s\S]*?WindowChromeSearchTextField\([\s\S]*?placeholder:\s*UIStrings\.text\("toolbar\.globalSearch"[\s\S]*?\) \{ focused in[\s\S]*?showsResults = !trimmedText\.isEmpty[\s\S]*?onChange\(of:\s*text\)[\s\S]*?showsResults = !trimmedText\.isEmpty[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)[\s\S]*?\.windowChromeGlassCapsule\(\)/.test(files.content)
       && !/private struct GlobalWindowSearchControl:[\s\S]*?\.popover\(isPresented:\s*resultsPopoverBinding/.test(files.content)
       && /private struct WindowChromeSearchTextField:\s*NSViewRepresentable[\s\S]*?FirstMouseNSTextField[\s\S]*?isBordered = false[\s\S]*?drawsBackground = false[\s\S]*?focusRingType = \.none[\s\S]*?controlTextDidChange[\s\S]*?control\([\s\S]*?insertNewline/.test(files.content)
@@ -252,7 +255,8 @@ const checks = [
       && !/GlobalToolbarSearchField/.test(files.content)
       && !/toolbar\.new/.test(files.content)
       && !/isSkillManagerSheetPresented/.test(files.content)
-      && /private struct WindowChromeAboutButton:[\s\S]*?NSApp\.orderFrontStandardAboutPanel\(nil\)[\s\S]*?questionmark\.circle[\s\S]*?frame\(width:\s*30,\s*height:\s*30\)[\s\S]*?\.windowChromeGlassCircle\(\)/.test(files.content)
+      && /private struct WindowChromeHelpButton:[\s\S]*?isShowingHelp\.toggle\(\)[\s\S]*?questionmark\.circle[\s\S]*?frame\(width:\s*30,\s*height:\s*30\)[\s\S]*?\.windowChromeGlassCircle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isShowingHelp[\s\S]*?help\.summary[\s\S]*?help\.privacy[\s\S]*?help\.documentation/.test(files.content)
+      && !/NSApp\.orderFrontStandardAboutPanel\(nil\)/.test(files.content)
       && /private struct WindowChromeSettingsControl:[\s\S]*?if #available\(macOS 14\.0,\s*\*\)[\s\S]*?SettingsLink[\s\S]*?settingsLabel[\s\S]*?Button\(action:\s*openSettingsFallback\)/.test(files.content)
       && /private struct WindowChromeSettingsControl:[\s\S]*?\.windowChromeGlassCircle\(\)[\s\S]*?gearshape[\s\S]*?frame\(width:\s*30,\s*height:\s*30\)[\s\S]*?openSettingsFallback\(\)[\s\S]*?showPreferencesWindow/.test(files.content)
       && /private extension View[\s\S]*?func windowChromeGlassCapsule\(\)[\s\S]*?Color\(nsColor:\s*\.controlBackgroundColor\)\.opacity\(0\.72\)[\s\S]*?func windowChromeGlassCircle\(\)[\s\S]*?Color\(nsColor:\s*\.controlBackgroundColor\)\.opacity\(0\.72\)/.test(files.content)
@@ -287,7 +291,7 @@ const checks = [
       && /\.task\s*{[\s\S]*?await store\.loadAppStartupDataIfNeeded\(\)[\s\S]*?}/.test(files.content)
       && /private struct AppStartupLoadingView:[\s\S]*?Text\(state\.message\)[\s\S]*?ProgressView\(value:\s*state\.progress\)[\s\S]*?\.background\(Color\.agentCopilotWindowBackground\)/.test(files.content)
       && !/if store\.status == nil && store\.skills\.isEmpty[\s\S]*?await store\.reload\(\)/.test(files.content)
-      && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.store)
+      && /struct AppStartupLoadingState:[\s\S]*?let message: String[\s\S]*?let progress: Double/.test(files.storePresentationModels)
       && /@Published private\(set\) var startupLoadingState:[\s\S]*?UIStrings\.startupPreparingLoading/.test(files.store)
       && /@Published private\(set\) var hasCompletedStartupLoad = false/.test(files.store)
       && /func loadAppStartupDataIfNeeded\(\) async[\s\S]*?try await refreshCollections\(includeSupplementalData:\s*false,\s*includeAIProviderStatus:\s*false\)[\s\S]*?await loadSelectedDetail\(\)[\s\S]*?scheduleStartupSupplementalLoads\(/.test(files.store)
@@ -514,10 +518,16 @@ const checks = [
   {
     label: "detail sections expose only visible skill detail surfaces while omitting retired work surfaces",
     text: files.detailSurface,
-    passed: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.history,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\]/.test(files.detailSection)
-      && !/static var visibleCases:[\s\S]*?\.conflicts/.test(files.detailSection)
+    passed: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.conflicts,\s*\.history,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\]/.test(files.detailSection)
       && !/static var visibleCases:[\s\S]*?\.analysis/.test(files.detailSection),
-    pattern: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.history,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\]/,
+    pattern: /static var visibleCases:[\s\S]*?\[\.overview,\s*\.findings,\s*\.conflicts,\s*\.history,\s*\.metadata\][\s\S]*?static var primaryWorkCases:[\s\S]*?\[\]/,
+  },
+  {
+    label: "skill issues and same-agent conflicts have independent detail routes",
+    text: files.detail + "\n" + files.detailHeaderOverview,
+    passed: /case \.findings:\s*FindingsSection\([\s\S]*?case \.conflicts:\s*ConflictsSection\(/.test(files.detail)
+      && /private var issueBadge:[\s\S]*?onSelectSection\(\.findings\)/.test(files.detailHeaderOverview)
+      && /private var conflictBadge:[\s\S]*?onSelectSection\(\.conflicts\)/.test(files.detailHeaderOverview),
   },
   {
     label: "detail router separates session, config, and skill details while modal tools stay outside detail routing",
@@ -538,9 +548,7 @@ const checks = [
     text: files.detailPrimitives + "\n" + files.agentConfigWorkspace + "\n" + files.skillManager + "\n" + files.sidebar + "\n" + files.content + "\n" + files.agentSessionDetail + "\n" + files.uiStrings,
     passed: /struct SummaryChip:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(title\)[\s\S]*?\.accessibilityValue\(value\)/.test(files.detailPrimitives)
       && /private struct AgentConfigAgentIcon:[\s\S]*?\.accessibilityLabel\(filter\.title\)/.test(files.agentConfigWorkspace)
-      && /private struct SearchResultRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(result\.name\)/.test(files.skillManager)
-      && /private struct InstalledSkillRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(record\.name\)/.test(files.skillManager)
-      && /private struct LocalSkillLibraryRow:[\s\S]*?\.accessibilityElement\(children:\s*\.combine\)[\s\S]*?\.accessibilityLabel\(skill\.name\)/.test(files.skillManager)
+      && /private struct SkillManagerSelectableRow:[\s\S]*?\.accessibilityLabel\(title\)[\s\S]*?\.accessibilityValue/.test(files.skillManager)
       && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("project\.chooseMenu"/.test(files.sidebar),
   },
   {
@@ -655,12 +663,14 @@ const checks = [
     pattern: /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?private struct SecondarySidebarProjectPickerLabel:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)/,
   },
   {
-    label: "skill-list batch action lives in the compact toolbar",
+    label: "skill list keeps programmatic scrolling outside the List content so its native section stays sticky",
     text: files.sidebar,
     passed: /private func skillToolbar\(visibleSkills:[\s\S]*?searchField[\s\S]*?batchToolbarButton\(visibleSkills:\s*visibleSkills\)/.test(files.sidebar)
       && /private func batchToolbarButton\(visibleSkills:[\s\S]*?resetBatchToggleSelectionToVisibleSkills\(\)[\s\S]*?isBatchOperationPresented = true[\s\S]*?Image\(systemName:\s*"checklist\.checked"\)/.test(files.sidebar)
-      && /private struct SkillListSectionHeader:[\s\S]*?Text\(UIStrings\.batchToggleSelectedCount\(visibleCount\)\)/.test(files.sidebar)
-      && !/private struct SkillListSectionHeader:[\s\S]*?Button\(action:\s*action\)/.test(files.sidebar),
+      && /Section\(UIStrings\.text\("sidebar\.skills\.list",\s*"Skill List"\)\)/.test(files.sidebar)
+      && /struct SecondarySidebarView:\s*View[\s\S]*?ScrollViewReader\s*\{\s*proxy\s+in\s*List\(selection:/.test(files.sidebar)
+      && !/private struct SkillSidebarPanel:\s*View[\s\S]*?var body:\s*some View\s*\{[\s\S]*?ScrollViewReader/.test(files.sidebar)
+      && !/private struct SkillListSectionHeader/.test(files.sidebar),
   },
   {
     label: "findings expose only the rule filter in the control panel",
@@ -854,7 +864,7 @@ const checks = [
   {
     label: "localized skill manager workflow and unavailable-tool labels are present",
     text: files.localizable,
-    pattern: /"skillManager\.workflow\.accessibility".*"skillManager\.workflow\.searchInstall".*"skillManager\.workflow\.installedUpdates".*"skillManager\.workflow\.localLibrary".*"skillManager\.toolUnavailable\.title".*"skillManager\.toolUnavailable\.message"/s,
+    pattern: /"skillManager\.workflow\.accessibility".*"skillManager\.workflow\.searchInstall".*"skillManager\.workflow\.installedUpdates".*"skillManager\.toolUnavailable\.title".*"skillManager\.toolUnavailable\.message".*"skillManager\.inventory".*"skillManager\.chooseZip"/s,
   },
   {
     label: "localized remediation and permissions labels are present",
@@ -1060,7 +1070,7 @@ const customChecks = [
       && /struct WorkflowSheetInlineBanner:[\s\S]*?Label\(message,\s*systemImage:\s*style\.systemImage\)[\s\S]*?\.background\(style\.color\.opacity\(0\.08\)[\s\S]*?Rectangle\(\)[\s\S]*?\.fill\(style\.color\)/.test(files.workflowSheet)
       && /struct TaskPreflightPreviewSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?WorkflowSheetSplitLayout\([\s\S]*?TaskPreflightEditorPane[\s\S]*?TaskPreflightHistoryPanel/.test(files.taskCockpit)
       && /struct SkillPackageManagerSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?SkillManagerPanel\(showsHeader:\s*false\)/.test(files.sidebar)
-      && /struct SkillManagerPanel:[\s\S]*?WorkflowSheetSplitLayout\(primaryMinWidth:\s*430,\s*secondaryWidth:\s*360\)[\s\S]*?workflowInputContent[\s\S]*?workflowResultsContent/.test(files.skillManager)
+      && /struct SkillManagerPanel:[\s\S]*?WorkflowSheetSplitLayout\(primaryMinWidth:\s*430,\s*secondaryWidth:\s*380\)[\s\S]*?workflowPicker[\s\S]*?searchSection[\s\S]*?inventorySection[\s\S]*?actionSection[\s\S]*?previewSection/.test(files.skillManager)
       && !/struct SkillPackageManagerSheet:[\s\S]*?ErrorBanner\(message:\s*error\)/.test(files.sidebar)
       && !/struct SkillPackageManagerSheet:[\s\S]*?SuccessBanner\(message:\s*message\)/.test(files.sidebar),
   },
@@ -1165,64 +1175,67 @@ const customChecks = [
       && !/RoundedRectangle\(cornerRadius:\s*8\)/.test(files.nativePanelSurface),
   },
   {
-    label: "Skill Manager uses segmented workflows, local feedback, and unavailable-tool gating",
-    passed: /enum SkillManagerWorkflow:[\s\S]*?case searchInstall[\s\S]*?case installedUpdates[\s\S]*?case localLibrary/.test(files.skillManagerModel)
+    label: "Skill Manager uses a skill-first inventory with action-time targeting",
+    passed: /enum SkillManagerWorkflow:[\s\S]*?case searchInstall[\s\S]*?case installedUpdates/.test(files.skillManagerModel)
+      && !/case localLibrary/.test(files.skillManagerModel)
       && /@State private var selectedWorkflow:\s*SkillManagerWorkflow = \.searchInstall/.test(files.skillManager)
-      && /Picker\(selection:\s*\$selectedWorkflow\)[\s\S]*?Label\(workflow\.title,\s*systemImage:\s*workflow\.systemImage\)\.tag\(workflow\)[\s\S]*?\.labelsHidden\(\)[\s\S]*?\.accessibilityLabel\(UIStrings\.text\("skillManager\.workflow\.accessibility"/.test(files.skillManager)
-      && !/Picker\(UIStrings\.text\("skillManager\.workflow\.label"/.test(files.skillManager)
-      && /private var workflowInputContent:[\s\S]*?case \.searchInstall:[\s\S]*?searchAndInstallControls[\s\S]*?case \.installedUpdates:[\s\S]*?installedActionControls[\s\S]*?case \.localLibrary:[\s\S]*?localLibraryControls/.test(files.skillManager)
-      && /private var workflowResultsContent:[\s\S]*?case \.searchInstall:[\s\S]*?searchResultsSection[\s\S]*?case \.installedUpdates:[\s\S]*?installedResultsSection[\s\S]*?case \.localLibrary:[\s\S]*?localLibraryResultsSection/.test(files.skillManager)
-      && /private var skillManagerFeedback:[\s\S]*?WorkflowSheetInlineBanner\(message:\s*error,\s*style:\s*\.error\)[\s\S]*?WorkflowSheetInlineBanner\(message:\s*message,\s*style:\s*\.success\)/.test(files.skillManager)
+      && /@State private var selectedSkill:\s*SkillManagerSelection\?/.test(files.skillManager)
+      && /private var searchSection:[\s\S]*?skillManagerSearchQuery[\s\S]*?SkillManagerSelectableRow/.test(files.skillManager)
+      && /private var inventorySection:[\s\S]*?Picker\(UIStrings\.scope,\s*selection:\s*\$store\.skillManagerScope\)[\s\S]*?skillManagerInventoryItems/.test(files.skillManager)
+      && /private var actionSection:[\s\S]*?if let selectedSkill[\s\S]*?actionPicker[\s\S]*?actionOptions[\s\S]*?actionButton/.test(files.skillManager)
+      && /private func agentPicker\(available:[\s\S]*?actionAgentIDs[\s\S]*?LazyVGrid/.test(files.skillManager)
+      && /private var feedback:[\s\S]*?WorkflowSheetInlineBanner\(message:\s*error,\s*style:\s*\.error\)[\s\S]*?WorkflowSheetInlineBanner\(message:\s*message,\s*style:\s*\.success\)/.test(files.skillManager)
       && /externalMutationDisabled/.test(files.skillManager)
       && /externalManagerUnavailableMessage/.test(files.skillManager)
-      && /toolUnavailableCard/.test(files.skillManager)
-      && /search\.isBlockedByNetwork/.test(files.skillManager)
-      && /skillManager\.search\.networkBlocked/.test(files.skillManager + "\n" + files.localizable)
-      && /preview\.localizedSummary/.test(files.skillManager)
-      && /var localizedSummary:\s*String/.test(files.skillManagerModel)
       && /store\.skillManagerErrorMessage/.test(files.skillManager)
       && /store\.skillManagerMessage/.test(files.skillManager)
-      && /skillManagerInstallSkillName/.test(files.store + "\n" + files.skillManager)
-      && /skillManagerRemoveSkillName/.test(files.store + "\n" + files.skillManager)
       && /clearSkillManagerWorkflowPreviews/.test(files.store + "\n" + files.skillManager + "\n" + files.sidebar)
       && /store\.skillManagerMutationConfirmation/.test(files.skillManager)
-      && /confirmation\.inputs\.agents\.map\(DisplayText\.agent\)/.test(files.skillManager)
-      && /\.accessibilityValue\(previewMatchAccessibilityValue\(matchesCurrentInputs\)\)/.test(files.skillManager)
-      && /await store\.applySkillManagerInstall\(confirmation:\s*confirmation\)/.test(files.skillManager)
-      && /await store\.applySkillManagerRemove\(confirmation:\s*confirmation\)/.test(files.skillManager)
-      && /await store\.applySkillManagerUpdate\(confirmation:\s*confirmation\)/.test(files.skillManager)
-      && /await store\.applySkillManagerLocalCreate\(confirmation:\s*confirmation\)/.test(files.skillManager)
-      && /await store\.applySkillManagerLocalDelete\(confirmation:\s*confirmation\)/.test(files.skillManager)
-      && !/private func applyCurrentMutation/.test(files.skillManager)
-      && !/skillManagerMutationPreview/.test(files.store + "\n" + files.skillManager)
-      && /private var canSearchSkillManager:[\s\S]*?skillManagerSearchQuery\.trimmingCharacters\(in:\s*\.whitespacesAndNewlines\)[\s\S]*?!store\.isSearchingSkillManager[\s\S]*?!externalMutationDisabled/.test(files.skillManager)
-      && /\.disabled\(!canSearchSkillManager\)/.test(files.skillManager)
-      && !/TextField\([\s\S]*?\$store\.skillManagerSkillName/.test(files.skillManager),
+      && /await store\.applySkillManagerLocalArchiveUpdate\(confirmation:\s*value\)/.test(files.skillManager)
+      && /await store\.refreshSkillManagerData\(\)/.test(files.skillManager)
+      && /SkillManagerInventoryBuilder\.build\([\s\S]*?installed:\s*skillManagerInstalled\?\.installed \?\? \[\][\s\S]*?catalogSkills:\s*skills[\s\S]*?localLibrarySkills:\s*localSkillLibrarySkills/.test(files.storeDerivedState)
+      && /enum SkillManagerInventoryBuilder[\s\S]*?deduplicatedInstalled\(installed\)[\s\S]*?consumedSourcePaths[\s\S]*?editableCatalogSources[\s\S]*?sharedAgentsSourceDirectory/.test(files.skillManagerModel)
+      && /\.onChange\(of:\s*store\.skillManagerInventoryItems\)[\s\S]*?items\.first\(where:\s*\{ \$0\.id == selectedItem\.id \}\)/.test(files.skillManager)
+      && !/\.task\s*\{[\s\S]*?listSkillManagerInstalled/.test(files.skillManager)
+      && !/\$store\.skillManagerOwner|\$store\.skillManagerSource|\$store\.skillManagerInstallSkillName|\$store\.skillManagerRemoveSkillName/.test(files.skillManager)
+      && !/Toggle\(UIStrings\.text\("skillManager\.network"/.test(files.skillManager)
+      && !/skillManagerDistribution/.test(files.skillManager),
   },
   {
-    label: "Skill Manager empty and blocked searches keep non-actionable completeness visible",
-    passed: /search\.isBlockedByNetwork[\s\S]*?skillManager\.search\.networkBlocked[\s\S]*?else if search\.results\.isEmpty[\s\S]*?skillManager\.search\.noResults/.test(files.skillManager)
-      && /\n {16}if let status = store\.skillManagerSearchStatus \{[\s\S]*?skillManagerSearchFooter\(status,\s*sourceCompleteness:\s*search\.sourceCompleteness\)/.test(files.skillManager)
-      && /private func skillManagerSearchFooter[\s\S]*?if status\.canLoadMore[\s\S]*?loadMoreSkillManagerSearchResults[\s\S]*?showAllReturnedSkillManagerSearchResults/.test(files.skillManager)
-      && /private func skillManagerSearchFooter[\s\S]*?status\.incompleteReason[\s\S]*?UIStrings\.listIncompleteReason[\s\S]*?skillManager\.search\.completenessRecovery/.test(files.skillManager)
-      && /"skillManager\.search\.completenessRecovery"/.test(files.localizable)
-      && /"skillManager\.search\.completenessRecovery"/.test(files.localizableZh),
+    label: "Skill Manager search is keyword-only and result-driven",
+    passed: /private var searchSection/.test(files.skillManager)
+      && /skillManagerSearchQuery/.test(files.skillManager)
+      && /store\.searchSkillManager\(\)/.test(files.skillManager)
+      && /SkillManagerSelectableRow/.test(files.skillManager)
+      && /result\.results\.isEmpty[\s\S]*?skillManager\.search\.noResults/.test(files.skillManager)
+      && /status\.canLoadMore[\s\S]*?loadMoreSkillManagerSearchResults[\s\S]*?showAllReturnedSkillManagerSearchResults/.test(files.skillManager)
+      && !/skillManagerOwner|skillManagerSuggestion/.test(files.skillManager),
   },
   {
-    label: "Skill Manager target controls preserve compact selection and expose all agents",
-    passed: /@State private var isShowingSkillManagerTargets = false/.test(files.skillManager)
-      && /private var selectedTargetAgents:\s*\[SkillManagerAgent\][\s\S]*?SkillManagerAgent\.defaultTargets\.filter[\s\S]*?store\.skillManagerSelectedAgentIDs\.contains/.test(files.skillManager)
-      && /private var targetControls:[\s\S]*?SkillManagerTargetSummary\(agents:\s*selectedTargetAgents\)[\s\S]*?Button\s*\{[\s\S]*?isShowingSkillManagerTargets\.toggle\(\)[\s\S]*?\} label:[\s\S]*?isShowingSkillManagerTargets \? "chevron\.up" : "chevron\.down"[\s\S]*?if isShowingSkillManagerTargets \{[\s\S]*?LazyVGrid/.test(files.skillManager)
-      && /private struct SkillManagerTargetSummary:[\s\S]*?ExpandableSummaryList\([\s\S]*?agents,[\s\S]*?visibleLimit:\s*4,[\s\S]*?skill-manager-agents\.show-all[\s\S]*?SkillManagerTargetIcon\(agent:\s*agent\)[\s\S]*?UIStrings\.text\("skillManager\.agents\.allSelected"/.test(files.skillManager)
-      && /private struct SkillManagerTargetIcon:[\s\S]*?AgentIconProvider\.image\(for:\s*agent\.skillAgentFilter\)[\s\S]*?Image\(nsImage:\s*image\)/.test(files.skillManager)
-      && /private extension SkillManagerAgent\s*\{[\s\S]*?var skillAgentFilter:\s*SkillAgentFilter[\s\S]*?case \.hermesAgent:[\s\S]*?return \.hermes/.test(files.skillManager),
+    label: "Skill Manager exposes local ZIP import and source-aware local update",
+    passed: /skill-manager\.local-import\.choose/.test(files.skillManager)
+      && /private func handleImportArchiveSelection[\s\S]*?previewSkillManagerLocalArchiveImport\(archivePath:\s*url\.path\)/.test(files.skillManager)
+      && /private func inventorySourceBadge[\s\S]*?source\.manager[\s\S]*?source\.localProject[\s\S]*?source\.localGlobal[\s\S]*?source\.localLibrary[\s\S]*?source\.localExternal/.test(files.skillManager)
+      && /if item\.origin == \.local[\s\S]*?skillManager\.localUpdate\.help/.test(files.skillManager)
+      && /if selection\.isLocal[\s\S]*?isChoosingArchive = true[\s\S]*?previewSkillManagerUpdate/.test(files.skillManager)
+      && /if item\.origin == \.local, item\.localInstanceID == nil\s*\{\s*return \[\.remove\]/.test(files.skillManager)
+      && /skillManagerLocalArchiveImportConfirmation[\s\S]*?localArchiveImport\(confirmation\)/.test(files.skillManager)
+      && /sourceKind:\s*String\?/.test(files.skillManagerModel)
+      && /let path:\s*String\?/.test(files.skillManagerModel)
+      && /sharedAgentsPathSuffix\(record\.path \?\? record\.source\)/.test(files.skillManagerModel)
+      && /guard !consumedSourcePaths\.contains\(source\.path\)/.test(files.skillManagerModel)
+      && /case project[\s\S]*?case global/.test(files.skillManagerModel),
   },
   {
-    label: "Skill Manager search suggestions render as clickable tag pills",
-    passed: /private var skillManagerSearchSuggestions:\s*\[String\][\s\S]*?store\.localSkillLibrarySkills\.map\(\\\.name\)[\s\S]*?store\.skillManagerInstalled\?\.installed\.map\(\\\.name\)/.test(files.skillManager)
-      && /skillManagerSuggestionBar/.test(files.skillManager)
-      && /private var skillManagerSuggestionBar:[\s\S]*?ForEach\(skillManagerSearchSuggestions,\s*id:\s*\\\.self\)[\s\S]*?store\.skillManagerSearchQuery = suggestion[\s\S]*?SkillManagerSuggestionPill\(title:\s*suggestion\)[\s\S]*?\.help\(suggestion\)/.test(files.skillManager)
-      && /private struct SkillManagerSuggestionPill:[\s\S]*?Text\(title\)[\s\S]*?\.background\(Color\.accentColor\.opacity\(0\.12\),\s*in:\s*Capsule\(\)\)/.test(files.skillManager),
+    label: "Skill Manager target controls appear only in install and remove actions",
+    passed: /private func actionOptions\(for selection:[\s\S]*?case \.install:[\s\S]*?agentPicker[\s\S]*?case \.remove:[\s\S]*?agentPicker/.test(files.skillManager)
+      && /case \.update:[\s\S]*?skillManager\.update\.affected/.test(files.skillManager)
+      && !/targetControls/.test(files.skillManager),
+  },
+  {
+    label: "Skill Manager removes search suggestions and manual package identity fields",
+    passed: !/skillManagerSearchSuggestions|skillManagerSuggestionBar|SkillManagerSuggestionPill/.test(files.skillManager + "\n" + files.skillManagerModel)
+      && !/skillManagerOwner|skillManagerSource|skillManagerInstallSkillName|skillManagerRemoveSkillName/.test(files.skillManager),
   },
   {
     label: "retired smart analysis detail copy is removed from current UI resources",
@@ -1233,7 +1246,7 @@ const customChecks = [
   {
     label: "safe batch lives behind the skill-list batch operation sheet",
     passed: !/SafeBatchTogglePanel|BatchTogglePreviewSummary/.test(files.sidebar)
-      && /SkillListSectionHeader\([\s\S]*?store\.resetBatchToggleSelectionToVisibleSkills\(\)[\s\S]*?isBatchOperationPresented\s*=\s*true/.test(files.sidebar)
+      && /private struct SkillSidebarPanel:[\s\S]*?private func batchToolbarButton\(visibleSkills:[\s\S]*?store\.resetBatchToggleSelectionToVisibleSkills\(\)[\s\S]*?isBatchOperationPresented\s*=\s*true/.test(files.sidebar)
       && /BatchSkillOperationSheet\(\)/.test(files.sidebar)
       && /Toggle\(isOn:\s*selectionBinding\)/.test(files.batchSkillOperation)
       && /store\.selectAllVisibleBatchToggleSkills\(\)/.test(files.batchSkillOperation)

@@ -1,7 +1,11 @@
-use crate::CommandError;
+use crate::{config_support::scope_from_snapshot, project_record_matches_context, CommandError};
 use sha2::{Digest, Sha256};
 use skills_copilot_catalog::ConfigSnapshotRecord;
-use std::{fs, io, path::Path};
+use skills_copilot_core::{AdapterContext, Scope};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct ConfigState {
@@ -59,6 +63,14 @@ pub(crate) fn rollback_preview_token(
     token.update(b"\0");
     token.update(snapshot.target.as_bytes());
     token.update(b"\0");
+    token.update(
+        snapshot
+            .project_root
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    token.update(b"\0");
     token.update(snapshot_content_hash.as_bytes());
     token.update(b"\0");
     token.update(current_revision.as_bytes());
@@ -78,6 +90,53 @@ pub(crate) fn ensure_rollback_preview_token(
     }
 }
 
+pub(crate) fn canonical_snapshot_project_root(
+    ctx: &AdapterContext,
+) -> Result<Option<PathBuf>, CommandError> {
+    ctx.project_root
+        .as_deref()
+        .map(|project_root| {
+            project_root.canonicalize().map_err(|error| {
+                CommandError::UnsafeConfigPath(format!(
+                    "current project root {} cannot be canonicalized for snapshot isolation: {error}",
+                    project_root.display()
+                ))
+            })
+        })
+        .transpose()
+}
+
+pub(crate) fn snapshot_project_root_for_scope(
+    ctx: &AdapterContext,
+    scope: Scope,
+) -> Result<Option<String>, CommandError> {
+    if scope != Scope::AgentProject {
+        return Ok(None);
+    }
+    let project_root = canonical_snapshot_project_root(ctx)?.ok_or_else(|| {
+        CommandError::UnsafeConfigPath(
+            "project-scoped config snapshot requires an active project root".to_string(),
+        )
+    })?;
+    Ok(Some(project_root.to_string_lossy().into_owned()))
+}
+
+pub(crate) fn validate_snapshot_project_binding(
+    ctx: &AdapterContext,
+    snapshot: &ConfigSnapshotRecord,
+) -> Result<(), CommandError> {
+    if scope_from_snapshot(&snapshot.scope)? != Scope::AgentProject {
+        return Ok(());
+    }
+    let recorded = snapshot.project_root.as_deref().map(Path::new);
+    if project_record_matches_context(recorded, ctx.project_root.as_deref()) {
+        return Ok(());
+    }
+    Err(CommandError::UnsafeConfigPath(
+        "project-scoped snapshot does not belong to the active project context".to_string(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +146,7 @@ mod tests {
             id: id.to_string(),
             agent: "claude-code".to_string(),
             scope: "agent-global".to_string(),
+            project_root: None,
             target: target.to_string(),
             content: content.to_string(),
             reason: "test".to_string(),

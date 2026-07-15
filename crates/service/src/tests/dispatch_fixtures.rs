@@ -1748,6 +1748,7 @@ pub(super) struct WireConfigSnapshotRecord {
     pub(super) id: String,
     pub(super) agent: String,
     pub(super) scope: String,
+    pub(super) project_root: Option<String>,
     pub(super) target: String,
     pub(super) content: String,
     pub(super) reason: String,

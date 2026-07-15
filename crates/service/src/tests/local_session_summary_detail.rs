@@ -225,6 +225,56 @@ fn detail_session_id_reads_only_target_candidate() {
 }
 
 #[test]
+fn selected_detail_reads_codex_events_beyond_the_summary_head_window() {
+    let fixture = SummaryDetailFixture::new("selected-large-head", 1);
+    let path = &fixture.paths[0];
+    let mut content = fs::read_to_string(path).expect("read base session");
+    let padding_record = format!(
+        "{}\n",
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": ["x".repeat(4_096)],
+            },
+        })
+    );
+    while content.len() < 512 * 1024 {
+        content.push_str(&padding_record);
+    }
+    content.push_str(&format!(
+        "{}\n",
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec_command",
+                "call_id": "call-after-summary-window",
+                "input": "{}",
+            },
+        })
+    ));
+    fs::write(path, content).expect("write expanded Codex session");
+
+    let mut params = fixture.params();
+    params.include_content_items = Some(true);
+    params.session_id = Some(local_session_row_id(path));
+    params.limit = Some(1);
+    params.offset = Some(0);
+    let result = fixture
+        .host
+        .preview_local_sessions(params)
+        .expect("preview selected Codex detail");
+
+    let row = result.session_rows.first().expect("selected detail row");
+    assert_eq!(row.tool_call_count, 1);
+    assert!(row
+        .content_items
+        .iter()
+        .any(|item| item.kind == "tool_call"));
+}
+
+#[test]
 fn session_preview_never_persists_raw_session_content() {
     let fixture = SummaryDetailFixture::new("no-persistence", 1);
     let mut summary_params = fixture.params();

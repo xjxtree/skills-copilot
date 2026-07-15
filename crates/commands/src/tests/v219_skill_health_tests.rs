@@ -103,9 +103,9 @@ fn health_summary_counts_triage_risk_and_analysis_groups() {
     assert_eq!(health.missing_count, 1);
     assert_eq!(health.malformed_count, 2);
     assert_eq!(health.findings_by_severity.error_count, 1);
-    assert_eq!(health.findings_by_severity.warning_count, 1);
+    assert_eq!(health.findings_by_severity.warning_count, 0);
     assert_eq!(health.findings_by_severity.info_count, 1);
-    assert_eq!(health.finding_count, 3);
+    assert_eq!(health.finding_count, 2);
     assert_eq!(health.conflict_count, 1);
     assert_eq!(health.risky_script_count, 1);
     assert_eq!(health.risky_permission_count, 1);
@@ -120,7 +120,7 @@ fn health_summary_counts_triage_risk_and_analysis_groups() {
         .expect("codex health summary");
     assert_eq!(codex.total_count, 1);
     assert_eq!(codex.disabled_count, 1);
-    assert_eq!(codex.finding_count, 1);
+    assert_eq!(codex.finding_count, 0);
     assert_eq!(codex.conflict_count, 0);
     assert_eq!(codex.risky_permission_count, 1);
     assert!(codex.analysis_group_count >= 1);
@@ -208,8 +208,8 @@ fn health_summary_dedupes_findings_and_counts_only_same_agent_runtime_conflicts(
 
     let health = build_skill_health_summary(&instances, &findings, &conflicts, &analysis);
 
-    assert_eq!(health.finding_count, 2);
-    assert_eq!(health.findings_by_severity.warning_count, 2);
+    assert_eq!(health.finding_count, 1);
+    assert_eq!(health.findings_by_severity.warning_count, 1);
     assert_eq!(health.conflict_count, 1);
     assert_eq!(health.analysis_groups.duplicate_name_count, 1);
 
@@ -226,8 +226,151 @@ fn health_summary_dedupes_findings_and_counts_only_same_agent_runtime_conflicts(
         .iter()
         .find(|summary| summary.agent == "codex")
         .expect("codex health summary");
-    assert_eq!(codex.finding_count, 1);
+    assert_eq!(codex.finding_count, 0);
     assert_eq!(codex.conflict_count, 0);
+}
+
+#[test]
+fn health_summary_uses_one_visible_issue_policy_for_all_supported_agents() {
+    let instances = vec![
+        health_skill(
+            "claude-visible",
+            AgentId::ClaudeCode,
+            Scope::AgentGlobal,
+            "claude-visible",
+            true,
+            SkillState::Loaded,
+        ),
+        health_skill(
+            "codex-collision",
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "codex-collision",
+            true,
+            SkillState::Loaded,
+        ),
+        health_skill(
+            "opencode-ignored",
+            AgentId::Opencode,
+            Scope::AgentGlobal,
+            "opencode-ignored",
+            true,
+            SkillState::Loaded,
+        ),
+        health_skill(
+            "pi-reviewed",
+            AgentId::Pi,
+            Scope::AgentGlobal,
+            "pi-reviewed",
+            true,
+            SkillState::Loaded,
+        ),
+        health_skill(
+            "hermes-suppressed",
+            AgentId::Hermes,
+            Scope::AgentGlobal,
+            "hermes-suppressed",
+            true,
+            SkillState::Loaded,
+        ),
+        health_skill(
+            "openclaw-follow-up",
+            AgentId::Openclaw,
+            Scope::AgentGlobal,
+            "openclaw-follow-up",
+            true,
+            SkillState::Loaded,
+        ),
+    ];
+
+    let mut ignored = health_finding(
+        "ignored",
+        Some("opencode-ignored"),
+        None,
+        "body.too-long",
+        "warning",
+    );
+    ignored.triage_status = "ignored".to_string();
+    let mut reviewed = health_finding(
+        "reviewed",
+        Some("pi-reviewed"),
+        None,
+        "body.too-long",
+        "warning",
+    );
+    reviewed.triage_status = "reviewed".to_string();
+    let mut suppressed = health_finding(
+        "suppressed",
+        Some("hermes-suppressed"),
+        None,
+        "body.too-long",
+        "warning",
+    );
+    suppressed.suppressed = true;
+    let mut follow_up = health_finding(
+        "follow-up",
+        Some("openclaw-follow-up"),
+        None,
+        "body.too-long",
+        "warning",
+    );
+    follow_up.triage_status = "needs-follow-up".to_string();
+    let findings = vec![
+        health_finding(
+            "baseline-warning",
+            Some("claude-visible"),
+            None,
+            "permissions.network-declared",
+            "warning",
+        ),
+        health_finding(
+            "baseline-error",
+            Some("claude-visible"),
+            None,
+            "permissions.exec-needs-human",
+            "error",
+        ),
+        health_finding(
+            "collision",
+            Some("codex-collision"),
+            None,
+            "name.collision",
+            "info",
+        ),
+        ignored,
+        reviewed,
+        suppressed,
+        follow_up,
+    ];
+    let analysis = analyze_skill_instances(&instances);
+
+    let health = build_skill_health_summary(&instances, &findings, &[], &analysis);
+
+    assert_eq!(health.finding_count, 2);
+    assert_eq!(health.findings_by_severity.error_count, 1);
+    assert_eq!(health.findings_by_severity.warning_count, 1);
+    assert_eq!(health.findings_by_severity.info_count, 0);
+    assert_eq!(
+        health
+            .agent_summaries
+            .iter()
+            .find(|summary| summary.agent == "claude-code")
+            .map(|summary| summary.finding_count),
+        Some(1)
+    );
+    assert_eq!(
+        health
+            .agent_summaries
+            .iter()
+            .find(|summary| summary.agent == "openclaw")
+            .map(|summary| summary.finding_count),
+        Some(1)
+    );
+    assert!(health
+        .agent_summaries
+        .iter()
+        .filter(|summary| !matches!(summary.agent.as_str(), "claude-code" | "openclaw"))
+        .all(|summary| summary.finding_count == 0));
 }
 
 #[test]

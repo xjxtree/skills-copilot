@@ -12,6 +12,7 @@
         "vercel-labs/agent-skills",
         "--skill",
         "frontend-design",
+        "--full-depth",
         "--agent",
         "claude-code",
         "--agent",

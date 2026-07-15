@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS config_snapshot (
     id         TEXT PRIMARY KEY,
     agent      TEXT NOT NULL,
     scope      TEXT NOT NULL,
+    project_root TEXT,
     target     TEXT NOT NULL,
     content    TEXT NOT NULL,
     reason     TEXT NOT NULL,

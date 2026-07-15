@@ -225,10 +225,10 @@ struct WireSkillManagerInstalledListRecord {
 struct WireSkillManagerInstalledRecord {
     name: String,
     source: Option<String>,
+    source_kind: String,
     agents: Vec<String>,
     scope: Option<String>,
     path: Option<String>,
-    raw: Value,
 }
 
 #[allow(dead_code)]
@@ -267,6 +267,43 @@ struct WireSkillManagerLocalDeleteRecord {
     confirmed: bool,
     deleted: bool,
     summary: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireSkillManagerLocalArchiveUpdateRecord {
+    instance_id: String,
+    skill_name: String,
+    archive_path: String,
+    archive_sha256: String,
+    file_count: usize,
+    uncompressed_bytes: u64,
+    preview_token: String,
+    confirmed: bool,
+    applied: bool,
+    summary: String,
+    #[serde(default)]
+    updated_skill: Option<WireSkillRecord>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireSkillManagerLocalArchiveImportRecord {
+    skill_name: String,
+    archive_path: String,
+    archive_sha256: String,
+    file_count: usize,
+    uncompressed_bytes: u64,
+    preview_token: String,
+    confirmed: bool,
+    applied: bool,
+    summary: String,
+    #[serde(default)]
+    imported_skill: Option<WireSkillRecord>,
+    #[serde(default)]
+    instance_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -730,6 +767,31 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(delete.app_owned);
             assert!(!delete.deleted);
             assert!(!delete.blocked_by_references.is_empty());
+        }
+        "skillManager.previewLocalArchiveImport" | "skillManager.applyLocalArchiveImport" => {
+            let import: WireSkillManagerLocalArchiveImportRecord =
+                decode_fixture_result(method, result, path);
+            assert!(!import.preview_token.is_empty());
+            assert_eq!(import.applied, method.contains(".apply"));
+            assert_eq!(import.confirmed, import.applied);
+            if import.applied {
+                assert_eq!(
+                    import
+                        .imported_skill
+                        .as_ref()
+                        .expect("imported skill")
+                        .agent,
+                    "tool-global"
+                );
+                assert!(import.instance_id.is_some());
+            }
+        }
+        "skillManager.previewLocalArchiveUpdate" | "skillManager.applyLocalArchiveUpdate" => {
+            let update: WireSkillManagerLocalArchiveUpdateRecord =
+                decode_fixture_result(method, result, path);
+            assert!(!update.preview_token.is_empty());
+            assert_eq!(update.applied, method.contains(".apply"));
+            assert_eq!(update.confirmed, update.applied);
         }
         "project.getContext" | "project.setContext" | "project.clearContext" => {
             let _: ProjectContextState = decode_fixture_result(method, result, path);

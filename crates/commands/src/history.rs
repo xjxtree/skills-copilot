@@ -1,6 +1,7 @@
 use skills_copilot_catalog::{
     Catalog, CatalogError, CatalogPageSnapshot, ConfigSnapshotRecord, SkillEventRecord,
 };
+use std::path::Path;
 
 use crate::CommandError;
 
@@ -8,6 +9,7 @@ pub fn list_agent_config_snapshot_page_snapshot(
     catalog: &Catalog,
     agent: &str,
     scope: Option<&str>,
+    current_project_root: Option<&Path>,
     before: Option<(i64, &str)>,
     limit: usize,
     validate_revision: impl FnOnce(&str) -> Result<(), CatalogError>,
@@ -15,6 +17,7 @@ pub fn list_agent_config_snapshot_page_snapshot(
     Ok(catalog.list_agent_config_snapshot_page_snapshot(
         agent,
         scope,
+        current_project_root,
         before,
         limit,
         validate_revision,

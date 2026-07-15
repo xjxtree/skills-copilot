@@ -1,4 +1,51 @@
 use super::*;
+use skills_copilot_adapters::{
+    codex_home_dir, codex_plugin_cache_id, parse_codex_enabled_plugin_ids,
+};
+use skills_copilot_ai_core::NATIVE_RUNTIME_NAMESPACE;
+
+pub(super) fn runtime_conflict_namespaces(
+    instances: &[SkillInstance],
+    ctx: &AdapterContext,
+) -> std::collections::HashMap<String, String> {
+    let codex_home = codex_home_dir(ctx);
+    let enabled_codex_plugins = fs::read_to_string(codex_home.join("config.toml"))
+        .map(|content| parse_codex_enabled_plugin_ids(&content))
+        .unwrap_or_default();
+    let codex_plugin_roots = CodexAdapter
+        .roots(ctx)
+        .into_iter()
+        .filter(|root| root.source == RootSource::Plugin)
+        .map(|root| root.path)
+        .collect::<Vec<_>>();
+
+    instances
+        .iter()
+        .filter_map(|instance| {
+            if instance.state != SkillState::Loaded
+                || !instance.enabled
+                || instance.scope == Scope::ToolGlobal
+            {
+                return None;
+            }
+            if instance.agent != AgentId::Codex {
+                return Some((instance.id.clone(), NATIVE_RUNTIME_NAMESPACE.to_string()));
+            }
+
+            let is_plugin_inventory = codex_plugin_roots
+                .iter()
+                .any(|root| instance.path.starts_with(root));
+            if !is_plugin_inventory {
+                return Some((instance.id.clone(), NATIVE_RUNTIME_NAMESPACE.to_string()));
+            }
+
+            let plugin_id = codex_plugin_cache_id(&codex_home, &instance.path)?;
+            enabled_codex_plugins
+                .contains(&plugin_id)
+                .then(|| (instance.id.clone(), format!("plugin:{plugin_id}")))
+        })
+        .collect()
+}
 
 pub fn list_conflicts(catalog: &Catalog) -> Result<Vec<ConflictGroupRecord>, CommandError> {
     let groups = catalog.list_conflict_groups()?;
@@ -14,13 +61,71 @@ pub fn list_conflicts(catalog: &Catalog) -> Result<Vec<ConflictGroupRecord>, Com
     Ok(runtime_conflict_groups(groups, &agent_by_instance_id))
 }
 
+pub fn apply_current_config_overrides_to_skill_records(
+    ctx: &AdapterContext,
+    records: &mut [SkillRecord],
+) -> Result<(), CommandError> {
+    let disabled_paths = codex_disabled_skill_paths(&codex_user_config_path(ctx))?;
+    for record in records.iter_mut() {
+        if record.agent != AgentId::Codex.as_str() {
+            continue;
+        }
+        let (state, enabled) = projected_codex_config_state(
+            &record.path,
+            &record.state,
+            record.enabled,
+            &disabled_paths,
+        );
+        record.state = state;
+        record.enabled = enabled;
+    }
+    Ok(())
+}
+
+pub fn apply_current_config_overrides_to_skill_detail(
+    ctx: &AdapterContext,
+    detail: &mut SkillDetailRecord,
+) -> Result<(), CommandError> {
+    if detail.agent != AgentId::Codex.as_str() {
+        return Ok(());
+    }
+    let disabled_paths = codex_disabled_skill_paths(&codex_user_config_path(ctx))?;
+    let (state, enabled) =
+        projected_codex_config_state(&detail.path, &detail.state, detail.enabled, &disabled_paths);
+    detail.state = state;
+    detail.enabled = enabled;
+    Ok(())
+}
+
+fn projected_codex_config_state(
+    path: &Path,
+    state: &str,
+    enabled: bool,
+    disabled_paths: &BTreeSet<PathBuf>,
+) -> (String, bool) {
+    if !matches!(state, "loaded" | "disabled") {
+        return (state.to_string(), enabled);
+    }
+    if disabled_paths.contains(path) {
+        (SkillState::Disabled.as_str().to_string(), false)
+    } else {
+        (SkillState::Loaded.as_str().to_string(), true)
+    }
+}
+
+pub fn list_conflicts_for_context(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+) -> Result<Vec<ConflictGroupRecord>, CommandError> {
+    let instances = projected_visible_catalog_instances(catalog, ctx)?;
+    Ok(projected_runtime_conflicts(&instances, ctx))
+}
+
 pub fn analyze_catalog(
     catalog: &Catalog,
     ctx: &AdapterContext,
 ) -> Result<CrossAgentAnalysisRecord, CommandError> {
-    let instances = visible_catalog_instances(
-        catalog.list_skill_instances_for_project_context(ctx.project_root.as_deref())?,
-    );
+    let instances = projected_visible_catalog_instances(catalog, ctx)?;
     Ok(analyze_skill_instances(&instances))
 }
 
@@ -28,15 +133,53 @@ pub fn skill_health_summary(
     catalog: &Catalog,
     ctx: &AdapterContext,
 ) -> Result<SkillHealthSummary, CommandError> {
-    let instances = visible_catalog_instances(
-        catalog.list_skill_instances_for_project_context(ctx.project_root.as_deref())?,
-    );
+    let instances = projected_visible_catalog_instances(catalog, ctx)?;
     let findings = catalog.list_rule_findings()?;
-    let conflicts = catalog.list_conflict_groups()?;
+    let conflicts = projected_runtime_conflicts(&instances, ctx);
     let analysis = analyze_skill_instances(&instances);
     Ok(build_skill_health_summary(
         &instances, &findings, &conflicts, &analysis,
     ))
+}
+
+fn projected_visible_catalog_instances(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+) -> Result<Vec<SkillInstance>, CommandError> {
+    let mut instances = visible_catalog_instances(
+        catalog.list_skill_instances_for_project_context(ctx.project_root.as_deref())?,
+    );
+    apply_codex_config_overrides(ctx, &mut instances)?;
+    Ok(instances)
+}
+
+fn projected_runtime_conflicts(
+    instances: &[SkillInstance],
+    ctx: &AdapterContext,
+) -> Vec<ConflictGroupRecord> {
+    let agent_by_instance_id = instances
+        .iter()
+        .map(|instance| (instance.id.as_str(), instance.agent.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let report = evaluate_mvp_rules(
+        instances,
+        &RuleContext {
+            previous_fingerprints: std::collections::HashMap::new(),
+            runtime_conflict_namespaces: Some(runtime_conflict_namespaces(instances, ctx)),
+        },
+    );
+    let conflicts = report
+        .conflicts
+        .into_iter()
+        .map(|conflict| ConflictGroupRecord {
+            id: conflict.id,
+            definition_id: conflict.definition_id,
+            reason: conflict.reason,
+            winner_id: conflict.winner_id,
+            instance_ids: conflict.instances,
+        })
+        .collect();
+    runtime_conflict_groups(conflicts, &agent_by_instance_id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,10 +283,7 @@ pub fn build_skill_health_summary(
     conflicts: &[ConflictGroupRecord],
     analysis: &CrossAgentAnalysisRecord,
 ) -> SkillHealthSummary {
-    let findings = dedupe_rule_finding_records(findings)
-        .into_iter()
-        .filter(|finding| !finding.suppressed)
-        .collect::<Vec<_>>();
+    let findings = user_visible_rule_findings(findings);
     let agent_by_instance_id = instances
         .iter()
         .map(|inst| (inst.id.as_str(), inst.agent.as_str()))
@@ -256,6 +396,40 @@ pub fn build_skill_health_summary(
         analysis_groups,
         agent_summaries,
     }
+}
+
+pub fn user_visible_rule_findings(findings: &[RuleFindingRecord]) -> Vec<RuleFindingRecord> {
+    dedupe_rule_finding_records(findings)
+        .into_iter()
+        .filter(is_user_visible_rule_finding)
+        .collect()
+}
+
+pub fn is_user_visible_rule_finding(finding: &RuleFindingRecord) -> bool {
+    if finding.suppressed || finding.instance_id.is_none() {
+        return false;
+    }
+    if !matches!(
+        finding.triage_status.trim(),
+        "" | "open" | "needs-follow-up"
+    ) {
+        return false;
+    }
+
+    let rule_id = finding.rule_id.trim().to_ascii_lowercase();
+    if rule_id == "name.collision" {
+        return false;
+    }
+    if matches!(
+        rule_id.as_str(),
+        "frontmatter.tools-not-empty"
+            | "permissions.network-declared"
+            | "permissions.exec-needs-human"
+    ) {
+        let severity = finding.effective_severity.trim().to_ascii_lowercase();
+        return matches!(severity.as_str(), "critical" | "error");
+    }
+    true
 }
 
 pub fn analyze_skill_instances(instances: &[SkillInstance]) -> CrossAgentAnalysisRecord {

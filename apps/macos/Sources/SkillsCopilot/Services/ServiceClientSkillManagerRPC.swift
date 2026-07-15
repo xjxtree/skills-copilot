@@ -5,15 +5,15 @@ extension ServiceClient {
         try await call(method: "skillManager.listTools", params: EmptyParams())
     }
 
-    func searchSkillManager(query: String, owner: String?, networkAllowed: Bool) async throws -> SkillManagerSearchRecord {
+    func searchSkillManager(query: String) async throws -> SkillManagerSearchRecord {
         let result: SkillManagerSearchRecord = try await call(
             method: "skillManager.search",
             params: SkillManagerSearchParams(
                 query: query,
-                owner: owner?.nilIfBlank,
-                networkAllowed: networkAllowed
+                owner: nil,
+                networkAllowed: true
             ),
-            timeoutMS: networkAllowed ? 120_000 : nil
+            timeoutMS: 120_000
         )
         guard result.hasValidPageMetadata else {
             throw ClientError.invalidOutput("skillManager.search returned inconsistent page metadata")
@@ -21,11 +21,11 @@ extension ServiceClient {
         return result
     }
 
-    func listSkillManagerInstalled(agents: [String], scope: SkillManagerScope) async throws -> SkillManagerInstalledListRecord {
+    func listSkillManagerInstalled(scope: SkillManagerScope) async throws -> SkillManagerInstalledListRecord {
         let result: SkillManagerInstalledListRecord = try await call(
             method: "skillManager.listInstalled",
             params: SkillManagerListInstalledParams(
-                agents: agents,
+                agents: [],
                 scope: scope.rawValue
             ),
             timeoutMS: 120_000
@@ -40,9 +40,7 @@ extension ServiceClient {
         source: String,
         skills: [String],
         agents: [String],
-        scope: SkillManagerScope,
-        distribution: SkillManagerDistribution,
-        networkAllowed: Bool
+        scope: SkillManagerScope
     ) async throws -> SkillManagerMutationRecord {
         try await skillManagerInstall(
             method: "skillManager.previewInstall",
@@ -50,8 +48,8 @@ extension ServiceClient {
             skills: skills,
             agents: agents,
             scope: scope,
-            distribution: distribution,
-            networkAllowed: networkAllowed,
+            distribution: .symlink,
+            networkAllowed: true,
             confirmed: false,
             previewToken: nil
         )
@@ -62,9 +60,7 @@ extension ServiceClient {
         source: String,
         skills: [String],
         agents: [String],
-        scope: SkillManagerScope,
-        distribution: SkillManagerDistribution,
-        networkAllowed: Bool
+        scope: SkillManagerScope
     ) async throws -> SkillManagerMutationRecord {
         try await skillManagerInstall(
             method: "skillManager.applyInstall",
@@ -72,8 +68,8 @@ extension ServiceClient {
             skills: skills,
             agents: agents,
             scope: scope,
-            distribution: distribution,
-            networkAllowed: networkAllowed,
+            distribution: .symlink,
+            networkAllowed: true,
             confirmed: true,
             previewToken: preview.preview.previewToken
         )
@@ -101,25 +97,25 @@ extension ServiceClient {
         )
     }
 
-    func previewSkillManagerUpdate(skills: [String], agents: [String], scope: SkillManagerScope, networkAllowed: Bool) async throws -> SkillManagerMutationRecord {
+    func previewSkillManagerUpdate(skills: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
         try await skillManagerUpdate(
             method: "skillManager.previewUpdate",
             skills: skills,
-            agents: agents,
+            agents: [],
             scope: scope,
-            networkAllowed: networkAllowed,
+            networkAllowed: true,
             confirmed: false,
             previewToken: nil
         )
     }
 
-    func applySkillManagerUpdate(preview: SkillManagerMutationRecord, skills: [String], agents: [String], scope: SkillManagerScope, networkAllowed: Bool) async throws -> SkillManagerMutationRecord {
+    func applySkillManagerUpdate(preview: SkillManagerMutationRecord, skills: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
         try await skillManagerUpdate(
             method: "skillManager.applyUpdate",
             skills: skills,
-            agents: agents,
+            agents: [],
             scope: scope,
-            networkAllowed: networkAllowed,
+            networkAllowed: true,
             confirmed: true,
             previewToken: preview.preview.previewToken
         )
@@ -165,6 +161,68 @@ extension ServiceClient {
                 instanceId: instanceID,
                 confirmed: true
             )
+        )
+    }
+
+    func previewSkillManagerLocalArchiveUpdate(
+        instanceID: String,
+        archivePath: String
+    ) async throws -> SkillManagerLocalArchiveUpdateRecord {
+        try await call(
+            method: "skillManager.previewLocalArchiveUpdate",
+            params: SkillManagerLocalArchiveUpdateParams(
+                instanceId: instanceID,
+                archivePath: archivePath,
+                confirmed: false,
+                previewToken: nil
+            ),
+            timeoutMS: 120_000
+        )
+    }
+
+    func previewSkillManagerLocalArchiveImport(
+        archivePath: String
+    ) async throws -> SkillManagerLocalArchiveImportRecord {
+        try await call(
+            method: "skillManager.previewLocalArchiveImport",
+            params: SkillManagerLocalArchiveImportParams(
+                archivePath: archivePath,
+                confirmed: false,
+                previewToken: nil
+            ),
+            timeoutMS: 120_000
+        )
+    }
+
+    func applySkillManagerLocalArchiveImport(
+        preview: SkillManagerLocalArchiveImportRecord,
+        archivePath: String
+    ) async throws -> SkillManagerLocalArchiveImportRecord {
+        try await call(
+            method: "skillManager.applyLocalArchiveImport",
+            params: SkillManagerLocalArchiveImportParams(
+                archivePath: archivePath,
+                confirmed: true,
+                previewToken: preview.previewToken
+            ),
+            timeoutMS: 120_000
+        )
+    }
+
+    func applySkillManagerLocalArchiveUpdate(
+        preview: SkillManagerLocalArchiveUpdateRecord,
+        instanceID: String,
+        archivePath: String
+    ) async throws -> SkillManagerLocalArchiveUpdateRecord {
+        try await call(
+            method: "skillManager.applyLocalArchiveUpdate",
+            params: SkillManagerLocalArchiveUpdateParams(
+                instanceId: instanceID,
+                archivePath: archivePath,
+                confirmed: true,
+                previewToken: preview.previewToken
+            ),
+            timeoutMS: 120_000
         )
     }
 
@@ -237,12 +295,5 @@ extension ServiceClient {
             ),
             timeoutMS: confirmed ? 180_000 : nil
         )
-    }
-}
-
-private extension String {
-    var nilIfBlank: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 }

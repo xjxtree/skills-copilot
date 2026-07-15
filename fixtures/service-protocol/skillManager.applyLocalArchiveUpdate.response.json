@@ -1,0 +1,27 @@
+{
+  "id": "fixture-skill-manager-apply-local-archive-update",
+  "ok": true,
+  "result": {
+    "instance_id": "fixture-local-tool-global",
+    "skill_name": "local-review-helper",
+    "archive_path": "/tmp/local-review-helper.zip",
+    "archive_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "file_count": 3,
+    "uncompressed_bytes": 4096,
+    "preview_token": "skill-manager-local-archive:fixture-preview",
+    "confirmed": true,
+    "applied": true,
+    "summary": "Replaced the app-owned local skill source from the confirmed ZIP; skill scripts were not executed.",
+    "updated_skill": {
+      "id": "fixture-local-tool-global",
+      "name": "local-review-helper",
+      "agent": "tool-global",
+      "scope": "tool-global",
+      "path": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+      "display_path": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+      "state": "valid",
+      "enabled": true,
+      "definition_id": "fixture-local-definition"
+    }
+  }
+}

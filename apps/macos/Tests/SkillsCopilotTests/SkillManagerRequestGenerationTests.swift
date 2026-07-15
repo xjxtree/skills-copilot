@@ -8,7 +8,8 @@ struct SkillManagerRequestGenerationTests {
         try await newerSearchWinsWhenOlderResponseFinishesLast()
         try await staleSearchCannotChangeVisibleIDsOrUnknownTotal()
         try await staleSearchErrorDoesNotReplaceNewSuccess()
-        try await installedListIsScopedToCapturedAgentsAndScope()
+        try await installedInventoryLoadsBothScopesWithoutAgentFiltering()
+        try await installedInventoryUsesSurfaceBusyStateWithoutBlockingTheApp()
         try await installedAndLocalLibraryExposeEveryVisibleID()
         try await invalidMethodMetadataPreservesCurrentRecords()
         try await inputChangeInvalidatesMutationPreview()
@@ -178,30 +179,50 @@ struct SkillManagerRequestGenerationTests {
         try expectNil(store.skillManagerErrorMessage, "A stale search error must not replace current success feedback.")
     }
 
-    private func installedListIsScopedToCapturedAgentsAndScope() async throws {
+    private func installedInventoryLoadsBothScopesWithoutAgentFiltering() async throws {
         let runner = SkillManagerGenerationServiceRunner()
-        await runner.suspend("installed:project:codex")
-        await runner.suspend("installed:global:pi")
         let store = makeStore(runner)
         store.skillManagerSelectedAgentIDs = ["codex"]
         store.skillManagerScope = .project
 
-        let old = Task { await store.listSkillManagerInstalled() }
-        try await waitForPending("installed:project:codex", runner: runner)
-        store.skillManagerSelectedAgentIDs = ["pi"]
-        store.skillManagerScope = .global
-        let current = Task { await store.listSkillManagerInstalled() }
-        try await waitForPending("installed:global:pi", runner: runner)
+        await store.listSkillManagerInstalled()
 
-        await runner.resumeSuccess("installed:global:pi")
-        await current.value
-        await runner.resumeSuccess("installed:project:codex")
-        await old.value
-
-        try expectEqual(store.skillManagerInstalled?.installed.first?.name, "global:pi", "Installed results should match the current captured request.")
+        try expectEqual(
+            store.skillManagerInstalledByScope[.project]?.installed.first?.name,
+            "project:",
+            "Project inventory should be cached independently."
+        )
+        try expectEqual(
+            store.skillManagerInstalledByScope[.global]?.installed.first?.name,
+            "global:",
+            "Global inventory should be cached independently."
+        )
         let calls = await runner.recordedCalls(method: "skillManager.listInstalled")
-        try expectEqual(calls.map(\.scope), ["project", "global"], "Each installed request should retain its captured scope.")
-        try expectEqual(calls.map(\.agents), [["codex"], ["pi"]], "Each installed request should retain its captured agents.")
+        try expectEqual(calls.map(\.scope), ["project", "global"], "Inventory refresh should load both scopes.")
+        try expectEqual(calls.map(\.agents), [[], []], "Inventory reads must not expand into per-agent requests.")
+    }
+
+    private func installedInventoryUsesSurfaceBusyStateWithoutBlockingTheApp() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        await runner.suspend("installed:project:")
+        let store = makeStore(runner)
+
+        let loading = Task { await store.listSkillManagerInstalled() }
+        try await waitForPending("installed:project:", runner: runner)
+
+        try expectEqual(
+            store.isListingSkillManagerInstalled,
+            true,
+            "A suspended inventory request should keep the Skill Manager surface in its loading state."
+        )
+        try expectEqual(
+            store.isRefreshBusy,
+            false,
+            "Read-only Skill Manager inventory loading must not block unrelated app operations."
+        )
+
+        await runner.resumeSuccess("installed:project:")
+        await loading.value
     }
 
     private func inputChangeInvalidatesMutationPreview() async throws {
@@ -575,7 +596,7 @@ struct SkillManagerRequestGenerationTests {
         let runner = SkillManagerGenerationServiceRunner()
         let labels = [
             "search:cancel-search",
-            "installed:project:codex",
+            "installed:project:",
             "mutation:install:owner/cancel",
             "local-create:cancel-local",
             "local-delete:cancel-delete"
@@ -1053,7 +1074,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             && ((call.method == "skillManager.search" && call.query == "retain-search")
                 || (call.method == "skillManager.listInstalled"
                     && call.scope == "project"
-                    && call.agents == ["codex"]))
+                    && call.agents.isEmpty))
         return Self.response(for: call, injectInvalidMetadata: injectInvalidMetadata)
     }
 

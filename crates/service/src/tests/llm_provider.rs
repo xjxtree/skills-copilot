@@ -7,6 +7,42 @@ use crate::service_llm::{
 };
 
 #[test]
+fn legacy_provider_epoch_seconds_are_normalized_without_changing_fixture_clocks() {
+    assert_eq!(
+        crate::provider::normalize_epoch_millis(1_789_000_000),
+        1_789_000_000_000
+    );
+    assert_eq!(
+        crate::provider::normalize_epoch_millis(1_789_000_000_000),
+        1_789_000_000_000
+    );
+    assert_eq!(crate::provider::normalize_epoch_millis(2_200), 2_200);
+}
+
+#[test]
+fn task_cockpit_transport_success_requires_business_schema() {
+    let valid = json!({
+        "summary": {},
+        "agent_candidates": [],
+        "skill_candidates": [],
+        "safety_flags": {}
+    })
+    .to_string();
+    assert!(crate::provider::validate_prompt_business_output("task_cockpit", Some(&valid)).is_ok());
+    assert!(
+        crate::provider::validate_prompt_business_output("task_cockpit", Some("not-json")).is_err()
+    );
+    assert!(crate::provider::validate_prompt_business_output(
+        "task_cockpit",
+        Some(r#"{"summary":{},"agent_candidates":[],"skill_candidates":[]}"#),
+    )
+    .is_err());
+    assert!(
+        crate::provider::validate_prompt_business_output("analyze", Some("plain draft")).is_ok()
+    );
+}
+
+#[test]
 fn llm_preview_prompt_returns_redacted_confirmation_payload() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-llm-preview-test-{}-{}",
@@ -91,6 +127,109 @@ fn llm_preview_prompt_returns_redacted_confirmation_payload() {
     assert!(!serialized.contains("fixture-redacted-value"));
     assert!(!serialized.contains(&skill_path.to_string_lossy().to_string()));
     assert!(!provider_call_metadata_path(&app_data_dir).exists());
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn llm_skill_prompt_uses_the_same_visible_issue_policy_as_the_app() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-visible-findings-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    seed_catalog_with_llm_skill(&host, &app_data_dir.join("fixture-skill").join("SKILL.md"));
+    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
+    let drafts = [
+        (
+            "baseline-warning",
+            "permissions.network-declared",
+            "warning",
+        ),
+        ("baseline-error", "permissions.exec-needs-human", "error"),
+        ("collision", "name.collision", "info"),
+        ("ignored", "script.no-shebang", "warning"),
+        ("reviewed", "name.canonical-case", "warning"),
+        ("suppressed", "dependency.unknown", "warning"),
+        ("visible", "body.too-long", "warning"),
+        ("sibling", "frontmatter.description-missing", "warning"),
+    ]
+    .into_iter()
+    .map(|(id, rule_id, severity)| RuleFindingDraft {
+        id: id.to_string(),
+        instance_id: Some(if id == "sibling" {
+            "llm-sibling-id".to_string()
+        } else {
+            "llm-skill-id".to_string()
+        }),
+        definition_id: Some("llm-definition-id".to_string()),
+        rule_id: rule_id.to_string(),
+        severity: severity.to_string(),
+        message: format!("{rule_id} marker"),
+        suggestion: Some(format!("fix {rule_id}")),
+        created_at: 1,
+    })
+    .collect::<Vec<_>>();
+    catalog
+        .refresh_rule_findings(&drafts)
+        .expect("refresh prompt findings");
+    let seeded = catalog.list_rule_findings().expect("list prompt findings");
+    for (rule_id, status) in [
+        ("script.no-shebang", "ignored"),
+        ("name.canonical-case", "reviewed"),
+    ] {
+        let triage_key = seeded
+            .iter()
+            .find(|finding| finding.rule_id == rule_id)
+            .map(|finding| finding.triage_key.as_str())
+            .expect("triage key");
+        catalog
+            .set_finding_triage(triage_key, status, None, 2)
+            .expect("set prompt finding triage");
+    }
+    catalog
+        .set_rule_suppression(
+            "dependency.unknown",
+            Some("claude-code"),
+            Some("agent-global"),
+            "fixture suppression",
+            None,
+            2,
+        )
+        .expect("suppress prompt finding");
+
+    let response = host.handle(ServiceRequest {
+        id: Some("preview-visible-findings".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: json!({
+            "action": "analyze",
+            "skill_instance_id": "llm-skill-id"
+        }),
+    });
+
+    assert!(response.ok, "{:?}", response.error);
+    let prompt = response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("prompt_preview"))
+        .and_then(Value::as_str)
+        .expect("prompt preview");
+    assert!(prompt.contains("body.too-long"));
+    assert!(prompt.contains("permissions.exec-needs-human"));
+    for hidden_rule in [
+        "permissions.network-declared",
+        "name.collision",
+        "script.no-shebang",
+        "name.canonical-case",
+        "dependency.unknown",
+        "frontmatter.description-missing",
+    ] {
+        assert!(
+            !prompt.contains(hidden_rule),
+            "hidden rule leaked into prompt: {hidden_rule}"
+        );
+    }
 
     let _ = fs::remove_dir_all(app_data_dir);
 }
@@ -2956,7 +3095,7 @@ fn finding_triage_service_writes_only_app_local_catalog() {
     catalog.init().expect("re-init catalog");
     assert_eq!(
         catalog
-            .list_all_config_snapshots()
+            .list_all_config_snapshots(None)
             .expect("snapshots")
             .len(),
         0,
@@ -3285,7 +3424,7 @@ fn scan_claude_returns_refresh_activity() {
 
 #[test]
 #[cfg(unix)]
-fn scan_claude_surfaces_partial_root_and_issue_in_refresh_activity() {
+fn scan_claude_surfaces_dangling_link_without_degrading_refresh_activity() {
     let temp_root = env::temp_dir().join(format!(
         "skills-copilot-scan-claude-partial-{}-{}",
         std::process::id(),
@@ -3329,16 +3468,16 @@ fn scan_claude_surfaces_partial_root_and_issue_in_refresh_activity() {
 
     assert_eq!(
         activity.get("status").and_then(Value::as_str),
-        Some("completed-partial")
+        Some("completed")
     );
     assert_eq!(
         summary.get("status").and_then(Value::as_str),
-        Some("completed-partial")
+        Some("completed")
     );
     assert!(summary
         .get("roots_partial")
         .and_then(Value::as_array)
-        .is_some_and(|roots| !roots.is_empty()));
+        .is_some_and(Vec::is_empty));
     assert_eq!(
         summary
             .get("scan_issues")
@@ -3346,7 +3485,7 @@ fn scan_claude_surfaces_partial_root_and_issue_in_refresh_activity() {
             .and_then(|issues| issues.first())
             .and_then(|issue| issue.get("kind"))
             .and_then(Value::as_str),
-        Some("entry_unreadable")
+        Some("dangling_symlink")
     );
 
     let _ = fs::remove_dir_all(temp_root);
@@ -3542,8 +3681,12 @@ fn scan_all_returns_multi_agent_refresh_activity() {
     assert!(
         log_messages
             .iter()
-            .any(|message| message.contains("root-error skipped-root path(s):")),
-        "scanAll activity should name skipped roots as root-error/skipped-root"
+            .all(|message| !message.contains("root-error skipped-root path(s):")),
+        "missing implicit built-in roots must not create skipped-root warnings"
+    );
+    assert_eq!(
+        activity.get("status").and_then(Value::as_str),
+        Some("completed")
     );
     let claude = summaries
         .iter()

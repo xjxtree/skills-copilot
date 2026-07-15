@@ -154,6 +154,61 @@ fn status_request_returns_supported_methods() {
 }
 
 #[test]
+fn app_state_snapshot_migrates_legacy_catalog_before_reading() {
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-state-snapshot-migration-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let app_data_dir = root.join("app-data");
+    fs::create_dir_all(&app_data_dir).expect("create legacy app data");
+    let host = test_host(app_data_dir);
+    {
+        let conn = rusqlite::Connection::open(host.catalog_path()).expect("open legacy catalog");
+        conn.execute_batch(
+            "CREATE TABLE config_snapshot (
+                id TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                target TEXT NOT NULL,
+                content TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             INSERT INTO config_snapshot (
+                id, agent, scope, target, content, reason, created_at
+             ) VALUES (
+                'legacy-snapshot', 'claude-code', 'agent-global',
+                '/tmp/settings.json', '{}', 'pre-toggle', 1
+             );",
+        )
+        .expect("seed legacy snapshot schema");
+    }
+
+    let response = host.handle(ServiceRequest {
+        id: Some("legacy-state-snapshot".to_string()),
+        method: "app.stateSnapshot".to_string(),
+        params: json!({}),
+    });
+    assert!(response.ok, "{response:?}");
+    let result = response.result.expect("state snapshot result");
+    assert_eq!(result["snapshots"][0]["id"], "legacy-snapshot");
+    assert_eq!(result["snapshots"][0]["project_root"], Value::Null);
+
+    let conn = rusqlite::Connection::open(host.catalog_path()).expect("reopen migrated catalog");
+    let columns = conn
+        .prepare("PRAGMA table_info(config_snapshot)")
+        .expect("prepare schema query")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("query schema")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect schema");
+    assert!(columns.iter().any(|column| column == "project_root"));
+    drop(conn);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn default_app_data_dir_uses_agent_copilot_bundle_id() {
     let home = env::temp_dir().join(format!(
         "skills-copilot-app-data-default-test-{}-{}",
@@ -319,6 +374,7 @@ fn list_agent_config_snapshots_returns_selected_agent_timeline_only() {
                 id,
                 agent,
                 scope,
+                project_root: None,
                 target,
                 content,
                 reason: "pre-toggle",
@@ -342,7 +398,7 @@ fn list_agent_config_snapshots_returns_selected_agent_timeline_only() {
             .iter()
             .map(|snapshot| snapshot.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["snap-codex-new", "snap-codex-old"]
+        vec!["snap-codex-new"]
     );
     assert!(snapshots.iter().all(|snapshot| snapshot.agent == "codex"));
 
@@ -355,9 +411,10 @@ fn list_agent_config_snapshots_returns_selected_agent_timeline_only() {
     let scoped_result = scoped_response.result.expect("scoped timeline result");
     let scoped_snapshots: Vec<WireConfigSnapshotRecord> =
         serde_json::from_value(scoped_result).expect("decode scoped snapshots");
-    assert_eq!(scoped_snapshots.len(), 1);
-    assert_eq!(scoped_snapshots[0].id, "snap-codex-old");
-    assert_eq!(scoped_snapshots[0].scope, "agent-project");
+    assert!(
+        scoped_snapshots.is_empty(),
+        "legacy project snapshots without a bound project root must fail closed"
+    );
 
     let _ = fs::remove_dir_all(&temp_root);
 }
@@ -1220,7 +1277,7 @@ fn llm_prepare_action_does_not_create_credentials_config_or_catalog_writes() {
     let before_catalog = Catalog::open(&host.catalog_path()).expect("open catalog before");
     let before_records = before_catalog.list_skill_records().expect("records before");
     let before_snapshots = before_catalog
-        .list_all_config_snapshots()
+        .list_all_config_snapshots(None)
         .expect("snapshots before");
 
     let response = host.handle(ServiceRequest {
@@ -1245,7 +1302,7 @@ fn llm_prepare_action_does_not_create_credentials_config_or_catalog_writes() {
     let after_catalog = Catalog::open(&host.catalog_path()).expect("open catalog after");
     let after_records = after_catalog.list_skill_records().expect("records after");
     let after_snapshots = after_catalog
-        .list_all_config_snapshots()
+        .list_all_config_snapshots(None)
         .expect("snapshots after");
     assert_eq!(after_records, before_records);
     assert_eq!(after_snapshots, before_snapshots);
@@ -1256,6 +1313,147 @@ fn llm_prepare_action_does_not_create_credentials_config_or_catalog_writes() {
     let serialized = serde_json::to_string(&response.result).expect("serialize response");
     assert!(!serialized.contains("OPENAI_API_KEY=<redacted>"));
     assert!(!serialized.contains("Analyze local skill posture"));
+
+    let _ = fs::remove_dir_all(app_data_dir);
+    let _ = fs::remove_dir_all(user_home);
+}
+
+#[test]
+fn app_snapshot_projects_external_codex_skill_config_without_rescan() {
+    let suffix = unique_suffix();
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-codex-live-config-app-{}-{suffix}",
+        std::process::id(),
+    ));
+    let user_home = env::temp_dir().join(format!(
+        "skills-copilot-codex-live-config-home-{}-{suffix}",
+        std::process::id(),
+    ));
+    let skill_path = user_home
+        .join(".agents/skills/using-superpowers")
+        .join("SKILL.md");
+    fs::create_dir_all(skill_path.parent().expect("skill parent")).expect("create skill dir");
+    fs::write(
+        &skill_path,
+        "---\nname: using-superpowers\ndescription: fixture\n---\nbody\n",
+    )
+    .expect("write skill");
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: user_home.clone(),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let instance = SkillInstance {
+        id: "codex-using-superpowers".to_string(),
+        agent: AgentId::Codex,
+        scope: Scope::AgentGlobal,
+        project_root: None,
+        path: skill_path.clone(),
+        display_path: skill_path.clone(),
+        definition_id: "using-superpowers-definition".to_string(),
+        name: "using-superpowers".to_string(),
+        display_name: "using-superpowers".to_string(),
+        description: "fixture".to_string(),
+        version: None,
+        state: SkillState::Loaded,
+        enabled: true,
+        frontmatter_raw: "name: using-superpowers\ndescription: fixture\n".to_string(),
+        body: "body".to_string(),
+        scripts: Vec::new(),
+        permissions: PermissionRequest::default(),
+        fingerprint: "using-superpowers-fingerprint".to_string(),
+        mtime: 1,
+        first_seen: 1,
+        last_seen: 1,
+    };
+    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
+    catalog.init().expect("init catalog");
+    catalog
+        .upsert_skill_instance(&instance)
+        .expect("seed loaded skill");
+
+    let config_path = user_home.join(".codex/config.toml");
+    fs::create_dir_all(config_path.parent().expect("config parent")).expect("create config dir");
+    fs::write(
+        &config_path,
+        format!(
+            "[[skills.config]]\npath = '{}'\nenabled = false\n",
+            skill_path.to_string_lossy()
+        ),
+    )
+    .expect("write disabled config");
+
+    let snapshot = host.app_state_snapshot().expect("load projected snapshot");
+    let projected = snapshot
+        .skills
+        .iter()
+        .find(|skill| skill.id == instance.id)
+        .expect("projected skill");
+    assert_eq!(projected.state, "disabled");
+    assert!(!projected.enabled);
+    assert_eq!(snapshot.health.disabled_count, 1);
+    assert_eq!(snapshot.health.enabled_count, 0);
+
+    let persisted = catalog
+        .list_skill_records()
+        .expect("list persisted records")
+        .into_iter()
+        .find(|skill| skill.id == instance.id)
+        .expect("persisted skill");
+    assert_eq!(persisted.state, "loaded");
+    assert!(
+        persisted.enabled,
+        "read projection must not mutate the catalog"
+    );
+
+    let detail_response = host.handle(ServiceRequest {
+        id: Some("codex-live-detail".to_string()),
+        method: "catalog.getSkill".to_string(),
+        params: json!({ "instance_id": instance.id }),
+    });
+    assert!(detail_response.ok);
+    assert_eq!(
+        detail_response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("state"))
+            .and_then(Value::as_str),
+        Some("disabled")
+    );
+    assert_eq!(
+        detail_response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("enabled"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+
+    let mut stale_disabled = instance.clone();
+    stale_disabled.state = SkillState::Disabled;
+    stale_disabled.enabled = false;
+    catalog
+        .upsert_skill_instance(&stale_disabled)
+        .expect("seed stale disabled state");
+    fs::write(&config_path, "# external enable removed the override\n")
+        .expect("clear disabled config");
+
+    let restored = host.app_state_snapshot().expect("load restored snapshot");
+    let restored_skill = restored
+        .skills
+        .iter()
+        .find(|skill| skill.id == instance.id)
+        .expect("restored skill");
+    assert_eq!(restored_skill.state, "loaded");
+    assert!(restored_skill.enabled);
+    assert_eq!(restored.health.disabled_count, 0);
+    assert_eq!(restored.health.enabled_count, 1);
 
     let _ = fs::remove_dir_all(app_data_dir);
     let _ = fs::remove_dir_all(user_home);
