@@ -83,6 +83,13 @@ Before packaging is enabled:
   config files are excluded.
 - Confirm update-feed behavior is either implemented and validated or absent.
 
+For a manually scoped architecture-specific ZIP release, build the candidate
+with the release configuration and a non-user-specific SwiftPM scratch path as
+documented in `docs/runbooks/macos-app-runbook.md`. Confirm the generated app
+contains its agent icon resources under `Contents/Resources`, then verify bundle
+versions, binary architecture, ad-hoc signature integrity, archive contents,
+and checksums before publishing.
+
 ## Privacy Requirements
 
 Distribution work must preserve the repository privacy stance:

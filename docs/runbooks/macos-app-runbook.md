@@ -22,6 +22,23 @@ pnpm check:macos
 
 `pnpm smoke:macos-app` validates the existing bundle; it does not rebuild it.
 
+Release-candidate builds use optimized Rust and Swift products. The generated
+app build script owns copying packaged resources into `Contents/Resources`, and
+runtime icon loading uses `Bundle.main` so it never depends on the maintainer's
+build tree or a SwiftPM resource accessor. Release builds also remap Rust source
+and Cargo registry paths so maintainer-specific absolute paths are not embedded
+in the service binary, and strip executable debug symbols before signing:
+
+```sh
+SWIFTPM_SCRATCH_PATH=/tmp/agent-copilot-release-arm64 \
+  ./script/build_and_run.sh --build-only --configuration release --arch arm64
+SWIFTPM_SCRATCH_PATH=/tmp/agent-copilot-release-x86_64 \
+  ./script/build_and_run.sh --build-only --configuration release --arch x86_64
+```
+
+Use a non-user-specific scratch path for public artifacts, then scan the app
+executables and archive listing for local paths before publishing.
+
 ## Scenarios
 
 | Scenario | Command | Data environment | Use |

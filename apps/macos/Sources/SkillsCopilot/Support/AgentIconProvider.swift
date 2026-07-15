@@ -57,7 +57,14 @@ enum AgentIconProvider {
     private static func load(candidate: AgentIconCandidate) -> NSImage? {
         switch candidate.kind {
         case .bundledResource:
-            guard let url = Bundle.module.url(forResource: candidate.path, withExtension: nil) else {
+            #if AGENT_COPILOT_APP_BUNDLE
+            let parent = Bundle.main
+            #elseif SWIFT_PACKAGE
+            let parent = Bundle.module
+            #else
+            let parent = Bundle.main
+            #endif
+            guard let url = parent.url(forResource: candidate.path, withExtension: nil) else {
                 return nil
             }
             return NSImage(contentsOf: url)

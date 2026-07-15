@@ -1286,7 +1286,9 @@ enum UIStrings {
             return cachedLocalizedStrings.strings
         }
 
-        #if SWIFT_PACKAGE
+        #if AGENT_COPILOT_APP_BUNDLE
+        let strings = strings(for: activeLanguage, in: .main) ?? [:]
+        #elseif SWIFT_PACKAGE
         let strings = strings(for: activeLanguage, in: .module) ?? strings(for: activeLanguage, in: .main) ?? [:]
         #else
         let strings = strings(for: activeLanguage, in: .main) ?? [:]
@@ -1309,7 +1311,9 @@ enum UIStrings {
     #if DEBUG
     static func localizationResourceDiagnostics(for language: AppLanguage) -> (paths: [String], count: Int) {
         let resourceNames = [language.rawValue, language.rawValue.lowercased()]
-        #if SWIFT_PACKAGE
+        #if AGENT_COPILOT_APP_BUNDLE
+        let parents: [Bundle] = [.main]
+        #elseif SWIFT_PACKAGE
         let parents: [Bundle] = [.module, .main]
         #else
         let parents: [Bundle] = [.main]
@@ -1317,7 +1321,9 @@ enum UIStrings {
         let paths = parents.flatMap { parent in
             resourceNames.compactMap { parent.path(forResource: "Localizable", ofType: "strings", inDirectory: "\($0).lproj") }
         }
-        #if SWIFT_PACKAGE
+        #if AGENT_COPILOT_APP_BUNDLE
+        let count = strings(for: language, in: .main)?.count ?? 0
+        #elseif SWIFT_PACKAGE
         let count = strings(for: language, in: .module)?.count ?? strings(for: language, in: .main)?.count ?? 0
         #else
         let count = strings(for: language, in: .main)?.count ?? 0

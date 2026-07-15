@@ -3,6 +3,7 @@ set -euo pipefail
 
 MODE="run"
 TARGET_ARCH="${AGENT_COPILOT_ARCH:-}"
+BUILD_CONFIGURATION="${AGENT_COPILOT_BUILD_CONFIGURATION:-debug}"
 APP_NAME="AgentCopilot"
 BUNDLE_ID="dev.agent-copilot.native"
 LEGACY_APP_NAME="SkillsCopilot"
@@ -40,12 +41,13 @@ fi
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only] [--arch arm64|x86_64]
+usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only] [--arch arm64|x86_64] [--configuration debug|release]
 
 Builds dist/$APP_NAME.app before running the selected mode.
 Use "pnpm build:macos" for a build that neither launches nor stops the app.
 Use "pnpm verify:macos-launch" only for interactive launch/window proof.
 Set AGENT_COPILOT_ARCH or pass --arch to cross-build architecture-specific bundles.
+Set AGENT_COPILOT_BUILD_CONFIGURATION or pass --configuration for debug or release builds.
 USAGE
 }
 
@@ -62,6 +64,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     --arch=*)
       TARGET_ARCH="${1#--arch=}"
+      shift
+      ;;
+    --configuration)
+      if [[ $# -lt 2 ]]; then
+        echo "--configuration requires debug or release" >&2
+        usage
+        exit 2
+      fi
+      BUILD_CONFIGURATION="$2"
+      shift 2
+      ;;
+    --configuration=*)
+      BUILD_CONFIGURATION="${1#--configuration=}"
       shift
       ;;
     run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify|--build-only|build-only)
@@ -102,13 +117,25 @@ case "$TARGET_ARCH" in
     ;;
 esac
 
+case "$BUILD_CONFIGURATION" in
+  debug|release)
+    ;;
+  *)
+    echo "unsupported build configuration: $BUILD_CONFIGURATION" >&2
+    usage
+    exit 2
+    ;;
+esac
+
 SWIFT_BUILD_ARGS=(--package-path "$MACOS_DIR")
+SWIFT_BUILD_ARGS+=(-Xswiftc -DAGENT_COPILOT_APP_BUNDLE)
 if [[ -n "${SWIFTPM_SCRATCH_PATH:-}" ]]; then
   SWIFT_BUILD_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
 fi
 if [[ -n "$SWIFT_TRIPLE" ]]; then
   SWIFT_BUILD_ARGS+=(--triple "$SWIFT_TRIPLE")
 fi
+SWIFT_BUILD_ARGS+=(-c "$BUILD_CONFIGURATION")
 
 CARGO_BUILD_ARGS=(-p skills-copilot-service)
 if [[ -n "$RUST_TARGET" ]]; then
@@ -117,6 +144,15 @@ if [[ -n "$RUST_TARGET" ]]; then
     exit 1
   fi
   CARGO_BUILD_ARGS+=(--target "$RUST_TARGET")
+fi
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+  CARGO_BUILD_ARGS+=(--release)
+  RELEASE_RUSTFLAGS="${RUSTFLAGS:-}"
+  RELEASE_RUSTFLAGS="${RELEASE_RUSTFLAGS:+$RELEASE_RUSTFLAGS }--remap-path-prefix=$ROOT_DIR=/agent-copilot-source"
+  if [[ -n "${HOME:-}" ]]; then
+    RELEASE_RUSTFLAGS="$RELEASE_RUSTFLAGS --remap-path-prefix=$HOME=/agent-copilot-home"
+  fi
+  CARGO_ENV+=(RUSTFLAGS="$RELEASE_RUSTFLAGS")
 fi
 
 canonical_app_bundle() {
@@ -372,11 +408,10 @@ swift build "${SWIFT_BUILD_ARGS[@]}"
 
 SWIFT_BIN_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 if [[ -n "$RUST_TARGET" ]]; then
-  RUST_SERVICE="$CARGO_TARGET_ROOT/$RUST_TARGET/debug/skills-copilot-service"
+  RUST_SERVICE="$CARGO_TARGET_ROOT/$RUST_TARGET/$BUILD_CONFIGURATION/skills-copilot-service"
 else
-  RUST_SERVICE="$CARGO_TARGET_ROOT/debug/skills-copilot-service"
+  RUST_SERVICE="$CARGO_TARGET_ROOT/$BUILD_CONFIGURATION/skills-copilot-service"
 fi
-
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$SWIFT_BIN_DIR/$SWIFT_PRODUCT_NAME" "$APP_BINARY"
@@ -390,6 +425,13 @@ if [[ ! -f "$ICON_SOURCE" ]]; then
 fi
 cp "$ICON_SOURCE" "$ICON_TARGET"
 chmod +x "$APP_BINARY" "$SERVICE_BINARY"
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+  if ! command -v strip >/dev/null 2>&1; then
+    echo "strip is required for release builds" >&2
+    exit 1
+  fi
+  strip -S -x "$APP_BINARY" "$SERVICE_BINARY"
+fi
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
