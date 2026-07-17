@@ -347,7 +347,7 @@ fn message_query_digest(
 fn message_source_revision(
     file: &mut fs::File,
     path: &Path,
-    metadata: &fs::Metadata,
+    _metadata: &fs::Metadata,
     snapshot_bytes: u64,
     session_id: &str,
 ) -> Result<String, ServiceError> {
@@ -379,8 +379,8 @@ fn message_source_revision(
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        hasher.update(metadata.dev().to_le_bytes());
-        hasher.update(metadata.ino().to_le_bytes());
+        hasher.update(_metadata.dev().to_le_bytes());
+        hasher.update(_metadata.ino().to_le_bytes());
     }
     Ok(format!("sha256:{}", hex_prefix(&hasher.finalize(), 64)))
 }
