@@ -14,6 +14,30 @@ use crate::environment::{absolute_env_path, env_flag, expand_local_path};
 #[derive(Debug, Default)]
 pub struct OpencodeAdapter;
 
+#[derive(Debug, Default)]
+struct OpencodeEnvironment {
+    config_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+    config_content: Option<String>,
+    disable_external_skills: bool,
+    disable_claude_code_skills: bool,
+}
+
+impl OpencodeEnvironment {
+    fn current() -> Self {
+        Self {
+            config_dir: absolute_env_path("OPENCODE_CONFIG_DIR")
+                .or_else(|| absolute_env_path("XDG_CONFIG_HOME").map(|path| path.join("opencode"))),
+            config_path: absolute_env_path("OPENCODE_CONFIG"),
+            config_content: std::env::var("OPENCODE_CONFIG_CONTENT")
+                .ok()
+                .filter(|content| !content.trim().is_empty()),
+            disable_external_skills: env_flag("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
+            disable_claude_code_skills: env_flag("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"),
+        }
+    }
+}
+
 impl AgentAdapter for OpencodeAdapter {
     fn id(&self) -> AgentId {
         AgentId::Opencode
@@ -24,39 +48,7 @@ impl AgentAdapter for OpencodeAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
-        let config_dir = opencode_config_dir(ctx);
-        let mut roots = vec![AdapterRoot {
-            scope: Scope::AgentGlobal,
-            path: config_dir.join("skills"),
-            source: RootSource::UserHome,
-        }];
-
-        if !env_flag("OPENCODE_DISABLE_EXTERNAL_SKILLS") {
-            if !env_flag("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS") {
-                roots.push(AdapterRoot {
-                    scope: Scope::AgentGlobal,
-                    path: ctx.user_home.join(".claude/skills"),
-                    source: RootSource::Compatibility,
-                });
-            }
-            roots.push(AdapterRoot {
-                scope: Scope::AgentGlobal,
-                path: ctx.user_home.join(".agents/skills"),
-                source: RootSource::Compatibility,
-            });
-        }
-
-        if let Some(project_root) = &ctx.project_root {
-            roots.extend(opencode_project_skill_roots(
-                project_root,
-                ctx.project_cwd.as_deref(),
-                !env_flag("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
-                !env_flag("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"),
-            ));
-        }
-
-        roots.extend(opencode_configured_skill_roots(ctx));
-        dedup_roots(roots)
+        opencode_roots(ctx, &OpencodeEnvironment::current())
     }
 
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
@@ -123,11 +115,47 @@ impl AgentAdapter for OpencodeAdapter {
     }
 
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
-        opencode_config_sources(ctx)
+        opencode_config_sources(ctx, &OpencodeEnvironment::current())
             .into_iter()
             .filter_map(|source| source.path)
             .collect()
     }
+}
+
+fn opencode_roots(ctx: &AdapterContext, environment: &OpencodeEnvironment) -> Vec<AdapterRoot> {
+    let config_dir = opencode_config_dir(ctx, environment);
+    let mut roots = vec![AdapterRoot {
+        scope: Scope::AgentGlobal,
+        path: config_dir.join("skills"),
+        source: RootSource::UserHome,
+    }];
+
+    if !environment.disable_external_skills {
+        if !environment.disable_claude_code_skills {
+            roots.push(AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: ctx.user_home.join(".claude/skills"),
+                source: RootSource::Compatibility,
+            });
+        }
+        roots.push(AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: ctx.user_home.join(".agents/skills"),
+            source: RootSource::Compatibility,
+        });
+    }
+
+    if let Some(project_root) = &ctx.project_root {
+        roots.extend(opencode_project_skill_roots(
+            project_root,
+            ctx.project_cwd.as_deref(),
+            !environment.disable_external_skills,
+            !environment.disable_claude_code_skills,
+        ));
+    }
+
+    roots.extend(opencode_configured_skill_roots(ctx, environment));
+    dedup_roots(roots)
 }
 
 pub fn opencode_data_dir(ctx: &AdapterContext) -> PathBuf {
@@ -136,19 +164,23 @@ pub fn opencode_data_dir(ctx: &AdapterContext) -> PathBuf {
         .unwrap_or_else(|| ctx.user_home.join(".local/share/opencode"))
 }
 
-fn opencode_config_dir(ctx: &AdapterContext) -> PathBuf {
-    absolute_env_path("OPENCODE_CONFIG_DIR")
-        .or_else(|| absolute_env_path("XDG_CONFIG_HOME").map(|path| path.join("opencode")))
+fn opencode_config_dir(ctx: &AdapterContext, environment: &OpencodeEnvironment) -> PathBuf {
+    environment
+        .config_dir
+        .clone()
         .unwrap_or_else(|| ctx.user_home.join(".config/opencode"))
 }
 
 pub fn opencode_user_config_path(ctx: &AdapterContext) -> PathBuf {
-    absolute_env_path("OPENCODE_CONFIG")
-        .unwrap_or_else(|| opencode_config_dir(ctx).join("opencode.json"))
+    let environment = OpencodeEnvironment::current();
+    environment
+        .config_path
+        .clone()
+        .unwrap_or_else(|| opencode_config_dir(ctx, &environment).join("opencode.json"))
 }
 
 pub fn opencode_user_skills_dir(ctx: &AdapterContext) -> PathBuf {
-    opencode_config_dir(ctx).join("skills")
+    opencode_config_dir(ctx, &OpencodeEnvironment::current()).join("skills")
 }
 
 impl AgentConfigAdapter for OpencodeAdapter {
@@ -245,8 +277,11 @@ struct OpencodeConfigSource {
     inline_content: Option<String>,
 }
 
-fn opencode_config_sources(ctx: &AdapterContext) -> Vec<OpencodeConfigSource> {
-    let config_dir = opencode_config_dir(ctx);
+fn opencode_config_sources(
+    ctx: &AdapterContext,
+    environment: &OpencodeEnvironment,
+) -> Vec<OpencodeConfigSource> {
+    let config_dir = opencode_config_dir(ctx, environment);
     let mut sources = vec![
         OpencodeConfigSource {
             path: Some(config_dir.join("opencode.json")),
@@ -259,21 +294,19 @@ fn opencode_config_sources(ctx: &AdapterContext) -> Vec<OpencodeConfigSource> {
             inline_content: None,
         },
     ];
-    if let Some(path) = absolute_env_path("OPENCODE_CONFIG") {
+    if let Some(path) = environment.config_path.clone() {
         sources.push(OpencodeConfigSource {
             path: Some(path),
             scope: Scope::AgentGlobal,
             inline_content: None,
         });
     }
-    if let Ok(content) = std::env::var("OPENCODE_CONFIG_CONTENT") {
-        if !content.trim().is_empty() {
-            sources.push(OpencodeConfigSource {
-                path: None,
-                scope: Scope::AgentGlobal,
-                inline_content: Some(content),
-            });
-        }
+    if let Some(content) = environment.config_content.clone() {
+        sources.push(OpencodeConfigSource {
+            path: None,
+            scope: Scope::AgentGlobal,
+            inline_content: Some(content),
+        });
     }
     if let Some(project_root) = &ctx.project_root {
         for directory in opencode_project_directories(project_root, ctx.project_cwd.as_deref()) {
@@ -309,9 +342,12 @@ fn opencode_project_directories<'a>(
     })
 }
 
-fn opencode_configured_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
+fn opencode_configured_skill_roots(
+    ctx: &AdapterContext,
+    environment: &OpencodeEnvironment,
+) -> Vec<AdapterRoot> {
     let relative_base = opencode_relative_path_base(ctx);
-    opencode_config_sources(ctx)
+    opencode_config_sources(ctx, environment)
         .into_iter()
         .flat_map(|source| {
             read_opencode_config_skill_paths(
@@ -732,7 +768,6 @@ mod tests {
 
     #[test]
     fn exposes_documented_native_and_compatibility_roots() {
-        let adapter = OpencodeAdapter;
         let ctx = AdapterContext {
             user_home: PathBuf::from("/tmp/home"),
             project_root: Some(PathBuf::from("/tmp/project")),
@@ -744,7 +779,7 @@ mod tests {
             }],
         };
 
-        let roots = adapter.roots(&ctx);
+        let roots = opencode_roots(&ctx, &OpencodeEnvironment::default());
 
         assert_eq!(roots.len(), 12);
         assert_eq!(
@@ -815,7 +850,6 @@ mod tests {
         std::fs::create_dir_all(project.join(".claude")).expect("create Claude project dir");
         std::os::unix::fs::symlink("../.agents/skills", project.join(".claude/skills"))
             .expect("link Claude project skills");
-        let adapter = OpencodeAdapter;
         let ctx = AdapterContext {
             user_home: temp_root.join("home"),
             project_root: Some(project.clone()),
@@ -823,7 +857,7 @@ mod tests {
             extra_roots: vec![],
         };
 
-        let roots = adapter.roots(&ctx);
+        let roots = opencode_roots(&ctx, &OpencodeEnvironment::default());
 
         assert!(roots.iter().any(|root| {
             root.source == RootSource::Compatibility && root.path == project.join(".claude/skills")
@@ -874,7 +908,6 @@ mod tests {
         });
         std::fs::write(project.join("opencode.json"), project_config.to_string())
             .expect("write project opencode config");
-        let adapter = OpencodeAdapter;
         let ctx = AdapterContext {
             user_home: home.clone(),
             project_root: Some(project.clone()),
@@ -886,7 +919,7 @@ mod tests {
             }],
         };
 
-        let roots = adapter.roots(&ctx);
+        let roots = opencode_roots(&ctx, &OpencodeEnvironment::default());
 
         assert_eq!(
             roots
