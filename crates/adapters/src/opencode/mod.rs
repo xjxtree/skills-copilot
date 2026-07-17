@@ -9,7 +9,9 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
 
-use crate::environment::{absolute_env_path, env_flag, expand_local_path};
+use crate::environment::{
+    absolute_env_path, env_flag, expand_local_path, normalize_path_lexically,
+};
 
 #[derive(Debug, Default)]
 pub struct OpencodeAdapter;
@@ -17,6 +19,7 @@ pub struct OpencodeAdapter;
 #[derive(Debug, Default)]
 struct OpencodeEnvironment {
     config_dir: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
     config_path: Option<PathBuf>,
     config_content: Option<String>,
     disable_external_skills: bool,
@@ -26,8 +29,8 @@ struct OpencodeEnvironment {
 impl OpencodeEnvironment {
     fn current() -> Self {
         Self {
-            config_dir: absolute_env_path("OPENCODE_CONFIG_DIR")
-                .or_else(|| absolute_env_path("XDG_CONFIG_HOME").map(|path| path.join("opencode"))),
+            config_dir: absolute_env_path("OPENCODE_CONFIG_DIR"),
+            xdg_config_home: absolute_env_path("XDG_CONFIG_HOME"),
             config_path: absolute_env_path("OPENCODE_CONFIG"),
             config_content: std::env::var("OPENCODE_CONFIG_CONTENT")
                 .ok()
@@ -159,7 +162,7 @@ fn opencode_roots(ctx: &AdapterContext, environment: &OpencodeEnvironment) -> Ve
 }
 
 pub fn opencode_data_dir(ctx: &AdapterContext) -> PathBuf {
-    absolute_env_path("XDG_DATA_HOME")
+    contextual_xdg_path(ctx, "XDG_DATA_HOME")
         .map(|path| path.join("opencode"))
         .unwrap_or_else(|| ctx.user_home.join(".local/share/opencode"))
 }
@@ -168,7 +171,27 @@ fn opencode_config_dir(ctx: &AdapterContext, environment: &OpencodeEnvironment) 
     environment
         .config_dir
         .clone()
+        .or_else(|| {
+            context_uses_process_home(ctx)
+                .then(|| environment.xdg_config_home.clone())
+                .flatten()
+                .map(|path| path.join("opencode"))
+        })
         .unwrap_or_else(|| ctx.user_home.join(".config/opencode"))
+}
+
+fn contextual_xdg_path(ctx: &AdapterContext, name: &str) -> Option<PathBuf> {
+    context_uses_process_home(ctx)
+        .then(|| absolute_env_path(name))
+        .flatten()
+}
+
+fn context_uses_process_home(ctx: &AdapterContext) -> bool {
+    absolute_env_path("HOME")
+        .or_else(|| absolute_env_path("USERPROFILE"))
+        .is_some_and(|process_home| {
+            normalize_path_lexically(&process_home) == normalize_path_lexically(&ctx.user_home)
+        })
 }
 
 pub fn opencode_user_config_path(ctx: &AdapterContext) -> PathBuf {

@@ -405,13 +405,17 @@ fn patch_pi_config(
     let prefix = if enabled { '+' } else { '-' };
     settings.push(serde_json::Value::String(format!(
         "{prefix}{}",
-        normalized_skill.display()
+        portable_path_text(&normalized_skill)
     )));
 
     let mut text = serde_json::to_string_pretty(&value)
         .map_err(|err| AdapterError::new(format!("failed to serialize Pi settings: {err}")))?;
     text.push('\n');
     Ok(text)
+}
+
+fn portable_path_text(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn pi_project_explicitly_untrusted(value: &serde_json::Value) -> bool {
@@ -624,6 +628,20 @@ mod tests {
         assert_eq!(skill.state, SkillState::Broken);
         assert!(!skill.enabled);
         assert!(skill.description.contains("description"));
+    }
+
+    #[test]
+    fn pi_settings_paths_use_portable_separators() {
+        let text = patch_pi_config(
+            "",
+            Path::new(r"C:\fixture\pi-toggle\SKILL.md"),
+            false,
+            Scope::AgentGlobal,
+        )
+        .expect("Pi config patch succeeds");
+
+        assert!(text.contains("C:/fixture/pi-toggle/SKILL.md"));
+        assert!(!text.contains(r"C:\\fixture"));
     }
 
     fn fixture_path(relative: &str) -> PathBuf {
