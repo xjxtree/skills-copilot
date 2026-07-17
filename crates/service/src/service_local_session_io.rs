@@ -963,6 +963,33 @@ impl SessionSidecarBudget {
     }
 }
 
+#[cfg(unix)]
+fn open_guarded_relative_directory(
+    root: &OwnedFd,
+    relative: &Path,
+    flags: rustix::fs::OFlags,
+) -> io::Result<OwnedFd> {
+    use rustix::fs::{openat, Mode};
+
+    let mut directory = openat(root, ".", flags, Mode::empty()).map_err(io::Error::from)?;
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => {
+                directory =
+                    openat(&directory, name, flags, Mode::empty()).map_err(io::Error::from)?;
+            }
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "guarded session directory contains an unsupported component",
+                ));
+            }
+        }
+    }
+    Ok(directory)
+}
+
 pub(crate) struct LocalSessionIoContext {
     pub(crate) limits: LocalSessionReadLimits,
     pub(crate) budget: LocalSessionReadBudget,
@@ -1115,23 +1142,35 @@ impl GuardedLocalSessionRoot {
     ) -> io::Result<GuardedLocalSessionMetadataInventory> {
         #[cfg(unix)]
         {
-            use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
+            use rustix::fs::{statat, AtFlags, Dir, FileType, OFlags};
 
             let mut collected = GuardedLocalSessionMetadataInventory {
                 inventory: LocalSessionInventory::default(),
                 directory_errors: Vec::new(),
             };
-            if !budget.claim_directory() {
-                collected.inventory.truncated = true;
-                return Ok(collected);
-            }
             let directory_flags =
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let root_directory = openat(&self.directory, ".", directory_flags, Mode::empty())
-                .map_err(io::Error::from)?;
-            let mut directories = vec![(PathBuf::new(), root_directory)];
+            let mut directories = vec![PathBuf::new()];
 
-            while let Some((relative_directory, directory)) = directories.pop() {
+            while let Some(relative_directory) = directories.pop() {
+                if !budget.claim_directory() {
+                    collected.inventory.truncated = true;
+                    return Ok(collected);
+                }
+                let directory = match open_guarded_relative_directory(
+                    &self.directory,
+                    &relative_directory,
+                    directory_flags,
+                ) {
+                    Ok(directory) => directory,
+                    Err(error) if relative_directory.as_os_str().is_empty() => return Err(error),
+                    Err(error) => {
+                        collected
+                            .directory_errors
+                            .push((self.path.join(&relative_directory), error));
+                        continue;
+                    }
+                };
                 let mut entries = match Dir::read_from(&directory) {
                     Ok(entries) => entries,
                     Err(error) => {
@@ -1141,6 +1180,7 @@ impl GuardedLocalSessionRoot {
                         continue;
                     }
                 };
+                let mut entry_names = Vec::new();
                 for entry in &mut entries {
                     let entry = match entry {
                         Ok(entry) => entry,
@@ -1156,28 +1196,23 @@ impl GuardedLocalSessionRoot {
                     if matches!(name_bytes, b"." | b"..") {
                         continue;
                     }
+                    entry_names.push(std::ffi::OsStr::from_bytes(name_bytes).to_owned());
+                }
+                entry_names.sort();
+                let mut child_directories = Vec::new();
+                for name in entry_names {
                     if !budget.claim_entry() {
                         collected.inventory.truncated = true;
                         return Ok(collected);
                     }
-                    let name = std::ffi::OsStr::from_bytes(name_bytes);
-                    let relative_path = relative_directory.join(name);
-                    let metadata = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+                    let relative_path = relative_directory.join(&name);
+                    let metadata = match statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW) {
                         Ok(metadata) => metadata,
                         Err(_) => continue,
                     };
                     match FileType::from_raw_mode(metadata.st_mode) {
                         FileType::Directory => {
-                            if !budget.claim_directory() {
-                                collected.inventory.truncated = true;
-                                return Ok(collected);
-                            }
-                            match openat(&directory, name, directory_flags, Mode::empty()) {
-                                Ok(child) => directories.push((relative_path, child)),
-                                Err(error) => collected
-                                    .directory_errors
-                                    .push((self.path.join(relative_path), io::Error::from(error))),
-                            }
+                            child_directories.push(relative_path);
                         }
                         FileType::RegularFile => {
                             let path = self.path.join(relative_path);
@@ -1198,6 +1233,7 @@ impl GuardedLocalSessionRoot {
                         _ => {}
                     }
                 }
+                directories.extend(child_directories.into_iter().rev());
             }
 
             Ok(collected)

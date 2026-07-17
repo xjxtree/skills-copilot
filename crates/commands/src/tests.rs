@@ -1690,10 +1690,18 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].reason, "pre-batch-toggle");
     let pi_snapshots = catalog
-        .list_config_snapshots("pi", &pi_settings_path.to_string_lossy())
+        .list_agent_config_snapshots("pi", Some(Scope::AgentGlobal.as_str()), None)
         .expect("list Pi snapshots");
     assert_eq!(pi_snapshots.len(), 1);
     assert_eq!(pi_snapshots[0].reason, "pre-batch-toggle");
+    assert_eq!(
+        PathBuf::from(&pi_snapshots[0].target)
+            .canonicalize()
+            .expect("canonical Pi snapshot target"),
+        pi_settings_path
+            .canonicalize()
+            .expect("canonical Pi settings path")
+    );
 
     for record in &applied.updated_records {
         let events = list_skill_events(&catalog, &record.id, Some(10)).expect("list events");
@@ -1746,10 +1754,18 @@ fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
     assert_eq!(rescanned.state, "disabled");
 
     let snapshots = catalog
-        .list_config_snapshots("pi", &settings_path.to_string_lossy())
+        .list_agent_config_snapshots("pi", Some(Scope::AgentGlobal.as_str()), None)
         .expect("list Pi snapshots");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].reason, "pre-toggle");
+    assert_eq!(
+        PathBuf::from(&snapshots[0].target)
+            .canonicalize()
+            .expect("canonical Pi snapshot target"),
+        settings_path
+            .canonicalize()
+            .expect("canonical Pi settings path")
+    );
     let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
         .expect("Pi rollback preview");
     rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
