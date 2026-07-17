@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -109,6 +109,7 @@ struct ResolvedScanRoot {
     declared: AdapterRoot,
     canonical: PathBuf,
     declared_is_symlink: bool,
+    is_file: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -203,7 +204,7 @@ where
     let mut report = ScanReport::default();
     let mut budget = ScanBudget::default();
     let roots = adapter.roots(ctx);
-    let overrides = SkillConfigOverrides::preload(adapter.id(), ctx, &roots);
+    let overrides = SkillConfigOverrides::preload(adapter, ctx);
     let mut resolved_roots = Vec::new();
 
     for declared in roots {
@@ -225,8 +226,8 @@ where
                 continue;
             }
         };
-        let canonical = match resolve_directory_root(&declared.path) {
-            Ok(canonical) => canonical,
+        let (canonical, is_file) = match resolve_scan_root(&declared.path) {
+            Ok(resolved) => resolved,
             Err(detail) => {
                 report.skipped_roots.push(declared.path.clone());
                 report.issues.push(ScanIssue {
@@ -237,6 +238,15 @@ where
                 continue;
             }
         };
+        if is_file && !adapter.is_skill_file(&canonical) {
+            report.skipped_roots.push(declared.path.clone());
+            report.issues.push(ScanIssue {
+                path: declared.path,
+                kind: ScanIssueKind::RootUnavailable,
+                detail: "root file is not a supported skill file for this adapter".to_string(),
+            });
+            continue;
+        }
         report.root_aliases.push(ScanRootAlias {
             declared: declared.path.clone(),
             canonical: canonical.clone(),
@@ -261,6 +271,7 @@ where
             declared,
             canonical,
             declared_is_symlink,
+            is_file,
         });
     }
 
@@ -359,13 +370,21 @@ where
     Ok(report)
 }
 
-fn resolve_directory_root(path: &Path) -> Result<PathBuf, String> {
+fn resolve_scan_root(path: &Path) -> Result<(PathBuf, bool), String> {
     let canonical = path
         .canonicalize()
         .map_err(|error| format!("failed to canonicalize root: {error}"))?;
     let metadata = fs::metadata(&canonical)
         .map_err(|error| format!("failed to inspect canonical root: {error}"))?;
-    if !metadata.is_dir() {
+    if !metadata.is_dir() && !metadata.is_file() {
+        return Err("root is neither a directory nor a regular file".to_string());
+    }
+    Ok((canonical, metadata.is_file()))
+}
+
+fn resolve_directory_root(path: &Path) -> Result<PathBuf, String> {
+    let (canonical, is_file) = resolve_scan_root(path)?;
+    if is_file {
         return Err("root is not a directory".to_string());
     }
     Ok(canonical)
@@ -479,6 +498,13 @@ fn is_allowed_canonical_root(
             .as_ref()
             .and_then(|project_root| project_root.canonicalize().ok())
             .is_some_and(|base| canonical_root.starts_with(base)),
+        RootSource::Compatibility
+            if agent == AgentId::Openclaw && root.scope == Scope::AgentProject =>
+        {
+            openclaw_workspace_base_for_root_path(&root.path)
+                .and_then(|workspace_root| workspace_root.canonicalize().ok())
+                .is_some_and(|base| canonical_root.starts_with(base))
+        }
         RootSource::Compatibility => match root.scope {
             Scope::AgentGlobal => ctx
                 .user_home
@@ -512,6 +538,35 @@ fn visit_root(
     inspect_skill_len: &mut dyn FnMut(&Path) -> std::io::Result<u64>,
     report: &mut ScanReport,
 ) -> RootWalkStatus {
+    if root.is_file {
+        let relative = root
+            .canonical
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.canonical.clone());
+        if !adapter.is_skill_file(&root.canonical)
+            || !adapter.accepts_skill_path(&root.declared, &relative)
+        {
+            return RootWalkStatus::Complete;
+        }
+        budget.stats.entries_seen = budget.stats.entries_seen.saturating_add(1);
+        let metadata_len = inspect_skill_len(&root.canonical);
+        return match visit_skill_file(
+            adapter,
+            ctx,
+            root,
+            overrides,
+            root.canonical.clone(),
+            root.declared.path.clone(),
+            metadata_len,
+            limits,
+            budget,
+            report,
+        ) {
+            SkillVisitStatus::Complete => RootWalkStatus::Complete,
+            SkillVisitStatus::BudgetExceeded => RootWalkStatus::Partial,
+        };
+    }
     // Each stack entry is (resolved_dir, display_root, depth).
     // `display_root` is the user-visible path of the directory being scanned.
     // For the initial scan root it is the declared path; for symlinked
@@ -647,6 +702,12 @@ fn visit_root(
                     }
                 };
                 if metadata.is_dir() {
+                    let relative = display_path
+                        .strip_prefix(&root.declared.path)
+                        .unwrap_or(display_path.as_path());
+                    if !adapter.should_descend(&root.declared, relative) {
+                        continue;
+                    }
                     if depth >= limits.max_depth {
                         partial = true;
                         record_budget_exceeded(
@@ -658,12 +719,11 @@ fn visit_root(
                     } else {
                         stack.push((resolved, display_path, depth + 1));
                     }
-                } else if resolved
-                    .file_name()
-                    .map(|n| n == "SKILL.md")
-                    .unwrap_or(false)
-                {
-                    if !adapter_accepts_skill_path(adapter.id(), &root.canonical, &resolved) {
+                } else if adapter.is_skill_file(&resolved) {
+                    let relative = display_path
+                        .strip_prefix(&root.declared.path)
+                        .unwrap_or(display_path.as_path());
+                    if !adapter.accepts_skill_path(&root.declared, relative) {
                         continue;
                     }
                     let metadata_len = inspect_skill_len(&resolved);
@@ -687,6 +747,12 @@ fn visit_root(
                 continue;
             }
             if file_type.is_dir() {
+                let relative = display_path
+                    .strip_prefix(&root.declared.path)
+                    .unwrap_or(display_path.as_path());
+                if !adapter.should_descend(&root.declared, relative) {
+                    continue;
+                }
                 if depth >= limits.max_depth {
                     partial = true;
                     record_budget_exceeded(
@@ -700,7 +766,7 @@ fn visit_root(
                 }
                 continue;
             }
-            if entry.file_name() == "SKILL.md" {
+            if adapter.is_skill_file(&path) {
                 let canonical_path = match path.canonicalize() {
                     Ok(canonical_path) => canonical_path,
                     Err(error) => {
@@ -724,7 +790,10 @@ fn visit_root(
                     });
                     continue;
                 }
-                if !adapter_accepts_skill_path(adapter.id(), &root.canonical, &canonical_path) {
+                let relative = display_path
+                    .strip_prefix(&root.declared.path)
+                    .unwrap_or(display_path.as_path());
+                if !adapter.accepts_skill_path(&root.declared, relative) {
                     continue;
                 }
                 let metadata_len = inspect_skill_len(&canonical_path);
@@ -991,22 +1060,6 @@ fn read_skill_content_bounded(
     }
 }
 
-fn adapter_accepts_skill_path(
-    agent: AgentId,
-    canonical_root: &Path,
-    canonical_path: &Path,
-) -> bool {
-    if agent != AgentId::Pi {
-        return true;
-    }
-    let Ok(relative) = canonical_path.strip_prefix(canonical_root) else {
-        return false;
-    };
-    let components = relative.components().collect::<Vec<_>>();
-    components.len() == 2
-        && canonical_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
-}
-
 fn dedup_instances(instances: Vec<SkillInstance>) -> Vec<SkillInstance> {
     let mut seen_paths = HashSet::new();
     let mut deduped = Vec::new();
@@ -1085,55 +1138,59 @@ fn normalize_instance(
 #[derive(Debug)]
 struct SkillConfigOverrides {
     agent: AgentId,
-    disabled_by_settings_path: HashMap<PathBuf, HashSet<String>>,
+    disabled: HashSet<String>,
+    pi_settings: Vec<(Scope, PathBuf, String)>,
 }
 
 impl SkillConfigOverrides {
-    fn preload(agent: AgentId, ctx: &AdapterContext, roots: &[AdapterRoot]) -> Self {
-        let mut disabled_by_settings_path = HashMap::new();
+    fn preload(adapter: &dyn AgentAdapter, ctx: &AdapterContext) -> Self {
+        let agent = adapter.id();
+        let mut disabled = HashSet::new();
+        let mut pi_settings = Vec::new();
+        let config_paths = adapter.config_paths(ctx);
         match agent {
             AgentId::ClaudeCode => {
-                for settings_path in roots
-                    .iter()
-                    .filter_map(|root| claude_settings_path_for(ctx, root))
-                    .collect::<HashSet<_>>()
-                {
-                    if let Some(disabled) = read_disabled_claude_skill_overrides(&settings_path) {
-                        disabled_by_settings_path.insert(settings_path, disabled);
+                for settings_path in config_paths {
+                    if let Some(names) = read_disabled_claude_skill_overrides(&settings_path) {
+                        disabled.extend(names);
                     }
                 }
             }
             AgentId::Opencode => {
-                for settings_path in roots
-                    .iter()
-                    .filter_map(|root| opencode_settings_path_for(ctx, root))
-                    .collect::<HashSet<_>>()
-                {
-                    if let Some(disabled) = read_disabled_opencode_skill_permissions(&settings_path)
-                    {
-                        disabled_by_settings_path.insert(settings_path, disabled);
+                for settings_path in config_paths {
+                    if let Some(names) = read_disabled_opencode_skill_permissions(&settings_path) {
+                        disabled.extend(names);
                     }
                 }
             }
             AgentId::Hermes => {
-                for settings_path in roots
-                    .iter()
-                    .filter_map(|root| hermes_settings_path_for(ctx, root))
-                    .collect::<HashSet<_>>()
-                {
-                    if let Some(disabled) = read_disabled_hermes_skills(&settings_path) {
-                        disabled_by_settings_path.insert(settings_path, disabled);
+                for settings_path in config_paths {
+                    if let Some(names) = read_disabled_hermes_skills(&settings_path) {
+                        disabled.extend(names);
                     }
                 }
             }
+            AgentId::Pi => {
+                for settings_path in config_paths {
+                    let Ok(content) = fs::read_to_string(&settings_path) else {
+                        continue;
+                    };
+                    let scope = if settings_path
+                        .components()
+                        .any(|component| component.as_os_str() == ".pi")
+                        && !settings_path.starts_with(ctx.user_home.join(".pi/agent"))
+                    {
+                        Scope::AgentProject
+                    } else {
+                        Scope::AgentGlobal
+                    };
+                    pi_settings.push((scope, settings_path, content));
+                }
+            }
             AgentId::Openclaw => {
-                for settings_path in roots
-                    .iter()
-                    .filter_map(|root| openclaw_settings_path_for(ctx, root))
-                    .collect::<HashSet<_>>()
-                {
-                    if let Some(disabled) = read_disabled_openclaw_skill_entries(&settings_path) {
-                        disabled_by_settings_path.insert(settings_path, disabled);
+                for settings_path in config_paths {
+                    if let Some(names) = read_disabled_openclaw_skill_entries(&settings_path) {
+                        disabled.extend(names);
                     }
                 }
             }
@@ -1142,7 +1199,8 @@ impl SkillConfigOverrides {
 
         Self {
             agent,
-            disabled_by_settings_path,
+            disabled,
+            pi_settings,
         }
     }
 
@@ -1152,63 +1210,75 @@ impl SkillConfigOverrides {
         root: &AdapterRoot,
         instance: &SkillInstance,
     ) -> bool {
-        let settings_path = match self.agent {
-            AgentId::Opencode => opencode_settings_path_for(ctx, root),
-            AgentId::ClaudeCode => claude_settings_path_for(ctx, root),
-            AgentId::Hermes => hermes_settings_path_for(ctx, root),
-            AgentId::Openclaw => openclaw_settings_path_for(ctx, root),
-            _ => None,
-        };
+        if self.agent == AgentId::Pi {
+            return self
+                .pi_settings
+                .iter()
+                .filter(|(scope, _, _)| *scope == root.scope)
+                .any(|(_, path, content)| {
+                    !pi_skill_enabled_by_settings(content, path, &instance.path, &ctx.user_home)
+                });
+        }
         let skill_key = match self.agent {
             AgentId::Openclaw => {
                 openclaw_config_key_from_frontmatter(&instance.frontmatter_raw, &instance.name)
             }
             _ => instance.name.clone(),
         };
-        settings_path
-            .and_then(|settings_path| self.disabled_by_settings_path.get(&settings_path))
-            .is_some_and(|disabled| disabled.contains(&skill_key))
+        self.disabled.contains(&skill_key)
     }
 }
 
-fn claude_settings_path_for(ctx: &AdapterContext, root: &AdapterRoot) -> Option<PathBuf> {
-    match root.scope {
-        Scope::AgentGlobal => Some(ctx.user_home.join(".claude/settings.json")),
-        Scope::AgentProject => ctx
-            .project_root
-            .as_ref()
-            .map(|p| p.join(".claude/settings.local.json")),
-        Scope::ToolGlobal => None,
-        // Scope is `#[non_exhaustive]`; future variants have no default path.
-        _ => None,
-    }
-}
-
-fn opencode_settings_path_for(ctx: &AdapterContext, root: &AdapterRoot) -> Option<PathBuf> {
-    match root.scope {
-        Scope::AgentGlobal => Some(ctx.user_home.join(".config/opencode/opencode.json")),
-        Scope::AgentProject => ctx.project_root.as_ref().map(|p| p.join("opencode.json")),
-        Scope::ToolGlobal => None,
-        _ => None,
-    }
-}
-
-fn hermes_settings_path_for(ctx: &AdapterContext, root: &AdapterRoot) -> Option<PathBuf> {
-    match root.scope {
-        Scope::AgentGlobal => Some(ctx.user_home.join(".hermes/config.yaml")),
-        Scope::AgentProject | Scope::ToolGlobal => None,
-        _ => None,
-    }
-}
-
-fn openclaw_settings_path_for(ctx: &AdapterContext, root: &AdapterRoot) -> Option<PathBuf> {
-    match root.scope {
-        Scope::AgentGlobal | Scope::AgentProject => {
-            Some(ctx.user_home.join(".openclaw/openclaw.json"))
-        }
-        Scope::ToolGlobal => None,
-        _ => None,
-    }
+fn pi_skill_enabled_by_settings(
+    content: &str,
+    settings_path: &Path,
+    skill_path: &Path,
+    user_home: &Path,
+) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
+        return true;
+    };
+    let patterns = value
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    let base = settings_path.parent().unwrap_or(user_home);
+    let matches = |raw: &str| {
+        let raw = raw.trim();
+        let target = if raw == "~" {
+            user_home.to_path_buf()
+        } else if let Some(relative) = raw.strip_prefix("~/") {
+            user_home.join(relative)
+        } else {
+            let raw_path = PathBuf::from(raw);
+            if raw_path.is_absolute() {
+                raw_path
+            } else {
+                base.join(raw_path)
+            }
+        };
+        let target = target.canonicalize().unwrap_or(target);
+        let skill = skill_path
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_path_lexically(skill_path));
+        target == skill || skill.parent().is_some_and(|parent| target == parent)
+    };
+    let excluded = patterns
+        .iter()
+        .filter_map(|raw| raw.strip_prefix('!'))
+        .any(matches);
+    let included = patterns
+        .iter()
+        .filter_map(|raw| raw.strip_prefix('+'))
+        .any(matches);
+    let force_excluded = patterns
+        .iter()
+        .filter_map(|raw| raw.strip_prefix('-'))
+        .any(matches);
+    (!excluded || included) && !force_excluded
 }
 
 fn read_disabled_claude_skill_overrides(settings_path: &Path) -> Option<HashSet<String>> {
@@ -1422,6 +1492,8 @@ fn hash_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use skills_copilot_adapters::{
         ClaudeCodeAdapter, CodexAdapter, HermesAdapter, OpenclawAdapter, OpencodeAdapter, PiAdapter,
     };
@@ -1875,6 +1947,35 @@ mod tests {
         assert!(report.issues.is_empty());
         assert!(report.partial_roots.is_empty());
         assert_eq!(report.scanned_roots, vec![canonical_root]);
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn generated_cache_and_vcs_directories_are_never_skill_sources() {
+        let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("generated-roots");
+        write_budget_skill(
+            &scan_root,
+            "active",
+            "---\nname: active\ndescription: active fixture\n---\nbody\n",
+        );
+        for generated in ["cache", ".cache", "dist", "build", "target", ".git"] {
+            write_budget_skill(
+                &scan_root.join(generated),
+                "stale",
+                "---\nname: stale\ndescription: generated fixture\n---\nbody\n",
+            );
+        }
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+        assert_eq!(
+            report
+                .instances
+                .iter()
+                .map(|instance| instance.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["active"]
+        );
 
         let _ = std::fs::remove_dir_all(temp_root);
     }
@@ -2940,7 +3041,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_scans_native_directory_skills_and_ignores_plain_markdown() {
+    fn pi_scans_recursive_directory_skills_and_native_root_markdown() {
         let temp_root =
             std::env::temp_dir().join(format!("skills-copilot-pi-scan-{}", std::process::id()));
         let home = temp_root.join("home");
@@ -2989,11 +3090,94 @@ mod tests {
             .map(|skill| skill.name.as_str())
             .collect();
 
-        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances.len(), 4);
         assert!(names.contains("global-pdf"));
-        assert!(!names.contains("root-note"));
-        assert!(!names.contains("implementation"));
-        assert!(!names.contains("root-noise"));
+        assert!(names.contains("root-note"));
+        assert!(names.contains("implementation"));
+        assert!(names.contains("root-noise"));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn pi_honors_exact_skill_path_overrides_without_scanning_override_tokens() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-pi-path-override-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let skill_path = home.join(".pi/agent/skills/review/SKILL.md");
+        let configured_path = temp_root.join("configured/extra.md");
+        std::fs::create_dir_all(skill_path.parent().expect("skill parent"))
+            .expect("create Pi skill");
+        std::fs::create_dir_all(configured_path.parent().expect("configured parent"))
+            .expect("create configured parent");
+        for (path, name) in [(&skill_path, "review"), (&configured_path, "extra")] {
+            std::fs::write(
+                path,
+                format!("---\nname: {name}\ndescription: Pi settings fixture\n---\nBody."),
+            )
+            .expect("write Pi skill");
+        }
+        let settings_path = home.join(".pi/agent/settings.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings parent");
+        std::fs::write(
+            &settings_path,
+            serde_json::json!({
+                "skills": [
+                    configured_path.to_string_lossy(),
+                    format!("-{}", skill_path.display())
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write Pi settings");
+        let settings = std::fs::read_to_string(&settings_path).expect("read Pi settings");
+        assert!(
+            !pi_skill_enabled_by_settings(&settings, &settings_path, &skill_path, &home),
+            "the official exact -path override should disable the target"
+        );
+
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        };
+        let overrides = SkillConfigOverrides::preload(&PiAdapter, &ctx);
+        assert_eq!(overrides.pi_settings.len(), 1);
+        assert_eq!(overrides.pi_settings[0].0, Scope::AgentGlobal);
+        let native_root = PiAdapter
+            .roots(&ctx)
+            .into_iter()
+            .find(|root| root.path.ends_with(".pi/agent/skills"))
+            .expect("native root");
+        assert_eq!(native_root.scope, Scope::AgentGlobal);
+        let parsed = PiAdapter
+            .parse(&skill_path.canonicalize().expect("canonical skill"))
+            .expect("parse skill");
+        assert!(!pi_skill_enabled_by_settings(
+            &overrides.pi_settings[0].2,
+            &overrides.pi_settings[0].1,
+            &parsed.path,
+            &ctx.user_home,
+        ));
+        assert!(overrides.is_disabled(&ctx, &native_root, &parsed));
+
+        let report = scan_agent(&PiAdapter, &ctx).expect("scan succeeds");
+        let review = report
+            .instances
+            .iter()
+            .find(|skill| skill.name == "review")
+            .expect("native skill remains visible as disabled");
+        assert_eq!(review.state, SkillState::Disabled);
+        assert!(!review.enabled);
+        assert!(report.instances.iter().any(|skill| skill.name == "extra"));
+        assert!(report
+            .skipped_roots
+            .iter()
+            .all(|root| !root.to_string_lossy().starts_with('-')));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

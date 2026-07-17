@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, fs, io, path::Path};
 
 use skills_copilot_adapters::{
+    claude_config_dir, hermes_home_dir, openclaw_config_path, opencode_user_config_path,
     ClaudeCodeAdapter, CodexAdapter, HermesAdapter, OpenclawAdapter, OpencodeAdapter, PiAdapter,
 };
 use skills_copilot_catalog::SkillInstanceMeta;
@@ -98,6 +99,12 @@ fn read_config_target(
     scope: Scope,
 ) -> Result<ConfigTarget, CommandError> {
     match (agent, scope) {
+        (AgentId::ClaudeCode, Scope::AgentGlobal) => Ok(ConfigTarget {
+            agent,
+            scope,
+            path: claude_config_dir(ctx).join("settings.json"),
+            format: ConfigFormat::Json,
+        }),
         (AgentId::Codex, Scope::AgentProject) => Ok(ConfigTarget {
             agent,
             scope,
@@ -107,6 +114,24 @@ fn read_config_target(
                 .map(|root| root.join(".codex/config.toml"))
                 .ok_or(CommandError::UnsupportedScope(scope))?,
             format: ConfigFormat::Toml,
+        }),
+        (AgentId::Opencode, Scope::AgentGlobal) => Ok(ConfigTarget {
+            agent,
+            scope,
+            path: opencode_user_config_path(ctx),
+            format: ConfigFormat::Json,
+        }),
+        (AgentId::Hermes, Scope::AgentGlobal) => Ok(ConfigTarget {
+            agent,
+            scope,
+            path: hermes_home_dir(ctx).join("config.yaml"),
+            format: ConfigFormat::Yaml,
+        }),
+        (AgentId::Openclaw, Scope::AgentGlobal) => Ok(ConfigTarget {
+            agent,
+            scope,
+            path: openclaw_config_path(ctx),
+            format: ConfigFormat::Json,
         }),
         _ => expected_config_target(ctx, agent, scope),
     }
@@ -257,9 +282,7 @@ pub(super) fn normalize_initial_config_text(config_target: &ConfigTarget, text: 
 
 fn pi_default_settings_text(_scope: Scope) -> String {
     let mut text = serde_json::json!({
-        "skills": {
-            "disabled": []
-        }
+        "skills": []
     })
     .to_string();
     text.push('\n');

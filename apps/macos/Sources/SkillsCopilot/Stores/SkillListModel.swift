@@ -132,6 +132,7 @@ enum SkillStateFilter: String, CaseIterable, Identifiable {
         .disabled,
         .withFindings,
         .withConflicts,
+        .missing,
     ]
 
     var title: String {
@@ -286,6 +287,14 @@ struct SkillAgentGroup: Identifiable, Hashable {
 }
 
 enum SkillListModel {
+    static func isDeleted(_ skill: SkillRecord) -> Bool {
+        DisplayText.statusKind(skill.state, enabled: skill.enabled) == .missing
+    }
+
+    static func currentSkills(_ skills: [SkillRecord]) -> [SkillRecord] {
+        skills.filter { !isDeleted($0) }
+    }
+
     static func filteredAndSorted(
         skills: [SkillRecord],
         findings: [RuleFindingRecord],
@@ -316,27 +325,29 @@ enum SkillListModel {
             guard scopeFilter.includes(skill) else {
                 return false
             }
+            let status = DisplayText.statusKind(skill.state, enabled: skill.enabled)
+            guard status != .missing || stateFilter == .missing else {
+                return false
+            }
             switch stateFilter {
             case .all:
                 return true
             case .enabled:
-                return DisplayText.statusKind(skill.state, enabled: skill.enabled) == .enabled
+                return status == .enabled
             case .disabled:
-                return DisplayText.statusKind(skill.state, enabled: skill.enabled) == .disabled
+                return status == .disabled
             case .broken:
-                return DisplayText.statusKind(skill.state, enabled: skill.enabled) == .broken
+                return status == .broken
             case .missing:
-                return DisplayText.statusKind(skill.state, enabled: skill.enabled) == .missing
+                return status == .missing
             case .shadowed:
-                return DisplayText.statusKind(skill.state, enabled: skill.enabled) == .shadowed
+                return status == .shadowed
             case .unknown:
-                return DisplayText.statusKind(skill.state, enabled: skill.enabled) == .unknown
+                return status == .unknown
             case .withFindings:
                 let issueIndex = listIssueIndex()
-                let status = DisplayText.statusKind(skill.state, enabled: skill.enabled)
                 return issueIndex.findingInstanceIDs.contains(skill.id)
                     || status == .broken
-                    || status == .missing
                     || status == .unknown
             case .withConflicts:
                 return listIssueIndex().sameAgentConflictInstanceIDs.contains(skill.id)
@@ -497,7 +508,7 @@ enum SkillListModel {
     ) -> Int {
         let issueIndex = issueIndex(skills: skills, findings: findings, conflicts: conflicts)
         return skills
-            .filter { agentFilter.includes($0) }
+            .filter { agentFilter.includes($0) && !isDeleted($0) }
             .reduce(0) { count, skill in
                 count + issueIndex.issueCount(for: skill.id)
             }

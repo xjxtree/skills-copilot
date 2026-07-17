@@ -1,10 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    env,
+    path::{Path, PathBuf},
+};
 
 use crate::shared::{optional_frontmatter_string, split_yaml_frontmatter, stable_path_id};
 use skills_copilot_core::{
     AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
+
+use crate::environment::{absolute_env_path, expand_local_path, normalize_path_lexically};
 
 #[derive(Debug, Default)]
 pub struct OpenclawAdapter;
@@ -19,22 +25,24 @@ impl AgentAdapter for OpenclawAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        let state_dir = openclaw_state_dir(ctx);
         let mut roots = vec![
             AdapterRoot {
                 scope: Scope::AgentGlobal,
-                path: ctx.user_home.join(".openclaw/skills"),
+                path: state_dir.join("skills"),
                 source: RootSource::UserHome,
             },
             AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: ctx.user_home.join(".agents/skills"),
-                source: RootSource::UserHome,
+                source: RootSource::Compatibility,
             },
         ];
 
         roots.extend(openclaw_bundled_skill_roots());
+        roots.extend(openclaw_extra_skill_roots(ctx, &state_dir));
 
-        if let Some(workspace_root) = openclaw_selected_workspace_root(ctx) {
+        for workspace_root in openclaw_selected_workspace_roots(ctx, &state_dir) {
             roots.push(AdapterRoot {
                 scope: Scope::AgentProject,
                 path: workspace_root.join("skills"),
@@ -43,11 +51,11 @@ impl AgentAdapter for OpenclawAdapter {
             roots.push(AdapterRoot {
                 scope: Scope::AgentProject,
                 path: workspace_root.join(".agents/skills"),
-                source: RootSource::Project,
+                source: RootSource::Compatibility,
             });
         }
 
-        roots
+        dedup_roots(roots)
     }
 
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
@@ -109,6 +117,11 @@ impl AgentAdapter for OpenclawAdapter {
         instance.enabled
     }
 
+    fn accepts_skill_path(&self, _root: &AdapterRoot, relative_path: &Path) -> bool {
+        relative_path.components().count() == 2
+            && relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+    }
+
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
         vec![openclaw_config_path(ctx)]
     }
@@ -157,8 +170,28 @@ fn parse_skill_content(content: &str, fallback_name: &str) -> Result<ParsedSkill
     })
 }
 
-fn openclaw_config_path(ctx: &AdapterContext) -> PathBuf {
-    ctx.user_home.join(".openclaw/openclaw.json")
+pub fn openclaw_config_path(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("OPENCLAW_CONFIG_PATH")
+        .unwrap_or_else(|| openclaw_state_dir(ctx).join("openclaw.json"))
+}
+
+pub fn openclaw_state_dir(ctx: &AdapterContext) -> PathBuf {
+    if let Some(path) = absolute_env_path("OPENCLAW_STATE_DIR") {
+        return path;
+    }
+    let profile = env::var("OPENCLAW_PROFILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        });
+    profile.map_or_else(
+        || ctx.user_home.join(".openclaw"),
+        |profile| ctx.user_home.join(format!(".openclaw-{profile}")),
+    )
 }
 
 pub fn openclaw_disabled_skill_keys(config_text: &str) -> Vec<String> {
@@ -278,15 +311,15 @@ fn openclaw_config_key_for_instance(instance: &SkillInstance) -> String {
     openclaw_config_key_from_frontmatter(frontmatter_raw, &instance.name)
 }
 
-fn openclaw_selected_workspace_root(ctx: &AdapterContext) -> Option<PathBuf> {
+fn openclaw_selected_workspace_roots(ctx: &AdapterContext, state_dir: &Path) -> Vec<PathBuf> {
     let selected_paths = [ctx.project_root.as_ref(), ctx.project_cwd.as_ref()]
         .into_iter()
         .flatten()
         .flat_map(|selected| normalized_path_variants(selected))
         .collect::<Vec<_>>();
-    openclaw_home_workspace_candidates(ctx)
+    openclaw_workspace_candidates(ctx, state_dir)
         .into_iter()
-        .find(|candidate| {
+        .filter(|candidate| {
             let candidate_paths = normalized_path_variants(candidate);
             selected_paths.iter().any(|selected| {
                 candidate_paths
@@ -294,28 +327,108 @@ fn openclaw_selected_workspace_root(ctx: &AdapterContext) -> Option<PathBuf> {
                     .any(|candidate| selected == candidate || selected.starts_with(candidate))
             })
         })
+        .collect()
 }
 
-fn openclaw_home_workspace_candidates(ctx: &AdapterContext) -> [PathBuf; 2] {
-    [
-        ctx.user_home.join(".openclaw/workspace"),
-        ctx.user_home.join("openclaw/workspace"),
-    ]
+fn openclaw_workspace_candidates(ctx: &AdapterContext, state_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(workspace) = absolute_env_path("OPENCLAW_WORKSPACE_DIR") {
+        candidates.push(workspace);
+    }
+    if let Ok(content) = std::fs::read_to_string(openclaw_config_path(ctx)) {
+        if let Ok(config) = json5::from_str::<serde_json::Value>(&content) {
+            let default_workspace = config
+                .get("agents")
+                .and_then(|agents| agents.get("defaults"))
+                .and_then(|defaults| defaults.get("workspace"))
+                .and_then(serde_json::Value::as_str);
+            if let Some(path) =
+                default_workspace.and_then(|raw| expand_local_path(raw, &ctx.user_home, state_dir))
+            {
+                candidates.push(path);
+            }
+            if let Some(agents) = config
+                .get("agents")
+                .and_then(|agents| agents.get("list"))
+                .and_then(serde_json::Value::as_array)
+            {
+                candidates.extend(agents.iter().filter_map(|agent| {
+                    agent
+                        .get("workspace")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|raw| expand_local_path(raw, &ctx.user_home, state_dir))
+                }));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        candidates.push(state_dir.join("workspace"));
+    }
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
 }
 
 fn openclaw_bundled_skill_roots() -> Vec<AdapterRoot> {
-    [
-        "/usr/lib/node_modules/openclaw/skills",
-        "/usr/local/lib/node_modules/openclaw/skills",
-        "/opt/jvs-claw/base/lib/node_modules/openclaw/skills",
-    ]
-    .into_iter()
-    .map(|path| AdapterRoot {
-        scope: Scope::AgentGlobal,
-        path: PathBuf::from(path),
-        source: RootSource::System,
+    openclaw_package_root_from_path()
+        .into_iter()
+        .map(|package_root| AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: package_root.join("skills"),
+            source: RootSource::System,
+        })
+        .collect()
+}
+
+fn openclaw_package_root_from_path() -> Option<PathBuf> {
+    let executable = env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|directory| directory.join("openclaw"))
+        .find(|candidate| candidate.is_file())?
+        .canonicalize()
+        .ok()?;
+    executable.ancestors().find_map(|ancestor| {
+        let manifest = ancestor.join("package.json");
+        let content = std::fs::read_to_string(manifest).ok()?;
+        let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+        (value.get("name").and_then(serde_json::Value::as_str) == Some("openclaw"))
+            .then(|| ancestor.to_path_buf())
     })
-    .collect()
+}
+
+fn openclaw_extra_skill_roots(ctx: &AdapterContext, state_dir: &Path) -> Vec<AdapterRoot> {
+    let Ok(content) = std::fs::read_to_string(openclaw_config_path(ctx)) else {
+        return Vec::new();
+    };
+    let Ok(config) = json5::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    config
+        .get("skills")
+        .and_then(|skills| skills.get("load"))
+        .and_then(|load| load.get("extraDirs"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(|raw| expand_local_path(raw, &ctx.user_home, state_dir))
+        .map(|path| AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path,
+            source: RootSource::Configured,
+        })
+        .collect()
+}
+
+fn dedup_roots(roots: Vec<AdapterRoot>) -> Vec<AdapterRoot> {
+    let mut seen = HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| seen.insert((root.scope, root.path.clone())))
+        .collect()
 }
 
 fn containing_dir_name(path: &Path) -> String {
@@ -332,26 +445,6 @@ fn normalized_path_variants(path: &Path) -> Vec<PathBuf> {
         Ok(canonical) if canonical != lexical => vec![lexical, canonical],
         Ok(_) | Err(_) => vec![lexical],
     }
-}
-
-fn normalize_path_lexically(path: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-        }
-    }
-    normalized
 }
 
 #[cfg(test)]
@@ -428,7 +521,7 @@ mod tests {
         assert_eq!(roots[0].source, RootSource::UserHome);
         assert_eq!(roots[1].path, PathBuf::from("/tmp/home/.agents/skills"));
         assert_eq!(roots[1].scope, Scope::AgentGlobal);
-        assert_eq!(roots[1].source, RootSource::UserHome);
+        assert_eq!(roots[1].source, RootSource::Compatibility);
         assert!(
             roots
                 .iter()
@@ -466,7 +559,7 @@ mod tests {
         }));
         assert!(roots.iter().any(|root| {
             root.scope == Scope::AgentProject
-                && root.source == RootSource::Project
+                && root.source == RootSource::Compatibility
                 && root.path == Path::new("/tmp/home/.openclaw/workspace/.agents/skills")
         }));
     }
@@ -490,7 +583,7 @@ mod tests {
         }));
         assert!(roots.iter().any(|root| {
             root.scope == Scope::AgentProject
-                && root.source == RootSource::Project
+                && root.source == RootSource::Compatibility
                 && root.path == Path::new("/tmp/home/.openclaw/workspace/.agents/skills")
         }));
         assert!(

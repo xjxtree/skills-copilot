@@ -10,8 +10,8 @@ use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skills_copilot_adapters::{
-    parse_codex_skill_config_entries, pi_disabled_skill_names, ClaudeCodeAdapter, CodexAdapter,
-    HermesAdapter, OpenclawAdapter, OpencodeAdapter, PiAdapter,
+    parse_codex_skill_config_entries, pi_agent_dir, pi_skill_enabled_by_settings,
+    ClaudeCodeAdapter, CodexAdapter, HermesAdapter, OpenclawAdapter, OpencodeAdapter, PiAdapter,
 };
 use skills_copilot_ai_core::{evaluate_mvp_rules, Finding, RuleContext, RuleReport, Severity};
 use skills_copilot_catalog::{
@@ -31,6 +31,7 @@ use thiserror::Error;
 use skills_copilot_core::SkillScript;
 
 mod analysis;
+mod codex_runtime;
 mod config_consistency;
 mod config_support;
 mod history;
@@ -591,6 +592,7 @@ fn scan_agent_for_catalog(
     let mut report = scan_agent(adapter, ctx)?;
     if adapter.id() == AgentId::Codex {
         apply_codex_config_overrides(ctx, &mut report.instances)?;
+        codex_runtime::merge_codex_runtime_inventory(ctx, &mut report);
     } else if adapter.id() == AgentId::Pi {
         apply_pi_config_overrides(ctx, &mut report.instances)?;
     }
@@ -627,12 +629,12 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             display_name: "Codex",
             status: "verified",
             scan: AdapterFeatureCapability::supported_with_reason(
-                "verified-expanded-read-only",
-                "V2.92 scans verified user/project .agents/skills plus read-only CODEX_HOME skills, local plugin marketplace roots, and admin roots when present.",
+                "verified-runtime-and-filesystem",
+                "Scans verified user/project .agents/skills, read-only CODEX_HOME skills, and admin roots; the Codex app-server skills/list result supplies the authoritative runtime inventory when available.",
             ),
             project_scan: AdapterFeatureCapability::supported_with_reason(
-                "verified-expanded-read-only",
-                "Project scan remains bounded by the selected project and adds only read-only project plugin marketplace diagnostics.",
+                "verified-bounded",
+                "Project discovery is bounded to .agents/skills from the selected working directory through the selected project root.",
             ),
             config_toggle: AdapterFeatureCapability::supported_with_reason(
                 "verified-native-roots-only",
@@ -642,11 +644,12 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             install: AdapterFeatureCapability::supported("verified"),
             writable: AdapterFeatureCapability::supported_with_reason(
                 "verified-native-roots-only",
-                "Codex writes are limited to verified user/project .agents/skills instances and the user config.toml override; CODEX_HOME skills, plugin, admin, and system roots are read-only.",
+                "Codex writes are limited to verified user/project .agents/skills instances and the user config.toml override; CODEX_HOME, runtime-only, admin, and system skills are read-only.",
             ),
             blockers: vec![
                 "Project-local .codex/config.toml toggle semantics remain unverified.",
-                "CODEX_HOME skills, plugin marketplace, admin, and system roots are scan-only.",
+                "CODEX_HOME, runtime-only, admin, and system skills are read-only.",
+                "CODEX_HOME/plugins/cache and local marketplace implementation directories are never filesystem scan roots.",
             ],
         },
         AdapterCapabilityRecord {
@@ -679,7 +682,7 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             ),
             blockers: vec![
                 "skills.urls are recognized as config scope but remain metadata-only; scans and diagnostics do not fetch network skill indexes.",
-                "OPENCODE_CONFIG, OPENCODE_CONFIG_DIR, OPENCODE_CONFIG_CONTENT, remote org config, and managed settings can affect opencode runtime but are not read or mutated by this app.",
+                "Absolute OPENCODE_CONFIG/OPENCODE_CONFIG_DIR and inline OPENCODE_CONFIG_CONTENT are read for local discovery; remote organization config is never fetched, and managed settings remain read-only.",
             ],
         },
         AdapterCapabilityRecord {
@@ -687,8 +690,8 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             display_name: "Pi",
             status: "guarded",
             scan: AdapterFeatureCapability::supported_with_reason(
-                "verified",
-                "V2.94 scans Pi-native global/project roots and .agents/skills compatibility roots without reading secrets or fetching remote package indexes.",
+                "verified-current-sources",
+                "Scans Pi-native global/project roots, .agents/skills compatibility roots, local settings paths, and installed local package manifests without fetching package indexes.",
             ),
             project_scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-compatibility-roots",
@@ -696,7 +699,7 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             ),
             config_toggle: AdapterFeatureCapability::supported_with_reason(
                 "guarded-v2.94",
-                "V2.94 enables guarded Pi-native and .agents compatibility toggles through settings JSON, pre-toggle snapshots, atomic write verification, and rollback; project/package toggles do not require a positive trust marker, but explicit untrusted project markers block writes.",
+                "Writes Pi's documented skills array exact +path/-path overrides with pre-toggle snapshots, atomic verification, and rollback; explicit untrusted project markers block project writes.",
             ),
             config_snapshot: AdapterFeatureCapability::supported_with_reason(
                 "guarded-v2.94",
@@ -3916,7 +3919,7 @@ fn opencode_config_path(ctx: &AdapterContext, scope: Scope) -> Result<PathBuf, C
 
 fn pi_expected_config_path(ctx: &AdapterContext, scope: Scope) -> Result<PathBuf, CommandError> {
     match scope {
-        Scope::AgentGlobal => Ok(ctx.user_home.join(".pi/agent/settings.json")),
+        Scope::AgentGlobal => Ok(pi_agent_dir(ctx).join("settings.json")),
         Scope::AgentProject => ctx
             .project_root
             .as_ref()
@@ -3940,7 +3943,7 @@ fn pi_config_path_for_skill_path(
     skill_path: &Path,
 ) -> Result<PathBuf, CommandError> {
     match scope {
-        Scope::AgentGlobal => Ok(ctx.user_home.join(".pi/agent/settings.json")),
+        Scope::AgentGlobal => Ok(pi_agent_dir(ctx).join("settings.json")),
         Scope::AgentProject => {
             if let Some(pi_skill_root) = pi_project_native_skill_root(skill_path) {
                 let pi_dir = pi_skill_root.parent().ok_or_else(|| {
@@ -4764,28 +4767,24 @@ fn apply_pi_config_overrides(
     ctx: &AdapterContext,
     instances: &mut [SkillInstance],
 ) -> Result<(), CommandError> {
-    let mut disabled_by_config = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+    let mut settings_by_path = BTreeMap::<PathBuf, String>::new();
     for instance in instances.iter() {
         let config_path = match pi_config_path_for_skill_instance(ctx, instance) {
             Ok(path) => path,
             Err(_) => continue,
         };
-        if disabled_by_config.contains_key(&config_path) {
+        if settings_by_path.contains_key(&config_path) {
             continue;
         }
         let content = match fs::read_to_string(&config_path) {
             Ok(content) => content,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                disabled_by_config.insert(config_path, BTreeSet::new());
+                settings_by_path.insert(config_path, "{}".to_string());
                 continue;
             }
             Err(err) => return Err(err.into()),
         };
-        let disabled = pi_disabled_skill_names(&content)
-            .map_err(|err| CommandError::Adapter(err.message))?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        disabled_by_config.insert(config_path, disabled);
+        settings_by_path.insert(config_path, content);
     }
 
     for instance in instances.iter_mut() {
@@ -4793,10 +4792,16 @@ fn apply_pi_config_overrides(
             Ok(path) => path,
             Err(_) => continue,
         };
-        if disabled_by_config
+        let enabled = settings_by_path
             .get(&config_path)
-            .is_some_and(|disabled| disabled.contains(&instance.name))
-        {
+            .map_or(Ok(true), |content| {
+                pi_skill_enabled_by_settings(content, &config_path, &instance.path, &ctx.user_home)
+                    .map_err(|err| CommandError::Adapter(err.message))
+            })?;
+        if instance.state == SkillState::Disabled && enabled {
+            instance.enabled = true;
+            instance.state = SkillState::Loaded;
+        } else if instance.state == SkillState::Loaded && !enabled {
             instance.enabled = false;
             instance.state = SkillState::Disabled;
         }

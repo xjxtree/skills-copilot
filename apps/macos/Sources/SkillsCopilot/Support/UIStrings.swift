@@ -181,7 +181,7 @@ enum UIStrings {
     static var stateEnabled: String { text("state.enabled", "Enabled") }
     static var stateDisabled: String { text("state.disabled", "Disabled") }
     static var stateBroken: String { text("state.broken", "Broken") }
-    static var stateMissing: String { text("state.missing", "Missing") }
+    static var stateMissing: String { text("state.missing", "Deleted") }
     static var stateShadowed: String { text("state.shadowed", "Shadowed") }
     static var stateUnknown: String { text("state.unknown", "Unknown") }
     static var retryRefresh: String { text("action.retryRefresh", "Retry Refresh") }

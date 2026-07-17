@@ -43,9 +43,10 @@ use skills_copilot_commands::{
     SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_core::{
-    AdapterContext, AdapterRoot, AgentId, ListIncompleteReason, ListPageMetadata,
-    ListSourceCompleteness, RootSource, Scope,
+    AdapterContext, AgentId, ListIncompleteReason, ListPageMetadata, ListSourceCompleteness, Scope,
 };
+#[cfg(test)]
+use skills_copilot_core::{AdapterRoot, RootSource};
 use thiserror::Error;
 
 mod project_context;
@@ -381,6 +382,54 @@ pub struct LocalSessionContentItem {
     pub char_count: usize,
     pub timestamp: Option<i64>,
     pub evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LocalSessionMessagePageParams {
+    #[serde(default, alias = "authorized_dirs", alias = "authorized_paths")]
+    pub authorized_roots: Vec<String>,
+    #[serde(default)]
+    pub auto_discover: Option<bool>,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub project_root: Option<String>,
+    #[serde(default)]
+    pub current_cwd: Option<String>,
+    pub session_id: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub source_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalSessionMessagePageResult {
+    pub generated_by: &'static str,
+    pub session_id: String,
+    pub content_items: Vec<LocalSessionContentItem>,
+    pub returned_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_count: Option<usize>,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub source_revision: String,
+    pub source_completeness: ListSourceCompleteness,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete_reason: Option<ListIncompleteReason>,
+    pub scanned_bytes: u64,
+    pub scanned_through_bytes: u64,
+    pub snapshot_bytes: u64,
+    pub redaction_summary: LocalPreviewRedactionSummary,
+    pub safety_flags: LocalPreviewSafetyFlags,
+    pub read_only: bool,
+    pub provider_request_sent: bool,
+    pub raw_prompt_persisted: bool,
+    pub raw_response_persisted: bool,
+    pub raw_trace_persisted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -389,7 +389,7 @@ async function initializeFixtureEnvironment(root) {
   );
   writeFileSync(
     projectPiSettings,
-    JSON.stringify({ project: { trusted: true }, skills: { disabled: [] } }, null, 2) + "\n",
+    JSON.stringify({ skills: [] }, null, 2) + "\n",
   );
   writeSkill(
     opencodeSkillsRoot,
@@ -1025,8 +1025,8 @@ function runFixturePiCompatibilitySmoke(skills, env, fixture) {
     fail("Pi compatibility toggle did not return a disabled Pi skill");
   }
   const settings = JSON.parse(readFileSync(fixture.projectPiSettings, "utf8"));
-  const disabledSkills = settings?.skills?.disabled ?? settings?.disabledSkills ?? [];
-  if (!disabledSkills.some((entry) => String(entry).includes("pi-agent-project-smoke"))) {
+  const skillOverrides = Array.isArray(settings?.skills) ? settings.skills : [];
+  if (!skillOverrides.some((entry) => String(entry).startsWith("-") && String(entry).includes("pi-agent-project-smoke"))) {
     fail("Pi project settings missing disabled compatibility skill entry");
   }
   const rescanned = callService("catalog.scanAll", {}, env);

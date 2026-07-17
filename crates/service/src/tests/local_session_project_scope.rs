@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::{params, Connection};
 
 #[test]
 fn all_scope_retains_project_roots_for_supported_agents() {
@@ -39,16 +40,30 @@ fn all_scope_retains_project_roots_for_supported_agents() {
     )
     .expect("write codex session");
 
-    let opencode_root = user_home.join(".local/share/opencode/storage/session/global");
-    fs::create_dir_all(&opencode_root).expect("create opencode session root");
-    fs::write(
-        opencode_root.join("ses_project.json"),
-        format!(
-            r#"{{"id":"ses_project","title":"opencode project task","directory":"{}","projectID":"global"}}"#,
-            json_path_text(&project_root)
-        ),
-    )
-    .expect("write opencode session");
+    let opencode_db = user_home.join(".local/share/opencode/opencode.db");
+    fs::create_dir_all(opencode_db.parent().expect("OpenCode database parent"))
+        .expect("create OpenCode database directory");
+    let opencode = Connection::open(&opencode_db).expect("create OpenCode database");
+    opencode
+        .execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER);\
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);\
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .expect("create current OpenCode schema");
+    opencode
+        .execute(
+            "INSERT INTO session (id, directory, title, time_created, time_updated) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "ses_project",
+                project_root_text,
+                "opencode project task",
+                1_000_i64,
+                2_000_i64
+            ],
+        )
+        .expect("write current OpenCode session");
+    drop(opencode);
 
     let pi_root = user_home.join(".pi/agent/sessions").join(&encoded_project);
     fs::create_dir_all(&pi_root).expect("create pi project session root");

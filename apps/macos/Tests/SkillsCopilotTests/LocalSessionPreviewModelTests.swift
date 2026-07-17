@@ -7,8 +7,31 @@ struct LocalSessionPreviewModelTests {
         try previewDecodesCandidateAndContentCompatibility()
         try previewMergesPaginatedRows()
         try previewMergesSkillUsageAcrossPages()
+        try messagePageDecodesExactFinalMessages()
+        try defaultDetailFiltersShowOnlyConversationMessages()
         try unavailableKeepsAuthorizationRequired()
         try filteredEmptyCopyExplainsHiddenLocalSessionCount()
+    }
+
+    private func messagePageDecodesExactFinalMessages() throws {
+        let payload = #"{"generated_by":"local-v2.99","session_id":"session-large","content_items":[{"id":"user-1","kind":"user_message","title":"User","text":"Set the goal","char_count":12},{"id":"agent-1","kind":"agent_reply","title":"Agent","text":"Goal accepted","char_count":13}],"returned_count":2,"total_count":null,"has_more":true,"next_cursor":"v1:message-page-2","source_revision":"sha256:messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":33554432,"scanned_through_bytes":33554432,"snapshot_bytes":600000000}"#
+        let page = try JSONDecoder().decode(LocalSessionMessagePageResult.self, from: Data(payload.utf8))
+        try expectEqual(page.sessionID, "session-large", "Message page should bind to the selected session.")
+        try expectEqual(page.contentItems.map(\.kind), [.userMessage, .agentReply], "Message pages should decode user-facing conversation kinds.")
+        try expectEqual(page.nextCursor, "v1:message-page-2", "Message page should decode its continuation cursor.")
+        try expectEqual(page.listPage.sourceCompleteness, .enumerable, "Message page should report an enumerable fixed snapshot.")
+        try expectEqual(page.snapshotBytes, 600_000_000, "Message page should retain its fixed snapshot size.")
+    }
+
+    private func defaultDetailFiltersShowOnlyConversationMessages() throws {
+        try expectEqual(
+            LocalSessionContentKind.defaultDetailKinds,
+            Set([.userMessage, .agentReply]),
+            "Session detail should default to user messages and final agent replies only."
+        )
+        try expectFalse(LocalSessionContentKind.defaultDetailKinds.contains(.thinking), "Thinking should be hidden by default.")
+        try expectFalse(LocalSessionContentKind.defaultDetailKinds.contains(.toolCall), "Tool calls should be hidden by default.")
+        try expectFalse(LocalSessionContentKind.defaultDetailKinds.contains(.skillCall), "Skill calls should be hidden by default.")
     }
 
     private func previewDecodesRedactedRowsAndSafety() throws {

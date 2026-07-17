@@ -288,6 +288,10 @@ extension SkillStore {
         )
     }
 
+    var currentSkillCount: Int {
+        SkillListModel.currentSkills(skills).count
+    }
+
     var selectedSkillEvents: [SkillEventRecord] {
         guard let id = selectedSkill?.id else { return [] }
         return (skillEventsByID[id] ?? []).filter(\.isToggleActivity)

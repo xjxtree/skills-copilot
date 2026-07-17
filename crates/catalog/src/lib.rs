@@ -87,36 +87,51 @@ fn skill_source_provenance(agent: &str, path: &Path) -> SkillSourceProvenance {
         .components()
         .filter_map(|component| component.as_os_str().to_str())
         .collect::<Vec<_>>();
-    let Some(cache_index) = components
+    if components.contains(&".agent-copilot-runtime") {
+        return SkillSourceProvenance {
+            publisher: None,
+            package_name: None,
+            package_version: None,
+            source_kind: Some("codex-runtime".to_string()),
+            read_only_reason: Some(
+                "Reported by the current Codex runtime; source cache paths are not scanned or persisted"
+                    .to_string(),
+            ),
+        };
+    }
+    if let Some(cache_index) = components
         .windows(2)
         .position(|window| window == ["plugins", "cache"])
-    else {
-        return SkillSourceProvenance::default();
-    };
-    let package = cache_index + 2;
-    if components.get(package + 3) != Some(&"skills") {
-        return SkillSourceProvenance::default();
-    }
-    let (Some(publisher), Some(package_name), Some(package_version)) = (
-        components.get(package),
-        components.get(package + 1),
-        components.get(package + 2),
-    ) else {
-        return SkillSourceProvenance::default();
-    };
-    if [publisher, package_name, package_version]
-        .iter()
-        .any(|value| value.is_empty() || value.starts_with('.'))
     {
-        return SkillSourceProvenance::default();
+        let package = cache_index + 2;
+        if components.get(package + 3) == Some(&"skills") {
+            let provenance = (
+                components.get(package),
+                components.get(package + 1),
+                components.get(package + 2),
+            );
+            if let (Some(publisher), Some(package_name), Some(package_version)) = provenance {
+                if [publisher, package_name, package_version]
+                    .iter()
+                    .all(|value| !value.is_empty() && !value.starts_with('.'))
+                {
+                    return SkillSourceProvenance {
+                        publisher: Some((*publisher).to_string()),
+                        package_name: Some((*package_name).to_string()),
+                        package_version: Some((*package_version).to_string()),
+                        source_kind: Some("chatgpt-plugin-cache".to_string()),
+                        read_only_reason: Some("Managed by the ChatGPT plugin cache".to_string()),
+                    };
+                }
+            }
+        }
     }
-    SkillSourceProvenance {
-        publisher: Some((*publisher).to_string()),
-        package_name: Some((*package_name).to_string()),
-        package_version: Some((*package_version).to_string()),
-        source_kind: Some("chatgpt-plugin-cache".to_string()),
-        read_only_reason: Some("Managed by the ChatGPT plugin cache".to_string()),
-    }
+
+    SkillSourceProvenance::default()
+}
+
+fn is_ignored_current_skill_source(agent: &str, path: &Path) -> bool {
+    skill_source_provenance(agent, path).source_kind.as_deref() == Some("chatgpt-plugin-cache")
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -908,6 +923,85 @@ mod tests {
         assert_eq!(detail.package_version, record.package_version);
         assert_eq!(detail.source_kind, record.source_kind);
         assert_eq!(detail.read_only_reason, record.read_only_reason);
+    }
+
+    #[test]
+    fn codex_runtime_records_expose_read_only_runtime_provenance() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let instance = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/home/.codex/.agent-copilot-runtime/abc/SKILL.md",
+            "agent-pet-companion:agent-pet-studio",
+            SkillState::Loaded,
+        );
+        let id = instance.id.clone();
+        catalog
+            .upsert_skill_instance(&instance)
+            .expect("plugin skill upserts");
+
+        let record = catalog
+            .get_skill_record(&id)
+            .expect("record query succeeds")
+            .expect("record exists");
+        assert_eq!(record.publisher, None);
+        assert_eq!(record.package_name, None);
+        assert_eq!(record.package_version, None);
+        assert_eq!(record.source_kind.as_deref(), Some("codex-runtime"));
+        assert_eq!(
+            record.read_only_reason.as_deref(),
+            Some("Reported by the current Codex runtime; source cache paths are not scanned or persisted")
+        );
+    }
+
+    #[test]
+    fn current_skill_projections_ignore_all_codex_plugin_cache_rows() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let old_cache = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/home/.codex/plugins/cache/personal/agent-pet-companion/0.1.0/skills/agent-pet-studio/SKILL.md",
+            "agent-pet-studio",
+            SkillState::Missing,
+        );
+        let current_cache = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/home/.codex/plugins/cache/personal/agent-pet-companion/0.2.0/skills/agent-pet-studio/SKILL.md",
+            "agent-pet-studio",
+            SkillState::Loaded,
+        );
+        let runtime = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/home/.codex/.agent-copilot-runtime/abc/SKILL.md",
+            "agent-pet-companion:agent-pet-studio",
+            SkillState::Loaded,
+        );
+        let runtime_id = runtime.id.clone();
+
+        catalog
+            .upsert_skill_instances(&[old_cache, runtime, current_cache])
+            .expect("plugin rows upsert");
+        let records = catalog.list_skill_records().expect("records list");
+        let instances = catalog
+            .list_skill_instances_for_project_context(None)
+            .expect("instances list");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, runtime_id);
+        assert_eq!(records[0].source_kind.as_deref(), Some("codex-runtime"));
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].id, runtime_id);
+        let raw_count = catalog
+            .conn
+            .query_row("SELECT COUNT(*) FROM skill_instance", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("raw row count");
+        assert_eq!(raw_count, 3, "ignored cache history must remain persisted");
     }
 
     #[test]

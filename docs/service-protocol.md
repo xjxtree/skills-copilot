@@ -94,6 +94,7 @@ conditional on the exact local state that the client reviewed.
 | `adapter.listCapabilities` | None | Never | Never | None |
 | `adapter.listDiagnostics` | None | Never | Never | None |
 | `session.previewLocalSessions` | None | Never | Never | None |
+| `session.listLocalSessionMessages` | None | Never | Never | None |
 | `llm.status` | None | Never | Never | None |
 | `llm.listProviderProfiles` | None | Never | Never | None |
 | `llm.saveProviderProfile` | App-local data, Keychain | Never | Never | None |
@@ -245,18 +246,20 @@ or expose write controls.
 - `catalog.listSkills`, `catalog.getSkill`, toggle responses, and batch-toggle
   skill records include optional `publisher`, `package_name`,
   `package_version`, `source_kind`, and `read_only_reason` fields.
-- For a validated Codex path beneath
-  `$CODEX_HOME/plugins/cache/<publisher>/<package>/<version>/skills`, the
-  service returns `source_kind="chatgpt-plugin-cache"` and identifies the
-  package as managed by the ChatGPT plugin cache. Native and legacy records
-  return null provenance fields.
+- Legacy persisted Codex rows beneath `$CODEX_HOME/plugins/cache` can still be
+  decoded with `source_kind="chatgpt-plugin-cache"` for backward-compatible
+  direct record reads. They are excluded from `catalog.listSkills`, current
+  instance/analysis/conflict projections, and the native Deleted filter.
+- Legacy local Codex marketplace rows may still decode with
+  `source_kind="codex-plugin-marketplace"` for audit continuity. Marketplace
+  directories are no longer scan roots; current runtime inventory comes from
+  the Codex `skills/list` protocol and verified filesystem roots.
 - Provenance is derived deterministically from the cataloged path at read time.
   It does not persist plugin manifests, introduce a plugin-cache write path, or
   merge ChatGPT plugin ownership with `skillManager.*` package ownership.
-- Plugin-cache provenance is inventory, not activation. Same-name cache rows
-  from different packages do not create runtime conflicts. Only loaded/enabled
-  packages explicitly enabled in the guarded Codex config participate in their
-  package namespace; native and active-plugin rows of the same name conflict.
+- `catalog.listSkills` and current `SkillInstance` projections reject every
+  plugin-cache row before normal exact-path dedupe. Cache rows therefore never
+  create runtime conflicts or user-visible deleted history.
 - Read-only startup/reload, list, detail, analysis, conflict, app-search, and
   LLM skill-selection paths project current guarded Codex `[[skills.config]]`
   `enabled=false` entries over cached native records. Removing an override
@@ -430,6 +433,22 @@ or expose write controls.
   `ended_at` in Unix epoch milliseconds, with `ended_at` representing the last
   parsed session message/content event. Each `content_items[]` item includes
   `timestamp` when its source event has a timestamp.
+- Codex inventory rows represent interactive, user-owned top-level tasks. When
+  a rollout exposes `session_meta`, its `source` must be the Codex interactive
+  `cli` or `vscode` source and, when present, `thread_source` must be `user`.
+  Structured subagents, memory consolidation, host-created internal workflows,
+  and non-interactive `exec` carriers are excluded. Legacy `cli`/`vscode`
+  rollouts without `thread_source` and older metadata-poor compatible records
+  remain visible. The latest matching
+  `session_index.jsonl` title takes precedence over a title inferred from the
+  transcript; `history.jsonl` remains a fallback.
+- Agent-specific inventory filtering excludes internal conversation stores at
+  discovery and metadata boundaries: Claude Code sidechains, `subagents`, tool
+  results, and runtime lock state; OpenCode child sessions with a `parent_id`;
+  Pi extension subagent transcripts/artifacts and context-mode state; Hermes
+  cron, batch, subagent, and memory workflows; and OpenClaw cron, hook,
+  heartbeat, ACP, and subagent session keys. Pi transcript branching and Hermes
+  compression lineage remain part of their user-facing parent conversations.
 - `session.previewLocalSessions` supports complete, stateless summary paging.
   A first page explicitly sends `paging_mode="keyset"`; a continuation sends
   the opaque `cursor` and matching `source_revision` (and may repeat the mode).
@@ -468,6 +487,41 @@ or expose write controls.
   read, not a fan-out summary scan. It may use up to a 4 MiB primary head and a
   512 KiB tail within the unchanged aggregate request budget so large Codex
   JSONL wrappers do not hide early user/tool events beyond the summary window.
+  This bounded detail remains the source for sampled process items such as
+  thinking, tool calls, and skill calls; it is not the completeness contract
+  for user-facing conversation messages.
+- `session.listLocalSessionMessages` is the read-only, selected-session
+  completeness path for user messages and final Agent replies. It accepts the
+  same authorized-root, agent, and project context plus one stable `session_id`.
+  A continuation sends the opaque `cursor` and matching `source_revision`.
+  The response contains only `user_message` and `agent_reply` content items;
+  thinking, tool calls, tool results, progress events, and mirrored Codex
+  `event_msg` copies are excluded. Host-injected user-role blocks such as
+  recommended plugin/app/skill catalogs and runtime instruction envelopes are
+  excluded from message counts, excerpts, inferred titles, and detail pages.
+  Codex goal context is normalized to its user-authored `<objective>` text so a
+  goal-setting message remains visible; repeated internal reinjection of the
+  unchanged active goal is collapsed until the objective changes.
+- Message pages default to 40 items and allow at most 100. Each request scans at
+  most 32 MiB of the fixed transcript snapshot and normally returns at most
+  2 MiB of message text. A single larger final message is returned intact on
+  its own page rather than truncated or omitted. A page that crosses only a
+  large non-message record may return zero items with `has_more=true`; its
+  cursor must still advance. This keeps sidecar work bounded while allowing the
+  native app to publish accepted messages between pages and yield to UI work.
+- The first message page fixes `snapshot_bytes`. Appends to a live Codex JSONL
+  are allowed during continuation but are excluded until the user refreshes;
+  shrink, replacement, or detected fixed-snapshot drift returns
+  `source_changed`. `total_count` is `null` until EOF and exact on the terminal
+  page. Responses also report `scanned_bytes`, `scanned_through_bytes`, and
+  `snapshot_bytes` for local progress without exposing a raw path.
+- The native detail loader first obtains the bounded process sample, then
+  automatically consumes message pages to EOF and publishes every accepted
+  page. Cancellation and page failure retain already accepted messages and
+  expose retry. The detail view uses lazy rows and defaults its selected
+  filters to User and Agent Reply; Thinking, Tool, and Skill remain available
+  but unselected. Exact final-message counts replace the bounded preview counts
+  as pages arrive. Neither pages nor merged detail are persisted.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
   ascending.
@@ -516,9 +570,10 @@ or expose write controls.
   decreasing total reaches exact `loaded == total` completeness at EOF.
   Cancellation or a source-key/generation change retains accepted rows and
   rejects late successes and errors. Scope, search, sort, and
-  global search project all loaded summaries in memory. At most a selected
-  row's bounded detail is held in the in-memory detail cache; neither summaries
-  nor details persist raw session content.
+  global search project all loaded summaries in memory. At most one selected
+  row's bounded process sample and progressively paged final messages are held
+  in the bounded in-memory detail cache; neither summaries nor details persist
+  raw session content.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
 
@@ -565,7 +620,6 @@ or expose write controls.
 | `SKILLS_COPILOT_HOME` | Override user home used by adapters |
 | `SKILLS_COPILOT_PROJECT_CWD` | Provide current project working directory |
 | `SKILLS_COPILOT_PROJECT_ROOT` | Provide project safety root |
-| `SKILLS_COPILOT_CLAUDE_EXTRA_ROOTS` | Add fixture Claude skill roots |
 | `SKILLS_COPILOT_SERVICE_PATH` | Override sidecar path for local debugging |
 | `CODEX_HOME` | Override Codex user config home when safe for the active context |
 

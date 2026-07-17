@@ -18,11 +18,17 @@ mod local_session_codex_home;
 #[cfg(unix)]
 mod local_session_codex_wrappers;
 #[cfg(unix)]
+mod local_session_internal_filtering;
+#[cfg(unix)]
 mod local_session_inventory;
+#[cfg(unix)]
+mod local_session_message_paging;
 #[cfg(unix)]
 mod local_session_preview;
 #[cfg(unix)]
 mod local_session_project_scope;
+#[cfg(unix)]
+mod local_session_sqlite;
 #[cfg(unix)]
 mod local_session_summary_detail;
 mod method_effects;

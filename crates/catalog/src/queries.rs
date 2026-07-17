@@ -46,6 +46,7 @@ impl Catalog {
                 instance.project_root.as_deref().and_then(Path::to_str),
                 project_context,
             ) && catalog_path_has_skill_shape(instance.agent.as_str(), &instance.path)
+                && !is_ignored_current_skill_source(instance.agent.as_str(), &instance.path)
             {
                 instances.push(instance);
             }
@@ -106,6 +107,7 @@ impl Catalog {
                 project_root.as_deref(),
                 project_context,
             ) && catalog_path_has_skill_shape(&record.agent, &record.path)
+                && !is_ignored_current_skill_source(&record.agent, &record.path)
             {
                 records.push(record);
             }

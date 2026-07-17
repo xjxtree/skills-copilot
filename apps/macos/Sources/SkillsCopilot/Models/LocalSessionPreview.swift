@@ -9,6 +9,8 @@ enum LocalSessionContentKind: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    static let defaultDetailKinds: Set<LocalSessionContentKind> = [.userMessage, .agentReply]
+
     var title: String {
         switch self {
         case .userMessage:
@@ -132,6 +134,51 @@ struct LocalSessionContentItem: Decodable, Hashable, Identifiable {
             .evidenceRefsAlt,
             .evidence
         ])
+    }
+}
+
+struct LocalSessionMessagePageResult: Decodable, Equatable {
+    let generatedBy: String
+    let sessionID: String
+    let contentItems: [LocalSessionContentItem]
+    let returnedCount: Int
+    let totalCount: Int?
+    let hasMore: Bool
+    let nextCursor: String?
+    let sourceRevision: String
+    let sourceCompleteness: ListSourceCompleteness
+    let incompleteReason: ListIncompleteReason?
+    let scannedBytes: Int64
+    let scannedThroughBytes: Int64
+    let snapshotBytes: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case generatedBy = "generated_by"
+        case sessionID = "session_id"
+        case contentItems = "content_items"
+        case returnedCount = "returned_count"
+        case totalCount = "total_count"
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+        case sourceRevision = "source_revision"
+        case sourceCompleteness = "source_completeness"
+        case incompleteReason = "incomplete_reason"
+        case scannedBytes = "scanned_bytes"
+        case scannedThroughBytes = "scanned_through_bytes"
+        case snapshotBytes = "snapshot_bytes"
+    }
+
+    var listPage: ListPage<LocalSessionContentItem> {
+        ListPage(
+            items: contentItems,
+            returnedCount: returnedCount,
+            totalCount: totalCount,
+            hasMore: hasMore,
+            nextCursor: nextCursor,
+            sourceRevision: sourceRevision,
+            sourceCompleteness: sourceCompleteness,
+            incompleteReason: incompleteReason
+        )
     }
 }
 
@@ -319,6 +366,37 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
             evidenceRefs: evidenceRefs,
             contentIncluded: false,
             contentItems: []
+        )
+    }
+
+    func replacingContentItems(
+        _ items: [LocalSessionContentItem],
+        exactFinalMessages: [LocalSessionContentItem]
+    ) -> LocalSessionPreviewRow {
+        let exactUserCount = exactFinalMessages.filter { $0.kind == .userMessage }.count
+        let exactFinalCount = exactFinalMessages.count
+        let sampledThinkingCount = items.filter { $0.kind == .thinking }.count
+        return LocalSessionPreviewRow(
+            id: id,
+            title: title,
+            sourceKind: sourceKind,
+            scope: scope,
+            agent: agent,
+            projectRoot: projectRoot,
+            redactedPath: redactedPath,
+            modifiedAt: modifiedAt,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            excerpt: excerpt,
+            excerptCharCount: excerptCharCount,
+            userMessageCount: exactUserCount,
+            totalMessageCount: exactFinalCount + sampledThinkingCount,
+            toolCallCount: toolCallCount,
+            skillCallCount: skillCallCount,
+            contentHash: contentHash,
+            evidenceRefs: evidenceRefs,
+            contentIncluded: true,
+            contentItems: items
         )
     }
 }

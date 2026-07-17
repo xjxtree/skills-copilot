@@ -12,6 +12,7 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "adapter.listCapabilities",
     "adapter.listDiagnostics",
     "session.previewLocalSessions",
+    "session.listLocalSessionMessages",
     "llm.status",
     "llm.listProviderProfiles",
     "llm.saveProviderProfile",

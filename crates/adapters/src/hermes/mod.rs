@@ -9,6 +9,8 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
 
+use crate::environment::{absolute_env_path, expand_local_path};
+
 #[derive(Debug, Default)]
 pub struct HermesAdapter;
 
@@ -22,7 +24,7 @@ impl AgentAdapter for HermesAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
-        let hermes_home = hermes_home(ctx);
+        let hermes_home = hermes_home_dir(ctx);
         let mut roots = vec![AdapterRoot {
             scope: Scope::AgentGlobal,
             path: hermes_home.join("skills"),
@@ -92,7 +94,7 @@ impl AgentAdapter for HermesAdapter {
     }
 
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
-        vec![hermes_home(ctx).join("config.yaml")]
+        vec![hermes_home_dir(ctx).join("config.yaml")]
     }
 }
 
@@ -108,8 +110,8 @@ impl AgentConfigAdapter for HermesAdapter {
     }
 }
 
-fn hermes_home(ctx: &AdapterContext) -> PathBuf {
-    ctx.user_home.join(".hermes")
+pub fn hermes_home_dir(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("HERMES_HOME").unwrap_or_else(|| ctx.user_home.join(".hermes"))
 }
 
 fn hermes_external_skill_roots(hermes_home: &Path, user_home: &Path) -> Vec<AdapterRoot> {
@@ -246,45 +248,7 @@ fn hermes_disabled_array_mut(
 }
 
 fn external_dir_path(raw_dir: &str, config_dir: &Path, user_home: &Path) -> Option<PathBuf> {
-    let raw_dir = raw_dir.trim();
-    if raw_dir.is_empty() {
-        return None;
-    }
-
-    let path = if raw_dir == "~" {
-        user_home.to_path_buf()
-    } else if let Some(stripped) = raw_dir.strip_prefix("~/") {
-        user_home.join(stripped)
-    } else {
-        let path = PathBuf::from(raw_dir);
-        if path.is_absolute() {
-            path
-        } else {
-            config_dir.join(path)
-        }
-    };
-
-    Some(normalize_path_lexically(&path))
-}
-
-fn normalize_path_lexically(path: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-        }
-    }
-    normalized
+    expand_local_path(raw_dir, user_home, config_dir)
 }
 
 struct ParsedSkill {

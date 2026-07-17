@@ -10,6 +10,7 @@ struct LocalSessionCacheTests {
         try refreshingKeepsPreviousSummariesVisible()
         try failedRefreshWithDataBecomesStale()
         try failedDetailDoesNotChangeSummaryList()
+        try progressiveDetailRetainsAcceptedMessagesOnCancelAndRetry()
         try detailCacheIsBoundedAndSourceScoped()
         try oldSummaryAndDetailGenerationsAreIgnored()
         try cursorMetadataIsTransientAndCancellationRejectsLatePages()
@@ -155,6 +156,33 @@ struct LocalSessionCacheTests {
             throw NativeModelTestFailure(description: "Detail failure should remain detail-local.")
         }
         try expectEqual(displayError, "detail failed", "Detail failure should retain its display error.")
+    }
+
+    private func progressiveDetailRetainsAcceptedMessagesOnCancelAndRetry() throws {
+        let cache = LocalSessionCache()
+        publish([row(id: "large")], to: cache)
+        let key = LocalSessionDetailKey(source: source, sessionID: "large")
+        let generation = try required(cache.beginDetailLoad(for: key), "Progressive detail load should begin.")
+        let progress = ListCompletenessState(
+            loadedCount: 40,
+            totalCount: nil,
+            hasMore: true,
+            isComplete: false,
+            completeness: .partial,
+            incompleteReason: nil,
+            loadingPhase: .all,
+            canLoadMore: false,
+            canLoadAll: false
+        )
+        try expectFalse(!cache.publishDetailProgress(row(id: "large"), completeness: progress, key: key, generation: generation), "A valid progressive page should publish.")
+        cache.cancelDetailLoad(key: key)
+        guard case .loaded(let retained) = cache.detailStates[key] else {
+            throw NativeModelTestFailure(description: "Cancellation should retain accepted detail messages.")
+        }
+        try expectEqual(retained.id, "large", "Cancellation should retain the selected detail row.")
+        try expectEqual(cache.detailCompleteness[key]?.loadedCount, 40, "Cancellation should retain the accepted message count.")
+        try expectEqual(cache.detailCompleteness[key]?.canLoadAll, true, "Cancellation should make the incomplete detail retryable.")
+        try expectFalse(cache.beginDetailLoad(for: key) == nil, "An incomplete loaded detail should allow retry.")
     }
 
     private func detailCacheIsBoundedAndSourceScoped() throws {

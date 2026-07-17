@@ -50,6 +50,7 @@ struct ServiceClientRPCTests {
         try await localHistoryPageRequestsDecodeAliases()
         try await providerActivityPageRequestUsesExactBindings()
         try await localSessionCursorRequestDecodesCompleteness()
+        try await localSessionMessagePageRequestUsesExactBindings()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
@@ -170,6 +171,39 @@ struct ServiceClientRPCTests {
         try expectEqual(legacyParams["offset"] as? Int, 0, "Legacy session wrapper should retain offset zero.")
         try expectEqual(legacyParams["max_files"] as? Int, 800, "Legacy session wrapper should retain the 800-file default.")
         try expectNil(legacyParams["paging_mode"], "Legacy session requests must not opt into keyset paging.")
+    }
+
+    private func localSessionMessagePageRequestUsesExactBindings() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+        let page = try await client.listLocalSessionMessages(
+            authorizedRoots: ["/tmp/sessions"],
+            agent: "codex",
+            project: ProjectContext(
+                id: "project-fixture",
+                name: "Fixture",
+                rootPath: "/tmp/project",
+                currentCWD: "/tmp/project/subdir",
+                lastUsedAt: nil,
+                isActive: true,
+                validationError: nil
+            ),
+            sessionID: "session-large",
+            limit: 40,
+            cursor: "v1:message-page-2",
+            sourceRevision: "sha256:messages"
+        )
+        let params = try runner.params(for: "session.listLocalSessionMessages")
+        try expectEqual(params["session_id"] as? String, "session-large", "Message page stable session id")
+        try expectEqual(params["limit"] as? Int, 40, "Message page limit")
+        try expectEqual(params["cursor"] as? String, "v1:message-page-2", "Message continuation cursor")
+        try expectEqual(params["source_revision"] as? String, "sha256:messages", "Message source revision")
+        try expectEqual(params["project_root"] as? String, "/tmp/project", "Message page project root")
+        try expectEqual(
+            page.contentItems.map(\.kind),
+            [LocalSessionContentKind.userMessage, LocalSessionContentKind.agentReply],
+            "Message RPC should decode conversation messages."
+        )
     }
 
     private func encodedObjectKeys<T: Encodable>(_ value: T) throws -> Set<String> {
@@ -779,6 +813,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.skillEventPageResponse.utf8)
         case "session.previewLocalSessions":
             return Data(Self.localSessionPageResponse.utf8)
+        case "session.listLocalSessionMessages":
+            return Data(Self.localSessionMessagePageResponse.utf8)
         case "llm.listProviderActivity":
             return Data(Self.providerActivityPageResponse.utf8)
         case "llm.previewPrompt":
@@ -816,6 +852,10 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
 
     private static let localSessionPageResponse = """
     {"id":"test","ok":true,"result":{"generated_by":"local-v2.98","authorized":true,"count":1,"total_candidate_count":205,"total_matched_count":205,"offset":0,"limit":100,"has_more":true,"next_cursor":"v1:cursor-200","source_revision":"sha256:sessions","source_completeness":"enumerable","candidate_set_truncated":false,"session_rows":[{"id":"session-100","title":"Session 100","source_kind":"authorized-local-session","scope":"all","redacted_path":"$HOME/.sessions/100.jsonl","excerpt":"Summary","content_included":false,"content_items":[]}]}}
+    """
+
+    private static let localSessionMessagePageResponse = """
+    {"id":"test","ok":true,"result":{"generated_by":"local-v2.99","session_id":"session-large","content_items":[{"id":"user-1","kind":"user_message","title":"User","text":"Set the goal","char_count":12,"evidence_refs":[]},{"id":"agent-1","kind":"agent_reply","title":"Agent","text":"Goal accepted","char_count":13,"evidence_refs":[]}],"returned_count":2,"total_count":2,"has_more":false,"next_cursor":null,"source_revision":"sha256:messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":1024,"scanned_through_bytes":1024,"snapshot_bytes":1024}}
     """
 
     private static let providerActivityPageResponse = """

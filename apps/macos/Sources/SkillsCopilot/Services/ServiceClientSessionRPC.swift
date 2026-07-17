@@ -1,6 +1,29 @@
 import Foundation
 
 extension ServiceClient {
+    func listLocalSessionMessages(
+        authorizedRoots: [String],
+        agent: String? = nil,
+        project: ProjectContext? = nil,
+        sessionID: String,
+        limit: Int = 40,
+        cursor: String? = nil,
+        sourceRevision: String? = nil
+    ) async throws -> LocalSessionMessagePageResult {
+        let params = LocalSessionMessagePageParams(
+            authorizedRoots: authorizedRoots,
+            autoDiscover: authorizedRoots.isEmpty,
+            agent: agent,
+            projectRoot: project?.rootPath,
+            currentCWD: project?.currentCWD,
+            sessionID: sessionID,
+            limit: limit,
+            cursor: cursor,
+            sourceRevision: sourceRevision
+        )
+        return try await call(method: "session.listLocalSessionMessages", params: params)
+    }
+
     func previewLocalSessions(
         authorizedRoots: [String],
         agent: String? = nil,

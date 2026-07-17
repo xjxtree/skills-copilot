@@ -10,7 +10,6 @@ use skills_copilot_core::{
 };
 
 mod paths;
-mod plugins;
 pub use paths::codex_home_dir;
 #[cfg(test)]
 use paths::resolved_codex_home;
@@ -127,7 +126,6 @@ impl AgentAdapter for CodexAdapter {
             ));
         }
 
-        roots.extend(codex_plugin_skill_roots(ctx));
         roots.push(AdapterRoot {
             scope: Scope::AgentGlobal,
             path: PathBuf::from("/etc/codex/skills"),
@@ -198,11 +196,31 @@ impl AgentAdapter for CodexAdapter {
         instance.enabled
     }
 
+    fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
+        let components = relative_path
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect::<Vec<_>>();
+        (components.len() == 2
+            || (root.source == RootSource::Compatibility
+                && components.len() == 3
+                && components.first() == Some(&".system")))
+            && components.last() == Some(&"SKILL.md")
+    }
+
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
         let mut paths = vec![codex_user_config_path(ctx)];
         if let Some(project_root) = &ctx.project_root {
-            paths.push(project_root.join(".codex/config.toml"));
+            paths.extend(
+                codex_project_directories(project_root, ctx.project_cwd.as_deref())
+                    .map(|directory| directory.join(".codex/config.toml")),
+            );
         }
+        if let Some(profile) = active_codex_profile(&paths[0]) {
+            paths.push(codex_home_dir(ctx).join(format!("{profile}.config.toml")));
+        }
+        paths.push(PathBuf::from("/etc/codex/config.toml"));
+        paths.dedup();
         paths
     }
 }
@@ -250,124 +268,57 @@ fn codex_user_config_path(ctx: &AdapterContext) -> PathBuf {
 }
 
 fn codex_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Vec<AdapterRoot> {
-    let start = project_cwd
-        .filter(|cwd| cwd.starts_with(project_root))
-        .unwrap_or(project_root);
-    let mut roots = Vec::new();
-    let mut current = Some(start);
-
-    while let Some(dir) = current {
-        roots.push(AdapterRoot {
+    codex_project_directories(project_root, project_cwd)
+        .map(|dir| AdapterRoot {
             scope: Scope::AgentProject,
             path: dir.join(".agents/skills"),
             source: RootSource::Project,
-        });
-        if dir == project_root {
-            break;
-        }
-        current = dir
-            .parent()
-            .filter(|parent| parent.starts_with(project_root));
-    }
-
-    roots
-}
-
-fn codex_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
-    let mut roots = plugins::cached_plugin_skill_roots(&codex_home_dir(ctx));
-    roots.extend(plugin_skill_roots_from_marketplace(
-        &ctx.user_home.join(".agents/plugins/marketplace.json"),
-        &ctx.user_home,
-        Scope::AgentGlobal,
-    ));
-
-    if let Some(project_root) = &ctx.project_root {
-        roots.extend(plugin_skill_roots_from_marketplace(
-            &project_root.join(".agents/plugins/marketplace.json"),
-            project_root,
-            Scope::AgentProject,
-        ));
-        roots.extend(plugin_skill_roots_from_marketplace(
-            &project_root.join(".claude-plugin/marketplace.json"),
-            project_root,
-            Scope::AgentProject,
-        ));
-    }
-
-    roots
-}
-
-fn plugin_skill_roots_from_marketplace(
-    marketplace_path: &Path,
-    marketplace_root: &Path,
-    scope: Scope,
-) -> Vec<AdapterRoot> {
-    let Ok(content) = std::fs::read_to_string(marketplace_path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Vec::new();
-    };
-    let Some(plugins) = value.get("plugins").and_then(serde_json::Value::as_array) else {
-        return Vec::new();
-    };
-
-    plugins
-        .iter()
-        .filter_map(plugin_source_path)
-        .filter_map(|source_path| resolve_local_marketplace_path(marketplace_root, source_path))
-        .filter_map(|plugin_root| plugin_skills_root(&plugin_root))
-        .map(|path| AdapterRoot {
-            scope,
-            path,
-            source: RootSource::Plugin,
         })
         .collect()
 }
 
-fn plugin_source_path(plugin: &serde_json::Value) -> Option<&str> {
-    let source = plugin.get("source")?;
-    if let Some(path) = source.as_str() {
-        return Some(path);
-    }
-    let object = source.as_object()?;
-    if object
-        .get("source")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|kind| kind != "local")
-    {
-        return None;
-    }
-    object.get("path").and_then(serde_json::Value::as_str)
+fn codex_project_directories<'a>(
+    project_root: &'a Path,
+    project_cwd: Option<&'a Path>,
+) -> impl Iterator<Item = &'a Path> {
+    let start = project_cwd
+        .filter(|cwd| cwd.starts_with(project_root))
+        .unwrap_or(project_root);
+    std::iter::successors(Some(start), move |directory| {
+        (*directory != project_root)
+            .then(|| directory.parent())
+            .flatten()
+            .filter(|parent| parent.starts_with(project_root))
+    })
 }
 
-fn plugin_skills_root(plugin_root: &Path) -> Option<PathBuf> {
-    let manifest_path = plugin_root.join(".codex-plugin/plugin.json");
-    let content = std::fs::read_to_string(manifest_path).ok()?;
-    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
-    let skills_path = value
-        .get("skills")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("./skills/");
-    let path = resolve_local_marketplace_path(plugin_root, skills_path)?;
-    if path.is_dir() {
-        Some(path)
-    } else {
-        None
+fn active_codex_profile(config_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let mut inside_section = false;
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') {
+            inside_section = true;
+            continue;
+        }
+        if inside_section || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "profile" {
+            let profile = parse_toml_string(value.trim()).ok()?;
+            if !profile.is_empty()
+                && profile
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Some(profile);
+            }
+        }
     }
-}
-
-fn resolve_local_marketplace_path(base: &Path, raw_path: &str) -> Option<PathBuf> {
-    if !raw_path.starts_with("./") {
-        return None;
-    }
-    let canonical_base = base.canonicalize().ok()?;
-    let canonical_path = canonical_base.join(raw_path).canonicalize().ok()?;
-    if canonical_path.starts_with(&canonical_base) {
-        Some(canonical_path)
-    } else {
-        None
-    }
+    None
 }
 
 fn dedup_roots(roots: Vec<AdapterRoot>) -> Vec<AdapterRoot> {
@@ -904,7 +855,7 @@ enabled = true
     }
 
     #[test]
-    fn scans_local_plugin_marketplace_skill_roots_read_only() {
+    fn local_plugin_marketplace_is_not_a_filesystem_scan_source() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-codex-plugin-roots-{}",
             std::process::id()
@@ -942,28 +893,20 @@ enabled = true
         };
         let roots = adapter.roots(&ctx);
 
-        assert!(
-            roots.iter().any(|root| {
-                root.source == RootSource::Plugin
-                    && root.scope == Scope::AgentGlobal
-                    && root.path == skills_root.canonicalize().expect("canonical plugin skills")
-            }),
-            "local marketplace plugin skills roots should be exposed as read-only plugin roots"
-        );
         assert_eq!(
             roots
                 .iter()
                 .filter(|root| root.source == RootSource::Plugin)
                 .count(),
-            1,
-            "remote and escaping marketplace plugin sources must be skipped"
+            0,
+            "marketplace and cache layouts are runtime implementation details, not scan roots"
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
-    fn plugin_cache_discovers_latest_valid_version_and_skips_unsafe_packages() {
+    fn plugin_cache_is_never_exposed_as_an_adapter_root() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-codex-plugin-cache-{}",
             std::process::id()
@@ -1009,19 +952,16 @@ enabled = true
             project_cwd: None,
             extra_roots: vec![],
         });
-        let plugin_roots = roots
+        let cache_roots = roots
             .iter()
-            .filter(|root| root.source == RootSource::Plugin)
+            .filter(|root| root.path.starts_with(&cache))
             .map(|root| root.path.clone())
             .collect::<Vec<_>>();
 
-        assert_eq!(plugin_roots.len(), 1, "{plugin_roots:?}");
-        assert!(plugin_roots[0].ends_with(
-            Path::new("openai-bundled")
-                .join("browser")
-                .join("1.10.0")
-                .join("skills")
-        ));
+        assert!(
+            cache_roots.is_empty(),
+            "cache roots leaked: {cache_roots:?}"
+        );
         let _ = std::fs::remove_dir_all(temp_root);
     }
 

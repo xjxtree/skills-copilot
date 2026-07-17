@@ -5,14 +5,23 @@ use super::service_local_session_io::{
     MAX_PROVENANCE_TOKEN_BYTES,
 };
 use super::*;
-use skills_copilot_adapters::codex_home_dir;
+use skills_copilot_adapters::{
+    claude_config_dir, codex_home_dir, hermes_home_dir, openclaw_state_dir, opencode_data_dir,
+    pi_agent_dir,
+};
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 mod classification;
+mod message_paging;
 mod paging;
+mod sqlite_sessions;
 
-use classification::{local_session_role_classification, local_session_type_name_classification};
+use classification::{
+    is_internal_local_session_title_block, is_supported_local_session_file,
+    is_unhelpful_local_session_title, local_session_metadata_is_internal,
+    local_session_role_classification, local_session_type_name_classification,
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum LocalSessionSort {
@@ -140,6 +149,24 @@ impl ServiceHost {
             return Err(ServiceError::InvalidRequest(
                 "source_revision requires keyset paging".to_string(),
             ));
+        }
+
+        if requested_roots.is_empty() && auto_discover {
+            if let Some(result) = sqlite_sessions::preview_sqlite_sessions(
+                &adapter_ctx,
+                &params,
+                requested_agent,
+                scope,
+                sort,
+                direction,
+                search.as_deref(),
+                include_content_items,
+                limit,
+                max_excerpt_chars,
+                &redaction_roots,
+            )? {
+                return Ok(result);
+            }
         }
 
         let mut root_requests = requested_roots
@@ -285,6 +312,7 @@ impl ServiceHost {
 
             let inventory = collect_local_session_inventory(
                 &guarded_root,
+                requested_agent,
                 &mut io.inventory_budget,
                 &mut gap_notes,
                 &mut redactor,
@@ -668,6 +696,7 @@ struct LocalSessionParsedMetadata {
     title: Option<String>,
     project_root: Option<String>,
     session_id: Option<String>,
+    is_internal_thread: bool,
 }
 
 fn auto_local_session_roots(
@@ -681,7 +710,7 @@ fn auto_local_session_roots(
     let home = &adapter_ctx.user_home;
 
     if local_session_agent_matches(requested_agent, AgentId::ClaudeCode.as_str()) {
-        let claude_projects = home.join(".claude/projects");
+        let claude_projects = claude_config_dir(adapter_ctx).join("projects");
         let mut pushed_project_root = false;
         if scope == LocalSessionScope::Project {
             for project in project_roots {
@@ -695,13 +724,6 @@ fn auto_local_session_roots(
                 );
             }
         }
-        push_existing_session_root(
-            &mut roots,
-            home,
-            home.join(".claude/sessions"),
-            "auto-discovered-read-only",
-            "auto-local-session",
-        );
         if scope == LocalSessionScope::All || project_roots.is_empty() || !pushed_project_root {
             push_existing_session_root(
                 &mut roots,
@@ -724,18 +746,14 @@ fn auto_local_session_roots(
         );
     }
 
-    if local_session_agent_matches(requested_agent, AgentId::Opencode.as_str()) {
-        push_existing_session_root(
-            &mut roots,
-            home,
-            home.join(".local/share/opencode/storage"),
-            "auto-discovered-read-only",
-            "auto-local-session",
-        );
+    if local_session_agent_matches(requested_agent, AgentId::Opencode.as_str())
+        && opencode_data_dir(adapter_ctx).join("opencode.db").exists()
+    {
+        notes.push("OpenCode sessions are loaded from its current SQLite database.".to_string());
     }
 
     if local_session_agent_matches(requested_agent, AgentId::Pi.as_str()) {
-        let pi_sessions = home.join(".pi/agent/sessions");
+        let pi_sessions = pi_session_dir(adapter_ctx);
         let mut pushed_project_root = false;
         if scope == LocalSessionScope::Project {
             for project in project_roots {
@@ -759,30 +777,22 @@ fn auto_local_session_roots(
                 "auto-local-session",
             );
         }
-        push_existing_session_root(
-            &mut roots,
-            home,
-            home.join(".pi/context-mode/sessions"),
-            "auto-discovered-read-only",
-            "auto-local-session",
-        );
     }
 
     if local_session_agent_matches(requested_agent, AgentId::Hermes.as_str()) {
-        let state_db = home.join(".hermes/state.db");
+        let state_db = hermes_home_dir(adapter_ctx).join("state.db");
         if state_db.exists() {
-            notes.push(
-                "Hermes session storage is SQLite-backed; automatic session parsing is deferred until the schema is confirmed."
-                    .to_string(),
-            );
+            notes
+                .push("Hermes sessions are loaded from its canonical SQLite database.".to_string());
         }
     }
 
     if local_session_agent_matches(requested_agent, AgentId::Openclaw.as_str()) {
-        let openclaw_root = home.join(".openclaw");
-        if openclaw_root.exists() {
+        let openclaw_root = openclaw_state_dir(adapter_ctx);
+        let databases = openclaw_session_databases(&openclaw_root);
+        if !databases.is_empty() {
             notes.push(
-                "OpenClaw session storage is not yet format-confirmed for automatic local parsing."
+                "OpenClaw active sessions were detected in per-agent SQLite stores; use the installed OpenClaw runtime inventory for schema-owned reads."
                     .to_string(),
             );
         }
@@ -796,6 +806,46 @@ fn auto_local_session_roots(
     }
 
     (roots, notes)
+}
+
+fn pi_session_dir(adapter_ctx: &AdapterContext) -> PathBuf {
+    if let Some(path) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return path;
+    }
+    let agent_dir = pi_agent_dir(adapter_ctx);
+    let settings_path = agent_dir.join("settings.json");
+    if let Ok(content) = std::fs::read_to_string(settings_path) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(raw) = value.get("sessionDir").and_then(serde_json::Value::as_str) {
+                let path = PathBuf::from(raw);
+                if path.is_absolute() {
+                    return path;
+                }
+                if let Some(rest) = raw.strip_prefix("~/") {
+                    return adapter_ctx.user_home.join(rest);
+                }
+                return agent_dir.join(path);
+            }
+        }
+    }
+    agent_dir.join("sessions")
+}
+
+fn openclaw_session_databases(state_dir: &Path) -> Vec<PathBuf> {
+    let agents_dir = state_dir.join("agents");
+    let Ok(entries) = std::fs::read_dir(agents_dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path().join("agent/openclaw-agent.sqlite");
+            path.is_file().then_some(path)
+        })
+        .collect()
 }
 
 fn local_session_project_filter_roots(
@@ -911,12 +961,14 @@ fn encode_project_path_session_component(project: &Path) -> String {
 
 fn collect_local_session_inventory(
     root: &GuardedLocalSessionRoot,
+    requested_agent: Option<&str>,
     budget: &mut LocalSessionInventoryBudget,
     gap_notes: &mut Vec<String>,
     redactor: &mut PromptRedactor<'_>,
 ) -> LocalSessionInventory {
     let collected = match root.collect_regular_files(budget, |path| {
-        is_supported_local_session_file(path) && !is_ignored_local_session_file(path)
+        is_supported_local_session_file(path)
+            && !is_ignored_local_session_file(path, requested_agent)
     }) {
         Ok(inventory) => inventory,
         Err(error) => {
@@ -938,19 +990,7 @@ fn collect_local_session_inventory(
     collected.inventory
 }
 
-fn is_supported_local_session_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "jsonl" | "json" | "txt" | "log"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn is_ignored_local_session_file(path: &Path) -> bool {
+fn is_ignored_local_session_file(path: &Path, requested_agent: Option<&str>) -> bool {
     if path
         .file_name()
         .and_then(|name| name.to_str())
@@ -958,14 +998,23 @@ fn is_ignored_local_session_file(path: &Path) -> bool {
     {
         return true;
     }
-    path.components().any(|component| {
-        component.as_os_str().to_str().is_some_and(|name| {
-            matches!(
-                name,
-                "memory" | "subagents" | "message" | "part" | "tool-results"
-            )
+    let agent = requested_agent.unwrap_or_default();
+    let has_component = |candidates: &[&str]| {
+        path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|name| candidates.contains(&name))
         })
-    })
+    };
+    let all_agents = agent.is_empty() || agent.eq_ignore_ascii_case("all");
+    has_component(&["memory", "subagent", "subagents", "subagent-artifacts"])
+        || ((all_agents || agent.eq_ignore_ascii_case(AgentId::ClaudeCode.as_str()))
+            && has_component(&["tool-results"]))
+        || ((all_agents || agent.eq_ignore_ascii_case(AgentId::Opencode.as_str()))
+            && has_component(&["message", "part", "project", "session_diff"]))
+        || (agent.eq_ignore_ascii_case(AgentId::Pi.as_str())
+            && path.file_name().and_then(|name| name.to_str()) == Some("session.jsonl"))
 }
 
 #[rustfmt::skip]
@@ -1016,17 +1065,21 @@ fn local_session_preview_row(
     if content.trim().is_empty() {
         return Ok(LocalSessionPreviewReadOutcome::rejected(budget_exhausted));
     }
-    let mut metadata = local_session_parsed_metadata(path, &content);
+    let mut metadata = local_session_parsed_metadata(path, &content, options.requested_agent);
+    if metadata.is_internal_thread {
+        return Ok(LocalSessionPreviewReadOutcome::rejected(budget_exhausted));
+    }
     if let Some(project_root) =
         local_session_storage_project_root(path, root, options.project_filter_roots)
     {
         metadata.project_root = Some(project_root);
     }
-    if metadata.title.is_none() {
+    if path.starts_with(options.codex_home.join("sessions")) {
         metadata.title = metadata
             .session_id
             .as_deref()
-            .and_then(|session_id| codex_session_index_title(io, options.codex_home, session_id));
+            .and_then(|session_id| codex_session_index_title(io, options.codex_home, session_id))
+            .or(metadata.title);
     }
     if !local_session_matches_scope(
         options.scope,
@@ -2476,6 +2529,8 @@ mod bounded_content_tests {
             .preview_local_sessions_with_test_limits(
                 LocalSessionPreviewParams {
                     agent: Some("opencode".to_string()),
+                    authorized_roots: vec![storage_root.to_string_lossy().to_string()],
+                    auto_discover: Some(false),
                     limit: Some(10),
                     ..LocalSessionPreviewParams::default()
                 },
@@ -2568,18 +2623,46 @@ fn strip_internal_local_session_records(content: &str) -> String {
     let mut visible = String::new();
     for line in content.lines() {
         let trimmed = line.trim();
-        let is_marker = serde_json::from_str::<Value>(trimmed)
-            .ok()
+        let parsed = serde_json::from_str::<Value>(trimmed).ok();
+        let is_marker = parsed
             .as_ref()
             .and_then(local_session_top_level_record_type)
             == Some(LOCAL_SESSION_TRUNCATION_MARKER_TYPE);
-        if trimmed.is_empty() || is_marker {
+        let is_internal_injection = parsed
+            .as_ref()
+            .is_some_and(local_session_json_record_is_internal_injection);
+        if trimmed.is_empty() || is_marker || is_internal_injection {
             continue;
         }
         visible.push_str(line);
         visible.push('\n');
     }
     visible
+}
+
+fn local_session_json_record_is_internal_injection(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(local_session_json_record_is_internal_injection)
+        }
+        Value::Object(map) => {
+            if is_codex_session_wrapper(map) {
+                return map
+                    .get("payload")
+                    .is_some_and(local_session_json_record_is_internal_injection);
+            }
+            json_session_content_kind(map, None)
+                .and_then(|kind| {
+                    json_session_text_for_kind(map, kind)
+                        .map(|text| is_internal_local_session_message(kind, &text))
+                })
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
 }
 
 fn accepted_local_session_content(content: &str) -> String {
@@ -2994,7 +3077,11 @@ fn opencode_storage_root(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn local_session_parsed_metadata(path: &Path, content: &str) -> LocalSessionParsedMetadata {
+fn local_session_parsed_metadata(
+    path: &Path,
+    content: &str,
+    requested_agent: Option<&str>,
+) -> LocalSessionParsedMetadata {
     let mut metadata = LocalSessionParsedMetadata::default();
     let mut parsed_json = false;
     if path
@@ -3016,6 +3103,9 @@ fn local_session_parsed_metadata(path: &Path, content: &str) -> LocalSessionPars
             continue;
         };
         parsed_json = true;
+        if local_session_metadata_is_internal(requested_agent, &value) {
+            metadata.is_internal_thread = true;
+        }
         merge_local_session_metadata(&value, &mut metadata);
     }
     if metadata.title.is_none() && !parsed_json {
@@ -3128,45 +3218,6 @@ fn normalize_local_session_title_candidates(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn is_internal_local_session_title_block(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    lower.starts_with("# agents.md instructions")
-        || lower.starts_with("<permissions instructions>")
-        || lower.starts_with("<environment_context>")
-        || lower.starts_with("<local-command-caveat>")
-        || lower.starts_with("<command-")
-        || lower.starts_with("<skill name=")
-        || lower.starts_with("<turn_")
-        || lower.starts_with("you are a delegated subagent")
-        || lower.starts_with("you are codex")
-        || lower.starts_with("shared instruction entrypoint")
-}
-
-fn is_unhelpful_local_session_title(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    let trimmed = value.trim();
-    lower.starts_with("# agents.md instructions")
-        || lower.starts_with("<permissions instructions>")
-        || lower.starts_with("<environment_context>")
-        || lower.starts_with("<local-command-caveat>")
-        || lower.starts_with("<command-")
-        || lower.starts_with("<skill name=")
-        || lower.starts_with("<turn_")
-        || lower.starts_with("you are a delegated subagent")
-        || lower.starts_with("you are codex")
-        || lower.starts_with("shared instruction entrypoint")
-        || lower == "normal"
-        || lower == "head"
-        || lower == "main"
-        || lower == "null"
-        || lower == "clear"
-        || lower == "cls"
-        || is_image_placeholder_local_session_title(trimmed)
-        || trimmed.starts_with("$HOME")
-        || trimmed.starts_with('/')
-        || is_version_like_local_session_title(trimmed)
-}
-
 fn is_image_placeholder_local_session_title(value: &str) -> bool {
     let trimmed = value.trim();
     if !trimmed.starts_with("[Image #") {
@@ -3262,7 +3313,9 @@ fn load_codex_session_index_titles(
         return HashMap::new();
     };
     let mut titles = HashMap::new();
-    for index_file_name in ["session_index.jsonl", "history.jsonl"] {
+    // Codex appends title changes to each index. Read the fallback history
+    // first, then let later records and the dedicated session index win.
+    for index_file_name in ["history.jsonl", "session_index.jsonl"] {
         let index_path = codex_root.join(index_file_name);
         let Ok(bounded) = read_bounded_text(
             &guarded_root,
@@ -3293,7 +3346,7 @@ fn load_codex_session_index_titles(
             for key in ["thread_name", "title", "text"] {
                 if let Some(title) = map.get(key).and_then(Value::as_str) {
                     if let Some(title) = local_session_text_title_candidate(title) {
-                        titles.entry(row_id.to_string()).or_insert(title);
+                        titles.insert(row_id.to_string(), title);
                         break;
                     }
                 }
@@ -4889,109 +4942,4 @@ fn compact_json_session_text(value: &Value) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct LocalSessionMetrics {
-    user_message_count: usize,
-    total_message_count: usize,
-    tool_call_count: usize,
-    skill_call_count: usize,
-}
-
-fn local_session_metrics(
-    content_drafts: &[LocalSessionContentDraft],
-    skill_call_count: usize,
-) -> LocalSessionMetrics {
-    let mut metrics = LocalSessionMetrics::default();
-    for draft in content_drafts {
-        match draft.kind.as_str() {
-            "user_message" => {
-                metrics.user_message_count += 1;
-                metrics.total_message_count += 1;
-            }
-            "agent_reply" | "thinking" => {
-                metrics.total_message_count += 1;
-            }
-            "tool_call" => {
-                metrics.tool_call_count += 1;
-            }
-            "skill_call" => {}
-            _ => {}
-        }
-    }
-
-    metrics.skill_call_count = skill_call_count;
-    metrics
-}
-
-fn json_session_role(map: &serde_json::Map<String, Value>) -> Option<&str> {
-    let evidence = local_session_role_evidence(map);
-    (!local_session_classification_is_rejected(evidence.classification))
-        .then_some(evidence.role)
-        .flatten()
-}
-
-fn local_session_title(path: &Path, short_hash: &str) -> String {
-    path.file_stem()
-        .and_then(|name| name.to_str())
-        .map(|name| truncate_chars(name, 120))
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| format!("Local session {short_hash}"))
-}
-
-fn infer_local_session_agent(path: &Path) -> Option<String> {
-    let normalized = path.to_string_lossy().to_ascii_lowercase();
-    if normalized.contains(".claude") {
-        Some("claude-code".to_string())
-    } else if normalized.contains(".codex") {
-        Some("codex".to_string())
-    } else if normalized.contains("opencode") {
-        Some("opencode".to_string())
-    } else if normalized.contains(".pi/") {
-        Some("pi".to_string())
-    } else {
-        None
-    }
-}
-
-fn local_preview_redaction_summary_from(
-    summary: LlmPromptRedactionSummary,
-) -> LocalPreviewRedactionSummary {
-    LocalPreviewRedactionSummary {
-        status: "redacted-local-only".to_string(),
-        redacted_value_count: summary.redacted_value_count,
-        redacted_fields: summary.redacted_fields,
-        placeholders: summary
-            .placeholders
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        raw_trace_persisted: false,
-        raw_prompt_persisted: false,
-        raw_response_persisted: false,
-        raw_secret_returned: summary.raw_secret_returned,
-    }
-}
-
-fn local_preview_safety_flags() -> LocalPreviewSafetyFlags {
-    LocalPreviewSafetyFlags {
-        read_only: true,
-        app_local_only: true,
-        provider_request_sent: false,
-        write_back_allowed: false,
-        write_actions_available: false,
-        skill_files_mutated: false,
-        agent_config_mutated: false,
-        script_execution_allowed: false,
-        execution_actions_available: false,
-        config_mutation_allowed: false,
-        snapshot_created: false,
-        triage_mutation_allowed: false,
-        credential_accessed: false,
-        raw_secret_returned: false,
-        raw_prompt_persisted: false,
-        raw_response_persisted: false,
-        raw_trace_persisted: false,
-        cloud_sync_performed: false,
-        telemetry_emitted: false,
-    }
-}
+include!("service_local_sessions/row_helpers.rs");

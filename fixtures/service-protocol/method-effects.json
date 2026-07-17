@@ -8,6 +8,7 @@
     "adapter.listCapabilities": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "adapter.listDiagnostics": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "session.previewLocalSessions": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
+    "session.listLocalSessionMessages": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "llm.status": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "llm.listProviderProfiles": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "llm.saveProviderProfile": { "writes": ["app_data", "keychain"], "process": "never", "network": "never", "confirmation": "none" },

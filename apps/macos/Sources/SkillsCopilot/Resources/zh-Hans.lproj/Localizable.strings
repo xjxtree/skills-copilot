@@ -602,7 +602,7 @@
 "state.enabled" = "已启用";
 "state.disabled" = "已禁用";
 "state.broken" = "损坏";
-"state.missing" = "缺失";
+"state.missing" = "已删除";
 "state.shadowed" = "被遮蔽";
 "state.unknown" = "未知";
 "action.retryRefresh" = "重试刷新";

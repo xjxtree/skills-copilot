@@ -160,6 +160,30 @@ struct LocalSessionPreviewParams: Encodable {
     }
 }
 
+struct LocalSessionMessagePageParams: Encodable {
+    let authorizedRoots: [String]
+    let autoDiscover: Bool?
+    let agent: String?
+    let projectRoot: String?
+    let currentCWD: String?
+    let sessionID: String
+    let limit: Int?
+    let cursor: String?
+    let sourceRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case authorizedRoots = "authorized_roots"
+        case autoDiscover = "auto_discover"
+        case agent
+        case projectRoot = "project_root"
+        case currentCWD = "current_cwd"
+        case sessionID = "session_id"
+        case limit
+        case cursor
+        case sourceRevision = "source_revision"
+    }
+}
+
 struct PrepareLLMActionParams: Encodable {
     let action: LLMAction
     let instanceId: String

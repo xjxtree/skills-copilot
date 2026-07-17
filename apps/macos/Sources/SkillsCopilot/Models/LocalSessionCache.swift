@@ -94,6 +94,7 @@ final class LocalSessionCache {
 
     private(set) var summaryStates: [LocalSessionSnapshotKey: LocalSessionLoadState] = [:]
     private(set) var detailStates: [LocalSessionDetailKey: LocalSessionDetailState] = [:]
+    private(set) var detailCompleteness: [LocalSessionDetailKey: ListCompletenessState] = [:]
 
     private var nextGeneration: UInt64 = 0
     private var summaryGenerations: [LocalSessionSnapshotKey: UInt64] = [:]
@@ -148,16 +149,42 @@ final class LocalSessionCache {
     func beginDetailLoad(for key: LocalSessionDetailKey) -> UInt64? {
         if let state = detailStates[key] {
             switch state {
-            case .loading, .loaded:
+            case .loading:
                 touchDetail(key)
                 return nil
+            case .loaded:
+                if detailCompleteness[key]?.isComplete != false {
+                    touchDetail(key)
+                    return nil
+                }
             case .failed:
                 break
             }
         }
         let generation = makeGeneration()
         detailGenerations[key] = generation
-        detailStates[key] = .loading(generation: generation)
+        let shouldShowInitialLoading: Bool
+        switch detailStates[key] {
+        case .none, .some(.failed):
+            shouldShowInitialLoading = true
+        case .some(.loading), .some(.loaded):
+            shouldShowInitialLoading = false
+        }
+        if shouldShowInitialLoading {
+            detailStates[key] = .loading(generation: generation)
+        }
+        let loadedCount = detailCompleteness[key]?.loadedCount ?? 0
+        detailCompleteness[key] = ListCompletenessState(
+            loadedCount: loadedCount,
+            totalCount: detailCompleteness[key]?.totalCount,
+            hasMore: true,
+            isComplete: false,
+            completeness: loadedCount > 0 ? .partial : .unknown,
+            incompleteReason: nil,
+            loadingPhase: .all,
+            canLoadMore: false,
+            canLoadAll: false
+        )
         touchDetail(key)
         trimDetails()
         return generation
@@ -172,17 +199,83 @@ final class LocalSessionCache {
               detailGenerations[key] == generation,
               case .loading(generation) = detailStates[key] else { return false }
         detailStates[key] = .loaded(row)
+        detailCompleteness[key] = ListCompletenessState(
+            loadedCount: row.contentItems.count,
+            totalCount: row.contentItems.count,
+            hasMore: false,
+            isComplete: true,
+            completeness: .complete,
+            incompleteReason: nil,
+            loadingPhase: .idle,
+            canLoadMore: false,
+            canLoadAll: false
+        )
         touchDetail(key)
         trimDetails()
         return true
     }
 
-    func failDetail(key: LocalSessionDetailKey, generation: UInt64, displayError: String) {
-        guard detailGenerations[key] == generation,
-              case .loading(generation) = detailStates[key] else { return }
-        detailStates[key] = .failed(displayError: displayError)
+    func publishDetailProgress(
+        _ row: LocalSessionPreviewRow,
+        completeness: ListCompletenessState,
+        key: LocalSessionDetailKey,
+        generation: UInt64
+    ) -> Bool {
+        guard row.id == key.sessionID,
+              detailGenerations[key] == generation,
+              detailStates[key] != nil else { return false }
+        detailStates[key] = .loaded(row)
+        detailCompleteness[key] = completeness
         touchDetail(key)
         trimDetails()
+        return true
+    }
+
+    func failDetail(
+        key: LocalSessionDetailKey,
+        generation: UInt64,
+        displayError: String,
+        reason: ListIncompleteReason = .pageFailed
+    ) {
+        guard detailGenerations[key] == generation else { return }
+        if case .loaded = detailStates[key] {
+            let loadedCount = detailCompleteness[key]?.loadedCount ?? 0
+            detailCompleteness[key] = ListCompletenessState(
+                loadedCount: loadedCount,
+                totalCount: detailCompleteness[key]?.totalCount,
+                hasMore: true,
+                isComplete: false,
+                completeness: .incomplete,
+                incompleteReason: reason,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: true
+            )
+        } else if case .loading(generation) = detailStates[key] {
+            detailStates[key] = .failed(displayError: displayError)
+            detailCompleteness.removeValue(forKey: key)
+        } else {
+            return
+        }
+        touchDetail(key)
+        trimDetails()
+    }
+
+    func cancelDetailLoad(key: LocalSessionDetailKey) {
+        guard case .loaded = detailStates[key] else { return }
+        detailGenerations[key] = makeGeneration()
+        let loadedCount = detailCompleteness[key]?.loadedCount ?? 0
+        detailCompleteness[key] = ListCompletenessState(
+            loadedCount: loadedCount,
+            totalCount: detailCompleteness[key]?.totalCount,
+            hasMore: true,
+            isComplete: false,
+            completeness: .partial,
+            incompleteReason: .pageFailed,
+            loadingPhase: .idle,
+            canLoadMore: false,
+            canLoadAll: true
+        )
     }
 
     func successfulSnapshot(for key: LocalSessionSnapshotKey) -> LocalSessionSnapshot? {
@@ -245,6 +338,7 @@ final class LocalSessionCache {
         for detailKey in obsolete {
             detailStates.removeValue(forKey: detailKey)
             detailGenerations.removeValue(forKey: detailKey)
+            detailCompleteness.removeValue(forKey: detailKey)
         }
         detailRecency.removeAll { $0.source != key }
     }
@@ -264,6 +358,7 @@ final class LocalSessionCache {
             detailRecency.removeFirst()
             detailStates.removeValue(forKey: oldest)
             detailGenerations.removeValue(forKey: oldest)
+            detailCompleteness.removeValue(forKey: oldest)
         }
     }
 

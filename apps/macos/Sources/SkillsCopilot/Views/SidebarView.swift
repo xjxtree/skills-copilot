@@ -90,7 +90,8 @@ struct SidebarView: View {
     }
 
     private var agentSkills: [SkillRecord] {
-        store.skills.filter { store.agentFilter.includes($0) }
+        SkillListModel.currentSkills(store.skills)
+            .filter { store.agentFilter.includes($0) }
     }
 
     private var agentDisabledSkills: [SkillRecord] {
@@ -98,11 +99,13 @@ struct SidebarView: View {
     }
 
     private var agentSkillCount: Int {
-        store.selectedAgentHealthSummary?.totalCount ?? agentSkills.count
+        agentSkills.count
     }
 
     private var agentEnabledCount: Int {
-        store.selectedAgentHealthSummary?.enabledCount ?? agentSkills.filter(\.enabled).count
+        agentSkills.filter {
+            DisplayText.statusKind($0.state, enabled: $0.enabled) == .enabled
+        }.count
     }
 
     private var agentFindingCount: Int {

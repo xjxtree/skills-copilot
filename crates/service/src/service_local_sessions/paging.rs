@@ -137,6 +137,7 @@ impl ServiceHost {
             };
             let inventory = collect_local_session_inventory(
                 &guarded_root,
+                requested_agent,
                 &mut io.inventory_budget,
                 &mut gap_notes,
                 &mut redactor,

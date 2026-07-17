@@ -29,6 +29,15 @@ pub(super) fn service_protocol_fixtures_decode() {
                         });
                 assert_eq!(params.paging_mode.as_deref(), Some("keyset"));
             }
+            if request.method == "session.listLocalSessionMessages" {
+                let params = serde_json::from_value::<WireLocalSessionMessagePageParams>(
+                    request.params.clone(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("request fixture {} params failed: {error}", path.display())
+                });
+                assert!(!params.session_id.is_empty());
+            }
             request_methods.push(request.method);
         }
         if name.ends_with(".response.json") {
@@ -123,6 +132,21 @@ struct WireLocalSessionPreviewParams {
     direction: Option<String>,
     max_files: Option<usize>,
     max_excerpt_chars: Option<usize>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLocalSessionMessagePageParams {
+    authorized_roots: Vec<String>,
+    auto_discover: Option<bool>,
+    agent: Option<String>,
+    project_root: Option<String>,
+    current_cwd: Option<String>,
+    session_id: String,
+    limit: Option<usize>,
+    cursor: Option<String>,
+    source_revision: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -431,6 +455,31 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert!(!row.content_included);
                 assert!(row.content_items.is_empty());
             }
+        }
+        "session.listLocalSessionMessages" => {
+            let page: WireLocalSessionMessagePageResult =
+                decode_fixture_result(method, result, path);
+            assert_eq!(page.generated_by, "local-v2.99");
+            assert_eq!(page.returned_count, page.content_items.len());
+            assert_eq!(page.total_count, Some(page.returned_count));
+            assert!(!page.has_more);
+            assert!(page.next_cursor.is_none());
+            assert!(page.source_revision.starts_with("sha256:"));
+            assert_eq!(page.source_completeness, "enumerable");
+            assert!(page.incomplete_reason.is_none());
+            assert_eq!(page.scanned_through_bytes, page.snapshot_bytes);
+            assert!(page.scanned_bytes <= page.snapshot_bytes);
+            assert!(page.read_only);
+            assert!(!page.provider_request_sent);
+            assert!(!page.raw_prompt_persisted);
+            assert!(!page.raw_response_persisted);
+            assert!(!page.raw_trace_persisted);
+            assert_local_preview_safety(&page.safety_flags);
+            assert!(!page.redaction_summary.raw_trace_persisted);
+            assert!(page
+                .content_items
+                .iter()
+                .all(|item| { matches!(item.kind.as_str(), "user_message" | "agent_reply") }));
         }
         "llm.status" => {
             let status: WireLlmStatus = decode_fixture_result(method, result, path);

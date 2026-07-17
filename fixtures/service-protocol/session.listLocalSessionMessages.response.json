@@ -1,0 +1,63 @@
+{
+  "id": "fixture-session-messages",
+  "ok": true,
+  "result": {
+    "generated_by": "local-v2.99",
+    "session_id": "local-session-fixture",
+    "content_items": [
+      {
+        "id": "session-message-0123456789abcdef",
+        "kind": "user_message",
+        "title": "User",
+        "text": "Review the current implementation.",
+        "char_count": 34,
+        "timestamp": 1784246400000,
+        "evidence_refs": ["session.message:0123456789abcdef"]
+      }
+    ],
+    "returned_count": 1,
+    "total_count": 1,
+    "has_more": false,
+    "source_revision": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "source_completeness": "enumerable",
+    "scanned_bytes": 4096,
+    "scanned_through_bytes": 4096,
+    "snapshot_bytes": 4096,
+    "redaction_summary": {
+      "status": "redacted-local-only",
+      "redacted_value_count": 0,
+      "redacted_fields": ["local paths", "secret-like tokens and private URLs"],
+      "placeholders": ["$HOME", "<project-root>", "<project-cwd>", "<app-data-dir>", "<redacted>", "<redacted-url>"],
+      "raw_trace_persisted": false,
+      "raw_prompt_persisted": false,
+      "raw_response_persisted": false,
+      "raw_secret_returned": false
+    },
+    "safety_flags": {
+      "read_only": true,
+      "app_local_only": true,
+      "provider_request_sent": false,
+      "write_back_allowed": false,
+      "write_actions_available": false,
+      "skill_files_mutated": false,
+      "agent_config_mutated": false,
+      "script_execution_allowed": false,
+      "execution_actions_available": false,
+      "config_mutation_allowed": false,
+      "snapshot_created": false,
+      "triage_mutation_allowed": false,
+      "credential_accessed": false,
+      "raw_secret_returned": false,
+      "raw_prompt_persisted": false,
+      "raw_response_persisted": false,
+      "raw_trace_persisted": false,
+      "cloud_sync_performed": false,
+      "telemetry_emitted": false
+    },
+    "read_only": true,
+    "provider_request_sent": false,
+    "raw_prompt_persisted": false,
+    "raw_response_persisted": false,
+    "raw_trace_persisted": false
+  }
+}

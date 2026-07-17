@@ -1,0 +1,13 @@
+{
+  "id": "fixture-session-messages",
+  "method": "session.listLocalSessionMessages",
+  "params": {
+    "authorized_roots": ["/tmp/agent-copilot-fixture-sessions"],
+    "auto_discover": false,
+    "agent": "codex",
+    "project_root": "/tmp/agent-copilot-fixture-project",
+    "current_cwd": "/tmp/agent-copilot-fixture-project",
+    "session_id": "local-session-fixture",
+    "limit": 40
+  }
+}

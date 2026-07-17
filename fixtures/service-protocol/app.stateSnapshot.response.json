@@ -16,6 +16,7 @@
         "adapter.listCapabilities",
         "adapter.listDiagnostics",
         "session.previewLocalSessions",
+        "session.listLocalSessionMessages",
         "llm.status",
         "llm.listProviderProfiles",
         "llm.saveProviderProfile",

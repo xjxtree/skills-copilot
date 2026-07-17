@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{AgentId, Scope, SkillInstance};
 
@@ -8,6 +8,49 @@ pub trait AgentAdapter: Send + Sync {
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot>;
     fn link_target_roots(&self, _ctx: &AdapterContext) -> Vec<AdapterRoot> {
         Vec::new()
+    }
+    /// Returns whether scanner traversal may enter a directory below one of
+    /// this adapter's declared roots. Adapters may further narrow traversal,
+    /// while the default rejects well-known generated, cache, quarantine, and
+    /// VCS directories that are never authoritative skill sources.
+    fn should_descend(&self, _root: &AdapterRoot, relative_dir: &Path) -> bool {
+        !relative_dir.components().any(|component| {
+            matches!(
+                component.as_os_str().to_str(),
+                Some(
+                    ".git"
+                        | ".svn"
+                        | ".hg"
+                        | ".cache"
+                        | "cache"
+                        | "caches"
+                        | "tmp"
+                        | "temp"
+                        | "dist"
+                        | "build"
+                        | "target"
+                        | "out"
+                        | "coverage"
+                        | "__pycache__"
+                        | ".hub"
+                        | "quarantine"
+                        | "archive"
+                        | "archives"
+                )
+            )
+        })
+    }
+    /// Returns whether an otherwise valid `SKILL.md` has the documented shape
+    /// for this adapter and root. This keeps source-specific layout semantics
+    /// out of the generic filesystem walker.
+    fn accepts_skill_path(&self, _root: &AdapterRoot, _relative_path: &Path) -> bool {
+        true
+    }
+    /// Returns whether a regular file can represent a skill entry. Most
+    /// adapters use directory-based `SKILL.md`; Pi also supports top-level
+    /// Markdown skill files in selected roots.
+    fn is_skill_file(&self, path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
     }
     fn parse(&self, path: &std::path::Path) -> Result<SkillInstance, AdapterError>;
     fn parse_content(

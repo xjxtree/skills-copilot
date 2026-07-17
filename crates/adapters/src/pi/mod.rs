@@ -1,8 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use crate::shared::{
     required_frontmatter_string, split_yaml_frontmatter, stable_path_id, validate_kebab_skill_name,
 };
+
+use crate::environment::{absolute_env_path, expand_local_path, normalize_path_lexically};
 use skills_copilot_core::{
     AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
@@ -21,10 +26,11 @@ impl AgentAdapter for PiAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        let agent_dir = pi_agent_dir(ctx);
         let mut roots = vec![
             AdapterRoot {
                 scope: Scope::AgentGlobal,
-                path: ctx.user_home.join(".pi/agent/skills"),
+                path: agent_dir.join("skills"),
                 source: RootSource::UserHome,
             },
             AdapterRoot {
@@ -41,7 +47,10 @@ impl AgentAdapter for PiAdapter {
             ));
         }
 
-        roots
+        roots.extend(pi_configured_skill_roots(ctx, &agent_dir));
+        roots.extend(pi_package_skill_roots(ctx, &agent_dir));
+
+        dedup_roots(roots)
     }
 
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
@@ -101,13 +110,38 @@ impl AgentAdapter for PiAdapter {
         instance.enabled
     }
 
+    fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
+        if relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
+            return !relative_path.as_os_str().is_empty();
+        }
+        root.source != RootSource::Compatibility
+            && relative_path.components().count() == 1
+            && relative_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    }
+
+    fn is_skill_file(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    }
+
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
-        let mut paths = vec![ctx.user_home.join(".pi/agent/settings.json")];
+        let mut paths = vec![pi_agent_dir(ctx).join("settings.json")];
         if let Some(project_root) = &ctx.project_root {
-            paths.push(project_root.join(".pi/settings.json"));
+            paths.extend(
+                pi_project_directories(project_root, ctx.project_cwd.as_deref())
+                    .map(|directory| directory.join(".pi/settings.json")),
+            );
         }
         paths
     }
+}
+
+pub fn pi_agent_dir(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("PI_CODING_AGENT_DIR").unwrap_or_else(|| ctx.user_home.join(".pi/agent"))
 }
 
 impl AgentConfigAdapter for PiAdapter {
@@ -117,7 +151,7 @@ impl AgentConfigAdapter for PiAdapter {
         instance: &SkillInstance,
         on: bool,
     ) -> Result<(), AdapterError> {
-        doc.text = patch_pi_config(&doc.text, &instance.name, on, instance.scope)?;
+        doc.text = patch_pi_config(&doc.text, &instance.path, on, instance.scope)?;
         Ok(())
     }
 }
@@ -150,13 +184,8 @@ fn parse_skill_content(content: &str) -> Result<ParsedSkill, String> {
 }
 
 fn pi_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Vec<AdapterRoot> {
-    let start = project_cwd
-        .filter(|cwd| cwd.starts_with(project_root))
-        .unwrap_or(project_root);
     let mut roots = Vec::new();
-    let mut current = Some(start);
-
-    while let Some(dir) = current {
+    for dir in pi_project_directories(project_root, project_cwd) {
         roots.push(AdapterRoot {
             scope: Scope::AgentProject,
             path: dir.join(".pi/skills"),
@@ -167,15 +196,165 @@ fn pi_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Ve
             path: dir.join(".agents/skills"),
             source: RootSource::Compatibility,
         });
-        if dir == project_root {
-            break;
-        }
-        current = dir
-            .parent()
-            .filter(|parent| parent.starts_with(project_root));
     }
 
     roots
+}
+
+fn pi_project_directories<'a>(
+    project_root: &'a Path,
+    project_cwd: Option<&'a Path>,
+) -> impl Iterator<Item = &'a Path> {
+    let start = project_cwd
+        .filter(|cwd| cwd.starts_with(project_root))
+        .unwrap_or(project_root);
+    std::iter::successors(Some(start), move |directory| {
+        (*directory != project_root)
+            .then(|| directory.parent())
+            .flatten()
+            .filter(|parent| parent.starts_with(project_root))
+    })
+}
+
+fn pi_settings_sources(ctx: &AdapterContext, agent_dir: &Path) -> Vec<(Scope, PathBuf)> {
+    let mut sources = vec![(Scope::AgentGlobal, agent_dir.join("settings.json"))];
+    if let Some(project_root) = &ctx.project_root {
+        sources.extend(
+            pi_project_directories(project_root, ctx.project_cwd.as_deref())
+                .map(|directory| (Scope::AgentProject, directory.join(".pi/settings.json"))),
+        );
+    }
+    sources
+}
+
+fn pi_configured_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<AdapterRoot> {
+    pi_settings_sources(ctx, agent_dir)
+        .into_iter()
+        .flat_map(|(scope, config_path)| {
+            let Ok(content) = std::fs::read_to_string(&config_path) else {
+                return Vec::new();
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+                return Vec::new();
+            };
+            let base = if scope == Scope::AgentProject {
+                config_path.parent().unwrap_or(agent_dir)
+            } else {
+                agent_dir
+            };
+            value
+                .get("skills")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|raw| {
+                    !matches!(raw.as_bytes().first(), Some(b'!') | Some(b'+') | Some(b'-'))
+                })
+                .filter_map(|raw| expand_local_path(raw, &ctx.user_home, base))
+                .map(|path| AdapterRoot {
+                    scope,
+                    path,
+                    source: RootSource::Configured,
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn pi_package_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<AdapterRoot> {
+    let mut roots = Vec::new();
+    for (scope, config_path) in pi_settings_sources(ctx, agent_dir) {
+        let Ok(content) = std::fs::read_to_string(&config_path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let Some(packages) = value.get("packages").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        let config_base = config_path.parent().unwrap_or(agent_dir);
+        for package in packages {
+            let source = package
+                .as_str()
+                .or_else(|| package.get("source").and_then(serde_json::Value::as_str));
+            if package
+                .get("skills")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                continue;
+            }
+            let Some(package_root) = source.and_then(|source| {
+                pi_installed_package_root(source, agent_dir, config_base, &ctx.user_home, scope)
+            }) else {
+                continue;
+            };
+            let manifest_path = package_root.join("package.json");
+            let Ok(manifest_text) = std::fs::read_to_string(manifest_path) else {
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_text) else {
+                continue;
+            };
+            let skill_paths = manifest
+                .get("pi")
+                .and_then(|pi| pi.get("skills"))
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_else(|| vec![serde_json::Value::String("./skills".to_string())]);
+            roots.extend(
+                skill_paths
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(|raw| expand_local_path(raw, &ctx.user_home, &package_root))
+                    .map(|path| AdapterRoot {
+                        scope,
+                        path,
+                        source: RootSource::Plugin,
+                    }),
+            );
+        }
+    }
+    roots
+}
+
+fn pi_installed_package_root(
+    source: &str,
+    agent_dir: &Path,
+    config_base: &Path,
+    user_home: &Path,
+    scope: Scope,
+) -> Option<PathBuf> {
+    let source = source.trim();
+    if let Some(package) = source.strip_prefix("npm:") {
+        if package.is_empty()
+            || package
+                .split('/')
+                .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+        {
+            return None;
+        }
+        let install_root = if scope == Scope::AgentProject {
+            config_base
+        } else {
+            agent_dir
+        };
+        return Some(install_root.join("npm/node_modules").join(package));
+    }
+    if source.starts_with("git:") || source.starts_with("http:") || source.starts_with("https:") {
+        return None;
+    }
+    expand_local_path(source, user_home, config_base)
+}
+
+fn dedup_roots(roots: Vec<AdapterRoot>) -> Vec<AdapterRoot> {
+    let mut seen = HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| seen.insert((root.scope, root.path.clone())))
+        .collect()
 }
 
 fn fallback_skill_name(path: &Path) -> String {
@@ -195,16 +374,12 @@ fn fallback_skill_name(path: &Path) -> String {
 
 fn patch_pi_config(
     content: &str,
-    skill_name: &str,
+    skill_path: &Path,
     enabled: bool,
     scope: Scope,
 ) -> Result<String, AdapterError> {
     let mut value = if content.trim().is_empty() {
-        serde_json::json!({
-            "skills": {
-                "disabled": []
-            }
-        })
+        serde_json::json!({ "skills": [] })
     } else {
         serde_json::from_str(content)
             .map_err(|err| AdapterError::new(format!("invalid Pi settings JSON: {err}")))?
@@ -216,15 +391,22 @@ fn patch_pi_config(
         ));
     }
 
-    let disabled = pi_disabled_array_mut(&mut value)?;
-    if enabled {
-        disabled.retain(|value| value.as_str() != Some(skill_name));
-    } else if !disabled
-        .iter()
-        .any(|value| value.as_str() == Some(skill_name))
-    {
-        disabled.push(serde_json::Value::String(skill_name.to_string()));
-    }
+    let settings = pi_skill_paths_array_mut(&mut value)?;
+    let normalized_skill = normalize_path_lexically(skill_path);
+    settings.retain(|value| {
+        let Some(raw) = value.as_str() else {
+            return true;
+        };
+        let Some(target) = raw.strip_prefix(['!', '+', '-']) else {
+            return true;
+        };
+        normalize_path_lexically(Path::new(target)) != normalized_skill
+    });
+    let prefix = if enabled { '+' } else { '-' };
+    settings.push(serde_json::Value::String(format!(
+        "{prefix}{}",
+        normalized_skill.display()
+    )));
 
     let mut text = serde_json::to_string_pretty(&value)
         .map_err(|err| AdapterError::new(format!("failed to serialize Pi settings: {err}")))?;
@@ -245,50 +427,73 @@ fn pi_project_explicitly_untrusted(value: &serde_json::Value) -> bool {
             == Some(false)
 }
 
-fn pi_disabled_array_mut(
+fn pi_skill_paths_array_mut(
     value: &mut serde_json::Value,
 ) -> Result<&mut Vec<serde_json::Value>, AdapterError> {
     let object = value
         .as_object_mut()
         .ok_or_else(|| AdapterError::new("Pi settings must be a JSON object"))?;
-    if object.contains_key("disabledSkills") {
-        return object
-            .get_mut("disabledSkills")
-            .and_then(serde_json::Value::as_array_mut)
-            .ok_or_else(|| AdapterError::new("Pi disabledSkills must be an array"));
-    }
     let skills = object
         .entry("skills")
-        .or_insert_with(|| serde_json::json!({}));
-    let skills_obj = skills
-        .as_object_mut()
-        .ok_or_else(|| AdapterError::new("Pi skills settings must be a JSON object"))?;
-    let disabled = skills_obj
-        .entry("disabled")
         .or_insert_with(|| serde_json::json!([]));
-    disabled
+    if skills.as_object().is_some_and(|legacy| {
+        legacy.len() == 1
+            && legacy
+                .get("disabled")
+                .and_then(serde_json::Value::as_array)
+                .is_some()
+    }) {
+        // Migrate the exact non-Pi shape emitted by early Agent Copilot
+        // builds. It never affected Pi runtime loading.
+        *skills = serde_json::json!([]);
+    }
+    skills
         .as_array_mut()
-        .ok_or_else(|| AdapterError::new("Pi skills.disabled must be an array"))
+        .ok_or_else(|| AdapterError::new("Pi skills must be an array"))
 }
 
-pub fn pi_disabled_skill_names(content: &str) -> Result<Vec<String>, AdapterError> {
+pub fn pi_skill_enabled_by_settings(
+    content: &str,
+    settings_path: &Path,
+    skill_path: &Path,
+    user_home: &Path,
+) -> Result<bool, AdapterError> {
     let value: serde_json::Value = serde_json::from_str(content)
         .map_err(|err| AdapterError::new(format!("invalid Pi settings JSON: {err}")))?;
-    let disabled = value
-        .get("disabledSkills")
+    // `disabledSkills` was emitted by early Agent Copilot builds but is not a
+    // Pi setting. Deliberately ignore it so diagnostics reflect Pi's runtime.
+    let patterns = value
+        .get("skills")
         .and_then(serde_json::Value::as_array)
-        .or_else(|| {
-            value
-                .get("skills")
-                .and_then(|skills| skills.get("disabled"))
-                .and_then(serde_json::Value::as_array)
-        });
-    Ok(disabled
         .into_iter()
         .flatten()
         .filter_map(serde_json::Value::as_str)
-        .map(str::to_string)
-        .collect())
+        .collect::<Vec<_>>();
+    let base = settings_path.parent().unwrap_or(user_home);
+    let matches = |raw: &str| {
+        expand_local_path(raw, user_home, base).is_some_and(|target| {
+            let target = target
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path_lexically(&target));
+            let skill = skill_path
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path_lexically(skill_path));
+            target == skill || skill.parent().is_some_and(|parent| target == parent)
+        })
+    };
+    let excluded = patterns
+        .iter()
+        .filter_map(|raw| raw.strip_prefix('!'))
+        .any(matches);
+    let included = patterns
+        .iter()
+        .filter_map(|raw| raw.strip_prefix('+'))
+        .any(matches);
+    let force_excluded = patterns
+        .iter()
+        .filter_map(|raw| raw.strip_prefix('-'))
+        .any(matches);
+    Ok((!excluded || included) && !force_excluded)
 }
 
 #[cfg(test)]

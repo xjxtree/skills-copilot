@@ -8,7 +8,7 @@ This file summarizes persisted and transient data.
 | --- | --- | --- |
 | Agent and scope ids | `crates/core` | Stable wire strings; no I/O base layer |
 | Skill catalog rows | Rust service | Derived from local roots and fixtures |
-| Session preview rows | Rust service | Redacted and bounded before UI display |
+| Session preview rows | Rust service | Redacted bounded summaries/process samples plus transient paged user/final-Agent messages |
 | Skill usage rows | Rust service | Derived from explicit invocation markers |
 | Config snapshots | Rust service | Guarded reads/writes for supported adapters |
 | Model-task matches | App-local JSON | Redacted metadata for Agent Copilot AI features only |
@@ -24,19 +24,30 @@ This file summarizes persisted and transient data.
 - Project-scoped config snapshots persist their canonical `project_root` and
   are filtered and rollback-validated against the active project context.
   Legacy project snapshots without this binding are retained but not exposed.
-- Session preview data and skill usage summaries are read-only diagnostics and
-  must not persist raw transcript content.
+- Session preview rows model user-facing, top-level conversations rather than
+  every transcript-like file. Adapter-specific subagent, scheduled, host-owned,
+  runtime-state, and other synthetic/internal records are filtered from both
+  summaries and details using source metadata and documented directory
+  boundaries. Session preview data, transient selected-session message pages,
+  and skill usage summaries are read-only diagnostics and must not persist raw
+  transcript content. The message-page cursor fixes one source snapshot and is
+  retained only in native in-memory loading state.
 - Scan root and issue diagnostics are transient response data. Partial roots
   preserve unseen catalog rows, and diagnostic paths/details are redacted
   before crossing the service boundary.
 - An exact complete adapter scan marks unseen rows for that agent and current
   project context as `missing`, including rows whose old root disappeared.
-  Runtime conflict groups are derived only from current loaded/enabled rows;
-  Codex cache provenance alone does not make an inventoried plugin active.
+  These historical rows appear only through the explicit Deleted filter; the
+  default All projection and current totals exclude them. Runtime conflict
+  groups are derived only from current loaded/enabled rows.
 - Codex catalog rows retain the last scanned state. Read-only service
   projections overlay the current guarded `skills.config` disabled paths in
   memory and can restore stale loaded/disabled rows when an external override
   is removed; this does not mutate SQLite.
+- Legacy Codex plugin-cache rows may remain persisted for audit continuity but
+  are excluded from current list, instance, analysis, conflict, and Deleted
+  projections. Legacy marketplace rows are historical records, not active scan
+  sources; current runtime-only skills use read-only runtime provenance.
 - Fixture data is test input; it must keep its wire shape unless protocol drift
   work is explicitly scoped.
 - Installed manager rows expose compact skill identity, source kind, scope, and

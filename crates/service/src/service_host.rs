@@ -22,7 +22,7 @@ impl ServiceHost {
             user_home,
             project_root: project_root.clone(),
             project_cwd: project_cwd.or(project_root),
-            extra_roots: extra_claude_roots_from_env(),
+            extra_roots: Vec::new(),
         };
         Ok(Self {
             app_data_dir,
@@ -77,6 +77,10 @@ impl ServiceHost {
                     serde_json::from_value(request.params)?
                 };
                 serde_json::to_value(self.preview_local_sessions(params)?).map_err(Into::into)
+            }
+            "session.listLocalSessionMessages" => {
+                let params: LocalSessionMessagePageParams = serde_json::from_value(request.params)?;
+                serde_json::to_value(self.list_local_session_messages(params)?).map_err(Into::into)
             }
             "llm.status" => serde_json::to_value(self.llm_status()).map_err(Into::into),
             "llm.listProviderProfiles" => {

@@ -9,6 +9,8 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
 
+use crate::environment::{absolute_env_path, env_flag, expand_local_path};
+
 #[derive(Debug, Default)]
 pub struct OpencodeAdapter;
 
@@ -22,28 +24,34 @@ impl AgentAdapter for OpencodeAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
-        let mut roots = vec![
-            AdapterRoot {
-                scope: Scope::AgentGlobal,
-                path: ctx.user_home.join(".config/opencode/skills"),
-                source: RootSource::UserHome,
-            },
-            AdapterRoot {
-                scope: Scope::AgentGlobal,
-                path: ctx.user_home.join(".claude/skills"),
-                source: RootSource::UserHome,
-            },
-            AdapterRoot {
+        let config_dir = opencode_config_dir(ctx);
+        let mut roots = vec![AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: config_dir.join("skills"),
+            source: RootSource::UserHome,
+        }];
+
+        if !env_flag("OPENCODE_DISABLE_EXTERNAL_SKILLS") {
+            if !env_flag("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS") {
+                roots.push(AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: ctx.user_home.join(".claude/skills"),
+                    source: RootSource::Compatibility,
+                });
+            }
+            roots.push(AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: ctx.user_home.join(".agents/skills"),
-                source: RootSource::UserHome,
-            },
-        ];
+                source: RootSource::Compatibility,
+            });
+        }
 
         if let Some(project_root) = &ctx.project_root {
             roots.extend(opencode_project_skill_roots(
                 project_root,
                 ctx.project_cwd.as_deref(),
+                !env_flag("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
+                !env_flag("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"),
             ));
         }
 
@@ -108,12 +116,39 @@ impl AgentAdapter for OpencodeAdapter {
         instance.enabled
     }
 
+    fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
+        let components = relative_path.components().count();
+        (components == 2 || (root.source == RootSource::Configured && components == 1))
+            && relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+    }
+
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
         opencode_config_sources(ctx)
             .into_iter()
-            .map(|source| source.path)
+            .filter_map(|source| source.path)
             .collect()
     }
+}
+
+pub fn opencode_data_dir(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("XDG_DATA_HOME")
+        .map(|path| path.join("opencode"))
+        .unwrap_or_else(|| ctx.user_home.join(".local/share/opencode"))
+}
+
+fn opencode_config_dir(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("OPENCODE_CONFIG_DIR")
+        .or_else(|| absolute_env_path("XDG_CONFIG_HOME").map(|path| path.join("opencode")))
+        .unwrap_or_else(|| ctx.user_home.join(".config/opencode"))
+}
+
+pub fn opencode_user_config_path(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("OPENCODE_CONFIG")
+        .unwrap_or_else(|| opencode_config_dir(ctx).join("opencode.json"))
+}
+
+pub fn opencode_user_skills_dir(ctx: &AdapterContext) -> PathBuf {
+    opencode_config_dir(ctx).join("skills")
 }
 
 impl AgentConfigAdapter for OpencodeAdapter {
@@ -163,6 +198,8 @@ fn parse_skill_content(content: &str, directory_name: &str) -> Result<ParsedSkil
 fn opencode_project_skill_roots(
     project_root: &Path,
     project_cwd: Option<&Path>,
+    external_skills_enabled: bool,
+    claude_skills_enabled: bool,
 ) -> Vec<AdapterRoot> {
     let start = project_cwd
         .filter(|cwd| cwd.starts_with(project_root))
@@ -176,16 +213,20 @@ fn opencode_project_skill_roots(
             path: dir.join(".opencode/skills"),
             source: RootSource::Project,
         });
-        roots.push(AdapterRoot {
-            scope: Scope::AgentProject,
-            path: dir.join(".claude/skills"),
-            source: RootSource::Project,
-        });
-        roots.push(AdapterRoot {
-            scope: Scope::AgentProject,
-            path: dir.join(".agents/skills"),
-            source: RootSource::Project,
-        });
+        if external_skills_enabled {
+            if claude_skills_enabled {
+                roots.push(AdapterRoot {
+                    scope: Scope::AgentProject,
+                    path: dir.join(".claude/skills"),
+                    source: RootSource::Compatibility,
+                });
+            }
+            roots.push(AdapterRoot {
+                scope: Scope::AgentProject,
+                path: dir.join(".agents/skills"),
+                source: RootSource::Compatibility,
+            });
+        }
         if dir == project_root {
             break;
         }
@@ -199,32 +240,73 @@ fn opencode_project_skill_roots(
 
 #[derive(Debug)]
 struct OpencodeConfigSource {
-    path: PathBuf,
+    path: Option<PathBuf>,
     scope: Scope,
+    inline_content: Option<String>,
 }
 
 fn opencode_config_sources(ctx: &AdapterContext) -> Vec<OpencodeConfigSource> {
+    let config_dir = opencode_config_dir(ctx);
     let mut sources = vec![
         OpencodeConfigSource {
-            path: ctx.user_home.join(".config/opencode/opencode.json"),
+            path: Some(config_dir.join("opencode.json")),
             scope: Scope::AgentGlobal,
+            inline_content: None,
         },
         OpencodeConfigSource {
-            path: ctx.user_home.join(".config/opencode/opencode.jsonc"),
+            path: Some(config_dir.join("opencode.jsonc")),
             scope: Scope::AgentGlobal,
+            inline_content: None,
         },
     ];
-    if let Some(project_root) = &ctx.project_root {
+    if let Some(path) = absolute_env_path("OPENCODE_CONFIG") {
         sources.push(OpencodeConfigSource {
-            path: project_root.join("opencode.json"),
-            scope: Scope::AgentProject,
-        });
-        sources.push(OpencodeConfigSource {
-            path: project_root.join("opencode.jsonc"),
-            scope: Scope::AgentProject,
+            path: Some(path),
+            scope: Scope::AgentGlobal,
+            inline_content: None,
         });
     }
+    if let Ok(content) = std::env::var("OPENCODE_CONFIG_CONTENT") {
+        if !content.trim().is_empty() {
+            sources.push(OpencodeConfigSource {
+                path: None,
+                scope: Scope::AgentGlobal,
+                inline_content: Some(content),
+            });
+        }
+    }
+    if let Some(project_root) = &ctx.project_root {
+        for directory in opencode_project_directories(project_root, ctx.project_cwd.as_deref()) {
+            for relative in [
+                "opencode.json",
+                "opencode.jsonc",
+                ".opencode/opencode.json",
+                ".opencode/opencode.jsonc",
+            ] {
+                sources.push(OpencodeConfigSource {
+                    path: Some(directory.join(relative)),
+                    scope: Scope::AgentProject,
+                    inline_content: None,
+                });
+            }
+        }
+    }
     sources
+}
+
+fn opencode_project_directories<'a>(
+    project_root: &'a Path,
+    project_cwd: Option<&'a Path>,
+) -> impl Iterator<Item = &'a Path> {
+    let start = project_cwd
+        .filter(|cwd| cwd.starts_with(project_root))
+        .unwrap_or(project_root);
+    std::iter::successors(Some(start), move |directory| {
+        (*directory != project_root)
+            .then(|| directory.parent())
+            .flatten()
+            .filter(|parent| parent.starts_with(project_root))
+    })
 }
 
 fn opencode_configured_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
@@ -232,24 +314,27 @@ fn opencode_configured_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
     opencode_config_sources(ctx)
         .into_iter()
         .flat_map(|source| {
-            read_opencode_config_skill_paths(&source.path)
-                .into_iter()
-                .filter_map({
-                    let relative_base = relative_base.clone();
-                    move |raw_path| {
-                        let expanded =
-                            expand_opencode_skill_path(&raw_path, &ctx.user_home, &relative_base)?;
-                        if !opencode_configured_path_allowed(ctx, source.scope, &expanded) {
-                            return None;
-                        }
-                        Some(AdapterRoot {
-                            scope: opencode_configured_scope(ctx, source.scope, &raw_path),
-                            path: expanded,
-                            source: RootSource::Configured,
-                        })
+            read_opencode_config_skill_paths(
+                source.path.as_deref(),
+                source.inline_content.as_deref(),
+            )
+            .into_iter()
+            .filter_map({
+                let relative_base = relative_base.clone();
+                move |raw_path| {
+                    let expanded =
+                        expand_opencode_skill_path(&raw_path, &ctx.user_home, &relative_base)?;
+                    if !opencode_configured_path_allowed(ctx, source.scope, &expanded) {
+                        return None;
                     }
-                })
-                .collect::<Vec<_>>()
+                    Some(AdapterRoot {
+                        scope: opencode_configured_scope(ctx, source.scope, &raw_path),
+                        path: expanded,
+                        source: RootSource::Configured,
+                    })
+                }
+            })
+            .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -306,26 +391,21 @@ fn expand_opencode_skill_path(
     user_home: &Path,
     relative_base: &Path,
 ) -> Option<PathBuf> {
-    let trimmed = raw_path.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed == "~" {
-        return Some(user_home.to_path_buf());
-    }
-    if let Some(rest) = trimmed.strip_prefix("~/") {
-        return Some(user_home.join(rest));
-    }
-    let path = PathBuf::from(trimmed);
-    if path.is_absolute() {
-        Some(path)
-    } else {
-        Some(relative_base.join(path))
-    }
+    expand_local_path(raw_path, user_home, relative_base)
 }
 
-fn read_opencode_config_skill_paths(config_path: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(config_path) else {
+fn read_opencode_config_skill_paths(
+    config_path: Option<&Path>,
+    inline_content: Option<&str>,
+) -> Vec<String> {
+    let content = if let Some(content) = inline_content {
+        content.to_string()
+    } else if let Some(config_path) = config_path {
+        let Ok(content) = std::fs::read_to_string(config_path) else {
+            return Vec::new();
+        };
+        content
+    } else {
         return Vec::new();
     };
     let normalized = normalize_opencode_jsonc_for_read(&content);
@@ -707,7 +787,12 @@ mod tests {
         assert_eq!(roots[11].path, PathBuf::from("/tmp/project/.agents/skills"));
         for root in &roots[3..] {
             assert_eq!(root.scope, Scope::AgentProject);
-            assert_eq!(root.source, RootSource::Project);
+        }
+        for index in [3, 6, 9] {
+            assert_eq!(roots[index].source, RootSource::Project);
+        }
+        for index in [4, 5, 7, 8, 10, 11] {
+            assert_eq!(roots[index].source, RootSource::Compatibility);
         }
         assert!(
             roots
@@ -741,10 +826,10 @@ mod tests {
         let roots = adapter.roots(&ctx);
 
         assert!(roots.iter().any(|root| {
-            root.source == RootSource::Project && root.path == project.join(".claude/skills")
+            root.source == RootSource::Compatibility && root.path == project.join(".claude/skills")
         }));
         assert!(roots.iter().any(|root| {
-            root.source == RootSource::Project && root.path == project.join(".agents/skills")
+            root.source == RootSource::Compatibility && root.path == project.join(".agents/skills")
         }));
 
         let _ = std::fs::remove_dir_all(temp_root);

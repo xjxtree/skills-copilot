@@ -213,7 +213,7 @@ extension SkillRecord {
     }
 
     private var inferredRootKind: SkillProvenanceRootKind {
-        if sourceKind == "chatgpt-plugin-cache" {
+        if sourceKind == "chatgpt-plugin-cache" || sourceKind == "codex-runtime" {
             return .readOnly
         }
         if normalizedScopeContains("tool") || normalizedPathContains("/tool-global/") || normalizedPathContains("/skill-pool/") {
@@ -271,7 +271,7 @@ extension SkillRecord {
     }
 
     private var isReadOnlyProvenance: Bool {
-        sourceKind == "chatgpt-plugin-cache" || normalizedAgent == "hermes" || normalizedAgent == "openclaw"
+        sourceKind == "chatgpt-plugin-cache" || sourceKind == "codex-runtime" || normalizedAgent == "hermes" || normalizedAgent == "openclaw"
     }
 
     private var stableDisplayName: String {

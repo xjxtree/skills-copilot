@@ -5,6 +5,8 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
 
+use crate::environment::absolute_env_path;
+
 #[derive(Debug, Default)]
 pub struct ClaudeCodeAdapter;
 
@@ -20,16 +22,18 @@ impl AgentAdapter for ClaudeCodeAdapter {
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
         let mut roots = vec![AdapterRoot {
             scope: Scope::AgentGlobal,
-            path: ctx.user_home.join(".claude/skills"),
+            path: claude_config_dir(ctx).join("skills"),
             source: RootSource::UserHome,
         }];
 
         if let Some(project_root) = &ctx.project_root {
-            roots.push(AdapterRoot {
-                scope: Scope::AgentProject,
-                path: project_root.join(".claude/skills"),
-                source: RootSource::Project,
-            });
+            roots.extend(
+                claude_project_directories(ctx, project_root).map(|directory| AdapterRoot {
+                    scope: Scope::AgentProject,
+                    path: directory.join(".claude/skills"),
+                    source: RootSource::Project,
+                }),
+            );
         }
 
         roots.extend(ctx.extra_roots.clone());
@@ -43,11 +47,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
             source: RootSource::Compatibility,
         }];
         if let Some(project_root) = &ctx.project_root {
-            roots.push(AdapterRoot {
-                scope: Scope::AgentProject,
-                path: project_root.join(".agents/skills"),
-                source: RootSource::Compatibility,
-            });
+            roots.extend(
+                claude_project_directories(ctx, project_root).map(|directory| AdapterRoot {
+                    scope: Scope::AgentProject,
+                    path: directory.join(".agents/skills"),
+                    source: RootSource::Compatibility,
+                }),
+            );
         }
         roots
     }
@@ -116,13 +122,48 @@ impl AgentAdapter for ClaudeCodeAdapter {
         instance.enabled
     }
 
+    fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
+        let _ = root;
+        relative_path.components().count() == 2
+            && relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+    }
+
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
-        let mut paths = vec![ctx.user_home.join(".claude/settings.json")];
+        let mut paths = vec![claude_config_dir(ctx).join("settings.json")];
         if let Some(project_root) = &ctx.project_root {
-            paths.push(project_root.join(".claude/settings.local.json"));
+            for directory in claude_project_directories(ctx, project_root) {
+                paths.push(directory.join(".claude/settings.json"));
+                paths.push(directory.join(".claude/settings.local.json"));
+            }
         }
+        paths.push(PathBuf::from(
+            "/Library/Application Support/ClaudeCode/managed-settings.json",
+        ));
+        paths.push(PathBuf::from("/etc/claude-code/managed-settings.json"));
+        paths.dedup();
         paths
     }
+}
+
+pub fn claude_config_dir(ctx: &AdapterContext) -> PathBuf {
+    absolute_env_path("CLAUDE_CONFIG_DIR").unwrap_or_else(|| ctx.user_home.join(".claude"))
+}
+
+fn claude_project_directories<'a>(
+    ctx: &'a AdapterContext,
+    project_root: &'a Path,
+) -> impl Iterator<Item = &'a Path> {
+    let start = ctx
+        .project_cwd
+        .as_deref()
+        .filter(|cwd| cwd.starts_with(project_root))
+        .unwrap_or(project_root);
+    std::iter::successors(Some(start), move |directory| {
+        (*directory != project_root)
+            .then(|| directory.parent())
+            .flatten()
+            .filter(|parent| parent.starts_with(project_root))
+    })
 }
 
 impl AgentConfigAdapter for ClaudeCodeAdapter {

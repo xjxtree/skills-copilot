@@ -177,7 +177,7 @@ final class FakeServiceScript: ServiceProcessRunning {
         agent_config_claude='[{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"skillOverrides\\":{}}\\n","exists":true,"revision":"sha256:claude-global"},{"agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","format":"json","content":"{\\"permissions\\":{\\"allow\\":[\\"Bash(grep *)\\"]}}\\n","exists":true,"revision":"sha256:claude-project"}]'
         agent_config_codex='[{"agent":"codex","scope":"agent-global","target":"/tmp/home/.codex/config.toml","format":"toml","content":"model = \\"gpt-5\\"\\n","exists":true,"revision":"sha256:codex-global"},{"agent":"codex","scope":"agent-project","target":"/tmp/project/.codex/config.toml","format":"toml","content":"approval_policy = \\"never\\"\\n","exists":true,"revision":"sha256:codex-project"}]'
         agent_config_opencode='[{"agent":"opencode","scope":"agent-global","target":"/tmp/home/.config/opencode/opencode.json","format":"json","content":"{\\"permission\\":{\\"skill\\":{}}}\\n","exists":true,"revision":"sha256:opencode-global"},{"agent":"opencode","scope":"agent-project","target":"/tmp/project/opencode.json","format":"json","content":"{\\"permission\\":{\\"skill\\":{\\"local-review\\":\\"deny\\"}}}\\n","exists":true,"revision":"sha256:opencode-project"}]'
-        agent_config_pi='[{"agent":"pi","scope":"agent-global","target":"/tmp/home/.pi/agent/settings.json","format":"json","content":"{\\"skills\\":{\\"disabled\\":[\\"alibabacloud-agentbay-aio-skills\\"]},\\"apiToken\\":\\"fixture-token\\"}\\n","exists":true,"revision":"sha256:pi-global"},{"agent":"pi","scope":"agent-project","target":"/tmp/project/.pi/settings.json","format":"json","content":"{\\"skills\\":{\\"disabled\\":[]}}\\n","exists":false,"revision":"sha256:pi-project"}]'
+        agent_config_pi='[{"agent":"pi","scope":"agent-global","target":"/tmp/home/.pi/agent/settings.json","format":"json","content":"{\\"skills\\":[\\"-/tmp/home/.agents/skills/alibabacloud-agentbay-aio-skills/SKILL.md\\"],\\"apiToken\\":\\"fixture-token\\"}\\n","exists":true,"revision":"sha256:pi-global"},{"agent":"pi","scope":"agent-project","target":"/tmp/project/.pi/settings.json","format":"json","content":"{\\"skills\\":[]}\\n","exists":false,"revision":"sha256:pi-project"}]'
         agent_config_hermes='[{"agent":"hermes","scope":"agent-global","target":"/tmp/home/.hermes/config.yaml","format":"yaml","content":"skills:\\n  disabled: []\\n","exists":true,"revision":"sha256:hermes-global"}]'
         agent_config_openclaw='[{"agent":"openclaw","scope":"agent-global","target":"/tmp/home/.openclaw/openclaw.json","format":"json","content":"{\\"skills\\":{\\"entries\\":{}}}\\n","exists":true,"revision":"sha256:openclaw-global"}]'
 
@@ -304,6 +304,23 @@ final class FakeServiceScript: ServiceProcessRunning {
               respond '{"id":"test","ok":true,"result":{"profile":null}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.saveProviderProfile"}}'
+            ;;
+          *\\"session.listLocalSessionMessages\\"*)
+            case "$input" in
+              *\\"session_id\\":\\"session-alpha\\"*)
+                if [ "$scenario" = "sessions-new-detail" ]; then
+                  respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.99","session_id":"session-alpha","content_items":[{"id":"fresh-alpha-item","kind":"agent_reply","title":"Agent","text":"FRESH ALPHA DETAIL","char_count":18,"evidence_refs":[]}],"returned_count":1,"total_count":1,"has_more":false,"next_cursor":null,"source_revision":"sha256:fresh-alpha-messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":256,"scanned_through_bytes":256,"snapshot_bytes":256}}'
+                fi
+                respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.99","session_id":"session-alpha","content_items":[{"id":"alpha-item","kind":"agent_reply","title":"Agent","text":"Bounded alpha detail","char_count":20,"evidence_refs":[]}],"returned_count":1,"total_count":1,"has_more":false,"next_cursor":null,"source_revision":"sha256:alpha-messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":256,"scanned_through_bytes":256,"snapshot_bytes":256}}'
+                ;;
+              *\\"session_id\\":\\"session-develop\\"*)
+                respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.99","session_id":"session-develop","content_items":[{"id":"develop-item","kind":"agent_reply","title":"Agent","text":"Bounded develop detail","char_count":22,"evidence_refs":[]}],"returned_count":1,"total_count":1,"has_more":false,"next_cursor":null,"source_revision":"sha256:develop-messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":256,"scanned_through_bytes":256,"snapshot_bytes":256}}'
+                ;;
+              *\\"session_id\\":\\"session-global\\"*)
+                respond '{"id":"test","ok":true,"result":{"generated_by":"local-v2.99","session_id":"session-global","content_items":[{"id":"global-item","kind":"agent_reply","title":"Agent","text":"Bounded global detail","char_count":21,"evidence_refs":[]}],"returned_count":1,"total_count":1,"has_more":false,"next_cursor":null,"source_revision":"sha256:global-messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":256,"scanned_through_bytes":256,"snapshot_bytes":256}}'
+                ;;
+            esac
+            respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_session","message":"unknown session"}}'
             ;;
           *\\"session.previewLocalSessions\\"*)
             case "$input" in

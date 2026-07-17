@@ -1304,7 +1304,7 @@ impl GuardedLocalSessionRoot {
     }
 
     #[cfg(unix)]
-    fn open_regular_file(&self, path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+    pub(crate) fn open_regular_file(&self, path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
         use rustix::fs::{openat, Mode, OFlags};
 
         let relative = path.strip_prefix(&self.path).map_err(|_| {
@@ -1363,7 +1363,7 @@ impl GuardedLocalSessionRoot {
     }
 
     #[cfg(not(unix))]
-    fn open_regular_file(&self, _path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+    pub(crate) fn open_regular_file(&self, _path: &Path) -> io::Result<(fs::File, fs::Metadata)> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "guarded local session reads require descriptor-relative file access",

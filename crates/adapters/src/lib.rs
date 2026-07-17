@@ -2,22 +2,26 @@ pub(crate) mod shared;
 
 pub mod claude_code;
 pub mod codex;
+mod environment;
 pub mod hermes;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi;
 
-pub use claude_code::ClaudeCodeAdapter;
+pub use claude_code::{claude_config_dir, ClaudeCodeAdapter};
 pub use codex::{
     codex_home_dir, codex_plugin_cache_id, parse_codex_enabled_plugin_ids,
     parse_codex_skill_config_entries, CodexAdapter, CodexSkillConfigEntry,
 };
-pub use hermes::{hermes_disabled_skill_names, HermesAdapter};
+pub use hermes::{hermes_disabled_skill_names, hermes_home_dir, HermesAdapter};
 pub use openclaw::{
-    openclaw_config_key_from_frontmatter, openclaw_disabled_skill_keys, OpenclawAdapter,
+    openclaw_config_key_from_frontmatter, openclaw_config_path, openclaw_disabled_skill_keys,
+    openclaw_state_dir, OpenclawAdapter,
 };
-pub use opencode::OpencodeAdapter;
-pub use pi::{pi_disabled_skill_names, PiAdapter};
+pub use opencode::{
+    opencode_data_dir, opencode_user_config_path, opencode_user_skills_dir, OpencodeAdapter,
+};
+pub use pi::{pi_agent_dir, pi_skill_enabled_by_settings, PiAdapter};
 
 #[cfg(test)]
 pub(crate) fn assert_parse_equivalent(

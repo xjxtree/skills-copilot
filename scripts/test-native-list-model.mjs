@@ -40,7 +40,7 @@ struct NativeListModelTest {
 
         assertEqual(
             filter(agentFilter: .all).map(\.id),
-            ["alpha", "beta", "delta", "epsilon", "gamma", "omega", "theta", "zeta"],
+            ["alpha", "beta", "delta", "gamma", "omega", "theta", "zeta"],
             "all agent filter"
         )
         assertEqual(
@@ -50,7 +50,7 @@ struct NativeListModelTest {
         )
         assertEqual(
             filter(agentFilter: .codex).map(\.id),
-            ["epsilon", "gamma"],
+            ["gamma"],
             "codex agent filter"
         )
         assertEqual(
@@ -67,7 +67,7 @@ struct NativeListModelTest {
         )
         assertEqual(
             groups.map { $0.skills.map(\.id) },
-            [["alpha", "beta", "delta", "theta", "zeta"], ["epsilon", "gamma"], ["omega"]],
+            [["alpha", "beta", "delta", "theta", "zeta"], ["gamma"], ["omega"]],
             "agent group rows"
         )
         assertEqual(
@@ -108,28 +108,28 @@ struct NativeListModelTest {
         )
         assertEqual(
             filter(stateFilter: .withFindings).map(\.id),
-            ["delta", "epsilon", "gamma", "theta"],
+            ["delta", "gamma", "theta"],
             "problem items filter"
         )
 
         assertEqual(
             filter(sortOrder: .name).map(\.id),
-            ["alpha", "beta", "delta", "epsilon", "gamma", "omega", "theta", "zeta"],
+            ["alpha", "beta", "delta", "gamma", "omega", "theta", "zeta"],
             "sort by name"
         )
         assertEqual(
             filter(sortOrder: .scope).map(\.id),
-            ["alpha", "delta", "epsilon", "gamma", "omega", "theta", "zeta", "beta"],
+            ["alpha", "delta", "gamma", "omega", "theta", "zeta", "beta"],
             "sort by scope"
         )
         assertEqual(
             filter(sortOrder: .state).map(\.id),
-            ["delta", "epsilon", "beta", "alpha", "gamma", "omega", "zeta", "theta"],
+            ["delta", "beta", "alpha", "gamma", "omega", "zeta", "theta"],
             "sort by state"
         )
         assertEqual(
             filter(sortOrder: .path).map(\.id),
-            ["epsilon", "gamma", "alpha", "zeta", "omega", "beta", "delta", "theta"],
+            ["gamma", "alpha", "zeta", "omega", "beta", "delta", "theta"],
             "sort by path"
         )
     }

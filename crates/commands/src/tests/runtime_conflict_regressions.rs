@@ -69,7 +69,7 @@ fn codex_cached_records_project_external_config_changes_without_rescan() {
 }
 
 #[test]
-fn codex_runtime_conflicts_ignore_inactive_inventory_and_namespace_active_plugins() {
+fn codex_runtime_conflicts_ignore_plugin_cache_entirely() {
     let temp_root = temp_test_dir("codex-runtime-conflicts");
     let home = temp_root.join("home");
     let local_pdf = home.join(".codex/skills/pdf");
@@ -114,7 +114,7 @@ fn codex_runtime_conflicts_ignore_inactive_inventory_and_namespace_active_plugin
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     let ctx = AdapterContext {
-        user_home: home,
+        user_home: home.clone(),
         project_root: None,
         project_cwd: None,
         extra_roots: vec![],
@@ -134,7 +134,10 @@ fn codex_runtime_conflicts_ignore_inactive_inventory_and_namespace_active_plugin
         .filter_map(|instance_id| names_by_id.get(instance_id.as_str()).copied())
         .collect::<std::collections::BTreeSet<_>>();
 
-    assert_eq!(conflict_names, std::collections::BTreeSet::from(["pdf"]));
+    assert!(records
+        .iter()
+        .all(|record| !record.path.starts_with(home.join(".codex/plugins/cache"))));
+    assert!(conflict_names.is_empty());
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 

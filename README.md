@@ -42,14 +42,15 @@ agent-specific parsing and workflow rules in shared project code.
 
 OpenAI's current desktop experience hosts Codex inside the ChatGPT app. Agent
 Copilot keeps `codex` as the stable adapter identity, continues to read the
-same safe `$CODEX_HOME` configuration and local session stores, and recognizes
-skills delivered through ChatGPT's local plugin cache. Existing Codex projects
-and configuration do not need to be renamed for Agent Copilot.
+same safe `$CODEX_HOME` configuration and local session stores, and uses the
+current Codex runtime skill inventory when available. Implementation caches
+such as `$CODEX_HOME/plugins/cache` are not scanned. Existing Codex projects and
+configuration do not need to be renamed for Agent Copilot.
 
 - **Skills:** scan supported agent roots, filter by agent/scope/status, inspect
   metadata, review findings, and enable or disable supported local skills.
-  ChatGPT plugin-cache skills show their publisher, package, version, and
-  read-only ownership in the detail view.
+  Runtime-reported and filesystem-discovered skills retain source and
+  read-only ownership information without treating caches as skill roots.
 - **Sessions:** browse local Claude Code, Codex, opencode, and Pi session
   previews; search within supported history; open a selected session with
   redacted message and skill-usage summaries.
@@ -97,9 +98,10 @@ asdf, and nvm paths when launched from Finder. Custom installs can set
 `SKILLS_COPILOT_NPX_PATH`.
 
 ChatGPT's Plugin Directory and Agent Copilot's Skill Package Manager are
-separate sources. Agent Copilot only inventories ChatGPT's existing plugin
-cache; it does not install, update, or remove ChatGPT plugins. Writable package
-operations remain in the explicit, previewed `npx skills` workflow.
+separate sources. Agent Copilot can consume the current Codex runtime's exposed
+skill inventory, but it does not scan, install, update, or remove ChatGPT plugin
+caches. Writable package operations remain in the explicit, previewed `npx
+skills` workflow.
 
 ## Build From Source
 

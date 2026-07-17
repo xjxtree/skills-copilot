@@ -8,6 +8,7 @@ struct AgentSessionDetailPanel: View {
         AgentSessionContentPanel(
             session: store.selectedLocalSession,
             detailState: store.selectedLocalSessionDetailState,
+            messageCompleteness: store.selectedLocalSessionMessageCompleteness,
             gapNotes: store.selectedLocalSession == nil ? store.localSessionPreviewResult.gapNotes : [],
             isRefreshing: store.isPreviewingLocalSessions,
             showsLoadedRowsFilterNotice: store.localSessionCompleteness.hasMore,
@@ -19,7 +20,8 @@ struct AgentSessionDetailPanel: View {
             onLoadDetail: {
                 guard let sessionID = store.selectedLocalSessionID else { return }
                 Task { await store.loadLocalSessionDetailIfNeeded(sessionID: sessionID) }
-            }
+            },
+            onCancelMessageLoad: store.cancelLocalSessionMessageLoad
         )
     }
 }
@@ -27,13 +29,15 @@ struct AgentSessionDetailPanel: View {
 private struct AgentSessionContentPanel: View {
     let session: LocalSessionPreviewRow?
     let detailState: LocalSessionDetailState?
+    let messageCompleteness: ListCompletenessState
     let gapNotes: [String]
     let isRefreshing: Bool
     let showsLoadedRowsFilterNotice: Bool
     let onRefresh: () -> Void
     let onLoadDetail: () -> Void
+    let onCancelMessageLoad: () -> Void
 
-    @State private var selectedKinds = Set(LocalSessionContentKind.allCases)
+    @State private var selectedKinds = LocalSessionContentKind.defaultDetailKinds
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -96,11 +100,22 @@ private struct AgentSessionContentPanel: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else {
-                            VStack(alignment: .leading, spacing: 8) {
+                            LazyVStack(alignment: .leading, spacing: 8) {
                                 ForEach(visibleItems) { item in
                                     LocalSessionContentItemRow(item: item)
                                 }
                             }
+                        }
+                        if messageCompleteness.completeness != .complete
+                            || messageCompleteness.loadingPhase != .idle {
+                            ListCompletenessFooter(
+                                state: messageCompleteness,
+                                onLoadMore: onLoadDetail,
+                                onLoadAll: onLoadDetail,
+                                onCancel: onCancelMessageLoad,
+                                accessibilityIdentifierPrefix: "session-messages"
+                            )
+                            .accessibilityIdentifier("session-messages.completeness")
                         }
                     } else {
                         Button(UIStrings.text("agentCopilot.sessions.loadDetail", "Load Session Detail"), action: onLoadDetail)
@@ -133,6 +148,9 @@ private struct AgentSessionContentPanel: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativePanelSurface()
+        .onChange(of: session?.id) { _ in
+            selectedKinds = LocalSessionContentKind.defaultDetailKinds
+        }
     }
 
     private var emptySessionMessage: String {

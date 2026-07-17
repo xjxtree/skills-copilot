@@ -11,21 +11,24 @@ configuration paths, session stores, or service wire identities.
 - User `$CODEX_HOME/skills` and `$HOME/.agents/skills` where applicable.
 - Project `.agents/skills` discovered from the selected working directory up to
   the project root.
-- Local plugin marketplace roots,
-  `$CODEX_HOME/plugins/cache/<publisher>/<package>/<version>/skills`, and
-  `/etc/codex/skills` when present, as read-only diagnostics.
+- `/etc/codex/skills` when present, as read-only diagnostics.
 - Project `.codex/config.toml` as read-only diagnostics.
+- The installed `codex app-server` `skills/list` result is the authoritative
+  runtime inventory when available. Path-bearing rows merge with guarded
+  filesystem results; runtime-only rows remain synthetic and read-only.
 
 `CODEX_HOME` is shared by skill/config and local-session discovery. An override
 must be absolute and lexically normalize beneath the active user home; otherwise
 the adapter falls back to `$HOME/.codex`.
 
-Plugin-cache discovery is bounded and deterministic: hidden/staging entries are
-ignored, manifest reads are capped at 1 MiB, `skills` must resolve beneath the
-canonical package root, and the highest valid numeric-aware version for each
-publisher/package is selected. Plugin list/detail records expose optional
-publisher, package, version, `chatgpt-plugin-cache` source kind, and read-only
-reason derived from the cataloged path.
+`$CODEX_HOME/plugins/cache` is an implementation cache owned by ChatGPT/Codex,
+not a skill source. The adapter never scans it. Legacy catalog rows beneath that
+root may remain stored for audit continuity, but current list, instance,
+analysis, conflict, and Deleted projections exclude them.
+
+Local plugin marketplace directories are runtime implementation details rather
+than documented skill roots. They are not walked. Runtime visibility comes
+through `skills/list`, without persisting cache or marketplace paths.
 
 ## Skill Format
 
@@ -46,7 +49,7 @@ reason derived from the cataloged path.
 ## Blocked Scope
 
 - Do not write project `.codex/config.toml`.
-- Do not write plugin, admin, system, or compatibility roots.
+- Do not write runtime-only, admin, system, or compatibility roots.
 - Do not install, update, remove, or execute ChatGPT plugin-cache content.
 - Do not fetch marketplace/network skill indexes.
 - Do not add hooks, MCP config writes, script execution, credentials, cloud

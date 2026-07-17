@@ -43,6 +43,7 @@ const files = {
   localSessionCache: await read("apps/macos/Sources/SkillsCopilot/Models/LocalSessionCache.swift"),
   listCompletenessControls: await read("apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
+  storeLocalSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore+LocalSessionDetail.swift"),
   storePresentationModels: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStorePresentationModels.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
   storeDerivedState: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStoreDerivedState.swift"),
@@ -348,7 +349,7 @@ const checks = [
   },
   {
     label: "sidebar sessions surface exposes refresh, compact rows, and top skill usage",
-    text: files.sidebar + "\n" + files.store,
+    text: files.sidebar + "\n" + files.store + "\n" + files.storeLocalSessionDetail,
     passed: /private struct SessionSidebarPanel:[\s\S]*?let preview = store\.localSessionPreviewResult[\s\S]*?sidebar\.sessions\.list[\s\S]*?SessionSidebarRow\([\s\S]*?showsProjectRoot:\s*store\.localSessionScopeFilter == \.all[\s\S]*?store\.selectedSidebarSelection == \.session\(session\.id\)[\s\S]*?store\.selectLocalSession\(session\)[\s\S]*?preview\.skillUsageRows/.test(files.sidebar)
       && /private var sessionRefreshButton:[\s\S]*?await store\.previewLocalSessions\(\)/.test(files.sidebar)
       && /private struct SessionSidebarRow:[\s\S]*?let showsProjectRoot:\s*Bool[\s\S]*?session\.projectRoot[\s\S]*?if let startedAt = session\.startedAt[\s\S]*?sidebar\.sessions\.startShort[\s\S]*?if let endedAt = session\.endedAt[\s\S]*?sidebar\.sessions\.lastShort/.test(files.sidebar)
@@ -367,7 +368,7 @@ const checks = [
       && /func refreshSelectedAgentLocalSessionsIfNeeded\(\) async[\s\S]*?refreshLocalSessionSnapshot\(reason:\s*\.sourceChanged\)/.test(files.store)
       && /\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?refreshSelectedAgentLocalSessionsIfNeeded\(\)/.test(files.content)
       && /func selectLocalSession\([\s\S]*?_ session:\s*LocalSessionPreviewRow,[\s\S]*?origin:\s*LocalSessionSelectionOrigin = \.user[\s\S]*?setSidebarSelection\(\.session\(session\.id\)\)[\s\S]*?loadLocalSessionDetailIfNeeded\(sessionID:\s*sessionID\)/.test(files.store)
-      && /func loadLocalSessionDetailIfNeeded\(sessionID:\s*String\) async[\s\S]*?sessionID:\s*sessionID[\s\S]*?includeContentItems:\s*true[\s\S]*?limit:\s*1[\s\S]*?localSessionCache\.publishDetail/.test(files.store)
+      && /func loadLocalSessionDetailIfNeeded\(sessionID:\s*String\) async[\s\S]*?sessionID:\s*sessionID[\s\S]*?includeContentItems:\s*true[\s\S]*?limit:\s*1[\s\S]*?localSessionCache\.publishDetail/.test(files.storeLocalSessionDetail)
       && !/sessionTimeRangeSummary/.test(files.sidebar),
   },
   {

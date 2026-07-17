@@ -178,19 +178,6 @@ pub(crate) fn infer_project_root(cwd: &Path) -> PathBuf {
     cwd.to_path_buf()
 }
 
-pub(crate) fn extra_claude_roots_from_env() -> Vec<AdapterRoot> {
-    let Some(raw) = env::var_os("SKILLS_COPILOT_CLAUDE_EXTRA_ROOTS") else {
-        return Vec::new();
-    };
-    env::split_paths(&raw)
-        .map(|path| AdapterRoot {
-            scope: Scope::AgentGlobal,
-            path,
-            source: RootSource::Extra,
-        })
-        .collect()
-}
-
 pub(crate) fn display_path(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }

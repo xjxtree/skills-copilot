@@ -1682,7 +1682,7 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
     assert!(content.contains("\"off\""));
     let pi_settings_path = home.join(".pi/agent/settings.json");
     let pi_content = std::fs::read_to_string(&pi_settings_path).expect("read Pi settings");
-    assert!(pi_content.contains("\"batch-pi\""));
+    assert!(pi_content.contains("batch-pi/SKILL.md"));
 
     let snapshots = catalog
         .list_config_snapshots("claude-code", &settings_path.to_string_lossy())
@@ -1734,7 +1734,8 @@ fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
 
     let settings_path = home.join(".pi/agent/settings.json");
     let content = std::fs::read_to_string(&settings_path).expect("read Pi settings");
-    assert!(content.contains("\"pi-toggle\""));
+    assert!(content.contains("pi-toggle/SKILL.md"));
+    assert!(content.contains("-"));
 
     scan_all_to_catalog(&ctx, &catalog).expect("rescan all");
     let rescanned = catalog
@@ -1797,7 +1798,7 @@ fn toggle_pi_project_skill_allows_default_project_settings_and_blocks_explicit_u
         toggle_skill(&catalog, &ctx, &pi_id, false).expect("default Pi project toggle succeeds");
     assert!(!record.enabled);
     let content = std::fs::read_to_string(&settings_path).expect("read Pi settings");
-    assert!(content.contains("\"pi-project-toggle\""));
+    assert!(content.contains("pi-project-toggle/SKILL.md"));
 
     std::fs::write(
         &settings_path,
@@ -1844,7 +1845,7 @@ fn toggle_pi_project_compatibility_skill_allows_default_project_settings() {
         .expect("default Pi compatibility toggle succeeds");
     assert!(!record.enabled);
     let content = std::fs::read_to_string(&settings_path).expect("read Pi settings");
-    assert!(content.contains("\"pi-agent-compat\""));
+    assert!(content.contains("pi-agent-compat/SKILL.md"));
 
     scan_all_to_catalog(&ctx, &catalog).expect("rescan all");
     let rescanned = catalog
@@ -2186,7 +2187,7 @@ fn codex_config_path_honors_only_safe_codex_home_under_user_home() {
 }
 
 #[test]
-fn codex_expanded_roots_are_read_only_except_native_agents_roots() {
+fn codex_compatibility_root_is_read_only_and_marketplace_is_not_scanned() {
     let temp_root = temp_test_dir("codex-expanded-roots-read-only");
     let home = temp_root.join("home");
     let native_path = write_codex_skill(&home, "native-toggle");
@@ -2242,26 +2243,22 @@ fn codex_expanded_roots_are_read_only_except_native_agents_roots() {
         .iter()
         .find(|record| record.agent == "codex" && record.name == "compat-readonly")
         .expect("compat codex record");
-    let plugin_record = records
+    assert!(records
         .iter()
-        .find(|record| record.agent == "codex" && record.name == "plugin-readonly")
-        .expect("plugin codex record");
+        .all(|record| record.agent != "codex" || record.name != "plugin-readonly"));
 
-    let selection = vec![
-        native_record.id.clone(),
-        compat_record.id.clone(),
-        plugin_record.id.clone(),
-    ];
+    let selection = vec![native_record.id.clone(), compat_record.id.clone()];
     let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("preview");
     assert_eq!(preview.writable_count, 1);
-    assert_eq!(preview.skipped_count, 2);
+    assert_eq!(preview.skipped_count, 1);
     assert!(preview
         .affected_items
         .iter()
         .any(|item| item.instance_id == native_record.id));
-    assert!(preview.skipped_items.iter().all(|item| {
-        item.reason.contains(".agents/skills") || item.reason.contains("marketplace")
-    }));
+    assert!(preview
+        .skipped_items
+        .iter()
+        .all(|item| item.reason.contains(".agents/skills")));
 
     let config_path = home.join(".codex/config.toml");
     let compat_toggle = toggle_skill(&catalog, &ctx, &compat_record.id, false)
@@ -2269,12 +2266,6 @@ fn codex_expanded_roots_are_read_only_except_native_agents_roots() {
     assert!(
         compat_toggle.to_string().contains(".agents/skills"),
         "unexpected compat toggle error: {compat_toggle}"
-    );
-    let plugin_toggle = toggle_skill(&catalog, &ctx, &plugin_record.id, false)
-        .expect_err("plugin root must be read-only");
-    assert!(
-        plugin_toggle.to_string().contains("marketplace"),
-        "unexpected plugin toggle error: {plugin_toggle}"
     );
     assert!(
         !config_path.exists(),
@@ -3352,7 +3343,7 @@ fn read_agent_config_returns_pi_documents_without_creating_missing_project_confi
     assert!(documents[0].content.contains("remote-review"));
     assert_eq!(documents[1].scope, "agent-project");
     assert!(!documents[1].exists);
-    assert_eq!(documents[1].content, "{\"skills\":{\"disabled\":[]}}\n");
+    assert_eq!(documents[1].content, "{\"skills\":[]}\n");
     assert!(
         !project.join(".pi").exists(),
         "read-only config preview must not create missing config directories"

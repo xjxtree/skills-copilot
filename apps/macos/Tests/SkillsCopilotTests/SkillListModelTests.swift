@@ -103,16 +103,27 @@ struct SkillListModelTests {
     private func stateFiltersUseEffectiveStatusFindingsAndConflicts() throws {
         try expectEqual(
             SkillStateFilter.sidebarCases.map(\.rawValue),
-            ["all", "enabled", "disabled", "withFindings", "withConflicts"],
-            "The sidebar filter should expose Issues and Conflicts as independent user-facing buckets."
+            ["all", "enabled", "disabled", "withFindings", "withConflicts", "missing"],
+            "The sidebar filter should expose Issues, Conflicts, and Deleted as independent user-facing buckets."
+        )
+        try expectEqual(SkillStateFilter.missing.title, "Deleted", "Missing catalog history should be labeled as Deleted.")
+        try expectEqual(
+            filtered(stateFilter: .all).map(\.id),
+            ["alpha", "beta", "delta", "gamma", "omega", "theta", "zeta"],
+            "All should exclude deleted historical records by default."
+        )
+        try expectEqual(
+            SkillListModel.currentSkills(Self.skills).map(\.id),
+            ["beta", "gamma", "alpha", "zeta", "delta", "omega", "theta"],
+            "Current skill counts should exclude deleted historical records."
         )
         try expectEqual(filtered(stateFilter: .enabled).map(\.id), ["alpha", "gamma", "omega"], "Enabled filter")
         try expectEqual(filtered(stateFilter: .disabled).map(\.id), ["beta"], "Disabled filter")
         try expectEqual(filtered(stateFilter: .broken).map(\.id), ["delta"], "Broken filter")
-        try expectEqual(filtered(stateFilter: .missing).map(\.id), ["epsilon"], "Missing filter")
+        try expectEqual(filtered(stateFilter: .missing).map(\.id), ["epsilon"], "Deleted filter")
         try expectEqual(filtered(stateFilter: .shadowed).map(\.id), ["zeta"], "Shadowed filter")
         try expectEqual(filtered(stateFilter: .unknown).map(\.id), ["theta"], "Unknown filter")
-        try expectEqual(filtered(stateFilter: .withFindings).map(\.id), ["delta", "epsilon", "theta"], "Problem item filter")
+        try expectEqual(filtered(stateFilter: .withFindings).map(\.id), ["delta", "theta"], "Problem item filter")
         try expectEqual(filtered(stateFilter: .risky).map(\.id), [], "Risky filter")
     }
 
@@ -142,8 +153,8 @@ struct SkillListModelTests {
         )
         try expectEqual(
             SkillListModel.displayIssueCount(skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts, agentFilter: .all),
-            3,
-            "The sidebar Issues metric should equal the navigable per-skill issue total, including catalog-state problems and excluding unattached or ignored findings."
+            2,
+            "The sidebar Issues metric should equal the navigable current-skill issue total, excluding deleted, unattached, or ignored findings."
         )
         try expectEqual(
             SkillListModel.displayIssueCount(skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts, agentFilter: .claudeCode),
@@ -152,8 +163,8 @@ struct SkillListModelTests {
         )
         try expectEqual(
             SkillListModel.displayIssueCount(skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts, agentFilter: .codex),
-            1,
-            "Missing catalog-state records should contribute to the selected-agent Issues metric even without a finding row."
+            0,
+            "Deleted catalog history should not contribute to the selected-agent Issues metric."
         )
         try expectEqual(
             Self.skills.map { SkillListModel.issueIndicatorCount(for: $0, skills: Self.skills, findings: Self.findings, conflicts: Self.conflicts) },
@@ -209,8 +220,8 @@ struct SkillListModelTests {
 
         try expectEqual(
             problemSkills.map(\.id),
-            ["finding", "missing"],
-            "The Issues filter should contain only single-skill findings and catalog-state problems."
+            ["finding"],
+            "The Issues filter should contain only current single-skill findings and catalog-state problems."
         )
         try expectEqual(issueIndex.issueCount(for: "conflict-a"), 0, "A pure multi-skill conflict should not increment the single-skill issue badge.")
         try expectEqual(issueIndex.issueCount(for: "conflict-b"), 0, "Every member of a pure conflict should keep a zero single-skill issue badge.")
@@ -375,13 +386,13 @@ struct SkillListModelTests {
         )
         try expectEqual(
             filtered(agentFilter: .codex, stateFilter: .withFindings).map(\.id),
-            ["epsilon"],
-            "Problem items should include missing records but exclude conflict-only and declaration-baseline findings."
+            [],
+            "Problem items should exclude deleted, conflict-only, and declaration-baseline records."
         )
         try expectEqual(
             filtered(agentFilter: .all, stateFilter: .withFindings).map(\.id),
-            ["delta", "epsilon", "theta"],
-            "The all-agent Problem Items filter should include actionable findings and broken/missing/unknown states without conflict-only or declaration-baseline records."
+            ["delta", "theta"],
+            "The all-agent Problem Items filter should include actionable current findings and broken/unknown states without deleted, conflict-only, or declaration-baseline records."
         )
         try expectEqual(
             SkillListModel.sameAgentConflictGroupCount(skills: Self.skills, conflicts: Self.conflicts),
@@ -392,36 +403,36 @@ struct SkillListModelTests {
 
     private func scopeFiltersSeparateProjectAndGlobalSkills() throws {
         try expectEqual(filtered(scopeFilter: .project).map(\.id), ["beta"], "Project scope filter")
-        try expectEqual(filtered(scopeFilter: .global).map(\.id), ["alpha", "delta", "epsilon", "gamma", "omega", "theta", "zeta"], "Global scope filter")
+        try expectEqual(filtered(scopeFilter: .global).map(\.id), ["alpha", "delta", "gamma", "omega", "theta", "zeta"], "Global scope filter")
         try expectEqual(
             filtered(agentFilter: .codex, scopeFilter: .global).map(\.id),
-            ["epsilon", "gamma"],
+            ["gamma"],
             "Scope filter should compose with the selected agent."
         )
     }
 
     private func agentFiltersLimitResultsAndGroupsUseStableAdapterOrder() throws {
-        try expectEqual(filtered(agentFilter: .all).map(\.id), ["alpha", "beta", "delta", "epsilon", "gamma", "omega", "theta", "zeta"], "All agent filter")
+        try expectEqual(filtered(agentFilter: .all).map(\.id), ["alpha", "beta", "delta", "gamma", "omega", "theta", "zeta"], "All agent filter")
         try expectEqual(filtered(agentFilter: .claudeCode).map(\.id), ["alpha", "beta", "delta", "theta", "zeta"], "Claude Code agent filter")
-        try expectEqual(filtered(agentFilter: .codex).map(\.id), ["epsilon", "gamma"], "Codex agent filter")
+        try expectEqual(filtered(agentFilter: .codex).map(\.id), ["gamma"], "Codex agent filter")
         try expectEqual(filtered(agentFilter: .opencode).map(\.id), ["omega"], "opencode agent filter")
 
         let groups = SkillListModel.groupedByAgent(filtered(agentFilter: .all))
         try expectEqual(groups.map(\.title), [UIStrings.claudeCode, UIStrings.codex, UIStrings.opencode], "Agent groups should use display names.")
-        try expectEqual(groups.map { $0.skills.map(\.id) }, [["alpha", "beta", "delta", "theta", "zeta"], ["epsilon", "gamma"], ["omega"]], "Agent groups should preserve sorted rows.")
+        try expectEqual(groups.map { $0.skills.map(\.id) }, [["alpha", "beta", "delta", "theta", "zeta"], ["gamma"], ["omega"]], "Agent groups should preserve sorted rows.")
     }
 
     private func sortOrdersAreStableForCoreListColumns() throws {
-        try expectEqual(filtered(sortOrder: .name).map(\.id), ["alpha", "beta", "delta", "epsilon", "gamma", "omega", "theta", "zeta"], "Name sort")
-        try expectEqual(filtered(sortOrder: .scope).map(\.id), ["alpha", "delta", "epsilon", "gamma", "omega", "theta", "zeta", "beta"], "Scope sort")
-        try expectEqual(filtered(sortOrder: .state).map(\.id), ["delta", "epsilon", "beta", "alpha", "gamma", "omega", "zeta", "theta"], "State sort")
-        try expectEqual(filtered(sortOrder: .path).map(\.id), ["epsilon", "gamma", "alpha", "zeta", "omega", "beta", "delta", "theta"], "Path sort")
+        try expectEqual(filtered(sortOrder: .name).map(\.id), ["alpha", "beta", "delta", "gamma", "omega", "theta", "zeta"], "Name sort")
+        try expectEqual(filtered(sortOrder: .scope).map(\.id), ["alpha", "delta", "gamma", "omega", "theta", "zeta", "beta"], "Scope sort")
+        try expectEqual(filtered(sortOrder: .state).map(\.id), ["delta", "beta", "alpha", "gamma", "omega", "zeta", "theta"], "State sort")
+        try expectEqual(filtered(sortOrder: .path).map(\.id), ["gamma", "alpha", "zeta", "omega", "beta", "delta", "theta"], "Path sort")
     }
 
     private func sortDirectionCanReverseCoreListColumns() throws {
         try expectEqual(
             filtered(sortOrder: .name, sortDirection: .descending).map(\.id),
-            ["zeta", "theta", "omega", "gamma", "epsilon", "delta", "beta", "alpha"],
+            ["zeta", "theta", "omega", "gamma", "delta", "beta", "alpha"],
             "Name descending sort"
         )
     }

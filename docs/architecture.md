@@ -90,8 +90,11 @@ or catalog write; filesystem inventory changes still require an explicit scan.
   atomically; repeated complete scans do not duplicate the event.
 - Local-session UI state follows the same bounded-read posture: startup/manual
   refresh stores source-scoped summaries in memory, local criteria project that
-  snapshot, and one selected stable ID may load a bounded in-memory detail.
-  Session summary/detail content is not persisted.
+  snapshot, and one selected stable ID may load a bounded process sample plus
+  progressively paged user messages and final Agent replies. Each page has
+  item, scan-byte, and returned-text bounds; accepted pages publish between
+  sidecar calls and SwiftUI renders them lazily. Session summary/detail content
+  is not persisted.
 - Aggregate skill-byte accounting is based on bytes actually read. The bounded
   reader never retains more than the remaining aggregate allowance, including
   its limit-detection byte; stale file metadata cannot enlarge the read or
@@ -113,20 +116,22 @@ or catalog write; filesystem inventory changes still require an explicit scan.
   declaration-baseline findings are excluded at warning/information severity
   but remain visible when raised to error/critical.
 - Multi-skill runtime collisions appear only through the independent conflict
-  projection. Missing, broken, and unknown catalog states remain navigable
-  single-skill issues even when no rule finding is attached.
+  projection. Broken and unknown current catalog states remain navigable
+  single-skill issues even when no rule finding is attached. Missing rows are
+  historical Deleted records and are excluded from the default All and Issues
+  projections.
 - Runtime collision membership is limited to loaded, enabled instances that
-  share an agent and an effective runtime namespace. Codex plugin-cache rows are
-  inventory by default; only plugin ids explicitly enabled in the guarded
-  Codex config participate, and different plugin packages keep independent
-  namespaces. A native Codex skill still conflicts with an enabled plugin skill
-  of the same raw name.
+  share an agent and an effective runtime namespace. `$CODEX_HOME/plugins/cache`
+  is excluded from adapter scans and all current projections, so it cannot
+  participate in conflict analysis.
 - Skill detail preserves the same boundary through independent `Skill Issues`
   and `Same-Agent Conflicts` sections; neither section renders the other's
   projection, and each header metric routes to its matching section.
-- Sidebar totals, filters, row/header badges, detail cards, refresh feedback,
-  health summaries, and LLM related-finding context must use these derived
-  projections instead of raw catalog counts.
+- Sidebar totals, default filters, row/header badges, detail cards, refresh
+  feedback, health summaries, and LLM related-finding context must use these
+  current-skill projections instead of raw catalog counts. The explicit Deleted
+  filter is the only skill-list filter that shows general historical missing
+  rows.
 
 Skill Manager follows a skill-first cache model. Startup and explicit manual
 refresh load project/global package inventories; opening the panel and changing
@@ -162,8 +167,6 @@ fixtures require it.
 `codex` is likewise a stable adapter and protocol identity even when the
 desktop runtime is hosted by `ChatGPT.app`. The adapter and local-session
 service resolve one guarded `$CODEX_HOME`; neither assumes the former
-`Codex.app` bundle name. ChatGPT plugin-cache skills are discovered as read-only
-adapter roots. Cache inventory does not imply runtime activation; explicit
-`[plugins."<package>@<publisher>"] enabled = true` config controls participation
-in Codex runtime-conflict analysis. Installation remains isolated in the
-separately confirmed `skillManager.*` command path.
+`Codex.app` bundle name. ChatGPT's plugin cache is not an adapter root and never
+participates in current skill or conflict projections. Installation remains
+isolated in the separately confirmed `skillManager.*` command path.

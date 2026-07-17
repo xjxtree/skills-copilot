@@ -53,6 +53,17 @@ final class SkillStore: ObservableObject {
         canLoadAll: false
     )
     @Published private(set) var selectedLocalSessionDetailState: LocalSessionDetailState?
+    @Published private(set) var selectedLocalSessionMessageCompleteness = ListCompletenessState(
+        loadedCount: 0,
+        totalCount: nil,
+        hasMore: false,
+        isComplete: false,
+        completeness: .unknown,
+        incompleteReason: nil,
+        loadingPhase: .idle,
+        canLoadMore: false,
+        canLoadAll: false
+    )
     @Published private(set) var appSearchResult = AppSearchResult.empty()
     @Published private(set) var skillListScrollRequest: SkillListScrollRequest?
     @Published private(set) var isPreviewingLocalSessions = false
@@ -454,8 +465,8 @@ final class SkillStore: ObservableObject {
     var isAdoptingAgentSummaryCacheValid = false
     var scopedLocalSessionSummaryRevision = 0
     var scopedLocalSessionSummaryCache: ScopedLocalSessionSummaryCache?
-    private let localSessionCache = LocalSessionCache()
-    private var activeLocalSessionSnapshotKey: LocalSessionSnapshotKey?
+    let localSessionCache = LocalSessionCache()
+    var activeLocalSessionSnapshotKey: LocalSessionSnapshotKey?
     private var activeLocalSessionRefreshGeneration: UInt64?
     private let taskCockpitTimeoutSeconds: TimeInterval
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
@@ -1083,7 +1094,7 @@ final class SkillStore: ObservableObject {
             await loadSelectedDetail()
 
             setStartupLoading(UIStrings.startupReadyLoading, progress: 1.0)
-            refreshStatusMessage = UIStrings.refreshReloaded(skills.count, visibleIssueCount, sameAgentRuntimeConflictCount)
+            refreshStatusMessage = UIStrings.refreshReloaded(currentSkillCount, visibleIssueCount, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
             scheduleStartupSupplementalLoads(
@@ -1110,7 +1121,7 @@ final class SkillStore: ObservableObject {
 
         do {
             try await refreshCollections(includeSupplementalData: false, includeAIProviderStatus: true)
-            refreshStatusMessage = UIStrings.refreshReloaded(skills.count, visibleIssueCount, sameAgentRuntimeConflictCount)
+            refreshStatusMessage = UIStrings.refreshReloaded(currentSkillCount, visibleIssueCount, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
             await loadSelectedDetail()
@@ -2754,6 +2765,7 @@ final class SkillStore: ObservableObject {
         isPreviewingLocalSessions = false
         localSessionCache.activateSource(key)
         selectedLocalSessionDetailState = nil
+        selectedLocalSessionMessageCompleteness = emptyLocalSessionMessageCompleteness
         if let snapshot = localSessionCache.successfulSnapshot(for: key) {
             publishLocalSessionSnapshot(snapshot)
         } else {
@@ -2893,74 +2905,41 @@ final class SkillStore: ObservableObject {
         )
     }
 
-    func loadLocalSessionDetailIfNeeded(sessionID: String) async {
+    func cancelLocalSessionMessageLoad() {
+        localSessionDetailTask?.cancel()
         guard let source = activeLocalSessionSnapshotKey,
-              let snapshot = localSessionCache.successfulSnapshot(for: source),
-              snapshot.result.sessionRows.contains(where: { $0.id == sessionID }) else { return }
-        let key = LocalSessionDetailKey(source: source, sessionID: sessionID)
-        guard let generation = localSessionCache.beginDetailLoad(for: key) else {
-            synchronizeSelectedLocalSessionDetailState()
-            return
-        }
+              let selectedLocalSessionID else { return }
+        localSessionCache.cancelDetailLoad(
+            key: LocalSessionDetailKey(source: source, sessionID: selectedLocalSessionID)
+        )
         synchronizeSelectedLocalSessionDetailState()
-        let agent = source.agent == SkillAgentFilter.all.rawValue ? nil : source.agent
-        let project = activeProjectContext
-        do {
-            let result = try await service.previewLocalSessions(
-                authorizedRoots: source.authorizedRoots,
-                agent: agent,
-                scope: .all,
-                search: nil,
-                project: project,
-                sessionID: sessionID,
-                includeContentItems: true,
-                limit: 1,
-                offset: 0,
-                sort: .recent,
-                direction: .descending
-            )
-            guard activeLocalSessionSnapshotKey == source else { return }
-            guard let detail = result.sessionRows.first(where: { $0.id == sessionID }),
-                  detail.contentIncluded else {
-                localSessionCache.failDetail(
-                    key: key,
-                    generation: generation,
-                    displayError: "Session detail was unavailable. Retry to load it again."
-                )
-                if selectedLocalSessionID == sessionID {
-                    synchronizeSelectedLocalSessionDetailState()
-                }
-                return
-            }
-            guard localSessionCache.publishDetail(
-                detail,
-                key: key,
-                generation: generation
-            ) else { return }
-            if selectedLocalSessionID == sessionID {
-                synchronizeSelectedLocalSessionDetailState()
-            }
-        } catch {
-            localSessionCache.failDetail(
-                key: key,
-                generation: generation,
-                displayError: error.localizedDescription
-            )
-            if activeLocalSessionSnapshotKey == source, selectedLocalSessionID == sessionID {
-                synchronizeSelectedLocalSessionDetailState()
-            }
-        }
     }
 
-    private func synchronizeSelectedLocalSessionDetailState() {
+    func synchronizeSelectedLocalSessionDetailState() {
         guard let source = activeLocalSessionSnapshotKey,
               let selectedLocalSessionID else {
             selectedLocalSessionDetailState = nil
+            selectedLocalSessionMessageCompleteness = emptyLocalSessionMessageCompleteness
             return
         }
-        selectedLocalSessionDetailState = localSessionCache.detailStates[
-            LocalSessionDetailKey(source: source, sessionID: selectedLocalSessionID)
-        ]
+        let key = LocalSessionDetailKey(source: source, sessionID: selectedLocalSessionID)
+        selectedLocalSessionDetailState = localSessionCache.detailStates[key]
+        selectedLocalSessionMessageCompleteness = localSessionCache.detailCompleteness[key]
+            ?? emptyLocalSessionMessageCompleteness
+    }
+
+    private var emptyLocalSessionMessageCompleteness: ListCompletenessState {
+        ListCompletenessState(
+            loadedCount: 0,
+            totalCount: nil,
+            hasMore: false,
+            isComplete: false,
+            completeness: .unknown,
+            incompleteReason: nil,
+            loadingPhase: .idle,
+            canLoadMore: false,
+            canLoadAll: false
+        )
     }
 
     func updateAppSearch(query: String) {
@@ -3019,7 +2998,7 @@ final class SkillStore: ObservableObject {
 
         case .session:
             guard let session = item.session
-                ?? localSessionPreviewResult.sessionRows.first(where: { $0.id == item.targetID })
+                ?? activeLocalSessionSnapshot?.result.sessionRows.first(where: { $0.id == item.targetID })
             else { return }
             if agentFilter != .all, let filter = agentFilter(for: session.agent) {
                 agentFilter = filter
@@ -4335,7 +4314,7 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func listFailureReason(for error: Error) -> ListIncompleteReason {
+    func listFailureReason(for error: Error) -> ListIncompleteReason {
         if case ServiceClient.ClientError.service(let serviceError) = error,
            serviceError.code == "source_changed" {
             return .sourceChanged
@@ -4908,8 +4887,8 @@ final class SkillStore: ObservableObject {
         } else {
             partialScanWarningMessage = nil
             refreshStatusMessage = UIStrings.refreshScanComplete(
-                skills.count,
-                skills.count,
+                currentSkillCount,
+                currentSkillCount,
                 visibleIssueCount,
                 sameAgentRuntimeConflictCount
             )

@@ -602,7 +602,7 @@
 "state.enabled" = "Enabled";
 "state.disabled" = "Disabled";
 "state.broken" = "Broken";
-"state.missing" = "Missing";
+"state.missing" = "Deleted";
 "state.shadowed" = "Shadowed";
 "state.unknown" = "Unknown";
 "action.retryRefresh" = "Retry Refresh";
