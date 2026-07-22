@@ -10,8 +10,10 @@ use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skills_copilot_adapters::{
-    parse_codex_skill_config_entries, pi_agent_dir, pi_skill_enabled_by_settings,
-    ClaudeCodeAdapter, CodexAdapter, HermesAdapter, OpenclawAdapter, OpencodeAdapter, PiAdapter,
+    codex_home_dir, codex_plugin_cache_id, codex_plugin_is_effectively_enabled,
+    parse_codex_plugin_states, parse_codex_skill_config_entries, pi_agent_dir,
+    pi_skill_enabled_by_settings, ClaudeCodeAdapter, CodexAdapter, HermesAdapter, OpenclawAdapter,
+    OpencodeAdapter, PiAdapter,
 };
 use skills_copilot_ai_core::{evaluate_mvp_rules, Finding, RuleContext, RuleReport, Severity};
 use skills_copilot_catalog::{
@@ -31,7 +33,6 @@ use thiserror::Error;
 use skills_copilot_core::SkillScript;
 
 mod analysis;
-mod codex_runtime;
 mod config_consistency;
 mod config_support;
 mod history;
@@ -592,7 +593,6 @@ fn scan_agent_for_catalog(
     let mut report = scan_agent(adapter, ctx)?;
     if adapter.id() == AgentId::Codex {
         apply_codex_config_overrides(ctx, &mut report.instances)?;
-        codex_runtime::merge_codex_runtime_inventory(ctx, &mut report);
     } else if adapter.id() == AgentId::Pi {
         apply_pi_config_overrides(ctx, &mut report.instances)?;
     }
@@ -629,8 +629,8 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             display_name: "Codex",
             status: "verified",
             scan: AdapterFeatureCapability::supported_with_reason(
-                "verified-runtime-and-filesystem",
-                "Scans verified user/project .agents/skills, read-only CODEX_HOME skills, and admin roots; the Codex app-server skills/list result supplies the authoritative runtime inventory when available.",
+                "verified-filesystem",
+                "Scans verified user/project .agents/skills, read-only CODEX_HOME skills, installed plugin manifest roots, and admin roots from persistent local files.",
             ),
             project_scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-bounded",
@@ -644,12 +644,12 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             install: AdapterFeatureCapability::supported("verified"),
             writable: AdapterFeatureCapability::supported_with_reason(
                 "verified-native-roots-only",
-                "Codex writes are limited to verified user/project .agents/skills instances and the user config.toml override; CODEX_HOME, runtime-only, admin, and system skills are read-only.",
+                "Codex writes are limited to verified user/project .agents/skills instances and the user config.toml override; CODEX_HOME, installed plugin, admin, and system skills are read-only.",
             ),
             blockers: vec![
                 "Project-local .codex/config.toml toggle semantics remain unverified.",
-                "CODEX_HOME, runtime-only, admin, and system skills are read-only.",
-                "CODEX_HOME/plugins/cache and local marketplace implementation directories are never filesystem scan roots.",
+                "CODEX_HOME, installed plugin, admin, and system skills are read-only.",
+                "Enabled installed-plugin manifests are resolved to bounded versioned copies; the plugin store/cache is never walked broadly, and staging, marketplace source, and unrelated cache content are excluded.",
             ],
         },
         AdapterCapabilityRecord {
@@ -658,7 +658,7 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             status: "verified",
             scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-configured-local-paths",
-                "Scans native roots, official compatibility roots, and local skills.paths directories declared in opencode JSON/JSONC config; skills.urls are metadata-only and never fetched during scan.",
+                "Scans native roots, official .claude/.agents compatibility roots, exact direct skill-link targets, and local skills.paths directories declared in opencode JSON/JSONC config; skills.urls are never fetched.",
             ),
             project_scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-configured-local-paths",
@@ -691,11 +691,11 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             status: "guarded",
             scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-current-sources",
-                "Scans Pi-native global/project roots, .agents/skills compatibility roots, local settings paths, and installed local package manifests without fetching package indexes.",
+                "Scans installed package/configured roots first, cwd .pi/skills, ancestor .agents/skills, and native user roots in Pi's first-name-wins order without fetching package indexes.",
             ),
             project_scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-compatibility-roots",
-                "Project scan walks .pi/skills and .agents/skills compatibility roots from cwd up to the selected project root.",
+                "Project scan reads cwd .pi/skills and walks only .agents/skills compatibility roots from cwd through the selected git/project root.",
             ),
             config_toggle: AdapterFeatureCapability::supported_with_reason(
                 "guarded-v2.94",
@@ -761,7 +761,7 @@ pub fn list_adapter_capabilities(_ctx: &AdapterContext) -> Vec<AdapterCapability
             status: "guarded",
             scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-read-only",
-                "V2.39 scans documented OpenClaw filesystem roots without calling the OpenClaw CLI; workspace project roots are read-only and scoped to confirmed OpenClaw workspaces.",
+                "Scans documented OpenClaw roots in runtime precedence, including effectively enabled plugin manifests and configured local roots, then projects allowlists and eligibility without calling the OpenClaw CLI.",
             ),
             project_scan: AdapterFeatureCapability::supported_with_reason(
                 "verified-read-only",
@@ -969,11 +969,21 @@ fn adapter_root_reason(
         (AgentId::Opencode, RootSource::Configured) => {
             "OpenCode skills.paths local directory from opencode config; scanned read-only as a filesystem source and never used as an install target or skill-file write target. skills.urls are not fetched by diagnostics or scans.".to_string()
         }
+        (AgentId::Opencode, RootSource::Compatibility) => {
+            if root.path.to_string_lossy().contains(".claude/skills") {
+                "Official opencode .claude/skills compatibility source; this is effective opencode runtime input, not a Claude row leaking across the selected-agent filter.".to_string()
+            } else {
+                "Official opencode .agents/skills compatibility source; scanned with opencode permission rules and exact symlink-target authorization.".to_string()
+            }
+        }
         (AgentId::Codex, RootSource::Admin) => {
             "Codex admin skills root; scanned read-only when present, skipped when missing or unreadable, and never elevated or written.".to_string()
         }
         (AgentId::Codex, RootSource::Plugin) => {
-            "Codex plugin-bundled skills root from a local marketplace entry; scanned read-only without running hooks, MCP servers, plugin installers, or network fetches.".to_string()
+            "Manifest-declared skill root from an effectively enabled installed Codex plugin; scanned read-only without walking the plugin store/cache broadly or running hooks, MCP servers, installers, or network fetches.".to_string()
+        }
+        (AgentId::Openclaw, RootSource::Plugin) => {
+            "Safe manifest-declared root from an effectively enabled OpenClaw plugin; the extension store is not walked as a generic skill source.".to_string()
         }
         (AgentId::Codex, RootSource::System) => {
             "Codex system skills are bundled by Codex; no stable local filesystem root is scanned or written by this product.".to_string()
@@ -2434,7 +2444,7 @@ fn append_v28_local_rule_findings(instances: &[SkillInstance], report: &mut Rule
                 "Remove the tools field or list at least one required tool.",
             );
         }
-        if !is_canonical_skill_name(&inst.name) {
+        if !inst.name.contains(':') && !is_canonical_skill_name(&inst.name) {
             let suggestion = canonical_skill_name_suggestion(&inst.name);
             report.findings.push(Finding {
                 instance_id: Some(inst.id.clone()),
@@ -3018,8 +3028,7 @@ pub fn toggle_skill(
         return Err(CommandError::VerificationFailed);
     }
 
-    // File is now the authoritative source for skillOverrides; release the
-    // lock before mutating the per-process catalog cache.
+    // Release the config lock before mutating the per-process catalog cache.
     lock_file.unlock()?;
 
     // 6. Update the catalog to reflect the new effective state.
@@ -4746,7 +4755,7 @@ fn apply_codex_config_overrides(
     ctx: &AdapterContext,
     instances: &mut [SkillInstance],
 ) -> Result<(), CommandError> {
-    let disabled_paths = codex_disabled_skill_paths(&codex_user_config_path(ctx))?;
+    let projection = codex_config_projection(ctx)?;
     for instance in instances.iter_mut() {
         if instance.agent != AgentId::Codex {
             continue;
@@ -4755,7 +4764,7 @@ fn apply_codex_config_overrides(
             instance.enabled = true;
             instance.state = SkillState::Loaded;
         }
-        if instance.state == SkillState::Loaded && disabled_paths.contains(&instance.path) {
+        if instance.state == SkillState::Loaded && projection.is_disabled(&instance.path) {
             instance.enabled = false;
             instance.state = SkillState::Disabled;
         }
@@ -4816,17 +4825,35 @@ fn pi_config_path_for_skill_instance(
     pi_config_path_for_skill_path(ctx, instance.scope, &instance.path)
 }
 
-fn codex_disabled_skill_paths(path: &Path) -> Result<BTreeSet<PathBuf>, CommandError> {
-    let content = match fs::read_to_string(path) {
+struct CodexConfigProjection {
+    codex_home: PathBuf,
+    disabled_paths: BTreeSet<PathBuf>,
+    plugin_states: BTreeMap<String, bool>,
+}
+impl CodexConfigProjection {
+    fn is_disabled(&self, skill_path: &Path) -> bool {
+        self.disabled_paths.contains(skill_path)
+            || codex_plugin_cache_id(&self.codex_home, skill_path).is_some_and(|plugin_id| {
+                !codex_plugin_is_effectively_enabled(&plugin_id, &self.plugin_states)
+            })
+    }
+}
+
+fn codex_config_projection(ctx: &AdapterContext) -> Result<CodexConfigProjection, CommandError> {
+    let content = match fs::read_to_string(codex_user_config_path(ctx)) {
         Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
-        Err(err) => return Err(err.into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
     };
-    Ok(parse_codex_skill_config_entries(&content)
-        .into_iter()
-        .filter(|block| block.enabled == Some(false))
-        .filter_map(|block| block.path.map(PathBuf::from))
-        .collect())
+    Ok(CodexConfigProjection {
+        codex_home: codex_home_dir(ctx),
+        disabled_paths: parse_codex_skill_config_entries(&content)
+            .into_iter()
+            .filter(|block| block.enabled == Some(false))
+            .filter_map(|block| block.path.map(PathBuf::from))
+            .collect(),
+        plugin_states: parse_codex_plugin_states(&content),
+    })
 }
 
 const REDACTED_SNAPSHOT_PREFIX: &str = "# skills-copilot: snapshot content redacted\n";

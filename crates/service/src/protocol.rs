@@ -55,6 +55,8 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "project.getContext",
     "project.setContext",
     "project.clearContext",
+    "project.removeRecentContext",
+    "project.clearRecentContexts",
     "project.validateContext",
     "catalog.listSkills",
     "catalog.getSkill",

@@ -409,6 +409,16 @@ impl ServiceHost {
                 let state: ProjectContextState = clear_project_context(&self.app_data_dir)?;
                 serde_json::to_value(state).map_err(Into::into)
             }
+            "project.removeRecentContext" => {
+                let params: ProjectContextIDParams = serde_json::from_value(request.params)?;
+                let state: ProjectContextState =
+                    remove_recent_project_context(&self.app_data_dir, params)?;
+                serde_json::to_value(state).map_err(Into::into)
+            }
+            "project.clearRecentContexts" => {
+                let state: ProjectContextState = clear_recent_project_contexts(&self.app_data_dir)?;
+                serde_json::to_value(state).map_err(Into::into)
+            }
             "project.validateContext" => {
                 let params: ProjectContextParams = serde_json::from_value(request.params)?;
                 let context: ProjectContext = validate_project_context_for_response(params);

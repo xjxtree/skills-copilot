@@ -137,6 +137,8 @@ conditional on the exact local state that the client reviewed.
 | `project.getContext` | None | Never | Never | None |
 | `project.setContext` | App-local data | Never | Never | None |
 | `project.clearContext` | App-local data | Never | Never | None |
+| `project.removeRecentContext` | App-local data | Never | Never | None |
+| `project.clearRecentContexts` | App-local data | Never | Never | None |
 | `project.validateContext` | None | Never | Never | None |
 | `catalog.listSkills` | None | Never | Never | None |
 | `catalog.getSkill` | None | Never | Never | None |
@@ -246,26 +248,29 @@ or expose write controls.
 - `catalog.listSkills`, `catalog.getSkill`, toggle responses, and batch-toggle
   skill records include optional `publisher`, `package_name`,
   `package_version`, `source_kind`, and `read_only_reason` fields.
-- Legacy persisted Codex rows beneath `$CODEX_HOME/plugins/cache` can still be
-  decoded with `source_kind="chatgpt-plugin-cache"` for backward-compatible
-  direct record reads. They are excluded from `catalog.listSkills`, current
-  instance/analysis/conflict projections, and the native Deleted filter.
-- Legacy local Codex marketplace rows may still decode with
-  `source_kind="codex-plugin-marketplace"` for audit continuity. Marketplace
-  directories are no longer scan roots; current runtime inventory comes from
-  the Codex `skills/list` protocol and verified filesystem roots.
+- Installed Codex plugin skills are scanned only from bounded roots declared by
+  effectively enabled installed-plugin records and their manifests. The plugin
+  store/cache is never a generic root. These skills appear in
+  `catalog.listSkills` and current instance/analysis/conflict projections with
+  publisher, package, version, and read-only provenance.
+- `source_kind="chatgpt-plugin-cache"` remains the backward-compatible wire
+  value for those installed files; clients should present it as an installed
+  Codex plugin source, not as a runtime-only record. Legacy synthetic
+  `codex-runtime` rows are removed by schema migration and are excluded from
+  current projections if encountered.
 - Provenance is derived deterministically from the cataloged path at read time.
-  It does not persist plugin manifests, introduce a plugin-cache write path, or
-  merge ChatGPT plugin ownership with `skillManager.*` package ownership.
-- `catalog.listSkills` and current `SkillInstance` projections reject every
-  plugin-cache row before normal exact-path dedupe. Cache rows therefore never
-  create runtime conflicts or user-visible deleted history.
+  The service does not persist plugin manifests, introduce a plugin write path,
+  or merge Codex plugin ownership with `skillManager.*` package ownership.
+- The product discovery path never invokes the Codex runtime inventory API and
+  does not use it as an authoritative source. Release validation may compare a
+  temporary read-only runtime inventory against the filesystem result without
+  persisting runtime rows.
 - Read-only startup/reload, list, detail, analysis, conflict, app-search, and
   LLM skill-selection paths project current guarded Codex `[[skills.config]]`
-  `enabled=false` entries over cached native records. Removing an override
-  restores cached `loaded`/`disabled` records to loaded; broken, missing, and
-  shadowed states remain unchanged. The projection does not scan directories,
-  write config, or mutate the catalog.
+  path overrides and `[plugins.<id>] enabled` values over cached native/plugin
+  records. Removing an override restores cached `loaded`/`disabled` records to
+  loaded; broken, missing, and shadowed states remain unchanged. The projection
+  does not scan directories, write config, or mutate the catalog.
 
 ## Catalog Scan Diagnostics
 
@@ -278,9 +283,10 @@ or expose write controls.
   `completed-with-skipped-roots`, and `completed-no-roots-scanned` distinguish
   degraded outcomes; the enclosing activity is `completed-partial` when any
   adapter has a partial root.
-- Missing implicit built-in root candidates do not populate `roots_skipped` or
-  `scan_issues` and do not degrade status. Missing explicit roots, existing
-  invalid roots, and authorized traversal failures retain typed diagnostics.
+- Missing implicit built-in and package-convention root candidates do not
+  populate `roots_skipped` or `scan_issues` and do not degrade status. Missing
+  explicit or manifest-declared roots, existing invalid roots, and authorized
+  traversal failures retain typed diagnostics.
 - Unavailable skill symlink targets are reported as `dangling_symlink` without
   making the surrounding root partial. The single link is skipped, the rest of
   the root remains eligible for exact stale-row reconciliation, and recovery
@@ -433,15 +439,14 @@ or expose write controls.
   `ended_at` in Unix epoch milliseconds, with `ended_at` representing the last
   parsed session message/content event. Each `content_items[]` item includes
   `timestamp` when its source event has a timestamp.
-- Codex inventory rows represent interactive, user-owned top-level tasks. When
-  a rollout exposes `session_meta`, its `source` must be the Codex interactive
-  `cli` or `vscode` source and, when present, `thread_source` must be `user`.
-  Structured subagents, memory consolidation, host-created internal workflows,
-  and non-interactive `exec` carriers are excluded. Legacy `cli`/`vscode`
-  rollouts without `thread_source` and older metadata-poor compatible records
-  remain visible. The latest matching
-  `session_index.jsonl` title takes precedence over a title inferred from the
-  transcript; `history.jsonl` remains a fallback.
+- Codex summary rows come from the guarded `state_*.sqlite` thread index used by
+  current `thread/list`, represent active interactive user-owned top-level
+  tasks, and apply exact cwd matching for project scope. Archived, structured
+  subagent/review/compact, memory, host-created internal, and non-interactive
+  `exec` carriers are excluded. Selected detail and message pages still read
+  the guarded rollout on demand; the index is never treated as transcript
+  content. Legacy homes without a compatible index retain the bounded rollout
+  and `session_index.jsonl`/`history.jsonl` fallback.
 - Agent-specific inventory filtering excludes internal conversation stores at
   discovery and metadata boundaries: Claude Code sidechains, `subagents`, tool
   results, and runtime lock state; OpenCode child sessions with a `parent_id`;
@@ -449,6 +454,10 @@ or expose write controls.
   cron, batch, subagent, and memory workflows; and OpenClaw cron, hook,
   heartbeat, ACP, and subagent session keys. Pi transcript branching and Hermes
   compression lineage remain part of their user-facing parent conversations.
+- Current OpenClaw summaries and messages come from each agent's
+  `<state>/agents/<id>/agent/openclaw-agent.sqlite`. Legacy per-agent
+  `sessions.json` and JSONL transcripts are migration/archive material and do
+  not enter the active list.
 - `session.previewLocalSessions` supports complete, stateless summary paging.
   A first page explicitly sends `paging_mode="keyset"`; a continuation sends
   the opaque `cursor` and matching `source_revision` (and may repeat the mode).

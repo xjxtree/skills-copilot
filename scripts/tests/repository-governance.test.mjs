@@ -1258,6 +1258,33 @@ test("JSON load failures use stable repository-relative diagnostics", async (t) 
   }
 });
 
+test("unstaged deletions are validated as the next working-tree state", () => {
+  const root = createGovernanceFixture();
+  try {
+    mkdirSync(join(root, "docs"));
+    writeFileSync(join(root, "docs", "obsolete.md"), "# Obsolete\n");
+    execFileSync("git", ["add", "docs/obsolete.md"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "add obsolete doc"], { cwd: root });
+    rmSync(join(root, "docs", "obsolete.md"));
+
+    const result = runGovernanceFixture(root);
+    assert.equal(result.status, 0, result.stdout || result.stderr);
+
+    writeFileSync(
+      join(root, "README.md"),
+      "# Fixture\n\nRequired marker\n\n[Obsolete](docs/obsolete.md)\n",
+    );
+    const referencedResult = runGovernanceFixture(root);
+    assert.equal(referencedResult.status, 1);
+    assert.match(
+      referencedResult.stderr,
+      /README\.md:5 -> docs\/obsolete\.md is missing/u,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("tracked file type failures are stable and deduplicated", async (t) => {
   const cases = [
     {

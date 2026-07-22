@@ -368,6 +368,20 @@ fn v28_local_rules_do_not_infer_unknown_or_missing_fields_as_safe() {
 }
 
 #[test]
+fn v28_namespaced_plugin_skill_name_is_not_a_canonical_name_finding() {
+    let namespaced = local_rule_instance(
+        "product-design:Image-To-Code",
+        "name: Image-To-Code\ndescription: plugin skill\n",
+        "Plugin body.",
+    );
+    let mut report = RuleReport::default();
+
+    append_v28_local_rule_findings(&[namespaced], &mut report);
+
+    assert_rule_absent(&report, "name.canonical-case");
+}
+
+#[test]
 fn scans_claude_fixtures_into_catalog() {
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
@@ -387,7 +401,7 @@ fn scans_claude_fixtures_into_catalog() {
 
     assert_eq!(count, 1);
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].name, "summarize-changes");
+    assert_eq!(records[0].name, "valid-summarize");
 }
 
 #[test]
@@ -412,7 +426,7 @@ fn scan_all_includes_claude_and_codex_fixtures() {
     assert!(
         records
             .iter()
-            .any(|record| record.agent == "claude-code" && record.name == "summarize-changes"),
+            .any(|record| record.agent == "claude-code" && record.name == "valid-summarize"),
         "Claude Code fixture should still be scanned"
     );
     assert!(
@@ -2462,20 +2476,12 @@ fn scan_records_rule_findings_and_conflicts() {
             .any(|finding| finding.rule_id == "frontmatter.required-fields"),
         "broken frontmatter fixtures produce required-field findings"
     );
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule_id == "name.collision"),
-        "same-name fixtures produce collision findings"
-    );
+    assert!(findings
+        .iter()
+        .all(|finding| finding.rule_id != "name.collision"));
 
     let conflicts = catalog.list_conflict_groups().expect("conflicts list");
-    assert!(
-        conflicts
-            .iter()
-            .any(|conflict| conflict.reason == "content-drift"),
-        "same-name fixtures with different content create a content-drift conflict"
-    );
+    assert!(conflicts.is_empty());
 }
 
 #[test]

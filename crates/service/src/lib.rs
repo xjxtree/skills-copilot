@@ -63,9 +63,11 @@ mod service_observability_helpers;
 mod service_support_helpers;
 
 use project_context::{
-    clear_project_context, context_from_paths, load_project_context_state, project_context_summary,
+    clear_project_context, clear_recent_project_contexts, context_from_paths,
+    load_project_context_state, project_context_summary, remove_recent_project_context,
     set_project_context, stored_active_adapter_paths, validate_project_context_for_response,
-    ProjectContext, ProjectContextParams, ProjectContextState, ProjectContextSummary,
+    ProjectContext, ProjectContextIDParams, ProjectContextParams, ProjectContextState,
+    ProjectContextSummary,
 };
 pub use protocol::{
     ServiceErrorRecord, ServiceRequest, ServiceResponse, DEFAULT_BUNDLE_ID, LEGACY_BUNDLE_ID,

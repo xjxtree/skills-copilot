@@ -6,8 +6,8 @@ use super::service_local_session_io::{
 };
 use super::*;
 use skills_copilot_adapters::{
-    claude_config_dir, codex_home_dir, hermes_home_dir, openclaw_state_dir, opencode_data_dir,
-    pi_agent_dir,
+    claude_config_dir, codex_home_dir, hermes_home_dir, openclaw_config_path, openclaw_state_dir,
+    opencode_data_dir, pi_agent_dir,
 };
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -789,10 +789,14 @@ fn auto_local_session_roots(
 
     if local_session_agent_matches(requested_agent, AgentId::Openclaw.as_str()) {
         let openclaw_root = openclaw_state_dir(adapter_ctx);
-        let databases = openclaw_session_databases(&openclaw_root);
-        if !databases.is_empty() {
+        if !openclaw_agent_database_paths(&openclaw_root).is_empty() {
             notes.push(
-                "OpenClaw active sessions were detected in per-agent SQLite stores; use the installed OpenClaw runtime inventory for schema-owned reads."
+                "OpenClaw sessions are loaded from each agent's canonical SQLite database."
+                    .to_string(),
+            );
+        } else if openclaw_has_legacy_session_storage(&openclaw_root) {
+            notes.push(
+                "Legacy OpenClaw JSON/JSONL files were detected but are not active session storage; no canonical per-agent SQLite database was found."
                     .to_string(),
             );
         }
@@ -834,7 +838,7 @@ fn pi_session_dir(adapter_ctx: &AdapterContext) -> PathBuf {
     agent_dir.join("sessions")
 }
 
-fn openclaw_session_databases(state_dir: &Path) -> Vec<PathBuf> {
+fn openclaw_agent_database_paths(state_dir: &Path) -> Vec<PathBuf> {
     let agents_dir = state_dir.join("agents");
     let Ok(entries) = std::fs::read_dir(agents_dir) else {
         return Vec::new();
@@ -846,6 +850,14 @@ fn openclaw_session_databases(state_dir: &Path) -> Vec<PathBuf> {
             path.is_file().then_some(path)
         })
         .collect()
+}
+
+fn openclaw_has_legacy_session_storage(state_dir: &Path) -> bool {
+    std::fs::read_dir(state_dir.join("agents"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| entry.path().join("sessions").is_dir())
 }
 
 fn local_session_project_filter_roots(
@@ -1009,6 +1021,8 @@ fn is_ignored_local_session_file(path: &Path, requested_agent: Option<&str>) -> 
     };
     let all_agents = agent.is_empty() || agent.eq_ignore_ascii_case("all");
     has_component(&["memory", "subagent", "subagents", "subagent-artifacts"])
+        || ((all_agents || agent.eq_ignore_ascii_case(AgentId::Openclaw.as_str()))
+            && path.file_name().and_then(|name| name.to_str()) == Some("sessions.json"))
         || ((all_agents || agent.eq_ignore_ascii_case(AgentId::ClaudeCode.as_str()))
             && has_component(&["tool-results"]))
         || ((all_agents || agent.eq_ignore_ascii_case(AgentId::Opencode.as_str()))

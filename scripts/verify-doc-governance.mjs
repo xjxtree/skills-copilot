@@ -227,6 +227,16 @@ function pathExists(relativePath, trackedFiles) {
   return current !== repoRoot;
 }
 
+function existsInWorkingTree(relativePath) {
+  try {
+    lstatSync(join(repoRoot, relativePath));
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    return true;
+  }
+}
+
 function loadJson(path, label, errors) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -361,15 +371,17 @@ export function verifyRepositoryGovernance() {
     return errors;
   }
   const indexEntries = entriesByPath(allTrackedEntries);
-  const trackedFiles = new Set(indexEntries.keys());
-  const markdownPaths = [...indexEntries.keys()].filter((relativePath) =>
-    relativePath.endsWith(".md")
+  const trackedFiles = new Set(
+    [...indexEntries.keys()].filter(existsInWorkingTree),
+  );
+  const markdownPaths = [...trackedFiles].filter((relativePath) =>
+    relativePath.endsWith(".md"),
   );
   const readRepositoryFile = createRepositoryReader(indexEntries, errors);
 
   const policyDocuments = new Map();
   for (const relativePath of manifest.policy_documents) {
-    if (!trackedFiles.has(relativePath)) {
+    if (!indexEntries.has(relativePath)) {
       errors.push(`policy document is not tracked: ${relativePath}`);
       continue;
     }

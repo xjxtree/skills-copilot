@@ -54,6 +54,13 @@ impl AgentAdapter for OpencodeAdapter {
         opencode_roots(ctx, &OpencodeEnvironment::current())
     }
 
+    fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        self.roots(ctx)
+            .iter()
+            .flat_map(opencode_declared_skill_link_targets)
+            .collect()
+    }
+
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
         let content = std::fs::read_to_string(path)
             .map_err(|err| AdapterError::new(format!("failed to read skill: {err}")))?;
@@ -113,7 +120,7 @@ impl AgentAdapter for OpencodeAdapter {
 
     fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
         let components = relative_path.components().count();
-        (components == 2 || (root.source == RootSource::Configured && components == 1))
+        (components == 2 || (root.source == RootSource::Configured && components >= 1))
             && relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
     }
 
@@ -159,6 +166,30 @@ fn opencode_roots(ctx: &AdapterContext, environment: &OpencodeEnvironment) -> Ve
 
     roots.extend(opencode_configured_skill_roots(ctx, environment));
     dedup_roots(roots)
+}
+
+fn opencode_declared_skill_link_targets(root: &AdapterRoot) -> Vec<AdapterRoot> {
+    let Ok(entries) = std::fs::read_dir(&root.path) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if !metadata.file_type().is_symlink() || !path.join("SKILL.md").is_file() {
+                return None;
+            }
+            Some(AdapterRoot {
+                scope: root.scope,
+                path,
+                // OpenCode resolves direct skill-directory links in native and
+                // compatibility roots. Authorize only that declared link's
+                // exact target instead of broadening the external allowlist.
+                source: RootSource::Configured,
+            })
+        })
+        .collect()
 }
 
 pub fn opencode_data_dir(ctx: &AdapterContext) -> PathBuf {
@@ -888,6 +919,50 @@ mod tests {
         assert!(roots.iter().any(|root| {
             root.source == RootSource::Compatibility && root.path == project.join(".agents/skills")
         }));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn direct_compatibility_skill_link_authorizes_only_its_exact_target() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-opencode-direct-skill-link-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let external_skill = temp_root.join("external/linked-skill");
+        std::fs::create_dir_all(home.join(".agents/skills"))
+            .expect("create OpenCode compatibility root");
+        std::fs::create_dir_all(&external_skill).expect("create external skill");
+        std::fs::write(
+            external_skill.join("SKILL.md"),
+            "---\nname: linked-skill\ndescription: linked fixture\n---\nBody.\n",
+        )
+        .expect("write linked skill");
+        let declared_link = home.join(".agents/skills/linked-skill");
+        std::os::unix::fs::symlink(&external_skill, &declared_link)
+            .expect("create direct skill link");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let roots = OpencodeAdapter.link_target_roots(&ctx);
+
+        assert_eq!(
+            roots,
+            vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: declared_link,
+                source: RootSource::Configured,
+            }]
+        );
+        assert!(roots
+            .iter()
+            .all(|root| root.path != temp_root.join("external")));
 
         let _ = std::fs::remove_dir_all(temp_root);
     }

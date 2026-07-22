@@ -30,7 +30,7 @@ This file summarizes the LLM/provider boundary.
   skill-name mentions.
 - Provider Observability may display read-only redacted metadata for Agent
   Copilot AI requests, including model-task history rows, but must not add
-  write/delete controls without a new scoped version and safety review.
+  write/delete controls without an explicitly scoped safety review.
 
 ## Non-Goals
 

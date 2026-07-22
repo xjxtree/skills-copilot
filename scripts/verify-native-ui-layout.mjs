@@ -113,14 +113,17 @@ const checks = [
       && /struct HistorySection:[\s\S]*?let completeness:\s*ListCompletenessState[\s\S]*?ListCompletenessFooter\([\s\S]*?state:\s*completeness/.test(files.detailHeaderOverview),
   },
   {
-    label: "findings and conflicts expose catalog scan completeness",
-    text: files.detail + "\n" + files.detailFindingsHistory,
-    passed: /FindingsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogListCompleteness/.test(files.detail)
+    label: "skills, findings, and conflicts expose agent-scoped catalog scan completeness",
+    text: files.sidebar + "\n" + files.detail + "\n" + files.detailFindingsHistory + "\n" + files.storeDerivedState,
+    passed: /let catalogCompleteness = store\.filteredCatalogListCompleteness/.test(files.sidebar)
+      && /ListCompletenessFooter\([\s\S]*?state:\s*catalogCompleteness/.test(files.sidebar)
+      && /var filteredCatalogListCompleteness:\s*ListCompletenessState[\s\S]*?catalogCompleteness\(forAgent:\s*agentFilter\.rawValue\)/.test(files.storeDerivedState)
+      && /FindingsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogCompleteness\(forAgent:\s*skill\.agent\)/.test(files.detail)
       && /struct FindingsSection:[\s\S]*?let catalogCompleteness:\s*ListCompletenessState[\s\S]*?ListCompletenessFooter/.test(files.detailFindingsHistory)
       && /if findings\.isEmpty && catalogStatusIssueKind == nil\s*\{\s*if catalogCompleteness\.completeness == \.complete\s*\{[\s\S]*?UIStrings\.noFindings/.test(files.detailFindingsHistory)
       && /CatalogStatusIssueCard\(skill:\s*skill,\s*status:\s*catalogStatusIssueKind\)/.test(files.detailFindingsHistory)
       && /catalogCompletenessState\([\s\S]*?loadedCount:\s*findings\.count/.test(files.detailFindingsHistory)
-      && /ConflictsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogListCompleteness/.test(files.detail)
+      && /ConflictsSection\([\s\S]*?catalogCompleteness:\s*store\.catalogCompleteness\(forAgent:\s*skill\.agent\)/.test(files.detail)
       && /struct ConflictsSection:[\s\S]*?let catalogCompleteness:\s*ListCompletenessState[\s\S]*?showsEmptyState:\s*catalogCompleteness\.completeness == \.complete[\s\S]*?ListCompletenessFooter/.test(files.detailFindingsHistory)
       && /private var catalogCompletenessState:[\s\S]*?loadedCount:\s*conflicts\.count/.test(files.detailFindingsHistory),
   },
@@ -239,7 +242,7 @@ const checks = [
       && !/GlassEffectContainer|glassEffect\(/.test(files.content)
       && !/\.toolbar\s*\{[\s\S]*?ToolbarItem\(placement:\s*\.navigation\)[\s\S]*?TitlebarAgentSelectorControl\(\)/.test(files.content)
       && /private struct TitlebarAgentSelectorControl:\s*View[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?TitlebarAgentSelectorLabel\([\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter/.test(files.content)
-      && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?Button\s*\{[\s\S]*?chooseProject\(\)[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?await store\.setProject\([\s\S]*?revealActiveProject\(\)[\s\S]*?await store\.clearProject\(\)/.test(files.content)
+      && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?Button\s*\{[\s\S]*?chooseProject\(\)[\s\S]*?await store\.clearRecentProjects\(\)[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?await store\.setProject\([\s\S]*?recentProjectPath\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?revealActiveProject\(\)[\s\S]*?await store\.clearProject\(\)/.test(files.content)
       && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(""\)/.test(files.sidebar)
       && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
       && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
@@ -267,7 +270,7 @@ const checks = [
       && !/SecondarySidebarProjectPickerMenu\(isCompact:\s*true\)[\s\S]*?frame\(maxWidth:\s*\.infinity,\s*alignment:\s*\.trailing\)/.test(files.sidebar)
       && /private struct SecondarySidebarAgentSelectorMenu:[\s\S]*?Menu\s*\{[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter[\s\S]*?SecondarySidebarAgentSelectorLabel\([\s\S]*?shortTitle\(for:\s*store\.agentFilter\)[\s\S]*?\.accessibilityValue\(store\.agentFilter\.title\)/.test(files.sidebar)
       && /private struct SecondarySidebarAgentSelectorLabel:[\s\S]*?AgentIconBadge\(filter:\s*filter,\s*size:\s*24\)[\s\S]*?Image\(systemName:\s*"chevron\.up\.chevron\.down"\)[\s\S]*?\.frame\(minWidth:\s*126[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)/.test(files.sidebar)
-      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?title:\s*projectTitle[\s\S]*?return UIStrings\.toolbarNoProjectSelected[\s\S]*?private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/.test(files.sidebar)
+      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?recentProjectTitle\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?await store\.clearRecentProjects\(\)[\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?title:\s*projectTitle[\s\S]*?return UIStrings\.toolbarNoProjectSelected[\s\S]*?private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/.test(files.sidebar)
       && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?let isCompact:\s*Bool[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?isCompact:\s*isCompact/.test(files.sidebar)
       && /private struct SecondarySidebarProjectPickerLabel:[\s\S]*?let isCompact:\s*Bool[\s\S]*?if isCompact[\s\S]*?collapsedLabel[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)[\s\S]*?expandedLabel[\s\S]*?collapsedLabel[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)[\s\S]*?\.secondarySidebarHeaderControlCircle\(\)/.test(files.sidebar)
       && !/ToolbarContextSummary/.test(files.content)
@@ -661,7 +664,23 @@ const checks = [
   {
     label: "secondary sidebar project menu owns merged project selection and actions",
     text: files.sidebar,
-    pattern: /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?private struct SecondarySidebarProjectPickerLabel:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)/,
+    pattern: /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?await store\.removeRecentProject\([\s\S]*?await store\.clearRecentProjects\(\)[\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?private struct SecondarySidebarProjectPickerLabel:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)/,
+  },
+  {
+    label: "titlebar project popover keeps compact clear action in the recent header",
+    text: files.content,
+    passed: (() => {
+      const body = extractStructBody(files.content, "TitlebarProjectPickerControl")
+      const recentTitle = body.indexOf("Text(UIStrings.recentProjects)")
+      const compactClear = body.indexOf("Text(UIStrings.clearRecentProjectsCompact)")
+      const recentRows = body.indexOf("ForEach(store.recentProjectContexts)")
+      return /HStack\(spacing:\s*8\)[\s\S]*?Text\(UIStrings\.recentProjects\)[\s\S]*?Spacer\(minLength:\s*8\)[\s\S]*?Button\(role:\s*\.destructive\)/.test(body)
+        && recentTitle >= 0
+        && compactClear > recentTitle
+        && recentRows > compactClear
+        && body.includes("Task { await store.clearRecentProjects() }")
+        && !body.includes('Label(UIStrings.clearRecentProjects, systemImage: "trash.slash")')
+    })(),
   },
   {
     label: "skill list keeps programmatic scrolling outside the List content so its native section stays sticky",

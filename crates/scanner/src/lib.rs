@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -362,6 +362,15 @@ where
         }
     }
     report.instances = dedup_instances(report.instances);
+    if matches!(
+        adapter.id(),
+        AgentId::ClaudeCode | AgentId::Pi | AgentId::Openclaw
+    ) {
+        let mut effective_names = HashSet::new();
+        report
+            .instances
+            .retain(|instance| effective_names.insert(instance.name.clone()));
+    }
     let mut alias_keys = HashSet::new();
     report
         .root_aliases
@@ -943,11 +952,17 @@ fn visit_skill_file(
     normalize_instance(
         ctx,
         &root.declared,
-        canonical_path,
+        canonical_path.clone(),
         overrides,
         &mut instance,
     );
-    instance.display_path = display_path;
+    instance.display_path = normalized_display_path(
+        instance.agent,
+        &root.declared,
+        &canonical_path,
+        display_path,
+    );
+    finalize_discovered_instance(ctx, &root.declared, overrides, &mut instance);
     report.instances.push(instance);
     SkillVisitStatus::Complete
 }
@@ -967,11 +982,17 @@ fn push_broken_instance(
     normalize_instance(
         ctx,
         &root.declared,
-        canonical_path,
+        canonical_path.clone(),
         overrides,
         &mut instance,
     );
-    instance.display_path = display_path;
+    instance.display_path = normalized_display_path(
+        instance.agent,
+        &root.declared,
+        &canonical_path,
+        display_path,
+    );
+    finalize_discovered_instance(ctx, &root.declared, overrides, &mut instance);
     report.instances.push(instance);
 }
 
@@ -1096,11 +1117,20 @@ fn normalize_instance(
     ctx: &AdapterContext,
     root: &AdapterRoot,
     canonical_path: PathBuf,
-    overrides: &SkillConfigOverrides,
+    _overrides: &SkillConfigOverrides,
     instance: &mut SkillInstance,
 ) {
     instance.scope = root.scope;
     instance.path = canonical_path.clone();
+    instance.display_path = canonical_path.clone();
+    if instance.agent == AgentId::Codex {
+        if let Some(namespace) = codex_skill_namespace(root) {
+            if !instance.name.starts_with(&format!("{namespace}:")) {
+                instance.name = format!("{namespace}:{}", instance.name);
+                instance.display_name = instance.name.clone();
+            }
+        }
+    }
     instance.project_root = match root.scope {
         Scope::AgentProject if instance.agent == AgentId::Openclaw => {
             openclaw_workspace_base_for_root_path(&root.path).or_else(|| ctx.project_root.clone())
@@ -1125,41 +1155,225 @@ fn normalize_instance(
     }
     instance.first_seen = instance.mtime;
     instance.last_seen = instance.mtime;
+}
 
+fn finalize_discovered_instance(
+    ctx: &AdapterContext,
+    root: &AdapterRoot,
+    overrides: &SkillConfigOverrides,
+    instance: &mut SkillInstance,
+) {
+    if instance.agent == AgentId::ClaudeCode {
+        normalize_claude_runtime_identity(ctx, root, instance);
+        instance.definition_id = canonical_definition_id(&instance.name);
+    }
     // Agent config overrides are scoped to the current adapter only. Keep the
     // per-scan settings cache outside adapter parsing so one file is not reread
-    // for every skill in a root.
+    // for every skill in a root. Claude plugin skills are controlled by plugin
+    // enablement and are intentionally unaffected by `skillOverrides`.
     if matches!(instance.state, SkillState::Loaded) && overrides.is_disabled(ctx, root, instance) {
         instance.enabled = false;
         instance.state = SkillState::Disabled;
     }
 }
 
+fn normalize_claude_runtime_identity(
+    ctx: &AdapterContext,
+    root: &AdapterRoot,
+    instance: &mut SkillInstance,
+) {
+    if root.source == RootSource::Plugin {
+        if let Some(namespace) = claude_plugin_namespace(&instance.path) {
+            instance.name = format!("{namespace}:{}", instance.name);
+            instance.display_name = instance.name.clone();
+        }
+        return;
+    }
+    if root.path.file_name().and_then(|name| name.to_str()) == Some("commands")
+        && instance
+            .display_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        return;
+    }
+
+    let Some(directory_name) = instance
+        .display_path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+    else {
+        return;
+    };
+    let mut runtime_name = directory_name.to_string();
+    if root.scope == Scope::AgentProject {
+        let skill_owner_directory = instance.display_path.ancestors().nth(4);
+        if let (Some(project_root), Some(skill_owner_directory)) =
+            (ctx.project_root.as_deref(), skill_owner_directory)
+        {
+            if skill_owner_directory != project_root {
+                if let Ok(relative) = skill_owner_directory.strip_prefix(project_root) {
+                    let qualifier = relative
+                        .components()
+                        .filter_map(|component| component.as_os_str().to_str())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    if !qualifier.is_empty() {
+                        runtime_name = format!("{qualifier}:{runtime_name}");
+                    }
+                }
+            }
+        }
+    }
+    instance.name = runtime_name.clone();
+    instance.display_name = runtime_name;
+}
+
+fn claude_plugin_namespace(path: &Path) -> Option<String> {
+    path.ancestors().find_map(|ancestor| {
+        let manifest = ancestor.join(".claude-plugin/plugin.json");
+        let content = fs::read_to_string(manifest).ok()?;
+        let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+        value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn normalized_display_path(
+    agent: AgentId,
+    root: &AdapterRoot,
+    canonical_path: &Path,
+    discovered_display_path: PathBuf,
+) -> PathBuf {
+    if root.source == RootSource::Plugin {
+        match agent {
+            AgentId::Codex => {
+                return codex_plugin_logical_display_path(canonical_path)
+                    .unwrap_or(discovered_display_path);
+            }
+            AgentId::ClaudeCode => {
+                return claude_plugin_logical_display_path(canonical_path)
+                    .unwrap_or(discovered_display_path);
+            }
+            _ => {}
+        }
+    }
+    discovered_display_path
+}
+
+fn claude_plugin_logical_display_path(path: &Path) -> Option<PathBuf> {
+    let plugin_root = path
+        .ancestors()
+        .find(|ancestor| ancestor.join(".claude-plugin/plugin.json").is_file())?;
+    let namespace = claude_plugin_namespace(path)?;
+    let relative = path.strip_prefix(plugin_root).ok()?;
+    Some(
+        PathBuf::from("$CLAUDE_CONFIG_DIR")
+            .join("plugins")
+            .join(namespace)
+            .join(relative),
+    )
+}
+
+fn codex_skill_namespace(root: &AdapterRoot) -> Option<String> {
+    if root.source == RootSource::Plugin {
+        let components = root
+            .path
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect::<Vec<_>>();
+        if let Some(cache_index) = components
+            .windows(2)
+            .position(|window| window == ["plugins", "cache"])
+        {
+            return components
+                .get(cache_index + 3)
+                .map(|package| (*package).to_string());
+        }
+        return root
+            .path
+            .ancestors()
+            .find(|ancestor| ancestor.join(".codex-plugin/plugin.json").is_file())
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .map(ToString::to_string);
+    }
+    let metadata = fs::symlink_metadata(&root.path).ok()?;
+    if !metadata.file_type().is_symlink() || root.path.join("SKILL.md").is_file() {
+        return None;
+    }
+    root.path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToString::to_string)
+}
+
+fn codex_plugin_logical_display_path(path: &Path) -> Option<PathBuf> {
+    let components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let cache_index = components
+        .windows(2)
+        .position(|window| window == ["plugins", "cache"])?;
+    let publisher = *components.get(cache_index + 2)?;
+    let package = *components.get(cache_index + 3)?;
+    let payload_index = cache_index + 5;
+    let payload = components.get(payload_index..)?;
+    if payload.len() < 2 || payload.last() != Some(&"SKILL.md") {
+        return None;
+    }
+    let mut logical = PathBuf::from("$CODEX_HOME")
+        .join("plugins")
+        .join(format!("{package}@{publisher}"));
+    for component in payload {
+        logical.push(component);
+    }
+    Some(logical)
+}
+
 #[derive(Debug)]
 struct SkillConfigOverrides {
     agent: AgentId,
     disabled: HashSet<String>,
+    claude_skill_overrides: HashMap<String, bool>,
+    opencode_skill_permissions: Vec<(String, bool)>,
     pi_settings: Vec<(Scope, PathBuf, String)>,
+    openclaw_config: Option<serde_json::Value>,
+    openclaw_allowed_skills: Option<HashSet<String>>,
+    openclaw_allow_bundled: Option<HashSet<String>>,
 }
 
 impl SkillConfigOverrides {
     fn preload(adapter: &dyn AgentAdapter, ctx: &AdapterContext) -> Self {
         let agent = adapter.id();
         let mut disabled = HashSet::new();
+        let mut claude_skill_overrides = HashMap::new();
+        let mut opencode_skill_permissions = Vec::new();
         let mut pi_settings = Vec::new();
+        let mut openclaw_config = None;
+        let mut openclaw_allowed_skills = None;
+        let mut openclaw_allow_bundled = None;
         let config_paths = adapter.config_paths(ctx);
         match agent {
             AgentId::ClaudeCode => {
                 for settings_path in config_paths {
-                    if let Some(names) = read_disabled_claude_skill_overrides(&settings_path) {
-                        disabled.extend(names);
+                    if let Some(entries) = read_claude_skill_overrides(&settings_path) {
+                        claude_skill_overrides.extend(entries);
                     }
                 }
             }
             AgentId::Opencode => {
                 for settings_path in config_paths {
-                    if let Some(names) = read_disabled_opencode_skill_permissions(&settings_path) {
-                        disabled.extend(names);
+                    if let Some(permissions) = read_opencode_skill_permissions(&settings_path) {
+                        opencode_skill_permissions.extend(permissions);
                     }
                 }
             }
@@ -1189,7 +1403,29 @@ impl SkillConfigOverrides {
             }
             AgentId::Openclaw => {
                 for settings_path in config_paths {
-                    if let Some(names) = read_disabled_openclaw_skill_entries(&settings_path) {
+                    if let Some(config) = read_openclaw_config(&settings_path) {
+                        if let Some(names) = disabled_openclaw_skill_entries(&config) {
+                            disabled.extend(names);
+                        }
+                        openclaw_allowed_skills = effective_openclaw_agent_skill_allowlist(
+                            ctx,
+                            &config,
+                            &openclaw_state_dir(ctx),
+                        );
+                        openclaw_allow_bundled = config
+                            .get("skills")
+                            .and_then(|skills| skills.get("allowBundled"))
+                            .and_then(serde_json::Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(ToString::to_string)
+                                    .collect()
+                            });
+                        openclaw_config = Some(config);
+                    } else if let Some(names) = read_disabled_openclaw_skill_entries(&settings_path)
+                    {
                         disabled.extend(names);
                     }
                 }
@@ -1200,7 +1436,12 @@ impl SkillConfigOverrides {
         Self {
             agent,
             disabled,
+            claude_skill_overrides,
+            opencode_skill_permissions,
             pi_settings,
+            openclaw_config,
+            openclaw_allowed_skills,
+            openclaw_allow_bundled,
         }
     }
 
@@ -1219,12 +1460,47 @@ impl SkillConfigOverrides {
                     !pi_skill_enabled_by_settings(content, path, &instance.path, &ctx.user_home)
                 });
         }
+        if self.agent == AgentId::Opencode {
+            return self
+                .opencode_skill_permissions
+                .iter()
+                .filter(|(pattern, _)| wildcard_matches(pattern, &instance.name))
+                .map(|(_, denied)| *denied)
+                .next_back()
+                .unwrap_or(false);
+        }
+        if self.agent == AgentId::ClaudeCode {
+            if root.source == RootSource::Plugin {
+                return false;
+            }
+            return self
+                .claude_skill_overrides
+                .get(&instance.name)
+                .copied()
+                .unwrap_or(false);
+        }
         let skill_key = match self.agent {
             AgentId::Openclaw => {
                 openclaw_config_key_from_frontmatter(&instance.frontmatter_raw, &instance.name)
             }
             _ => instance.name.clone(),
         };
+        if self.agent == AgentId::Openclaw
+            && (self
+                .openclaw_allowed_skills
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains(&instance.name))
+                || (root.source == RootSource::System
+                    && self
+                        .openclaw_allow_bundled
+                        .as_ref()
+                        .is_some_and(|allowed| !allowed.contains(&instance.name)))
+                || self.openclaw_config.as_ref().is_some_and(|config| {
+                    !openclaw_skill_is_eligible(config, instance, &skill_key)
+                }))
+        {
+            return true;
+        }
         self.disabled.contains(&skill_key)
     }
 }
@@ -1281,7 +1557,7 @@ fn pi_skill_enabled_by_settings(
     (!excluded || included) && !force_excluded
 }
 
-fn read_disabled_claude_skill_overrides(settings_path: &Path) -> Option<HashSet<String>> {
+fn read_claude_skill_overrides(settings_path: &Path) -> Option<HashMap<String, bool>> {
     let Ok(content) = fs::read_to_string(settings_path) else {
         return None;
     };
@@ -1294,13 +1570,16 @@ fn read_disabled_claude_skill_overrides(settings_path: &Path) -> Option<HashSet<
     Some(
         overrides
             .iter()
-            .filter(|(_, value)| *value == "off")
-            .map(|(name, _)| name.clone())
+            .filter_map(|(name, value)| match value.as_str() {
+                Some("off") => Some((name.clone(), true)),
+                Some("on" | "name-only" | "user-invocable-only") => Some((name.clone(), false)),
+                _ => None,
+            })
             .collect(),
     )
 }
 
-fn read_disabled_opencode_skill_permissions(settings_path: &Path) -> Option<HashSet<String>> {
+fn read_opencode_skill_permissions(settings_path: &Path) -> Option<Vec<(String, bool)>> {
     let Ok(content) = fs::read_to_string(settings_path) else {
         return None;
     };
@@ -1312,14 +1591,50 @@ fn read_disabled_opencode_skill_permissions(settings_path: &Path) -> Option<Hash
         .get("permission")
         .and_then(|permission| permission.get("skill"))
         .and_then(serde_json::Value::as_object)?;
-    Some(
-        skill_permissions
-            .iter()
-            .filter(|(_, value)| value.as_str() == Some("deny"))
-            .filter(|(name, _)| !name.contains('*') && !name.contains('?'))
-            .map(|(name, _)| name.clone())
-            .collect(),
-    )
+    let mut permissions = skill_permissions
+        .iter()
+        .filter_map(|(pattern, value)| match value.as_str() {
+            Some("deny") => Some((pattern.clone(), true)),
+            Some("allow") | Some("ask") => Some((pattern.clone(), false)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    permissions.sort_by_key(|(pattern, _)| {
+        pattern
+            .chars()
+            .filter(|ch| !matches!(ch, '*' | '?'))
+            .count()
+    });
+    Some(permissions)
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let (mut pattern_index, mut value_index) = (0usize, 0usize);
+    let (mut star_index, mut star_value_index) = (None, 0usize);
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
+        {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            star_value_index = value_index;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            star_value_index += 1;
+            value_index = star_value_index;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
 }
 
 fn read_disabled_hermes_skills(settings_path: &Path) -> Option<HashSet<String>> {
@@ -1343,10 +1658,18 @@ fn read_disabled_hermes_skills(settings_path: &Path) -> Option<HashSet<String>> 
 }
 
 fn read_disabled_openclaw_skill_entries(settings_path: &Path) -> Option<HashSet<String>> {
+    let value = read_openclaw_config(settings_path)?;
+    disabled_openclaw_skill_entries(&value)
+}
+
+fn read_openclaw_config(settings_path: &Path) -> Option<serde_json::Value> {
     let Ok(content) = fs::read_to_string(settings_path) else {
         return None;
     };
-    let value = json5::from_str::<serde_json::Value>(&content).ok()?;
+    json5::from_str::<serde_json::Value>(&content).ok()
+}
+
+fn disabled_openclaw_skill_entries(value: &serde_json::Value) -> Option<HashSet<String>> {
     let entries = value
         .get("skills")
         .and_then(|skills| skills.get("entries"))
@@ -1360,6 +1683,183 @@ fn read_disabled_openclaw_skill_entries(settings_path: &Path) -> Option<HashSet<
             .map(|(key, _)| key.clone())
             .collect(),
     )
+}
+
+fn effective_openclaw_agent_skill_allowlist(
+    ctx: &AdapterContext,
+    config: &serde_json::Value,
+    state_dir: &Path,
+) -> Option<HashSet<String>> {
+    let defaults = config
+        .get("agents")
+        .and_then(|agents| agents.get("defaults"))
+        .and_then(|defaults| defaults.get("skills"))
+        .and_then(json_string_set);
+    let selected = [ctx.project_cwd.as_deref(), ctx.project_root.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let matching_agent = config
+        .get("agents")
+        .and_then(|agents| agents.get("list"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|agent| {
+            agent
+                .get("workspace")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| openclaw_config_path_value(raw, &ctx.user_home, state_dir))
+                .is_some_and(|workspace| {
+                    selected.iter().any(|selected| {
+                        let selected = normalize_path_lexically(selected);
+                        let workspace = normalize_path_lexically(&workspace);
+                        selected == workspace || selected.starts_with(&workspace)
+                    })
+                })
+        });
+    matching_agent
+        .and_then(|agent| agent.get("skills"))
+        .and_then(json_string_set)
+        .or(defaults)
+}
+
+fn openclaw_state_dir(ctx: &AdapterContext) -> PathBuf {
+    if let Some(path) = std::env::var_os("OPENCLAW_STATE_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return normalize_path_lexically(&path);
+    }
+    let profile = std::env::var("OPENCLAW_PROFILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        });
+    profile.map_or_else(
+        || ctx.user_home.join(".openclaw"),
+        |profile| ctx.user_home.join(format!(".openclaw-{profile}")),
+    )
+}
+
+fn json_string_set(value: &serde_json::Value) -> Option<HashSet<String>> {
+    value.as_array().map(|items| {
+        items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(ToString::to_string)
+            .collect()
+    })
+}
+
+fn openclaw_config_path_value(raw: &str, user_home: &Path, base: &Path) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "~" {
+        return Some(user_home.to_path_buf());
+    }
+    if let Some(relative) = trimmed.strip_prefix("~/") {
+        return Some(user_home.join(relative));
+    }
+    let path = PathBuf::from(trimmed);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
+fn openclaw_skill_is_eligible(
+    config: &serde_json::Value,
+    instance: &SkillInstance,
+    skill_key: &str,
+) -> bool {
+    let Ok(frontmatter) = serde_norway::from_str::<serde_norway::Value>(&instance.frontmatter_raw)
+    else {
+        return true;
+    };
+    let Some(requires) = frontmatter
+        .get("metadata")
+        .and_then(|metadata| metadata.get("openclaw"))
+        .and_then(|openclaw| openclaw.get("requires"))
+    else {
+        return true;
+    };
+    let strings = |key: &str| {
+        requires
+            .get(key)
+            .and_then(serde_norway::Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_norway::Value::as_str)
+            .collect::<Vec<_>>()
+    };
+    let bins = strings("bins");
+    if bins.iter().any(|bin| !command_exists(bin)) {
+        return false;
+    }
+    let any_bins = strings("anyBins");
+    if !any_bins.is_empty() && !any_bins.iter().any(|bin| command_exists(bin)) {
+        return false;
+    }
+    let os = strings("os");
+    if !os.is_empty()
+        && !os
+            .iter()
+            .any(|value| openclaw_os_matches(value, std::env::consts::OS))
+    {
+        return false;
+    }
+    let configured_env = config
+        .get("skills")
+        .and_then(|skills| skills.get("entries"))
+        .and_then(|entries| entries.get(skill_key));
+    for name in strings("env") {
+        let process_has_value = std::env::var_os(name).is_some_and(|value| !value.is_empty());
+        let entry_has_value = configured_env.is_some_and(|entry| {
+            entry
+                .get("env")
+                .and_then(|env| env.get(name))
+                .is_some_and(|value| !value.is_null())
+                || entry.get("apiKey").is_some_and(|value| !value.is_null())
+        });
+        if !process_has_value && !entry_has_value {
+            return false;
+        }
+    }
+    strings("config")
+        .iter()
+        .all(|path| json_dotted_path_exists(config, path))
+}
+
+fn command_exists(command: &str) -> bool {
+    if command.trim().is_empty() || command.contains(std::path::MAIN_SEPARATOR) {
+        return false;
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .any(|directory| directory.join(command).is_file())
+}
+
+fn openclaw_os_matches(required: &str, actual: &str) -> bool {
+    matches!(
+        (required, actual),
+        ("darwin" | "macos", "macos") | ("win32" | "windows", "windows")
+    ) || required == actual
+}
+
+fn json_dotted_path_exists(value: &serde_json::Value, path: &str) -> bool {
+    path.split('.')
+        .filter(|part| !part.is_empty())
+        .try_fold(value, |current, part| current.get(part))
+        .is_some_and(|value| !value.is_null())
 }
 
 fn openclaw_config_key_from_frontmatter(frontmatter_raw: &str, fallback_name: &str) -> String {
@@ -1500,6 +2000,161 @@ mod tests {
     use skills_copilot_core::{AdapterContext, AdapterRoot, RootSource};
 
     use super::*;
+
+    #[test]
+    fn codex_plugin_display_path_identifies_install_without_exposing_cache_layout() {
+        assert_eq!(
+            codex_plugin_logical_display_path(Path::new(
+                "/home/.codex/plugins/cache/openai-bundled/browser/1.2.3/skills/control/SKILL.md"
+            )),
+            Some(PathBuf::from(
+                "$CODEX_HOME/plugins/browser@openai-bundled/skills/control/SKILL.md"
+            ))
+        );
+        assert_eq!(
+            codex_plugin_logical_display_path(Path::new(
+                "/home/.codex/plugins/cache/personal/workflows/2.0.0/playbooks/review/SKILL.md"
+            )),
+            Some(PathBuf::from(
+                "$CODEX_HOME/plugins/workflows@personal/playbooks/review/SKILL.md"
+            )),
+            "a nonstandard manifest skills root must stay logical and cache-free"
+        );
+    }
+
+    #[test]
+    fn codex_plugin_namespace_matches_runtime_skill_identity() {
+        assert_eq!(
+            codex_skill_namespace(&AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: PathBuf::from(
+                    "/home/.codex/plugins/cache/openai-bundled/browser/1.2.3/skills"
+                ),
+                source: RootSource::Plugin,
+            })
+            .as_deref(),
+            Some("browser")
+        );
+        assert_eq!(
+            codex_skill_namespace(&AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: PathBuf::from(
+                    "/home/.codex/plugins/cache/openai-curated-remote/product-design/0.1.52/skills"
+                ),
+                source: RootSource::Plugin,
+            })
+            .as_deref(),
+            Some("product-design"),
+            "a manifest-declared plugin root must retain its package namespace"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_scans_declared_shared_skill_symlinks_with_runtime_namespaces() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-codex-shared-links-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let shared = home.join(".agents/skills");
+        let grouped = temp_root.join("grouped-skills");
+        let direct = temp_root.join("direct-skill");
+        std::fs::create_dir_all(grouped.join("android-native-dev")).expect("create grouped skill");
+        std::fs::create_dir_all(&direct).expect("create direct skill");
+        std::fs::create_dir_all(&shared).expect("create shared skills root");
+        std::fs::write(
+            grouped.join("android-native-dev/SKILL.md"),
+            "---\nname: android-native-dev\ndescription: grouped fixture\n---\nBody.",
+        )
+        .expect("write grouped skill");
+        std::fs::write(
+            direct.join("SKILL.md"),
+            "---\nname: short-drama-pro\ndescription: direct fixture\n---\nBody.",
+        )
+        .expect("write direct skill");
+        symlink(&grouped, shared.join("minimax-skills")).expect("link grouped root");
+        symlink(&direct, shared.join("short-drama-pro")).expect("link direct root");
+
+        let report = scan_agent(
+            &CodexAdapter,
+            &AdapterContext {
+                user_home: home,
+                project_root: None,
+                project_cwd: None,
+                extra_roots: vec![],
+            },
+        )
+        .expect("scan succeeds");
+        let names = report
+            .instances
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<HashSet<_>>();
+
+        assert!(
+            names.contains("minimax-skills:android-native-dev"),
+            "names={names:?}; issues={:?}",
+            report.issues
+        );
+        assert!(names.contains("short-drama-pro"), "names={names:?}");
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn codex_scans_only_enabled_plugin_and_hides_cache_storage_path() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-codex-plugin-display-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let plugin = home.join(".codex/plugins/cache/openai-bundled/browser/1.2.3");
+        std::fs::create_dir_all(plugin.join(".codex-plugin"))
+            .expect("create plugin manifest directory");
+        std::fs::create_dir_all(plugin.join("skills/control"))
+            .expect("create plugin skill directory");
+        std::fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"browser","version":"1.2.3","skills":"./skills/"}"#,
+        )
+        .expect("write plugin manifest");
+        std::fs::write(
+            plugin.join("skills/control/SKILL.md"),
+            "---\nname: control\ndescription: browser control fixture\n---\nBody.",
+        )
+        .expect("write plugin skill");
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[plugins.\"browser@openai-bundled\"]\nenabled = true\n",
+        )
+        .expect("write plugin enablement");
+
+        let report = scan_agent(
+            &CodexAdapter,
+            &AdapterContext {
+                user_home: home,
+                project_root: None,
+                project_cwd: None,
+                extra_roots: vec![],
+            },
+        )
+        .expect("scan succeeds");
+
+        assert_eq!(report.instances.len(), 1, "issues={:?}", report.issues);
+        assert_eq!(report.instances[0].name, "browser:control");
+        assert_eq!(
+            report.instances[0].display_path,
+            PathBuf::from("$CODEX_HOME/plugins/browser@openai-bundled/skills/control/SKILL.md")
+        );
+        assert!(!report.instances[0]
+            .display_path
+            .to_string_lossy()
+            .contains("/plugins/cache/"));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
 
     #[test]
     fn yaml_contract_scanner_preserves_disabled_sequence_and_nested_metadata() {
@@ -1996,8 +2651,115 @@ mod tests {
         let report = scan_agent(&ClaudeCodeAdapter, &ctx).expect("scan succeeds");
 
         assert_eq!(report.instances.len(), 1);
-        assert_eq!(report.instances[0].name, "summarize-changes");
+        assert_eq!(report.instances[0].name, "valid-summarize");
         assert_eq!(report.instances[0].scope, Scope::AgentGlobal);
+    }
+
+    #[test]
+    fn claude_scans_only_enabled_plugin_skills_with_namespaced_logical_provenance() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-claude-plugin-scan-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let config = home.join(".claude");
+        let plugin = config.join("plugins/cache/market/review-kit/1.2.3");
+        let skill = plugin.join("skills/review");
+        std::fs::create_dir_all(plugin.join(".claude-plugin"))
+            .expect("create Claude plugin manifest dir");
+        std::fs::create_dir_all(&skill).expect("create Claude plugin skill dir");
+        std::fs::write(
+            plugin.join(".claude-plugin/plugin.json"),
+            r#"{"name":"review-kit"}"#,
+        )
+        .expect("write Claude plugin manifest");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: review\ndescription: plugin fixture\n---\nBody.\n",
+        )
+        .expect("write Claude plugin skill");
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"enabledPlugins":{"review-kit@market":true},"skillOverrides":{"review-kit:review":"off"}}"#,
+        )
+        .expect("write Claude settings");
+        std::fs::create_dir_all(config.join("plugins")).expect("create Claude plugins dir");
+        std::fs::write(
+            config.join("plugins/installed_plugins.json"),
+            serde_json::json!({
+                "version": 2,
+                "plugins": {
+                    "review-kit@market": [{"installPath": plugin}]
+                }
+            })
+            .to_string(),
+        )
+        .expect("write Claude installed plugin index");
+
+        let report = scan_agent(
+            &ClaudeCodeAdapter,
+            &AdapterContext {
+                user_home: home,
+                project_root: None,
+                project_cwd: None,
+                extra_roots: Vec::new(),
+            },
+        )
+        .expect("scan succeeds");
+
+        assert_eq!(report.instances.len(), 1);
+        let instance = &report.instances[0];
+        assert_eq!(instance.name, "review-kit:review");
+        assert_eq!(instance.state, SkillState::Loaded);
+        assert!(instance.enabled, "plugin enablement is not a skillOverride");
+        assert_eq!(
+            instance.display_path,
+            PathBuf::from("$CLAUDE_CONFIG_DIR/plugins/review-kit/skills/review/SKILL.md")
+        );
+        assert!(!instance.display_path.to_string_lossy().contains("cache"));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn claude_project_command_keeps_its_runtime_command_name() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-claude-project-command-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let project = temp_root.join("project");
+        let command = project.join(".claude/commands/gan-build.md");
+        std::fs::create_dir_all(command.parent().expect("command parent"))
+            .expect("create Claude project commands dir");
+        std::fs::write(&command, "Build the GAN feature end to end.\n")
+            .expect("write Claude project command");
+
+        let report = scan_agent(
+            &ClaudeCodeAdapter,
+            &AdapterContext {
+                user_home: home,
+                project_root: Some(project.clone()),
+                project_cwd: Some(project),
+                extra_roots: vec![],
+            },
+        )
+        .expect("Claude scan succeeds");
+        let instance = report
+            .instances
+            .iter()
+            .find(|instance| instance.display_path == command)
+            .unwrap_or_else(|| {
+                panic!(
+                    "project command is scanned; instances={:?}; issues={:?}",
+                    report.instances, report.issues
+                )
+            });
+
+        assert_eq!(instance.name, "gan-build");
+        assert_eq!(instance.display_name, "gan-build");
+        assert_eq!(instance.scope, Scope::AgentProject);
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -2169,7 +2931,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn rejects_symlink_target_outside_declared_adapter_roots() {
+    fn claude_personal_skill_symlink_explicitly_authorizes_its_exact_target() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-undeclared-home-symlink-{}",
             std::process::id()
@@ -2199,21 +2961,13 @@ mod tests {
             .canonicalize()
             .expect("canonicalize private skill dir");
 
-        assert!(
-            report
-                .instances
-                .iter()
-                .all(|instance| !instance.path.starts_with(&canonical_private_dir)),
-            "scanner must reject targets outside every declared adapter root"
+        assert_eq!(report.instances.len(), 1);
+        assert!(report.instances[0].path.starts_with(&canonical_private_dir));
+        assert_eq!(report.instances[0].name, "linked");
+        assert_eq!(
+            report.instances[0].display_path,
+            claude_skills_dir.join("linked/SKILL.md")
         );
-        assert!(report
-            .scanned_roots
-            .iter()
-            .all(|root| !root.starts_with(&canonical_private_dir)));
-        assert!(report
-            .partial_roots
-            .iter()
-            .all(|root| !root.starts_with(&canonical_private_dir)));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
@@ -2786,7 +3540,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn rejects_project_root_symlinks_outside_project_root() {
+    fn claude_project_skill_symlink_explicitly_authorizes_its_exact_target() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-project-symlink-{}",
             std::process::id()
@@ -2814,10 +3568,9 @@ mod tests {
 
         let report = scan_agent(&ClaudeCodeAdapter, &ctx).expect("scan succeeds");
 
-        assert!(
-            report.instances.is_empty(),
-            "project roots must not scan symlink targets outside the project root"
-        );
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].name, "home-only");
+        assert_eq!(report.instances[0].scope, Scope::AgentProject);
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
@@ -2865,6 +3618,43 @@ mod tests {
         assert!(!report.instances[0].enabled);
         assert_eq!(report.instances[0].state, SkillState::Disabled);
 
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn opencode_permission_skill_wildcard_marks_matching_skill_disabled() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-opencode-wildcard-permission-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let skill_dir = home.join(".config/opencode/skills/global-review");
+        std::fs::create_dir_all(&skill_dir).expect("create opencode skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: global-review\ndescription: wildcard-disabled fixture\n---\nBody.",
+        )
+        .expect("write opencode SKILL.md");
+        std::fs::write(
+            home.join(".config/opencode/opencode.json"),
+            r#"{"permission":{"skill":{"*":"allow","global-*":"deny"}}}"#,
+        )
+        .expect("write opencode wildcard permission");
+
+        let report = scan_agent(
+            &OpencodeAdapter,
+            &AdapterContext {
+                user_home: home,
+                project_root: None,
+                project_cwd: None,
+                extra_roots: vec![],
+            },
+        )
+        .expect("scan succeeds");
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].state, SkillState::Disabled);
+        assert!(!report.instances[0].enabled);
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
@@ -2938,7 +3728,7 @@ mod tests {
         ));
         let home = temp_root.join("home");
         let configured_root = temp_root.join("custom-skills");
-        let skill_dir = configured_root.join("custom-review");
+        let skill_dir = configured_root.join("vendor/custom-review");
         std::fs::create_dir_all(&skill_dir).expect("create configured skill dir");
         std::fs::create_dir_all(home.join(".config/opencode")).expect("create opencode config dir");
         std::fs::write(
@@ -3245,11 +4035,12 @@ mod tests {
         ));
         let home = temp_root.join("home");
         let workspace = home.join(".openclaw/workspace");
-        let managed_global_path =
-            write_openclaw_skill(&home.join(".openclaw/skills"), "managed-global");
-        write_openclaw_skill(&home.join(".agents/skills"), "managed-global");
+        write_openclaw_skill(&home.join(".openclaw/skills"), "managed-global");
+        let personal_global_path =
+            write_openclaw_skill(&home.join(".agents/skills"), "managed-global");
         write_openclaw_skill(&home.join(".agents/skills"), "personal-shared");
-        write_openclaw_skill(&workspace.join("skills"), "workspace-local");
+        let grouped_workspace_path =
+            write_openclaw_skill(&workspace.join("skills/group/organized"), "workspace-local");
         write_openclaw_skill(&workspace.join(".agents/skills"), "workspace-agents");
 
         let ctx = AdapterContext {
@@ -3266,7 +4057,7 @@ mod tests {
             .map(|skill| (skill.name.as_str(), skill.scope))
             .collect();
 
-        assert_eq!(report.instances.len(), 5);
+        assert_eq!(report.instances.len(), 4);
         assert_eq!(by_name.get("managed-global"), Some(&Scope::AgentGlobal));
         assert_eq!(by_name.get("personal-shared"), Some(&Scope::AgentGlobal));
         assert_eq!(by_name.get("workspace-local"), Some(&Scope::AgentProject));
@@ -3278,8 +4069,18 @@ mod tests {
                 .find(|skill| skill.name == "managed-global")
                 .expect("managed global")
                 .path,
-            managed_global_path,
-            "OpenClaw native global root wins over shared compatibility root"
+            personal_global_path,
+            "OpenClaw personal .agents root wins over managed ~/.openclaw/skills"
+        );
+        assert_eq!(
+            report
+                .instances
+                .iter()
+                .find(|skill| skill.name == "workspace-local")
+                .expect("grouped workspace skill")
+                .path,
+            grouped_workspace_path,
+            "OpenClaw discovers grouped skills recursively within its six-level bound"
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);
@@ -3297,6 +4098,21 @@ mod tests {
         let workspace_skill = write_openclaw_skill(&workspace.join("skills"), "workspace-local");
         let workspace_agents_skill =
             write_openclaw_skill(&workspace.join(".agents/skills"), "workspace-agents");
+        std::fs::write(
+            home.join(".openclaw/openclaw.json"),
+            serde_json::json!({
+                "agents": {
+                    "defaults": {"skills": ["workspace-agents"]},
+                    "list": [{
+                        "id": "main",
+                        "workspace": workspace,
+                        "skills": ["workspace-local"]
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .expect("write workspace-specific OpenClaw allowlist");
 
         let ctx = AdapterContext {
             user_home: home,
@@ -3321,6 +4137,12 @@ mod tests {
             by_name.get("workspace-agents").map(|skill| &skill.path),
             Some(&workspace_agents_skill)
         );
+        assert!(by_name
+            .get("workspace-local")
+            .is_some_and(|skill| skill.enabled));
+        assert!(by_name
+            .get("workspace-agents")
+            .is_some_and(|skill| !skill.enabled && skill.state == SkillState::Disabled));
         assert!(report.instances.iter().all(|skill| {
             skill.scope == Scope::AgentProject && skill.project_root == Some(workspace.clone())
         }));

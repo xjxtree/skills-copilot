@@ -50,7 +50,6 @@ const steps = [
     },
   ],
   ["pnpm", ["smoke:macos-app", "--", "--fixture-data", "--capture-window"], baseEnv],
-  ["pnpm", ["verify:screenshot-artifacts"], baseEnv],
 ];
 
 for (const [command, args, env] of steps) {

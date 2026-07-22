@@ -844,6 +844,7 @@ dependencies = [
 name = "skills-copilot-service"
 version = "0.1.4"
 dependencies = [
+ "json5",
  "keyring",
  "rusqlite",
  "rustix",

@@ -33,13 +33,13 @@ Agent Copilot 按 local-first 的桌面产品方式组织：
 
 OpenAI 当前的桌面体验已将 Codex 集成到 ChatGPT App 中。Agent Copilot 仍保留
 `codex` 作为稳定的 adapter 标识，继续读取同一套安全的 `$CODEX_HOME` 配置和
-本地会话目录，并在可用时使用当前 Codex runtime 提供的技能清单。诸如
-`$CODEX_HOME/plugins/cache` 的实现缓存不会参与扫描。现有 Codex 项目和配置无需
-为了 Agent Copilot 改名。
+本地会话目录。技能清单只以持久化的 `SKILL.md` 文件为依据，也包括已启用、已安装
+Codex 插件中由 manifest 明确声明的技能目录；插件 store/cache 绝不会作为通用扫描
+源，物理 cache 路径也不会展示。Agent Copilot 不向 Codex runtime 查询技能清单。
 
 - **技能：** 扫描受支持的 Agent 根目录，按 Agent、范围和状态筛选，查看元数据、
-  问题项，并对受支持的本地技能执行启用或禁用。runtime 上报和文件系统发现的
-  技能会保留来源与只读归属信息，但缓存目录不会被当作技能根目录。
+  问题项，并对受支持的本地技能执行启用或禁用。文件系统发现的技能会保留来源与
+  只读归属信息；已安装的 Codex 插件副本可见，但始终不可写。
 - **会话：** 浏览 Claude Code、Codex、opencode、Pi 的本地会话预览；在受支持
   的历史中搜索；打开选中会话查看消息摘要和技能调用摘要。
 - **全局搜索：** 从顶部工具栏搜索，并直接跳转到匹配的技能、会话、配置或详情页。
@@ -76,9 +76,9 @@ App 从 Finder 启动时会自动探测 Homebrew、Volta、asdf、nvm 等常见�
 安装位置可以设置 `SKILLS_COPILOT_NPX_PATH`。
 
 ChatGPT 的 Plugin Directory 与 Agent Copilot 的技能包管理是两个独立来源。
-Agent Copilot 可以使用当前 Codex runtime 对外提供的技能清单，但不会扫描、安装、
-更新或移除 ChatGPT 插件缓存；可写的技能包操作仍只通过带命令预览和确认的
-`npx skills` 流程执行。
+Agent Copilot 只读取已启用插件的安装记录、manifest 及其声明的本地技能文件，
+不会把插件 store/cache 当作通用来源，也不会安装、更新、移除或执行插件内容；
+可写的技能包操作仍只通过带命令预览和确认的 `npx skills` 流程执行。
 
 ## 源码构建指引
 
@@ -126,11 +126,9 @@ pnpm check:privacy
 | `docs/service-protocol.md` | App/服务集成的方法契约 |
 | `docs/security-model.md` | 安全、隐私、凭据和本地数据规则 |
 | `docs/ai-layer.md` | 可选 provider 工作流边界 |
-| `docs/ui-delivery-standards.md` | 原生 UI 与截图验证标准 |
+| `docs/ui-delivery-standards.md` | 原生 UI、交互与实机验证标准 |
 | `docs/runbooks/macos-app-runbook.md` | 本地 macOS 构建、运行和 smoke 验证流程 |
 | `docs/runbooks/release-checklist.md` | 维护者发版前检查清单 |
-| `docs/plans/roadmap.md` | 后续规划与延后范围 |
-| `docs/plans/development-tasks.md` | 当前任务路由 |
 | `AGENTS.md` | 本仓库的 coding agent 操作规则 |
 
 ## Contributing
@@ -141,7 +139,7 @@ pnpm check:privacy
 - 让改动聚焦在当前 App 功能和既有架构内。
 - 如果服务行为变化，同步更新 fixtures 和 `docs/service-protocol.md`。
 - 小改动运行聚焦检查；涉及 UI、协议或发版影响的改动运行 `pnpm check:macos`。
-- 提交或发布证据前运行 `pnpm check:privacy`。
+- 提交或推送改动前运行 `pnpm check:privacy`。
 - 在 PR 或交接说明里写清楚运行过的命令。
 
 ## License

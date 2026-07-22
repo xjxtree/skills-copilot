@@ -101,6 +101,9 @@ struct SkillStoreTests {
         try await runCase("scanAllUsesGenericCatalogMethod") {
             try await scanAllUsesGenericCatalogMethod()
         }
+        try await runCase("catalogScanPresentationFollowsSelectedAgent") {
+            try await catalogScanPresentationFollowsSelectedAgent()
+        }
         try await runCase("partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle") {
             try await partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle()
         }
@@ -301,6 +304,12 @@ struct SkillStoreTests {
         }
         try await runCase("clearProjectClearsContextAndScans") {
             try await clearProjectClearsContextAndScans()
+        }
+        try await runCase("removeRecentProjectUpdatesCacheWithoutScanning") {
+            try await removeRecentProjectUpdatesCacheWithoutScanning()
+        }
+        try await runCase("clearRecentProjectsUpdatesCacheWithoutScanning") {
+            try await clearRecentProjectsUpdatesCacheWithoutScanning()
         }
         try await runCase("projectValidationErrorSkipsScanAndSurfacesMessage") {
             try await projectValidationErrorSkipsScanAndSurfacesMessage()
@@ -1135,7 +1144,7 @@ struct SkillStoreTests {
         try expectContains(store.refreshStatusMessage, "1 visible issues", "Scan feedback should report the same filtered issue total as the navigable skill UI, not the raw Catalog finding count.")
         try expectContains(store.refreshStatusMessage, "<adapter-root>/dangling-link", "The primary partial status should include the first redacted issue path.")
         try expectContains(store.refreshStatusMessage, "Review partial scan diagnostics.", "The primary partial status should include a recovery action.")
-        try expectEqual(store.lastMutationMessage, store.refreshStatusMessage, "The visible detail feedback must surface the partial status instead of a generic success toast.")
+        try expectContains(store.lastMutationMessage ?? "", "Scanned 3 skills", "The mutation toast should stay generic so unrelated agent filters do not inherit a degraded-agent warning.")
         try expectEqual(store.partialScanWarningMessage, store.refreshStatusMessage, "Persistent partial feedback must not be coupled to later generic reload status text.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.count, 3, "Scan should retain complete, partial, and skipped adapter diagnostics when the service provides them.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "opencode" }?.rootsSkipped, ["<adapter-root>/missing-opencode"], "Scan diagnostics should decode skipped roots.")
@@ -1146,6 +1155,7 @@ struct SkillStoreTests {
         try expectEqual(claudeIssues.first { $0.kind == "entry_unreadable" }?.path, "<adapter-root>/dangling-link", "Partial feedback should be able to select the issue that actually degraded traversal.")
         store.agentFilter = .codex
         try expectEqual(store.selectedAgentRefreshSummary?.rootsScanned, ["$HOME/.agents/skills"], "Selected adapter diagnostics should follow the agent filter.")
+        try expectNil(store.partialScanWarningMessage, "A completed Codex scan must not inherit Claude or opencode warnings.")
         let calls = await runner.calls()
         try expectEqual(countOccurrences("app.stateSnapshot", in: calls), 1, "Scan should refresh collections with one app state snapshot call.")
         try expectEqual(countOccurrences("catalog.listSkills", in: calls), 0, "Scan refresh should not launch a separate skills list sidecar.")
@@ -1153,10 +1163,8 @@ struct SkillStoreTests {
         try expectEqual(countOccurrences("catalog.listConflicts", in: calls), 0, "Scan refresh should not launch a separate conflicts list sidecar.")
         try expectEqual(countMethodCalls("snapshot.list", in: calls), 0, "Scan refresh should not launch a global snapshots list sidecar.")
         try expectFalse(countMethodCalls("snapshot.listAgentConfig", in: calls) == 0, "Scan refresh should refresh at least one writable agent config history.")
-        let partialWarning = store.partialScanWarningMessage
         await store.reload()
-        try expectEqual(store.partialScanWarningMessage, partialWarning, "Reloading cached catalog data must not relabel or discard an unresolved partial-scan warning.")
-        try expectFalse(store.refreshStatusMessage == partialWarning, "Generic reload status and persistent partial-scan warning should remain independent.")
+        try expectNil(store.partialScanWarningMessage, "Reloading cached data must keep the selected completed agent free of unrelated warnings.")
     }
 
     private func partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle() async throws {
@@ -1411,19 +1419,6 @@ struct SkillStoreTests {
         await eventTask.value
         try expectEqual(eventStore.skillEventsByID["skill-1"]?.count, 200, "Event cancellation must retain accepted rows and reject the delayed page.")
         try expectEqual(eventStore.skillEventCompletenessByID["skill-1"]?.completeness, .partial, "Cancelled event Load All should remain partial.")
-    }
-
-    private func catalogScanCompletenessTracksExplicitScan() async throws {
-        let runner = CatalogRefreshServiceRunner(scanFixtures: [.completeWithSafeDiagnostics, .budget])
-        let store = SkillStore(service: runner.serviceClient())
-
-        await store.loadAppStartupDataIfNeeded()
-        try expectEqual(store.catalogListCompleteness.completeness, .unknown, "Catalog-only startup cannot prove scan completeness")
-        await store.scanAll()
-        try expectEqual(store.catalogListCompleteness.completeness, .complete, "Complete scan should prove catalog completeness")
-        await store.scanAll()
-        try expectEqual(store.catalogListCompleteness.completeness, .incomplete, "Budgeted scan must be visible as incomplete")
-        try expectEqual(store.catalogListCompleteness.incompleteReason, .safetyBudget, "Budget reason")
     }
 
     private func previewRollbackShowsDiffWithoutCallingRollback() async throws {
@@ -4769,9 +4764,9 @@ private final class EventHistoryABARunner: ServiceProcessRunning, @unchecked Sen
     }
 }
 
-private enum CatalogRefreshScanFixture {
+enum CatalogRefreshScanFixture {
     case partial
-    case complete, completeWithSafeDiagnostics
+    case complete, completeWithSafeDiagnostics, completeWithDeletedHistory
     case budget
     case legacySummary
     case legacyWithoutActivity
@@ -4792,7 +4787,7 @@ private actor CatalogRefreshScanSequence {
     }
 }
 
-private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
+final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     private let recorder = CatalogRefreshCallRecorder()
     private let scanSequence: CatalogRefreshScanSequence
 
@@ -4869,6 +4864,7 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
         case .complete:
             completeScanResult
         case .completeWithSafeDiagnostics: completeWithSafeDiagnosticsScanResult
+        case .completeWithDeletedHistory: completeWithDeletedHistoryScanResult
         case .budget:
             budgetScanResult
         case .legacySummary:
@@ -4905,7 +4901,11 @@ private final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     """
 
     private static let completeWithSafeDiagnosticsScanResult = """
-    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.agents/skills","$HOME/.hermes/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"opencode","display_label":"opencode","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.agents/skills"],"roots_scanned":["$HOME/.agents/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[{"kind":"root_outside_allowlist","path":"$HOME/.agents/skills/external","detail":"A resolved path was outside the explicit same-scope adapter roots."}],"recovery_actions":[]},{"agent":"hermes","display_label":"Hermes","status":"completed-no-roots-scanned","scanned_count":0,"catalog_count":0,"broken_count":0,"roots_considered":["$HOME/.hermes/skills"],"roots_scanned":[],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
+    {"scanned_count":3,"skills":\(skills),"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":3,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.agents/skills","$HOME/.hermes/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"opencode","display_label":"opencode","status":"completed","scanned_count":3,"catalog_count":3,"broken_count":0,"roots_considered":["$HOME/.agents/skills"],"roots_scanned":["$HOME/.agents/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[{"kind":"root_outside_allowlist","path":"$HOME/.agents/skills/external","detail":"A resolved path was outside the explicit same-scope adapter roots."},{"kind":"dangling_symlink","path":"$HOME/.config/opencode/skills/removed","detail":"An Agent skill link points to an unavailable source; the link was skipped and the rest of the root was reconciled."}],"recovery_actions":[]},{"agent":"hermes","display_label":"Hermes","status":"completed-no-roots-scanned","scanned_count":0,"catalog_count":0,"broken_count":0,"roots_considered":["$HOME/.hermes/skills"],"roots_scanned":[],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
+    """
+
+    private static let completeWithDeletedHistoryScanResult = """
+    {"scanned_count":3,"skills":[{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","state":"loaded","enabled":true},{"id":"beta","agent":"claude-code","scope":"agent-project","path":"/tmp/project/beta/SKILL.md","display_path":"/tmp/project/beta/SKILL.md","definition_id":"def.beta","name":"Beta","state":"loaded","enabled":true},{"id":"gamma","agent":"codex","scope":"agent-global","path":"/tmp/codex/skills/gamma/SKILL.md","display_path":"~/.codex/skills/gamma/SKILL.md","definition_id":"codex:gamma","name":"Gamma","state":"loaded","enabled":true},{"id":"legacy-runtime","agent":"codex","scope":"agent-global","path":"/tmp/codex/.agent-copilot-runtime/legacy/SKILL.md","display_path":"Codex Runtime/legacy","definition_id":"legacy","name":"Legacy","state":"missing","enabled":false}],"activity":{"operation":"catalog.scanAll","status":"completed","started_at":3,"finished_at":4,"scanned_count":3,"skill_count":4,"finding_count":0,"conflict_count":0,"snapshot_count":0,"roots":["$HOME/.claude/skills","$HOME/.codex/skills"],"log_entries":[],"recovery_actions":[],"agent_summaries":[{"agent":"claude-code","display_label":"Claude Code","status":"completed","scanned_count":2,"catalog_count":2,"broken_count":0,"roots_considered":["$HOME/.claude/skills"],"roots_scanned":["$HOME/.claude/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]},{"agent":"codex","display_label":"Codex","status":"completed","scanned_count":1,"catalog_count":2,"broken_count":0,"roots_considered":["$HOME/.codex/skills"],"roots_scanned":["$HOME/.codex/skills"],"roots_partial":[],"roots_skipped":[],"scan_issues":[],"recovery_actions":[]}]}}
     """
 
     private static let budgetScanResult = """

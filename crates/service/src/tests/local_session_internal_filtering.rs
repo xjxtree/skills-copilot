@@ -204,3 +204,68 @@ fn auto_discovery_excludes_runtime_state_and_extension_session_roots() {
 
     let _ = fs::remove_dir_all(fixture);
 }
+
+#[test]
+fn openclaw_auto_discovery_ignores_legacy_jsonl_without_current_agent_database() {
+    let unique = unique_suffix();
+    let fixture = env::temp_dir().join(format!(
+        "skills-copilot-openclaw-auto-session-test-{}-{unique}",
+        std::process::id()
+    ));
+    let user_home = fixture.join("home");
+    let sessions = user_home.join(".openclaw/agents/main/sessions");
+    fs::create_dir_all(&sessions).expect("create OpenClaw sessions directory");
+    fs::write(
+        sessions.join("sessions.json"),
+        json!({"agent:main:main":{"sessionId":"openclaw-main","updatedAt":2000}}).to_string(),
+    )
+    .expect("write OpenClaw session index");
+    fs::write(
+        sessions.join("openclaw-main.jsonl"),
+        [
+            json!({"type":"session","sessionId":"openclaw-main","sessionKey":"agent:main:main"}),
+            json!({"type":"message","message":{"role":"user","content":"Visible OpenClaw task"}}),
+        ]
+        .into_iter()
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
+    )
+    .expect("write OpenClaw main transcript");
+    fs::write(
+        sessions.join("openclaw-child.jsonl"),
+        [
+            json!({"type":"session","sessionId":"openclaw-child","sessionKey":"agent:main:subagent:child"}),
+            json!({"type":"message","message":{"role":"user","content":"Hidden OpenClaw child"}}),
+        ]
+        .into_iter()
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"),
+    )
+    .expect("write OpenClaw child transcript");
+
+    let host = ServiceHost {
+        app_data_dir: fixture.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let preview = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            auto_discover: Some(true),
+            agent: Some("openclaw".to_string()),
+            limit: Some(20),
+            ..LocalSessionPreviewParams::default()
+        })
+        .expect("preview OpenClaw sessions");
+
+    assert!(preview.session_rows.is_empty());
+    assert!(preview.gap_notes.iter().any(|note| {
+        note.contains("Legacy OpenClaw JSON/JSONL") && note.contains("not active session storage")
+    }));
+    let _ = fs::remove_dir_all(fixture);
+}

@@ -1,0 +1,16 @@
+{
+  "id": "fixture-project-remove-recent-context",
+  "ok": true,
+  "result": {
+    "active": {
+      "id": "project-fixture-id",
+      "name": "Fixture Project",
+      "root_path": "/tmp/skills-copilot-project",
+      "current_cwd": "/tmp/skills-copilot-project",
+      "last_used_at": 1780590000000,
+      "is_active": true,
+      "validation_error": null
+    },
+    "recent": []
+  }
+}

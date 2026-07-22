@@ -49,7 +49,7 @@ executables and archive listing for local paths before publishing.
 | Headless Sidecar Smoke | `pnpm smoke:macos-app -- --fixture-data --headless-sidecar` | Temporary fixture HOME, app data, and project roots | Validate the bundled Rust sidecar without GUI or Accessibility |
 | Smoke App Run | `pnpm smoke:macos-app -- --fixture-data --capture-window` | Temporary fixture HOME, app data, and project roots | Automated validation without real config |
 | Native Model Tests | `pnpm test:macos-native-models` | Temporary SwiftPM test package | Explicit native model runner without SwiftPM test-bundle loading |
-| macOS Check | `pnpm check:macos` | Combined local gate | fmt/test/clippy/native model tests/build/launch/smoke/window screenshot |
+| macOS Check | `pnpm check:macos` | Combined local gate | fmt/test/clippy/native model tests/build/launch/fixture smoke |
 
 ## Gate Parity
 
@@ -65,7 +65,6 @@ these members in this exact order:
 7. `verify:js-syntax`
 8. `verify:rust-docs`
 9. `verify:validation-blockers`
-10. `verify:screenshot-artifacts`
 
 `verify:quality-budgets` checks the parser, exact 10k count contract, and
 checked-in elapsed/RSS/p95 ceilings. The live benchmark commands separately
@@ -115,15 +114,14 @@ Smoke must:
 - avoid script execution through scan, import, export, install, LLM prepare,
   state snapshot, or detail loading.
 
-## Screenshot Rules
+## Screen Capture Rules
 
-- Completed screenshots must be app-window-only.
+- Runtime screenshots must be app-window-only and remain outside the repository.
 - Do not commit full desktop screenshots.
-- Keep screenshot privacy mode enabled for committed evidence.
+- Keep screenshot privacy mode enabled.
 - Do not expose real HOME paths, app data, `/var/folders`, fixture temp roots,
   tokens, keys, or credential placeholders.
-- Run `pnpm verify:screenshot-artifacts` after screenshot changes.
-- Manually inspect new screenshots; the verifier is not OCR.
+- Manually inspect task screenshots before handoff.
 
 ## Real-Local Validation
 
@@ -141,8 +139,9 @@ or:
 ```
 
 Operate the visible app window with Computer Use/AX when available. If the app
-process launches but the window cannot be resolved, record one canonical
-blocker and do not substitute fixture smoke for real-local validation.
+process launches but the window cannot be resolved, report one canonical
+blocker in the task or pull request and do not substitute fixture smoke for
+real-local validation.
 
 Useful classifier:
 

@@ -32,6 +32,13 @@ metadata are not skill instances.
 - No hub, URL, tap, update, uninstall, reset, package, script, credential, cloud
   sync, telemetry, or uncontrolled network operations.
 
+## Session Inventory
+
+- The canonical local source is `<HERMES_HOME>/state.db`.
+- Cron, batch, subagent, and memory-consolidation workflows are excluded from
+  the user-facing list. Legacy JSON files are not active when the database
+  exists.
+
 ## Fixtures
 
 Hermes fixtures live under `fixtures/hermes/` and cover native skill parsing,

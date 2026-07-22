@@ -27,7 +27,19 @@ impl AgentAdapter for PiAdapter {
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
         let agent_dir = pi_agent_dir(ctx);
-        let mut roots = vec![
+        let mut roots = pi_package_skill_roots(ctx, &agent_dir);
+        roots.extend(pi_configured_skill_roots(ctx, &agent_dir));
+
+        if let Some(project_root) = &ctx.project_root {
+            if pi_project_is_trusted(ctx, &agent_dir) {
+                roots.extend(pi_project_skill_roots(
+                    project_root,
+                    ctx.project_cwd.as_deref(),
+                ));
+            }
+        }
+
+        roots.extend([
             AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: agent_dir.join("skills"),
@@ -38,19 +50,16 @@ impl AgentAdapter for PiAdapter {
                 path: ctx.user_home.join(".agents/skills"),
                 source: RootSource::Compatibility,
             },
-        ];
-
-        if let Some(project_root) = &ctx.project_root {
-            roots.extend(pi_project_skill_roots(
-                project_root,
-                ctx.project_cwd.as_deref(),
-            ));
-        }
-
-        roots.extend(pi_configured_skill_roots(ctx, &agent_dir));
-        roots.extend(pi_package_skill_roots(ctx, &agent_dir));
+        ]);
 
         dedup_roots(roots)
+    }
+
+    fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        self.roots(ctx)
+            .into_iter()
+            .flat_map(|root| pi_declared_skill_link_targets(&root))
+            .collect()
     }
 
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
@@ -131,13 +140,51 @@ impl AgentAdapter for PiAdapter {
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
         let mut paths = vec![pi_agent_dir(ctx).join("settings.json")];
         if let Some(project_root) = &ctx.project_root {
-            paths.extend(
-                pi_project_directories(project_root, ctx.project_cwd.as_deref())
-                    .map(|directory| directory.join(".pi/settings.json")),
-            );
+            let cwd = ctx
+                .project_cwd
+                .as_deref()
+                .filter(|cwd| cwd.starts_with(project_root))
+                .unwrap_or(project_root);
+            paths.push(cwd.join(".pi/settings.json"));
         }
         paths
     }
+}
+
+fn pi_declared_skill_link_targets(root: &AdapterRoot) -> Vec<AdapterRoot> {
+    let mut targets = Vec::new();
+    let mut stack = vec![root.path.clone()];
+    let mut visited = 0usize;
+    while let Some(directory) = stack.pop() {
+        if visited >= 50_000 {
+            break;
+        }
+        visited += 1;
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                if path.is_dir() || path.is_file() {
+                    targets.push(AdapterRoot {
+                        scope: root.scope,
+                        path,
+                        source: RootSource::Configured,
+                    });
+                }
+            } else if metadata.is_dir()
+                && entry.file_name() != "node_modules"
+                && !entry.file_name().to_string_lossy().starts_with('.')
+            {
+                stack.push(path);
+            }
+        }
+    }
+    targets
 }
 
 pub fn pi_agent_dir(ctx: &AdapterContext) -> PathBuf {
@@ -185,12 +232,15 @@ fn parse_skill_content(content: &str) -> Result<ParsedSkill, String> {
 
 fn pi_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Vec<AdapterRoot> {
     let mut roots = Vec::new();
-    for dir in pi_project_directories(project_root, project_cwd) {
-        roots.push(AdapterRoot {
-            scope: Scope::AgentProject,
-            path: dir.join(".pi/skills"),
-            source: RootSource::Project,
-        });
+    let cwd = project_cwd
+        .filter(|cwd| cwd.starts_with(project_root))
+        .unwrap_or(project_root);
+    roots.push(AdapterRoot {
+        scope: Scope::AgentProject,
+        path: cwd.join(".pi/skills"),
+        source: RootSource::Project,
+    });
+    for dir in pi_project_directories(project_root, Some(cwd)) {
         roots.push(AdapterRoot {
             scope: Scope::AgentProject,
             path: dir.join(".agents/skills"),
@@ -217,14 +267,56 @@ fn pi_project_directories<'a>(
 }
 
 fn pi_settings_sources(ctx: &AdapterContext, agent_dir: &Path) -> Vec<(Scope, PathBuf)> {
-    let mut sources = vec![(Scope::AgentGlobal, agent_dir.join("settings.json"))];
+    let mut sources = Vec::new();
     if let Some(project_root) = &ctx.project_root {
-        sources.extend(
-            pi_project_directories(project_root, ctx.project_cwd.as_deref())
-                .map(|directory| (Scope::AgentProject, directory.join(".pi/settings.json"))),
-        );
+        if pi_project_is_trusted(ctx, agent_dir) {
+            let cwd = ctx
+                .project_cwd
+                .as_deref()
+                .filter(|cwd| cwd.starts_with(project_root))
+                .unwrap_or(project_root);
+            sources.push((Scope::AgentProject, cwd.join(".pi/settings.json")));
+        }
     }
+    sources.push((Scope::AgentGlobal, agent_dir.join("settings.json")));
     sources
+}
+
+fn pi_project_is_trusted(ctx: &AdapterContext, agent_dir: &Path) -> bool {
+    let Some(project_root) = ctx.project_root.as_deref() else {
+        return false;
+    };
+    let cwd = ctx
+        .project_cwd
+        .as_deref()
+        .filter(|cwd| cwd.starts_with(project_root))
+        .unwrap_or(project_root);
+    let trust_path = agent_dir.join("trust.json");
+    let Ok(content) = std::fs::read_to_string(trust_path) else {
+        // No persisted decision means Pi will ask interactively. Keep the
+        // inventory visible so a session-only acceptance can still be
+        // reconciled; an explicit persisted denial is always enforced below.
+        return true;
+    };
+    let Ok(entries) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content)
+    else {
+        return true;
+    };
+    let mut current = cwd
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_path_lexically(cwd));
+    loop {
+        if let Some(decision) = entries
+            .get(current.to_string_lossy().as_ref())
+            .and_then(serde_json::Value::as_bool)
+        {
+            return decision;
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    true
 }
 
 fn pi_configured_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<AdapterRoot> {
@@ -298,12 +390,18 @@ fn pi_package_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<Adapter
             let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_text) else {
                 continue;
             };
-            let skill_paths = manifest
+            let declared_skill_paths = manifest
                 .get("pi")
                 .and_then(|pi| pi.get("skills"))
                 .and_then(serde_json::Value::as_array)
-                .cloned()
-                .unwrap_or_else(|| vec![serde_json::Value::String("./skills".to_string())]);
+                .cloned();
+            let skill_paths = declared_skill_paths.unwrap_or_else(|| {
+                let convention_path = package_root.join("skills");
+                match std::fs::symlink_metadata(&convention_path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                    _ => vec![serde_json::Value::String("./skills".to_string())],
+                }
+            });
             roots.extend(
                 skill_paths
                     .iter()
@@ -565,31 +663,83 @@ mod tests {
 
         let roots = adapter.roots(&ctx);
 
-        assert_eq!(roots[0].path, PathBuf::from("/tmp/home/.pi/agent/skills"));
-        assert_eq!(roots[0].source, RootSource::UserHome);
-        assert_eq!(roots[1].path, PathBuf::from("/tmp/home/.agents/skills"));
+        assert_eq!(
+            roots[0].path,
+            PathBuf::from("/tmp/project/nested/deeper/.pi/skills")
+        );
+        assert_eq!(roots[0].source, RootSource::Project);
+        assert_eq!(
+            roots[1].path,
+            PathBuf::from("/tmp/project/nested/deeper/.agents/skills")
+        );
         assert_eq!(roots[1].source, RootSource::Compatibility);
         assert_eq!(
             roots[2].path,
-            PathBuf::from("/tmp/project/nested/deeper/.pi/skills")
-        );
-        assert_eq!(roots[2].source, RootSource::Project);
-        assert_eq!(
-            roots[3].path,
-            PathBuf::from("/tmp/project/nested/deeper/.agents/skills")
-        );
-        assert_eq!(roots[3].source, RootSource::Compatibility);
-        assert_eq!(
-            roots[4].path,
-            PathBuf::from("/tmp/project/nested/.pi/skills")
-        );
-        assert_eq!(
-            roots[5].path,
             PathBuf::from("/tmp/project/nested/.agents/skills")
         );
-        assert_eq!(roots[6].path, PathBuf::from("/tmp/project/.pi/skills"));
-        assert_eq!(roots[7].path, PathBuf::from("/tmp/project/.agents/skills"));
-        assert_eq!(roots.len(), 8);
+        assert_eq!(roots[3].path, PathBuf::from("/tmp/project/.agents/skills"));
+        assert_eq!(roots[4].path, PathBuf::from("/tmp/home/.pi/agent/skills"));
+        assert_eq!(roots[4].source, RootSource::UserHome);
+        assert_eq!(roots[5].path, PathBuf::from("/tmp/home/.agents/skills"));
+        assert_eq!(roots[5].source, RootSource::Compatibility);
+        assert_eq!(roots.len(), 6);
+    }
+
+    #[test]
+    fn package_convention_root_is_optional_but_explicit_manifest_root_is_not() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "skills-copilot-pi-package-roots-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        let user_home = fixture_root.join("home");
+        let agent_dir = user_home.join(".pi/agent");
+        let package_root = agent_dir.join("npm/node_modules/example-extension");
+        std::fs::create_dir_all(&package_root).expect("create package root");
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{"packages":["npm:example-extension"]}"#,
+        )
+        .expect("write Pi settings");
+        std::fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"example-extension","pi":{"extensions":["./index.js"]}}"#,
+        )
+        .expect("write package manifest");
+        let ctx = AdapterContext {
+            user_home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let missing_convention_roots = pi_package_skill_roots(&ctx, &agent_dir);
+        assert!(
+            missing_convention_roots.is_empty(),
+            "a package without an existing conventional skills directory is not a scan source"
+        );
+
+        std::fs::create_dir(package_root.join("skills"))
+            .expect("create conventional skills directory");
+        let convention_roots = pi_package_skill_roots(&ctx, &agent_dir);
+        assert_eq!(convention_roots.len(), 1);
+        assert_eq!(convention_roots[0].path, package_root.join("skills"));
+
+        std::fs::remove_dir(package_root.join("skills"))
+            .expect("remove conventional skills directory");
+        std::fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"example-extension","pi":{"skills":["./declared-skills"]}}"#,
+        )
+        .expect("write explicit package skill root");
+        let explicit_roots = pi_package_skill_roots(&ctx, &agent_dir);
+        assert_eq!(explicit_roots.len(), 1);
+        assert_eq!(explicit_roots[0].path, package_root.join("declared-skills"));
+
+        std::fs::remove_dir_all(fixture_root).expect("remove Pi package root fixture");
     }
 
     #[test]

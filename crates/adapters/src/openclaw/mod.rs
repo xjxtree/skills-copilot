@@ -26,22 +26,7 @@ impl AgentAdapter for OpenclawAdapter {
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
         let state_dir = openclaw_state_dir(ctx);
-        let mut roots = vec![
-            AdapterRoot {
-                scope: Scope::AgentGlobal,
-                path: state_dir.join("skills"),
-                source: RootSource::UserHome,
-            },
-            AdapterRoot {
-                scope: Scope::AgentGlobal,
-                path: ctx.user_home.join(".agents/skills"),
-                source: RootSource::Compatibility,
-            },
-        ];
-
-        roots.extend(openclaw_bundled_skill_roots());
-        roots.extend(openclaw_extra_skill_roots(ctx, &state_dir));
-
+        let mut roots = Vec::new();
         for workspace_root in openclaw_selected_workspace_roots(ctx, &state_dir) {
             roots.push(AdapterRoot {
                 scope: Scope::AgentProject,
@@ -55,6 +40,55 @@ impl AgentAdapter for OpenclawAdapter {
             });
         }
 
+        roots.push(AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: ctx.user_home.join(".agents/skills"),
+            source: RootSource::Compatibility,
+        });
+        roots.push(AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: state_dir.join("skills"),
+            source: RootSource::UserHome,
+        });
+        roots.extend(openclaw_bundled_skill_roots());
+        roots.extend(openclaw_plugin_skill_roots(ctx, &state_dir));
+        roots.extend(openclaw_extra_skill_roots(ctx, &state_dir));
+
+        dedup_roots(roots)
+    }
+
+    fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        let state_dir = openclaw_state_dir(ctx);
+        let mut roots = Vec::new();
+        for declared in self.roots(ctx) {
+            let unconditional = declared.path == ctx.user_home.join(".agents/skills")
+                || declared.path == state_dir.join("skills");
+            if unconditional {
+                roots.extend(openclaw_declared_skill_link_targets(&declared));
+            }
+        }
+        if let Ok(content) = std::fs::read_to_string(openclaw_config_path(ctx)) {
+            if let Ok(config) = json5::from_str::<serde_json::Value>(&content) {
+                for path in config
+                    .get("skills")
+                    .and_then(|skills| skills.get("load"))
+                    .and_then(|load| load.get("allowSymlinkTargets"))
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(|raw| expand_local_path(raw, &ctx.user_home, &state_dir))
+                {
+                    for scope in [Scope::AgentGlobal, Scope::AgentProject] {
+                        roots.push(AdapterRoot {
+                            scope,
+                            path: path.clone(),
+                            source: RootSource::Configured,
+                        });
+                    }
+                }
+            }
+        }
         dedup_roots(roots)
     }
 
@@ -117,8 +151,14 @@ impl AgentAdapter for OpenclawAdapter {
         instance.enabled
     }
 
-    fn accepts_skill_path(&self, _root: &AdapterRoot, relative_path: &Path) -> bool {
-        relative_path.components().count() == 2
+    fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
+        let components = relative_path.components().count();
+        let depth_is_valid = if root.source == RootSource::Plugin {
+            (1..=7).contains(&components)
+        } else {
+            (2..=7).contains(&components)
+        };
+        depth_is_valid
             && relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
     }
 
@@ -423,6 +463,179 @@ fn openclaw_extra_skill_roots(ctx: &AdapterContext, state_dir: &Path) -> Vec<Ada
         .collect()
 }
 
+fn openclaw_plugin_skill_roots(ctx: &AdapterContext, state_dir: &Path) -> Vec<AdapterRoot> {
+    let config = std::fs::read_to_string(openclaw_config_path(ctx))
+        .ok()
+        .and_then(|content| json5::from_str::<serde_json::Value>(&content).ok());
+    let mut candidates = Vec::<(PathBuf, bool)>::new();
+    if let Some(config) = config.as_ref() {
+        candidates.extend(
+            config
+                .get("plugins")
+                .and_then(|plugins| plugins.get("load"))
+                .and_then(|load| load.get("paths"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter_map(|raw| expand_local_path(raw, &ctx.user_home, state_dir))
+                .map(|path| (path, false)),
+        );
+    }
+    candidates.extend(
+        openclaw_plugin_directories(&state_dir.join("extensions")).map(|path| (path, false)),
+    );
+    for workspace in openclaw_selected_workspace_roots(ctx, state_dir) {
+        candidates.extend(
+            openclaw_plugin_directories(&workspace.join(".openclaw/extensions"))
+                .map(|path| (path, true)),
+        );
+    }
+
+    let allow = config
+        .as_ref()
+        .and_then(|config| config.get("plugins"))
+        .and_then(|plugins| plugins.get("allow"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<HashSet<_>>()
+        });
+    let deny = config
+        .as_ref()
+        .and_then(|config| config.get("plugins"))
+        .and_then(|plugins| plugins.get("deny"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let entries = config
+        .as_ref()
+        .and_then(|config| config.get("plugins"))
+        .and_then(|plugins| plugins.get("entries"))
+        .and_then(serde_json::Value::as_object);
+
+    let mut roots = Vec::new();
+    for (candidate, workspace_origin) in candidates {
+        let Ok(plugin_root) = candidate.canonicalize() else {
+            continue;
+        };
+        let manifest_path = plugin_root.join("openclaw.plugin.json");
+        let Ok(content) = std::fs::read_to_string(manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = json5::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let Some(id) = manifest
+            .get("id")
+            .or_else(|| manifest.get("name"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let explicitly_enabled = entries
+            .and_then(|entries| entries.get(id))
+            .and_then(|entry| entry.get("enabled"))
+            .and_then(serde_json::Value::as_bool);
+        if deny.contains(id)
+            || allow.as_ref().is_some_and(|allow| !allow.contains(id))
+            || explicitly_enabled == Some(false)
+            || (workspace_origin && explicitly_enabled != Some(true))
+        {
+            continue;
+        }
+        let skills = manifest
+            .get("skills")
+            .into_iter()
+            .flat_map(json_string_or_array);
+        for raw in skills {
+            let Some(path) = safe_openclaw_plugin_path(&plugin_root, raw) else {
+                continue;
+            };
+            roots.push(AdapterRoot {
+                scope: if workspace_origin {
+                    Scope::AgentProject
+                } else {
+                    Scope::AgentGlobal
+                },
+                path,
+                source: RootSource::Plugin,
+            });
+        }
+    }
+    dedup_roots(roots)
+}
+
+fn openclaw_plugin_directories(root: &Path) -> impl Iterator<Item = PathBuf> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.path().is_dir().then(|| entry.path()))
+}
+
+fn json_string_or_array(value: &serde_json::Value) -> Vec<&str> {
+    match value {
+        serde_json::Value::String(value) => vec![value],
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn safe_openclaw_plugin_path(plugin_root: &Path, raw: &str) -> Option<PathBuf> {
+    let relative = Path::new(raw);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let canonical = plugin_root.join(relative).canonicalize().ok()?;
+    canonical.starts_with(plugin_root).then_some(canonical)
+}
+
+fn openclaw_declared_skill_link_targets(root: &AdapterRoot) -> Vec<AdapterRoot> {
+    let mut targets = Vec::new();
+    let mut stack = vec![(root.path.clone(), 0usize)];
+    while let Some((directory, depth)) = stack.pop() {
+        if depth >= 6 {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                if path.is_dir() {
+                    targets.push(AdapterRoot {
+                        scope: root.scope,
+                        path,
+                        source: RootSource::Configured,
+                    });
+                }
+            } else if metadata.is_dir() {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    targets
+}
+
 fn dedup_roots(roots: Vec<AdapterRoot>) -> Vec<AdapterRoot> {
     let mut seen = HashSet::new();
     roots
@@ -516,12 +729,12 @@ mod tests {
 
         let roots = adapter.roots(&ctx);
 
-        assert_eq!(roots[0].path, PathBuf::from("/tmp/home/.openclaw/skills"));
+        assert_eq!(roots[0].path, PathBuf::from("/tmp/home/.agents/skills"));
         assert_eq!(roots[0].scope, Scope::AgentGlobal);
-        assert_eq!(roots[0].source, RootSource::UserHome);
-        assert_eq!(roots[1].path, PathBuf::from("/tmp/home/.agents/skills"));
+        assert_eq!(roots[0].source, RootSource::Compatibility);
+        assert_eq!(roots[1].path, PathBuf::from("/tmp/home/.openclaw/skills"));
         assert_eq!(roots[1].scope, Scope::AgentGlobal);
-        assert_eq!(roots[1].source, RootSource::Compatibility);
+        assert_eq!(roots[1].source, RootSource::UserHome);
         assert!(
             roots
                 .iter()
@@ -592,6 +805,78 @@ mod tests {
                 .all(|root| !root.path.starts_with("/tmp/home/.openclaw/workspace/repo")),
             "OpenClaw must scan the confirmed workspace roots, not infer nested repo roots"
         );
+    }
+
+    #[test]
+    fn plugin_manifest_roots_are_enabled_explicitly_and_never_scan_extension_cache_broadly() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-openclaw-plugins-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let state = home.join(".openclaw");
+        let enabled = state.join("extensions/enabled-plugin");
+        let disabled = state.join("extensions/disabled-plugin");
+        let unlisted = state.join("extensions/unlisted-plugin");
+        for plugin in [&enabled, &disabled, &unlisted] {
+            std::fs::create_dir_all(plugin.join("declared-skill"))
+                .expect("create declared plugin skill root");
+            std::fs::create_dir_all(plugin.join("cache-noise/hidden"))
+                .expect("create plugin cache noise");
+        }
+        std::fs::write(
+            enabled.join("openclaw.plugin.json"),
+            r#"{"id":"enabled","skills":["declared-skill"]}"#,
+        )
+        .expect("write enabled plugin manifest");
+        std::fs::write(
+            disabled.join("openclaw.plugin.json"),
+            r#"{"id":"disabled","skills":["declared-skill"]}"#,
+        )
+        .expect("write disabled plugin manifest");
+        std::fs::write(
+            unlisted.join("openclaw.plugin.json"),
+            r#"{"id":"unlisted","skills":["declared-skill"]}"#,
+        )
+        .expect("write unlisted plugin manifest");
+        std::fs::write(
+            state.join("openclaw.json"),
+            r#"{"plugins":{"allow":["enabled","disabled"],"entries":{"enabled":{"enabled":true},"disabled":{"enabled":false}}}}"#,
+        )
+        .expect("write OpenClaw config");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let roots = OpenclawAdapter.roots(&ctx);
+
+        assert!(roots.iter().any(|root| {
+            root.source == RootSource::Plugin
+                && root.path == enabled.join("declared-skill").canonicalize().unwrap()
+        }));
+        assert!(roots.iter().all(|root| !root.path.starts_with(&disabled)));
+        assert!(roots.iter().all(|root| !root.path.starts_with(&unlisted)));
+        assert!(roots
+            .iter()
+            .all(|root| root.path != state.join("extensions")));
+
+        let plugin_root = AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: enabled.join("declared-skill"),
+            source: RootSource::Plugin,
+        };
+        let managed_root = AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: state.join("skills"),
+            source: RootSource::UserHome,
+        };
+        assert!(OpenclawAdapter.accepts_skill_path(&plugin_root, Path::new("SKILL.md")));
+        assert!(!OpenclawAdapter.accepts_skill_path(&managed_root, Path::new("SKILL.md")));
+
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

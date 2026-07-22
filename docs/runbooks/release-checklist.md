@@ -7,7 +7,7 @@ a public distribution checklist.
 
 - [ ] Work from the intended branch or release-candidate commit.
 - [ ] Confirm `git status --short` contains only intended changes.
-- [ ] Read `README.md`, `AGENTS.md`, `docs/plans/roadmap.md`, and
+- [ ] Read `README.md`, `AGENTS.md`, `docs/security-model.md`, and
   `docs/runbooks/distribution-runbook.md`.
 - [ ] Confirm public distribution, signing, notarization, DMG, ZIP, updater,
   and release automation remain deferred unless explicitly scoped.
@@ -28,12 +28,6 @@ a public distribution checklist.
 ```sh
 pnpm check:macos
 pnpm check:privacy
-```
-
-For screenshot changes, also run:
-
-```sh
-pnpm verify:screenshot-artifacts
 ```
 
 For documentation-only cleanup, at minimum run:
@@ -63,12 +57,12 @@ Confirm it:
   placeholders;
 - [ ] does not execute skill scripts.
 
-## Real-Local UI Evidence
+## Real-Local UI Validation
 
 For user-visible, UI, or service-protocol candidates, operate the real app in an
-unlocked interactive macOS session and record the result. If Computer Use/AX
-cannot resolve the app window, record the canonical blocker and keep real-local
-validation pending.
+unlocked interactive macOS session and record the result in the task, pull
+request, or release. If Computer Use/AX cannot resolve the app window, report
+the canonical blocker and keep real-local validation pending.
 
 Fixture smoke is supporting evidence only; it is not a substitute for required
 real-local interaction evidence.

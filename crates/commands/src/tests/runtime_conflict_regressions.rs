@@ -69,7 +69,86 @@ fn codex_cached_records_project_external_config_changes_without_rescan() {
 }
 
 #[test]
-fn codex_runtime_conflicts_ignore_plugin_cache_entirely() {
+fn codex_plugin_file_state_follows_persisted_plugin_config() {
+    let temp_root = temp_test_dir("codex-plugin-config-projection");
+    let home = temp_root.join("home");
+    write_codex_plugin_skill(
+        &home,
+        "openai-bundled",
+        "visualize",
+        "1.0.14",
+        "visualize",
+        "plugin body",
+    );
+    let config_path = home.join(".codex/config.toml");
+    std::fs::write(
+        &config_path,
+        "[plugins.\"visualize@openai-bundled\"]\nenabled = true\n",
+    )
+    .expect("write enabled plugin config");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+
+    scan_all_to_catalog(&ctx, &catalog).expect("plugin scan succeeds");
+    let mut records = catalog.list_skill_records().expect("plugin records list");
+    let enabled = records
+        .iter()
+        .find(|record| record.agent == "codex" && record.name == "visualize:visualize")
+        .expect("plugin record exists");
+    assert_eq!(enabled.state, "loaded");
+    assert!(enabled.enabled);
+    assert_eq!(enabled.source_kind.as_deref(), Some("chatgpt-plugin-cache"));
+
+    std::fs::write(
+        &config_path,
+        "[plugins.\"visualize@openai-bundled\"]\nenabled = false\n",
+    )
+    .expect("write disabled plugin config");
+    apply_current_config_overrides_to_skill_records(&ctx, &mut records)
+        .expect("project current plugin state");
+    let disabled = records
+        .iter()
+        .find(|record| record.agent == "codex" && record.name == "visualize:visualize")
+        .expect("projected plugin record exists");
+    assert_eq!(disabled.state, "disabled");
+    assert!(!disabled.enabled);
+
+    std::fs::write(&config_path, "# plugin installation entry removed\n")
+        .expect("remove plugin installation entry");
+    apply_current_config_overrides_to_skill_records(&ctx, &mut records)
+        .expect("project removed plugin state");
+    let uninstalled = records
+        .iter()
+        .find(|record| record.agent == "codex" && record.name == "visualize:visualize")
+        .expect("cached plugin record remains available for projection");
+    assert_eq!(uninstalled.state, "disabled");
+    assert!(!uninstalled.enabled);
+
+    std::fs::write(
+        &config_path,
+        "[plugins.\"visualize@openai-bundled\"]\nenabled = true\n",
+    )
+    .expect("restore enabled plugin config");
+    apply_current_config_overrides_to_skill_records(&ctx, &mut records)
+        .expect("restore current plugin state");
+    let restored = records
+        .iter()
+        .find(|record| record.agent == "codex" && record.name == "visualize:visualize")
+        .expect("restored plugin record exists");
+    assert_eq!(restored.state, "loaded");
+    assert!(restored.enabled);
+
+    let _ = std::fs::remove_dir_all(temp_root);
+}
+
+#[test]
+fn codex_plugin_files_are_cataloged_without_cross_plugin_runtime_conflicts() {
     let temp_root = temp_test_dir("codex-runtime-conflicts");
     let home = temp_root.join("home");
     let local_pdf = home.join(".codex/skills/pdf");
@@ -108,7 +187,7 @@ fn codex_runtime_conflicts_ignore_plugin_cache_entirely() {
     }
     std::fs::write(
         home.join(".codex/config.toml"),
-        "[plugins.\"pdf@openai-primary-runtime\"]\nenabled = true\n\n[plugins.\"package-a@active\"]\nenabled = true\n\n[plugins.\"package-b@active\"]\nenabled = true\n",
+        "[plugins.\"pdf@openai-primary-runtime\"]\nenabled = true\n\n[plugins.\"legacy-mirror@openai-curated\"]\nenabled = true\n\n[plugins.\"remote-mirror@openai-curated-remote\"]\nenabled = true\n\n[plugins.\"package-a@active\"]\nenabled = true\n\n[plugins.\"package-b@active\"]\nenabled = true\n",
     )
     .expect("write Codex plugin config");
     let catalog = Catalog::in_memory().expect("catalog opens");
@@ -119,6 +198,33 @@ fn codex_runtime_conflicts_ignore_plugin_cache_entirely() {
         project_cwd: None,
         extra_roots: vec![],
     };
+
+    let plugin_roots = CodexAdapter
+        .roots(&ctx)
+        .into_iter()
+        .filter(|root| root.source == RootSource::Plugin)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plugin_roots.len(),
+        5,
+        "fixture plugin roots must be discovered from manifests"
+    );
+    let canonical_cache = home
+        .join(".codex/plugins/cache")
+        .canonicalize()
+        .expect("plugin cache canonicalizes");
+    let codex_report = scan_agent(&CodexAdapter, &ctx).expect("Codex fixture scans");
+    assert_eq!(
+        codex_report
+            .instances
+            .iter()
+            .filter(|instance| instance.path.starts_with(&canonical_cache))
+            .count(),
+        5,
+        "every manifest-declared plugin skill should be scanned from its persisted file; skipped={:?}, issues={:?}",
+        codex_report.skipped_roots,
+        codex_report.issues
+    );
 
     scan_all_to_catalog(&ctx, &catalog).expect("scan all succeeds");
     let records = catalog.list_skill_records().expect("records");
@@ -136,8 +242,17 @@ fn codex_runtime_conflicts_ignore_plugin_cache_entirely() {
 
     assert!(records
         .iter()
-        .all(|record| !record.path.starts_with(home.join(".codex/plugins/cache"))));
-    assert!(conflict_names.is_empty());
+        .any(|record| record.path.starts_with(&canonical_cache)));
+    assert!(records.iter().all(|record| {
+        !record
+            .path
+            .to_string_lossy()
+            .contains(".agent-copilot-runtime")
+    }));
+    assert!(
+        conflict_names.is_empty(),
+        "native and plugin skills have distinct runtime identities, and separate plugin namespaces must stay isolated"
+    );
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
@@ -170,7 +285,17 @@ fn exact_rescan_retires_removed_pi_root_and_clears_its_conflict() {
         .list_conflict_groups()
         .expect("initial conflicts")
         .iter()
-        .any(|conflict| conflict.id.contains(":pi:")));
+        .all(|conflict| !conflict.id.contains(":pi:")));
+    let initial_pi_records = catalog
+        .list_skill_records()
+        .expect("initial records")
+        .into_iter()
+        .filter(|record| record.agent == "pi" && record.name == "shared-review")
+        .collect::<Vec<_>>();
+    assert_eq!(initial_pi_records.len(), 1);
+    assert!(initial_pi_records[0]
+        .path
+        .starts_with(native.canonicalize().expect("native root canonicalizes")));
 
     std::fs::remove_dir_all(project.join(".pi/skills")).expect("remove retired Pi root");
     scan_all_to_catalog(&ctx, &catalog).expect("rescan succeeds");

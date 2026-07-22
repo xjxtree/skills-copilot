@@ -130,6 +130,86 @@ extension SkillStore {
         lastScanActivity?.agentSummaries?.first { $0.agent == agentFilter.rawValue }
     }
 
+    var filteredCatalogListCompleteness: ListCompletenessState {
+        guard agentFilter != .all else { return catalogListCompleteness }
+        return catalogCompleteness(forAgent: agentFilter.rawValue)
+    }
+
+    func catalogCompleteness(forAgent agent: String) -> ListCompletenessState {
+        if let state = catalogListCompletenessByAgent[agent] {
+            return state
+        }
+        let loadedCount = SkillListModel.currentSkills(skills)
+            .filter { $0.agent == agent }
+            .count
+        return ListCompletenessState(
+            loadedCount: loadedCount,
+            totalCount: nil,
+            hasMore: false,
+            isComplete: false,
+            completeness: .unknown,
+            incompleteReason: nil,
+            loadingPhase: .idle,
+            canLoadMore: false,
+            canLoadAll: false
+        )
+    }
+
+    var partialScanWarningMessage: String? {
+        guard let summaries = lastScanActivity?.agentSummaries else { return nil }
+        let relevantSummaries: [AgentRefreshSummary]
+        if agentFilter == .all {
+            relevantSummaries = summaries
+        } else {
+            relevantSummaries = summaries.filter { $0.agent == agentFilter.rawValue }
+        }
+        if let degradedSummary = relevantSummaries.first(where: { !$0.provesCatalogCompleteness }) {
+            return refreshWarningMessage(for: degradedSummary)
+        }
+        return relevantSummaries.lazy.compactMap(refreshWarningMessage).first
+    }
+
+    func refreshWarningMessage(for summary: AgentRefreshSummary) -> String? {
+        if !summary.provesCatalogCompleteness {
+            let issue = summary.primaryCatalogIncompleteIssue.map { issue in
+                UIStrings.refreshPartialIssue(
+                    kind: issue.kind,
+                    path: issue.path,
+                    detail: issue.detail
+                )
+            } ?? UIStrings.refreshPartialIssueUnavailable
+            let recovery = summary.recoveryActions.first
+                ?? lastScanActivity?.recoveryActions.first
+                ?? UIStrings.refreshPartialRecoveryDefault
+            let filter = SkillAgentFilter(rawValue: summary.agent) ?? .all
+            let findingCount = SkillListModel.displayIssueCount(
+                skills: skills,
+                findings: findings,
+                conflicts: conflicts,
+                agentFilter: filter
+            )
+            let agentSkills = skills.filter { $0.agent == summary.agent }
+            let conflictCount = SkillListModel.sameAgentConflictGroupCount(
+                skills: agentSkills,
+                conflicts: conflicts
+            )
+            return UIStrings.refreshAgentScanDegraded(
+                summary.displayLabel,
+                status: summary.status,
+                scanned: summary.scannedCount,
+                skills: summary.catalogCount,
+                findings: findingCount,
+                conflicts: conflictCount,
+                issue: issue,
+                recovery: recovery
+            )
+        }
+        guard let danglingIssue = summary.scanIssues.first(where: { $0.kind == "dangling_symlink" }) else {
+            return nil
+        }
+        return UIStrings.refreshDanglingSymlink(danglingIssue.path)
+    }
+
     var selectedAgentHealthSummary: AgentSkillHealthSummary? {
         healthSummary.agentSummaries.first { $0.agent == agentFilter.rawValue }
     }

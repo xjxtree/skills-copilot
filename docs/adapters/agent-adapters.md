@@ -20,11 +20,12 @@ blocked operations. It is a current contract, not a version history.
   the rest of the user home or project tree does not authorize traversal.
 - Scanner link resolution must retain that same-scope root provenance; a link
   cannot promote a project root into a global root or vice versa.
-- Missing implicit built-in root candidates are ignored until created.
-  Unavailable explicit configured/plugin/extra roots and existing invalid roots
-  are skipped with typed issues, while authorized directory and entry failures
-  mark a root partial and allow other roots to continue. Only fully enumerated
-  roots are eligible for missing-record cleanup.
+- Missing implicit built-in and package-convention root candidates are ignored
+  until created. Unavailable explicit configured, manifest-declared plugin, and
+  extra roots plus existing invalid roots are skipped with typed issues, while
+  authorized directory and entry failures mark a root partial and allow other
+  roots to continue. Only fully enumerated roots are eligible for
+  missing-record cleanup.
 - Partial roots never participate in missing-sweep, including when another
   complete root resolves to the same physical location under a different scope.
 - Writes must go through the service layer with preview, snapshot/read-back
@@ -48,12 +49,12 @@ blocked operations. It is a current contract, not a version history.
 
 | Adapter | Scan roots | Guarded writes | Install targets | Blocked |
 | --- | --- | --- | --- | --- |
-| Claude Code | User/project `.claude/skills`; matching user/project `.agents/skills` directories are explicit same-scope symlink-target roots and are not walked directly | Private Claude settings toggle path | Verified native target paths | Shared project settings writes unless separately scoped |
-| Codex | Authoritative `codex app-server` `skills/list` inventory when available; verified user/project `.agents/skills`, read-only `$CODEX_HOME/skills`, `/etc/codex/skills`, and project `.codex/config.toml` diagnostics; `$CODEX_HOME/plugins/cache` and marketplace implementation directories are excluded | User config override for native `.agents/skills` instances | Native `.agents/skills` roots | Project `.codex/config.toml` and runtime-only/admin/system/compat writes |
-| opencode | Native roots, official `.claude` / `.agents` compatibility roots, and configured local `skills.paths` roots | Exact `permission.skill` overrides in verified config targets | Native opencode roots | `skills.urls` fetch, configured-root writes, compatibility-root installs |
-| Pi | Native `~/.pi/agent/skills`, project `.pi/skills`, `.agents/skills` compatibility roots, local `skills` settings paths, and installed local package manifests | Guarded official `skills` array exact `+path`/`-path` overrides | Native Pi roots only | Package install/remove, `.agents` direct installs, scripts, credentials |
+| Claude Code | User/project-ancestor `.claude/skills`, existing legacy `.claude/commands/*.md`, direct skill-directory links, and skill roots declared by effectively enabled installed plugins; matching `.agents/skills` directories only authorize same-scope link targets | Private Claude settings toggle path | Verified native target paths | Plugin writes, shared project settings writes unless separately scoped |
+| Codex | Verified user/project `.agents/skills`, read-only `$CODEX_HOME/skills`, manifest-declared roots in installed versioned `$CODEX_HOME/plugins/cache` copies, `/etc/codex/skills`, and project `.codex/config.toml` diagnostics; no runtime inventory call | User config override for native `.agents/skills` instances | Native `.agents/skills` roots | Project `.codex/config.toml` and plugin/admin/system/compat writes |
+| opencode | Native roots, official `.claude` / `.agents` compatibility roots, exact direct skill-link targets, and configured local `skills.paths` roots | Exact `permission.skill` overrides in verified config targets | Native opencode roots | `skills.urls` fetch, configured-root writes, compatibility-root installs |
+| Pi | Native user roots, cwd `.pi/skills`, ancestor `.agents/skills`, local `skills` settings paths, and installed local package manifests/convention roots in runtime precedence order | Guarded official `skills` array exact `+path`/`-path` overrides | Native Pi roots only | Package install/remove, `.agents` direct installs, scripts, credentials |
 | Hermes | Native `~/.hermes/skills` and explicit read-only `skills.external_dirs` | Global `skills.disabled` only | Native `~/.hermes/skills` | Project installs, `platform_disabled`, `external_dirs` writes, hub/URL/tap/update/uninstall/reset |
-| OpenClaw | Native `~/.openclaw/skills`, shared `~/.agents/skills`, optional bundled system roots, confirmed workspace `<workspace>/skills`, and `<workspace>/.agents/skills` | `skills.entries.<key>.enabled` only | Native `~/.openclaw/skills` and confirmed workspace `<workspace>/skills` | `.agents` direct installs, allowlists, env/apiKey, install policy, load roots, ClawHub/Git/update/verify/workshop |
+| OpenClaw | Workspace and personal `.agents` roots, native managed skills, optional bundled roots, enabled plugin manifest roots, and configured local extra dirs in runtime precedence order | `skills.entries.<key>.enabled` only | Native managed and confirmed workspace skill roots | `.agents` direct installs, allowlist/env/apiKey/install-policy writes, ClawHub/Git/update/verify/workshop |
 
 ## Verified Effective Source Inventory
 
@@ -63,12 +64,12 @@ they resolve to absolute local paths; network configuration is never fetched.
 
 | Adapter | Effective skill/config sources | Effective local-session source | Explicit exclusions |
 | --- | --- | --- | --- |
-| Claude Code | `CLAUDE_CONFIG_DIR` (default `~/.claude`) user skills/settings; selected-project ancestor `.claude/skills`, `.agents/skills`, `settings.json`, and `settings.local.json`; documented managed settings | `<CLAUDE_CONFIG_DIR>/projects` | Generic home/project walks, caches, generated outputs, and undeclared roots |
-| Codex | Runtime `skills/list`; `$CODEX_HOME/skills`, user/project `.agents/skills`, user/project/admin config diagnostics, `/etc/codex/skills` | `$CODEX_HOME/sessions` | `$CODEX_HOME/plugins/cache`, marketplace implementation trees, archived/intermediate stores, and arbitrary project roots |
+| Claude Code | `CLAUDE_CONFIG_DIR` (default `~/.claude`) user skills/settings and existing legacy `commands/*.md`; selected-project ancestor `.claude/skills` and `.claude/commands/*.md`; project-root settings; managed settings; skill roots from effectively enabled entries in `installed_plugins.json` | `<CLAUDE_CONFIG_DIR>/projects` | Disabled/uninstalled plugins, nested command files, generic cache walks, generated outputs, and undeclared roots |
+| Codex | `$CODEX_HOME/skills`, user/project `.agents/skills`, user/project/admin config diagnostics, `/etc/codex/skills`, and complete manifest-declared skill roots from bounded installed plugin packages explicitly enabled in `$CODEX_HOME/config.toml` | `$CODEX_HOME/state_*.sqlite` thread index for summaries; selected `$CODEX_HOME/sessions` rollout for message detail | Runtime skill inventory as a product data source, generic plugin-store/cache walks, unconfigured or disabled plugin packages, staging/source-marketplace trees, archived/internal sessions, and arbitrary project roots |
 | opencode | XDG/`OPENCODE_CONFIG_DIR` native roots; absolute `OPENCODE_CONFIG`; inline `OPENCODE_CONFIG_CONTENT`; selected-project ancestor native/official compatibility roots; local `skills.paths` | XDG data `opencode/opencode.db` | `skills.urls`, remote organization config, disabled external/Claude compatibility sources, caches, and legacy JSON sidecar stores when the SQLite DB exists |
-| Pi | `PI_CODING_AGENT_DIR` (default `~/.pi/agent`), `.agents/skills`, selected-project ancestor `.pi/skills` and `.agents/skills`, local settings `skills` paths, and installed local package manifests/convention directories | `PI_CODING_AGENT_SESSION_DIR`, configured `sessionDir`, or `<agent-dir>/sessions` | `--skill` process-only CLI arguments, `--no-skills` process state, temporary package trials, remote package indexes, caches, and generated outputs |
+| Pi | Installed project/global package skill roots, project/global configured `skills` paths, cwd `.pi/skills`, ancestor `.agents/skills` to the git root, `~/.pi/agent/skills`, and `~/.agents/skills`; first effective name wins | `PI_CODING_AGENT_SESSION_DIR`, configured `sessionDir`, or `<agent-dir>/sessions` | `--skill` process-only CLI arguments, `--no-skills` process state, temporary package trials, remote package indexes, caches, and generated outputs |
 | Hermes | `HERMES_HOME` (default `~/.hermes`) native skills/config plus explicit local `skills.external_dirs` | `<HERMES_HOME>/state.db` | Hubs, taps, URLs, legacy JSON stores when the canonical DB exists, caches, and inferred project roots |
-| OpenClaw | `OPENCLAW_STATE_DIR`/profile state, `OPENCLAW_CONFIG_PATH`, native/shared skills, configured local extra dirs, runtime-bundled roots discovered beside the installed executable, and confirmed configured/default workspace roots | Per-agent state stores under the active state directory; schema-owned runtime inventory remains read-only | Arbitrary selected repositories, ClawHub/Git/network sources, caches, temporary workspaces, and guessed installation paths |
+| OpenClaw | `OPENCLAW_STATE_DIR`/profile state, `OPENCLAW_CONFIG_PATH`, workspace/personal shared roots, managed skills, runtime-bundled roots, effectively enabled plugin manifest roots, configured extra dirs, agent/bundled allowlists, and eligibility metadata | `<state>/agents/<id>/agent/openclaw-agent.sqlite`; legacy JSON/JSONL is ignored | Arbitrary selected repositories, disabled plugins, ClawHub/Git/network sources, broad extension/cache walks, temporary workspaces, and guessed installation paths |
 
 All filesystem walkers prune VCS, cache, temporary, build, distribution,
 coverage, quarantine, archive, and language-cache directories before inspecting
@@ -83,18 +84,39 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - The adapter and local-session service share the same guarded Codex home.
   `CODEX_HOME` must be an absolute, lexically normalized path beneath the active
   user home; unsafe or relative overrides fall back to `$HOME/.codex`.
-- `$CODEX_HOME/plugins/cache` is never an adapter scan root. Legacy rows already
-  present in SQLite are excluded from current list, instance, analysis,
-  conflict, and Deleted projections.
-- The adapter asks the installed Codex runtime for `skills/list` and merges its
-  path-bearing rows with guarded filesystem results. Runtime rows without a
-  safe local source use a synthetic read-only identity; cache paths are never
-  persisted or displayed as current skills. If the runtime is unavailable,
-  filesystem discovery remains bounded to the verified roots above.
+- The adapter never calls `codex app-server` or `skills/list` for skill
+  discovery. Persisted files are the only catalog inventory source.
+- The plugin store/cache directory is never a generic scan root. Installed
+  plugin discovery considers only bounded marketplace/package/version records,
+  keeps only packages whose config state is explicitly `enabled = true`, reads
+  a bounded regular
+  `.codex-plugin/plugin.json`, rejects absolute, parent-traversing, and escaping
+  manifest paths, and selects one deterministic current version per
+  marketplace/plugin pair. It scans every valid skill in the manifest-declared
+  root. Unconfigured packages, staging, marketplace source, scripts, and
+  unrelated cache files are not scanned or executed.
+- Plugin skills are cataloged with the plugin namespace and a logical
+  `$CODEX_HOME/plugins/...` display path; the physical cache path is not shown
+  as the skill source. Rows retain `source_kind="chatgpt-plugin-cache"` only as
+  a wire-compatibility value, and the UI labels them as installed Codex plugin
+  files. Legacy synthetic runtime rows are removed by catalog migration.
 - Startup and manual reload project the current guarded Codex
-  `[[skills.config]]` enable/disable state over current native list, detail, and
-  analysis records. This read-only projection makes external config changes
-  visible without a catalog write.
+  `[[skills.config]]` path overrides and `[plugins.<id>] enabled` state over
+  current native/plugin list, detail, and analysis records. This read-only
+  projection makes external config changes visible without a catalog write.
+
+### opencode Compatibility Roots
+
+- opencode officially loads skills from its native roots plus `.claude/skills`
+  and `.agents/skills` compatibility roots. A row whose physical file is under
+  `~/.claude/skills` is therefore an effective opencode skill, not a Claude row
+  leaking across the selected-agent filter.
+- Compatibility provenance remains explicit in list/detail metadata and the UI
+  labels it as an opencode compatibility source. Claude `skillOverrides` do not
+  apply; opencode's own last-matching `permission.skill` rule controls access.
+- A direct skill-directory symlink authorizes only its exact resolved target.
+  The scanner never treats the target's parent or the rest of the user home as
+  an allowed opencode root.
 
 ## Skill Manager Tooling
 
@@ -155,8 +177,9 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Agent enable/disable remains in `config.toggleSkill`,
   `batch.previewSkillToggles`, and `batch.applySkillToggles` outside the Skill
   Manager surface; package manager state and agent config state are separate.
-- ChatGPT's Plugin Directory is also separate from Skill Manager. Plugin cache
-  content is excluded from current and Deleted skill projections;
+- ChatGPT's Plugin Directory is also separate from Skill Manager. Only enabled,
+  installed, manifest-declared plugin skills participate in current projections;
+  arbitrary plugin cache content and Deleted cache noise remain excluded;
   `skillManager.*` operates only through its explicit supported manager CLI,
   target selection, preview, and confirmation contract.
 
@@ -180,9 +203,9 @@ root conventions.
 
 - Same physical file exposed by multiple agents may appear as multiple
   `SkillInstance` rows.
-- Codex plugin-cache rows are excluded from every current `SkillInstance` and
-  `catalog.listSkills` projection. Exact-path dedupe remains unchanged for
-  supported roots and does not merge distinct native copies.
+- Installed Codex plugin rows participate in current `SkillInstance` and
+  `catalog.listSkills` projections with read-only provenance. Exact-path dedupe
+  remains unchanged and does not merge distinct native or plugin copies.
 - Same-agent runtime/name collisions require at least two distinct physical
   paths that are loaded and enabled in the same effective runtime namespace.
 - A complete exact adapter scan retires unseen rows for that agent and current

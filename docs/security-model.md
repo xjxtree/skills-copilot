@@ -71,16 +71,16 @@ This file describes security and privacy boundaries.
   persistence, public distribution automation, signing, notarization, DMG, and
   other ZIP creation/distribution work require explicit new scope.
 
-## Screenshot Evidence
+## Screen Capture
 
-- Completed UI screenshots must capture only the full app window.
+- UI screenshots used during validation must capture only the full app window
+  and remain outside the repository.
 - Full desktop screenshots are forbidden.
 - If the macOS session is locked, cannot be confirmed interactive, or window
-  capture is blocked, record the canonical blocker instead of substituting
-  unrelated evidence.
+  capture is blocked, report the canonical blocker in the task or pull request
+  instead of substituting fixture output.
 
 ## Verification
 
-Use `pnpm check:privacy` before committing, pushing, or handing off evidence.
-Use `pnpm check:macos` for milestone, user-visible, UI, service protocol, or
-major validation changes.
+Use `pnpm check:privacy` before committing or pushing changes. Use `pnpm
+check:macos` for substantial user-visible, UI, or service-protocol changes.

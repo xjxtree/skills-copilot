@@ -45,6 +45,11 @@ pub struct ProjectContextParams {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectContextIDParams {
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProjectContextStore {
     schema_version: u32,
@@ -96,6 +101,32 @@ pub fn clear_project_context(app_data_dir: &Path) -> Result<ProjectContextState,
         recent.is_active = false;
         recent.validation_error = None;
     }
+    save_store(app_data_dir, &store)?;
+    Ok(store.into_state())
+}
+
+pub fn remove_recent_project_context(
+    app_data_dir: &Path,
+    params: ProjectContextIDParams,
+) -> Result<ProjectContextState, ServiceError> {
+    let id = params.id.trim();
+    if id.is_empty() {
+        return Err(ServiceError::InvalidRequest("id is required".to_string()));
+    }
+
+    let mut store = load_store(app_data_dir)?;
+    store.recent.retain(|context| context.id != id);
+    normalize_store(&mut store);
+    save_store(app_data_dir, &store)?;
+    Ok(store.into_state())
+}
+
+pub fn clear_recent_project_contexts(
+    app_data_dir: &Path,
+) -> Result<ProjectContextState, ServiceError> {
+    let mut store = load_store(app_data_dir)?;
+    store.recent.clear();
+    normalize_store(&mut store);
     save_store(app_data_dir, &store)?;
     Ok(store.into_state())
 }

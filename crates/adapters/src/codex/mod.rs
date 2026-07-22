@@ -1,5 +1,8 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashSet},
+    fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -23,6 +26,11 @@ pub struct CodexSkillConfigEntry {
     pub enabled: Option<bool>,
 }
 
+const MAX_PLUGIN_MARKETPLACES: usize = 128;
+const MAX_PLUGINS_PER_MARKETPLACE: usize = 1_024;
+const MAX_VERSIONS_PER_PLUGIN: usize = 128;
+const MAX_PLUGIN_MANIFEST_BYTES: u64 = 256 * 1024;
+
 pub fn codex_plugin_cache_id(codex_home: &Path, skill_path: &Path) -> Option<String> {
     let cache_root = codex_home.join("plugins/cache");
     let relative = match skill_path.strip_prefix(&cache_root) {
@@ -40,7 +48,10 @@ pub fn codex_plugin_cache_id(codex_home: &Path, skill_path: &Path) -> Option<Str
     let publisher = normal_component(components.next()?)?;
     let package = normal_component(components.next()?)?;
     normal_component(components.next()?)?;
-    if normal_component(components.next()?)? != "skills" || components.next().is_none() {
+    let remainder = components
+        .map(normal_component)
+        .collect::<Option<Vec<_>>>()?;
+    if remainder.len() < 2 || remainder.last() != Some(&"SKILL.md") {
         return None;
     }
     Some(format!("{package}@{publisher}"))
@@ -54,6 +65,13 @@ fn normal_component(component: std::path::Component<'_>) -> Option<&str> {
 }
 
 pub fn parse_codex_enabled_plugin_ids(text: &str) -> BTreeSet<String> {
+    parse_codex_plugin_states(text)
+        .into_iter()
+        .filter_map(|(plugin_id, enabled)| enabled.then_some(plugin_id))
+        .collect()
+}
+
+pub fn parse_codex_plugin_states(text: &str) -> BTreeMap<String, bool> {
     let mut plugin_states = BTreeMap::new();
     let mut current_plugin = None;
 
@@ -77,13 +95,20 @@ pub fn parse_codex_enabled_plugin_ids(text: &str) -> BTreeSet<String> {
     }
 
     plugin_states
-        .into_iter()
-        .filter_map(|(plugin_id, enabled)| enabled.then_some(plugin_id))
-        .collect()
+}
+
+pub fn codex_plugin_is_effectively_enabled(
+    plugin_id: &str,
+    plugin_states: &BTreeMap<String, bool>,
+) -> bool {
+    plugin_states.get(plugin_id).copied().unwrap_or(false)
 }
 
 fn parse_codex_plugin_section_id(line: &str) -> Option<String> {
-    let inner = line.strip_prefix("[plugins.")?.strip_suffix(']')?.trim();
+    let header = line.strip_prefix("[plugins.")?;
+    let closing = header.find(']')?;
+    validate_toml_trailing(&header[closing + 1..]).ok()?;
+    let inner = header[..closing].trim();
     if inner.starts_with('\'') || inner.starts_with('"') {
         parse_toml_string(inner).ok()
     } else if !inner.is_empty()
@@ -107,11 +132,13 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
-        let mut roots = vec![AdapterRoot {
+        let shared_root = AdapterRoot {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::UserHome,
-        }];
+        };
+        let mut roots = vec![shared_root.clone()];
+        roots.extend(codex_declared_symlink_roots(&shared_root));
 
         roots.push(AdapterRoot {
             scope: Scope::AgentGlobal,
@@ -119,11 +146,14 @@ impl AgentAdapter for CodexAdapter {
             source: RootSource::Compatibility,
         });
 
+        roots.extend(codex_plugin_skill_roots(ctx));
+
         if let Some(project_root) = &ctx.project_root {
-            roots.extend(codex_project_skill_roots(
-                project_root,
-                ctx.project_cwd.as_deref(),
-            ));
+            let project_roots = codex_project_skill_roots(project_root, ctx.project_cwd.as_deref());
+            for project_root in &project_roots {
+                roots.extend(codex_declared_symlink_roots(project_root));
+            }
+            roots.extend(project_roots);
         }
 
         roots.push(AdapterRoot {
@@ -132,6 +162,23 @@ impl AgentAdapter for CodexAdapter {
             source: RootSource::Admin,
         });
         dedup_roots(roots)
+    }
+
+    fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
+        let mut roots = codex_declared_symlink_roots(&AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: ctx.user_home.join(".agents/skills"),
+            source: RootSource::Compatibility,
+        });
+        if let Some(project_root) = &ctx.project_root {
+            for root in codex_project_skill_roots(project_root, ctx.project_cwd.as_deref()) {
+                roots.extend(codex_declared_symlink_roots(&root));
+            }
+        }
+        for root in &mut roots {
+            root.source = RootSource::Configured;
+        }
+        roots
     }
 
     fn parse(&self, path: &Path) -> Result<SkillInstance, AdapterError> {
@@ -202,6 +249,10 @@ impl AgentAdapter for CodexAdapter {
             .filter_map(|component| component.as_os_str().to_str())
             .collect::<Vec<_>>();
         (components.len() == 2
+            || (components.len() == 1
+                && (root.source == RootSource::Plugin
+                    || fs::symlink_metadata(&root.path)
+                        .is_ok_and(|metadata| metadata.file_type().is_symlink())))
             || (root.source == RootSource::Compatibility
                 && components.len() == 3
                 && components.first() == Some(&".system")))
@@ -223,6 +274,156 @@ impl AgentAdapter for CodexAdapter {
         paths.dedup();
         paths
     }
+}
+
+fn codex_declared_symlink_roots(parent: &AdapterRoot) -> Vec<AdapterRoot> {
+    let Ok(entries) = fs::read_dir(&parent.path) else {
+        return Vec::new();
+    };
+    let mut roots = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|file_type| file_type.is_symlink())
+                && fs::metadata(entry.path()).is_ok_and(|metadata| metadata.is_dir())
+        })
+        .map(|entry| AdapterRoot {
+            scope: parent.scope,
+            path: entry.path(),
+            source: RootSource::Compatibility,
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| left.path.cmp(&right.path));
+    roots
+}
+
+fn codex_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
+    let cache_root = codex_home_dir(ctx).join("plugins/cache");
+    let plugin_states = fs::read_to_string(codex_user_config_path(ctx))
+        .map(|content| parse_codex_plugin_states(&content))
+        .unwrap_or_default();
+    let mut roots = Vec::new();
+    for marketplace_root in bounded_child_directories(&cache_root, MAX_PLUGIN_MARKETPLACES) {
+        let Some(publisher) = marketplace_root.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        for plugin_root in bounded_child_directories(&marketplace_root, MAX_PLUGINS_PER_MARKETPLACE)
+        {
+            let Some(package) = plugin_root.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let plugin_id = format!("{package}@{publisher}");
+            if !codex_plugin_is_effectively_enabled(&plugin_id, &plugin_states) {
+                continue;
+            }
+            let selected = bounded_child_directories(&plugin_root, MAX_VERSIONS_PER_PLUGIN)
+                .into_iter()
+                .filter_map(plugin_manifest_skill_root)
+                .max_by(compare_version_names);
+            let Some((_, skill_root)) = selected else {
+                continue;
+            };
+            roots.push(AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: skill_root,
+                source: RootSource::Plugin,
+            });
+        }
+    }
+    roots
+}
+
+fn bounded_child_directories(parent: &Path, limit: usize) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut directories = entries
+        .take(limit.saturating_add(1))
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| !name.is_empty() && !name.starts_with('.'))
+                && entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    directories.sort();
+    directories.truncate(limit);
+    directories
+}
+
+fn plugin_manifest_skill_root(version_root: PathBuf) -> Option<(String, PathBuf)> {
+    let version = version_root.file_name()?.to_str()?.to_string();
+    let manifest_path = version_root.join(".codex-plugin/plugin.json");
+    let metadata = fs::symlink_metadata(&manifest_path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_PLUGIN_MANIFEST_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().try_into().ok()?);
+    fs::File::open(manifest_path)
+        .ok()?
+        .take(MAX_PLUGIN_MANIFEST_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_PLUGIN_MANIFEST_BYTES {
+        return None;
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let raw_skills = manifest.get("skills")?.as_str()?;
+    let skill_root = safe_plugin_manifest_path(&version_root, raw_skills)?;
+    Some((version, skill_root))
+}
+
+fn safe_plugin_manifest_path(version_root: &Path, raw_path: &str) -> Option<PathBuf> {
+    let relative = Path::new(raw_path.trim());
+    if relative.as_os_str().is_empty() || relative.is_absolute() {
+        return None;
+    }
+    let mut resolved = version_root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(name) => resolved.push(name),
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    if resolved == version_root {
+        return None;
+    }
+    if let (Ok(canonical_version), Ok(canonical_resolved)) =
+        (version_root.canonicalize(), resolved.canonicalize())
+    {
+        if !canonical_resolved.starts_with(canonical_version) {
+            return None;
+        }
+    }
+    Some(resolved)
+}
+
+fn compare_version_names(left: &(String, PathBuf), right: &(String, PathBuf)) -> Ordering {
+    compare_natural_version(&left.0, &right.0).then_with(|| left.0.cmp(&right.0))
+}
+
+fn compare_natural_version(left: &str, right: &str) -> Ordering {
+    let left_parts = left.split(['.', '-', '_']).collect::<Vec<_>>();
+    let right_parts = right.split(['.', '-', '_']).collect::<Vec<_>>();
+    for index in 0..left_parts.len().max(right_parts.len()) {
+        let left_part = left_parts.get(index).copied().unwrap_or_default();
+        let right_part = right_parts.get(index).copied().unwrap_or_default();
+        let ordering = match (left_part.parse::<u64>(), right_part.parse::<u64>()) {
+            (Ok(left_number), Ok(right_number)) => left_number.cmp(&right_number),
+            _ => left_part.cmp(right_part),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
 }
 
 impl AgentConfigAdapter for CodexAdapter {
@@ -760,6 +961,28 @@ enabled = true
                 "pdf@openai-primary-runtime".to_string(),
             ])
         );
+        assert_eq!(
+            parse_codex_plugin_states("[plugins.\"browser@openai-bundled\"]\nenabled = false\n"),
+            BTreeMap::from([("browser@openai-bundled".to_string(), false)])
+        );
+        assert_eq!(
+            parse_codex_plugin_states(
+                "[plugins.\"browser@openai-bundled\"] # installed by desktop\nenabled = true # active\n"
+            ),
+            BTreeMap::from([("browser@openai-bundled".to_string(), true)])
+        );
+        assert!(!codex_plugin_is_effectively_enabled(
+            "sales@openai-curated-remote",
+            &BTreeMap::new()
+        ));
+        assert!(!codex_plugin_is_effectively_enabled(
+            "browser@openai-bundled",
+            &BTreeMap::new()
+        ));
+        assert!(!codex_plugin_is_effectively_enabled(
+            "sales@openai-curated-remote",
+            &BTreeMap::from([("sales@openai-curated-remote".to_string(), false)])
+        ));
     }
 
     #[test]
@@ -774,6 +997,17 @@ enabled = true
             )
             .as_deref(),
             Some("pdf@openai-primary-runtime")
+        );
+        assert_eq!(
+            codex_plugin_cache_id(
+                codex_home,
+                Path::new(
+                    "/tmp/home/.codex/plugins/cache/personal/workflows/2.0.0/playbooks/review/SKILL.md",
+                ),
+            )
+            .as_deref(),
+            Some("workflows@personal"),
+            "the manifest-declared root does not have to be named skills"
         );
         assert!(codex_plugin_cache_id(
             codex_home,
@@ -828,6 +1062,19 @@ enabled = true
         assert_eq!(roots[5].path, PathBuf::from("/etc/codex/skills"));
         assert_eq!(roots[5].scope, Scope::AgentGlobal);
         assert_eq!(roots[5].source, RootSource::Admin);
+    }
+
+    #[test]
+    fn includes_system_review_agent_reported_by_current_runtime() {
+        let adapter = CodexAdapter;
+        let root = AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: PathBuf::from("/tmp/home/.codex/skills"),
+            source: RootSource::Compatibility,
+        };
+
+        assert!(adapter.accepts_skill_path(&root, Path::new(".system/imagegen/SKILL.md")));
+        assert!(adapter.accepts_skill_path(&root, Path::new(".system/review-agent/SKILL.md")));
     }
 
     #[test]
@@ -906,7 +1153,7 @@ enabled = true
     }
 
     #[test]
-    fn plugin_cache_is_never_exposed_as_an_adapter_root() {
+    fn plugin_cache_exposes_only_explicitly_enabled_skill_roots() {
         let temp_root = std::env::temp_dir().join(format!(
             "skills-copilot-codex-plugin-cache-{}",
             std::process::id()
@@ -927,6 +1174,36 @@ enabled = true
             )
             .expect("write plugin manifest");
         }
+        let stale = cache.join("personal/stale-cache/9.0.0");
+        std::fs::create_dir_all(stale.join(".codex-plugin"))
+            .expect("create stale plugin manifest dir");
+        std::fs::create_dir_all(stale.join("skills/stale-cache"))
+            .expect("create stale plugin skills dir");
+        std::fs::write(
+            stale.join(".codex-plugin/plugin.json"),
+            r#"{"name":"stale-cache","version":"9.0.0","skills":"./skills/"}"#,
+        )
+        .expect("write stale plugin manifest");
+        let unconfigured_remote = cache.join("openai-curated-remote/unconfigured-remote/1.0.0");
+        std::fs::create_dir_all(unconfigured_remote.join(".codex-plugin"))
+            .expect("create unconfigured remote manifest dir");
+        std::fs::create_dir_all(unconfigured_remote.join("skills/unconfigured-remote"))
+            .expect("create unconfigured remote skill dir");
+        std::fs::write(
+            unconfigured_remote.join(".codex-plugin/plugin.json"),
+            r#"{"name":"unconfigured-remote","version":"1.0.0","skills":"./skills/"}"#,
+        )
+        .expect("write unconfigured remote manifest");
+        let unconfigured_local = cache.join("personal/unconfigured-local/1.0.0");
+        std::fs::create_dir_all(unconfigured_local.join(".codex-plugin"))
+            .expect("create unconfigured local manifest dir");
+        std::fs::create_dir_all(unconfigured_local.join("skills/unconfigured-local"))
+            .expect("create unconfigured local skill dir");
+        std::fs::write(
+            unconfigured_local.join(".codex-plugin/plugin.json"),
+            r#"{"name":"unconfigured-local","version":"1.0.0","skills":"./skills/"}"#,
+        )
+        .expect("write unconfigured local manifest");
         let escaping = cache.join("personal/escaping/1.0.0");
         std::fs::create_dir_all(escaping.join(".codex-plugin"))
             .expect("create escaping manifest dir");
@@ -944,6 +1221,12 @@ enabled = true
             r#"{"name":"staged","skills":"./skills/"}"#,
         )
         .expect("write staging manifest");
+        std::fs::create_dir_all(home.join(".codex")).expect("create Codex home");
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[plugins.\"browser@openai-bundled\"]\nenabled = true\n\n[plugins.\"stale-cache@personal\"]\nenabled = false\n",
+        )
+        .expect("write enabled plugin config");
 
         let adapter = CodexAdapter;
         let roots = adapter.roots(&AdapterContext {
@@ -958,10 +1241,73 @@ enabled = true
             .map(|root| root.path.clone())
             .collect::<Vec<_>>();
 
-        assert!(
-            cache_roots.is_empty(),
-            "cache roots leaked: {cache_roots:?}"
+        assert_eq!(
+            cache_roots,
+            vec![cache.join("openai-bundled/browser/1.10.0/skills")],
+            "only explicitly enabled plugin copies should be read from their manifest-declared roots"
         );
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn enabled_remote_plugins_expose_every_manifest_declared_skill_root() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-codex-remote-plugin-entries-{}",
+            std::process::id()
+        ));
+        let home = temp_root.join("home");
+        let cache = home.join(".codex/plugins/cache/openai-curated-remote");
+
+        let build_macos = cache.join("build-macos-apps/1.0.0");
+        let investment_banking = cache.join("investment-banking/1.0.0");
+        let templates = cache.join("openai-templates/1.0.0");
+        for package in [&build_macos, &investment_banking, &templates] {
+            std::fs::create_dir_all(package.join(".codex-plugin"))
+                .expect("create plugin manifest dir");
+            std::fs::write(
+                package.join(".codex-plugin/plugin.json"),
+                r#"{"name":"fixture","version":"1.0.0","skills":"./skills/"}"#,
+            )
+            .expect("write plugin manifest");
+        }
+        std::fs::create_dir_all(build_macos.join("skills/build-run-debug"))
+            .expect("create public macOS skill");
+        std::fs::create_dir_all(investment_banking.join("skills/investment-banking"))
+            .expect("create investment router skill");
+        std::fs::create_dir_all(investment_banking.join("skills/dcf-model-builder"))
+            .expect("create investment internal skill");
+        std::fs::create_dir_all(templates.join("skills/artifact-template"))
+            .expect("create default template skill");
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[plugins.\"build-macos-apps@openai-curated-remote\"]\nenabled = true\n\n[plugins.\"investment-banking@openai-curated-remote\"]\nenabled = true\n\n[plugins.\"openai-templates@openai-curated-remote\"]\nenabled = true\n",
+        )
+        .expect("write enabled remote plugin config");
+
+        let roots = CodexAdapter.roots(&AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        });
+        let plugin_roots = roots
+            .iter()
+            .filter(|root| root.source == RootSource::Plugin)
+            .map(|root| root.path.clone())
+            .collect::<Vec<_>>();
+
+        assert!(plugin_roots.contains(&build_macos.join("skills")));
+        assert!(plugin_roots.contains(&investment_banking.join("skills")));
+        assert!(plugin_roots.contains(&templates.join("skills")));
+        assert_eq!(plugin_roots.len(), 3);
+        assert!(CodexAdapter.accepts_skill_path(
+            roots
+                .iter()
+                .find(|root| root.path == investment_banking.join("skills"))
+                .expect("investment plugin skill root"),
+            Path::new("dcf-model-builder/SKILL.md")
+        ));
+
         let _ = std::fs::remove_dir_all(temp_root);
     }
 

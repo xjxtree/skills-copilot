@@ -1,8 +1,0 @@
-{
-  "packages": [
-    {
-      "source": "npm:example-pi-package",
-      "skills": []
-    }
-  ]
-}

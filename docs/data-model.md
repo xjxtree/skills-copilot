@@ -44,10 +44,11 @@ This file summarizes persisted and transient data.
   projections overlay the current guarded `skills.config` disabled paths in
   memory and can restore stale loaded/disabled rows when an external override
   is removed; this does not mutate SQLite.
-- Legacy Codex plugin-cache rows may remain persisted for audit continuity but
-  are excluded from current list, instance, analysis, conflict, and Deleted
-  projections. Legacy marketplace rows are historical records, not active scan
-  sources; current runtime-only skills use read-only runtime provenance.
+- Installed Codex plugin rows are derived from persisted manifest-declared
+  `SKILL.md` files and appear in current projections with read-only package
+  provenance. The compatibility wire value remains
+  `source_kind="chatgpt-plugin-cache"`; legacy synthetic runtime rows and
+  missing Pi reference-document noise are removed by schema migration.
 - Fixture data is test input; it must keep its wire shape unless protocol drift
   work is explicitly scoped.
 - Installed manager rows expose compact skill identity, source kind, scope, and

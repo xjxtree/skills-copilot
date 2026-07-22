@@ -15,9 +15,8 @@ Tracked text also blocks fixed local host-port fingerprints. Use non-local
 fixture hosts for provider examples; loopback port zero is allowed only for
 intentional ephemeral listener binds.
 
-Note: binary string scanning does not perform OCR. Run
-pnpm verify:screenshot-artifacts for PNG validity/black-image checks, then
-manually inspect new screenshots before commit.
+Note: binary string scanning does not perform OCR. Screenshots used for a task
+must stay outside the repository and be inspected before handoff.
 EOF
 }
 

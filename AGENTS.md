@@ -7,8 +7,9 @@ coding agents working in this repository.
 
 - Keep this file short, operational, and safe.
 - Put human-facing overview in `README.md`.
-- Put future planning in `docs/plans/roadmap.md`.
-- Put active task routing in `docs/plans/development-tasks.md`.
+- Keep `docs/` limited to current contracts and reusable procedures.
+- Put task state, future planning, validation results, and handoff notes in the
+  relevant GitHub issue, pull request, or release instead of repository docs.
 - Put version numbers, release notes, and main changelogs in GitHub tags and
   GitHub Releases.
 - Put detailed procedures in `docs/`.
@@ -65,21 +66,21 @@ coding agents working in this repository.
 ## Required Verification
 
 - For small code changes, run focused checks for the touched area.
-- For major changes, user-visible behavior, UI work, service protocol changes,
-  or milestone completion, run `pnpm check:macos`.
+- For substantial changes, user-visible behavior, UI work, or service protocol
+  changes, run `pnpm check:macos`.
 - `pnpm build:macos` builds the app bundle without launching or stopping an
   existing app. Use `pnpm verify:macos-launch` for explicit local launch/window
   proof; CI uses the fixture-only headless bundled-sidecar smoke.
-- For docs that claim implementation status, screenshots, or validation
-  results, run the relevant verifier or change the wording.
-- Before committing, pushing, or handing off evidence, run `pnpm check:privacy`.
+- Documentation must describe current contracts rather than implementation
+  progress or stored validation results.
+- Before committing, pushing, or handing off changes, run `pnpm check:privacy`.
 - After pushing to a GitHub remote, confirm the GitHub Actions run triggered by
   that push completes successfully before reporting the push as done.
 - Smoke validation uses fixture data and must not touch real user config.
 - Real local validation uses the developer's real local HOME, app data, and
   agent configs.
-- Completed UI screenshots must capture only the full app window. Full desktop
-  screenshots are forbidden.
+- UI screenshots used during validation must capture only the full app window,
+  remain outside the repository, and never include the full desktop.
 - If the macOS session is locked, cannot be confirmed interactive, or Computer
   Use/window capture is blocked, record the canonical blocker. Do not
   substitute a smoke screenshot for real local validation.
@@ -115,8 +116,6 @@ pnpm dev:macos
 | Service protocol | `docs/service-protocol.md` |
 | Data model | `docs/data-model.md` |
 | Security / privacy | `docs/security-model.md` |
-| Roadmap | `docs/plans/roadmap.md` |
-| Active task ledger | `docs/plans/development-tasks.md` |
 | Adapter scope | `docs/adapters/agent-adapters.md` |
 
 ## Git And Editing Rules

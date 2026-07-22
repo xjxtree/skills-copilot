@@ -581,6 +581,11 @@
 "project.switching" = "正在切换到 %@ 并刷新项目数据…";
 "project.recent" = "最近项目";
 "project.noRecent" = "无最近项目";
+"project.recent.manage" = "管理最近项目";
+"project.recent.clear" = "清空最近项目";
+"project.recent.clear.compact" = "清空";
+"project.recent.item" = "%@ — %@";
+"project.recent.remove" = "从最近项目中移除 %@（%@）";
 "project.validation" = "项目校验";
 "empty.noProjectSkills.message" = "全局 root 中未找到技能。请选择项目以包含项目范围技能，然后扫描。";
 "empty.noAgentSkills.message" = "当前 root 中未找到 %@ 技能。请切换 agent 或选择项目，然后重新扫描。";
@@ -661,15 +666,15 @@
 "metadata.provenanceRoot" = "Root";
 "metadata.provenanceKind" = "类型";
 "metadata.provenance.kind.native" = "原生";
-"metadata.provenance.kind.compatibility" = "兼容";
+"metadata.provenance.kind.compatibility" = "Agent 兼容加载";
 "metadata.provenance.kind.inferred" = "推断";
 "metadata.provenance.kind.toolGlobal" = "Tool-global";
 "metadata.provenance.kind.readOnly" = "只读";
 "metadata.provenance.kind.external" = "外部";
 "metadata.provenance.root.native" = "原生 root";
 "metadata.provenance.root.nativeOpencode" = "原生 opencode root";
-"metadata.provenance.root.claudeCompatibility" = "Claude 兼容 root";
-"metadata.provenance.root.agentsCompatibility" = "Agents 兼容 root";
+"metadata.provenance.root.claudeCompatibility" = "opencode 官方兼容（.claude/skills）";
+"metadata.provenance.root.agentsCompatibility" = "官方共享兼容（.agents/skills）";
 "metadata.provenance.root.toolGlobal" = "Tool-global 暂存";
 "metadata.provenance.root.readOnly" = "只读 root";
 "metadata.provenance.root.external" = "外部 root";
@@ -1060,6 +1065,7 @@
 "refresh.reloaded" = "已重新加载 %d 个技能、%d 个可见问题项和 %d 个同 agent 冲突。";
 "refresh.scanComplete" = "扫描完成：已扫描 %d 个，catalog 中 %d 个，%d 个可见问题项，%d 个同 agent 冲突。";
 "refresh.scanPartial" = "扫描部分完成（completed-partial）：已扫描 %d 个，catalog 中 %d 个，%d 个可见问题项，%d 个同 agent 冲突。首个问题：%@。恢复操作：%@";
+"refresh.agentScanDegraded" = "%@ 扫描状态 %@：已扫描 %d 个，catalog 中 %d 个，%d 个可见问题项，%d 个同 agent 冲突。首个问题：%@。恢复操作：%@";
 "refresh.partialIssueUnavailable" = "服务未返回类型化的问题详情。";
 "refresh.partialIssue" = "%@（%@）：%@";
 "refresh.danglingSymlink" = "已跳过 %@ 处的悬空 Agent 技能链接。其余根目录已完整对账；请先确认源已不存在，再仅删除该链接。";
@@ -1106,6 +1112,8 @@
 "message.savedSettings" = "已保存设置并刷新 catalog。";
 "message.projectSelectedAndScanned" = "已选择 %@ 并刷新 catalog。";
 "message.projectClearedAndScanned" = "已清除项目上下文并刷新 catalog。";
+"message.projectRecentRemoved" = "已从最近项目中移除 %@。";
+"message.projectRecentsCleared" = "已清空最近项目。";
 "refresh.projectValidationSkipped" = "扫描前需要处理项目上下文。";
 "project.validationFailed" = "项目校验失败：%@。";
 "scope.agentGlobal" = "Agent Global";
@@ -1170,7 +1178,7 @@
 "list.completeness.loadingSummary" = "%@ · 正在加载…";
 "list.completeness.reason.safetyBudget" = "安全预算中止了枚举。请缩小范围后重试。";
 "list.completeness.reason.sourceChanged" = "加载期间来源发生变化。合并更多行之前请重新开始刷新。";
-"list.completeness.reason.sourceLimited" = "来源无法公开或证明完整结果。";
+"list.completeness.reason.sourceLimited" = "部分来源不存在、不可用，或无法证明结果完整。";
 "list.completeness.reason.unreadableSource" = "部分来源无法读取。请修复访问权限后重试。";
 "list.completeness.reason.pageFailed" = "下一页加载失败。已接受的行仍会保留；请重试此页。";
 "list.completeness.reason.unsupportedProtocol" = "此服务版本无法报告完整的列表元数据。";

@@ -972,6 +972,7 @@ test("repository manifest inventories every planned formal list", () => {
     "permission.summary",
     "provider.activity",
     "session.top-skills",
+    "sessions.detail-messages",
     "sessions.sidebar",
     "skill-events.history",
     "skill-manager.agents",

@@ -215,14 +215,14 @@ private struct SkillDetailContentView: View {
             FindingsSection(
                 skill: skill,
                 findings: store.selectedDisplayFindings,
-                catalogCompleteness: store.catalogListCompleteness
+                catalogCompleteness: store.catalogCompleteness(forAgent: skill.agent)
             )
         case .conflicts:
             ConflictsSection(
                 conflicts: store.selectedConflicts,
                 selectedSkillID: skill.id,
                 currentAgentSkillIDs: Set(store.skills.filter { $0.agent == skill.agent }.map(\.id)),
-                catalogCompleteness: store.catalogListCompleteness
+                catalogCompleteness: store.catalogCompleteness(forAgent: skill.agent)
             )
         case .history:
             HistorySection(

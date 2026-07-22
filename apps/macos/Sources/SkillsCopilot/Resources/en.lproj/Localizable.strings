@@ -581,6 +581,11 @@
 "project.switching" = "Switching to %@ and refreshing project data…";
 "project.recent" = "Recent Projects";
 "project.noRecent" = "No Recent Projects";
+"project.recent.manage" = "Manage Recent Projects";
+"project.recent.clear" = "Clear Recent Projects";
+"project.recent.clear.compact" = "Clear";
+"project.recent.item" = "%@ — %@";
+"project.recent.remove" = "Remove %@ (%@) from Recent Projects";
 "project.validation" = "Project Validation";
 "empty.noProjectSkills.message" = "No skills were found in global roots. Choose a project to include project-scoped skills, then scan.";
 "empty.noAgentSkills.message" = "No %@ skills found in the current roots. Switch agents or choose a project, then scan again.";
@@ -661,15 +666,15 @@
 "metadata.provenanceRoot" = "Root";
 "metadata.provenanceKind" = "Kind";
 "metadata.provenance.kind.native" = "Native";
-"metadata.provenance.kind.compatibility" = "Compatibility";
+"metadata.provenance.kind.compatibility" = "Agent-compatible load";
 "metadata.provenance.kind.inferred" = "Inferred";
 "metadata.provenance.kind.toolGlobal" = "Tool-global";
 "metadata.provenance.kind.readOnly" = "Read-only";
 "metadata.provenance.kind.external" = "External";
 "metadata.provenance.root.native" = "native root";
 "metadata.provenance.root.nativeOpencode" = "Native opencode root";
-"metadata.provenance.root.claudeCompatibility" = "Claude compatibility root";
-"metadata.provenance.root.agentsCompatibility" = "Agents compatibility root";
+"metadata.provenance.root.claudeCompatibility" = "opencode official compatibility (.claude/skills)";
+"metadata.provenance.root.agentsCompatibility" = "Official shared compatibility (.agents/skills)";
 "metadata.provenance.root.toolGlobal" = "Tool-global staging";
 "metadata.provenance.root.readOnly" = "read-only root";
 "metadata.provenance.root.external" = "External root";
@@ -1060,6 +1065,7 @@
 "refresh.reloaded" = "Reloaded %d skills, %d visible issues, and %d same-agent conflicts.";
 "refresh.scanComplete" = "Scan complete: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts.";
 "refresh.scanPartial" = "Scan completed-partial: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@";
+"refresh.agentScanDegraded" = "%@ scan %@: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@";
 "refresh.partialIssueUnavailable" = "No typed issue detail was returned.";
 "refresh.partialIssue" = "%@ at %@: %@";
 "refresh.danglingSymlink" = "Dangling Agent skill link at %@ was skipped. The surrounding root was fully reconciled; confirm the source is unavailable before removing only this link.";
@@ -1106,6 +1112,8 @@
 "message.savedSettings" = "Saved settings and refreshed catalog.";
 "message.projectSelectedAndScanned" = "Selected %@ and refreshed catalog.";
 "message.projectClearedAndScanned" = "Cleared project context and refreshed catalog.";
+"message.projectRecentRemoved" = "Removed %@ from Recent Projects.";
+"message.projectRecentsCleared" = "Cleared Recent Projects.";
 "refresh.projectValidationSkipped" = "Project context needs attention before scanning.";
 "project.validationFailed" = "Project validation failed: %@.";
 "scope.agentGlobal" = "Agent Global";
@@ -1170,7 +1178,7 @@
 "list.completeness.loadingSummary" = "%@ · Loading...";
 "list.completeness.reason.safetyBudget" = "A safety budget stopped enumeration. Narrow the scope and retry.";
 "list.completeness.reason.sourceChanged" = "The source changed while loading. Restart the refresh before merging more rows.";
-"list.completeness.reason.sourceLimited" = "The source cannot expose or prove a complete result.";
+"list.completeness.reason.sourceLimited" = "A source is unavailable or cannot expose or prove a complete result.";
 "list.completeness.reason.unreadableSource" = "Part of the source could not be read. Fix access and retry.";
 "list.completeness.reason.pageFailed" = "The next page failed. Accepted rows remain available; retry the page.";
 "list.completeness.reason.unsupportedProtocol" = "This service version cannot report complete list metadata.";

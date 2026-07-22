@@ -1,12 +1,15 @@
-# Codex Evidence Fixtures
+# Codex Fixtures
 
-These fixtures document Codex adapter evidence and provide implementation test inputs for the first V2 Codex adapter slice.
+These files are executable parser and scanner inputs for
+`docs/adapters/codex-adapter-spec.md`.
 
-Evidence status:
+- `user-home/.agents/skills/user-alpha/SKILL.md` covers a global shared skill.
+- `project/.agents/skills/repo-beta/SKILL.md` and
+  `project/nested/.agents/skills/nested-gamma/SKILL.md` cover project discovery
+  from the selected working directory up to the project root.
+- `conflict/` contains same-name global and project skills for precedence and
+  conflict tests.
+- `broken/missing-description/SKILL.md` covers required frontmatter failure.
 
-- Read-only discovery is locally verified for `$HOME/.agents/skills` and repository `.agents/skills` roots with `codex-cli 0.137.0`.
-- User config disable is locally verified with `[[skills.config]]` in `$CODEX_HOME/config.toml` for both user and project skills.
-- User config re-enable is locally verified by removing all matching `[[skills.config]]` entries and returning to default discovery.
-- Project config disable is blocked: local verification did not show `<repo>/.codex/config.toml` disabling a project skill, even when the repo was trusted.
-
-When testing `config/user-config-disabled.toml` or `config/user-config-disabled-project.toml`, rewrite the placeholder absolute path to the temp fixture copy's real `SKILL.md` path before running Codex. Use absolute `SKILL.md` paths; local verification with the skill directory path did not disable the fixture skill.
+Configuration and plugin behavior are exercised with isolated temporary homes
+inside the Rust tests so fixture paths never need machine-specific rewriting.

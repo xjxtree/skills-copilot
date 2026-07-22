@@ -65,10 +65,11 @@ or catalog write; filesystem inventory changes still require an explicit scan.
 - A scan follows only explicit canonical adapter roots and explicitly declared
   same-scope link-target roots. It does not treat the whole home or project
   directory as an implicit symlink allowlist.
-- Built-in user, project, compatibility, admin, and system root candidates are
-  optional until their directory exists. A candidate that was never created is
-  omitted without degrading the scan; explicit configured, plugin, and extra
-  roots still report unavailability.
+- Built-in user, project, compatibility, admin, system, and implicit package
+  convention root candidates are optional until their directory exists. A
+  candidate that was never created is omitted without degrading the scan;
+  explicit configured, manifest-declared plugin, and extra roots still report
+  unavailability.
 - Scanner links may resolve only beneath those explicit roots with the same
   scope; link discovery never expands authorization to a neighboring scope.
 - An unavailable symlink target is reported as a per-entry
@@ -121,9 +122,14 @@ or catalog write; filesystem inventory changes still require an explicit scan.
   historical Deleted records and are excluded from the default All and Issues
   projections.
 - Runtime collision membership is limited to loaded, enabled instances that
-  share an agent and an effective runtime namespace. `$CODEX_HOME/plugins/cache`
-  is excluded from adapter scans and all current projections, so it cannot
-  participate in conflict analysis.
+  share an agent and an effective runtime namespace. Installed Codex plugin
+  skills use a package-specific namespace; separate plugins do not collide
+  with each other, while a loaded native skill and loaded plugin skill with the
+  same effective name can still surface a real same-agent conflict.
+- Plugin runtime names use a colon-separated namespace such as
+  `plugin:skill`. Namespaced values are excluded from the local
+  `name.canonical-case` finding because the separator is runtime identity, not
+  invalid skill authoring.
 - Skill detail preserves the same boundary through independent `Skill Issues`
   and `Same-Agent Conflicts` sections; neither section renders the other's
   projection, and each header metric routes to its matching section.
@@ -167,6 +173,8 @@ fixtures require it.
 `codex` is likewise a stable adapter and protocol identity even when the
 desktop runtime is hosted by `ChatGPT.app`. The adapter and local-session
 service resolve one guarded `$CODEX_HOME`; neither assumes the former
-`Codex.app` bundle name. ChatGPT's plugin cache is not an adapter root and never
-participates in current skill or conflict projections. Installation remains
-isolated in the separately confirmed `skillManager.*` command path.
+`Codex.app` bundle name. Codex skill discovery is filesystem-only: it reads
+verified native roots plus the manifest-declared skill roots of installed,
+versioned plugin copies and never calls the Codex runtime inventory API.
+Plugin files remain read-only, and installation stays isolated in the
+separately confirmed `skillManager.*` command path.

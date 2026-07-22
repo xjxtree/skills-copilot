@@ -18,7 +18,6 @@ File and section or line number:
 
 What should it say instead?
 
-## Evidence
+## References
 
 Links, examples, or local samples:
-

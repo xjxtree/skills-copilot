@@ -10,8 +10,9 @@ pub mod pi;
 
 pub use claude_code::{claude_config_dir, ClaudeCodeAdapter};
 pub use codex::{
-    codex_home_dir, codex_plugin_cache_id, parse_codex_enabled_plugin_ids,
-    parse_codex_skill_config_entries, CodexAdapter, CodexSkillConfigEntry,
+    codex_home_dir, codex_plugin_cache_id, codex_plugin_is_effectively_enabled,
+    parse_codex_enabled_plugin_ids, parse_codex_plugin_states, parse_codex_skill_config_entries,
+    CodexAdapter, CodexSkillConfigEntry,
 };
 pub use hermes::{hermes_disabled_skill_names, hermes_home_dir, HermesAdapter};
 pub use openclaw::{

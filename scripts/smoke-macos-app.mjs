@@ -322,7 +322,7 @@ async function initializeFixtureEnvironment(root) {
   const projectCwd = join(projectRoot, "nested", "workspace");
   const projectCodexSkillsRoot = join(projectRoot, ".agents", "skills");
   const projectOpencodeSkillsRoot = join(projectRoot, ".opencode", "skills");
-  const projectPiSkillsRoot = join(projectRoot, ".pi", "skills");
+  const projectPiSkillsRoot = join(projectCwd, ".pi", "skills");
   const projectPiSettings = join(projectRoot, ".pi", "settings.json");
   const codexUserConfig = join(home, ".codex", "config.toml");
   const projectCodexConfig = join(projectRoot, ".codex", "config.toml");
@@ -335,6 +335,7 @@ async function initializeFixtureEnvironment(root) {
   mkdirSync(projectCodexSkillsRoot, { recursive: true });
   mkdirSync(projectOpencodeSkillsRoot, { recursive: true });
   mkdirSync(projectPiSkillsRoot, { recursive: true });
+  mkdirSync(join(projectRoot, ".pi"), { recursive: true });
   mkdirSync(join(projectRoot, ".git"), { recursive: true });
   mkdirSync(projectCwd, { recursive: true });
   mkdirSync(appData, { recursive: true });
@@ -878,7 +879,9 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
   const hasProjectContextApi =
     methods.has("project.getContext") &&
     methods.has("project.setContext") &&
-    methods.has("project.clearContext");
+    methods.has("project.clearContext") &&
+    methods.has("project.removeRecentContext") &&
+    methods.has("project.clearRecentContexts");
 
   if (!hasProjectContextApi) {
     const projectEnv = {
@@ -898,7 +901,7 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
     runFixtureCodexConfigHardeningSmoke(projectEnv, fixture, projectScan.skills);
     note(
       "project context API unavailable; verified env project scanAll fallback only " +
-        "(waiting for project.getContext/project.setContext/project.clearContext)",
+        "(waiting for the complete project context and recent-project API)",
     );
     return;
   }
@@ -919,6 +922,31 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
 
   const activeContext = callService("project.getContext", {}, env);
   assertProjectContextState(activeContext, true, "active project context");
+
+  const removeRecentContext = callService(
+    "project.removeRecentContext",
+    { id: activeContext.active.id },
+    env,
+  );
+  assertProjectContextState(removeRecentContext, true, "remove recent project context");
+  if (removeRecentContext.recent.length !== 0) {
+    fail("removing the active project from recents should preserve active and empty recents");
+  }
+
+  callService(
+    "project.setContext",
+    {
+      current_cwd: fixture.projectCwd,
+      name: "Smoke Fixture Project",
+      root_path: fixture.projectRoot,
+    },
+    env,
+  );
+  const clearRecentContexts = callService("project.clearRecentContexts", {}, env);
+  assertProjectContextState(clearRecentContexts, true, "clear recent project contexts");
+  if (clearRecentContexts.recent.length !== 0) {
+    fail("clearing recent projects should preserve active and empty recents");
+  }
 
   const projectScan = callService("catalog.scanAll", {}, env);
   assertSkillPresent(
@@ -955,7 +983,10 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
     "project Pi fixture remained current/visible after project.clearContext -> scanAll",
     "pi",
   );
-  note("fixture project context smoke passed: setContext, scanAll project visibility, clearContext");
+  note(
+    "fixture project context smoke passed: setContext, recent remove/clear, " +
+      "scanAll project visibility, clearContext",
+  );
 }
 
 function assertFixturePiGlobalSmoke(skills) {

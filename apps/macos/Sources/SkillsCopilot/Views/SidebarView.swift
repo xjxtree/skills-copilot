@@ -585,9 +585,29 @@ private struct SecondarySidebarProjectPickerMenu: View {
                                 )
                             }
                         } label: {
-                            Text(context.name)
+                            Text(recentProjectTitle(context))
                         }
                     }
+                }
+
+                Menu {
+                    ForEach(store.recentProjectContexts) { context in
+                        Button(role: .destructive) {
+                            Task { await store.removeRecentProject(id: context.id) }
+                        } label: {
+                            Label(recentProjectTitle(context), systemImage: "trash")
+                        }
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        Task { await store.clearRecentProjects() }
+                    } label: {
+                        Label(UIStrings.clearRecentProjects, systemImage: "trash.slash")
+                    }
+                } label: {
+                    Label(UIStrings.manageRecentProjects, systemImage: "clock.arrow.circlepath")
                 }
             }
 
@@ -677,6 +697,13 @@ private struct SecondarySidebarProjectPickerMenu: View {
     private func revealActiveProject() {
         guard let rootPath = store.activeProjectContext?.rootPath else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: rootPath)])
+    }
+
+    private func recentProjectTitle(_ context: ProjectContext) -> String {
+        UIStrings.recentProjectItem(
+            context.name,
+            path: DisplayText.privacyPath(context.rootPath, privacyModeEnabled: true)
+        )
     }
 }
 
@@ -1614,6 +1641,7 @@ private struct SkillSidebarPanel: View {
 
     var body: some View {
         let visibleSkills = store.filteredSkills
+        let catalogCompleteness = store.filteredCatalogListCompleteness
 
         Group {
             Section {
@@ -1648,10 +1676,10 @@ private struct SkillSidebarPanel: View {
                 .id(skillListRefreshID(visibleCount: visibleSkills.count))
             }
 
-            if store.catalogListCompleteness.completeness != .complete {
+            if catalogCompleteness.completeness != .complete {
                 Section {
                     ListCompletenessFooter(
-                        state: store.catalogListCompleteness,
+                        state: catalogCompleteness,
                         onLoadMore: {},
                         onLoadAll: {},
                         onCancel: {}

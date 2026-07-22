@@ -104,7 +104,8 @@ fn skill_source_provenance(agent: &str, path: &Path) -> SkillSourceProvenance {
         .position(|window| window == ["plugins", "cache"])
     {
         let package = cache_index + 2;
-        if components.get(package + 3) == Some(&"skills") {
+        let payload = components.get(package + 3..).unwrap_or_default();
+        if payload.len() >= 2 && payload.last() == Some(&"SKILL.md") {
             let provenance = (
                 components.get(package),
                 components.get(package + 1),
@@ -120,7 +121,9 @@ fn skill_source_provenance(agent: &str, path: &Path) -> SkillSourceProvenance {
                         package_name: Some((*package_name).to_string()),
                         package_version: Some((*package_version).to_string()),
                         source_kind: Some("chatgpt-plugin-cache".to_string()),
-                        read_only_reason: Some("Managed by the ChatGPT plugin cache".to_string()),
+                        read_only_reason: Some(
+                            "Installed Codex plugin files are read-only".to_string(),
+                        ),
                     };
                 }
             }
@@ -131,7 +134,7 @@ fn skill_source_provenance(agent: &str, path: &Path) -> SkillSourceProvenance {
 }
 
 fn is_ignored_current_skill_source(agent: &str, path: &Path) -> bool {
-    skill_source_provenance(agent, path).source_kind.as_deref() == Some("chatgpt-plugin-cache")
+    skill_source_provenance(agent, path).source_kind.as_deref() == Some("codex-runtime")
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -892,7 +895,7 @@ mod tests {
         let instance = catalog_test_instance(
             AgentId::Codex,
             Scope::AgentGlobal,
-            "/tmp/home/.codex/plugins/cache/openai-bundled/browser/1.10.0/skills/control/SKILL.md",
+            "/tmp/home/.codex/plugins/cache/openai-bundled/browser/1.10.0/playbooks/control/SKILL.md",
             "browser-control",
             SkillState::Loaded,
         );
@@ -911,7 +914,7 @@ mod tests {
         assert_eq!(record.source_kind.as_deref(), Some("chatgpt-plugin-cache"));
         assert_eq!(
             record.read_only_reason.as_deref(),
-            Some("Managed by the ChatGPT plugin cache")
+            Some("Installed Codex plugin files are read-only")
         );
 
         let detail = catalog
@@ -956,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn current_skill_projections_ignore_all_codex_plugin_cache_rows() {
+    fn current_skill_projections_include_codex_plugin_files_and_ignore_legacy_runtime_rows() {
         let catalog = Catalog::in_memory().expect("catalog opens");
         catalog.init().expect("schema initializes");
         let old_cache = catalog_test_instance(
@@ -980,7 +983,8 @@ mod tests {
             "agent-pet-companion:agent-pet-studio",
             SkillState::Loaded,
         );
-        let runtime_id = runtime.id.clone();
+        let old_cache_id = old_cache.id.clone();
+        let current_cache_id = current_cache.id.clone();
 
         catalog
             .upsert_skill_instances(&[old_cache, runtime, current_cache])
@@ -990,18 +994,31 @@ mod tests {
             .list_skill_instances_for_project_context(None)
             .expect("instances list");
 
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].id, runtime_id);
-        assert_eq!(records[0].source_kind.as_deref(), Some("codex-runtime"));
-        assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].id, runtime_id);
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([old_cache_id.as_str(), current_cache_id.as_str()])
+        );
+        assert!(records
+            .iter()
+            .all(|record| { record.source_kind.as_deref() == Some("chatgpt-plugin-cache") }));
+        assert_eq!(instances.len(), 2);
+        assert!(instances
+            .iter()
+            .all(|instance| { instance.path.to_string_lossy().contains("/plugins/cache/") }));
         let raw_count = catalog
             .conn
             .query_row("SELECT COUNT(*) FROM skill_instance", [], |row| {
                 row.get::<_, i64>(0)
             })
             .expect("raw row count");
-        assert_eq!(raw_count, 3, "ignored cache history must remain persisted");
+        assert_eq!(
+            raw_count, 3,
+            "legacy runtime history may remain persisted until migration"
+        );
     }
 
     #[test]
@@ -1947,6 +1964,125 @@ mod tests {
         let conn = Connection::open(&path).expect("migrated catalog reopens");
         assert!(schema::is_current(&conn).expect("schema version reads"));
         drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn schema_migration_removes_legacy_runtime_and_missing_pi_document_history() {
+        let path = std::env::temp_dir().join(format!(
+            "skills-copilot-source-history-migration-{}-{}.sqlite",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let retained_id;
+        {
+            let catalog = Catalog::open(&path).expect("catalog opens");
+            catalog.init().expect("current schema initializes");
+            let runtime = catalog_test_instance(
+                AgentId::Codex,
+                Scope::AgentGlobal,
+                "/tmp/home/.codex/.agent-copilot-runtime/runtime/SKILL.md",
+                "runtime-only",
+                SkillState::Loaded,
+            );
+            let pi_reference = catalog_test_instance(
+                AgentId::Pi,
+                Scope::AgentGlobal,
+                "/tmp/home/.pi/agent/skills/review/references/details.md",
+                "details",
+                SkillState::Missing,
+            );
+            let retained = catalog_test_instance(
+                AgentId::Pi,
+                Scope::AgentGlobal,
+                "/tmp/home/.pi/agent/skills/review/SKILL.md",
+                "review",
+                SkillState::Loaded,
+            );
+            retained_id = retained.id.clone();
+            catalog
+                .upsert_skill_instances(&[runtime.clone(), pi_reference.clone(), retained])
+                .expect("legacy rows seed");
+            for (id, kind) in [
+                (&runtime.id, "runtime-event"),
+                (&pi_reference.id, "pi-event"),
+                (&retained_id, "retained-event"),
+            ] {
+                catalog
+                    .conn
+                    .execute(
+                        "INSERT INTO skill_event (instance_id, kind, payload, occurred_at) VALUES (?1, ?2, '{}', 1)",
+                        params![id, kind],
+                    )
+                    .expect("event seeds");
+            }
+            for (id, finding_id, triage_key) in [
+                (&runtime.id, "runtime-finding", "runtime-triage"),
+                (&pi_reference.id, "pi-finding", "pi-triage"),
+                (&retained_id, "retained-finding", "retained-triage"),
+            ] {
+                catalog
+                    .conn
+                    .execute(
+                        "INSERT INTO rule_finding (
+                            id, triage_key, triage_context, instance_id, definition_id,
+                            rule_id, severity, message, suggestion, created_at
+                         ) VALUES (?1, ?2, 'context', ?3, NULL, 'fixture', 'warn', 'fixture', NULL, 1)",
+                        params![finding_id, triage_key, id],
+                    )
+                    .expect("finding seeds");
+                catalog
+                    .conn
+                    .execute(
+                        "INSERT INTO finding_triage (triage_key, triage_context, status, note, updated_at)
+                         VALUES (?1, 'context', 'reviewed', NULL, 1)",
+                        params![triage_key],
+                    )
+                    .expect("triage seeds");
+            }
+            catalog
+                .conn
+                .pragma_update(None, "user_version", 6)
+                .expect("simulate v6 catalog");
+        }
+
+        let catalog = Catalog::open(&path).expect("catalog reopens");
+        catalog.init().expect("history cleanup migration runs");
+        let remaining_ids = catalog
+            .conn
+            .prepare("SELECT id FROM skill_instance ORDER BY id")
+            .expect("instance query prepares")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("instance rows query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("instance rows decode");
+        assert_eq!(remaining_ids, vec![retained_id.clone()]);
+        assert_eq!(
+            catalog
+                .conn
+                .query_row("SELECT COUNT(*) FROM skill_event", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("event count"),
+            1
+        );
+        assert_eq!(
+            catalog
+                .conn
+                .query_row("SELECT COUNT(*) FROM rule_finding", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("finding count"),
+            1
+        );
+        assert_eq!(
+            catalog
+                .conn
+                .query_row("SELECT COUNT(*) FROM finding_triage", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("triage count"),
+            1
+        );
+        assert!(schema::is_current(&catalog.conn).expect("schema is current"));
+        drop(catalog);
         let _ = std::fs::remove_file(path);
     }
 

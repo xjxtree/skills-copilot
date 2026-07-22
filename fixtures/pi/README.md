@@ -1,14 +1,11 @@
-# Pi Evidence Fixtures
+# Pi Fixtures
 
-These fixtures provide parser, scan, and guarded configuration contract
-evidence for `docs/adapters/pi-adapter-spec.md`. The original disposable-tool
-validation used Pi 0.78.1, which remains the minimum evidenced tool version.
+These files are executable parser and scanner inputs for
+`docs/adapters/pi-adapter-spec.md`.
 
-- `global/agent/skills/global-pdf/SKILL.md` mirrors `~/.pi/agent/skills/global-pdf/SKILL.md`.
-- `project/.pi/skills/project-plan/SKILL.md` mirrors `.pi/skills/project-plan/SKILL.md`.
-- `config/settings-package-filter-disabled.json` shows official package resource filtering syntax for disabling package-provided skills.
-- `broken/missing-description/SKILL.md` is intentionally invalid because Pi docs say skills with missing descriptions are not loaded.
+- `global/agent/skills/global-pdf/SKILL.md` covers the native global root.
+- `project/.pi/skills/project-plan/SKILL.md` covers the native project root.
+- `broken/missing-description/SKILL.md` covers required frontmatter failure.
 
-Revalidate parser or guarded-write changes against a disposable `agentDir` and
-fixture project with Pi 0.78.1 or newer. Never use real Pi settings for fixture
-validation.
+Package filtering, compatibility roots, toggles, and write isolation are
+exercised with temporary settings and homes inside the Rust tests.

@@ -11,21 +11,14 @@ used on this repository.
 
 Do not duplicate the full project rules across multiple instruction files. Put shared rules in `AGENTS.md`, tool-specific behavior in that tool's compatibility file, and detailed procedures in `docs/`.
 
-Current layout:
+Layout:
 
 ```text
 AGENTS.md                         # Shared agent entrypoint
 CLAUDE.md                         # Claude Code compatibility layer
 docs/ai-agent-workflow.md         # Multi-agent workflow and validation rules
 docs/runbooks/macos-app-runbook.md # macOS app run, smoke, and bundle freshness rules
-docs/ui-delivery-standards.md     # UI prototype, screenshot, and Computer Use rules
-```
-
-Future optional layout, only when the scoped rules become large enough to justify it:
-
-```text
-apps/macos/AGENTS.md              # Native macOS UI-specific rules
-crates/AGENTS.md                  # Rust workspace/crate-specific rules
+docs/ui-delivery-standards.md     # UI structure and Computer Use rules
 ```
 
 ## Compatibility Notes
@@ -61,20 +54,18 @@ If docs conflict with code, fix the docs or code as part of the task when the re
 
 ## Documentation Ownership Matrix
 
-Use this table before adding or moving documentation. It keeps agent-facing
-instructions, human-facing summaries, and evidence records from drifting into
-the same file.
+Use this table before adding or moving documentation. Repository docs contain
+current contracts and reusable procedures, not task state or validation logs.
 
 | Document | Primary audience | Put here | Do not put here |
 | --- | --- | --- | --- |
-| `AGENTS.md` | AI coding agents | Shared rules, current hard boundaries, validation expectations, compact gate anchors | Long changelog entries, full roadmap history, release notes |
+| `AGENTS.md` | AI coding agents | Shared rules, hard boundaries, validation expectations, compact gate anchors | Plans, task state, changelogs, release notes |
 | `CLAUDE.md` | Claude Code | Claude-specific behavior, Computer Use defaults | Shared project rules already in `AGENTS.md` |
-| `README.md` | Humans | Product overview, app features, download/build guide, document map | Version-by-version evidence dumps or task ledgers |
-| `docs/README.md` | Humans + agents | Focused documentation index and ownership navigation | Product marketing, task history, or duplicated contracts |
-| `docs/plans/roadmap.md` | Humans + agents | Future work, deferred scope, and non-goals | Per-command validation logs or implementation scratch notes |
-| `docs/plans/development-tasks.md` | Agents + maintainers | Active task rules and task routing | Marketing copy, full release notes |
-| GitHub Releases/tags | Humans + maintainers | Release versions, user-facing release notes, downloadable assets, checksums | Planning, task routing, detailed validation logs |
-| Focused specs (`docs/service-protocol.md`, adapter specs, security/data/AI docs) | Implementers | Durable contracts and domain-specific rules | General project status unless directly relevant |
+| `README.md` | Humans | Product overview, app features, download/build guide, document map | Validation dumps, plans, or task ledgers |
+| `docs/README.md` | Humans + agents | Focused documentation index and ownership navigation | Product marketing, task state, or duplicated contracts |
+| GitHub issues and pull requests | Contributors | Plans, task state, decisions, command results, and handoffs | Durable product contracts |
+| GitHub Releases/tags | Humans + maintainers | Release versions, user-facing release notes, downloadable assets, checksums | Planning and implementation details |
+| Focused specs (`docs/service-protocol.md`, adapter specs, security/data/AI docs) | Implementers | Current contracts and domain-specific rules | Progress reports or dated validation results |
 
 ## Validation Rules
 
@@ -82,14 +73,13 @@ Use focused validation for small code changes. Use full macOS validation for lar
 
 | Change type | Required validation |
 | --- | --- |
-| Pure planning discussion | None |
-| Docs-only wording change | Usually none |
-| Docs that state implementation status, screenshots, or validation results | Run the relevant command or update the wording to avoid false claims |
+| Planning discussion in an issue or pull request | None |
+| Docs-only contract change | `git diff --check` and `pnpm verify:doc-governance` |
 | Rust logic or service protocol change | Focused Rust tests; for service-visible behavior, `pnpm check:macos` |
 | Native macOS UI change | `pnpm check:macos` plus real Local App Run when Computer Use is available |
-| Major/user-visible/milestone change | `pnpm check:macos` plus real Local App Run |
-| Screenshot update | App-window-only capture; full desktop screenshots are forbidden |
-| Privacy-sensitive docs, screenshots, release evidence, or history cleanup | `pnpm check:privacy` plus manual visual inspection of new screenshots |
+| Major or user-visible change | `pnpm check:macos` plus real Local App Run |
+| Runtime screenshot | App-window-only capture outside the repository; full desktop screenshots are forbidden |
+| Privacy-sensitive docs or repository cleanup | `pnpm check:privacy` |
 
 `verify:macos-ui-layout` is intentionally reached through `pnpm check:macos`
 instead of `pnpm verify:gate-parity`, because it is a native UI layout guard
@@ -113,7 +103,7 @@ pnpm dev:macos
 
 It rebuilds and launches `dist/AgentCopilot.app` with the developer's real local HOME, app data, and Claude config. Use this to inspect actual product behavior and visual quality.
 
-For major, user-visible, UI, service protocol, or milestone work, run both in this order:
+For major, user-visible, UI, or service protocol work, run both in this order:
 
 ```sh
 pnpm check:macos
@@ -134,31 +124,26 @@ each operation is followed by Computer Use state read-back.
 
 ## Screenshot Rules
 
-Use:
+Use the temporary default output:
 
 ```sh
 pnpm capture:macos-window
 ```
 
-or:
-
-```sh
-script/capture_app_window.sh AgentCopilot docs/ui-artifacts/native-macos-shell/completed.png
-```
-
-The no-argument capture helper and fixture smoke write to `/tmp`; pass a repository artifact path only when deliberately refreshing completed evidence.
+The capture helper and fixture smoke write to `/tmp`. Do not point them into the
+repository.
 
 Only complete app-window captures are allowed. Full desktop screenshots are forbidden.
 
-If the macOS session is locked, cannot be confirmed interactive, or Computer Use cannot resolve the app window, mark real local validation as blocked for that candidate. Do not replace it with a smoke screenshot.
+If the macOS session is locked, cannot be confirmed interactive, or Computer Use cannot resolve the app window, report real-local validation as blocked in the task or pull request. Do not replace it with a smoke screenshot.
 
-Before committing screenshots or local validation evidence, inspect them visually and run:
+Inspect screenshots visually, keep them outside the repository, and run before handoff:
 
 ```sh
 pnpm check:privacy
 ```
 
-Screenshots and docs must not expose real local usernames, home paths,
+Screenshots and task output must not expose real local usernames, home paths,
 app-data paths, temp directories, credentials, tokens,
 or proxy-managed credential placeholders.
 Use placeholders such as `$HOME`, `<repo>`, `<worktree>`,
@@ -240,7 +225,7 @@ Worktree and branch:
 Changed files:
 Implementation summary:
 Validation commands and results:
-Screenshots or UI artifacts updated:
+Computer Use result or blocker:
 Known blockers:
 Docs updated:
 Commit hash, if committed:
@@ -255,8 +240,7 @@ Update docs when any of the following changes:
 - App run commands or validation flow.
 - Architecture boundaries.
 - Service protocol behavior.
-- UI implementation state or completed screenshots.
-- Roadmap scope.
+- UI behavior or validation flow.
 - Adapter scope or verified external agent specs.
 
 Keep README focused on human navigation. Keep `AGENTS.md` focused on rules that every coding agent must follow. Keep detailed procedures in `docs/`.

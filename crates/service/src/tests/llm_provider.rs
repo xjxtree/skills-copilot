@@ -3279,6 +3279,103 @@ fn project_context_set_get_and_clear_persist_state() {
 }
 
 #[test]
+fn project_recent_context_entries_can_be_removed_or_cleared_without_changing_active_context() {
+    let unique = unique_suffix();
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-project-recents-test-{}-{unique}",
+        std::process::id(),
+    ));
+    let first_root = app_data_dir.join("first-project");
+    let active_root = app_data_dir.join("active-project");
+    fs::create_dir_all(&first_root).expect("create first project");
+    fs::create_dir_all(&active_root).expect("create active project");
+    let host = test_host(app_data_dir.clone());
+
+    for (id, root, name) in [
+        ("set-first", &first_root, "First Project"),
+        ("set-active", &active_root, "Active Project"),
+    ] {
+        let response = host.handle(ServiceRequest {
+            id: Some(id.to_string()),
+            method: "project.setContext".to_string(),
+            params: json!({ "root_path": root, "name": name }),
+        });
+        assert!(response.ok, "{id} should succeed: {:?}", response.error);
+    }
+
+    let state = host.handle(ServiceRequest {
+        id: Some("get-before-remove".to_string()),
+        method: "project.getContext".to_string(),
+        params: Value::Null,
+    });
+    let state = state.result.expect("project state before remove");
+    let active_id = state
+        .pointer("/active/id")
+        .and_then(Value::as_str)
+        .expect("active project id")
+        .to_string();
+    assert_eq!(
+        state.get("recent").and_then(Value::as_array).map(Vec::len),
+        Some(2)
+    );
+
+    let remove = host.handle(ServiceRequest {
+        id: Some("remove-active-recent".to_string()),
+        method: "project.removeRecentContext".to_string(),
+        params: json!({ "id": active_id }),
+    });
+    assert!(
+        remove.ok,
+        "remove recent should succeed: {:?}",
+        remove.error
+    );
+    let removed_state = remove.result.expect("state after remove");
+    assert_eq!(
+        removed_state
+            .pointer("/active/name")
+            .and_then(Value::as_str),
+        Some("Active Project"),
+        "removing a recent row must not clear the active project"
+    );
+    assert_eq!(
+        removed_state
+            .get("recent")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        removed_state
+            .pointer("/recent/0/name")
+            .and_then(Value::as_str),
+        Some("First Project")
+    );
+
+    let clear = host.handle(ServiceRequest {
+        id: Some("clear-recents".to_string()),
+        method: "project.clearRecentContexts".to_string(),
+        params: Value::Null,
+    });
+    assert!(clear.ok, "clear recents should succeed: {:?}", clear.error);
+    let cleared_state = clear.result.expect("state after clearing recents");
+    assert_eq!(
+        cleared_state
+            .pointer("/active/name")
+            .and_then(Value::as_str),
+        Some("Active Project")
+    );
+    assert_eq!(
+        cleared_state
+            .get("recent")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn project_validate_context_reports_validation_error_without_persisting() {
     let host = test_host(env::temp_dir().join(format!(
         "skills-copilot-project-validate-test-{}-{}",

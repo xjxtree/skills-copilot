@@ -8,7 +8,8 @@ const MIGRATION_0003: &str = include_str!("migrations/0003_add_rule_findings.sql
 const MIGRATION_0004: &str = include_str!("migrations/0004_add_finding_triage.sql");
 const MIGRATION_0005: &str = include_str!("migrations/0005_add_rule_tuning.sql");
 const MIGRATION_0006: &str = include_str!("migrations/0006_add_config_snapshot_project_root.sql");
-const SCHEMA_VERSION: i64 = 6;
+const MIGRATION_0007: &str = include_str!("migrations/0007_remove_non_file_skill_history.sql");
+const SCHEMA_VERSION: i64 = 7;
 
 pub(crate) fn init_schema(conn: &Connection) -> Result<(), CatalogError> {
     if is_current(conn)? {
@@ -38,6 +39,7 @@ fn init_schema_in_transaction(conn: &Connection) -> Result<(), CatalogError> {
         "CREATE INDEX IF NOT EXISTS idx_config_snapshot_project
          ON config_snapshot(scope, project_root, created_at);",
     )?;
+    conn.execute_batch(MIGRATION_0007)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }

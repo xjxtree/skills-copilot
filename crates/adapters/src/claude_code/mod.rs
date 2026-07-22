@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Component, Path, PathBuf},
+};
 
 use skills_copilot_core::{
     AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
@@ -20,24 +23,39 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
-        let mut roots = vec![AdapterRoot {
+        let personal_root = AdapterRoot {
             scope: Scope::AgentGlobal,
             path: claude_config_dir(ctx).join("skills"),
             source: RootSource::UserHome,
-        }];
+        };
+        let mut roots = vec![personal_root.clone()];
+        roots.extend(claude_declared_skill_link_roots(&personal_root));
+        push_claude_commands_root(
+            &mut roots,
+            Scope::AgentGlobal,
+            claude_config_dir(ctx).join("commands"),
+        );
 
         if let Some(project_root) = &ctx.project_root {
-            roots.extend(
-                claude_project_directories(ctx, project_root).map(|directory| AdapterRoot {
+            for directory in claude_project_directories(ctx, project_root) {
+                let root = AdapterRoot {
                     scope: Scope::AgentProject,
                     path: directory.join(".claude/skills"),
                     source: RootSource::Project,
-                }),
-            );
+                };
+                roots.push(root.clone());
+                roots.extend(claude_declared_skill_link_roots(&root));
+                push_claude_commands_root(
+                    &mut roots,
+                    Scope::AgentProject,
+                    directory.join(".claude/commands"),
+                );
+            }
         }
 
+        roots.extend(claude_enabled_plugin_skill_roots(ctx));
         roots.extend(ctx.extra_roots.clone());
-        roots
+        dedup_roots(roots)
     }
 
     fn link_target_roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
@@ -65,20 +83,36 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn parse_content(&self, path: &Path, content: String) -> Result<SkillInstance, AdapterError> {
-        let display_name = path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let is_command = is_claude_command_path(path);
+        let display_name = (if is_command {
+            path.file_stem()
+        } else {
+            path.parent().and_then(Path::file_name)
+        })
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
         let parsed = parse_skill_content(&content);
         let (frontmatter_raw, body, name, description, permissions, state, enabled) = match parsed {
             Ok(parsed) => (
                 parsed.frontmatter_raw,
                 parsed.body,
-                parsed.name.unwrap_or_else(|| display_name.clone()),
+                if is_command {
+                    display_name.clone()
+                } else {
+                    parsed.name.unwrap_or_else(|| display_name.clone())
+                },
                 parsed.description,
                 parsed.permissions,
+                SkillState::Loaded,
+                true,
+            ),
+            Err(_message) if is_command && !starts_with_yaml_frontmatter(&content) => (
+                String::new(),
+                content.clone(),
+                display_name.clone(),
+                first_markdown_paragraph(&content),
+                PermissionRequest::default(),
                 SkillState::Loaded,
                 true,
             ),
@@ -123,18 +157,37 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
-        let _ = root;
-        relative_path.components().count() == 2
-            && relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+        let components = relative_path.components().count();
+        if is_claude_commands_root(root) {
+            return components == 1
+                && relative_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == Some("md")
+                && relative_path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| !name.is_empty() && !name.starts_with('.'));
+        }
+        relative_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
+            && if root.source == RootSource::Plugin {
+                (1..=2).contains(&components)
+            } else {
+                components == 2
+            }
+    }
+
+    fn is_skill_file(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
     }
 
     fn config_paths(&self, ctx: &AdapterContext) -> Vec<PathBuf> {
         let mut paths = vec![claude_config_dir(ctx).join("settings.json")];
         if let Some(project_root) = &ctx.project_root {
-            for directory in claude_project_directories(ctx, project_root) {
-                paths.push(directory.join(".claude/settings.json"));
-                paths.push(directory.join(".claude/settings.local.json"));
-            }
+            paths.push(project_root.join(".claude/settings.json"));
+            paths.push(project_root.join(".claude/settings.local.json"));
         }
         paths.push(PathBuf::from(
             "/Library/Application Support/ClaudeCode/managed-settings.json",
@@ -164,6 +217,210 @@ fn claude_project_directories<'a>(
             .flatten()
             .filter(|parent| parent.starts_with(project_root))
     })
+}
+
+fn push_claude_commands_root(roots: &mut Vec<AdapterRoot>, scope: Scope, path: PathBuf) {
+    if path.is_dir() {
+        roots.push(AdapterRoot {
+            scope,
+            path,
+            source: match scope {
+                Scope::AgentGlobal => RootSource::UserHome,
+                Scope::AgentProject => RootSource::Project,
+                _ => RootSource::Project,
+            },
+        });
+    }
+}
+
+fn is_claude_commands_root(root: &AdapterRoot) -> bool {
+    root.path.file_name().and_then(|name| name.to_str()) == Some("commands")
+        && matches!(root.source, RootSource::UserHome | RootSource::Project)
+}
+
+fn is_claude_command_path(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()) == Some("md")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("commands")
+}
+
+fn starts_with_yaml_frontmatter(content: &str) -> bool {
+    content.starts_with("---\n") || content.starts_with("---\r\n")
+}
+
+fn claude_declared_skill_link_roots(root: &AdapterRoot) -> Vec<AdapterRoot> {
+    let Ok(entries) = std::fs::read_dir(&root.path) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if !metadata.file_type().is_symlink() || !path.join("SKILL.md").is_file() {
+                return None;
+            }
+            Some(AdapterRoot {
+                scope: root.scope,
+                path,
+                // Claude 2.1.203+ treats an immediate skill-directory symlink
+                // as an explicit declaration. The resolved target is therefore
+                // a narrow authorized root, never a reason to allow a broad
+                // directory outside the normal Claude locations.
+                source: RootSource::Configured,
+            })
+        })
+        .collect()
+}
+
+fn claude_enabled_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
+    let config_dir = claude_config_dir(ctx);
+    let enabled = claude_effective_enabled_plugins(ctx);
+    if enabled.is_empty() {
+        return Vec::new();
+    }
+    let installed_path = config_dir.join("plugins/installed_plugins.json");
+    let Ok(content) = std::fs::read_to_string(installed_path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(installed) = value.get("plugins").and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    let plugins_root = config_dir.join("plugins");
+    let canonical_plugins_root = plugins_root
+        .canonicalize()
+        .unwrap_or_else(|_| plugins_root.clone());
+    let mut roots = Vec::new();
+    for (plugin_id, installations) in installed {
+        if !enabled.contains(plugin_id) {
+            continue;
+        }
+        let Some(installations) = installations.as_array() else {
+            continue;
+        };
+        let Some(install_path) = installations.iter().rev().find_map(|installation| {
+            installation
+                .get("installPath")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+        }) else {
+            continue;
+        };
+        let Ok(canonical_install) = install_path.canonicalize() else {
+            continue;
+        };
+        if !canonical_install.starts_with(&canonical_plugins_root) {
+            continue;
+        }
+        let manifest_path = canonical_install.join(".claude-plugin/plugin.json");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+        let manifest_skills = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.get("skills"));
+
+        let default_skills = canonical_install.join("skills");
+        if default_skills.is_dir() {
+            roots.push(AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: default_skills,
+                source: RootSource::Plugin,
+            });
+        }
+        for raw in manifest_skills.into_iter().flat_map(json_string_or_array) {
+            let Some(candidate) = safe_plugin_relative_path(&canonical_install, raw) else {
+                continue;
+            };
+            roots.push(AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: candidate,
+                source: RootSource::Plugin,
+            });
+        }
+        if manifest_skills.is_none()
+            && !canonical_install.join("skills").exists()
+            && canonical_install.join("SKILL.md").is_file()
+        {
+            roots.push(AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: canonical_install.join("SKILL.md"),
+                source: RootSource::Plugin,
+            });
+        }
+    }
+    dedup_roots(roots)
+}
+
+fn claude_effective_enabled_plugins(ctx: &AdapterContext) -> HashSet<String> {
+    let mut states = HashMap::<String, bool>::new();
+    for settings_path in ClaudeCodeAdapter.config_paths(ctx) {
+        let Ok(content) = std::fs::read_to_string(settings_path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let Some(entries) = value
+            .get("enabledPlugins")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (id, enabled) in entries {
+            if let Some(enabled) = enabled.as_bool() {
+                states.insert(id.clone(), enabled);
+            }
+        }
+    }
+    states
+        .into_iter()
+        .filter_map(|(id, enabled)| enabled.then_some(id))
+        .collect()
+}
+
+fn json_string_or_array(value: &serde_json::Value) -> Vec<&str> {
+    match value {
+        serde_json::Value::String(value) => vec![value.as_str()],
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn safe_plugin_relative_path(plugin_root: &Path, raw: &str) -> Option<PathBuf> {
+    if !raw.starts_with("./") {
+        return None;
+    }
+    let relative = Path::new(raw);
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    let candidate = plugin_root.join(relative);
+    let canonical = candidate.canonicalize().ok()?;
+    canonical.starts_with(plugin_root).then_some(canonical)
+}
+
+fn dedup_roots(roots: Vec<AdapterRoot>) -> Vec<AdapterRoot> {
+    let mut seen = HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| seen.insert((root.scope, root.path.clone())))
+        .collect()
 }
 
 impl AgentConfigAdapter for ClaudeCodeAdapter {
@@ -356,6 +613,122 @@ mod tests {
                 && root.source == RootSource::Compatibility
                 && root.path == Path::new("/tmp/project/.agents/skills")
         }));
+    }
+
+    #[test]
+    fn project_commands_are_exposed_as_legacy_claude_skills() {
+        let root = temp_test_root("skills-copilot-claude-commands");
+        let home = root.join("home");
+        let project = root.join("project");
+        let commands = project.join(".claude/commands");
+        std::fs::create_dir_all(&commands).expect("create commands dir");
+        let command = commands.join("gan-build.md");
+        std::fs::write(
+            &command,
+            "# GAN Build\n\nBuild with a generator/evaluator loop.\n",
+        )
+        .expect("write command");
+
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: Some(project.clone()),
+            project_cwd: Some(project),
+            extra_roots: Vec::new(),
+        };
+        let roots = ClaudeCodeAdapter.roots(&ctx);
+        let command_root = roots
+            .iter()
+            .find(|candidate| candidate.path == commands)
+            .expect("Claude project commands root");
+
+        assert_eq!(command_root.scope, Scope::AgentProject);
+        assert_eq!(command_root.source, RootSource::Project);
+        assert!(ClaudeCodeAdapter.accepts_skill_path(command_root, Path::new("gan-build.md")));
+        assert!(
+            !ClaudeCodeAdapter.accepts_skill_path(command_root, Path::new("nested/gan-build.md"))
+        );
+
+        let skill = ClaudeCodeAdapter
+            .parse(&command)
+            .expect("legacy command parses");
+        assert_eq!(skill.name, "gan-build");
+        assert_eq!(skill.display_name, "gan-build");
+        assert_eq!(skill.state, SkillState::Loaded);
+        assert!(skill.enabled);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_cache_is_not_a_root_and_only_enabled_manifest_skills_are_exposed() {
+        let root = temp_test_root("skills-copilot-claude-plugins");
+        let home = root.join("home");
+        let config = home.join(".claude");
+        let enabled = config.join("plugins/cache/market/enabled/1.0.0");
+        let disabled = config.join("plugins/cache/market/disabled/1.0.0");
+        for plugin in [&enabled, &disabled] {
+            std::fs::create_dir_all(plugin.join(".claude-plugin"))
+                .expect("create plugin manifest dir");
+            std::fs::create_dir_all(plugin.join("skills/example"))
+                .expect("create plugin skill dir");
+        }
+        std::fs::write(
+            enabled.join(".claude-plugin/plugin.json"),
+            r#"{"name":"enabled-plugin","skills":["./extra"]}"#,
+        )
+        .expect("write enabled manifest");
+        std::fs::create_dir_all(enabled.join("extra/custom")).expect("create custom skill root");
+        std::fs::write(
+            disabled.join(".claude-plugin/plugin.json"),
+            r#"{"name":"disabled-plugin"}"#,
+        )
+        .expect("write disabled manifest");
+        std::fs::create_dir_all(&config).expect("create Claude config");
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"enabledPlugins":{"enabled@market":true,"disabled@market":false}}"#,
+        )
+        .expect("write Claude settings");
+        std::fs::create_dir_all(config.join("plugins")).expect("create plugins dir");
+        std::fs::write(
+            config.join("plugins/installed_plugins.json"),
+            serde_json::json!({
+                "version": 2,
+                "plugins": {
+                    "enabled@market": [{"installPath": enabled}],
+                    "disabled@market": [{"installPath": disabled}]
+                }
+            })
+            .to_string(),
+        )
+        .expect("write installed plugin index");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let roots = ClaudeCodeAdapter.roots(&ctx);
+        let canonical_enabled = enabled.canonicalize().expect("canonicalize enabled plugin");
+        let canonical_disabled = disabled
+            .canonicalize()
+            .expect("canonicalize disabled plugin");
+
+        assert!(roots
+            .iter()
+            .any(|root| root.path == canonical_enabled.join("skills")));
+        assert!(roots
+            .iter()
+            .any(|root| root.path == canonical_enabled.join("extra")));
+        assert!(roots
+            .iter()
+            .all(|root| !root.path.starts_with(&canonical_disabled)));
+        assert!(roots
+            .iter()
+            .all(|root| root.path != config.join("plugins/cache")));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

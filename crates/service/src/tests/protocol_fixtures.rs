@@ -842,7 +842,11 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert_eq!(update.applied, method.contains(".apply"));
             assert_eq!(update.confirmed, update.applied);
         }
-        "project.getContext" | "project.setContext" | "project.clearContext" => {
+        "project.getContext"
+        | "project.setContext"
+        | "project.clearContext"
+        | "project.removeRecentContext"
+        | "project.clearRecentContexts" => {
             let _: ProjectContextState = decode_fixture_result(method, result, path);
             let state: WireProjectContextState = decode_fixture_result(method, result, path);
             assert!(

@@ -1,0 +1,7 @@
+{
+  "id": "fixture-project-remove-recent-context",
+  "method": "project.removeRecentContext",
+  "params": {
+    "id": "project-fixture-id"
+  }
+}

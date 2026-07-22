@@ -484,6 +484,11 @@ struct SkillListModelTests {
             path: "stable-instance-id",
             displayPath: "$HOME/.claude/skills/foo/SKILL.md"
         )
+        let claudeProjectCommand = Self.identityRecord(
+            agent: "Claude Code",
+            scope: "Agent Project",
+            path: "/repo/.claude/commands/gan-build.md"
+        )
         let piDirectorySkill = Self.identityRecord(
             agent: "pi",
             scope: "agent-global",
@@ -523,7 +528,7 @@ struct SkillListModelTests {
             packageName: "browser",
             packageVersion: "1.10.0",
             sourceKind: "chatgpt-plugin-cache",
-            readOnlyReason: "Managed by the ChatGPT plugin cache"
+            readOnlyReason: "Installed Codex plugin files are read-only"
         )
 
         try expectEqual(opencodeProject.provenance.rootKind, .native, "opencode project .opencode roots should be native.")
@@ -533,7 +538,9 @@ struct SkillListModelTests {
         try expectEqual(opencodeGlobal.provenance.scopeKind, .global, "opencode ~/.config/opencode roots should be global scoped.")
         try expectEqual(opencodeGlobal.provenance.label, "opencode native global", "opencode global native label")
         try expectEqual(opencodeClaudeCompatibility.provenance.rootKind, .compatibility, "opencode .claude roots should be compatibility roots.")
+        try expectEqual(opencodeClaudeCompatibility.provenance.label, "opencode official compatibility · .claude/skills", "opencode Claude compatibility should explain why a Claude path is effective.")
         try expectEqual(opencodeAgentsCompatibility.provenance.rootKind, .compatibility, "opencode .agents roots should be compatibility roots.")
+        try expectEqual(opencodeAgentsCompatibility.provenance.label, "opencode official compatibility · .agents/skills", "opencode Agents compatibility should identify its official shared root.")
         try expectEqual(opencodeConfigured.provenance.rootKind, .configured, "opencode skills.paths rows should be configured roots.")
         try expectEqual(opencodeConfigured.provenance.label, "opencode configured global", "opencode configured root label")
         try expectEqual(codexAgentsNative.provenance.rootKind, .native, "Codex .agents roots should be native roots.")
@@ -541,6 +548,8 @@ struct SkillListModelTests {
         try expectEqual(claudeGlobalDisplayAgent.provenance.rootKind, .native, "Claude Code display agent and tilde .claude roots should be native.")
         try expectEqual(claudeGlobalDisplayAgent.provenance.label, "Claude Code native global", "Claude Code display agent label")
         try expectEqual(claudeDisplayPathOnly.provenance.rootKind, .native, "Display path should classify provenance when path is a stable record ID.")
+        try expectEqual(claudeProjectCommand.provenance.rootKind, .native, "Claude legacy commands should be native Claude inputs.")
+        try expectEqual(claudeProjectCommand.provenance.label, "Claude Code native project", "Claude command provenance label")
         try expectEqual(piDirectorySkill.isCatalogedSkillIdentity, true, "Pi directory SKILL.md records should remain cataloged skills.")
         try expectEqual(piDirectorySkill.catalogIdentityPath, "$HOME/.pi/skills/foo", "Pi directory SKILL.md identity should use its containing directory.")
         try expectEqual(piDirectDocument.isCatalogedSkillIdentity, false, "Pi direct .md files should not be treated as cataloged skills.")
@@ -550,9 +559,9 @@ struct SkillListModelTests {
         try expectEqual(hermesExternalSkill.provenance.scopeKind, .external, "Hermes external dirs should not be treated as project scope.")
         try expectEqual(hermesExternalSkill.provenance.label, "Hermes explicit external read-only", "Hermes external dirs should retain read-only provenance.")
         try expectEqual(openClawSkill.provenance.label, "OpenClaw workspace read-only", "OpenClaw should present project rows as workspace read-only provenance.")
-        try expectEqual(codexPluginSkill.provenance.rootKind, .readOnly, "ChatGPT plugin cache skills must be classified read-only.")
-        try expectEqual(codexPluginSkill.provenance.label, "Codex ChatGPT plugin · openai-bundled/browser 1.10.0", "Plugin provenance should identify its package.")
-        try expectEqual(codexPluginSkill.readOnlyReason, "Managed by the ChatGPT plugin cache", "Plugin cache ownership should remain visible.")
+        try expectEqual(codexPluginSkill.provenance.rootKind, .readOnly, "Installed Codex plugin skills must be classified read-only.")
+        try expectEqual(codexPluginSkill.provenance.label, "Codex plugin install · openai-bundled/browser 1.10.0", "Plugin provenance should identify its persisted package.")
+        try expectEqual(codexPluginSkill.readOnlyReason, "Installed Codex plugin files are read-only", "Plugin installation ownership should remain visible.")
         try expectEqual(DisplayText.scope(for: openClawSkill), UIStrings.openClawWorkspaceScope, "OpenClaw project rows should display as workspace scope.")
     }
 

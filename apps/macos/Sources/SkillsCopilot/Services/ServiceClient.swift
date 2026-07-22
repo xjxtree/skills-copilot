@@ -505,6 +505,10 @@ struct ProjectContextParams: Encodable {
     }
 }
 
+struct ProjectContextIDParams: Encodable {
+    let id: String
+}
+
 final class ServiceClient {
     enum ClientError: LocalizedError {
         case missingBinary

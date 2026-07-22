@@ -7,8 +7,8 @@
       "owner": "SkillSidebarPanel",
       "source": "visibleSkills",
       "policy": "complete",
-      "total_count_source": "catalog snapshot skills count",
-      "allowed_limitations": ["safety_budget", "unreadable_source"]
+      "total_count_source": "active-agent catalog snapshot skills count",
+      "allowed_limitations": ["safety_budget", "source_limited", "unreadable_source"]
     },
     {
       "id": "catalog.findings",
@@ -17,7 +17,7 @@
       "source": "visibleGroups",
       "policy": "complete",
       "total_count_source": "filtered catalog finding count",
-      "allowed_limitations": ["safety_budget", "unreadable_source"]
+      "allowed_limitations": ["safety_budget", "source_limited", "unreadable_source"]
     },
     {
       "id": "catalog.conflicts",
@@ -26,7 +26,7 @@
       "source": "conflicts",
       "policy": "complete",
       "total_count_source": "filtered catalog conflict count",
-      "allowed_limitations": ["safety_budget", "unreadable_source"]
+      "allowed_limitations": ["safety_budget", "source_limited", "unreadable_source"]
     },
     {
       "id": "catalog.rules",

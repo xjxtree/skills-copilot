@@ -144,6 +144,7 @@ fn dispatch_coverage_params(method: &str) -> Value {
         "project.setContext" | "project.validateContext" => {
             json!({ "root_path": "/tmp/skills-copilot-missing-project" })
         }
+        "project.removeRecentContext" => json!({ "id": "missing-project" }),
         "snapshot.previewRollback" => {
             json!({ "snapshot_id": "missing-snapshot" })
         }

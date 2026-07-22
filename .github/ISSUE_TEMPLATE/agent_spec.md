@@ -1,6 +1,6 @@
 ---
-name: Agent spec evidence
-about: Provide verified skill/config details for an agent adapter
+name: Agent adapter contract
+about: Provide sourced skill/config details for an agent adapter
 title: "[agent-spec] "
 labels: agent-spec
 assignees: ""
@@ -12,7 +12,7 @@ Claude Code / Codex / pi / hermes / openclaw / opencode / other:
 
 ## Source
 
-Official documentation link or local sample provenance:
+Official documentation link or reproducible local sample provenance:
 
 ## Skill Layout
 
@@ -37,4 +37,3 @@ Minimal sample skill and config:
 ## Notes
 
 Precedence, live reload, platform differences, or known unknowns:
-

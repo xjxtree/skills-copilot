@@ -1,6 +1,7 @@
 use super::*;
 use skills_copilot_adapters::{
-    codex_home_dir, codex_plugin_cache_id, parse_codex_enabled_plugin_ids,
+    codex_home_dir, codex_plugin_cache_id, codex_plugin_is_effectively_enabled,
+    parse_codex_plugin_states,
 };
 use skills_copilot_ai_core::NATIVE_RUNTIME_NAMESPACE;
 
@@ -9,14 +10,14 @@ pub(super) fn runtime_conflict_namespaces(
     ctx: &AdapterContext,
 ) -> std::collections::HashMap<String, String> {
     let codex_home = codex_home_dir(ctx);
-    let enabled_codex_plugins = fs::read_to_string(codex_home.join("config.toml"))
-        .map(|content| parse_codex_enabled_plugin_ids(&content))
+    let codex_plugin_states = fs::read_to_string(codex_home.join("config.toml"))
+        .map(|content| parse_codex_plugin_states(&content))
         .unwrap_or_default();
     let codex_plugin_roots = CodexAdapter
         .roots(ctx)
         .into_iter()
         .filter(|root| root.source == RootSource::Plugin)
-        .map(|root| root.path)
+        .map(|root| root.path.canonicalize().unwrap_or(root.path))
         .collect::<Vec<_>>();
 
     instances
@@ -40,8 +41,7 @@ pub(super) fn runtime_conflict_namespaces(
             }
 
             let plugin_id = codex_plugin_cache_id(&codex_home, &instance.path)?;
-            enabled_codex_plugins
-                .contains(&plugin_id)
+            codex_plugin_is_effectively_enabled(&plugin_id, &codex_plugin_states)
                 .then(|| (instance.id.clone(), format!("plugin:{plugin_id}")))
         })
         .collect()
@@ -65,17 +65,13 @@ pub fn apply_current_config_overrides_to_skill_records(
     ctx: &AdapterContext,
     records: &mut [SkillRecord],
 ) -> Result<(), CommandError> {
-    let disabled_paths = codex_disabled_skill_paths(&codex_user_config_path(ctx))?;
+    let projection = codex_config_projection(ctx)?;
     for record in records.iter_mut() {
         if record.agent != AgentId::Codex.as_str() {
             continue;
         }
-        let (state, enabled) = projected_codex_config_state(
-            &record.path,
-            &record.state,
-            record.enabled,
-            &disabled_paths,
-        );
+        let (state, enabled) =
+            projected_codex_config_state(&record.path, &record.state, record.enabled, &projection);
         record.state = state;
         record.enabled = enabled;
     }
@@ -89,9 +85,9 @@ pub fn apply_current_config_overrides_to_skill_detail(
     if detail.agent != AgentId::Codex.as_str() {
         return Ok(());
     }
-    let disabled_paths = codex_disabled_skill_paths(&codex_user_config_path(ctx))?;
+    let projection = codex_config_projection(ctx)?;
     let (state, enabled) =
-        projected_codex_config_state(&detail.path, &detail.state, detail.enabled, &disabled_paths);
+        projected_codex_config_state(&detail.path, &detail.state, detail.enabled, &projection);
     detail.state = state;
     detail.enabled = enabled;
     Ok(())
@@ -101,12 +97,12 @@ fn projected_codex_config_state(
     path: &Path,
     state: &str,
     enabled: bool,
-    disabled_paths: &BTreeSet<PathBuf>,
+    projection: &CodexConfigProjection,
 ) -> (String, bool) {
     if !matches!(state, "loaded" | "disabled") {
         return (state.to_string(), enabled);
     }
-    if disabled_paths.contains(path) {
+    if projection.is_disabled(path) {
         (SkillState::Disabled.as_str().to_string(), false)
     } else {
         (SkillState::Loaded.as_str().to_string(), true)

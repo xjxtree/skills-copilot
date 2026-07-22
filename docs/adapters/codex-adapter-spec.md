@@ -13,22 +13,36 @@ configuration paths, session stores, or service wire identities.
   the project root.
 - `/etc/codex/skills` when present, as read-only diagnostics.
 - Project `.codex/config.toml` as read-only diagnostics.
-- The installed `codex app-server` `skills/list` result is the authoritative
-  runtime inventory when available. Path-bearing rows merge with guarded
-  filesystem results; runtime-only rows remain synthetic and read-only.
+- One deterministic current version per installed plugin record whose
+  `[plugins.<id>] enabled` value is explicitly `true` in
+  `$CODEX_HOME/config.toml`. A missing entry and `enabled = false` both exclude
+  the package. The physical copy may live under
+  `$CODEX_HOME/plugins/cache/<marketplace>/<plugin>/<version>`, but that cache
+  directory is never a scan root. The adapter reads the copy's bounded regular
+  `.codex-plugin/plugin.json` and scans only the safe relative root named by the
+  manifest `skills` field; that root does not have to be named `skills`.
+  Every valid skill below that declared root is part of the enabled plugin
+  inventory unless its exact `SKILL.md` path is disabled by
+  `[[skills.config]]`.
 
 `CODEX_HOME` is shared by skill/config and local-session discovery. An override
 must be absolute and lexically normalize beneath the active user home; otherwise
 the adapter falls back to `$HOME/.codex`.
 
-`$CODEX_HOME/plugins/cache` is an implementation cache owned by ChatGPT/Codex,
-not a skill source. The adapter never scans it. Legacy catalog rows beneath that
-root may remain stored for audit continuity, but current list, instance,
-analysis, conflict, and Deleted projections exclude them.
+Codex product skill discovery is filesystem-only. The adapter does not start
+`codex app-server` and does not call `skills/list`; release validation may make
+a temporary read-only comparison without persisting runtime rows.
+When validating a running ChatGPT-hosted Codex session, the comparison must use
+that host bundle's Codex binary/version rather than an unrelated `codex` found
+on `PATH`; concurrently installed versions can publish different system skills.
+Plugin files are persisted installation state and appear in list, detail,
+analysis, and conflict projections with a plugin namespace, logical display
+path, and read-only package provenance; their physical cache path is hidden.
 
 Local plugin marketplace directories are runtime implementation details rather
-than documented skill roots. They are not walked. Runtime visibility comes
-through `skills/list`, without persisting cache or marketplace paths.
+than installed skill roots. They are not walked. Ineffective cache packages,
+staging directories, scripts, assets, and unrelated cache content are also
+excluded and never executed.
 
 ## Skill Format
 
@@ -38,6 +52,8 @@ through `skills/list`, without persisting cache or marketplace paths.
   `agents/` are metadata only; importing or scanning must not execute scripts.
 - Missing required frontmatter creates a broken record rather than aborting the
   scan.
+- Plugin skills use the runtime `<plugin>:<skill>` namespace. A colon-separated
+  runtime name is not evaluated by the local lowercase-slug naming rule.
 
 ## Writable Scope
 
@@ -49,11 +65,21 @@ through `skills/list`, without persisting cache or marketplace paths.
 ## Blocked Scope
 
 - Do not write project `.codex/config.toml`.
-- Do not write runtime-only, admin, system, or compatibility roots.
-- Do not install, update, remove, or execute ChatGPT plugin-cache content.
+- Do not write plugin, admin, system, or compatibility roots.
+- Do not install, update, remove, or execute installed Codex plugin content.
 - Do not fetch marketplace/network skill indexes.
 - Do not add hooks, MCP config writes, script execution, credentials, cloud
 sync, or telemetry through the adapter.
+
+## Session Inventory
+
+- Summary inventory reads the newest guarded `$CODEX_HOME/state_*.sqlite`
+  thread index, matching Codex `thread/list` semantics for active interactive
+  top-level tasks and exact cwd project scope.
+- A selected session's messages are read on demand from its guarded rollout;
+  summary rows never copy raw transcript content into Agent Copilot storage.
+- Archived, exec, subagent, review, compact, memory, and other internal source
+  kinds are excluded.
 
 ChatGPT's Plugin Directory is not Agent Copilot's Skill Manager. The latter is
 the separate `skillManager.*` path backed by an explicit manager CLI preview,

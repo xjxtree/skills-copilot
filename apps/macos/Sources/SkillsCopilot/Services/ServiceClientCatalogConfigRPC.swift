@@ -58,6 +58,17 @@ extension ServiceClient {
         try await call(method: "project.clearContext", params: EmptyParams())
     }
 
+    func removeRecentProjectContext(id: String) async throws -> ProjectContextState {
+        try await call(
+            method: "project.removeRecentContext",
+            params: ProjectContextIDParams(id: id)
+        )
+    }
+
+    func clearRecentProjectContexts() async throws -> ProjectContextState {
+        try await call(method: "project.clearRecentContexts", params: EmptyParams())
+    }
+
     func validateProjectContext(rootPath: String, currentCWD: String?, name: String?) async throws -> ProjectContext {
         try await call(
             method: "project.validateContext",

@@ -42,15 +42,17 @@ agent-specific parsing and workflow rules in shared project code.
 
 OpenAI's current desktop experience hosts Codex inside the ChatGPT app. Agent
 Copilot keeps `codex` as the stable adapter identity, continues to read the
-same safe `$CODEX_HOME` configuration and local session stores, and uses the
-current Codex runtime skill inventory when available. Implementation caches
-such as `$CODEX_HOME/plugins/cache` are not scanned. Existing Codex projects and
-configuration do not need to be renamed for Agent Copilot.
+same safe `$CODEX_HOME` configuration and local session stores. Skill inventory
+comes from persisted `SKILL.md` files, including manifest-declared skill roots
+of enabled, installed Codex plugins. The plugin store/cache is never walked as
+a generic source, and physical cache paths are hidden. Agent Copilot does not query
+the Codex runtime for skill inventory. Existing Codex projects and configuration
+do not need to be renamed for Agent Copilot.
 
 - **Skills:** scan supported agent roots, filter by agent/scope/status, inspect
   metadata, review findings, and enable or disable supported local skills.
-  Runtime-reported and filesystem-discovered skills retain source and
-  read-only ownership information without treating caches as skill roots.
+  Filesystem-discovered skills retain source and read-only ownership
+  information; installed Codex plugin copies are visible but never writable.
 - **Sessions:** browse local Claude Code, Codex, opencode, and Pi session
   previews; search within supported history; open a selected session with
   redacted message and skill-usage summaries.
@@ -98,10 +100,10 @@ asdf, and nvm paths when launched from Finder. Custom installs can set
 `SKILLS_COPILOT_NPX_PATH`.
 
 ChatGPT's Plugin Directory and Agent Copilot's Skill Package Manager are
-separate sources. Agent Copilot can consume the current Codex runtime's exposed
-skill inventory, but it does not scan, install, update, or remove ChatGPT plugin
-caches. Writable package operations remain in the explicit, previewed `npx
-skills` workflow.
+separate sources. Agent Copilot reads only enabled-plugin records and their
+manifest-declared local skill files. It does not treat the plugin store/cache as
+a general source, or install, update, remove, or execute plugin content. Writable package operations
+remain in the explicit, previewed `npx skills` workflow.
 
 ## Build From Source
 
@@ -149,11 +151,9 @@ pnpm check:privacy
 | `docs/service-protocol.md` | Service method contract for app/service integration |
 | `docs/security-model.md` | Security, privacy, credential, and local data rules |
 | `docs/ai-layer.md` | Optional provider workflow boundary |
-| `docs/ui-delivery-standards.md` | Native UI and screenshot validation standards |
+| `docs/ui-delivery-standards.md` | Native UI, interaction, and runtime validation standards |
 | `docs/runbooks/macos-app-runbook.md` | Local macOS build, run, and smoke validation flow |
 | `docs/runbooks/release-checklist.md` | Maintainer release-readiness checklist |
-| `docs/plans/roadmap.md` | Future work and deferred scope |
-| `docs/plans/development-tasks.md` | Active task routing |
 | `AGENTS.md` | Coding-agent operating rules for this repository |
 
 ## Contributing
@@ -165,7 +165,7 @@ Contributions are welcome. For a smooth review:
 - Update fixtures and `docs/service-protocol.md` when service behavior changes.
 - Run focused checks for small changes and `pnpm check:macos` for UI,
   protocol, or publishing work.
-- Run `pnpm check:privacy` before committing or publishing evidence.
+- Run `pnpm check:privacy` before committing or pushing changes.
 - Include the commands you ran in your PR or handoff notes.
 
 ## License

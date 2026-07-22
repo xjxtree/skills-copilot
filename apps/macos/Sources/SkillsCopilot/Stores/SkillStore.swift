@@ -200,9 +200,9 @@ final class SkillStore: ObservableObject {
     }
     @Published private(set) var projectContextState: ProjectContextState? {
         didSet {
+            guard oldValue?.active?.rootPath != projectContextState?.active?.rootPath else { return }
             invalidateScopedLocalSessionSummaryCache()
             activateLocalSessionSourceCache()
-            guard oldValue?.active?.rootPath != projectContextState?.active?.rootPath else { return }
             invalidateSkillManagerInstalledList()
             skillManagerInstalledByScope = [:]
             invalidateSkillManagerSearch()
@@ -234,7 +234,6 @@ final class SkillStore: ObservableObject {
         didSet { scheduleLastMutationMessageDismissal() }
     }
     @Published private(set) var refreshStatusMessage = UIStrings.refreshIdle
-    @Published private(set) var partialScanWarningMessage: String?
     @Published private(set) var watcherStatusMessage = UIStrings.refreshWatcherManual
     @Published private(set) var refreshLogEntries: [RefreshLogEntry] = []
     @Published private(set) var lastScanActivity: RefreshActivity?
@@ -249,6 +248,7 @@ final class SkillStore: ObservableObject {
         canLoadMore: false,
         canLoadAll: false
     )
+    @Published private(set) var catalogListCompletenessByAgent: [String: ListCompletenessState] = [:]
     @Published private(set) var canRetryLastRefresh = false
     @Published private(set) var claudeSettings: ConfigDocumentRecord?
     @Published private(set) var configMutationState: ConfigMutationState = .idle
@@ -1153,6 +1153,7 @@ final class SkillStore: ObservableObject {
             lastMutationMessage = UIStrings.scannedSkills(result.scannedCount)
             applyRefreshActivity(result.activity)
             catalogListCompleteness = catalogCompleteness(after: result)
+            catalogListCompletenessByAgent = catalogCompletenessByAgent(after: result)
             await loadSelectedDetail()
         } catch {
             handleRefreshFailure(error, action: .scan)
@@ -1215,6 +1216,37 @@ final class SkillStore: ObservableObject {
             if errorMessage == nil {
                 lastMutationMessage = UIStrings.projectClearedAndScanned
             }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeRecentProject(id: String) async {
+        guard !isRefreshBusy else { return }
+        isProjectUpdating = true
+        errorMessage = nil
+        lastMutationMessage = nil
+        defer { isProjectUpdating = false }
+
+        do {
+            let removedName = recentProjectContexts.first { $0.id == id }?.name
+            projectContextState = try await service.removeRecentProjectContext(id: id)
+            lastMutationMessage = UIStrings.recentProjectRemoved(removedName ?? UIStrings.projectSelectedSource)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func clearRecentProjects() async {
+        guard !isRefreshBusy else { return }
+        isProjectUpdating = true
+        errorMessage = nil
+        lastMutationMessage = nil
+        defer { isProjectUpdating = false }
+
+        do {
+            projectContextState = try await service.clearRecentProjectContexts()
+            lastMutationMessage = UIStrings.recentProjectsCleared
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -4013,7 +4045,10 @@ final class SkillStore: ObservableObject {
         self.llmStatus = fetchedLLMStatus
         self.projectContextState = fetchedProjectContextState
         self.skills = snapshot.skills
-        self.catalogListCompleteness = unknownCatalogCompleteness(loadedCount: snapshot.skills.count)
+        self.catalogListCompleteness = unknownCatalogCompleteness(
+            loadedCount: SkillListModel.currentSkills(snapshot.skills).count
+        )
+        self.catalogListCompletenessByAgent = [:]
         self.findings = snapshot.findings
         self.ruleTuning = fetchedRuleTuning
         self.conflicts = snapshot.conflicts
@@ -4076,53 +4111,65 @@ final class SkillStore: ObservableObject {
     }
 
     private func catalogCompleteness(after result: ScanResult) -> ListCompletenessState {
+        let currentSkills = SkillListModel.currentSkills(result.skills)
         guard let activity = result.activity else {
-            return ListCompletenessState(
-                loadedCount: result.skills.count,
-                totalCount: nil,
-                hasMore: false,
+            return catalogCompletenessState(
+                loadedCount: currentSkills.count,
                 isComplete: false,
-                completeness: .incomplete,
-                incompleteReason: .sourceLimited,
-                loadingPhase: .idle,
-                canLoadMore: false,
-                canLoadAll: false
+                incompleteReason: .sourceLimited
             )
         }
         let summaries = activity.agentSummaries ?? []
-        let issues = summaries.flatMap(\.scanIssues)
         let complete = activity.status == "completed"
-            && summaries.allSatisfy { summary in
-                summary.rootsPartial.isEmpty && summary.rootsSkipped.isEmpty
-            }
-        if complete {
-            return ListCompletenessState(
-                loadedCount: result.skills.count,
-                totalCount: result.skills.count,
-                hasMore: false,
-                isComplete: true,
-                completeness: .complete,
-                incompleteReason: nil,
-                loadingPhase: .idle,
-                canLoadMore: false,
-                canLoadAll: false
+            && summaries.allSatisfy(\.provesCatalogCompleteness)
+        let incompleteSummaries = summaries.filter { !$0.provesCatalogCompleteness }
+        let reason = catalogIncompleteReason(for: incompleteSummaries)
+        return catalogCompletenessState(
+            loadedCount: currentSkills.count,
+            isComplete: complete,
+            incompleteReason: complete ? nil : reason
+        )
+    }
+
+    private func catalogCompletenessByAgent(after result: ScanResult) -> [String: ListCompletenessState] {
+        guard let summaries = result.activity?.agentSummaries else { return [:] }
+        let currentSkills = SkillListModel.currentSkills(result.skills)
+        return summaries.reduce(into: [String: ListCompletenessState]()) { states, summary in
+            states[summary.agent] = catalogCompletenessState(
+                loadedCount: currentSkills.filter { $0.agent == summary.agent }.count,
+                isComplete: summary.provesCatalogCompleteness,
+                incompleteReason: summary.provesCatalogCompleteness
+                    ? nil
+                    : summary.catalogIncompleteReason
             )
         }
-        let reason: ListIncompleteReason
-        if issues.contains(where: { $0.kind == "budget_exceeded" }) {
-            reason = .safetyBudget
-        } else if !issues.isEmpty {
-            reason = .unreadableSource
-        } else {
-            reason = .sourceLimited
+    }
+
+    private func catalogIncompleteReason(
+        for summaries: [AgentRefreshSummary]
+    ) -> ListIncompleteReason {
+        let reasons = summaries.map(\.catalogIncompleteReason)
+        if reasons.contains(.safetyBudget) {
+            return .safetyBudget
         }
+        if reasons.contains(.unreadableSource) {
+            return .unreadableSource
+        }
+        return .sourceLimited
+    }
+
+    private func catalogCompletenessState(
+        loadedCount: Int,
+        isComplete: Bool,
+        incompleteReason: ListIncompleteReason?
+    ) -> ListCompletenessState {
         return ListCompletenessState(
-            loadedCount: result.skills.count,
-            totalCount: nil,
+            loadedCount: loadedCount,
+            totalCount: isComplete ? loadedCount : nil,
             hasMore: false,
-            isComplete: false,
-            completeness: .incomplete,
-            incompleteReason: reason,
+            isComplete: isComplete,
+            completeness: isComplete ? .complete : .incomplete,
+            incompleteReason: incompleteReason,
             loadingPhase: .idle,
             canLoadMore: false,
             canLoadAll: false
@@ -4837,9 +4884,13 @@ final class SkillStore: ObservableObject {
     }
 
     private func applyRefreshActivity(_ activity: RefreshActivity?) {
+        lastScanActivity = activity
         if let activity {
-            lastScanActivity = activity
-            if activity.status == "completed-partial" {
+            let summaries = activity.agentSummaries ?? []
+            if let degradedSummary = summaries.first(where: { !$0.provesCatalogCompleteness }) {
+                refreshStatusMessage = refreshWarningMessage(for: degradedSummary)
+                    ?? UIStrings.refreshPartialIssueUnavailable
+            } else if activity.status == "completed-partial" {
                 let partialSummary = activity.agentSummaries?.first { summary in
                     summary.status == "completed-partial"
                 }
@@ -4862,10 +4913,6 @@ final class SkillStore: ObservableObject {
                     issue: issueText,
                     recovery: recovery
                 )
-                partialScanWarningMessage = refreshStatusMessage
-                // DetailFeedbackInlineView keeps this degraded completion visible
-                // as a warning instead of replacing it with a generic success.
-                lastMutationMessage = refreshStatusMessage
             } else {
                 refreshStatusMessage = UIStrings.refreshScanComplete(
                     activity.scannedCount,
@@ -4873,19 +4920,10 @@ final class SkillStore: ObservableObject {
                     visibleIssueCount,
                     sameAgentRuntimeConflictCount
                 )
-                if let danglingIssue = activity.agentSummaries?
-                    .flatMap(\.scanIssues)
-                    .first(where: { $0.kind == "dangling_symlink" })
-                {
-                    partialScanWarningMessage = UIStrings.refreshDanglingSymlink(danglingIssue.path)
-                } else {
-                    partialScanWarningMessage = nil
-                }
             }
             refreshLogEntries = activity.logEntries + refreshLogEntries
             trimRefreshLog()
         } else {
-            partialScanWarningMessage = nil
             refreshStatusMessage = UIStrings.refreshScanComplete(
                 currentSkillCount,
                 currentSkillCount,

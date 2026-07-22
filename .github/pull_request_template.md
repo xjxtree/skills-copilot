@@ -5,7 +5,7 @@ What changed and why?
 ## Type
 
 - [ ] Documentation
-- [ ] Agent spec evidence
+- [ ] Adapter contract
 - [ ] Planning
 - [ ] Other
 
@@ -14,7 +14,7 @@ What changed and why?
 - [ ] I read `README.md`, `CLAUDE.md`, and `docs/`
 - [ ] I did not guess unverified agent behavior
 - [ ] I kept the current architecture, adapter, security, and write boundaries intact
-- [ ] I updated related docs if this changes architecture, data model, security, or roadmap
+- [ ] I updated related docs if this changes architecture, data model, security, protocol, UI, or adapter contracts
 
 ## Evidence
 

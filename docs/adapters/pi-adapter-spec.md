@@ -4,12 +4,16 @@ This document records the current Pi adapter contract.
 
 ## Scan Roots
 
-- Native global `~/.pi/agent/skills`.
-- Native project `.pi/skills`.
-- Shared `.agents/skills` compatibility roots from user and project scopes.
+- Project and global installed package skill roots, then configured `skills`
+  paths, in Pi's first-name-wins precedence.
+- Cwd `.pi/skills` only; do not infer `.pi/skills` from every ancestor.
+- Project `.agents/skills` from cwd through the git root.
+- Native global `~/.pi/agent/skills` and shared `~/.agents/skills`.
 
-Directory skills with `SKILL.md` are cataloged. Direct root Markdown files are
-ignored because they can include ordinary resource documents.
+Directory skills with `SKILL.md` are cataloged recursively. Direct root
+Markdown skills are accepted in Pi-native roots and ignored in `.agents`
+compatibility roots. Declared skill symlinks authorize only their exact
+canonical targets.
 
 ## Skill Format
 
@@ -33,6 +37,13 @@ ignored because they can include ordinary resource documents.
 - No `.agents` direct skill-file installs.
 - No scripts, credentials, cloud sync, telemetry, or AI write-back.
 - Explicit untrusted project markers block project writes.
+
+## Session Inventory
+
+- Use `PI_CODING_AGENT_SESSION_DIR`, configured `sessionDir`, or the native
+  `<agent-dir>/sessions` fallback, matching Pi's own lookup order.
+- Extension subagent artifacts are excluded; normal parent transcript branches
+  remain part of the user-owned session.
 
 ## Fixtures
 

@@ -232,7 +232,7 @@ extension SkillRecord {
             }
             return .configured
         case "claude-code":
-            if normalizedPathContains(".claude/skills/") {
+            if normalizedPathContains(".claude/skills/") || normalizedPathContains(".claude/commands/") {
                 return .native
             }
         case "codex":
@@ -373,7 +373,7 @@ extension SkillRecord {
         }
         if rootKind == .readOnly {
             if sourceKind == "chatgpt-plugin-cache", let pluginPackageSummary {
-                return "\(agentLabel) ChatGPT plugin · \(pluginPackageSummary)"
+                return "\(agentLabel) plugin install · \(pluginPackageSummary)"
             }
             if normalizedAgent == "hermes" && scopeKind == .global {
                 return "\(agentLabel) home/profile read-only"
@@ -382,6 +382,14 @@ extension SkillRecord {
                 return "\(agentLabel) workspace read-only"
             }
             return "\(agentLabel) read-only \(scopeLabel)"
+        }
+        if rootKind == .compatibility && normalizedAgent == "opencode" {
+            if normalizedPathContains(".claude/skills/") {
+                return "opencode official compatibility · .claude/skills"
+            }
+            if normalizedPathContains(".agents/skills/") {
+                return "opencode official compatibility · .agents/skills"
+            }
         }
         if rootKind == .toolGlobal || scopeKind == .toolGlobal {
             return "\(agentLabel) tool-global"
@@ -1203,6 +1211,37 @@ struct AgentRefreshSummary: Codable, Hashable, Identifiable {
             "file_too_large", "budget_exceeded",
         ]
         return scanIssues.first { partialKinds.contains($0.kind) } ?? scanIssues.first
+    }
+
+    var primaryCatalogIncompleteIssue: AgentRefreshScanIssue? {
+        if !rootsPartial.isEmpty {
+            return primaryPartialIssue
+        }
+        if !rootsSkipped.isEmpty {
+            let skippedKinds: Set<String> = ["root_unavailable", "root_outside_allowlist"]
+            return scanIssues.first { skippedKinds.contains($0.kind) } ?? scanIssues.first
+        }
+        return scanIssues.first
+    }
+
+    var provesCatalogCompleteness: Bool {
+        rootsPartial.isEmpty
+            && rootsSkipped.isEmpty
+            && ["completed", "completed-no-roots-scanned"].contains(status)
+    }
+
+    var catalogIncompleteReason: ListIncompleteReason {
+        if scanIssues.contains(where: { $0.kind == "budget_exceeded" }) {
+            return .safetyBudget
+        }
+        let unreadableKinds: Set<String> = [
+            "directory_unreadable", "entry_unreadable", "file_unreadable",
+        ]
+        if !rootsPartial.isEmpty,
+           scanIssues.contains(where: { unreadableKinds.contains($0.kind) }) {
+            return .unreadableSource
+        }
+        return .sourceLimited
     }
 
     enum CodingKeys: String, CodingKey {

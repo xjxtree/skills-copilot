@@ -106,6 +106,15 @@ enum UIStrings {
     }
     static var recentProjects: String { text("project.recent", "Recent Projects") }
     static var noRecentProjects: String { text("project.noRecent", "No Recent Projects") }
+    static var manageRecentProjects: String { text("project.recent.manage", "Manage Recent Projects") }
+    static var clearRecentProjects: String { text("project.recent.clear", "Clear Recent Projects") }
+    static var clearRecentProjectsCompact: String { text("project.recent.clear.compact", "Clear") }
+    static func recentProjectItem(_ name: String, path: String) -> String {
+        format("project.recent.item", "%@ — %@", name, path)
+    }
+    static func removeRecentProject(_ name: String, path: String) -> String {
+        format("project.recent.remove", "Remove %@ (%@) from Recent Projects", name, path)
+    }
     static var projectValidation: String { text("project.validation", "Project Validation") }
     static var noProjectSkillsMessage: String { text("empty.noProjectSkills.message", "No skills were found in global roots. Choose a project to include project-scoped skills, then scan.") }
     static func noAgentSkillsMessage(_ agent: String) -> String {
@@ -160,7 +169,7 @@ enum UIStrings {
         case "source_changed":
             return text("list.completeness.reason.sourceChanged", "The source changed while loading. Restart the refresh before merging more rows.")
         case "source_limited":
-            return text("list.completeness.reason.sourceLimited", "The source cannot expose or prove a complete result.")
+            return text("list.completeness.reason.sourceLimited", "A source is unavailable or cannot expose or prove a complete result.")
         case "unreadable_source":
             return text("list.completeness.reason.unreadableSource", "Part of the source could not be read. Fix access and retry.")
         case "page_failed":
@@ -1026,6 +1035,30 @@ enum UIStrings {
         )
     }
 
+    static func refreshAgentScanDegraded(
+        _ agent: String,
+        status: String,
+        scanned: Int,
+        skills: Int,
+        findings: Int,
+        conflicts: Int,
+        issue: String,
+        recovery: String
+    ) -> String {
+        format(
+            "refresh.agentScanDegraded",
+            "%@ scan %@: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@",
+            agent,
+            status,
+            scanned,
+            skills,
+            findings,
+            conflicts,
+            issue,
+            recovery
+        )
+    }
+
     static var refreshPartialIssueUnavailable: String {
         text("refresh.partialIssueUnavailable", "No typed issue detail was returned.")
     }
@@ -1215,6 +1248,10 @@ enum UIStrings {
     }
 
     static var projectClearedAndScanned: String { text("message.projectClearedAndScanned", "Cleared project context and refreshed catalog.") }
+    static func recentProjectRemoved(_ name: String) -> String {
+        format("message.projectRecentRemoved", "Removed %@ from Recent Projects.", name)
+    }
+    static var recentProjectsCleared: String { text("message.projectRecentsCleared", "Cleared Recent Projects.") }
     static var projectScanSkippedValidation: String { text("refresh.projectValidationSkipped", "Project context needs attention before scanning.") }
 
     static func projectValidationFailed(_ reason: String) -> String {

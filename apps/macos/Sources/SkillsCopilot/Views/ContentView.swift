@@ -485,30 +485,64 @@ private struct TitlebarProjectPickerControl: View {
 
                 if !store.recentProjectContexts.isEmpty {
                     Divider()
-                    Text(UIStrings.recentProjects)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
+                    HStack(spacing: 8) {
+                        Text(UIStrings.recentProjects)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
 
-                    ForEach(store.recentProjectContexts) { context in
-                        Button {
-                            isPopoverPresented = false
-                            Task {
-                                await store.setProject(
-                                    rootPath: context.rootPath,
-                                    currentCWD: context.currentCWD,
-                                    name: context.name
-                                )
-                            }
+                        Spacer(minLength: 8)
+
+                        Button(role: .destructive) {
+                            Task { await store.clearRecentProjects() }
                         } label: {
-                            Text(context.name)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(UIStrings.clearRecentProjectsCompact)
+                                .font(.caption)
                         }
                         .buttonStyle(.plain)
+                        .help(UIStrings.clearRecentProjects)
+                        .accessibilityLabel(UIStrings.clearRecentProjects)
+                    }
+                    .padding(.horizontal, 8)
+
+                    ForEach(store.recentProjectContexts) { context in
+                        HStack(spacing: 4) {
+                            Button {
+                                isPopoverPresented = false
+                                Task {
+                                    await store.setProject(
+                                        rootPath: context.rootPath,
+                                        currentCWD: context.currentCWD,
+                                        name: context.name
+                                    )
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(context.name)
+                                        .lineLimit(1)
+                                    Text(recentProjectPath(context))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 6)
+
+                            Button(role: .destructive) {
+                                Task { await store.removeRecentProject(id: context.id) }
+                            } label: {
+                                Image(systemName: "trash")
+                                    .frame(width: 24, height: 24)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help(UIStrings.removeRecentProject(context.name, path: recentProjectPath(context)))
+                            .accessibilityLabel(UIStrings.removeRecentProject(context.name, path: recentProjectPath(context)))
+                        }
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
                     }
                 }
 
@@ -539,7 +573,7 @@ private struct TitlebarProjectPickerControl: View {
                 }
             }
             .padding(8)
-            .frame(width: 260, alignment: .leading)
+            .frame(width: 300, alignment: .leading)
         }
         .help(projectHelp)
         .accessibilityLabel(UIStrings.text("project.chooseMenu", "Project"))
@@ -600,6 +634,10 @@ private struct TitlebarProjectPickerControl: View {
     private func revealActiveProject() {
         guard let rootPath = store.activeProjectContext?.rootPath else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: rootPath)])
+    }
+
+    private func recentProjectPath(_ context: ProjectContext) -> String {
+        DisplayText.privacyPath(context.rootPath, privacyModeEnabled: true)
     }
 }
 

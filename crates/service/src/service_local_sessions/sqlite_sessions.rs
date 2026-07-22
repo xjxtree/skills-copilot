@@ -14,6 +14,7 @@ const SQLITE_MESSAGE_SCAN_ROWS: usize = 1_000;
 enum SqliteAgent {
     Opencode,
     Hermes,
+    Openclaw,
 }
 
 impl SqliteAgent {
@@ -21,6 +22,7 @@ impl SqliteAgent {
         match value?.trim().to_ascii_lowercase().as_str() {
             "opencode" | "open-code" => Some(Self::Opencode),
             "hermes" | "hermes-agent" => Some(Self::Hermes),
+            "openclaw" | "open-claw" => Some(Self::Openclaw),
             _ => None,
         }
     }
@@ -29,6 +31,7 @@ impl SqliteAgent {
         match self {
             Self::Opencode => "opencode",
             Self::Hermes => "hermes",
+            Self::Openclaw => "openclaw",
         }
     }
 
@@ -36,19 +39,91 @@ impl SqliteAgent {
         match self {
             Self::Opencode => "opencode-sqlite",
             Self::Hermes => "hermes-sqlite",
+            Self::Openclaw => "openclaw-sqlite",
         }
     }
 
-    fn database_path(self, ctx: &AdapterContext) -> PathBuf {
+    fn database_paths(self, ctx: &AdapterContext) -> Vec<(PathBuf, Option<String>)> {
         match self {
-            Self::Opencode => opencode_data_dir(ctx).join("opencode.db"),
-            Self::Hermes => hermes_home_dir(ctx).join("state.db"),
+            Self::Opencode => vec![(opencode_data_dir(ctx).join("opencode.db"), None)],
+            Self::Hermes => vec![(hermes_home_dir(ctx).join("state.db"), None)],
+            Self::Openclaw => openclaw_database_sources(ctx),
         }
     }
 }
 
+fn openclaw_database_sources(ctx: &AdapterContext) -> Vec<(PathBuf, Option<String>)> {
+    let state_dir = openclaw_state_dir(ctx);
+    let config = std::fs::read_to_string(openclaw_config_path(ctx))
+        .ok()
+        .and_then(|content| json5::from_str::<serde_json::Value>(&content).ok());
+    openclaw_agent_database_paths(&state_dir)
+        .into_iter()
+        .map(|db_path| {
+            let agent_id = db_path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .and_then(|value| value.to_str())
+                .unwrap_or("main");
+            let workspace =
+                openclaw_workspace_for_agent(config.as_ref(), agent_id, &state_dir, &ctx.user_home);
+            (
+                db_path,
+                workspace.map(|path| path.to_string_lossy().to_string()),
+            )
+        })
+        .collect()
+}
+
+fn openclaw_workspace_for_agent(
+    config: Option<&serde_json::Value>,
+    agent_id: &str,
+    state_dir: &Path,
+    user_home: &Path,
+) -> Option<PathBuf> {
+    let listed = config
+        .and_then(|config| config.get("agents"))
+        .and_then(|agents| agents.get("list"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
+        })
+        .and_then(|agent| agent.get("workspace"))
+        .and_then(serde_json::Value::as_str);
+    let default = config
+        .and_then(|config| config.get("agents"))
+        .and_then(|agents| agents.get("defaults"))
+        .and_then(|defaults| defaults.get("workspace"))
+        .and_then(serde_json::Value::as_str);
+    let raw = listed.or(default);
+    if let Some(raw) = raw {
+        let trimmed = raw.trim();
+        if trimmed == "~" {
+            return Some(user_home.to_path_buf());
+        }
+        if let Some(relative) = trimmed.strip_prefix("~/") {
+            return Some(user_home.join(relative));
+        }
+        let path = PathBuf::from(trimmed);
+        return Some(if path.is_absolute() {
+            path
+        } else {
+            state_dir.join(path)
+        });
+    }
+    Some(if agent_id == "main" {
+        state_dir.join("workspace")
+    } else {
+        state_dir.join(format!("workspace-{agent_id}"))
+    })
+}
+
 #[derive(Clone)]
 struct SqliteSession {
+    db_path: PathBuf,
     native_id: String,
     service_id: String,
     title: String,
@@ -82,11 +157,35 @@ pub(super) fn preview_sqlite_sessions(
     max_excerpt_chars: usize,
     redaction_roots: &[(String, &'static str)],
 ) -> Result<Option<LocalSessionPreviewResult>, ServiceError> {
+    if requested_agent.is_some_and(|agent| agent.eq_ignore_ascii_case(AgentId::Codex.as_str())) {
+        // Summary inventory comes from the same local thread index used by
+        // `thread/list`. Exact detail and message reads deliberately fall back
+        // to the guarded rollout reader so raw conversation content is never
+        // copied into another database.
+        if params.session_id.is_none() && !include_content_items {
+            return preview_codex_state_sessions(
+                ctx,
+                params,
+                scope,
+                sort,
+                direction,
+                search,
+                limit,
+                max_excerpt_chars,
+                redaction_roots,
+            );
+        }
+        return Ok(None);
+    }
     let Some(agent) = SqliteAgent::from_requested(requested_agent) else {
         return Ok(None);
     };
-    let db_path = agent.database_path(ctx);
-    if !db_path.is_file() {
+    let db_sources = agent
+        .database_paths(ctx)
+        .into_iter()
+        .filter(|(path, _)| path.is_file())
+        .collect::<Vec<_>>();
+    if db_sources.is_empty() {
         return Ok(None);
     }
     if params.paging_mode.as_deref() == Some("keyset")
@@ -100,8 +199,16 @@ pub(super) fn preview_sqlite_sessions(
         ));
     }
 
-    let connection = open_read_only_database(&db_path)?;
-    let mut sessions = load_sessions(&connection, agent, &db_path)?;
+    let mut sessions = Vec::new();
+    for (db_path, project_root) in &db_sources {
+        let connection = open_read_only_database(db_path)?;
+        sessions.extend(load_sessions(
+            &connection,
+            agent,
+            db_path,
+            project_root.as_deref(),
+        )?);
+    }
     if let Some(session_id) = params
         .session_id
         .as_deref()
@@ -129,7 +236,7 @@ pub(super) fn preview_sqlite_sessions(
     }
     sort_sqlite_sessions(&mut sessions, sort, direction);
 
-    let source_revision = sqlite_source_revision(&sessions, agent, &db_path);
+    let source_revision = sqlite_source_revision(&sessions, agent);
     let query_digest = sqlite_preview_query_digest(agent, params, scope, include_content_items);
     let cursor = params
         .cursor
@@ -161,6 +268,7 @@ pub(super) fn preview_sqlite_sessions(
     let mut redactor = PromptRedactor::new(redaction_roots);
     let mut rows = Vec::with_capacity(page.len());
     for session in page {
+        let connection = open_read_only_database(&session.db_path)?;
         rows.push(sqlite_session_row(
             &connection,
             agent,
@@ -193,7 +301,18 @@ pub(super) fn preview_sqlite_sessions(
     } else {
         None
     };
-    let redacted_db = redactor.redact(&db_path.to_string_lossy());
+    let preview_roots = db_sources
+        .iter()
+        .map(|(db_path, _)| LocalSessionPreviewRoot {
+            root: redactor.redact(&db_path.to_string_lossy()),
+            status: "auto-discovered-read-only".to_string(),
+            candidate_count: sessions
+                .iter()
+                .filter(|session| session.db_path.as_path() == db_path.as_path())
+                .count(),
+            blocker: None,
+        })
+        .collect();
     let user_message_count = rows.iter().map(|row| row.user_message_count).sum();
     let total_message_count = rows.iter().map(|row| row.total_message_count).sum();
     let tool_call_count = rows.iter().map(|row| row.tool_call_count).sum();
@@ -202,12 +321,7 @@ pub(super) fn preview_sqlite_sessions(
         generated_by: "local-v3.00-sqlite",
         authorized: true,
         authorization_required: false,
-        roots: vec![LocalSessionPreviewRoot {
-            root: redacted_db,
-            status: "auto-discovered-read-only".to_string(),
-            candidate_count: count,
-            blocker: None,
-        }],
+        roots: preview_roots,
         count,
         total_candidate_count: sessions.len(),
         total_matched_count: sessions.len(),
@@ -242,6 +356,294 @@ pub(super) fn preview_sqlite_sessions(
     }))
 }
 
+#[derive(Clone)]
+struct CodexIndexedSession {
+    service_id: String,
+    native_id: String,
+    title: String,
+    cwd: String,
+    rollout_path: PathBuf,
+    preview: String,
+    started_at: i64,
+    modified_at: i64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preview_codex_state_sessions(
+    ctx: &AdapterContext,
+    params: &LocalSessionPreviewParams,
+    scope: LocalSessionScope,
+    sort: LocalSessionSort,
+    direction: SortDirection,
+    search: Option<&str>,
+    limit: usize,
+    max_excerpt_chars: usize,
+    redaction_roots: &[(String, &'static str)],
+) -> Result<Option<LocalSessionPreviewResult>, ServiceError> {
+    let Some(db_path) = codex_state_database_path(ctx) else {
+        return Ok(None);
+    };
+    if params.paging_mode.as_deref() == Some("keyset")
+        && (sort != LocalSessionSort::ModifiedAt
+            || direction != SortDirection::Desc
+            || search.is_some()
+            || scope != LocalSessionScope::All)
+    {
+        return Err(ServiceError::InvalidRequest(
+            "cursor session pages require all-scope recent order without server search".to_string(),
+        ));
+    }
+
+    let connection = open_read_only_database(&db_path)?;
+    let mut sessions = load_codex_indexed_sessions(&connection)?;
+    if scope == LocalSessionScope::Project {
+        let project_roots = local_session_project_filter_roots(
+            ctx,
+            params.project_root.as_deref(),
+            params.current_cwd.as_deref(),
+        );
+        sessions.retain(|session| {
+            let session_cwd = local_session_normalized_path(Path::new(&session.cwd));
+            project_roots
+                .iter()
+                .any(|root| local_session_normalized_path(root) == session_cwd)
+        });
+    }
+    if let Some(search) = search {
+        sessions.retain(|session| {
+            session.title.to_ascii_lowercase().contains(search)
+                || session.preview.to_ascii_lowercase().contains(search)
+        });
+    }
+    sessions.sort_by(|left, right| {
+        let order = match sort {
+            LocalSessionSort::ModifiedAt => left.modified_at.cmp(&right.modified_at),
+            LocalSessionSort::Title => left.title.to_lowercase().cmp(&right.title.to_lowercase()),
+        };
+        let order = if direction == SortDirection::Desc {
+            order.reverse()
+        } else {
+            order
+        };
+        order.then_with(|| left.service_id.cmp(&right.service_id))
+    });
+
+    let source_revision = codex_index_source_revision(&sessions, &db_path);
+    let query_digest = format!(
+        "sha256:{}",
+        trace_content_hash(&format!(
+            "codex|{}|{}|{}|{}",
+            scope.as_str(),
+            params.project_root.as_deref().unwrap_or_default(),
+            params.current_cwd.as_deref().unwrap_or_default(),
+            search.unwrap_or_default()
+        ))
+    );
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(|value| decode_cursor(value, PREVIEW_METHOD, &query_digest))
+        .transpose()?;
+    if params
+        .source_revision
+        .as_deref()
+        .is_some_and(|value| value != source_revision)
+        || cursor
+            .as_ref()
+            .is_some_and(|value| value.source_revision != source_revision)
+    {
+        return Err(ServiceError::SourceChanged);
+    }
+    let start = cursor.as_ref().map_or_else(
+        || params.offset.unwrap_or(0).min(sessions.len()),
+        |cursor| {
+            sessions.partition_point(|session| {
+                session.modified_at > cursor.sort_value
+                    || (session.modified_at == cursor.sort_value
+                        && session.service_id <= cursor.stable_id)
+            })
+        },
+    );
+    let end = start.saturating_add(limit).min(sessions.len());
+    let page = &sessions[start..end];
+    let mut redactor = PromptRedactor::new(redaction_roots);
+    let rows = page
+        .iter()
+        .map(|session| {
+            let title = if session.title.trim().is_empty() {
+                truncate_chars(&session.preview, 120)
+            } else {
+                truncate_chars(&session.title, 120)
+            };
+            let excerpt = truncate_chars(&redactor.redact(&session.preview), max_excerpt_chars);
+            LocalSessionPreviewRow {
+                id: session.service_id.clone(),
+                title,
+                source_kind: "codex-state-index".to_string(),
+                scope: scope.as_str().to_string(),
+                agent: Some(AgentId::Codex.as_str().to_string()),
+                project_root: Some(redactor.redact(&session.cwd)),
+                redacted_path: format!(
+                    "<codex-session-index>#{}",
+                    &session.native_id[..session.native_id.len().min(20)]
+                ),
+                modified_at: Some(session.modified_at),
+                started_at: Some(session.started_at),
+                ended_at: Some(session.modified_at),
+                excerpt_char_count: excerpt.chars().count(),
+                excerpt,
+                user_message_count: 0,
+                total_message_count: 0,
+                tool_call_count: 0,
+                skill_call_count: 0,
+                content_hash: format!(
+                    "sha256:{}",
+                    trace_content_hash(&format!("{}|{}", session.native_id, session.modified_at))
+                ),
+                evidence_refs: vec!["codex:thread-index".to_string()],
+                content_included: false,
+                content_items: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let has_more = end < sessions.len();
+    let next_cursor = if has_more {
+        page.last()
+            .map(|session| {
+                encode_cursor(&KeysetCursor {
+                    version: 1,
+                    method: PREVIEW_METHOD.to_string(),
+                    query_digest: query_digest.clone(),
+                    source_revision: source_revision.clone(),
+                    sort_value: session.modified_at,
+                    stable_id: session.service_id.clone(),
+                    tie_breaker_digest: None,
+                    accepted_count: Some(end),
+                    processed_prefix_digest: None,
+                    resolved_start_at: None,
+                    resolved_end_at: None,
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let count = rows.len();
+    let redacted_db = redactor.redact(&db_path.to_string_lossy());
+    Ok(Some(LocalSessionPreviewResult {
+        generated_by: "local-v3.01-codex-index",
+        authorized: true,
+        authorization_required: false,
+        roots: vec![LocalSessionPreviewRoot {
+            root: redacted_db,
+            status: "auto-discovered-read-only".to_string(),
+            candidate_count: sessions.len(),
+            blocker: None,
+        }],
+        count,
+        total_candidate_count: sessions.len(),
+        total_matched_count: sessions.len(),
+        offset: start,
+        limit,
+        has_more,
+        next_offset: (params.cursor.is_none() && has_more).then_some(end),
+        next_cursor,
+        source_revision: Some(source_revision),
+        source_completeness: ListSourceCompleteness::Enumerable,
+        incomplete_reason: None,
+        candidate_set_truncated: false,
+        user_message_count: 0,
+        total_message_count: 0,
+        tool_call_count: 0,
+        skill_call_count: 0,
+        skill_usage_rows: Vec::new(),
+        session_rows: rows,
+        gap_notes: Vec::new(),
+        blocker_notes: Vec::new(),
+        redaction_summary: local_preview_redaction_summary_from(redactor.summary()),
+        safety_flags: local_preview_safety_flags(),
+        read_only: true,
+        provider_request_sent: false,
+        skill_files_mutated: false,
+        agent_config_mutated: false,
+        snapshot_created: false,
+        triage_mutated: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        raw_trace_persisted: false,
+    }))
+}
+
+fn codex_state_database_path(ctx: &AdapterContext) -> Option<PathBuf> {
+    let codex_home = codex_home_dir(ctx);
+    let preferred = codex_home.join("state_5.sqlite");
+    if preferred.is_file() {
+        return Some(preferred);
+    }
+    let mut candidates = fs::read_dir(codex_home)
+        .ok()?
+        .take(128)
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let version = name
+                .strip_prefix("state_")?
+                .strip_suffix(".sqlite")?
+                .parse::<u32>()
+                .ok()?;
+            entry
+                .file_type()
+                .ok()?
+                .is_file()
+                .then_some((version, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(version, _)| *version);
+    candidates.pop().map(|(_, path)| path)
+}
+
+fn load_codex_indexed_sessions(
+    connection: &Connection,
+) -> Result<Vec<CodexIndexedSession>, ServiceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, title, cwd, rollout_path, preview, COALESCE(created_at_ms, created_at * 1000), COALESCE(updated_at_ms, updated_at * 1000) FROM threads WHERE archived = 0 AND source IN ('cli', 'vscode', 'appServer', 'unknown') ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC, id ASC LIMIT ?1",
+        )
+        .map_err(sqlite_schema_error)?;
+    let rows = statement
+        .query_map([MAX_SQLITE_SESSIONS as i64], |row| {
+            let native_id: String = row.get(0)?;
+            let rollout_path = PathBuf::from(row.get::<_, String>(3)?);
+            Ok(CodexIndexedSession {
+                service_id: local_session_row_id(&rollout_path),
+                native_id,
+                title: row.get(1)?,
+                cwd: row.get(2)?,
+                rollout_path,
+                preview: row.get(4)?,
+                started_at: row.get(5)?,
+                modified_at: row.get(6)?,
+            })
+        })
+        .map_err(sqlite_schema_error)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_schema_error)
+}
+
+fn codex_index_source_revision(sessions: &[CodexIndexedSession], db_path: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-copilot.codex-thread-index.v1\0");
+    hasher.update(trace_content_hash(&db_path.to_string_lossy()).as_bytes());
+    for session in sessions {
+        hasher.update([0]);
+        hasher.update(session.service_id.as_bytes());
+        hasher.update(session.modified_at.to_le_bytes());
+        hasher.update(session.rollout_path.to_string_lossy().as_bytes());
+    }
+    format!("sha256:{}", hex_prefix(&hasher.finalize(), 64))
+}
+
 pub(super) fn list_sqlite_session_messages(
     ctx: &AdapterContext,
     params: &LocalSessionMessagePageParams,
@@ -251,21 +653,32 @@ pub(super) fn list_sqlite_session_messages(
     let Some(agent) = SqliteAgent::from_requested(params.agent.as_deref()) else {
         return Ok(None);
     };
-    let db_path = agent.database_path(ctx);
-    if !db_path.is_file() {
+    let db_sources = agent
+        .database_paths(ctx)
+        .into_iter()
+        .filter(|(path, _)| path.is_file())
+        .collect::<Vec<_>>();
+    if db_sources.is_empty() {
         return Ok(None);
     }
-    let connection = open_read_only_database(&db_path)?;
-    let sessions = load_sessions(&connection, agent, &db_path)?;
-    let Some(session) = sessions
-        .iter()
-        .find(|session| session.service_id == params.session_id)
-    else {
+    let mut selected = None;
+    for (db_path, project_root) in &db_sources {
+        let connection = open_read_only_database(db_path)?;
+        if let Some(session) = load_sessions(&connection, agent, db_path, project_root.as_deref())?
+            .into_iter()
+            .find(|session| session.service_id == params.session_id)
+        {
+            selected = Some(session);
+            break;
+        }
+    }
+    let Some(session) = selected else {
         return Err(ServiceError::InvalidRequest(
             "selected session was not found in the current SQLite store".to_string(),
         ));
     };
-    let source_revision = sqlite_message_revision(&connection, agent, session)?;
+    let connection = open_read_only_database(&session.db_path)?;
+    let source_revision = sqlite_message_revision(&connection, agent, &session)?;
     let query_digest = sqlite_message_query_digest(agent, params);
     let cursor = params
         .cursor
@@ -380,20 +793,24 @@ fn load_sessions(
     connection: &Connection,
     agent: SqliteAgent,
     db_path: &Path,
+    project_root: Option<&str>,
 ) -> Result<Vec<SqliteSession>, ServiceError> {
     let sql = match agent {
+        SqliteAgent::Opencode if sqlite_table_has_column(connection, "session", "time_archived")? => "SELECT id, title, directory, time_created, time_updated, NULL, 0, 0 FROM session WHERE parent_id IS NULL AND time_archived IS NULL ORDER BY time_updated DESC, id ASC LIMIT ?1",
         SqliteAgent::Opencode => "SELECT id, title, directory, time_created, time_updated, NULL, 0, 0 FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC, id ASC LIMIT ?1",
-        SqliteAgent::Hermes => "SELECT id, COALESCE(title, id), NULL, CAST(started_at * 1000 AS INTEGER), CAST(COALESCE(ended_at, started_at) * 1000 AS INTEGER), CAST(ended_at * 1000 AS INTEGER), COALESCE(message_count, 0), COALESCE(tool_call_count, 0) FROM sessions WHERE source NOT IN ('cron', 'batch', 'subagent', 'memory') ORDER BY COALESCE(ended_at, started_at) DESC, id ASC LIMIT ?1",
+        SqliteAgent::Hermes => "SELECT id, COALESCE(title, id), NULL, CAST(started_at * 1000 AS INTEGER), CAST(COALESCE(ended_at, started_at) * 1000 AS INTEGER), CAST(ended_at * 1000 AS INTEGER), COALESCE(message_count, 0), COALESCE(tool_call_count, 0) FROM sessions WHERE source NOT IN ('cron', 'batch', 'subagent', 'memory', 'memory_consolidation') ORDER BY COALESCE(ended_at, started_at) DESC, id ASC LIMIT ?1",
+        SqliteAgent::Openclaw => "SELECT s.session_id, COALESCE(NULLIF(s.display_name, ''), s.session_key), NULL, s.started_at, s.updated_at, s.ended_at, 0, 0 FROM sessions s WHERE COALESCE(s.status, 'active') NOT IN ('archived', 'deleted') AND EXISTS (SELECT 1 FROM session_routes r WHERE r.session_id = s.session_id) AND NOT EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id = s.session_id AND json_extract(e.entry_json, '$.archivedAt') IS NOT NULL) AND lower(s.session_key) NOT LIKE 'cron:%' AND lower(s.session_key) NOT LIKE 'hook:%' AND lower(s.session_key) NOT LIKE '%:subagent:%' AND lower(s.session_key) NOT LIKE '%:cron:%' AND lower(s.session_key) NOT LIKE '%:hook:%' AND lower(s.session_key) NOT LIKE '%:heartbeat:%' AND lower(s.session_key) NOT LIKE '%:acp:%' ORDER BY s.updated_at DESC, s.session_id ASC LIMIT ?1",
     };
     let mut statement = connection.prepare(sql).map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map([MAX_SQLITE_SESSIONS as i64], |row| {
             let native_id: String = row.get(0)?;
             Ok(SqliteSession {
+                db_path: db_path.to_path_buf(),
                 service_id: sqlite_service_id(agent, db_path, &native_id),
                 native_id,
                 title: row.get(1)?,
-                project_root: row.get(2)?,
+                project_root: project_root.map(ToString::to_string).or(row.get(2)?),
                 started_at: row.get(3)?,
                 modified_at: row.get::<_, Option<i64>>(4)?.unwrap_or_default(),
                 ended_at: row.get(5)?,
@@ -402,8 +819,29 @@ fn load_sessions(
             })
         })
         .map_err(sqlite_schema_error)?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(sqlite_schema_error)
+    let sessions = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_schema_error)?;
+    Ok(sessions)
+}
+
+fn sqlite_table_has_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, ServiceError> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(sqlite_schema_error)?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sqlite_schema_error)?;
+    for name in names {
+        if name.map_err(sqlite_schema_error)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn load_messages(
@@ -414,6 +852,7 @@ fn load_messages(
     match agent {
         SqliteAgent::Opencode => load_opencode_messages(connection, session_id),
         SqliteAgent::Hermes => load_hermes_messages(connection, session_id),
+        SqliteAgent::Openclaw => load_openclaw_messages(connection, session_id),
     }
 }
 
@@ -471,6 +910,7 @@ fn sqlite_message_row_count(
             "SELECT COUNT(*) FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1"
         }
         SqliteAgent::Hermes => "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+        SqliteAgent::Openclaw => "SELECT COUNT(*) FROM transcript_events WHERE session_id = ?1",
     };
     let count = connection
         .query_row(sql, [session_id], |row| row.get::<_, i64>(0))
@@ -488,6 +928,106 @@ fn load_message_rows(
     match agent {
         SqliteAgent::Opencode => load_opencode_message_rows(connection, session_id, offset, limit),
         SqliteAgent::Hermes => load_hermes_message_rows(connection, session_id, offset, limit),
+        SqliteAgent::Openclaw => load_openclaw_message_rows(connection, session_id, offset, limit),
+    }
+}
+
+fn load_openclaw_message_rows(
+    connection: &Connection,
+    session_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<SqliteMessage>, ServiceError> {
+    let mut statement = connection
+        .prepare("SELECT event_json, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2 OFFSET ?3")
+        .map_err(sqlite_schema_error)?;
+    let rows = statement
+        .query_map((session_id, limit as i64, offset as i64), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })
+        .map_err(sqlite_schema_error)?;
+    rows.map(|row| {
+        let (event_json, timestamp) = row.map_err(sqlite_schema_error)?;
+        Ok(openclaw_message_from_json(&event_json, timestamp))
+    })
+    .collect()
+}
+
+fn openclaw_message_from_json(event_json: &str, timestamp: Option<i64>) -> SqliteMessage {
+    let event = serde_json::from_str::<serde_json::Value>(event_json).unwrap_or_default();
+    let payload = event
+        .get("message")
+        .or_else(|| {
+            event
+                .get("payload")
+                .and_then(|payload| payload.get("message"))
+        })
+        .unwrap_or(&event);
+    let role = payload
+        .get("role")
+        .or_else(|| event.get("role"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let content = payload
+        .get("content")
+        .or_else(|| payload.get("text"))
+        .or_else(|| event.get("content"));
+    let (text, has_tool, has_thinking) = openclaw_content_projection(content);
+    let kind = if role == "user" && !text.is_empty() {
+        "user_message"
+    } else if role == "assistant" && !text.is_empty() {
+        "agent_reply"
+    } else if has_thinking {
+        "thinking"
+    } else if has_tool {
+        "tool_call"
+    } else {
+        "ignored"
+    };
+    SqliteMessage {
+        role,
+        text,
+        timestamp,
+        kind: kind.to_string(),
+    }
+}
+
+fn openclaw_content_projection(content: Option<&serde_json::Value>) -> (String, bool, bool) {
+    let Some(content) = content else {
+        return (String::new(), false, false);
+    };
+    match content {
+        serde_json::Value::String(text) => (text.clone(), false, false),
+        serde_json::Value::Array(items) => {
+            let mut text = Vec::new();
+            let mut has_tool = false;
+            let mut has_thinking = false;
+            for item in items {
+                let kind = item
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                has_tool |= matches!(
+                    kind,
+                    "tool" | "tool_call" | "toolCall" | "tool_use" | "toolUse"
+                );
+                has_thinking |= matches!(kind, "thinking" | "reasoning");
+                if matches!(kind, "text" | "output_text" | "thinking" | "reasoning") {
+                    if let Some(value) = item
+                        .get("text")
+                        .or_else(|| item.get("content"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        if !value.is_empty() {
+                            text.push(value);
+                        }
+                    }
+                }
+            }
+            (text.join("\n"), has_tool, has_thinking)
+        }
+        _ => (String::new(), false, false),
     }
 }
 
@@ -692,6 +1232,26 @@ fn load_hermes_messages(
     Ok(messages)
 }
 
+fn load_openclaw_messages(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<SqliteMessage>, ServiceError> {
+    let rows = load_openclaw_message_rows(connection, session_id, 0, MAX_SQLITE_PREVIEW_MESSAGES)?;
+    let mut messages = Vec::new();
+    let mut retained_bytes = 0usize;
+    for message in rows {
+        if message.kind == "ignored" || (message.text.is_empty() && message.kind != "tool_call") {
+            continue;
+        }
+        retained_bytes = retained_bytes.saturating_add(message.text.len());
+        if retained_bytes > MAX_SQLITE_TEXT_BYTES {
+            break;
+        }
+        messages.push(message);
+    }
+    Ok(messages)
+}
+
 fn sqlite_session_row(
     connection: &Connection,
     agent: SqliteAgent,
@@ -764,6 +1324,22 @@ fn sqlite_session_counts(
         SqliteAgent::Hermes => {
             "SELECT SUM(CASE WHEN role = 'user' AND COALESCE(content, '') <> '' THEN 1 ELSE 0 END), SUM(CASE WHEN role = 'assistant' AND COALESCE(content, '') <> '' THEN 1 ELSE 0 END), COUNT(*), SUM(CASE WHEN COALESCE(tool_name, '') <> '' OR COALESCE(tool_calls, '') <> '' THEN 1 ELSE 0 END) FROM messages WHERE session_id = ?1"
         }
+        SqliteAgent::Openclaw => {
+            let messages = load_openclaw_messages(connection, session_id)?;
+            let user = messages
+                .iter()
+                .filter(|message| message.kind == "user_message")
+                .count();
+            let agent = messages
+                .iter()
+                .filter(|message| message.kind == "agent_reply")
+                .count();
+            let tools = messages
+                .iter()
+                .filter(|message| message.kind == "tool_call")
+                .count();
+            return Ok((user, agent, messages.len(), tools));
+        }
     };
     let counts = connection
         .query_row(sql, [session_id], |row| {
@@ -828,6 +1404,14 @@ fn load_first_final_message(
                 timestamp: Some(timestamp),
             }))
         }
+        SqliteAgent::Openclaw => Ok(load_openclaw_message_rows(
+            connection,
+            session_id,
+            0,
+            MAX_SQLITE_PREVIEW_MESSAGES,
+        )?
+        .into_iter()
+        .find(|message| matches!(message.kind.as_str(), "user_message" | "agent_reply"))),
     }
 }
 
@@ -889,17 +1473,13 @@ fn sqlite_service_id(agent: SqliteAgent, db_path: &Path, native_id: &str) -> Str
     )
 }
 
-fn sqlite_source_revision(
-    sessions: &[SqliteSession],
-    agent: SqliteAgent,
-    db_path: &Path,
-) -> String {
+fn sqlite_source_revision(sessions: &[SqliteSession], agent: SqliteAgent) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"agent-copilot.sqlite-session-source.v1\0");
     hasher.update(agent.id().as_bytes());
-    hasher.update(trace_content_hash(&db_path.to_string_lossy()).as_bytes());
     for session in sessions {
         hasher.update([0]);
+        hasher.update(trace_content_hash(&session.db_path.to_string_lossy()).as_bytes());
         hasher.update(session.service_id.as_bytes());
         hasher.update(session.modified_at.to_le_bytes());
     }
@@ -919,6 +1499,11 @@ fn sqlite_message_revision(
         ),
         SqliteAgent::Hermes => connection.query_row(
             "SELECT COUNT(*), COALESCE(CAST(MAX(timestamp) * 1000 AS INTEGER), 0) FROM messages WHERE session_id = ?1",
+            [&session.native_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ),
+        SqliteAgent::Openclaw => connection.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM transcript_events WHERE session_id = ?1",
             [&session.native_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ),
