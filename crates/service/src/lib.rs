@@ -1668,6 +1668,10 @@ impl ServiceError {
                 "partial_effect"
             }
             Self::Command(_) => "command_error",
+            Self::Provider(ProviderError::Command(
+                skills_copilot_commands::CommandError::PartialEffect { .. },
+            )) => "partial_effect",
+            Self::Provider(ProviderError::Command(_)) => "command_error",
             Self::Provider(_) => "provider_error",
             Self::Json(_) => "json_error",
             Self::SkillNotFound(_) => "skill_not_found",
@@ -1689,6 +1693,19 @@ impl ServiceError {
                 cleanup_required,
                 ..
             }) => Some(ServiceErrorDetails {
+                operation: operation.clone(),
+                state: (*state).to_string(),
+                cleanup_required: *cleanup_required,
+                retry_allowed: false,
+            }),
+            Self::Provider(ProviderError::Command(
+                skills_copilot_commands::CommandError::PartialEffect {
+                    operation,
+                    state,
+                    cleanup_required,
+                    ..
+                },
+            )) => Some(ServiceErrorDetails {
                 operation: operation.clone(),
                 state: (*state).to_string(),
                 cleanup_required: *cleanup_required,

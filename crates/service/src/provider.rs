@@ -4,7 +4,6 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 use std::{
-    fs,
     io::{self, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -14,15 +13,20 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use skills_copilot_commands::ActionConfirmation;
+use skills_copilot_commands::{
+    lock_app_mutations, lock_or_create_app_mutations_with_parents, ActionConfirmation,
+    AppMutationLock, CommandError,
+};
 use thiserror::Error;
 use ureq::Error as UreqError;
 use url::Url;
 
-use crate::{append_private_line, write_private_text_file};
-
 const KEYCHAIN_SERVICE: &str = "dev.skills-copilot.native.llm";
 const PROFILE_STORE_VERSION: u32 = 1;
+const PROVIDER_PROFILE_STORE_RELATIVE_PATH: &str = "llm/provider-profiles.json";
+const PROVIDER_CALL_METADATA_RELATIVE_PATH: &str = "llm/provider-call-metadata.jsonl";
+const PROVIDER_PROFILE_STORE_MAX_BYTES: u64 = 1024 * 1024;
+const PROVIDER_CALL_METADATA_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT: u32 = 8_000;
 const DEFAULT_MONTHLY_BUDGET_USD: f64 = 5.0;
 const TEST_INPUT_TOKEN_ESTIMATE: u32 = 12;
@@ -33,6 +37,8 @@ const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub enum ProviderError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+    #[error("app-data owner error: {0}")]
+    Command(#[from] CommandError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid provider profile: {0}")]
@@ -478,21 +484,34 @@ pub fn list_provider_profiles(
     app_data_dir: &Path,
 ) -> Result<ListProviderProfilesResult, ProviderError> {
     let store = load_store(app_data_dir)?;
-    Ok(ListProviderProfilesResult {
+    Ok(provider_profile_list(store))
+}
+
+fn provider_profile_list(store: ProviderProfileStore) -> ListProviderProfilesResult {
+    ListProviderProfilesResult {
         profiles: store.profiles,
         default_profile_id: store.default_profile_id,
         credential_storage: "keychain".to_string(),
         credential_persistence_allowed: true,
         raw_secrets_returned: false,
-    })
+    }
 }
 
 pub fn save_provider_profile(
     app_data_dir: &Path,
     params: SaveProviderProfileParams,
 ) -> Result<SaveProviderProfileResult, ProviderError> {
+    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
+    save_provider_profile_while_locked(app_data_dir, &owner, params)
+}
+
+pub(crate) fn save_provider_profile_while_locked(
+    app_data_dir: &Path,
+    owner: &AppMutationLock,
+    params: SaveProviderProfileParams,
+) -> Result<SaveProviderProfileResult, ProviderError> {
     let now = unix_timestamp_millis();
-    let mut store = load_store(app_data_dir)?;
+    let mut store = load_store_while_locked(owner)?;
     let normalized = normalize_save_provider_profile_params(&params)?;
     let profile_id = normalized.id.clone();
     let replaces_credential = normalized.replaces_credential;
@@ -552,7 +571,7 @@ pub fn save_provider_profile(
     } else if store.default_profile_id.is_none() {
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
-    if let Err(error) = save_store(app_data_dir, &store) {
+    if let Err(error) = save_store(app_data_dir, owner, &store) {
         if let Some(commit) = credential_commit.as_ref() {
             return match commit.compensate() {
                 Ok(()) => Ok(SaveProviderProfileResult {
@@ -667,7 +686,16 @@ pub fn delete_provider_profile(
     app_data_dir: &Path,
     params: DeleteProviderProfileParams,
 ) -> Result<DeleteProviderProfileResult, ProviderError> {
-    let mut store = load_store(app_data_dir)?;
+    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
+    delete_provider_profile_while_locked(app_data_dir, &owner, params)
+}
+
+pub(crate) fn delete_provider_profile_while_locked(
+    app_data_dir: &Path,
+    owner: &AppMutationLock,
+    params: DeleteProviderProfileParams,
+) -> Result<DeleteProviderProfileResult, ProviderError> {
+    let mut store = load_store_while_locked(owner)?;
     let Some(profile) = store
         .profiles
         .iter()
@@ -689,7 +717,7 @@ pub fn delete_provider_profile(
     if store.default_profile_id.as_deref() == Some(profile.id.as_str()) {
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
-    save_store(app_data_dir, &store)?;
+    save_store(app_data_dir, owner, &store)?;
     let (credential_deleted, credential_effect, error_code, error_message, operation_state) =
         if params.delete_credential {
             match delete_secret(&profile.credential_reference) {
@@ -744,22 +772,30 @@ pub fn test_provider_connection(
     app_data_dir: &Path,
     params: TestProviderConnectionParams,
 ) -> Result<TestProviderConnectionResult, ProviderError> {
-    let store = load_store(app_data_dir)?;
+    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
+    test_provider_connection_while_locked(app_data_dir, &owner, params)
+}
+
+pub(crate) fn test_provider_connection_while_locked(
+    app_data_dir: &Path,
+    owner: &AppMutationLock,
+    params: TestProviderConnectionParams,
+) -> Result<TestProviderConnectionResult, ProviderError> {
+    let store = load_store_while_locked(owner)?;
     let profile = store
         .profiles
         .iter()
         .find(|profile| profile.id == params.profile_id)
         .cloned()
         .ok_or_else(|| ProviderError::ProfileNotFound(params.profile_id.clone()))?;
-    let destination_host = destination_host(&profile.base_url);
     let budget = budget_status(&profile);
     let started = Instant::now();
 
     if !profile.enabled {
         return finish_test(
             app_data_dir,
+            owner,
             &profile,
-            &destination_host,
             &params.confirmation_id,
             started,
             budget,
@@ -777,8 +813,8 @@ pub fn test_provider_connection(
     if params.confirmation_id.trim().is_empty() {
         return finish_test(
             app_data_dir,
+            owner,
             &profile,
-            &destination_host,
             &params.confirmation_id,
             started,
             budget,
@@ -796,8 +832,8 @@ pub fn test_provider_connection(
     if budget.state != "ok" {
         return finish_test(
             app_data_dir,
+            owner,
             &profile,
-            &destination_host,
             &params.confirmation_id,
             started,
             budget,
@@ -816,8 +852,8 @@ pub fn test_provider_connection(
         Err(error) => {
             return finish_test(
                 app_data_dir,
+                owner,
                 &profile,
-                &destination_host,
                 &params.confirmation_id,
                 started,
                 budget,
@@ -838,8 +874,8 @@ pub fn test_provider_connection(
     match call_result {
         Ok(status) if (200..300).contains(&status) => finish_test(
             app_data_dir,
+            owner,
             &profile,
-            &destination_host,
             &params.confirmation_id,
             started,
             budget,
@@ -853,8 +889,8 @@ pub fn test_provider_connection(
         ),
         Ok(status) => finish_test(
             app_data_dir,
+            owner,
             &profile,
-            &destination_host,
             &params.confirmation_id,
             started,
             budget,
@@ -868,8 +904,8 @@ pub fn test_provider_connection(
         ),
         Err(error) => finish_test(
             app_data_dir,
+            owner,
             &profile,
-            &destination_host,
             &params.confirmation_id,
             started,
             budget,
@@ -888,7 +924,16 @@ pub fn send_provider_prompt(
     app_data_dir: &Path,
     params: SendProviderPromptParams,
 ) -> Result<SendProviderPromptResult, ProviderError> {
-    let store = load_store(app_data_dir)?;
+    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
+    send_provider_prompt_while_locked(app_data_dir, &owner, params)
+}
+
+pub(crate) fn send_provider_prompt_while_locked(
+    app_data_dir: &Path,
+    owner: &AppMutationLock,
+    params: SendProviderPromptParams,
+) -> Result<SendProviderPromptResult, ProviderError> {
+    let store = load_store_while_locked(owner)?;
     let profile = store
         .profiles
         .iter()
@@ -904,6 +949,7 @@ pub fn send_provider_prompt(
     if !profile.enabled {
         return finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -923,6 +969,7 @@ pub fn send_provider_prompt(
     if params.confirmation_id.trim().is_empty() {
         return finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -943,6 +990,7 @@ pub fn send_provider_prompt(
     if params.prompt.trim().is_empty() {
         return finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -960,6 +1008,7 @@ pub fn send_provider_prompt(
     if profile.single_request_token_limit < estimated_total_tokens {
         return finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -979,6 +1028,7 @@ pub fn send_provider_prompt(
     if profile.monthly_budget_usd <= 0.0 {
         return finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -1001,6 +1051,7 @@ pub fn send_provider_prompt(
         Err(error) => {
             return finish_prompt(
                 app_data_dir,
+                owner,
                 &profile,
                 &destination_host,
                 &params,
@@ -1035,6 +1086,7 @@ pub fn send_provider_prompt(
             };
             finish_prompt(
                 app_data_dir,
+                owner,
                 &profile,
                 &destination_host,
                 &params,
@@ -1051,6 +1103,7 @@ pub fn send_provider_prompt(
         }
         Ok(success) => finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -1066,6 +1119,7 @@ pub fn send_provider_prompt(
         ),
         Err(error) => finish_prompt(
             app_data_dir,
+            owner,
             &profile,
             &destination_host,
             &params,
@@ -1093,15 +1147,48 @@ pub fn provider_call_metadata_path(app_data_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn provider_profiles_revision(app_data_dir: &Path) -> Result<String, ProviderError> {
-    file_revision(&provider_profiles_path(app_data_dir), "provider-profiles")
+    let owner = match lock_app_mutations(app_data_dir) {
+        Ok(owner) => owner,
+        Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(digest_revision("provider-profiles:missing", &[]))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    provider_profiles_revision_while_locked(&owner)
+}
+
+pub(crate) fn provider_profiles_revision_while_locked(
+    owner: &AppMutationLock,
+) -> Result<String, ProviderError> {
+    file_revision_while_locked(
+        owner,
+        Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
+        "provider-profiles",
+        PROVIDER_PROFILE_STORE_MAX_BYTES,
+    )
 }
 
 pub(crate) fn provider_call_metadata_revision(
     app_data_dir: &Path,
 ) -> Result<String, ProviderError> {
-    file_revision(
-        &provider_call_metadata_path(app_data_dir),
+    let owner = match lock_app_mutations(app_data_dir) {
+        Ok(owner) => owner,
+        Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(digest_revision("provider-call-metadata:missing", &[]))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    provider_call_metadata_revision_while_locked(&owner)
+}
+
+pub(crate) fn provider_call_metadata_revision_while_locked(
+    owner: &AppMutationLock,
+) -> Result<String, ProviderError> {
+    file_revision_while_locked(
+        owner,
+        Path::new(PROVIDER_CALL_METADATA_RELATIVE_PATH),
         "provider-call-metadata",
+        PROVIDER_CALL_METADATA_MAX_BYTES,
     )
 }
 
@@ -1208,20 +1295,21 @@ pub fn estimate_prompt_cost_usd(provider_type: ProviderType, tokens: u32) -> f64
 
 fn finish_test(
     app_data_dir: &Path,
+    owner: &AppMutationLock,
     profile: &ProviderProfileRecord,
-    destination_host: &str,
     confirmation_id: &str,
     started: Instant,
     budget: ProviderBudgetStatus,
     finish: ProviderTestFinish<'_>,
 ) -> Result<TestProviderConnectionResult, ProviderError> {
+    let destination_host = destination_host(&profile.base_url);
     let mut audit = ProviderCallMetadata {
         timestamp: unix_timestamp_millis(),
         action_type: "test_connection".to_string(),
         profile_id: profile.id.clone(),
         provider_type: profile.provider_type,
         model: profile.model.clone(),
-        destination_host: destination_host.to_string(),
+        destination_host: destination_host.clone(),
         status: finish.status.to_string(),
         error_code: finish.error_code.clone(),
         error_message: finish.error_message.clone(),
@@ -1236,7 +1324,7 @@ fn finish_test(
         raw_prompt_persisted: false,
         raw_response_persisted: false,
     };
-    let local_metadata_persisted = append_call_metadata(app_data_dir, &audit).is_ok();
+    let local_metadata_persisted = append_call_metadata(app_data_dir, owner, &audit).is_ok();
     if !local_metadata_persisted {
         audit.status = if finish.provider_request_sent {
             "partial".to_string()
@@ -1251,7 +1339,7 @@ fn finish_test(
         profile_id: profile.id.clone(),
         provider_type: profile.provider_type,
         model: profile.model.clone(),
-        destination_host: destination_host.to_string(),
+        destination_host,
         status: audit.status.clone(),
         provider_request_sent: finish.provider_request_sent,
         credential_accessed: finish.credential_accessed,
@@ -1269,6 +1357,7 @@ fn finish_test(
 
 fn finish_prompt(
     app_data_dir: &Path,
+    owner: &AppMutationLock,
     profile: &ProviderProfileRecord,
     destination_host: &str,
     params: &SendProviderPromptParams,
@@ -1296,7 +1385,7 @@ fn finish_prompt(
         raw_prompt_persisted: false,
         raw_response_persisted: false,
     };
-    let local_metadata_persisted = append_call_metadata(app_data_dir, &audit).is_ok();
+    let local_metadata_persisted = append_call_metadata(app_data_dir, owner, &audit).is_ok();
     if !local_metadata_persisted {
         audit.status = if finish.provider_request_sent {
             "partial".to_string()
@@ -1328,12 +1417,26 @@ fn finish_prompt(
 }
 
 fn load_store(app_data_dir: &Path) -> Result<ProviderProfileStore, ProviderError> {
-    let path = provider_profiles_path(app_data_dir);
-    if !path.exists() {
+    let owner = match lock_app_mutations(app_data_dir) {
+        Ok(owner) => owner,
+        Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(ProviderProfileStore::default())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    load_store_while_locked(&owner)
+}
+
+fn load_store_while_locked(owner: &AppMutationLock) -> Result<ProviderProfileStore, ProviderError> {
+    let Some(content) = owner.owner_fs().read_bounded_regular_file(
+        Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
+        PROVIDER_PROFILE_STORE_MAX_BYTES,
+        "provider profile store",
+    )?
+    else {
         return Ok(ProviderProfileStore::default());
-    }
-    let content = fs::read_to_string(path)?;
-    let mut store: ProviderProfileStore = serde_json::from_str(&content)?;
+    };
+    let mut store: ProviderProfileStore = serde_json::from_slice(&content)?;
     for profile in &mut store.profiles {
         profile.created_at = normalize_epoch_millis(profile.created_at);
         profile.updated_at = normalize_epoch_millis(profile.updated_at);
@@ -1341,28 +1444,44 @@ fn load_store(app_data_dir: &Path) -> Result<ProviderProfileStore, ProviderError
     Ok(store)
 }
 
-fn save_store(app_data_dir: &Path, store: &ProviderProfileStore) -> Result<(), ProviderError> {
+fn save_store(
+    _app_data_dir: &Path,
+    owner: &AppMutationLock,
+    store: &ProviderProfileStore,
+) -> Result<(), ProviderError> {
     #[cfg(test)]
-    if take_test_provider_io_fault(app_data_dir, TestProviderIoFault::SaveStore) {
+    if take_test_provider_io_fault(_app_data_dir, TestProviderIoFault::SaveStore) {
         return Err(io::Error::other("injected provider profile write failure").into());
     }
-    let path = provider_profiles_path(app_data_dir);
-    let content = serde_json::to_string_pretty(store)?;
-    write_private_text_file(&path, &format!("{content}\n"))?;
+    let mut content = serde_json::to_vec_pretty(store)?;
+    content.push(b'\n');
+    owner.owner_fs().ensure_directory_all(Path::new("llm"))?;
+    owner.owner_fs().atomic_replace_private_file(
+        Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
+        &content,
+        "provider-profiles",
+    )?;
     Ok(())
 }
 
 fn append_call_metadata(
-    app_data_dir: &Path,
+    _app_data_dir: &Path,
+    owner: &AppMutationLock,
     metadata: &ProviderCallMetadata,
 ) -> Result<(), ProviderError> {
     #[cfg(test)]
-    if take_test_provider_io_fault(app_data_dir, TestProviderIoFault::AppendCallMetadata) {
+    if take_test_provider_io_fault(_app_data_dir, TestProviderIoFault::AppendCallMetadata) {
         return Err(io::Error::other("injected provider metadata write failure").into());
     }
-    let path = provider_call_metadata_path(app_data_dir);
-    let line = serde_json::to_string(metadata)?;
-    append_private_line(&path, &line)?;
+    let mut line = serde_json::to_vec(metadata)?;
+    line.push(b'\n');
+    owner.owner_fs().ensure_directory_all(Path::new("llm"))?;
+    owner.owner_fs().append_private_file(
+        Path::new(PROVIDER_CALL_METADATA_RELATIVE_PATH),
+        &line,
+        PROVIDER_CALL_METADATA_MAX_BYTES,
+        "provider call metadata",
+    )?;
     Ok(())
 }
 
@@ -1896,13 +2015,18 @@ fn estimated_provider_cost(provider_type: ProviderType, tokens: u32) -> f64 {
     f64::from(tokens) * per_million / 1_000_000.0
 }
 
-fn file_revision(path: &Path, label: &str) -> Result<String, ProviderError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(digest_revision(&format!("{label}:present"), &bytes)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(digest_revision(&format!("{label}:missing"), &[]))
-        }
-        Err(error) => Err(error.into()),
+fn file_revision_while_locked(
+    owner: &AppMutationLock,
+    relative_path: &Path,
+    label: &str,
+    max_bytes: u64,
+) -> Result<String, ProviderError> {
+    match owner
+        .owner_fs()
+        .read_bounded_regular_file(relative_path, max_bytes, label)?
+    {
+        Some(bytes) => Ok(digest_revision(&format!("{label}:present"), &bytes)),
+        None => Ok(digest_revision(&format!("{label}:missing"), &[])),
     }
 }
 

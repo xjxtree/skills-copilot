@@ -310,29 +310,6 @@ pub(crate) fn write_private_bytes_file(path: &Path, content: &[u8]) -> io::Resul
     write_result
 }
 
-pub(crate) fn append_private_line(path: &Path, line: &str) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "private file has no parent"))?;
-    create_private_dir_all(parent)?;
-    reject_symlink(path, "private file")?;
-
-    let mut options = fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    }
-    let mut file = options.open(path)?;
-    set_private_file_permissions(&file)?;
-    writeln!(file, "{line}")?;
-    file.sync_all()?;
-    sync_parent_dir(parent);
-    Ok(())
-}
-
 fn private_tmp_path(path: &Path) -> io::Result<PathBuf> {
     let parent = path
         .parent()
