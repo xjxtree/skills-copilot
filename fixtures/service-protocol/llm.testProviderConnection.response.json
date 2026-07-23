@@ -21,7 +21,7 @@
       "reason": "Connection test is within configured local budget limits."
     },
     "audit": {
-      "timestamp": 1780590000,
+      "timestamp": 1780590000000,
       "action_type": "test_connection",
       "profile_id": "fixture-openai",
       "provider_type": "openai-compatible",
@@ -34,15 +34,44 @@
       "estimated_input_tokens": 12,
       "estimated_output_tokens": 4,
       "estimated_cost_usd": 0.00004,
-      "confirmation_id": "fixture-confirmation",
+      "confirmation_id": "provider-connection-test-fixture",
       "redaction_status": "metadata-only-no-raw-prompt-or-response",
       "provider_request_sent": false,
       "credential_accessed": false,
       "raw_prompt_persisted": false,
       "raw_response_persisted": false
     },
+    "local_metadata_persisted": true,
     "raw_prompt_persisted": false,
     "raw_response_persisted": false,
-    "raw_secret_returned": false
+    "raw_secret_returned": false,
+    "outcome": {
+      "state": "verified",
+      "effect": "verified",
+      "remote_effect": "not_sent",
+      "local_effect": "provider_activity_verified",
+      "credential_effect": "read_only",
+      "recovery": null
+    },
+    "readback": {
+      "action_id": "provider-connection-test-fixture",
+      "source_revision": "sha256:provider-test-readback",
+      "project_id": null,
+      "domains": ["provider_profiles", "provider_activity"],
+      "target_ids": ["fixture-openai"],
+      "observations": [
+        {
+          "domain": "provider_profiles",
+          "target_id": "fixture-openai",
+          "revision": "sha256:provider-store-after-test"
+        },
+        {
+          "domain": "provider_activity",
+          "target_id": "fixture-openai",
+          "revision": "sha256:provider-activity-after-test"
+        }
+      ],
+      "verified": true
+    }
   }
 }

@@ -51,7 +51,7 @@ fn dispatch_coverage_params(method: &str) -> Value {
             "confirmed": false
         }),
         "llm.prepareAction" => json!({ "kind": "recommend", "user_intent": "fixture" }),
-        "llm.saveProviderProfile" => json!({
+        "llm.previewSaveProviderProfile" => json!({
             "id": "dispatch-provider",
             "display_name": "Dispatch Provider",
             "provider_type": "openai-compatible",
@@ -59,21 +59,81 @@ fn dispatch_coverage_params(method: &str) -> Value {
             "model": "dispatch-model",
             "enabled": false
         }),
-        "llm.deleteProviderProfile" => json!({
+        "llm.saveProviderProfile" => json!({
+            "id": "dispatch-provider",
+            "display_name": "Dispatch Provider",
+            "provider_type": "openai-compatible",
+            "base_url": "https://example.invalid/v1",
+            "model": "dispatch-model",
+            "enabled": false,
+            "action_confirmation": {
+                "reference": {
+                    "action_id": "dispatch-provider-save",
+                    "source_revision": "sha256:dispatch",
+                    "target": {
+                        "kind": "provider_profile",
+                        "id": "dispatch-provider"
+                    }
+                },
+                "preview_token": "action-preview:v1:hmac-sha256:dispatch",
+                "confirmed": true
+            }
+        }),
+        "llm.previewDeleteProviderProfile" => json!({
             "profile_id": "dispatch-provider",
             "delete_credential": false
         }),
+        "llm.deleteProviderProfile" => json!({
+            "profile_id": "dispatch-provider",
+            "delete_credential": false,
+            "action_confirmation": {
+                "reference": {
+                    "action_id": "dispatch-provider-delete",
+                    "source_revision": "sha256:dispatch",
+                    "target": {
+                        "kind": "provider_profile",
+                        "id": "dispatch-provider"
+                    }
+                },
+                "preview_token": "action-preview:v1:hmac-sha256:dispatch",
+                "confirmed": true
+            }
+        }),
+        "llm.previewProviderConnectionTest" => json!({
+            "profile_id": "dispatch-provider"
+        }),
         "llm.testProviderConnection" => json!({
             "profile_id": "dispatch-provider",
-            "confirmation_id": "dispatch-confirmation"
+            "action_confirmation": {
+                "reference": {
+                    "action_id": "dispatch-provider-test",
+                    "source_revision": "sha256:dispatch",
+                    "target": {
+                        "kind": "provider_profile",
+                        "id": "dispatch-provider"
+                    }
+                },
+                "preview_token": "action-preview:v1:hmac-sha256:dispatch",
+                "confirmed": true
+            }
         }),
         "llm.previewPrompt" => json!({
             "action": "recommend",
             "user_intent": "fixture"
         }),
         "llm.confirmPromptAndSend" => json!({
-            "preview_id": "prompt-preview-stale",
-            "confirmation_id": "dispatch-confirmation",
+            "action_confirmation": {
+                "reference": {
+                    "action_id": "dispatch-provider-prompt",
+                    "source_revision": "sha256:dispatch",
+                    "target": {
+                        "kind": "provider_profile",
+                        "id": "dispatch-provider"
+                    }
+                },
+                "preview_token": "action-preview:v1:hmac-sha256:dispatch",
+                "confirmed": true
+            },
             "request": {
                 "action": "recommend",
                 "user_intent": "fixture"
@@ -537,10 +597,33 @@ pub(super) struct WireListProviderProfilesResult {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct WireProviderActionPreviewResult {
+    pub(super) action: WireActionDescriptor,
+    pub(super) preconditions: Vec<WireActionPrecondition>,
+    pub(super) preview_token: String,
+    pub(super) operation: String,
+    pub(super) profile_id: String,
+    pub(super) provider_type: String,
+    pub(super) destination_host: String,
+    pub(super) model: String,
+    pub(super) expected_revision: String,
+    pub(super) credential_change: bool,
+    pub(super) raw_secret_returned: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WireSaveProviderProfileResult {
     pub(super) profile: WireProviderProfileRecord,
     pub(super) credential_status: WireProviderCredentialStatus,
+    pub(super) profile_persisted: bool,
+    pub(super) credential_effect: String,
+    pub(super) error_code: Option<String>,
+    pub(super) error_message: Option<String>,
     pub(super) raw_secret_returned: bool,
+    pub(super) outcome: WireProviderActionExecutionOutcome,
+    pub(super) readback: Option<WireActionReadbackRecord>,
 }
 
 #[allow(dead_code)]
@@ -550,7 +633,12 @@ pub(super) struct WireDeleteProviderProfileResult {
     pub(super) deleted_profile_id: String,
     pub(super) profile_deleted: bool,
     pub(super) credential_deleted: bool,
+    pub(super) credential_effect: String,
+    pub(super) error_code: Option<String>,
+    pub(super) error_message: Option<String>,
     pub(super) raw_secret_returned: bool,
+    pub(super) outcome: WireProviderActionExecutionOutcome,
+    pub(super) readback: Option<WireActionReadbackRecord>,
 }
 
 #[allow(dead_code)]
@@ -569,9 +657,24 @@ pub(super) struct WireTestProviderConnectionResult {
     pub(super) error_message: Option<String>,
     pub(super) budget: WireProviderBudgetStatus,
     pub(super) audit: WireProviderCallMetadata,
+    pub(super) local_metadata_persisted: bool,
     pub(super) raw_prompt_persisted: bool,
     pub(super) raw_response_persisted: bool,
     pub(super) raw_secret_returned: bool,
+    pub(super) outcome: WireProviderActionExecutionOutcome,
+    pub(super) readback: Option<WireActionReadbackRecord>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireProviderActionExecutionOutcome {
+    pub(super) state: String,
+    pub(super) effect: String,
+    pub(super) remote_effect: String,
+    pub(super) local_effect: String,
+    pub(super) credential_effect: String,
+    pub(super) recovery: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -697,10 +800,14 @@ pub(super) struct WireLlmPreviewPromptResult {
     pub(super) status: String,
     pub(super) allowed: bool,
     pub(super) reason: String,
-    pub(super) action: String,
+    pub(super) request_kind: String,
+    pub(super) action: WireActionDescriptor,
+    pub(super) preconditions: Vec<WireActionPrecondition>,
+    pub(super) preview_token: String,
     pub(super) profile_id: Option<String>,
     pub(super) provider: Option<String>,
     pub(super) model: Option<String>,
+    pub(super) endpoint: Option<String>,
     pub(super) destination_host: Option<String>,
     pub(super) prompt_scope: Vec<String>,
     pub(super) included_fields: Vec<String>,
@@ -743,7 +850,7 @@ pub(super) struct WireLlmConfirmPromptAndSendResult {
     pub(super) preview_id: String,
     pub(super) confirmation_id: String,
     pub(super) status: String,
-    pub(super) action: String,
+    pub(super) request_kind: String,
     pub(super) profile_id: String,
     pub(super) provider: String,
     pub(super) model: String,
@@ -758,9 +865,20 @@ pub(super) struct WireLlmConfirmPromptAndSendResult {
     pub(super) snapshot_created: bool,
     pub(super) triage_mutation_allowed: bool,
     pub(super) audit: WireProviderCallMetadata,
+    pub(super) readback: Option<WireActionReadbackRecord>,
+    pub(super) partial_outcome: Option<WireLlmPromptPartialOutcome>,
     pub(super) raw_secret_returned: bool,
     pub(super) raw_prompt_persisted: bool,
     pub(super) raw_response_persisted: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireLlmPromptPartialOutcome {
+    pub(super) remote_effect: String,
+    pub(super) local_record: String,
+    pub(super) recovery: String,
 }
 
 #[allow(dead_code)]

@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+fs4.workspace = true
 keyring.workspace = true
 json5.workspace = true
 rusqlite.workspace = true

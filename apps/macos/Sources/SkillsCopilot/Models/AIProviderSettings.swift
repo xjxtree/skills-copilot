@@ -196,6 +196,94 @@ struct AIProviderProfile: Decodable, Identifiable, Hashable {
 
 struct AIProviderSaveResult: Decodable, Hashable {
     let profile: AIProviderProfile?
+    let outcome: AIProviderActionOutcome?
+    let readback: ActionReadbackRecordWire?
+}
+
+struct AIProviderActionOutcome: Decodable, Hashable {
+    let state: String
+    let effect: String
+    let remoteEffect: String
+    let localEffect: String
+    let credentialEffect: String
+    let recovery: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case effect
+        case remoteEffect = "remote_effect"
+        case localEffect = "local_effect"
+        case credentialEffect = "credential_effect"
+        case recovery
+    }
+
+    var isVerified: Bool { state.lowercased() == "verified" }
+    var isPartial: Bool { state.lowercased() == "partial" }
+    var userFacingFailure: String {
+        if let recovery {
+            let trimmed = recovery.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return "Provider action outcome is \(effect); reload provider settings before creating a new preview."
+    }
+}
+
+struct AIProviderActionPreview: Decodable, Hashable {
+    let action: ActionDescriptorWire
+    let preconditions: [ActionPreconditionWire]
+    let previewToken: String
+    let operation: String
+    let profileID: String
+    let providerType: String
+    let destinationHost: String
+    let model: String
+    let expectedRevision: String
+    let credentialChange: Bool
+    let rawSecretReturned: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case preconditions
+        case previewToken = "preview_token"
+        case operation
+        case profileID = "profile_id"
+        case providerType = "provider_type"
+        case destinationHost = "destination_host"
+        case model
+        case expectedRevision = "expected_revision"
+        case credentialChange = "credential_change"
+        case rawSecretReturned = "raw_secret_returned"
+    }
+
+    var confirmation: ActionConfirmationWire {
+        ActionConfirmationWire(action: action, previewToken: previewToken)
+    }
+}
+
+enum AIProviderPendingAction: String, Hashable {
+    case save
+    case delete
+    case test
+}
+
+struct AIProviderDeleteResult: Decodable, Hashable {
+    let deletedProfileID: String
+    let profileDeleted: Bool
+    let credentialDeleted: Bool
+    let rawSecretReturned: Bool
+    let outcome: AIProviderActionOutcome?
+    let readback: ActionReadbackRecordWire?
+
+    enum CodingKeys: String, CodingKey {
+        case deletedProfileID = "deleted_profile_id"
+        case profileDeleted = "profile_deleted"
+        case credentialDeleted = "credential_deleted"
+        case rawSecretReturned = "raw_secret_returned"
+        case outcome
+        case readback
+    }
 }
 
 struct AIProviderCallAuditMetadata: Decodable, Hashable {
@@ -278,6 +366,8 @@ struct AIProviderTestResult: Decodable, Hashable {
     let status: String
     let message: String
     let audit: AIProviderCallAuditMetadata?
+    let outcome: AIProviderActionOutcome?
+    let readback: ActionReadbackRecordWire?
 
     enum CodingKeys: String, CodingKey {
         case success
@@ -289,13 +379,24 @@ struct AIProviderTestResult: Decodable, Hashable {
         case audit
         case auditMetadata = "audit_metadata"
         case metadata
+        case outcome
+        case readback
     }
 
-    init(success: Bool, status: String, message: String, audit: AIProviderCallAuditMetadata?) {
+    init(
+        success: Bool,
+        status: String,
+        message: String,
+        audit: AIProviderCallAuditMetadata?,
+        outcome: AIProviderActionOutcome? = nil,
+        readback: ActionReadbackRecordWire? = nil
+    ) {
         self.success = success
         self.status = status
         self.message = message
         self.audit = audit
+        self.outcome = outcome
+        self.readback = readback
     }
 
     init(from decoder: Decoder) throws {
@@ -312,10 +413,18 @@ struct AIProviderTestResult: Decodable, Hashable {
         audit = try container.decodeIfPresent(AIProviderCallAuditMetadata.self, forKey: .audit)
             ?? container.decodeIfPresent(AIProviderCallAuditMetadata.self, forKey: .auditMetadata)
             ?? container.decodeIfPresent(AIProviderCallAuditMetadata.self, forKey: .metadata)
+        outcome = try container.decodeIfPresent(AIProviderActionOutcome.self, forKey: .outcome)
+        readback = try container.decodeIfPresent(ActionReadbackRecordWire.self, forKey: .readback)
     }
 
     static func unavailable(reason: String = UIStrings.aiProviderUnavailable) -> AIProviderTestResult {
-        AIProviderTestResult(success: false, status: "unavailable", message: reason, audit: nil)
+        AIProviderTestResult(
+            success: false,
+            status: "unavailable",
+            message: reason,
+            audit: nil,
+            readback: nil
+        )
     }
 }
 

@@ -33,16 +33,16 @@ use skills_copilot_commands::{
     user_visible_rule_findings, validate_local_delete_confirmation,
     validate_skill_install_confirmation, validate_skill_manager_confirmation,
     validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
-    ActionConfirmation, AdapterCapabilityRecord, AdapterDiagnosticsRecord,
-    AgentCatalogScanPathAlias, AgentCatalogScanReport, BatchToggleApplyRecord,
-    BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord, ConfigSaveApplyRecord,
-    ConfigSavePreviewRecord, CrossAgentAnalysisRecord, ScriptExecutionPreviewRecord,
-    ScriptExecutionRequest, SkillHealthSummary, SkillInstallPreviewRecord,
-    SkillManagerDeleteLocalParams, SkillManagerInstallParams, SkillManagerListInstalledParams,
-    SkillManagerLocalArchiveImportParams, SkillManagerLocalArchiveUpdateParams,
-    SkillManagerLocalCreateParams, SkillManagerRemoveParams, SkillManagerSearchParams,
-    SkillManagerUpdateParams, SnapshotRollbackApplyRecord, SnapshotRollbackPreviewRecord,
-    SCRIPT_EXECUTION_DISABLED_REASON,
+    ActionConfirmation, ActionPreviewBinding, ActionReadbackRecord, AdapterCapabilityRecord,
+    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport,
+    BatchToggleApplyRecord, BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord,
+    ConfigSaveApplyRecord, ConfigSavePreviewRecord, CrossAgentAnalysisRecord,
+    ScriptExecutionPreviewRecord, ScriptExecutionRequest, SkillHealthSummary,
+    SkillInstallPreviewRecord, SkillManagerDeleteLocalParams, SkillManagerInstallParams,
+    SkillManagerListInstalledParams, SkillManagerLocalArchiveImportParams,
+    SkillManagerLocalArchiveUpdateParams, SkillManagerLocalCreateParams, SkillManagerRemoveParams,
+    SkillManagerSearchParams, SkillManagerUpdateParams, SnapshotRollbackApplyRecord,
+    SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_core::{
     AdapterContext, AgentId, ListIncompleteReason, ListPageMetadata, ListSourceCompleteness, Scope,
@@ -62,6 +62,7 @@ mod service_llm_prompt_helpers;
 mod service_local_session_io;
 mod service_local_sessions;
 mod service_observability_helpers;
+mod service_provider_actions;
 mod service_support_helpers;
 
 use project_context::{
@@ -76,12 +77,11 @@ pub use protocol::{
     LEGACY_BUNDLE_ID, SERVICE_PROTOCOL_VERSION, SUPPORTED_METHODS,
 };
 use provider::{
-    default_monthly_budget_usd, default_token_limit, delete_provider_profile,
-    estimate_prompt_cost_usd, list_provider_profiles, provider_call_metadata_path,
-    provider_profiles_path, save_provider_profile, send_provider_prompt, test_provider_connection,
-    DeleteProviderProfileParams, ListProviderProfilesResult, ProviderCallMetadata, ProviderError,
-    ProviderProfileRecord, SaveProviderProfileParams, SendProviderPromptParams,
-    TestProviderConnectionParams,
+    default_monthly_budget_usd, default_token_limit, estimate_prompt_cost_usd,
+    list_provider_profiles, provider_call_metadata_path, provider_profiles_path,
+    send_provider_prompt, DeleteProviderProfileParams, ListProviderProfilesResult,
+    ProviderCallMetadata, ProviderError, ProviderProfileRecord, SaveProviderProfileParams,
+    SendProviderPromptParams, TestProviderConnectionParams,
 };
 pub(crate) use service_llm_prompt_helpers::*;
 pub(crate) use service_observability_helpers::*;
@@ -519,8 +519,7 @@ pub struct LlmPreviewPromptParams {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LlmConfirmPromptAndSendParams {
-    pub preview_id: String,
-    pub confirmation_id: String,
+    pub action_confirmation: ActionConfirmation,
     pub request: LlmPreviewPromptParams,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -626,10 +625,13 @@ pub struct LlmPreviewPromptResult {
     pub status: String,
     pub allowed: bool,
     pub reason: String,
-    pub action: &'static str,
+    pub request_kind: &'static str,
+    #[serde(flatten)]
+    pub binding: ActionPreviewBinding,
     pub profile_id: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub endpoint: Option<String>,
     pub destination_host: Option<String>,
     pub prompt_scope: Vec<String>,
     pub included_fields: Vec<String>,
@@ -668,7 +670,7 @@ pub struct LlmConfirmPromptAndSendResult {
     pub preview_id: String,
     pub confirmation_id: String,
     pub status: String,
-    pub action: &'static str,
+    pub request_kind: &'static str,
     pub profile_id: String,
     pub provider: String,
     pub model: String,
@@ -683,9 +685,18 @@ pub struct LlmConfirmPromptAndSendResult {
     pub snapshot_created: bool,
     pub triage_mutation_allowed: bool,
     pub audit: ProviderCallMetadata,
+    pub readback: Option<ActionReadbackRecord>,
+    pub partial_outcome: Option<LlmPromptPartialOutcome>,
     pub raw_secret_returned: bool,
     pub raw_prompt_persisted: bool,
     pub raw_response_persisted: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmPromptPartialOutcome {
+    pub remote_effect: String,
+    pub local_record: String,
+    pub recovery: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1581,6 +1592,10 @@ pub enum ServiceError {
     ProviderActivitySourceUnreadable(&'static str),
     #[error("provider activity source is invalid: {0}")]
     ProviderActivitySourceInvalid(&'static str),
+    #[error("action did not start: {0}")]
+    ActionNotStarted(String),
+    #[error("action applied but could not be verified: {0}")]
+    AppliedUnverified(String),
 }
 
 impl ServiceError {
@@ -1623,6 +1638,8 @@ impl ServiceError {
             Self::SourceChanged => "source_changed",
             Self::ProviderActivitySourceUnreadable(_) => "provider_activity_source_unreadable",
             Self::ProviderActivitySourceInvalid(_) => "provider_activity_source_invalid",
+            Self::ActionNotStarted(_) => "action_not_started",
+            Self::AppliedUnverified(_) => "applied_unverified",
         }
     }
 

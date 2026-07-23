@@ -1,8 +1,29 @@
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor_for_method, encode_cursor, KeysetCursor};
+use skills_copilot_commands::{
+    action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,
+    ActionPrecondition, ActionPreconditionKind, ActionReadbackObservation,
+};
+use skills_copilot_core::{
+    ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture, ActionReadbackDomain,
+    ActionTargetKind, ActionTargetRef,
+};
 
 const TASK_COCKPIT_MAX_EFFECTIVE_SKILLS: usize = 24;
 const TASK_COCKPIT_MAX_PROMPT_TOKENS: u32 = 12_000;
+
+fn llm_prompt_runs_revision(path: &Path) -> Result<String, ServiceError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-copilot/prompt-runs-revision/v1");
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
 
 impl ServiceHost {
     pub fn llm_status(&self) -> LlmStatus {
@@ -88,6 +109,7 @@ impl ServiceHost {
             .as_ref()
             .map(|profile| profile.provider_type.as_str().to_string());
         let model = profile.as_ref().map(|profile| profile.model.clone());
+        let endpoint = profile.as_ref().map(|profile| profile.base_url.clone());
         let profile_id = profile.as_ref().map(|profile| profile.id.clone());
         let destination_host = profile
             .as_ref()
@@ -147,16 +169,123 @@ impl ServiceHost {
             estimated_input_tokens,
             estimated_output_tokens,
         );
+        let profile_store_revision =
+            crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+        let profile_revision = profile
+            .as_ref()
+            .map(crate::provider::provider_profile_nonsecret_revision)
+            .transpose()?
+            .unwrap_or_else(|| "missing".to_string());
+        let action_state_revision =
+            crate::service_provider_actions::provider_action_state_revision(&self.app_data_dir)?;
+        let prompt_revision =
+            action_source_revision("llm.redactedPrompt", &[("prompt", &built.prompt_preview)])?;
+        let project_id = skills_copilot_commands::canonical_project_id(
+            self.effective_adapter_ctx()?.project_root.as_deref(),
+        );
+        let target_id = profile_id
+            .clone()
+            .unwrap_or_else(|| "unconfigured-provider".to_string());
+        let endpoint_binding = endpoint
+            .clone()
+            .unwrap_or_else(|| "unconfigured".to_string());
+        let model_binding = model.clone().unwrap_or_else(|| "unconfigured".to_string());
+        let cost_binding = format!("{estimated_cost_usd:.12}");
+        let input_tokens_binding = estimated_input_tokens.to_string();
+        let output_tokens_binding = estimated_output_tokens.to_string();
+        let source_revision = action_source_revision(
+            "llm.confirmPromptAndSend",
+            &[
+                ("request_kind", params.action.as_str()),
+                ("profile_id", &target_id),
+                ("profile_store", &profile_store_revision),
+                ("profile", &profile_revision),
+                ("endpoint", &endpoint_binding),
+                ("model", &model_binding),
+                ("prompt", &prompt_revision),
+                ("estimated_input_tokens", &input_tokens_binding),
+                ("estimated_output_tokens", &output_tokens_binding),
+                ("estimated_cost_usd", &cost_binding),
+                ("action_state", &action_state_revision),
+            ],
+        )?;
+        let mut evidence_refs = vec![
+            format!("provider-profile:{target_id}"),
+            format!("redacted-prompt:{prompt_revision}"),
+            format!("prompt-preview:{preview_id}"),
+        ];
+        evidence_refs.extend(
+            params
+                .instance_ids
+                .iter()
+                .chain(params.skill_instance_id.iter())
+                .map(|instance_id| format!("skill:{instance_id}")),
+        );
+        evidence_refs.extend(
+            params
+                .agents
+                .iter()
+                .map(|agent| format!("agent:{}", agent.trim().to_ascii_lowercase())),
+        );
+        if let Some(project_id) = project_id.as_ref() {
+            evidence_refs.push(format!("project:{project_id}"));
+        }
+        evidence_refs.sort();
+        evidence_refs.dedup();
+        let action = action_descriptor(
+            ActionKind::ProviderPrompt,
+            ActionIntent::SendProviderPrompt,
+            ActionTargetRef {
+                kind: ActionTargetKind::ProviderProfile,
+                id: target_id,
+                agent: None,
+                scope: None,
+            },
+            project_id,
+            vec![ActionImpact::AppLocalData],
+            "llm.previewPrompt",
+            Some("llm.confirmPromptAndSend"),
+            source_revision,
+            true,
+            ActionNetworkPosture::Required,
+            vec![
+                ActionReadbackDomain::ProviderActivity,
+                ActionReadbackDomain::PromptRuns,
+            ],
+            evidence_refs,
+        )?;
+        let binding = action_preview_binding(
+            action,
+            vec![
+                ActionPrecondition {
+                    kind: ActionPreconditionKind::ProviderProfile,
+                    target_id: "provider-profiles".to_string(),
+                    expected_revision: profile_store_revision,
+                },
+                ActionPrecondition {
+                    kind: ActionPreconditionKind::PromptContext,
+                    target_id: "redacted-prompt".to_string(),
+                    expected_revision: prompt_revision,
+                },
+                ActionPrecondition {
+                    kind: ActionPreconditionKind::PromptContext,
+                    target_id: "provider-action-state".to_string(),
+                    expected_revision: action_state_revision,
+                },
+            ],
+        )?;
 
         Ok(LlmPreviewPromptResult {
             preview_id,
             status: if allowed { "ready" } else { "blocked" }.to_string(),
             allowed,
             reason,
-            action: params.action.as_str(),
+            request_kind: params.action.as_str(),
+            binding,
             profile_id,
             provider,
             model,
+            endpoint,
             destination_host,
             prompt_scope: built.prompt_scope,
             included_fields: built.included_fields,
@@ -201,27 +330,34 @@ impl ServiceHost {
         &self,
         params: LlmConfirmPromptAndSendParams,
     ) -> Result<LlmConfirmPromptAndSendResult, ServiceError> {
-        if params.confirmation_id.trim().is_empty() {
-            return Err(ServiceError::ConfirmationRequired(
-                "llm.confirmPromptAndSend requires an explicit confirmation_id".to_string(),
-            ));
+        let preliminary = self.preview_llm_prompt(params.request.clone())?;
+        if !preliminary.allowed {
+            return Err(ServiceError::InvalidRequest(preliminary.reason));
         }
+        ensure_action_confirmed(&preliminary.binding, Some(&params.action_confirmation))?;
+
+        let _lock = crate::service_provider_actions::lock_provider_actions(&self.app_data_dir)?;
         let preview = self.preview_llm_prompt(params.request.clone())?;
-        if preview.preview_id != params.preview_id {
-            return Err(ServiceError::InvalidRequest(
-                "preview_id does not match the current redacted prompt preview".to_string(),
-            ));
+        if !preview.allowed {
+            return Err(ServiceError::InvalidRequest(preview.reason));
         }
+        ensure_action_confirmed(&preview.binding, Some(&params.action_confirmation))?;
+        crate::service_provider_actions::reserve_provider_action(
+            &self.app_data_dir,
+            &preview.binding,
+            &params.action_confirmation,
+        )?;
         let profile_id = preview.profile_id.clone().ok_or_else(|| {
             ServiceError::InvalidRequest(
                 "No provider profile is available for the confirmed prompt.".to_string(),
             )
         })?;
-        let send = send_provider_prompt(
+        let confirmation_id = preview.binding.action.id.clone();
+        let send = match send_provider_prompt(
             &self.app_data_dir,
             SendProviderPromptParams {
                 profile_id: profile_id.clone(),
-                confirmation_id: params.confirmation_id.clone(),
+                confirmation_id: confirmation_id.clone(),
                 action_type: llm_prompt_action_type(&params.request),
                 prompt: preview.prompt_preview.clone(),
                 estimated_input_tokens: preview.estimated_input_tokens,
@@ -230,14 +366,102 @@ impl ServiceHost {
                 redaction_status: preview.redaction.status.clone(),
                 timeout_ms: params.timeout_ms,
             },
-        )?;
-        self.record_llm_prompt_run(&params, &preview, &send)?;
+        ) {
+            Ok(send) => send,
+            Err(error) => {
+                let _ = crate::service_provider_actions::finalize_provider_action(
+                    &self.app_data_dir,
+                    &preview.binding,
+                    &params.action_confirmation,
+                    crate::service_provider_actions::ProviderActionState::NotStarted,
+                );
+                return Err(ServiceError::ActionNotStarted(format!(
+                    "provider prompt did not start: {error}; create a new preview before retrying"
+                )));
+            }
+        };
+        let target_matches = send.profile_id == profile_id
+            && preview.model.as_deref() == Some(send.model.as_str())
+            && preview.destination_host.as_deref() == Some(send.destination_host.as_str());
+        // A target mismatch is handled below as an explicit partial outcome:
+        // the provider request may already have left the process.
+        let prompt_record_persisted = self.record_llm_prompt_run(&params, &preview, &send).is_ok();
+        let mut readback =
+            if target_matches && send.local_metadata_persisted && prompt_record_persisted {
+                let activity_revision =
+                    crate::provider::provider_call_metadata_revision(&self.app_data_dir);
+                let prompt_runs_revision = llm_prompt_runs_revision(&self.llm_prompt_runs_path());
+                match (activity_revision, prompt_runs_revision) {
+                    (Ok(activity_revision), Ok(prompt_runs_revision)) => {
+                        ActionReadbackRecord::verified(
+                            &preview.binding.action,
+                            vec![
+                                ActionReadbackObservation {
+                                    domain: ActionReadbackDomain::ProviderActivity,
+                                    target_id: profile_id.clone(),
+                                    revision: activity_revision,
+                                },
+                                ActionReadbackObservation {
+                                    domain: ActionReadbackDomain::PromptRuns,
+                                    target_id: preview.preview_id.clone(),
+                                    revision: prompt_runs_revision,
+                                },
+                            ],
+                        )
+                        .ok()
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+        if readback.is_some()
+            && crate::service_provider_actions::finalize_provider_action(
+                &self.app_data_dir,
+                &preview.binding,
+                &params.action_confirmation,
+                crate::service_provider_actions::ProviderActionState::Verified,
+            )
+            .is_err()
+        {
+            readback = None;
+        }
+        let partial_outcome = if readback.is_none() {
+            let _ = crate::service_provider_actions::finalize_provider_action(
+                &self.app_data_dir,
+                &preview.binding,
+                &params.action_confirmation,
+                crate::service_provider_actions::ProviderActionState::Partial,
+            );
+            Some(LlmPromptPartialOutcome {
+                remote_effect: if send.provider_request_sent {
+                    "remote_unknown".to_string()
+                } else {
+                    "not_sent".to_string()
+                },
+                local_record: if send.local_metadata_persisted && prompt_record_persisted {
+                    "applied_unverified".to_string()
+                } else {
+                    "incomplete".to_string()
+                },
+                recovery:
+                    "Review provider activity before creating a new preview; this action reference cannot be replayed."
+                        .to_string(),
+            })
+        } else {
+            None
+        };
+        let status = if partial_outcome.is_some() {
+            "partial".to_string()
+        } else {
+            send.status.clone()
+        };
 
         Ok(LlmConfirmPromptAndSendResult {
-            preview_id: params.preview_id,
-            confirmation_id: params.confirmation_id,
-            status: send.status,
-            action: params.request.action.as_str(),
+            preview_id: preview.preview_id,
+            confirmation_id,
+            status,
+            request_kind: params.request.action.as_str(),
             profile_id,
             provider: send.provider_type.as_str().to_string(),
             model: send.model,
@@ -252,6 +476,8 @@ impl ServiceHost {
             snapshot_created: false,
             triage_mutation_allowed: false,
             audit: send.audit,
+            readback,
+            partial_outcome,
             raw_secret_returned: send.raw_secret_returned,
             raw_prompt_persisted: send.raw_prompt_persisted,
             raw_response_persisted: send.raw_response_persisted,

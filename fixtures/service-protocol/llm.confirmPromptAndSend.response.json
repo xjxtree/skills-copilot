@@ -3,9 +3,9 @@
   "ok": true,
   "result": {
     "preview_id": "prompt-preview-fixture",
-    "confirmation_id": "confirm-fixture",
+    "confirmation_id": "provider-prompt-fixture",
     "status": "blocked",
-    "action": "recommend",
+    "request_kind": "recommend",
     "profile_id": "fixture-openai",
     "provider": "openai-compatible",
     "model": "fixture-model",
@@ -33,13 +33,34 @@
       "estimated_input_tokens": 235,
       "estimated_output_tokens": 500,
       "estimated_cost_usd": 0.0018375,
-      "confirmation_id": "confirm-fixture",
+      "confirmation_id": "provider-prompt-fixture",
       "redaction_status": "redacted-preview-confirmed-required",
       "provider_request_sent": false,
       "credential_accessed": false,
       "raw_prompt_persisted": false,
       "raw_response_persisted": false
     },
+    "readback": {
+      "action_id": "provider-prompt-fixture",
+      "source_revision": "sha256:provider-prompt-readback",
+      "project_id": null,
+      "domains": ["provider_activity", "prompt_runs"],
+      "target_ids": ["fixture-openai", "prompt-preview-fixture"],
+      "observations": [
+        {
+          "domain": "provider_activity",
+          "target_id": "fixture-openai",
+          "revision": "sha256:provider-activity-after-prompt"
+        },
+        {
+          "domain": "prompt_runs",
+          "target_id": "prompt-preview-fixture",
+          "revision": "sha256:prompt-runs-after-prompt"
+        }
+      ],
+      "verified": true
+    },
+    "partial_outcome": null,
     "raw_secret_returned": false,
     "raw_prompt_persisted": false,
     "raw_response_persisted": false

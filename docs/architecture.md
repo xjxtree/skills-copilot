@@ -59,6 +59,14 @@ Mutations follow Detect, Explain, Evidence, Preview, Confirm, Apply, and
 Read-back. Preview/apply authority remains in Rust. A provider result cannot
 invent an action, target, command, revision token, or write path.
 
+Provider profile save/delete, connection tests, and LLM prompt sends use the
+same signed action descriptor and exact confirmation contract. Their tokens are
+reserved once under a canonical local lock and finish as not-started, verified,
+or partial in one bounded replay-state record rather than an action history.
+Verified results carry semantic typed read-back; unknown local, credential, or
+remote effects are explicit partial outcomes and are never automatically
+retried.
+
 ## Layers
 
 | Layer | Owner | Notes |

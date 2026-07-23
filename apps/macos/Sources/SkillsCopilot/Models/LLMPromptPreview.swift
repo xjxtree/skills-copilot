@@ -98,6 +98,9 @@ struct LLMPromptRedactionSummary: Decodable, Hashable {
 struct LLMPromptPreview: Decodable, Identifiable, Hashable {
     let previewID: String
     let action: LLMAction?
+    let actionDescriptor: ActionDescriptorWire?
+    let preconditions: [ActionPreconditionWire]
+    let previewToken: String?
     let analysisKind: String?
     let requestKind: String?
     let scope: String?
@@ -106,6 +109,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
     let disabledReason: String?
     let provider: String?
     let model: String?
+    let endpoint: String?
     let destinationHost: String?
     let includedFields: [LLMPromptField]
     let excludedFields: [LLMPromptField]
@@ -125,6 +129,8 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         case id
         case confirmationID = "confirmation_id"
         case action
+        case preconditions
+        case previewToken = "preview_token"
         case kind
         case analysisKind = "analysis_kind"
         case requestKind = "request_kind"
@@ -191,10 +197,17 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         rawResponsePersisted: Bool,
         draftCopyOnly: Bool,
         promptPreview: String?,
-        audit: AIProviderCallAuditMetadata?
+        audit: AIProviderCallAuditMetadata?,
+        actionDescriptor: ActionDescriptorWire? = nil,
+        preconditions: [ActionPreconditionWire] = [],
+        previewToken: String? = nil,
+        endpoint: String? = nil
     ) {
         self.previewID = previewID
         self.action = action
+        self.actionDescriptor = actionDescriptor
+        self.preconditions = preconditions
+        self.previewToken = previewToken
         self.analysisKind = analysisKind
         self.requestKind = requestKind
         self.scope = scope
@@ -203,6 +216,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         self.disabledReason = disabledReason
         self.provider = provider
         self.model = model
+        self.endpoint = endpoint
         self.destinationHost = destinationHost
         self.includedFields = includedFields
         self.excludedFields = excludedFields
@@ -222,7 +236,10 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
             ?? container.decodeIfPresent(String.self, forKey: .id)
             ?? container.decodeIfPresent(String.self, forKey: .confirmationID)
             ?? ""
-        action = try Self.decodeAction(from: container, keys: [.action, .kind])
+        action = try Self.decodeAction(from: container, keys: [.requestKind, .action, .kind])
+        actionDescriptor = try? container.decode(ActionDescriptorWire.self, forKey: .action)
+        preconditions = try container.decodeIfPresent([ActionPreconditionWire].self, forKey: .preconditions) ?? []
+        previewToken = try container.decodeIfPresent(String.self, forKey: .previewToken)
         analysisKind = try Self.decodeFlexibleString(from: container, keys: [.analysisKind])
         requestKind = try container.decodeIfPresent(String.self, forKey: .requestKind)
         scope = try container.decodeIfPresent(String.self, forKey: .scope)
@@ -237,9 +254,10 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         provider = try container.decodeIfPresent(String.self, forKey: .provider)
             ?? container.decodeIfPresent(String.self, forKey: .providerType)
         model = try container.decodeIfPresent(String.self, forKey: .model)
+        endpoint = try container.decodeIfPresent(String.self, forKey: .endpoint)
         destinationHost = try container.decodeIfPresent(String.self, forKey: .destinationHost)
             ?? container.decodeIfPresent(String.self, forKey: .networkDestination)
-            ?? container.decodeIfPresent(String.self, forKey: .endpoint)
+            ?? endpoint
             ?? container.decodeIfPresent(String.self, forKey: .host)
         includedFields = try container.decodeIfPresent([LLMPromptField].self, forKey: .includedFields) ?? []
         excludedFields = try container.decodeIfPresent([LLMPromptField].self, forKey: .excludedFields) ?? []
@@ -310,12 +328,20 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         )
     }
 
+    var actionConfirmation: ActionConfirmationWire? {
+        guard let actionDescriptor,
+              let previewToken,
+              !previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return ActionConfirmationWire(action: actionDescriptor, previewToken: previewToken)
+    }
+
     private static func decodeAction(
         from container: KeyedDecodingContainer<CodingKeys>,
         keys: [CodingKeys]
     ) throws -> LLMAction? {
         for key in keys {
-            if let value = try container.decodeIfPresent(String.self, forKey: key),
+            if let value = try? container.decode(String.self, forKey: key),
                let action = LLMAction(rawValue: value) {
                 return action
             }
@@ -352,6 +378,8 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
     let writeBackAllowed: Bool
     let scriptExecutionAllowed: Bool
     let audit: AIProviderCallAuditMetadata?
+    let readback: ActionReadbackRecordWire?
+    let partialOutcome: LLMPromptPartialOutcome?
 
     var id: String { previewID.isEmpty ? status : previewID }
 
@@ -384,6 +412,8 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         case audit
         case auditMetadata = "audit_metadata"
         case metadata
+        case readback
+        case partialOutcome = "partial_outcome"
     }
 
     init(
@@ -397,7 +427,9 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         rawResponsePersisted: Bool,
         writeBackAllowed: Bool,
         scriptExecutionAllowed: Bool,
-        audit: AIProviderCallAuditMetadata?
+        audit: AIProviderCallAuditMetadata?,
+        readback: ActionReadbackRecordWire? = nil,
+        partialOutcome: LLMPromptPartialOutcome? = nil
     ) {
         self.previewID = previewID
         self.success = success
@@ -410,6 +442,8 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         self.writeBackAllowed = writeBackAllowed
         self.scriptExecutionAllowed = scriptExecutionAllowed
         self.audit = audit
+        self.readback = readback
+        self.partialOutcome = partialOutcome
     }
 
     init(from decoder: Decoder) throws {
@@ -461,6 +495,8 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
             ?? container.decodeIfPresent(Bool.self, forKey: .executionActionsAvailable)
             ?? false
         audit = decodedAudit
+        readback = try container.decodeIfPresent(ActionReadbackRecordWire.self, forKey: .readback)
+        partialOutcome = try container.decodeIfPresent(LLMPromptPartialOutcome.self, forKey: .partialOutcome)
     }
 
     private static func firstNonEmpty(_ values: String?...) -> String? {
@@ -484,7 +520,9 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
             rawResponsePersisted: false,
             writeBackAllowed: false,
             scriptExecutionAllowed: false,
-            audit: nil
+            audit: nil,
+            readback: nil,
+            partialOutcome: nil
         )
     }
 
@@ -500,6 +538,18 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
             return errorCode
         }
         return nil
+    }
+}
+
+struct LLMPromptPartialOutcome: Decodable, Hashable {
+    let remoteEffect: String
+    let localRecord: String
+    let recovery: String
+
+    enum CodingKeys: String, CodingKey {
+        case remoteEffect = "remote_effect"
+        case localRecord = "local_record"
+        case recovery
     }
 }
 

@@ -1,0 +1,8 @@
+{
+  "id": "fixture-llm-preview-provider-connection-test",
+  "method": "llm.previewProviderConnectionTest",
+  "params": {
+    "profile_id": "fixture-openai",
+    "timeout_ms": 250
+  }
+}

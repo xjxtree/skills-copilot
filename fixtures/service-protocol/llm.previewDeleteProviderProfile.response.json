@@ -1,0 +1,50 @@
+{
+  "id": "fixture-llm-preview-delete-provider-profile",
+  "ok": true,
+  "result": {
+    "action": {
+      "id": "provider-profile-delete-fixture",
+      "kind": "provider_profile",
+      "intent": "delete_provider_profile",
+      "target": {
+        "kind": "provider_profile",
+        "id": "fixture-openai",
+        "agent": null,
+        "scope": null
+      },
+      "project_id": null,
+      "impacts": ["app_local_data", "credential_store"],
+      "preview_method": "llm.previewDeleteProviderProfile",
+      "apply_method": "llm.deleteProviderProfile",
+      "source_revision": "sha256:provider-delete-source-fixture",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["provider_profiles", "provider_credentials"],
+      "evidence_refs": [
+        "provider-profile:fixture-openai",
+        "provider-state:sha256:provider-profile-before"
+      ]
+    },
+    "preconditions": [
+      {
+        "kind": "provider_profile",
+        "target_id": "provider-profiles",
+        "expected_revision": "sha256:provider-store-before"
+      },
+      {
+        "kind": "prompt_context",
+        "target_id": "provider-action-state",
+        "expected_revision": "sha256:provider-action-state-before"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:fixture-delete",
+    "operation": "delete",
+    "profile_id": "fixture-openai",
+    "provider_type": "openai-compatible",
+    "destination_host": "example.invalid",
+    "model": "fixture-model",
+    "expected_revision": "sha256:provider-store-before",
+    "credential_change": true,
+    "raw_secret_returned": false
+  }
+}

@@ -3,7 +3,21 @@
   "method": "llm.testProviderConnection",
   "params": {
     "profile_id": "fixture-openai",
-    "confirmation_id": "fixture-confirmation",
-    "timeout_ms": 250
+    "timeout_ms": 250,
+    "action_confirmation": {
+      "reference": {
+        "action_id": "provider-connection-test-fixture",
+        "source_revision": "sha256:provider-test-source-fixture",
+        "project_id": null,
+        "target": {
+          "kind": "provider_profile",
+          "id": "fixture-openai",
+          "agent": null,
+          "scope": null
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:fixture-test",
+      "confirmed": true
+    }
   }
 }

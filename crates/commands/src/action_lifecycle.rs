@@ -91,6 +91,8 @@ pub enum ActionPreconditionKind {
     TargetFile,
     ManagerInventory,
     Archive,
+    ProviderProfile,
+    PromptContext,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -120,7 +122,7 @@ pub struct ActionReadbackRecord {
 }
 
 impl ActionReadbackRecord {
-    pub(crate) fn verified(
+    pub fn verified(
         action: &ActionDescriptor,
         mut observations: Vec<ActionReadbackObservation>,
     ) -> Result<Self, CommandError> {
@@ -181,6 +183,28 @@ pub fn action_source_revision(
         hash_field(&mut hasher, label, value);
     }
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+/// Creates an in-memory, keyed binding for sensitive action input.
+///
+/// Callers must feed the returned value into another signed or hashed binding
+/// and must never serialize, log, persist, or display it. Unlike a plain
+/// content digest, this value cannot be used for offline guessing without the
+/// process-local action signing secret.
+pub fn opaque_sensitive_action_input_binding(
+    label: &str,
+    value: &str,
+) -> Result<String, CommandError> {
+    ensure_nonempty(label, "sensitive action input label")?;
+    let mut payload = Sha256::new();
+    hash_field(
+        &mut payload,
+        "domain",
+        "agent-copilot/sensitive-action-input/v1",
+    );
+    hash_field(&mut payload, "label", label);
+    hash_field(&mut payload, "value", value);
+    action_preview_hmac(payload.finalize().as_slice())
 }
 
 pub fn deterministic_action_id(
@@ -516,6 +540,7 @@ fn action_impact_wire_value(impact: ActionImpact) -> &'static str {
     match impact {
         ActionImpact::ReadOnly => "read_only",
         ActionImpact::AppLocalData => "app_local_data",
+        ActionImpact::CredentialStore => "credential_store",
         ActionImpact::AgentConfig => "agent_config",
         ActionImpact::SkillFiles => "skill_files",
         ActionImpact::ExternalManager => "external_manager",
@@ -611,15 +636,24 @@ pub fn validate_action_method_ownership(
                 )
         }
         ActionKind::ProviderProfile => {
-            preview_method == "llm.listProviderProfiles"
-                && matches!(
-                    apply_method,
-                    Some("llm.saveProviderProfile") | Some("llm.deleteProviderProfile")
+            matches!(
+                (preview_method, apply_method),
+                (
+                    "llm.previewSaveProviderProfile",
+                    Some("llm.saveProviderProfile")
+                ) | (
+                    "llm.previewDeleteProviderProfile",
+                    Some("llm.deleteProviderProfile")
                 )
+            )
         }
         ActionKind::ProviderConnectionTest => {
-            preview_method == "llm.testProviderConnection"
+            preview_method == "llm.previewProviderConnectionTest"
                 && apply_method == Some("llm.testProviderConnection")
+        }
+        ActionKind::ProviderPrompt => {
+            preview_method == "llm.previewPrompt"
+                && apply_method == Some("llm.confirmPromptAndSend")
         }
         _ => false,
     };
@@ -670,12 +704,13 @@ pub fn validate_action_intent(kind: ActionKind, intent: ActionIntent) -> Result<
             | (ActionKind::ProjectContext, ActionIntent::SetProjectContext)
             | (
                 ActionKind::ProviderProfile,
-                ActionIntent::SaveProviderProfile
+                ActionIntent::SaveProviderProfile | ActionIntent::DeleteProviderProfile
             )
             | (
                 ActionKind::ProviderConnectionTest,
                 ActionIntent::TestProviderConnection
             )
+            | (ActionKind::ProviderPrompt, ActionIntent::SendProviderPrompt)
     );
     if valid {
         Ok(())
@@ -706,6 +741,7 @@ fn action_kind_wire_value(kind: ActionKind) -> &'static str {
         ActionKind::ProjectContext => "project_context",
         ActionKind::ProviderProfile => "provider_profile",
         ActionKind::ProviderConnectionTest => "provider_connection_test",
+        ActionKind::ProviderPrompt => "provider_prompt",
         _ => "unknown",
     }
 }
@@ -731,7 +767,9 @@ fn action_intent_wire_value(intent: ActionIntent) -> &'static str {
         ActionIntent::TuneRule => "tune_rule",
         ActionIntent::SetProjectContext => "set_project_context",
         ActionIntent::SaveProviderProfile => "save_provider_profile",
+        ActionIntent::DeleteProviderProfile => "delete_provider_profile",
         ActionIntent::TestProviderConnection => "test_provider_connection",
+        ActionIntent::SendProviderPrompt => "send_provider_prompt",
         _ => "unknown",
     }
 }
@@ -756,6 +794,10 @@ fn action_readback_wire_value(domain: ActionReadbackDomain) -> &'static str {
         ActionReadbackDomain::ManagerInventory => "manager_inventory",
         ActionReadbackDomain::SessionContinuation => "session_continuation",
         ActionReadbackDomain::BlockedAttemptAudit => "blocked_attempt_audit",
+        ActionReadbackDomain::ProviderProfiles => "provider_profiles",
+        ActionReadbackDomain::ProviderCredentials => "provider_credentials",
+        ActionReadbackDomain::ProviderActivity => "provider_activity",
+        ActionReadbackDomain::PromptRuns => "prompt_runs",
         _ => "unknown",
     }
 }
@@ -768,6 +810,8 @@ fn precondition_kind_wire_value(kind: ActionPreconditionKind) -> &'static str {
         ActionPreconditionKind::TargetFile => "target_file",
         ActionPreconditionKind::ManagerInventory => "manager_inventory",
         ActionPreconditionKind::Archive => "archive",
+        ActionPreconditionKind::ProviderProfile => "provider_profile",
+        ActionPreconditionKind::PromptContext => "prompt_context",
     }
 }
 

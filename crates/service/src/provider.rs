@@ -1,3 +1,8 @@
+#[cfg(test)]
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -7,6 +12,8 @@ use std::{
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use skills_copilot_commands::ActionConfirmation;
 use thiserror::Error;
 use ureq::Error as UreqError;
 use url::Url;
@@ -32,6 +39,8 @@ pub enum ProviderError {
     ProfileNotFound(String),
     #[error("credential storage unavailable: {0}")]
     CredentialStorageUnavailable(String),
+    #[error("credential mutation outcome is unverified: {0}")]
+    CredentialMutationPartial(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +124,8 @@ pub struct SaveProviderProfileParams {
     pub single_request_token_limit: Option<u32>,
     #[serde(default)]
     pub monthly_budget_usd: Option<f64>,
+    #[serde(default)]
+    pub action_confirmation: Option<ActionConfirmation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,14 +133,19 @@ pub struct DeleteProviderProfileParams {
     pub profile_id: String,
     #[serde(default)]
     pub delete_credential: bool,
+    #[serde(default)]
+    pub action_confirmation: Option<ActionConfirmation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestProviderConnectionParams {
     pub profile_id: String,
-    pub confirmation_id: String,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub action_confirmation: Option<ActionConfirmation>,
+    #[serde(skip)]
+    pub confirmation_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +174,13 @@ pub struct ListProviderProfilesResult {
 pub struct SaveProviderProfileResult {
     pub profile: ProviderProfileRecord,
     pub credential_status: ProviderCredentialStatus,
+    pub profile_persisted: bool,
+    pub credential_effect: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
     pub raw_secret_returned: bool,
+    #[serde(skip, default)]
+    pub(crate) operation_state: ProviderMutationState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,7 +188,12 @@ pub struct DeleteProviderProfileResult {
     pub deleted_profile_id: String,
     pub profile_deleted: bool,
     pub credential_deleted: bool,
+    pub credential_effect: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
     pub raw_secret_returned: bool,
+    #[serde(skip, default)]
+    pub(crate) operation_state: ProviderMutationState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +210,7 @@ pub struct TestProviderConnectionResult {
     pub error_message: Option<String>,
     pub budget: ProviderBudgetStatus,
     pub audit: ProviderCallMetadata,
+    pub local_metadata_persisted: bool,
     pub raw_prompt_persisted: bool,
     pub raw_response_persisted: bool,
     pub raw_secret_returned: bool,
@@ -202,6 +230,7 @@ pub struct SendProviderPromptResult {
     pub error_message: Option<String>,
     pub output_text: Option<String>,
     pub audit: ProviderCallMetadata,
+    pub local_metadata_persisted: bool,
     pub raw_prompt_persisted: bool,
     pub raw_response_persisted: bool,
     pub raw_secret_returned: bool,
@@ -237,6 +266,21 @@ struct ProviderProfileStore {
     profiles: Vec<ProviderProfileRecord>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct NormalizedProviderProfileInput {
+    pub id: String,
+    pub display_name: String,
+    pub provider_type: ProviderType,
+    pub base_url: String,
+    pub model: String,
+    pub enabled: bool,
+    pub api_version: Option<String>,
+    pub organization: Option<String>,
+    pub single_request_token_limit: u32,
+    pub monthly_budget_usd: f64,
+    pub replaces_credential: bool,
+}
+
 struct ProviderTestFinish<'a> {
     status: &'a str,
     provider_request_sent: bool,
@@ -257,6 +301,142 @@ struct ProviderPromptFinish {
 struct ProviderPromptHttpSuccess {
     status: u16,
     body: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) enum ProviderMutationState {
+    #[default]
+    NotStarted,
+    Applied,
+    Partial,
+}
+
+struct CredentialCommit {
+    target: ProviderCredentialReference,
+    staging: ProviderCredentialReference,
+    previous_secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CredentialDeleteOutcome {
+    Deleted,
+    AlreadyAbsent,
+}
+
+impl CredentialCommit {
+    fn compensate(&self) -> Result<(), ProviderError> {
+        #[cfg(test)]
+        if take_test_credential_fault(
+            &self.target.account,
+            TestProviderCredentialFault::Compensation,
+        ) {
+            return Err(ProviderError::CredentialStorageUnavailable(
+                "injected credential compensation failure".to_string(),
+            ));
+        }
+        match self.previous_secret.as_deref() {
+            Some(secret) => {
+                store_and_verify_secret(&self.target, secret)?;
+            }
+            None => {
+                let _ = delete_secret(&self.target)?;
+            }
+        }
+        let _ = delete_secret(&self.staging)?;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), ProviderError> {
+        let _ = delete_secret(&self.staging)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum TestProviderIoFault {
+    SaveStore,
+    AppendCallMetadata,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum TestProviderCredentialFault {
+    Compensation,
+    Delete,
+}
+
+#[cfg(test)]
+static TEST_PROVIDER_IO_FAULTS: LazyLock<Mutex<Vec<(PathBuf, TestProviderIoFault)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(test)]
+static TEST_PROVIDER_CREDENTIAL_FAULTS: LazyLock<
+    Mutex<Vec<(String, TestProviderCredentialFault)>>,
+> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(test)]
+static TEST_PROVIDER_KEYCHAIN: LazyLock<Mutex<HashMap<String, Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+pub(crate) fn install_test_provider_io_fault(app_data_dir: &Path, fault: TestProviderIoFault) {
+    TEST_PROVIDER_IO_FAULTS
+        .lock()
+        .expect("lock provider IO faults")
+        .push((app_data_dir.to_path_buf(), fault));
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_provider_credential_fault(
+    profile_id: &str,
+    fault: TestProviderCredentialFault,
+) {
+    TEST_PROVIDER_CREDENTIAL_FAULTS
+        .lock()
+        .expect("lock provider credential faults")
+        .push((format!("provider:{profile_id}"), fault));
+}
+
+#[cfg(test)]
+pub(crate) fn manage_test_provider_credential(profile_id: &str, secret: Option<&str>) {
+    TEST_PROVIDER_KEYCHAIN
+        .lock()
+        .expect("lock provider test keychain")
+        .insert(
+            format!("provider:{profile_id}"),
+            secret.map(ToOwned::to_owned),
+        );
+}
+
+#[cfg(test)]
+fn take_test_provider_io_fault(app_data_dir: &Path, fault: TestProviderIoFault) -> bool {
+    let mut faults = TEST_PROVIDER_IO_FAULTS
+        .lock()
+        .expect("lock provider IO faults");
+    let Some(index) = faults
+        .iter()
+        .position(|(path, candidate)| path == app_data_dir && *candidate == fault)
+    else {
+        return false;
+    };
+    faults.swap_remove(index);
+    true
+}
+
+#[cfg(test)]
+fn take_test_credential_fault(account: &str, fault: TestProviderCredentialFault) -> bool {
+    let mut faults = TEST_PROVIDER_CREDENTIAL_FAULTS
+        .lock()
+        .expect("lock provider credential faults");
+    let Some(index) = faults
+        .iter()
+        .position(|(candidate, kind)| candidate == account && *kind == fault)
+    else {
+        return false;
+    };
+    faults.swap_remove(index);
+    true
 }
 
 impl Default for ProviderProfileStore {
@@ -288,39 +468,15 @@ pub fn save_provider_profile(
 ) -> Result<SaveProviderProfileResult, ProviderError> {
     let now = unix_timestamp_millis();
     let mut store = load_store(app_data_dir)?;
-    let profile_id = params
-        .id
-        .as_deref()
-        .map(sanitize_profile_id)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| sanitize_profile_id(&params.display_name));
-    if profile_id.is_empty() {
-        return Err(ProviderError::InvalidProfile(
-            "profile id or display name must contain an ASCII letter or digit".to_string(),
-        ));
-    }
-    let base_url = validate_base_url(&params.base_url)?;
-    let model = require_non_empty("model", &params.model)?;
-    let display_name = require_non_empty("display_name", &params.display_name)?;
-    let token_limit = params
-        .single_request_token_limit
-        .unwrap_or(DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT)
-        .clamp(1, 200_000);
-    let monthly_budget = params
-        .monthly_budget_usd
-        .unwrap_or(DEFAULT_MONTHLY_BUDGET_USD)
-        .clamp(0.0, 10_000.0);
+    let normalized = normalize_save_provider_profile_params(&params)?;
+    let profile_id = normalized.id.clone();
+    let replaces_credential = normalized.replaces_credential;
     let previous_profile = store
         .profiles
         .iter()
         .find(|profile| profile.id == profile_id)
         .cloned();
-    let has_new_secret = params
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|secret| !secret.is_empty());
-    let mut credential_reference = if has_new_secret {
+    let mut credential_reference = if replaces_credential {
         keychain_reference(&profile_id)
     } else {
         previous_profile
@@ -328,12 +484,18 @@ pub fn save_provider_profile(
             .map(|profile| profile.credential_reference.clone())
             .unwrap_or_else(|| keychain_reference(&profile_id))
     };
-    let credential_status = match params.api_key.as_deref().map(str::trim) {
+    let credential_commit = match params.api_key.as_deref().map(str::trim) {
         Some(secret) if !secret.is_empty() => {
-            store_and_verify_secret(&credential_reference, secret)?;
-            available_credential_status("API key stored in the OS credential store.")
+            Some(stage_and_commit_secret(&credential_reference, secret)?)
         }
-        _ => existing_credential_status(&credential_reference),
+        _ => None,
+    };
+    let credential_status = match credential_commit.as_ref() {
+        Some(_) => available_credential_status("API key stored in the OS credential store."),
+        None => previous_profile
+            .as_ref()
+            .map(|profile| profile.credential_status.clone())
+            .unwrap_or_else(|| existing_credential_status(&credential_reference)),
     };
     credential_reference.secret_persisted = credential_status.secret_available;
     let previous_created_at = previous_profile
@@ -342,18 +504,15 @@ pub fn save_provider_profile(
         .unwrap_or(now);
     let profile = ProviderProfileRecord {
         id: profile_id.clone(),
-        display_name,
-        provider_type: params.provider_type,
-        base_url,
-        model,
-        enabled: params.enabled,
-        api_version: params
-            .api_version
-            .and_then(non_empty_string)
-            .or_else(|| default_api_version(params.provider_type)),
-        organization: params.organization.and_then(non_empty_string),
-        single_request_token_limit: token_limit,
-        monthly_budget_usd: monthly_budget,
+        display_name: normalized.display_name,
+        provider_type: normalized.provider_type,
+        base_url: normalized.base_url,
+        model: normalized.model,
+        enabled: normalized.enabled,
+        api_version: normalized.api_version,
+        organization: normalized.organization,
+        single_request_token_limit: normalized.single_request_token_limit,
+        monthly_budget_usd: normalized.monthly_budget_usd,
         credential_reference,
         credential_status: credential_status.clone(),
         created_at: previous_created_at,
@@ -368,12 +527,114 @@ pub fn save_provider_profile(
     } else if store.default_profile_id.is_none() {
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
-    save_store(app_data_dir, &store)?;
+    if let Err(error) = save_store(app_data_dir, &store) {
+        if let Some(commit) = credential_commit.as_ref() {
+            return match commit.compensate() {
+                Ok(()) => Ok(SaveProviderProfileResult {
+                    profile,
+                    credential_status,
+                    profile_persisted: false,
+                    credential_effect: "restored_after_profile_write_failure".to_string(),
+                    error_code: Some("provider_profile_write_failed".to_string()),
+                    error_message: Some(
+                        "Provider profile was not saved; the previous credential state was restored."
+                            .to_string(),
+                    ),
+                    raw_secret_returned: false,
+                    operation_state: ProviderMutationState::NotStarted,
+                }),
+                Err(_) => Ok(SaveProviderProfileResult {
+                    profile,
+                    credential_status,
+                    profile_persisted: false,
+                    credential_effect: "unknown_after_compensation_failure".to_string(),
+                    error_code: Some("credential_compensation_failed".to_string()),
+                    error_message: Some(
+                        "Provider profile was not saved and credential restoration could not be verified."
+                            .to_string(),
+                    ),
+                    raw_secret_returned: false,
+                    operation_state: ProviderMutationState::Partial,
+                }),
+            };
+        }
+        return Err(error);
+    }
+    if let Some(commit) = credential_commit {
+        if commit.finish().is_err() {
+            return Ok(SaveProviderProfileResult {
+                profile,
+                credential_status,
+                profile_persisted: true,
+                credential_effect: "target_verified_staging_cleanup_unknown".to_string(),
+                error_code: Some("credential_staging_cleanup_failed".to_string()),
+                error_message: Some(
+                    "Provider profile and target credential were saved, but staging credential cleanup could not be verified."
+                        .to_string(),
+                ),
+                raw_secret_returned: false,
+                operation_state: ProviderMutationState::Partial,
+            });
+        }
+    }
 
     Ok(SaveProviderProfileResult {
         profile,
         credential_status,
+        profile_persisted: true,
+        credential_effect: if replaces_credential {
+            "stored_and_verified".to_string()
+        } else {
+            "preserved".to_string()
+        },
+        error_code: None,
+        error_message: None,
         raw_secret_returned: false,
+        operation_state: ProviderMutationState::Applied,
+    })
+}
+
+pub(crate) fn normalize_save_provider_profile_params(
+    params: &SaveProviderProfileParams,
+) -> Result<NormalizedProviderProfileInput, ProviderError> {
+    let profile_id = params
+        .id
+        .as_deref()
+        .map(sanitize_profile_id)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| sanitize_profile_id(&params.display_name));
+    if profile_id.is_empty() {
+        return Err(ProviderError::InvalidProfile(
+            "profile id or display name must contain an ASCII letter or digit".to_string(),
+        ));
+    }
+    let provider_type = params.provider_type;
+    Ok(NormalizedProviderProfileInput {
+        id: profile_id,
+        display_name: require_non_empty("display_name", &params.display_name)?,
+        provider_type,
+        base_url: validate_base_url(&params.base_url)?,
+        model: require_non_empty("model", &params.model)?,
+        enabled: params.enabled,
+        api_version: params
+            .api_version
+            .clone()
+            .and_then(non_empty_string)
+            .or_else(|| default_api_version(provider_type)),
+        organization: params.organization.clone().and_then(non_empty_string),
+        single_request_token_limit: params
+            .single_request_token_limit
+            .unwrap_or(DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT)
+            .clamp(1, 200_000),
+        monthly_budget_usd: params
+            .monthly_budget_usd
+            .unwrap_or(DEFAULT_MONTHLY_BUDGET_USD)
+            .clamp(0.0, 10_000.0),
+        replaces_credential: params
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|secret| !secret.is_empty()),
     })
 }
 
@@ -392,7 +653,11 @@ pub fn delete_provider_profile(
             deleted_profile_id: params.profile_id,
             profile_deleted: false,
             credential_deleted: false,
+            credential_effect: "not_started".to_string(),
+            error_code: Some("provider_profile_not_found".to_string()),
+            error_message: Some("Provider profile no longer exists.".to_string()),
             raw_secret_returned: false,
+            operation_state: ProviderMutationState::NotStarted,
         });
     };
     store.profiles.retain(|existing| existing.id != profile.id);
@@ -400,14 +665,53 @@ pub fn delete_provider_profile(
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
     save_store(app_data_dir, &store)?;
-    let credential_deleted =
-        params.delete_credential && delete_secret(&profile.credential_reference).unwrap_or(false);
+    let (credential_deleted, credential_effect, error_code, error_message, operation_state) =
+        if params.delete_credential {
+            match delete_secret(&profile.credential_reference) {
+                Ok(CredentialDeleteOutcome::Deleted) => (
+                    true,
+                    "deleted_and_verified".to_string(),
+                    None,
+                    None,
+                    ProviderMutationState::Applied,
+                ),
+                Ok(CredentialDeleteOutcome::AlreadyAbsent) => (
+                    false,
+                    "absence_verified".to_string(),
+                    None,
+                    None,
+                    ProviderMutationState::Applied,
+                ),
+                Err(_) => (
+                    false,
+                    "unknown_after_delete_failure".to_string(),
+                    Some("credential_delete_unverified".to_string()),
+                    Some(
+                        "Provider profile was deleted, but credential deletion could not be verified."
+                            .to_string(),
+                    ),
+                    ProviderMutationState::Partial,
+                ),
+            }
+        } else {
+            (
+                false,
+                "preserved".to_string(),
+                None,
+                None,
+                ProviderMutationState::Applied,
+            )
+        };
 
     Ok(DeleteProviderProfileResult {
         deleted_profile_id: profile.id,
         profile_deleted: true,
         credential_deleted,
+        credential_effect,
+        error_code,
+        error_message,
         raw_secret_returned: false,
+        operation_state,
     })
 }
 
@@ -787,6 +1091,95 @@ pub fn provider_call_metadata_path(app_data_dir: &Path) -> PathBuf {
         .join("provider-call-metadata.jsonl")
 }
 
+pub(crate) fn provider_profiles_revision(app_data_dir: &Path) -> Result<String, ProviderError> {
+    file_revision(&provider_profiles_path(app_data_dir), "provider-profiles")
+}
+
+pub(crate) fn provider_call_metadata_revision(
+    app_data_dir: &Path,
+) -> Result<String, ProviderError> {
+    file_revision(
+        &provider_call_metadata_path(app_data_dir),
+        "provider-call-metadata",
+    )
+}
+
+pub(crate) fn provider_profile_nonsecret_revision(
+    profile: &ProviderProfileRecord,
+) -> Result<String, ProviderError> {
+    let content = serde_json::to_vec(profile)?;
+    Ok(digest_revision("provider-profile", &content))
+}
+
+pub(crate) fn normalized_provider_input_revision(
+    input: &NormalizedProviderProfileInput,
+) -> Result<String, ProviderError> {
+    let content = serde_json::to_vec(input)?;
+    Ok(digest_revision("provider-profile-input", &content))
+}
+
+pub(crate) fn verify_provider_credential_matches(
+    profile_id: &str,
+    expected_secret: &str,
+) -> Result<String, ProviderError> {
+    let reference = keychain_reference(profile_id);
+    let stored = load_secret(&reference)?;
+    if expected_secret.is_empty()
+        || !constant_time_secret_eq(stored.as_bytes(), expected_secret.as_bytes())
+    {
+        return Err(ProviderError::CredentialStorageUnavailable(
+            "saved API key read-back did not match the confirmed credential input".to_string(),
+        ));
+    }
+    Ok(provider_credential_state_revision(
+        profile_id,
+        "present-and-matched",
+    ))
+}
+
+pub(crate) fn verify_provider_credential_absent(profile_id: &str) -> Result<String, ProviderError> {
+    let reference = keychain_reference(profile_id);
+    #[cfg(test)]
+    {
+        let keychain = TEST_PROVIDER_KEYCHAIN
+            .lock()
+            .expect("lock provider test keychain");
+        if let Some(secret) = keychain.get(&reference.account) {
+            return if secret.is_none() {
+                Ok(provider_credential_state_revision(
+                    profile_id,
+                    "absence-verified",
+                ))
+            } else {
+                Err(ProviderError::CredentialStorageUnavailable(
+                    "credential still exists after confirmed deletion".to_string(),
+                ))
+            };
+        }
+    }
+    let entry = Entry::new(&reference.service, &reference.account)
+        .map_err(|error| ProviderError::CredentialStorageUnavailable(error.to_string()))?;
+    match entry.get_password() {
+        Err(keyring::Error::NoEntry) => Ok(provider_credential_state_revision(
+            profile_id,
+            "absence-verified",
+        )),
+        Ok(_) => Err(ProviderError::CredentialStorageUnavailable(
+            "credential still exists after confirmed deletion".to_string(),
+        )),
+        Err(error) => Err(ProviderError::CredentialStorageUnavailable(
+            error.to_string(),
+        )),
+    }
+}
+
+fn provider_credential_state_revision(profile_id: &str, state: &str) -> String {
+    digest_revision(
+        "provider-credential-state",
+        format!("{profile_id}\0{state}").as_bytes(),
+    )
+}
+
 pub fn default_token_limit() -> u32 {
     DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT
 }
@@ -808,7 +1201,7 @@ fn finish_test(
     budget: ProviderBudgetStatus,
     finish: ProviderTestFinish<'_>,
 ) -> Result<TestProviderConnectionResult, ProviderError> {
-    let audit = ProviderCallMetadata {
+    let mut audit = ProviderCallMetadata {
         timestamp: unix_timestamp_millis(),
         action_type: "test_connection".to_string(),
         profile_id: profile.id.clone(),
@@ -829,20 +1222,31 @@ fn finish_test(
         raw_prompt_persisted: false,
         raw_response_persisted: false,
     };
-    append_call_metadata(app_data_dir, &audit)?;
+    let local_metadata_persisted = append_call_metadata(app_data_dir, &audit).is_ok();
+    if !local_metadata_persisted {
+        audit.status = if finish.provider_request_sent {
+            "partial".to_string()
+        } else {
+            finish.status.to_string()
+        };
+        audit.error_code = Some("local_metadata_write_failed".to_string());
+        audit.error_message =
+            Some("Provider result returned, but local metadata could not be recorded.".to_string());
+    }
     Ok(TestProviderConnectionResult {
         profile_id: profile.id.clone(),
         provider_type: profile.provider_type,
         model: profile.model.clone(),
         destination_host: destination_host.to_string(),
-        status: finish.status.to_string(),
+        status: audit.status.clone(),
         provider_request_sent: finish.provider_request_sent,
         credential_accessed: finish.credential_accessed,
         duration_ms: audit.duration_ms,
-        error_code: finish.error_code,
-        error_message: finish.error_message,
+        error_code: audit.error_code.clone(),
+        error_message: audit.error_message.clone(),
         budget,
         audit,
+        local_metadata_persisted,
         raw_prompt_persisted: false,
         raw_response_persisted: false,
         raw_secret_returned: false,
@@ -857,7 +1261,7 @@ fn finish_prompt(
     started: Instant,
     finish: ProviderPromptFinish,
 ) -> Result<SendProviderPromptResult, ProviderError> {
-    let audit = ProviderCallMetadata {
+    let mut audit = ProviderCallMetadata {
         timestamp: unix_timestamp_millis(),
         action_type: params.action_type.clone(),
         profile_id: profile.id.clone(),
@@ -878,20 +1282,31 @@ fn finish_prompt(
         raw_prompt_persisted: false,
         raw_response_persisted: false,
     };
-    append_call_metadata(app_data_dir, &audit)?;
+    let local_metadata_persisted = append_call_metadata(app_data_dir, &audit).is_ok();
+    if !local_metadata_persisted {
+        audit.status = if finish.provider_request_sent {
+            "partial".to_string()
+        } else {
+            finish.status.clone()
+        };
+        audit.error_code = Some("local_metadata_write_failed".to_string());
+        audit.error_message =
+            Some("Provider result returned, but local metadata could not be recorded.".to_string());
+    }
     Ok(SendProviderPromptResult {
         profile_id: profile.id.clone(),
         provider_type: profile.provider_type,
         model: profile.model.clone(),
         destination_host: destination_host.to_string(),
-        status: finish.status,
+        status: audit.status.clone(),
         provider_request_sent: finish.provider_request_sent,
         credential_accessed: finish.credential_accessed,
         duration_ms: audit.duration_ms,
-        error_code: finish.error_code,
-        error_message: finish.error_message,
+        error_code: audit.error_code.clone(),
+        error_message: audit.error_message.clone(),
         output_text: finish.output_text,
         audit,
+        local_metadata_persisted,
         raw_prompt_persisted: false,
         raw_response_persisted: false,
         raw_secret_returned: false,
@@ -913,6 +1328,10 @@ fn load_store(app_data_dir: &Path) -> Result<ProviderProfileStore, ProviderError
 }
 
 fn save_store(app_data_dir: &Path, store: &ProviderProfileStore) -> Result<(), ProviderError> {
+    #[cfg(test)]
+    if take_test_provider_io_fault(app_data_dir, TestProviderIoFault::SaveStore) {
+        return Err(io::Error::other("injected provider profile write failure").into());
+    }
     let path = provider_profiles_path(app_data_dir);
     let content = serde_json::to_string_pretty(store)?;
     write_private_text_file(&path, &format!("{content}\n"))?;
@@ -923,6 +1342,10 @@ fn append_call_metadata(
     app_data_dir: &Path,
     metadata: &ProviderCallMetadata,
 ) -> Result<(), ProviderError> {
+    #[cfg(test)]
+    if take_test_provider_io_fault(app_data_dir, TestProviderIoFault::AppendCallMetadata) {
+        return Err(io::Error::other("injected provider metadata write failure").into());
+    }
     let path = provider_call_metadata_path(app_data_dir);
     let line = serde_json::to_string(metadata)?;
     append_private_line(&path, &line)?;
@@ -1083,10 +1506,61 @@ fn keychain_reference(profile_id: &str) -> ProviderCredentialReference {
     }
 }
 
+fn staging_keychain_reference(target: &ProviderCredentialReference) -> ProviderCredentialReference {
+    ProviderCredentialReference {
+        storage: target.storage.clone(),
+        service: target.service.clone(),
+        account: format!("{}:staging", target.account),
+        secret_persisted: false,
+    }
+}
+
+fn stage_and_commit_secret(
+    target: &ProviderCredentialReference,
+    secret: &str,
+) -> Result<CredentialCommit, ProviderError> {
+    let previous_secret = load_optional_secret(target)?.filter(|value| !value.is_empty());
+    let staging = staging_keychain_reference(target);
+    store_and_verify_secret(&staging, secret)?;
+    if let Err(error) = store_and_verify_secret(target, secret) {
+        let target_restored = match previous_secret.as_deref() {
+            Some(previous) => store_and_verify_secret(target, previous).is_ok(),
+            None => delete_secret(target).is_ok(),
+        };
+        let staging_removed = delete_secret(&staging).is_ok();
+        if !target_restored || !staging_removed {
+            return Err(ProviderError::CredentialMutationPartial(
+                "target restoration or staging cleanup failed after the credential update could not be verified"
+                    .to_string(),
+            ));
+        }
+        return Err(error);
+    }
+    Ok(CredentialCommit {
+        target: target.clone(),
+        staging,
+        previous_secret,
+    })
+}
+
 fn store_secret(
     reference: &ProviderCredentialReference,
     secret: &str,
 ) -> Result<(), ProviderError> {
+    #[cfg(test)]
+    {
+        let mut keychain = TEST_PROVIDER_KEYCHAIN
+            .lock()
+            .expect("lock provider test keychain");
+        let target_account = reference
+            .account
+            .strip_suffix(":staging")
+            .unwrap_or(&reference.account);
+        if keychain.contains_key(&reference.account) || keychain.contains_key(target_account) {
+            keychain.insert(reference.account.clone(), Some(secret.to_string()));
+            return Ok(());
+        }
+    }
     let entry = Entry::new(&reference.service, &reference.account)
         .map_err(|error| ProviderError::CredentialStorageUnavailable(error.to_string()))?;
     entry
@@ -1114,15 +1588,42 @@ fn store_and_verify_secret(
 }
 
 fn load_secret(reference: &ProviderCredentialReference) -> Result<String, ProviderError> {
+    load_optional_secret(reference)?.ok_or_else(|| {
+        ProviderError::CredentialStorageUnavailable(
+            "No matching entry found in secure storage".to_string(),
+        )
+    })
+}
+
+fn load_optional_secret(
+    reference: &ProviderCredentialReference,
+) -> Result<Option<String>, ProviderError> {
     #[cfg(test)]
     if let Ok(secret) = std::env::var(test_secret_env_name(&reference.account)) {
-        return Ok(secret);
+        return Ok(Some(secret));
+    }
+    #[cfg(test)]
+    {
+        let keychain = TEST_PROVIDER_KEYCHAIN
+            .lock()
+            .expect("lock provider test keychain");
+        let target_account = reference
+            .account
+            .strip_suffix(":staging")
+            .unwrap_or(&reference.account);
+        if keychain.contains_key(&reference.account) || keychain.contains_key(target_account) {
+            return Ok(keychain.get(&reference.account).and_then(Clone::clone));
+        }
     }
     let entry = Entry::new(&reference.service, &reference.account)
         .map_err(|error| ProviderError::CredentialStorageUnavailable(error.to_string()))?;
-    entry
-        .get_password()
-        .map_err(|error| ProviderError::CredentialStorageUnavailable(error.to_string()))
+    match entry.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(ProviderError::CredentialStorageUnavailable(
+            error.to_string(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -1140,12 +1641,44 @@ fn test_secret_env_name(account: &str) -> String {
     format!("SKILLS_COPILOT_TEST_SECRET_{suffix}")
 }
 
-fn delete_secret(reference: &ProviderCredentialReference) -> Result<bool, ProviderError> {
+fn delete_secret(
+    reference: &ProviderCredentialReference,
+) -> Result<CredentialDeleteOutcome, ProviderError> {
+    #[cfg(test)]
+    if take_test_credential_fault(&reference.account, TestProviderCredentialFault::Delete) {
+        return Err(ProviderError::CredentialStorageUnavailable(
+            "injected credential delete failure".to_string(),
+        ));
+    }
+    #[cfg(test)]
+    {
+        let mut keychain = TEST_PROVIDER_KEYCHAIN
+            .lock()
+            .expect("lock provider test keychain");
+        let target_account = reference
+            .account
+            .strip_suffix(":staging")
+            .unwrap_or(&reference.account);
+        if keychain.contains_key(&reference.account) || keychain.contains_key(target_account) {
+            let deleted = keychain
+                .insert(reference.account.clone(), None)
+                .flatten()
+                .is_some();
+            return Ok(if deleted {
+                CredentialDeleteOutcome::Deleted
+            } else {
+                CredentialDeleteOutcome::AlreadyAbsent
+            });
+        }
+    }
     let entry = Entry::new(&reference.service, &reference.account)
         .map_err(|error| ProviderError::CredentialStorageUnavailable(error.to_string()))?;
     match entry.delete_credential() {
-        Ok(()) => Ok(true),
-        Err(_) => Ok(false),
+        Ok(()) => Ok(CredentialDeleteOutcome::Deleted),
+        Err(keyring::Error::NoEntry) => Ok(CredentialDeleteOutcome::AlreadyAbsent),
+        Err(error) => Err(ProviderError::CredentialStorageUnavailable(
+            error.to_string(),
+        )),
     }
 }
 
@@ -1248,6 +1781,36 @@ fn estimated_provider_cost(provider_type: ProviderType, tokens: u32) -> f64 {
     f64::from(tokens) * per_million / 1_000_000.0
 }
 
+fn file_revision(path: &Path, label: &str) -> Result<String, ProviderError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(digest_revision(&format!("{label}:present"), &bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(digest_revision(&format!("{label}:missing"), &[]))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn digest_revision(label: &str, content: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-copilot/provider-revision/v1");
+    hasher.update((label.len() as u64).to_be_bytes());
+    hasher.update(label.as_bytes());
+    hasher.update((content.len() as u64).to_be_bytes());
+    hasher.update(content);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn constant_time_secret_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        let left_byte = left.get(index).copied().unwrap_or_default();
+        let right_byte = right.get(index).copied().unwrap_or_default();
+        difference |= usize::from(left_byte ^ right_byte);
+    }
+    difference == 0
+}
+
 fn validate_base_url(value: &str) -> Result<String, ProviderError> {
     let value = require_non_empty("base_url", value)?;
     let url = Url::parse(&value).map_err(|_| {
@@ -1336,7 +1899,7 @@ fn sanitize_profile_id(value: &str) -> String {
         .to_string()
 }
 
-fn destination_host(base_url: &str) -> String {
+pub(crate) fn destination_host(base_url: &str) -> String {
     let Ok(url) = Url::parse(base_url) else {
         return "<unknown>".to_string();
     };

@@ -22,8 +22,112 @@ extension ServiceClient {
         }
     }
 
-    func saveAIProviderSettings(draft: AIProviderSettingsDraft) async throws -> AIProviderStatus {
-        let params = SaveAIProviderProfileParams(
+    func previewSaveAIProviderSettings(
+        draft: AIProviderSettingsDraft
+    ) async throws -> AIProviderActionPreview {
+        try await call(
+            method: "llm.previewSaveProviderProfile",
+            params: makeSaveAIProviderProfileParams(draft: draft, confirmation: nil)
+        )
+    }
+
+    func saveAIProviderSettings(
+        draft: AIProviderSettingsDraft,
+        preview: AIProviderActionPreview
+    ) async throws -> AIProviderStatus {
+        let params = makeSaveAIProviderProfileParams(
+            draft: draft,
+            confirmation: preview.confirmation
+        )
+        let result: AIProviderSaveResult = try await call(
+            method: "llm.saveProviderProfile",
+            params: params
+        )
+        if let outcome = result.outcome, !outcome.isVerified {
+            throw ClientError.actionOutcome(outcome.userFacingFailure)
+        }
+        guard result.readback?.verified == true else {
+            throw ClientError.invalidOutput("Provider save did not return verified typed read-back.")
+        }
+        return try await aiProviderStatus()
+    }
+
+    func previewDeleteAIProviderSettings(
+        profileID: String,
+        deleteCredential: Bool
+    ) async throws -> AIProviderActionPreview {
+        try await call(
+            method: "llm.previewDeleteProviderProfile",
+            params: DeleteAIProviderProfileParams(
+                profileID: profileID,
+                deleteCredential: deleteCredential,
+                actionConfirmation: nil
+            )
+        )
+    }
+
+    func deleteAIProviderSettings(
+        preview: AIProviderActionPreview,
+        deleteCredential: Bool
+    ) async throws -> AIProviderStatus {
+        let result: AIProviderDeleteResult = try await call(
+            method: "llm.deleteProviderProfile",
+            params: DeleteAIProviderProfileParams(
+                profileID: preview.profileID,
+                deleteCredential: deleteCredential,
+                actionConfirmation: preview.confirmation
+            )
+        )
+        if let outcome = result.outcome, !outcome.isVerified {
+            throw ClientError.actionOutcome(outcome.userFacingFailure)
+        }
+        guard result.readback?.verified == true else {
+            throw ClientError.invalidOutput("Provider delete did not return verified typed read-back.")
+        }
+        return try await aiProviderStatus()
+    }
+
+    func previewAIProviderConnectionTest(
+        profileID: String
+    ) async throws -> AIProviderActionPreview {
+        try await call(
+            method: "llm.previewProviderConnectionTest",
+            params: TestAIProviderConnectionParams(
+                profileID: profileID,
+                timeoutMS: 4_000,
+                actionConfirmation: nil
+            )
+        )
+    }
+
+    func testAIProviderConnection(
+        preview: AIProviderActionPreview
+    ) async throws -> AIProviderTestResult {
+        let result: AIProviderTestResult = try await call(
+            method: "llm.testProviderConnection",
+            params: TestAIProviderConnectionParams(
+                profileID: preview.profileID,
+                timeoutMS: 4_000,
+                actionConfirmation: preview.confirmation
+            )
+        )
+        if let outcome = result.outcome, outcome.isPartial {
+            return result
+        }
+        if let outcome = result.outcome, !outcome.isVerified {
+            throw ClientError.actionOutcome(outcome.userFacingFailure)
+        }
+        guard result.readback?.verified == true else {
+            throw ClientError.invalidOutput("Provider test did not return verified typed read-back.")
+        }
+        return result
+    }
+
+    private func makeSaveAIProviderProfileParams(
+        draft: AIProviderSettingsDraft,
+        confirmation: ActionConfirmationWire?
+    ) -> SaveAIProviderProfileParams {
+        SaveAIProviderProfileParams(
             id: draft.kind.rawValue,
             displayName: draft.kind.title,
             providerType: draft.kind.rawValue,
@@ -33,23 +137,9 @@ extension ServiceClient {
             apiVersion: draft.trimmedAPIVersion,
             apiKey: draft.trimmedAPIKey,
             singleRequestTokenLimit: draft.parsedSingleRequestTokenLimit,
-            monthlyBudgetUSD: draft.parsedMonthlyBudgetUSD
+            monthlyBudgetUSD: draft.parsedMonthlyBudgetUSD,
+            actionConfirmation: confirmation
         )
-        let _: AIProviderSaveResult = try await call(method: "llm.saveProviderProfile", params: params)
-        return try await aiProviderStatus()
-    }
-
-    func testAIProviderConnection(draft: AIProviderSettingsDraft) async throws -> AIProviderTestResult {
-        let params = TestAIProviderConnectionParams(
-            profileID: draft.kind.rawValue,
-            confirmationID: "settings-test-\(UUID().uuidString)",
-            timeoutMS: 4_000
-        )
-        do {
-            return try await call(method: "llm.testProviderConnection", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable()
-        }
     }
 
     func prepareLLMAction(action: LLMAction, skill: SkillRecord) async throws -> LLMPrepareResult {
@@ -89,7 +179,11 @@ extension ServiceClient {
         }
     }
 
-    func confirmPromptAndSendForLLMAction(previewID: String, action: LLMAction, skill: SkillRecord) async throws -> LLMPromptSendResult {
+    func confirmPromptAndSendForLLMAction(
+        preview: LLMPromptPreview,
+        action: LLMAction,
+        skill: SkillRecord
+    ) async throws -> LLMPromptSendResult {
         let request = PreviewLLMPromptParams(
             action: action.rawValue,
             requestKind: "action",
@@ -103,7 +197,7 @@ extension ServiceClient {
             userIntent: nil,
             candidateInstanceIDs: nil
         )
-        return try await confirmPromptAndSend(previewID: previewID, request: request)
+        return try await confirmPromptAndSend(preview: preview, request: request)
     }
 
     func previewPromptForTaskCockpit(
@@ -136,7 +230,7 @@ extension ServiceClient {
     }
 
     func confirmPromptAndSendForTaskCockpit(
-        previewID: String,
+        preview: LLMPromptPreview,
         taskText: String,
         agents: [String],
         instanceIDs: [String]
@@ -155,7 +249,7 @@ extension ServiceClient {
             candidateInstanceIDs: instanceIDs
         )
         return try await confirmPromptAndSend(
-            previewID: previewID,
+            preview: preview,
             request: request,
             timeoutMS: LLMPromptRequestTimeouts.taskCockpitSendMS
         )
@@ -230,20 +324,39 @@ extension ServiceClient {
     }
 
     private func confirmPromptAndSend(
-        previewID: String,
+        preview: LLMPromptPreview,
         request: PreviewLLMPromptParams,
         timeoutMS: Int = LLMPromptRequestTimeouts.standardSendMS
     ) async throws -> LLMPromptSendResult {
+        guard let actionConfirmation = preview.actionConfirmation else {
+            throw ClientError.invalidOutput(
+                "The provider prompt preview is missing its typed action confirmation."
+            )
+        }
         let params = ConfirmLLMPromptParams(
-            previewID: previewID,
-            confirmationID: "prompt-confirm-\(UUID().uuidString)",
+            actionConfirmation: actionConfirmation,
             request: request,
             timeoutMS: timeoutMS
         )
         do {
-            return try await call(method: "llm.confirmPromptAndSend", params: params, timeoutMS: timeoutMS)
+            let result: LLMPromptSendResult = try await call(
+                method: "llm.confirmPromptAndSend",
+                params: params,
+                timeoutMS: timeoutMS
+            )
+            if result.partialOutcome == nil, result.readback?.verified != true {
+                throw ClientError.invalidOutput(
+                    "Provider prompt send did not return verified typed read-back."
+                )
+            }
+            if result.partialOutcome != nil, result.status.lowercased() != "partial" {
+                throw ClientError.invalidOutput(
+                    "Provider prompt partial outcome must use the explicit partial status."
+                )
+            }
+            return result
         } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(previewID: previewID, reason: UIStrings.llmPromptUnavailable)
+            return .unavailable(previewID: preview.previewID, reason: UIStrings.llmPromptUnavailable)
         }
     }
 }

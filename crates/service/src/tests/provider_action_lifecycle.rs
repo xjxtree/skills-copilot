@@ -1,0 +1,920 @@
+use super::*;
+
+#[test]
+fn provider_save_preview_is_signed_and_has_zero_write_effects() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-preview-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: json!({
+            "id": "fixture-openai",
+            "display_name": "Fixture OpenAI",
+            "provider_type": "openai-compatible",
+            "base_url": "https://example.invalid/v1",
+            "model": "fixture-model",
+            "enabled": true,
+            "api_key": "sentinel-provider-secret",
+            "single_request_token_limit": 4096,
+            "monthly_budget_usd": 3.5
+        }),
+    });
+
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("provider preview");
+    assert_eq!(
+        result.pointer("/action/kind").and_then(Value::as_str),
+        Some("provider_profile")
+    );
+    assert_eq!(
+        result.pointer("/action/intent").and_then(Value::as_str),
+        Some("save_provider_profile")
+    );
+    assert_eq!(
+        result.pointer("/action/network").and_then(Value::as_str),
+        Some("none")
+    );
+    assert!(result
+        .get("preview_token")
+        .and_then(Value::as_str)
+        .is_some_and(|token| token.starts_with("action-preview:v1:hmac-sha256:")));
+    let serialized = serde_json::to_string(&result).expect("serialize preview");
+    assert!(!serialized.contains("sentinel-provider-secret"));
+    assert!(
+        !app_data_dir.exists(),
+        "preview must not initialize app data"
+    );
+}
+
+#[test]
+fn provider_save_confirmation_is_bound_to_the_exact_credential_without_artifacts() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-secret-binding-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let mut secret_a = provider_save_params("secret-bound-provider", "https://example.invalid/v1");
+    secret_a["api_key"] = json!("credential-secret-a");
+    let preview_a = host.handle(ServiceRequest {
+        id: Some("provider-secret-a".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: secret_a.clone(),
+    });
+    assert!(preview_a.ok, "{:?}", preview_a.error);
+    let preview_a = preview_a.result.expect("secret A preview");
+
+    let mut secret_b = secret_a;
+    secret_b["api_key"] = json!("credential-secret-b");
+    let preview_b = host.handle(ServiceRequest {
+        id: Some("provider-secret-b".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: secret_b.clone(),
+    });
+    assert!(preview_b.ok, "{:?}", preview_b.error);
+    let preview_b = preview_b.result.expect("secret B preview");
+    assert_ne!(
+        preview_a.pointer("/action/source_revision"),
+        preview_b.pointer("/action/source_revision"),
+        "changing only the secret must change the signed source binding"
+    );
+    assert_ne!(
+        preview_a.get("preview_token"),
+        preview_b.get("preview_token"),
+        "changing only the secret must change the HMAC preview token"
+    );
+
+    secret_b["action_confirmation"] = action_confirmation_from_preview(&preview_a);
+    let rejected = host.handle(ServiceRequest {
+        id: Some("provider-secret-mismatch".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: secret_b,
+    });
+    assert!(!rejected.ok);
+    assert_eq!(
+        rejected.error.expect("secret mismatch error").code,
+        "stale_action_reference"
+    );
+    assert!(
+        !app_data_dir.exists(),
+        "secret mismatch must reject before creating app-data, replay state, or a lock artifact"
+    );
+    let serialized = serde_json::to_string(&preview_a).expect("serialize secret preview");
+    assert!(!serialized.contains("credential-secret-a"));
+    assert!(!serialized.contains("credential_input"));
+}
+
+#[test]
+fn llm_prompt_preview_returns_confirmable_action_without_leaking_prompt_secret() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-action-preview-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("prompt-preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: json!({
+            "action": "recommend",
+            "user_intent": "review token=sentinel-prompt-secret"
+        }),
+    });
+
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("prompt preview");
+    assert_eq!(
+        result.pointer("/action/kind").and_then(Value::as_str),
+        Some("provider_prompt")
+    );
+    assert_eq!(
+        result.pointer("/action/intent").and_then(Value::as_str),
+        Some("send_provider_prompt")
+    );
+    assert_eq!(
+        result.pointer("/action/network").and_then(Value::as_str),
+        Some("required")
+    );
+    assert!(result
+        .get("preview_token")
+        .and_then(Value::as_str)
+        .is_some_and(|token| token.starts_with("action-preview:v1:hmac-sha256:")));
+    let serialized = serde_json::to_string(&result).expect("serialize preview");
+    assert!(!serialized.contains("sentinel-prompt-secret"));
+    assert!(!provider_call_metadata_path(&app_data_dir).exists());
+}
+
+#[test]
+fn provider_apply_requires_confirmation_before_creating_app_data() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-unconfirmed-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: provider_save_params("fixture-openai", "https://example.invalid/v1"),
+    });
+
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("confirmation error").code,
+        "confirmation_required"
+    );
+    assert!(
+        !app_data_dir.exists(),
+        "rejected apply must not create a lock, profile store, or replay state"
+    );
+}
+
+#[test]
+fn provider_save_rejects_target_mismatch_and_replay_without_rewriting_profile() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-replay-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let params = provider_save_params("fixture-openai", "https://example.invalid/v1");
+    let preview = host.handle(ServiceRequest {
+        id: Some("provider-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("provider preview");
+
+    let mut mismatched_confirmation = action_confirmation_from_preview(&preview);
+    mismatched_confirmation["reference"]["target"]["id"] =
+        Value::String("other-profile".to_string());
+    let mut mismatched_params = params.clone();
+    mismatched_params["action_confirmation"] = mismatched_confirmation;
+    let mismatch = host.handle(ServiceRequest {
+        id: Some("provider-mismatch".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: mismatched_params,
+    });
+    assert!(!mismatch.ok);
+    assert_eq!(
+        mismatch.error.expect("target mismatch").code,
+        "action_target_mismatch"
+    );
+    assert!(!provider_profiles_path(&app_data_dir).exists());
+
+    let mut apply_params = params;
+    apply_params["action_confirmation"] = action_confirmation_from_preview(&preview);
+    let first = host.handle(ServiceRequest {
+        id: Some("provider-first".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: apply_params.clone(),
+    });
+    assert!(first.ok, "{:?}", first.error);
+    let first_result = first.result.expect("provider apply");
+    assert_eq!(
+        first_result
+            .pointer("/readback/verified")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        first_result
+            .pointer("/readback/domains/0")
+            .and_then(Value::as_str),
+        Some("provider_profiles")
+    );
+    let profile_bytes =
+        fs::read(provider_profiles_path(&app_data_dir)).expect("provider profile bytes");
+
+    let replay = host.handle(ServiceRequest {
+        id: Some("provider-replay".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: apply_params,
+    });
+    assert!(!replay.ok);
+    assert_eq!(
+        replay.error.expect("replay error").code,
+        "stale_action_reference"
+    );
+    assert_eq!(
+        fs::read(provider_profiles_path(&app_data_dir)).expect("provider profile bytes"),
+        profile_bytes,
+        "replay must not rewrite the provider profile"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_replay_state_stays_bounded_and_keeps_only_the_latest_action() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-bounded-state-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    for index in 0..64 {
+        let (_, response) = confirmed_action_request(
+            &host,
+            "llm.previewSaveProviderProfile",
+            "llm.saveProviderProfile",
+            provider_save_params(
+                &format!("bounded-provider-{index}"),
+                "https://example.invalid/v1",
+            ),
+        );
+        assert!(response.ok, "action {index}: {:?}", response.error);
+        let snapshot =
+            crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+                .expect("bounded replay state");
+        assert_eq!(snapshot.0, index + 1);
+        assert_eq!(
+            snapshot.1,
+            crate::service_provider_actions::ProviderActionStatePhase::Outcome
+        );
+        assert_eq!(
+            snapshot.2,
+            crate::service_provider_actions::ProviderActionState::Verified
+        );
+        assert!(snapshot.3 <= 4 * 1024);
+    }
+
+    let state_path = crate::service_provider_actions::provider_action_state_file(&app_data_dir);
+    let bytes = fs::read(&state_path).expect("provider replay-state bytes");
+    let value: Value = serde_json::from_slice(&bytes).expect("one replay-state JSON record");
+    assert!(value.is_object());
+    assert_eq!(value.get("generation").and_then(Value::as_u64), Some(64));
+    assert!(!bytes.windows(2).any(|window| window == b"}{"));
+    assert!(!bytes.contains(&b'\n'));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            fs::metadata(&state_path)
+                .expect("replay-state metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn corrupt_or_oversized_provider_replay_state_fails_closed_without_replacement() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-corrupt-state-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let state_path = crate::service_provider_actions::provider_action_state_file(&app_data_dir);
+    fs::create_dir_all(state_path.parent().expect("replay-state parent"))
+        .expect("create replay-state parent");
+    let corrupt = b"{\"version\":1".to_vec();
+    fs::write(&state_path, &corrupt).expect("seed corrupt replay state");
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-corrupt-state-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: provider_save_params("corrupt-state-provider", "https://example.invalid/v1"),
+    });
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("corrupt state error").code,
+        "invalid_request"
+    );
+    assert_eq!(
+        fs::read(&state_path).expect("unchanged corrupt state"),
+        corrupt
+    );
+
+    let invalid_digest = serde_json::to_vec(&json!({
+        "version": 1,
+        "generation": 1,
+        "token_digest": format!("sha256:{}", "z".repeat(64)),
+        "action_id": "structured-but-invalid",
+        "source_revision": format!("sha256:{}", "0".repeat(64)),
+        "phase": "outcome",
+        "state": "verified",
+        "updated_at": 1
+    }))
+    .expect("structured invalid replay state");
+    fs::write(&state_path, &invalid_digest).expect("seed invalid digest replay state");
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-invalid-digest-state-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: provider_save_params(
+            "invalid-digest-state-provider",
+            "https://example.invalid/v1",
+        ),
+    });
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("invalid digest state error").code,
+        "invalid_request"
+    );
+    assert_eq!(
+        fs::read(&state_path).expect("unchanged invalid digest state"),
+        invalid_digest
+    );
+
+    let oversized = vec![b'x'; (4 * 1024) + 1];
+    fs::write(&state_path, &oversized).expect("seed oversized replay state");
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-oversized-state-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: provider_save_params("oversized-state-provider", "https://example.invalid/v1"),
+    });
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("oversized state error").code,
+        "invalid_request"
+    );
+    assert_eq!(
+        fs::metadata(&state_path)
+            .expect("oversized state metadata")
+            .len(),
+        ((4 * 1024) + 1) as u64
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn concurrent_confirmations_from_one_state_generation_allow_only_one_action() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-concurrent-state-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let params_a = provider_save_params("concurrent-provider-a", "https://example.invalid/v1");
+    let params_b = provider_save_params("concurrent-provider-b", "https://example.invalid/v1");
+    let preview_a = host.handle(ServiceRequest {
+        id: Some("provider-concurrent-preview-a".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params_a.clone(),
+    });
+    let preview_b = host.handle(ServiceRequest {
+        id: Some("provider-concurrent-preview-b".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params_b.clone(),
+    });
+    assert!(preview_a.ok, "{:?}", preview_a.error);
+    assert!(preview_b.ok, "{:?}", preview_b.error);
+    let preview_a = preview_a.result.expect("concurrent preview A");
+    let preview_b = preview_b.result.expect("concurrent preview B");
+    assert_eq!(
+        preview_a
+            .pointer("/preconditions/1/expected_revision")
+            .and_then(Value::as_str),
+        preview_b
+            .pointer("/preconditions/1/expected_revision")
+            .and_then(Value::as_str)
+    );
+
+    let mut apply_a = params_a;
+    apply_a["action_confirmation"] = action_confirmation_from_preview(&preview_a);
+    let mut apply_b = params_b;
+    apply_b["action_confirmation"] = action_confirmation_from_preview(&preview_b);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let run = |host: ServiceHost, params: Value, barrier: std::sync::Arc<std::sync::Barrier>| {
+        std::thread::spawn(move || {
+            barrier.wait();
+            host.handle(ServiceRequest {
+                id: Some("provider-concurrent-apply".to_string()),
+                method: "llm.saveProviderProfile".to_string(),
+                params,
+            })
+        })
+    };
+    let first = run(host.clone(), apply_a, barrier.clone());
+    let second = run(host.clone(), apply_b, barrier.clone());
+    barrier.wait();
+    let responses = [
+        first.join().expect("concurrent apply A"),
+        second.join().expect("concurrent apply B"),
+    ];
+    assert_eq!(responses.iter().filter(|response| response.ok).count(), 1);
+    let rejected = responses
+        .iter()
+        .find(|response| !response.ok)
+        .expect("one stale concurrent response");
+    assert_eq!(
+        rejected.error.as_ref().expect("stale error").code,
+        "stale_action_reference"
+    );
+    let state = crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+        .expect("concurrent replay state");
+    assert_eq!(state.0, 1);
+    assert_eq!(
+        state.1,
+        crate::service_provider_actions::ProviderActionStatePhase::Outcome
+    );
+    assert_eq!(
+        state.2,
+        crate::service_provider_actions::ProviderActionState::Verified
+    );
+    assert_eq!(
+        crate::provider::list_provider_profiles(&app_data_dir)
+            .expect("concurrent provider profiles")
+            .profiles
+            .len(),
+        1
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_delete_and_connection_test_return_semantic_readback() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-action-readback-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("fixture-openai", "https://example.invalid/v1"),
+    );
+    assert!(save.ok, "{:?}", save.error);
+
+    let (_, test) = confirmed_action_request(
+        &host,
+        "llm.previewProviderConnectionTest",
+        "llm.testProviderConnection",
+        json!({"profile_id":"fixture-openai","timeout_ms":250}),
+    );
+    assert!(test.ok, "{:?}", test.error);
+    let test = test.result.expect("provider test");
+    assert_eq!(
+        test.pointer("/readback/verified").and_then(Value::as_bool),
+        Some(true)
+    );
+    let test_domains = test
+        .pointer("/readback/domains")
+        .and_then(Value::as_array)
+        .expect("test readback domains");
+    assert!(test_domains.contains(&json!("provider_profiles")));
+    assert!(test_domains.contains(&json!("provider_activity")));
+
+    let (_, delete) = confirmed_action_request(
+        &host,
+        "llm.previewDeleteProviderProfile",
+        "llm.deleteProviderProfile",
+        json!({"profile_id":"fixture-openai","delete_credential":false}),
+    );
+    assert!(delete.ok, "{:?}", delete.error);
+    let delete = delete.result.expect("provider delete");
+    assert_eq!(
+        delete
+            .pointer("/readback/verified")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        delete.get("profile_deleted").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles")
+        .profiles
+        .is_empty());
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_credential_save_has_semantic_credential_readback() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-credential-readback-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    crate::provider::manage_test_provider_credential("credential-provider", None);
+    let mut params = provider_save_params("credential-provider", "https://example.invalid/v1");
+    params["api_key"] = json!("credential-readback-secret");
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        params,
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let result = save.result.expect("credential save result");
+    assert_eq!(
+        result.pointer("/outcome/state").and_then(Value::as_str),
+        Some("verified")
+    );
+    let domains = result
+        .pointer("/readback/domains")
+        .and_then(Value::as_array)
+        .expect("credential readback domains");
+    assert!(domains.contains(&json!("provider_profiles")));
+    assert!(domains.contains(&json!("provider_credentials")));
+    crate::provider::verify_provider_credential_matches(
+        "credential-provider",
+        "credential-readback-secret",
+    )
+    .expect("credential semantic readback");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn credential_compensation_failure_returns_partial_and_records_terminal_outcome() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-compensation-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    crate::provider::manage_test_provider_credential(
+        "compensation-provider",
+        Some("credential-before"),
+    );
+    let mut params = provider_save_params("compensation-provider", "https://example.invalid/v1");
+    params["api_key"] = json!("credential-after");
+    let preview = host.handle(ServiceRequest {
+        id: Some("provider-compensation-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("compensation preview");
+    params["action_confirmation"] = action_confirmation_from_preview(&preview);
+    crate::provider::install_test_provider_io_fault(
+        &app_data_dir,
+        crate::provider::TestProviderIoFault::SaveStore,
+    );
+    crate::provider::install_test_provider_credential_fault(
+        "compensation-provider",
+        crate::provider::TestProviderCredentialFault::Compensation,
+    );
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-compensation-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params,
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("compensation partial");
+    assert_eq!(
+        result.pointer("/outcome/state").and_then(Value::as_str),
+        Some("partial")
+    );
+    assert_eq!(
+        result.pointer("/outcome/effect").and_then(Value::as_str),
+        Some("applied_unverified")
+    );
+    assert_eq!(
+        result.get("profile_persisted").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(result.get("readback").is_some_and(Value::is_null));
+    assert!(!serde_json::to_string(&result)
+        .expect("serialize partial")
+        .contains("credential-after"));
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    crate::provider::verify_provider_credential_matches(
+        "compensation-provider",
+        "credential-after",
+    )
+    .expect("failed compensation leaves explicit unknown new credential state");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn credential_delete_failure_returns_partial_without_false_readback() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-delete-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    crate::provider::manage_test_provider_credential(
+        "delete-partial-provider",
+        Some("credential-to-delete"),
+    );
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("delete-partial-provider", "https://example.invalid/v1"),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let params = json!({
+        "profile_id": "delete-partial-provider",
+        "delete_credential": true
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("provider-delete-partial-preview".to_string()),
+        method: "llm.previewDeleteProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("delete partial preview");
+    assert!(preview
+        .pointer("/action/readback")
+        .and_then(Value::as_array)
+        .is_some_and(|domains| domains.contains(&json!("provider_credentials"))));
+    crate::provider::install_test_provider_credential_fault(
+        "delete-partial-provider",
+        crate::provider::TestProviderCredentialFault::Delete,
+    );
+    let mut apply = params;
+    apply["action_confirmation"] = action_confirmation_from_preview(&preview);
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-delete-partial-apply".to_string()),
+        method: "llm.deleteProviderProfile".to_string(),
+        params: apply,
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("delete partial result");
+    assert_eq!(
+        result.pointer("/outcome/state").and_then(Value::as_str),
+        Some("partial")
+    );
+    assert_eq!(
+        result.get("profile_deleted").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        result.get("credential_effect").and_then(Value::as_str),
+        Some("unknown_after_delete_failure")
+    );
+    assert!(result.get("readback").is_some_and(Value::is_null));
+    assert!(crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("profiles after partial delete")
+        .profiles
+        .is_empty());
+    crate::provider::verify_provider_credential_matches(
+        "delete-partial-provider",
+        "credential-to-delete",
+    )
+    .expect("failed credential deletion preserves credential");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn llm_prompt_action_is_one_time_and_replay_has_no_second_network_effect() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-action-replay-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let (base_url, server) = spawn_mock_openai_server();
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("mock-openai", &base_url),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_MOCK_OPENAI",
+        "test-secret-key",
+    );
+    let request = json!({"action":"recommend","user_intent":"review this task"});
+    let preview = host.handle(ServiceRequest {
+        id: Some("prompt-preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("prompt preview");
+    let apply_params = json!({
+        "action_confirmation": action_confirmation_from_preview(&preview),
+        "request": request,
+        "timeout_ms": 2_000
+    });
+    let first = host.handle(ServiceRequest {
+        id: Some("prompt-first".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: apply_params.clone(),
+    });
+    assert!(first.ok, "{:?}", first.error);
+    assert_eq!(
+        first
+            .result
+            .as_ref()
+            .and_then(|result| result.pointer("/readback/verified"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let replay = host.handle(ServiceRequest {
+        id: Some("prompt-replay".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: apply_params,
+    });
+    assert!(!replay.ok);
+    assert_eq!(
+        replay.error.expect("prompt replay error").code,
+        "stale_action_reference"
+    );
+    let request_text = server.join().expect("single mock provider request");
+    assert!(request_text.contains("review this task"));
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn llm_remote_success_with_prompt_record_failure_is_explicit_partial_outcome() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-action-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let (base_url, server) = spawn_mock_openai_server();
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("mock-openai", &base_url),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_MOCK_OPENAI",
+        "test-secret-key",
+    );
+    fs::create_dir_all(host.llm_prompt_runs_path()).expect("block prompt-run file writes");
+
+    let (_, send) = confirmed_llm_prompt_request(
+        &host,
+        json!({"action":"recommend","user_intent":"partial outcome test"}),
+        2_000,
+    );
+    assert!(send.ok, "{:?}", send.error);
+    let result = send.result.expect("partial prompt result");
+    assert_eq!(
+        result.get("status").and_then(Value::as_str),
+        Some("partial")
+    );
+    assert_eq!(
+        result.get("provider_request_sent").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(result.get("readback").is_some_and(Value::is_null));
+    assert_eq!(
+        result
+            .pointer("/partial_outcome/remote_effect")
+            .and_then(Value::as_str),
+        Some("remote_unknown")
+    );
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("prompt replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _request_text = server.join().expect("mock provider request");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_network_postprocessing_failure_returns_remote_unknown() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-network-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let (base_url, server) = spawn_mock_openai_server();
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("network-partial-provider", &base_url),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_NETWORK_PARTIAL_PROVIDER",
+        "test-secret-key",
+    );
+    let params = json!({
+        "profile_id": "network-partial-provider",
+        "timeout_ms": 2_000
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("provider-network-preview".to_string()),
+        method: "llm.previewProviderConnectionTest".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("network preview");
+    crate::provider::install_test_provider_io_fault(
+        &app_data_dir,
+        crate::provider::TestProviderIoFault::AppendCallMetadata,
+    );
+    let mut apply = params;
+    apply["action_confirmation"] = action_confirmation_from_preview(&preview);
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-network-apply".to_string()),
+        method: "llm.testProviderConnection".to_string(),
+        params: apply,
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("network partial result");
+    assert_eq!(
+        result.pointer("/outcome/state").and_then(Value::as_str),
+        Some("partial")
+    );
+    assert_eq!(
+        result.pointer("/outcome/effect").and_then(Value::as_str),
+        Some("remote_unknown")
+    );
+    assert_eq!(
+        result.get("provider_request_sent").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(result.get("readback").is_some_and(Value::is_null));
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("network replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _request_text = server.join().expect("mock provider request");
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+fn provider_save_params(profile_id: &str, base_url: &str) -> Value {
+    json!({
+        "id": profile_id,
+        "display_name": "Fixture Provider",
+        "provider_type": "openai-compatible",
+        "base_url": base_url,
+        "model": "fixture-model",
+        "enabled": true,
+        "single_request_token_limit": 4096,
+        "monthly_budget_usd": 10.0
+    })
+}

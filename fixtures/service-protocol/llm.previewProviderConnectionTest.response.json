@@ -1,0 +1,50 @@
+{
+  "id": "fixture-llm-preview-provider-connection-test",
+  "ok": true,
+  "result": {
+    "action": {
+      "id": "provider-connection-test-fixture",
+      "kind": "provider_connection_test",
+      "intent": "test_provider_connection",
+      "target": {
+        "kind": "provider_profile",
+        "id": "fixture-openai",
+        "agent": null,
+        "scope": null
+      },
+      "project_id": null,
+      "impacts": ["app_local_data"],
+      "preview_method": "llm.previewProviderConnectionTest",
+      "apply_method": "llm.testProviderConnection",
+      "source_revision": "sha256:provider-test-source-fixture",
+      "confirmation_required": true,
+      "network": "required",
+      "readback": ["provider_profiles", "provider_activity"],
+      "evidence_refs": [
+        "provider-profile:fixture-openai",
+        "provider-state:sha256:provider-profile-before"
+      ]
+    },
+    "preconditions": [
+      {
+        "kind": "provider_profile",
+        "target_id": "provider-profiles",
+        "expected_revision": "sha256:provider-store-before"
+      },
+      {
+        "kind": "prompt_context",
+        "target_id": "provider-action-state",
+        "expected_revision": "sha256:provider-action-state-before"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:fixture-test",
+    "operation": "test",
+    "profile_id": "fixture-openai",
+    "provider_type": "openai-compatible",
+    "destination_host": "example.invalid",
+    "model": "fixture-model",
+    "expected_revision": "sha256:provider-store-before",
+    "credential_change": false,
+    "raw_secret_returned": false
+  }
+}

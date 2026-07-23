@@ -86,6 +86,76 @@ pub(super) fn service_protocol_fixtures_decode() {
                     assert!(params.confirmed);
                     assert!(params.action_reference.is_some());
                 }
+                "llm.previewSaveProviderProfile" => {
+                    let params =
+                        serde_json::from_value::<SaveProviderProfileParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(params.action_confirmation.is_none());
+                }
+                "llm.saveProviderProfile" => {
+                    let params =
+                        serde_json::from_value::<SaveProviderProfileParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(params
+                        .action_confirmation
+                        .as_ref()
+                        .is_some_and(|confirmation| confirmation.confirmed));
+                }
+                "llm.previewDeleteProviderProfile" => {
+                    let params = serde_json::from_value::<DeleteProviderProfileParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.action_confirmation.is_none());
+                }
+                "llm.deleteProviderProfile" => {
+                    let params = serde_json::from_value::<DeleteProviderProfileParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params
+                        .action_confirmation
+                        .as_ref()
+                        .is_some_and(|confirmation| confirmation.confirmed));
+                }
+                "llm.previewProviderConnectionTest" => {
+                    let params = serde_json::from_value::<TestProviderConnectionParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.action_confirmation.is_none());
+                }
+                "llm.testProviderConnection" => {
+                    let params = serde_json::from_value::<TestProviderConnectionParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params
+                        .action_confirmation
+                        .as_ref()
+                        .is_some_and(|confirmation| confirmation.confirmed));
+                }
+                "llm.confirmPromptAndSend" => {
+                    let params = serde_json::from_value::<LlmConfirmPromptAndSendParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.action_confirmation.confirmed);
+                }
                 _ => {}
             }
             request_methods.push(request.method);
@@ -572,24 +642,107 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 decode_fixture_result(method, result, path);
             assert!(!profiles.raw_secrets_returned);
         }
+        "llm.previewSaveProviderProfile"
+        | "llm.previewDeleteProviderProfile"
+        | "llm.previewProviderConnectionTest" => {
+            let preview: WireProviderActionPreviewResult =
+                decode_fixture_result(method, result, path);
+            assert_eq!(preview.action.preview_method, method);
+            assert_eq!(
+                preview.action.apply_method.as_deref(),
+                Some(match method {
+                    "llm.previewSaveProviderProfile" => "llm.saveProviderProfile",
+                    "llm.previewDeleteProviderProfile" => "llm.deleteProviderProfile",
+                    "llm.previewProviderConnectionTest" => "llm.testProviderConnection",
+                    _ => unreachable!(),
+                })
+            );
+            assert!(preview.action.confirmation_required);
+            assert_eq!(preview.action.target.kind, "provider_profile");
+            assert_eq!(preview.action.target.id, preview.profile_id);
+            assert!(preview
+                .preconditions
+                .iter()
+                .any(|precondition| precondition.kind == "provider_profile"));
+            assert!(preview
+                .preconditions
+                .iter()
+                .any(|precondition| precondition.kind == "prompt_context"));
+            assert!(preview
+                .preview_token
+                .starts_with("action-preview:v1:hmac-sha256:"));
+            assert!(!preview.raw_secret_returned);
+        }
         "llm.saveProviderProfile" => {
             let saved: WireSaveProviderProfileResult = decode_fixture_result(method, result, path);
             assert!(!saved.raw_secret_returned);
+            assert_eq!(saved.outcome.state, "verified");
+            assert!(saved
+                .readback
+                .as_ref()
+                .is_some_and(|readback| readback.verified));
+            assert!(saved
+                .readback
+                .as_ref()
+                .expect("verified save readback")
+                .domains
+                .iter()
+                .any(|domain| domain == "provider_profiles"));
         }
         "llm.deleteProviderProfile" => {
             let deleted: WireDeleteProviderProfileResult =
                 decode_fixture_result(method, result, path);
             assert!(!deleted.raw_secret_returned);
+            assert_eq!(deleted.outcome.state, "verified");
+            assert!(deleted
+                .readback
+                .as_ref()
+                .is_some_and(|readback| readback.verified));
+            assert!(deleted
+                .readback
+                .as_ref()
+                .expect("verified delete readback")
+                .domains
+                .iter()
+                .any(|domain| domain == "provider_profiles"));
         }
         "llm.testProviderConnection" => {
             let tested: WireTestProviderConnectionResult =
                 decode_fixture_result(method, result, path);
+            assert!(tested.local_metadata_persisted);
             assert!(!tested.raw_prompt_persisted);
             assert!(!tested.raw_response_persisted);
             assert!(!tested.raw_secret_returned);
+            assert_eq!(tested.outcome.state, "verified");
+            assert!(tested
+                .readback
+                .as_ref()
+                .is_some_and(|readback| readback.verified));
+            assert!(tested
+                .readback
+                .as_ref()
+                .expect("verified test readback")
+                .domains
+                .iter()
+                .any(|domain| domain == "provider_activity"));
         }
         "llm.previewPrompt" => {
             let preview: WireLlmPreviewPromptResult = decode_fixture_result(method, result, path);
+            assert_eq!(preview.action.kind, "provider_prompt");
+            assert_eq!(preview.action.intent, "send_provider_prompt");
+            assert_eq!(preview.action.preview_method, method);
+            assert_eq!(
+                preview.action.apply_method.as_deref(),
+                Some("llm.confirmPromptAndSend")
+            );
+            assert_eq!(preview.action.network, "required");
+            assert!(preview
+                .preconditions
+                .iter()
+                .any(|precondition| precondition.target_id == "redacted-prompt"));
+            assert!(preview
+                .preview_token
+                .starts_with("action-preview:v1:hmac-sha256:"));
             assert!(preview.requires_confirmation);
             assert!(!preview.provider_request_sent);
             assert!(!preview.write_back_allowed);
@@ -612,6 +765,16 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(!confirmed.raw_secret_returned);
             assert!(!confirmed.raw_prompt_persisted);
             assert!(!confirmed.raw_response_persisted);
+            if confirmed.status == "partial" {
+                assert!(confirmed.readback.is_none());
+                assert!(confirmed.partial_outcome.is_some());
+            } else {
+                assert!(confirmed
+                    .readback
+                    .as_ref()
+                    .is_some_and(|readback| readback.verified));
+                assert!(confirmed.partial_outcome.is_none());
+            }
         }
         "llm.listPromptRuns" => {
             let runs: WireLlmPromptRunListResult = decode_fixture_result(method, result, path);

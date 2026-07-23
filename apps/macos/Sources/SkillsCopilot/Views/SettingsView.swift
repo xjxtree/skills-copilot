@@ -58,7 +58,6 @@ struct SettingsView: View {
     @AppStorage(DisplayText.screenshotPrivacyModeStorageKey) private var screenshotPrivacyModeEnabled = true
     @State private var providerDraft = AIProviderSettingsDraft(status: .unavailable())
     @State private var hasEditedProviderDraft = false
-    @State private var isConfirmingProviderTest = false
     @State private var showsServiceDiagnostics = false
     @State private var selectedSettingsTab: SettingsTab = .appearance
 
@@ -123,40 +122,17 @@ struct SettingsView: View {
             }
         }
         .onChange(of: store.aiProviderStatus) { _ in
-            if store.providerAutosaveDraft != nil || !hasEditedProviderDraft {
+            if !hasEditedProviderDraft {
                 hydrateProviderDraftFromStore()
             }
         }
         .onChange(of: providerDraft) { _ in
             handleProviderDraftChange()
         }
-        .onChange(of: store.providerAutosaveDraft) { latestDraft in
-            let resolvedDraft = AutosaveDraftPresentation.resolve(
-                storeDraft: latestDraft,
-                persistedValue: AIProviderSettingsDraft(status: store.aiProviderStatus)
-            )
-            guard resolvedDraft != providerDraft else { return }
-            providerDraft = resolvedDraft
-            resetProviderEditedState()
-        }
         .transaction { transaction in
             if reduceMotion {
                 transaction.animation = nil
             }
-        }
-        .confirmationDialog(
-            UIStrings.aiProviderTestConfirmationTitle,
-            isPresented: $isConfirmingProviderTest,
-            titleVisibility: .visible
-        ) {
-            Button(UIStrings.aiProviderTest, role: .destructive) {
-                testProviderConnection()
-            }
-            Button(UIStrings.cancel, role: .cancel) {
-                isConfirmingProviderTest = false
-            }
-        } message: {
-            Text(UIStrings.aiProviderTestConfirmationMessage)
         }
         .onExitCommand {
             NSApp.keyWindow?.close()
@@ -326,23 +302,34 @@ struct SettingsView: View {
 
                 if store.isTestingAIProvider {
                     SettingsBanner(message: UIStrings.aiProviderTesting, systemImage: "network", color: .secondary)
-                } else {
-                    switch store.providerAutosavePhase {
-                    case .saving:
-                        SettingsBanner(message: UIStrings.aiProviderSaving, systemImage: "hourglass", color: .secondary)
-                    case .debouncing, .pendingAfterSave:
-                        SettingsBanner(message: UIStrings.aiProviderAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
-                    case .idle:
-                        if hasEditedProviderDraft, providerValidationMessage == nil {
-                            SettingsBanner(message: UIStrings.aiProviderAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
-                        }
-                    case .failed:
-                        EmptyView()
-                    }
+                } else if store.isSavingAIProvider {
+                    SettingsBanner(message: UIStrings.aiProviderSaving, systemImage: "hourglass", color: .secondary)
+                } else if hasEditedProviderDraft, providerValidationMessage == nil {
+                    SettingsBanner(
+                        message: UIStrings.text(
+                            "settings.aiProvider.unsaved",
+                            "Unsaved changes. Review a signed preview before saving."
+                        ),
+                        systemImage: "pencil.and.list.clipboard",
+                        color: .secondary
+                    )
                 }
 
                 SettingsSectionCard(title: UIStrings.text("settings.actions", "Actions"), systemImage: "command") {
                     providerActions
+                }
+
+                if let preview = store.aiProviderActionPreview,
+                   let pendingAction = store.aiProviderPendingAction {
+                    SettingsSectionCard(
+                        title: UIStrings.text(
+                            "settings.aiProvider.signedPreview",
+                            "Signed Action Preview"
+                        ),
+                        systemImage: "checkmark.shield"
+                    ) {
+                        providerActionPreview(preview, pendingAction: pendingAction)
+                    }
                 }
 
                 if let result = store.aiProviderTestResult {
@@ -449,10 +436,10 @@ struct SettingsView: View {
     }
 
     private var providerActions: some View {
-        HStack {
+        HStack(spacing: 10) {
             Button {
                 Task {
-                    store.cancelPendingProviderAutosave()
+                    store.cancelAIProviderActionPreview()
                     await store.loadAIProviderStatus()
                     resetProviderDraftFromStore()
                 }
@@ -461,14 +448,146 @@ struct SettingsView: View {
             }
             .disabled(store.isLoadingAIProvider || store.isSavingAIProvider || store.isTestingAIProvider)
 
+            Button(role: .destructive) {
+                Task {
+                    await store.previewDeleteAIProviderSettings()
+                }
+            } label: {
+                Label(
+                    UIStrings.text("settings.aiProvider.delete", "Delete"),
+                    systemImage: "trash"
+                )
+            }
+            .disabled(providerActionsDisabled || store.aiProviderStatus.activeProfile == nil)
+
             Spacer()
 
             Button {
-                isConfirmingProviderTest = true
+                Task {
+                    await store.previewAIProviderConnectionTest()
+                }
             } label: {
                 Label(UIStrings.aiProviderTest, systemImage: "network")
             }
             .disabled(!canTestProvider)
+
+            Button {
+                Task {
+                    await store.previewSaveAIProviderSettings(draft: providerDraft)
+                }
+            } label: {
+                Label(
+                    UIStrings.text("common.save", "Save"),
+                    systemImage: "square.and.arrow.down"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(
+                providerActionsDisabled
+                    || providerValidationMessage != nil
+                    || !hasEditedProviderDraft
+            )
+        }
+    }
+
+    private func providerActionPreview(
+        _ preview: AIProviderActionPreview,
+        pendingAction: AIProviderPendingAction
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.target", "Target"),
+                    value: "\(preview.action.target.kind): \(preview.action.target.id)"
+                )
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.scope", "Scope"),
+                    value: preview.action.target.scope
+                        ?? UIStrings.text("action.scope.providerGlobal", "Provider global")
+                )
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.impact", "Impact"),
+                    value: preview.action.impacts.joined(separator: ", ")
+                )
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.network", "Network"),
+                    value: preview.action.network
+                )
+                SettingsMetadataRow(
+                    label: UIStrings.aiProviderEndpoint,
+                    value: preview.destinationHost
+                )
+                SettingsMetadataRow(label: UIStrings.aiProviderModel, value: preview.model)
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.expectedRevision", "Expected revision"),
+                    value: preview.expectedRevision
+                )
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.readback", "Read-back"),
+                    value: preview.action.readback.joined(separator: ", ")
+                )
+                SettingsMetadataRow(
+                    label: UIStrings.text("action.evidence", "Evidence"),
+                    value: preview.action.evidenceRefs.joined(separator: ", ")
+                )
+            }
+
+            Text(
+                UIStrings.text(
+                    "settings.aiProvider.previewBoundary",
+                    "Confirming applies only this signed target and revision. A changed target or profile is rejected; the signing token is never displayed."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button(UIStrings.cancel, role: .cancel) {
+                    store.cancelAIProviderActionPreview()
+                }
+                Spacer()
+                Button(role: pendingAction == .delete ? .destructive : nil) {
+                    confirmProviderAction(pendingAction)
+                } label: {
+                    Label(
+                        providerConfirmLabel(pendingAction),
+                        systemImage: pendingAction == .test ? "network" : "checkmark.shield"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isSavingAIProvider || store.isTestingAIProvider)
+            }
+        }
+    }
+
+    private func providerConfirmLabel(_ action: AIProviderPendingAction) -> String {
+        switch action {
+        case .save:
+            return UIStrings.text("settings.aiProvider.confirmSave", "Confirm Save")
+        case .delete:
+            return UIStrings.text("settings.aiProvider.confirmDelete", "Confirm Delete")
+        case .test:
+            return UIStrings.text("settings.aiProvider.confirmTest", "Confirm Test")
+        }
+    }
+
+    private func confirmProviderAction(_ action: AIProviderPendingAction) {
+        Task {
+            switch action {
+            case .save:
+                if await store.confirmSaveAIProviderSettings(draft: providerDraft) {
+                    providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+                    hasEditedProviderDraft = false
+                }
+            case .delete:
+                if await store.confirmDeleteAIProviderSettings() {
+                    providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+                    hasEditedProviderDraft = false
+                }
+            case .test:
+                _ = await store.confirmAIProviderConnectionTest()
+            }
         }
     }
 
@@ -549,16 +668,12 @@ struct SettingsView: View {
     }
 
     private func hydrateProviderDraftFromStore() {
-        providerDraft = AutosaveDraftPresentation.resolve(
-            storeDraft: store.providerAutosaveDraft,
-            persistedValue: AIProviderSettingsDraft(status: store.aiProviderStatus)
-        )
+        providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
         hasEditedProviderDraft = false
-        resetProviderEditedState()
     }
 
     private func resetProviderDraftFromStore() {
-        store.cancelPendingProviderAutosave()
+        store.cancelAIProviderActionPreview()
         providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
         hasEditedProviderDraft = false
     }
@@ -569,24 +684,7 @@ struct SettingsView: View {
 
     private func handleProviderDraftChange() {
         resetProviderEditedState()
-        guard store.providerAutosaveDraft != providerDraft else { return }
-        guard AutosaveDraftSubmissionPolicy.shouldSubmit(
-            hasChangesFromPersistedValue: hasEditedProviderDraft,
-            hasActiveSave: store.providerAutosaveHasActiveSave
-        ) else {
-            store.cancelPendingProviderAutosave()
-            return
-        }
-        store.submitProviderAutosave(draft: providerDraft)
-    }
-
-    private func testProviderConnection() {
-        Task {
-            store.cancelPendingProviderAutosave()
-            _ = await store.testAIProviderConnection(draft: providerDraft)
-            providerDraft.apiKey = ""
-            resetProviderEditedState()
-        }
+        store.cancelAIProviderActionPreview()
     }
 }
 

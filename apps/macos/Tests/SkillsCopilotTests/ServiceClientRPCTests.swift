@@ -58,6 +58,8 @@ struct ServiceClientRPCTests {
         try actionReadbackMustMatchTheConfirmedDescriptor()
         try structuredPartialEffectDetailsDecodeForNativeRecovery()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
+        try await providerActionsUseSignedPreviewConfirmAndTypedReadback()
+        try await fakeServiceCallEvidenceDeepRedactsSecretsAndRawPrompts()
     }
 
     private func structuredPartialEffectDetailsDecodeForNativeRecovery() throws {
@@ -528,13 +530,13 @@ struct ServiceClientRPCTests {
         let runner = RecordingServiceProcessRunner()
         let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
 
-        _ = try await client.previewPromptForTaskCockpit(
+        let preview = try await client.previewPromptForTaskCockpit(
             taskText: "查看下阿里云 ALB 指标与错误情况",
             agents: ["claude-code", "codex"],
             instanceIDs: ["alb-skill"]
         )
         _ = try await client.confirmPromptAndSendForTaskCockpit(
-            previewID: "prompt-preview-task",
+            preview: preview,
             taskText: "查看下阿里云 ALB 指标与错误情况",
             agents: ["claude-code", "codex"],
             instanceIDs: ["alb-skill"]
@@ -550,6 +552,104 @@ struct ServiceClientRPCTests {
             ["llm.previewPrompt", "llm.confirmPromptAndSend"],
             "Task Preflight should use the provider preview and confirmation methods."
         )
+    }
+
+    private func providerActionsUseSignedPreviewConfirmAndTypedReadback() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "provider-action-ready")
+        let client = fake.serviceClient()
+
+        var draft = AIProviderSettingsDraft(status: .unavailable())
+        draft.endpoint = "https://provider-action.example.com/v1"
+        draft.model = "model-action"
+        draft.apiKey = "provider-action-secret"
+
+        let savePreview = try await client.previewSaveAIProviderSettings(draft: draft)
+        try expectEqual(savePreview.action.target.id, "openai-compatible", "Save preview should bind the provider profile.")
+        try expectEqual(savePreview.action.impacts, ["credential_store", "app_local_data"], "Save preview should disclose credential and app-local impacts.")
+        let saved = try await client.saveAIProviderSettings(draft: draft, preview: savePreview)
+        try expectEqual(saved.activeProfile?.model, "model-action", "Save apply should require verified read-back before returning refreshed state.")
+
+        let testPreview = try await client.previewAIProviderConnectionTest(profileID: "openai-compatible")
+        try expectEqual(testPreview.action.network, "external", "Connection-test preview should disclose external network use.")
+        let tested = try await client.testAIProviderConnection(preview: testPreview)
+        try expectEqual(tested.readback?.verified, true, "Connection test should expose verified provider-activity read-back.")
+
+        let deletePreview = try await client.previewDeleteAIProviderSettings(
+            profileID: "openai-compatible",
+            deleteCredential: true
+        )
+        let deleted = try await client.deleteAIProviderSettings(
+            preview: deletePreview,
+            deleteCredential: true
+        )
+        try expectEqual(deleted.profiles.isEmpty, true, "Delete apply should require verified read-back before returning refreshed state.")
+
+        let calls = fake.calls()
+        try expectContains(calls, "llm.previewSaveProviderProfile", "Provider save must start with a preview.")
+        try expectContains(calls, "llm.saveProviderProfile", "Provider save must use the confirmed apply method.")
+        try expectContains(calls, "llm.previewProviderConnectionTest", "Provider test must start with a preview.")
+        try expectContains(calls, "llm.testProviderConnection", "Provider test must use the confirmed apply method.")
+        try expectContains(calls, "llm.previewDeleteProviderProfile", "Provider delete must start with a preview.")
+        try expectContains(calls, "llm.deleteProviderProfile", "Provider delete must use the confirmed apply method.")
+        try expectContains(calls, "\"confirmed\":true", "Every provider apply should carry explicit typed confirmation.")
+        try expectContains(calls, "\"preview_token\":\"[REDACTED]\"", "Recorded provider confirmations must redact opaque tokens.")
+        try expectFalse(calls.contains("provider-action-secret"), "Recorded provider calls must not retain API keys.")
+    }
+
+    private func fakeServiceCallEvidenceDeepRedactsSecretsAndRawPrompts() async throws {
+        let providerFake = try FakeServiceScript()
+        defer { providerFake.cleanup() }
+        providerFake.activate(scenario: "provider-action-ready")
+        let providerClient = providerFake.serviceClient()
+
+        let apiKeySentinel = "SENTINEL_PROVIDER_API_KEY"
+        var draft = AIProviderSettingsDraft(status: .unavailable())
+        draft.endpoint = "https://provider-action.example.com/v1"
+        draft.model = "model-action"
+        draft.apiKey = apiKeySentinel
+        _ = try await providerClient.previewSaveAIProviderSettings(draft: draft)
+
+        let promptFake = try FakeServiceScript()
+        defer { promptFake.cleanup() }
+        promptFake.activate(scenario: "prompt-ready")
+        let promptClient = promptFake.serviceClient()
+        let promptSentinel = "SENTINEL_RAW_PROMPT_内容"
+        let promptPreview = try await promptClient.previewPromptForTaskCockpit(
+            taskText: promptSentinel,
+            agents: ["claude-code"],
+            instanceIDs: ["beta"]
+        )
+        _ = try await promptClient.confirmPromptAndSendForTaskCockpit(
+            preview: promptPreview,
+            taskText: promptSentinel,
+            agents: ["claude-code"],
+            instanceIDs: ["beta"]
+        )
+
+        let configFake = try FakeServiceScript()
+        defer { configFake.cleanup() }
+        configFake.activate(scenario: "config-cas")
+        let configSecretSentinel = "SENTINEL_NESTED_CONFIG_SECRET"
+        _ = try await configFake.serviceClient().saveClaudeSettings(
+            content: #"{"env":{"OPENAI_API_KEY":"\#(configSecretSentinel)"},"theme":"dark"}"#,
+            expectedRevision: "sha256:settings-revision"
+        )
+
+        let evidence = [
+            providerFake.calls(),
+            promptFake.calls(),
+            configFake.calls()
+        ].joined(separator: "\n")
+        try expectFalse(evidence.contains(apiKeySentinel), "Fake service evidence must deep-redact provider API keys.")
+        try expectFalse(evidence.contains(promptSentinel), "Fake service evidence must deep-redact raw prompts.")
+        try expectFalse(evidence.contains(configSecretSentinel), "Fake service evidence must redact secrets nested inside config strings.")
+        try expectFalse(evidence.contains("action-preview:v1:"), "Fake service evidence must redact opaque action tokens.")
+        try expectContains(evidence, "\"api_key\":\"[REDACTED]\"", "API-key field shape should remain visible after redaction.")
+        try expectContains(evidence, "\"task_text\":\"[REDACTED]\"", "Prompt field shape should remain visible after redaction.")
+        try expectContains(evidence, "OPENAI_API_KEY", "Nested config key shape should remain visible after redaction.")
+        try expectContains(evidence, ConfigContentRedactor.redactedValue, "Evidence should use the canonical redaction marker.")
     }
 }
 
@@ -1071,7 +1171,7 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
     }
 
     private static let previewResponse = """
-    {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","request_kind":"task_cockpit","scope":"agents","prompt_scope":"Task Preflight","enabled":true,"provider":"openai-compatible","model":"gpt-test","destination_host":"llm.example.com","included_fields":[],"excluded_fields":[],"redaction":{"status":"redacted","summary":"ok","redacted_fields":[],"placeholders":[]},"confirmation_required":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"draft_copy_only":true,"redacted_prompt_preview":"preview"}}
+    {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","request_kind":"task_cockpit","action":{"id":"prompt-preview-task","kind":"provider_prompt","intent":"send_provider_prompt","target":{"kind":"provider_profile","id":"openai-compatible","agent":null,"scope":"provider-global"},"project_id":null,"impacts":["external_network","app_local_data"],"preview_method":"llm.previewPrompt","apply_method":"llm.confirmPromptAndSend","source_revision":"sha256:prompt-preview","confirmation_required":true,"network":"external","readback":["provider_activity","prompt_runs"],"evidence_refs":["provider-profile:openai-compatible"]},"preconditions":[{"kind":"provider_profile","target_id":"openai-compatible","expected_revision":"sha256:profile"}],"preview_token":"action-preview:v1:hmac-sha256:fixture","scope":"agents","prompt_scope":"Task Preflight","enabled":true,"provider":"openai-compatible","model":"gpt-test","endpoint":"https://llm.example.com/v1","destination_host":"llm.example.com","included_fields":[],"excluded_fields":[],"redaction":{"status":"redacted","summary":"ok","redacted_fields":[],"placeholders":[]},"confirmation_required":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"draft_copy_only":true,"redacted_prompt_preview":"preview"}}
     """
 
     private static let ruleSuppressionResponse = """
@@ -1127,7 +1227,7 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
     """
 
     private static let sendResponse = """
-    {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","success":true,"status":"succeeded","message":"Provider response received.","output_text":"{}","draft_copy_only":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"write_back_allowed":false,"script_execution_allowed":false}}
+    {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","success":true,"status":"succeeded","message":"Provider response received.","output_text":"{}","draft_copy_only":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"write_back_allowed":false,"script_execution_allowed":false,"readback":{"action_id":"prompt-preview-task","source_revision":"sha256:prompt-after","project_id":null,"domains":["provider_activity","prompt_runs"],"target_ids":["prompt-preview-task"],"observations":[{"domain":"provider_activity","target_id":"prompt-preview-task","revision":"sha256:activity-after"},{"domain":"prompt_runs","target_id":"prompt-preview-task","revision":"sha256:prompt-run-after"}],"verified":true}}}
     """
 
     private static let unknownMethodResponse = """

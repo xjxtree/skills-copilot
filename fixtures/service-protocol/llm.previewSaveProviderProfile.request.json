@@ -1,0 +1,15 @@
+{
+  "id": "fixture-llm-preview-save-provider-profile",
+  "method": "llm.previewSaveProviderProfile",
+  "params": {
+    "id": "fixture-openai",
+    "display_name": "Fixture OpenAI",
+    "provider_type": "openai-compatible",
+    "base_url": "https://example.invalid/v1",
+    "model": "fixture-model",
+    "enabled": true,
+    "api_key": "<redacted>",
+    "single_request_token_limit": 4096,
+    "monthly_budget_usd": 3.5
+  }
+}

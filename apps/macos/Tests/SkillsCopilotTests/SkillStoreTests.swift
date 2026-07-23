@@ -161,20 +161,8 @@ struct SkillStoreTests {
         try await runCase("agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally") {
             try await agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally()
         }
-        try await runCase("providerAutosaveKeepsEditArrivingDuringSave") {
-            try await providerAutosaveKeepsEditArrivingDuringSave()
-        }
-        try await runCase("olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft") {
-            try await olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft()
-        }
-        try await runCase("providerAutosaveQueuesRevertDuringActiveSave") {
-            try await providerAutosaveQueuesRevertDuringActiveSave()
-        }
-        try await runCase("providerUnknownMutationDoesNotReportSaved") {
-            try await providerUnknownMutationDoesNotReportSaved()
-        }
-        try await runCase("successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh") {
-            try await successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh()
+        try await runCase("providerMutationsRequireExplicitPreviewAndConfirmation") {
+            try await providerMutationsRequireExplicitPreviewAndConfirmation()
         }
         try await runCase("previewRollbackShowsDiffWithoutCallingRollback") {
             try await previewRollbackShowsDiffWithoutCallingRollback()
@@ -1705,217 +1693,62 @@ struct SkillStoreTests {
         )
     }
 
-    private func providerAutosaveKeepsEditArrivingDuringSave() async throws {
+    private func providerMutationsRequireExplicitPreviewAndConfirmation() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
-        fake.activate(scenario: "autosave-delayed-provider")
+        fake.activate(scenario: "provider-action-ready")
 
-        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
-        await store.loadAIProviderStatus()
-        var draftA = AIProviderSettingsDraft(status: .unavailable())
-        draftA.endpoint = "https://provider-a.example.com/v1"
-        draftA.model = "model-a"
-        draftA.apiKey = "A"
-        _ = store.submitProviderAutosave(draft: draftA)
-        try await waitUntil("Provider autosave A should reach the service.", timeout: 5) {
-            countMethodCalls("llm.saveProviderProfile", in: fake.calls()) == 1
-        }
-
-        var draftB = draftA
-        draftB.endpoint = "https://provider-b.example.com/v1"
-        draftB.model = "model-b"
-        draftB.apiKey = "B"
-        let revisionB = store.submitProviderAutosave(draft: draftB)
-        try expectEqual(
-            store.providerAutosavePhase,
-            .pendingAfterSave(revision: revisionB),
-            "Provider edit B should remain pending while A is writing."
-        )
-
-        fake.releaseDelayedProviderSaveA()
-        try await waitUntil("Provider autosave B should start after A.", timeout: 5) {
-            countMethodCalls("llm.saveProviderProfile", in: fake.calls()) == 2
-        }
-        try expectEqual(
-            store.providerAutosaveDraft?.apiKey,
-            "B",
-            "Completion A must not clear the newer provider API-key draft B."
-        )
-
-        fake.releaseDelayedProviderSaveB()
-        await store.flushPendingAutosaves()
-
-        let calls = fake.calls()
-        try expectFalse(calls.contains(#""api_key":"A""#), "Fake service call evidence must not retain provider API key A.")
-        try expectFalse(calls.contains(#""api_key":"B""#), "Fake service call evidence must not retain provider API key B.")
-        try expectContains(calls, ConfigContentRedactor.redactedValue, "Fake service call evidence should retain an explicit redaction marker.")
-        guard let callA = calls.range(of: "provider-a.example.com"), let callB = calls.range(of: "provider-b.example.com") else {
-            throw NativeModelTestFailure(description: "Provider autosave calls should preserve both draft values.")
-        }
-        try expectEqual(callA.lowerBound < callB.lowerBound, true, "Provider autosave should preserve A then B service order.")
-        try expectNil(store.providerAutosaveDraft, "The latest committed provider draft should retire after revision B succeeds.")
-        let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        try expectEqual(committedDraft.endpoint, draftB.endpoint, "Persisted provider state should settle on revision B.")
-        try expectEqual(committedDraft.apiKey, "", "Hydrating committed provider state must not restore its API key.")
-        try expectEqual(store.aiProviderMessage, Optional(UIStrings.aiProviderSaved), "The exact latest provider completion should publish saved feedback.")
-        try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after both writes.")
-    }
-
-    private func olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft() async throws {
-        for scenario in ["autosave-delayed-provider", "autosave-delayed-provider-failure"] {
-            let fake = try FakeServiceScript()
-            defer { fake.cleanup() }
-            fake.activate(scenario: scenario)
-
-            let store = SkillStore(
-                service: fake.serviceClient(),
-                autosaveDelayNanoseconds: 500_000_000
-            )
-            await store.loadAIProviderStatus()
-            var draftA = AIProviderSettingsDraft(status: store.aiProviderStatus)
-            draftA.endpoint = "https://provider-a.example.com/v1"
-            draftA.model = "model-a"
-            draftA.apiKey = "A"
-            _ = store.submitProviderAutosave(draft: draftA)
-            try await waitUntil("Provider autosave A should reach the feedback service.", timeout: 5) {
-                countMethodCalls("llm.saveProviderProfile", in: fake.calls()) == 1
-            }
-
-            var draftB = draftA
-            draftB.endpoint = "https://provider-b.example.com/v1"
-            draftB.model = "model-b"
-            draftB.apiKey = "B"
-            let revisionB = store.submitProviderAutosave(draft: draftB)
-            fake.releaseDelayedProviderSaveA()
-            try await waitUntil("Provider A should finish while B owns visible feedback.", timeout: 5) {
-                store.providerAutosavePhase == .debouncing(revision: revisionB)
-            }
-
-            try expectNil(store.aiProviderMessage, "Older provider A success must not publish a saved banner for B.")
-            try expectNil(store.aiProviderErrorMessage, "Older provider A failure must not publish an error for B.")
-            try expectEqual(store.providerAutosaveDraft?.apiKey, "B", "Older provider completion must preserve B's secret draft.")
-            store.cancelPendingProviderAutosave()
-        }
-
-        let latestFake = try FakeServiceScript()
-        defer { latestFake.cleanup() }
-        latestFake.activate(scenario: "autosave-delayed-provider-failure")
-        let latestStore = SkillStore(service: latestFake.serviceClient(), autosaveDelayNanoseconds: 0)
-        await latestStore.loadAIProviderStatus()
-        var latestDraft = AIProviderSettingsDraft(status: latestStore.aiProviderStatus)
-        latestDraft.endpoint = "https://provider-a.example.com/v1"
-        latestDraft.model = "model-a"
-        latestDraft.apiKey = "A"
-        _ = latestStore.submitProviderAutosave(draft: latestDraft)
-        try await waitUntil("Latest provider failure should reach the service.", timeout: 5) {
-            countMethodCalls("llm.saveProviderProfile", in: latestFake.calls()) == 1
-        }
-        latestFake.releaseDelayedProviderSaveA()
-        await latestStore.flushPendingAutosaves()
-        try expectContains(
-            latestStore.aiProviderErrorMessage ?? "",
-            "provider A failed",
-            "The exact latest provider failure should publish terminal feedback."
-        )
-    }
-
-    private func providerAutosaveQueuesRevertDuringActiveSave() async throws {
-        let runner = ProviderAutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await store.loadAIProviderStatus()
-        let baseline = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        var draftA = baseline
-        draftA.endpoint = "https://provider-a.example.com/v1"
-        draftA.model = "model-a"
-        draftA.apiKey = "provider-a-secret"
-
-        _ = store.submitProviderAutosave(draft: draftA)
-        try await waitUntil("Provider autosave A should start in the continuation runner.") {
-            await runner.startedProviderSaveCount == 1
-        }
-
-        _ = store.submitProviderAutosave(draft: baseline)
-        await runner.releaseNextProviderSave()
-        try await waitUntil("Reverting provider fields to X during A should enqueue a second save.") {
-            await runner.startedProviderSaveCount == 2
-        }
-        try expectEqual(
-            store.providerAutosaveDraft?.endpoint,
-            baseline.endpoint,
-            "Completion A must not overwrite the newer reverted provider draft."
-        )
-
-        await runner.releaseNextProviderSave()
-        await store.flushPendingAutosaves()
-        try expectEqual(
-            await runner.providerSaveEndpoints,
-            [draftA.endpoint, baseline.endpoint],
-            "Provider X to A saving to X must persist the final revert as a newer revision."
-        )
-        try expectNil(store.providerAutosaveDraft, "The latest committed provider revert should retire its draft.")
-        let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        try expectEqual(committedDraft.endpoint, baseline.endpoint, "Persisted provider state should settle on X.")
-        try expectEqual(committedDraft.apiKey, "", "Hydrating the newest committed revision must not restore its API key.")
-    }
-
-    private func providerUnknownMutationDoesNotReportSaved() async throws {
-        let runner = ProviderAutosaveControlServiceRunner(providerMutationUnavailable: true)
-        let store = SkillStore(service: runner.serviceClient())
-        var draft = AIProviderSettingsDraft(status: .unavailable())
-        draft.endpoint = "https://unavailable-provider.example.com/v1"
-        draft.model = "unavailable-model"
-        draft.apiKey = "must-not-clear"
-
-        let saved = await store.saveAIProviderSettings(draft: draft)
-
-        try expectFalse(saved, "An unknown mutating provider RPC must fail instead of mapping to a saved unavailable status.")
-        try expectNil(store.aiProviderMessage, "An unavailable provider mutation must not publish a saved banner.")
-        try expectEqual(store.aiProviderStatus.serviceAvailable, false, "Read-side unavailable compatibility should remain visible.")
-
-        _ = store.submitProviderAutosave(draft: draft)
-        await store.flushPendingAutosaves()
-        try expectEqual(
-            store.providerAutosaveDraft?.apiKey,
-            "must-not-clear",
-            "A failed provider autosave must preserve the unsaved API key draft."
-        )
-        guard case .failed = store.providerAutosavePhase else {
-            throw NativeModelTestFailure(description: "A failed provider mutation should leave the autosave phase failed.")
-        }
-    }
-
-    private func successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh() async throws {
-        let runner = ProviderAutosaveControlServiceRunner(suspendMutations: false)
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
+        let store = SkillStore(service: fake.serviceClient())
         await store.loadAIProviderStatus()
         var draft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        draft.endpoint = "https://provider-saved.example.com/v1"
-        draft.model = "model-saved"
-        draft.apiKey = "provider-secret"
+        draft.endpoint = "https://provider-action.example.com/v1"
+        draft.model = "model-action"
+        draft.apiKey = "store-provider-secret"
 
-        _ = store.submitProviderAutosave(draft: draft)
-        await store.flushPendingAutosaves()
-        try expectNil(
-            store.providerAutosaveDraft,
-            "The latest successful provider completion should retire its Store-owned draft."
-        )
-        let committedDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        try expectEqual(committedDraft.endpoint, draft.endpoint, "Committed provider hydration should retain the saved endpoint.")
-        try expectEqual(committedDraft.apiKey, "", "Committed provider hydration must not retain the submitted API key.")
-
-        await runner.setExternalProvider(
-            endpoint: "https://provider-external.example.com/v1",
-            model: "model-external"
-        )
-        await store.loadAIProviderStatus()
-        let effectiveDraft = store.providerAutosaveDraft
-            ?? AIProviderSettingsDraft(status: store.aiProviderStatus)
+        await store.previewSaveAIProviderSettings(draft: draft)
+        try expectEqual(store.aiProviderPendingAction, .save, "Provider save should stop at a signed preview.")
         try expectEqual(
-            effectiveDraft.endpoint,
-            "https://provider-external.example.com/v1",
-            "Passive provider hydration should adopt an external status refresh after the last draft commits."
+            countMethodCalls("llm.saveProviderProfile", in: fake.calls()),
+            0,
+            "Previewing provider save must perform zero writes."
         )
-        try expectEqual(effectiveDraft.apiKey, "", "External provider hydration must not restore an API key draft.")
+        store.cancelAIProviderActionPreview()
+        try expectEqual(
+            await store.confirmSaveAIProviderSettings(draft: draft),
+            false,
+            "A cancelled provider preview must not be confirmable."
+        )
+
+        await store.previewSaveAIProviderSettings(draft: draft)
+        try expectEqual(
+            await store.confirmSaveAIProviderSettings(draft: draft),
+            true,
+            "Explicit save confirmation should apply the signed provider action."
+        )
+
+        await store.previewAIProviderConnectionTest()
+        try expectEqual(store.aiProviderPendingAction, .test, "Provider test should stop at a network preview.")
+        try expectEqual(
+            countMethodCalls("llm.testProviderConnection", in: fake.calls()),
+            0,
+            "Previewing provider test must send zero network requests."
+        )
+        let tested = await store.confirmAIProviderConnectionTest()
+        try expectEqual(tested?.readback?.verified, true, "Confirmed provider test should publish verified activity read-back.")
+
+        await store.previewDeleteAIProviderSettings()
+        try expectEqual(store.aiProviderPendingAction, .delete, "Provider delete should stop at a destructive preview.")
+        try expectEqual(
+            countMethodCalls("llm.deleteProviderProfile", in: fake.calls()),
+            0,
+            "Previewing provider delete must perform zero deletes."
+        )
+        try expectEqual(
+            await store.confirmDeleteAIProviderSettings(),
+            true,
+            "Explicit delete confirmation should apply the signed provider action."
+        )
+        try expectFalse(fake.calls().contains("store-provider-secret"), "Store-level fake evidence must not retain provider secrets.")
     }
 
     private func rollbackUsesImmutablePreviewInputs() async throws {

@@ -540,10 +540,11 @@ fn llm_provider_profile_save_persists_metadata_without_secret_file() {
     ));
     let host = test_host(app_data_dir.clone());
 
-    let response = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, response) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "fixture-openai",
             "display_name": "Fixture OpenAI",
             "provider_type": "openai-compatible",
@@ -553,7 +554,7 @@ fn llm_provider_profile_save_persists_metadata_without_secret_file() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 3.5
         }),
-    });
+    );
 
     assert!(response.ok, "{:?}", response.error);
     let result = response.result.expect("provider save result");
@@ -655,7 +656,7 @@ fn llm_provider_profile_rejects_unsafe_base_urls() {
     for (index, base_url) in unsafe_base_urls.iter().enumerate() {
         let response = host.handle(ServiceRequest {
             id: Some(format!("provider-save-{index}")),
-            method: "llm.saveProviderProfile".to_string(),
+            method: "llm.previewSaveProviderProfile".to_string(),
             params: json!({
                 "id": format!("unsafe-{index}"),
                 "display_name": format!("Unsafe {index}"),
@@ -698,10 +699,11 @@ fn llm_provider_profile_accepts_https_and_exact_loopback_http_urls() {
     ];
 
     for (index, base_url) in safe_base_urls.iter().enumerate() {
-        let response = host.handle(ServiceRequest {
-            id: Some(format!("provider-save-{index}")),
-            method: "llm.saveProviderProfile".to_string(),
-            params: json!({
+        let (_, response) = confirmed_action_request(
+            &host,
+            "llm.previewSaveProviderProfile",
+            "llm.saveProviderProfile",
+            json!({
                 "id": format!("safe-{index}"),
                 "display_name": format!("Safe {index}"),
                 "provider_type": "openai-compatible",
@@ -709,7 +711,7 @@ fn llm_provider_profile_accepts_https_and_exact_loopback_http_urls() {
                 "model": "fixture-model",
                 "enabled": true
             }),
-        });
+        );
 
         assert!(
             response.ok,
@@ -741,10 +743,11 @@ fn llm_test_provider_connection_blocks_without_key_and_writes_metadata_only() {
         unique_suffix(),
     ));
     let host = test_host(app_data_dir.clone());
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "fixture-claude",
             "display_name": "Fixture Claude",
             "provider_type": "claude-compatible",
@@ -755,18 +758,18 @@ fn llm_test_provider_connection_blocks_without_key_and_writes_metadata_only() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 2.0
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
 
-    let test = host.handle(ServiceRequest {
-        id: Some("provider-test".to_string()),
-        method: "llm.testProviderConnection".to_string(),
-        params: json!({
+    let (_, test) = confirmed_action_request(
+        &host,
+        "llm.previewProviderConnectionTest",
+        "llm.testProviderConnection",
+        json!({
             "profile_id": "fixture-claude",
-            "confirmation_id": "confirm-fixture-test",
             "timeout_ms": 250
         }),
-    });
+    );
 
     assert!(test.ok, "{:?}", test.error);
     let result = test.result.expect("test connection");
@@ -843,10 +846,11 @@ fn llm_test_provider_connection_uses_preserved_key_after_blank_save() {
     let secret_env = provider_test_secret_env_name(&profile_id);
     let _secret_env_guard = EnvVarGuard::set(&secret_env, "test-secret-key");
 
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": profile_id,
             "display_name": "Mock OpenAI Preserve",
             "provider_type": "openai-compatible",
@@ -856,7 +860,7 @@ fn llm_test_provider_connection_uses_preserved_key_after_blank_save() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 10.0
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
     assert_eq!(
         save.result
@@ -866,10 +870,11 @@ fn llm_test_provider_connection_uses_preserved_key_after_blank_save() {
         Some(true)
     );
 
-    let blank_resave = host.handle(ServiceRequest {
-        id: Some("provider-resave".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, blank_resave) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": profile_id,
             "display_name": "Mock OpenAI Preserve",
             "provider_type": "openai-compatible",
@@ -879,7 +884,7 @@ fn llm_test_provider_connection_uses_preserved_key_after_blank_save() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 10.0
         }),
-    });
+    );
     assert!(blank_resave.ok, "{:?}", blank_resave.error);
     assert_eq!(
         blank_resave
@@ -890,15 +895,15 @@ fn llm_test_provider_connection_uses_preserved_key_after_blank_save() {
         Some(true)
     );
 
-    let test = host.handle(ServiceRequest {
-        id: Some("provider-test".to_string()),
-        method: "llm.testProviderConnection".to_string(),
-        params: json!({
+    let (_, test) = confirmed_action_request(
+        &host,
+        "llm.previewProviderConnectionTest",
+        "llm.testProviderConnection",
+        json!({
             "profile_id": profile_id,
-            "confirmation_id": "confirm-preserved-key",
             "timeout_ms": 2_000
         }),
-    });
+    );
 
     assert!(test.ok, "{:?}", test.error);
     let result = test.result.expect("test connection");
@@ -939,10 +944,11 @@ fn llm_test_provider_connection_downgrades_stale_credential_metadata() {
     let secret_env = provider_test_secret_env_name(&profile_id);
     let secret_env_guard = EnvVarGuard::set(&secret_env, "test-secret-key");
 
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": profile_id,
             "display_name": "Mock OpenAI Stale",
             "provider_type": "openai-compatible",
@@ -952,19 +958,19 @@ fn llm_test_provider_connection_downgrades_stale_credential_metadata() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 10.0
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
     secret_env_guard.remove_current();
 
-    let test = host.handle(ServiceRequest {
-        id: Some("provider-test".to_string()),
-        method: "llm.testProviderConnection".to_string(),
-        params: json!({
+    let (_, test) = confirmed_action_request(
+        &host,
+        "llm.previewProviderConnectionTest",
+        "llm.testProviderConnection",
+        json!({
             "profile_id": profile_id,
-            "confirmation_id": "confirm-stale-key",
             "timeout_ms": 250
         }),
-    });
+    );
     assert!(test.ok, "{:?}", test.error);
     let result = test.result.expect("test connection");
     assert_eq!(

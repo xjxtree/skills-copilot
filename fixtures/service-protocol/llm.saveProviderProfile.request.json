@@ -8,7 +8,23 @@
     "base_url": "https://example.invalid/v1",
     "model": "fixture-model",
     "enabled": true,
+    "api_key": "<redacted>",
     "single_request_token_limit": 4096,
-    "monthly_budget_usd": 3.5
+    "monthly_budget_usd": 3.5,
+    "action_confirmation": {
+      "reference": {
+        "action_id": "provider-profile-save-fixture",
+        "source_revision": "sha256:provider-save-source-fixture",
+        "project_id": null,
+        "target": {
+          "kind": "provider_profile",
+          "id": "fixture-openai",
+          "agent": null,
+          "scope": null
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:fixture-save",
+      "confirmed": true
+    }
   }
 }

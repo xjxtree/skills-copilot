@@ -28,6 +28,9 @@ supported-method inventory.
 | `SessionContinuationRecord` | Project/agent identity, stable session identity, timing, completeness, native source revision, accepted snapshot revision, evidence, and native resume capability | Transient selected-project state only |
 | `EvidenceRef` | Stable typed id, evidence kind, source revision, and redacted display summary | Stored only when the owning existing metadata record is allowed to persist |
 | `ActionDescriptor` | Deterministic id, target, impact, preview/apply method, revision binding, network posture, and confirmation requirement | Transient; never write authorization by itself |
+| `ActionConfirmation` | Exact action reference, opaque HMAC preview token, and explicit confirmation | Transient; cleared after a confirmed attempt |
+| `ActionReadbackRecord` | Action/source binding plus typed domain, target, revision observations, and verified state | Response only |
+| Provider action outcome | Verified, not-started, or partial local/remote/credential effects with recovery guidance | Response only |
 
 `EnvironmentHealthState` is `healthy`, `review`, or `blocked`.
 `SkillEffectivenessState` is `effective`, `disabled`, `shadowed`,
@@ -44,6 +47,19 @@ Core product records enforce these invariants before service exposure:
   contain unique impacts and evidence references, and bind one source
   revision. A mutating impact requires both an apply method and explicit
   confirmation; a read-only action cannot expose an apply method.
+- Provider action tokens are one-time. Private
+  `provider-action-state.json` is a bounded, atomic, `0600` replay guard, not a
+  history: one monotonic generation stores only a token digest, action id,
+  source revision, reservation or outcome phase,
+  `not_started`/`verified`/`partial` state, and timestamp. Reservation and
+  outcome replace the same record, and the next action replaces it at a higher
+  generation. It stores no descriptor, prompt, response, profile content,
+  credential, or reusable credential digest.
+- A verified action read-back covers every domain declared by its descriptor.
+  Provider credential observations verify Keychain value/presence or absence
+  semantically without returning the secret. An unverified local effect is an
+  explicit partial outcome; a request that may have reached a provider uses
+  `remote_unknown`.
 - Healthy project or agent readiness requires complete source coverage.
 - `partial`, stale, unavailable, source-limited, and uninspected required
   evidence maps to typed incomplete coverage and blocks healthy readiness.

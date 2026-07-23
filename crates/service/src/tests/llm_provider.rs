@@ -51,10 +51,11 @@ fn llm_preview_prompt_returns_redacted_confirmation_payload() {
     let host = test_host(app_data_dir.clone());
     let skill_path = app_data_dir.join("secret-project-path").join("SKILL.md");
     seed_catalog_with_llm_skill(&host, &skill_path);
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "fixture-openai",
             "display_name": "Fixture OpenAI",
             "provider_type": "openai-compatible",
@@ -64,7 +65,7 @@ fn llm_preview_prompt_returns_redacted_confirmation_payload() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 3.5
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
 
     let response = host.handle(ServiceRequest {
@@ -242,10 +243,11 @@ fn llm_confirm_prompt_rejects_mismatched_preview_without_metadata() {
     ));
     let host = test_host(app_data_dir.clone());
     seed_catalog_with_llm_skill(&host, &app_data_dir.join("fixture-skill").join("SKILL.md"));
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "fixture-openai",
             "display_name": "Fixture OpenAI",
             "provider_type": "openai-compatible",
@@ -253,26 +255,34 @@ fn llm_confirm_prompt_rejects_mismatched_preview_without_metadata() {
             "model": "fixture-model",
             "enabled": true
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
 
+    let request = json!({
+        "action": "analyze",
+        "skill_instance_id": "llm-skill-id"
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("preview result");
+    let mut confirmation = action_confirmation_from_preview(&preview_result);
+    confirmation["reference"]["source_revision"] = Value::String("sha256:forged".to_string());
     let response = host.handle(ServiceRequest {
         id: Some("confirm".to_string()),
         method: "llm.confirmPromptAndSend".to_string(),
         params: json!({
-            "preview_id": "prompt-preview-stale",
-            "confirmation_id": "confirm-preview",
-            "request": {
-                "action": "analyze",
-                "skill_instance_id": "llm-skill-id"
-            }
+            "action_confirmation": confirmation,
+            "request": request
         }),
     });
 
     assert!(!response.ok);
     let error = response.error.expect("mismatch error");
-    assert_eq!(error.code, "invalid_request");
-    assert!(error.message.contains("preview_id"));
+    assert_eq!(error.code, "stale_action_reference");
     assert!(!provider_call_metadata_path(&app_data_dir).exists());
 
     let _ = fs::remove_dir_all(app_data_dir);
@@ -286,10 +296,11 @@ fn llm_confirm_prompt_blocks_without_credential_and_writes_metadata_only() {
         unique_suffix(),
     ));
     let host = test_host(app_data_dir.clone());
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "fixture-openai",
             "display_name": "Fixture OpenAI",
             "provider_type": "openai-compatible",
@@ -297,36 +308,13 @@ fn llm_confirm_prompt_blocks_without_credential_and_writes_metadata_only() {
             "model": "fixture-model",
             "enabled": true
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
     let request = json!({
         "action": "recommend",
         "user_intent": "review token=fixture-redacted-value"
     });
-    let preview = host.handle(ServiceRequest {
-        id: Some("preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: request.clone(),
-    });
-    assert!(preview.ok, "{:?}", preview.error);
-    let preview_id = preview
-        .result
-        .as_ref()
-        .and_then(|result| result.get("preview_id"))
-        .and_then(Value::as_str)
-        .expect("preview id")
-        .to_string();
-
-    let confirm = host.handle(ServiceRequest {
-        id: Some("confirm".to_string()),
-        method: "llm.confirmPromptAndSend".to_string(),
-        params: json!({
-            "preview_id": preview_id,
-            "confirmation_id": "confirm-without-credential",
-            "request": request,
-            "timeout_ms": 250
-        }),
-    });
+    let (_, confirm) = confirmed_llm_prompt_request(&host, request, 250);
 
     assert!(confirm.ok, "{:?}", confirm.error);
     let result = confirm.result.expect("confirm result");
@@ -375,10 +363,11 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
     let host = test_host(app_data_dir.clone());
     let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
     seed_catalog_with_llm_skill(&host, &skill_path);
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "mock-openai",
             "display_name": "Mock OpenAI",
             "provider_type": "openai-compatible",
@@ -388,7 +377,7 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 10.0
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
     let _secret_env_guard = EnvVarGuard::set(
         "SKILLS_COPILOT_TEST_SECRET_PROVIDER_MOCK_OPENAI",
@@ -400,29 +389,7 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
         "skill_instance_id": "llm-skill-id",
         "user_intent": "summarize risk without exposing token=fixture-redacted-value"
     });
-    let preview = host.handle(ServiceRequest {
-        id: Some("preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: request.clone(),
-    });
-    assert!(preview.ok, "{:?}", preview.error);
-    let preview_result = preview.result.expect("preview result");
-    let preview_id = preview_result
-        .get("preview_id")
-        .and_then(Value::as_str)
-        .expect("preview id")
-        .to_string();
-
-    let confirm = host.handle(ServiceRequest {
-        id: Some("confirm".to_string()),
-        method: "llm.confirmPromptAndSend".to_string(),
-        params: json!({
-            "preview_id": preview_id,
-            "confirmation_id": "confirm-mock-provider",
-            "request": request,
-            "timeout_ms": 2_000
-        }),
-    });
+    let (_, confirm) = confirmed_llm_prompt_request(&host, request, 2_000);
 
     assert!(confirm.ok, "{:?}", confirm.error);
     let result = confirm.result.expect("confirm result");
@@ -470,7 +437,7 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
         result
             .pointer("/audit/confirmation_id")
             .and_then(Value::as_str),
-        Some("confirm-mock-provider")
+        result.get("confirmation_id").and_then(Value::as_str)
     );
 
     let request_text = server.join().expect("mock server thread");
@@ -560,10 +527,11 @@ fn llm_confirm_prompt_redacts_persisted_draft_output() {
     let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
     seed_catalog_with_llm_skill(&host, &skill_path);
 
-    let save = host.handle(ServiceRequest {
-        id: Some("provider-save".to_string()),
-        method: "llm.saveProviderProfile".to_string(),
-        params: json!({
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        json!({
             "id": "mock-openai-draft-redaction",
             "display_name": "Mock OpenAI Draft Redaction",
             "provider_type": "openai-compatible",
@@ -573,7 +541,7 @@ fn llm_confirm_prompt_redacts_persisted_draft_output() {
             "single_request_token_limit": 4096,
             "monthly_budget_usd": 10.0
         }),
-    });
+    );
     assert!(save.ok, "{:?}", save.error);
     let _secret_env_guard = EnvVarGuard::set(
         "SKILLS_COPILOT_TEST_SECRET_PROVIDER_MOCK_OPENAI_DRAFT_REDACTION",
@@ -585,30 +553,7 @@ fn llm_confirm_prompt_redacts_persisted_draft_output() {
         "skill_instance_id": "llm-skill-id",
         "user_intent": "summarize draft redaction posture"
     });
-    let preview = host.handle(ServiceRequest {
-        id: Some("preview".to_string()),
-        method: "llm.previewPrompt".to_string(),
-        params: request.clone(),
-    });
-    assert!(preview.ok, "{:?}", preview.error);
-    let preview_id = preview
-        .result
-        .expect("preview result")
-        .get("preview_id")
-        .and_then(Value::as_str)
-        .expect("preview id")
-        .to_string();
-
-    let confirm = host.handle(ServiceRequest {
-        id: Some("confirm".to_string()),
-        method: "llm.confirmPromptAndSend".to_string(),
-        params: json!({
-            "preview_id": preview_id,
-            "confirmation_id": "confirm-draft-redaction",
-            "request": request,
-            "timeout_ms": 2_000
-        }),
-    });
+    let (_, confirm) = confirmed_llm_prompt_request(&host, request, 2_000);
     assert!(confirm.ok, "{:?}", confirm.error);
     let result = confirm.result.expect("confirm result");
     assert_eq!(

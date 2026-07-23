@@ -252,14 +252,12 @@ struct PreviewLLMPromptParams: Encodable {
 }
 
 struct ConfirmLLMPromptParams: Encodable {
-    let previewID: String
-    let confirmationID: String
+    let actionConfirmation: ActionConfirmationWire
     let request: PreviewLLMPromptParams
     let timeoutMS: Int
 
     enum CodingKeys: String, CodingKey {
-        case previewID = "preview_id"
-        case confirmationID = "confirmation_id"
+        case actionConfirmation = "action_confirmation"
         case request
         case timeoutMS = "timeout_ms"
     }
@@ -486,6 +484,7 @@ struct SaveAIProviderProfileParams: Encodable {
     let apiKey: String?
     let singleRequestTokenLimit: Int?
     let monthlyBudgetUSD: Double?
+    let actionConfirmation: ActionConfirmationWire?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -498,18 +497,31 @@ struct SaveAIProviderProfileParams: Encodable {
         case apiKey = "api_key"
         case singleRequestTokenLimit = "single_request_token_limit"
         case monthlyBudgetUSD = "monthly_budget_usd"
+        case actionConfirmation = "action_confirmation"
+    }
+}
+
+struct DeleteAIProviderProfileParams: Encodable {
+    let profileID: String
+    let deleteCredential: Bool
+    let actionConfirmation: ActionConfirmationWire?
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case deleteCredential = "delete_credential"
+        case actionConfirmation = "action_confirmation"
     }
 }
 
 struct TestAIProviderConnectionParams: Encodable {
     let profileID: String
-    let confirmationID: String
     let timeoutMS: Int
+    let actionConfirmation: ActionConfirmationWire?
 
     enum CodingKeys: String, CodingKey {
         case profileID = "profile_id"
-        case confirmationID = "confirmation_id"
         case timeoutMS = "timeout_ms"
+        case actionConfirmation = "action_confirmation"
     }
 }
 
@@ -533,6 +545,7 @@ final class ServiceClient {
     enum ClientError: LocalizedError {
         case missingBinary
         case invalidOutput(String)
+        case actionOutcome(String)
         case service(ServiceErrorPayload)
         case processFailed(Int32, String)
         case processTimedOut
@@ -544,6 +557,8 @@ final class ServiceClient {
                 return "skills-copilot-service was not found in the app bundle."
             case .invalidOutput(let output):
                 return "\(UIStrings.text("service.error.invalidOutput", "Invalid service output:")) \(output)"
+            case .actionOutcome(let message):
+                return message
             case .service(let error):
                 return "\(error.code): \(error.message)"
             case .processFailed(let status, let stderr):

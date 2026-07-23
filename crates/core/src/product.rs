@@ -98,6 +98,7 @@ pub enum ActionTargetKind {
     Session,
     Config,
     Package,
+    ProviderProfile,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -116,6 +117,7 @@ pub struct ActionTargetRef {
 pub enum ActionImpact {
     ReadOnly,
     AppLocalData,
+    CredentialStore,
     AgentConfig,
     SkillFiles,
     ExternalManager,
@@ -152,6 +154,7 @@ pub enum ActionKind {
     ProjectContext,
     ProviderProfile,
     ProviderConnectionTest,
+    ProviderPrompt,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -177,7 +180,9 @@ pub enum ActionIntent {
     TuneRule,
     SetProjectContext,
     SaveProviderProfile,
+    DeleteProviderProfile,
     TestProviderConnection,
+    SendProviderPrompt,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -193,6 +198,10 @@ pub enum ActionReadbackDomain {
     ManagerInventory,
     SessionContinuation,
     BlockedAttemptAudit,
+    ProviderProfiles,
+    ProviderCredentials,
+    ProviderActivity,
+    PromptRuns,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]

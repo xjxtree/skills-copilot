@@ -41,7 +41,21 @@ copy-only authoring aid.
 ## Request Contract
 
 - Existing `llm.previewPrompt` and `llm.confirmPromptAndSend` remain the only
-  provider request boundary.
+  provider prompt-request boundary. Provider profile save/delete and connection
+  tests use their own paired preview/apply methods.
+- Every provider profile mutation, connection test, and prompt send uses the
+  signed typed action lifecycle. Apply requires the exact
+  `action_confirmation`; its one-time token is cleared by the native client
+  after a confirmed attempt and cannot be replayed or retried automatically.
+- Profile save previews bind non-secret normalized input. Credential
+  replacement is represented only by an authorization-keyed opaque binding;
+  API keys never appear in the preview, action descriptor, bounded replay
+  state, log, or response.
+- Verified applies return semantic read-back for all declared profile,
+  credential, activity, and prompt-run domains. Unverified local effects are
+  `applied_unverified`; any failure after provider traffic may have left the
+  process is `remote_unknown`. Both are explicit partial outcomes that require
+  state inspection and a fresh preview.
 - The wire action `task_cockpit` remains compatible while the UI presents it as
   inline task readiness.
 - New product actions such as `session_digest` and `skill_change_review` are not

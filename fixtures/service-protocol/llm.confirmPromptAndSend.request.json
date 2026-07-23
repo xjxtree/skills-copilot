@@ -2,11 +2,26 @@
   "id": "fixture-llm-confirm-prompt-and-send",
   "method": "llm.confirmPromptAndSend",
   "params": {
-    "preview_id": "prompt-preview-fixture",
-    "confirmation_id": "confirm-fixture",
+    "action_confirmation": {
+      "reference": {
+        "action_id": "provider-prompt-fixture",
+        "source_revision": "sha256:provider-prompt-source-fixture",
+        "project_id": null,
+        "target": {
+          "kind": "provider_profile",
+          "id": "fixture-openai",
+          "agent": null,
+          "scope": null
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:fixture-prompt",
+      "confirmed": true
+    },
     "request": {
       "action": "recommend",
+      "profile_id": "fixture-openai",
       "user_intent": "fixture"
-    }
+    },
+    "timeout_ms": 4000
   }
 }

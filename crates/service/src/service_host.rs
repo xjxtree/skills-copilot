@@ -90,19 +90,35 @@ impl ServiceHost {
             "llm.listProviderProfiles" => {
                 serde_json::to_value(self.list_llm_provider_profiles()?).map_err(Into::into)
             }
+            "llm.previewSaveProviderProfile" => {
+                let params: SaveProviderProfileParams = serde_json::from_value(request.params)?;
+                serde_json::to_value(self.preview_save_provider_profile(&params)?)
+                    .map_err(Into::into)
+            }
             "llm.saveProviderProfile" => {
                 let params: SaveProviderProfileParams = serde_json::from_value(request.params)?;
-                serde_json::to_value(save_provider_profile(&self.app_data_dir, params)?)
+                serde_json::to_value(self.save_provider_profile_with_confirmation(params)?)
+                    .map_err(Into::into)
+            }
+            "llm.previewDeleteProviderProfile" => {
+                let params: DeleteProviderProfileParams = serde_json::from_value(request.params)?;
+                serde_json::to_value(self.preview_delete_provider_profile(&params)?)
                     .map_err(Into::into)
             }
             "llm.deleteProviderProfile" => {
                 let params: DeleteProviderProfileParams = serde_json::from_value(request.params)?;
-                serde_json::to_value(delete_provider_profile(&self.app_data_dir, params)?)
+                serde_json::to_value(self.delete_provider_profile_with_confirmation(params)?)
+                    .map_err(Into::into)
+            }
+            "llm.previewProviderConnectionTest" => {
+                let params: TestProviderConnectionParams =
+                    serde_json::from_value(request.params)?;
+                serde_json::to_value(self.preview_provider_connection_test(&params)?)
                     .map_err(Into::into)
             }
             "llm.testProviderConnection" => {
                 let params: TestProviderConnectionParams = serde_json::from_value(request.params)?;
-                serde_json::to_value(test_provider_connection(&self.app_data_dir, params)?)
+                serde_json::to_value(self.test_provider_connection_with_confirmation(params)?)
                     .map_err(Into::into)
             }
             "llm.previewPrompt" => {
@@ -1207,12 +1223,12 @@ impl ServiceHost {
 
         let record = LlmPromptRunRecord {
             id: generated_llm_prompt_run_id(
-                &params.preview_id,
-                &params.confirmation_id,
+                &preview.preview_id,
+                &params.action_confirmation.reference.action_id,
                 completed_at,
             ),
-            preview_id: params.preview_id.clone(),
-            confirmation_id: params.confirmation_id.clone(),
+            preview_id: preview.preview_id.clone(),
+            confirmation_id: params.action_confirmation.reference.action_id.clone(),
             action: params.request.action.as_str().to_string(),
             request_kind: params.request.action.as_str().to_string(),
             analysis_kind: None,

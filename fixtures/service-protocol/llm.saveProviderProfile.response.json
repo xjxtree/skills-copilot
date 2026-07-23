@@ -17,23 +17,55 @@
         "storage": "keychain",
         "service": "dev.skills-copilot.native.llm",
         "account": "provider:fixture-openai",
-        "secret_persisted": false
+        "secret_persisted": true
       },
       "credential_status": {
-        "state": "missing",
-        "reason": "No API key is stored for this profile.",
-        "secret_available": false,
+        "state": "available",
+        "reason": "API key is available from the OS credential store.",
+        "secret_available": true,
         "fallback_available": false
       },
-      "created_at": 1780590000,
-      "updated_at": 1780590000
+      "created_at": 1780590000000,
+      "updated_at": 1780590000000
     },
     "credential_status": {
-      "state": "missing",
-      "reason": "No API key is stored for this profile.",
-      "secret_available": false,
+      "state": "available",
+      "reason": "API key is available from the OS credential store.",
+      "secret_available": true,
       "fallback_available": false
     },
-    "raw_secret_returned": false
+    "profile_persisted": true,
+    "credential_effect": "stored_and_verified",
+    "error_code": null,
+    "error_message": null,
+    "raw_secret_returned": false,
+    "outcome": {
+      "state": "verified",
+      "effect": "verified",
+      "remote_effect": "not_applicable",
+      "local_effect": "provider_profile_verified",
+      "credential_effect": "stored_and_verified",
+      "recovery": null
+    },
+    "readback": {
+      "action_id": "provider-profile-save-fixture",
+      "source_revision": "sha256:provider-save-readback",
+      "project_id": null,
+      "domains": ["provider_profiles", "provider_credentials"],
+      "target_ids": ["fixture-openai"],
+      "observations": [
+        {
+          "domain": "provider_profiles",
+          "target_id": "fixture-openai",
+          "revision": "sha256:provider-store-after-save"
+        },
+        {
+          "domain": "provider_credentials",
+          "target_id": "fixture-openai",
+          "revision": "sha256:provider-credential-after-save"
+        }
+      ],
+      "verified": true
+    }
   }
 }

@@ -103,11 +103,11 @@ confirmation, and network posture.
 - The lifecycle currently covers single and batch agent-config toggles through
   `batch.*`, `skill.install`, Skill Manager install/remove/update/local create,
   physical deletion of an eligible app-owned local source, explicit Claude
-  settings saves, and config snapshot rollback. Local archive import/update,
-  provider/profile calls, and LLM send keep their existing method-specific
-  guards and must not be presented as action-reference-backed until their
-  contracts are migrated. `config.toggleSkill` is compatibility-only and
-  cannot mutate.
+  settings saves, config snapshot rollback, provider profile save/delete,
+  provider connection tests, and confirmed LLM prompt sends. Local archive
+  import/update keeps its method-specific guards and must not be presented as
+  action-reference-backed until its contract is migrated.
+  `config.toggleSkill` is compatibility-only and cannot mutate.
 
 ### Config Mutation Atomicity
 
@@ -130,6 +130,35 @@ confirmation, and network posture.
   outcome. The service must not overwrite that state; it returns
   `partial_effect` with cleanup required, and clients must stop automatic
   retries and require inspection.
+
+### Provider And Prompt Mutation Atomicity
+
+- Provider previews bind the current profile store, the bounded replay state,
+  and the normalized non-secret input. A save that replaces a credential also
+  binds a keyed opaque value derived from the submitted secret. The raw secret
+  and its reusable digest never enter descriptors, tokens, replay state, logs,
+  responses, or UI state.
+- A confirmed provider/profile or prompt action consumes its token exactly
+  once. The private `provider-action-state.json` file is a bounded, atomic,
+  `0600` single-record replay guard, not action history. It stores only a
+  monotonic generation, token digest, action id, source revision, phase, state,
+  and timestamp. A `not_started` reservation is atomically replaced by its
+  terminal `not_started`, `verified`, or `partial` outcome; the next action
+  replaces that record with a higher generation. A consumed action is never
+  automatically retried; recovery starts from a fresh preview. Malformed,
+  oversized, symlinked, or non-regular replay state fails closed.
+- Provider mutations use an existing canonical parent-directory lock, so a
+  rejected stale or mismatched confirmation creates no lock or replay-state
+  artifact. Credential replacement is staged in Keychain, verified, and
+  compensated if the profile write fails. A credential or local metadata
+  effect that cannot be semantically verified is `partial` and
+  `applied_unverified`.
+- After a provider request may have left the process, post-request transport,
+  parsing, audit, or prompt-run persistence failures are returned as a typed
+  partial outcome with `remote_effect=remote_unknown`. The client must not
+  retry automatically. A verified apply returns read-back observations for
+  every domain declared in its action descriptor, including credential
+  semantics when Keychain is in scope.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not
   be triggered by imports, LLM output, analyzer recommendations, previews, or

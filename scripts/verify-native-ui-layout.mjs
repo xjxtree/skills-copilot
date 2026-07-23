@@ -150,23 +150,11 @@ const checks = [
     passed: !/applicationShouldTerminate|configureAutosaveFlusher|flushPendingAutosaves/.test(files.app),
   },
   {
-    label: "provider autosave and explicit config apply share the serialized mutation lane",
-    text: files.revisionAutosave + "\n" + files.store,
-    passed: /struct AutosaveMutationLaneToken:[\s\S]*?case config[\s\S]*?case provider[\s\S]*?let revision:\s*UInt64/.test(files.revisionAutosave)
-      && /enum AutosaveMutationLaneResult<Result>[\s\S]*?case completed\(Result\)[\s\S]*?case cancelled/.test(files.revisionAutosave)
-      && /currentOwnerToken:\s*AutosaveMutationLaneToken\?/.test(files.revisionAutosave)
-      && /registeredTokens:\s*Set<AutosaveMutationLaneToken>/.test(files.revisionAutosave)
-      && /cancelledTokens:\s*Set<AutosaveMutationLaneToken>/.test(files.revisionAutosave)
-      && /func register\(_ token:\s*AutosaveMutationLaneToken\)[\s\S]*?registeredTokens\.insert\(token\)/.test(files.revisionAutosave)
-      && /func cancelQueued\(_ token:\s*AutosaveMutationLaneToken\)[\s\S]*?currentOwnerToken != token[\s\S]*?cancelledTokens\.insert\(token\)[\s\S]*?waiters\.remove\(at:\s*index\)[\s\S]*?resume\(returning:\s*false\)/.test(files.revisionAutosave)
-      && /private func acquire\(token:[\s\S]*?cancelledTokens\.remove\(token\)[\s\S]*?currentOwnerToken = token/.test(files.revisionAutosave)
-      && /private func enqueue\(token:[\s\S]*?cancelledTokens\.remove\(token\)[\s\S]*?waiters\.append/.test(files.revisionAutosave)
-      && /func shutdown\(\)[\s\S]*?waiters\.removeAll\(\)[\s\S]*?resume\(returning:\s*false\)/.test(files.revisionAutosave)
-      && /waiters\.removeFirst\(\)\.continuation\.resume\(returning:\s*true\)/.test(files.revisionAutosave)
-      && /workerWillStart:\s*\{[\s\S]*?autosaveMutationLane\.register\([\s\S]*?family:\s*\.provider/.test(files.store)
-      && /submitProviderAutosave\(draft:[\s\S]*?draft\.validationMessage != nil[\s\S]*?cancelQueued/.test(files.store)
-      && /cancelPendingProviderAutosave\(\)[\s\S]*?AutosaveMutationLaneToken\(family:\s*\.provider,\s*revision:\s*activeRevision\)/.test(files.store)
+    label: "confirmed config apply uses the serialized mutation lane without autosave",
+    text: files.store,
+    passed: /private let autosaveMutationLane = AutosaveMutationLane\(\)/.test(files.store)
       && /func applyClaudeSettingsSave\([\s\S]*?autosaveMutationLane\.perform/.test(files.store)
+      && !/submit(?:Provider|Config)Autosave/.test(files.store)
       && /deinit[\s\S]*?lane\.shutdown\(\)/.test(files.store),
   },
   {
@@ -767,30 +755,20 @@ const checks = [
       && /Picker\(UIStrings\.llmProvider,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings),
   },
   {
-    label: "settings AI provider autosaves profile edits while confirming provider tests",
-    text: files.settings + "\n" + files.store + "\n" + files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh,
-    passed: !/@State private var providerAutosaveTask: Task<Void,\s*Never>\?/.test(files.settings)
-      && /@State private var isConfirmingProviderTest = false/.test(files.settings)
-      && /\.onChange\(of:\s*providerDraft\)[\s\S]*?handleProviderDraftChange\(\)/.test(files.settings)
-      && /\.onChange\(of:\s*store\.providerAutosaveDraft\)[\s\S]*?AutosaveDraftPresentation\.resolve[\s\S]*?providerDraft = resolvedDraft/.test(files.settings)
-      && /\.task\(id:\s*selectedSettingsTab\)[\s\S]*?case \.provider:[\s\S]*?hydrateProviderDraftFromStore\(\)/.test(files.settings)
-      && /private func hydrateProviderDraftFromStore\(\)[\s\S]*?AutosaveDraftPresentation\.resolve\([\s\S]*?storeDraft:\s*store\.providerAutosaveDraft[\s\S]*?persistedValue:\s*AIProviderSettingsDraft\(status:\s*store\.aiProviderStatus\)/.test(files.settings)
-      && !extractFunctionBody(files.settings, "hydrateProviderDraftFromStore").includes("cancelPendingProviderAutosave")
-      && /private func handleProviderDraftChange\(\)[\s\S]*?store\.providerAutosaveDraft != providerDraft[\s\S]*?providerAutosaveHasActiveSave[\s\S]*?store\.submitProviderAutosave\(draft:\s*providerDraft\)/.test(files.settings)
-      && !/private func handleProviderDraftChange\(\)[\s\S]*?Task\.sleep|private func handleProviderDraftChange\(\)[\s\S]*?store\.saveAIProviderSettings/.test(files.settings)
-      && /@Published private\(set\) var providerAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
-      && /private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>/.test(files.store)
-      && /private func handleProviderAutosaveCompletion\([\s\S]*?completion\.revision == latestProviderAutosaveRevision[\s\S]*?providerAutosaveDraft = nil/.test(files.store)
-      && /UIStrings\.aiProviderAutosavePending/.test(files.settings)
-      && /Button\s*\{[\s\S]*?isConfirmingProviderTest = true[\s\S]*?\} label:\s*\{[\s\S]*?Label\(UIStrings\.aiProviderTest,\s*systemImage:\s*"network"\)/.test(files.settings)
-      && /\.confirmationDialog\(\s*UIStrings\.aiProviderTestConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingProviderTest[\s\S]*?Button\(UIStrings\.aiProviderTest,\s*role:\s*\.destructive\)[\s\S]*?testProviderConnection\(\)[\s\S]*?Text\(UIStrings\.aiProviderTestConfirmationMessage\)/.test(files.settings)
-      && /private func testProviderConnection\(\)[\s\S]*?await store\.testAIProviderConnection\(draft:\s*providerDraft\)/.test(files.settings)
-      && !/isConfirmingProviderSave/.test(files.settings)
-      && !/Label\(UIStrings\.aiProviderSave,\s*systemImage:\s*"square\.and\.arrow\.down"\)/.test(files.settings)
-      && /static var aiProviderAutosavePending/.test(files.uiStrings)
-      && /static var aiProviderTestConfirmationMessage/.test(files.uiStrings)
-      && /"settings\.aiProvider\.autosavePending"/.test(files.localizable)
-      && /"settings\.aiProvider\.testConfirmation\.message"/.test(files.localizableZh),
+    label: "settings AI provider uses signed previews and explicit confirmations without autosave",
+    text: files.settings + "\n" + files.store + "\n" + files.revisionAutosave,
+    passed: !/providerAutosave|submitProviderAutosave|cancelPendingProviderAutosave/.test(
+      files.settings + "\n" + files.store + "\n" + files.revisionAutosave
+    )
+      && /await store\.previewDeleteAIProviderSettings\(\)/.test(files.settings)
+      && /await store\.previewAIProviderConnectionTest\(\)/.test(files.settings)
+      && /await store\.previewSaveAIProviderSettings\(draft:\s*providerDraft\)/.test(files.settings)
+      && /if let preview = store\.aiProviderActionPreview,[\s\S]*?let pendingAction = store\.aiProviderPendingAction[\s\S]*?providerActionPreview\(preview,\s*pendingAction:\s*pendingAction\)/.test(files.settings)
+      && /private func providerActionPreview\([\s\S]*?preview\.action\.impacts[\s\S]*?preview\.action\.network[\s\S]*?preview\.expectedRevision[\s\S]*?preview\.action\.readback/.test(files.settings)
+      && /private func confirmProviderAction\([\s\S]*?confirmSaveAIProviderSettings\(draft:\s*providerDraft\)[\s\S]*?confirmDeleteAIProviderSettings\(\)[\s\S]*?confirmAIProviderConnectionTest\(\)/.test(files.settings)
+      && /func confirmSaveAIProviderSettings\([\s\S]*?guard aiProviderPendingAction == \.save,[\s\S]*?let preview = aiProviderActionPreview[\s\S]*?defer \{[\s\S]*?aiProviderActionPreview = nil[\s\S]*?aiProviderPendingAction = nil/.test(files.store)
+      && /func confirmDeleteAIProviderSettings\([\s\S]*?guard aiProviderPendingAction == \.delete,[\s\S]*?let preview = aiProviderActionPreview[\s\S]*?defer \{[\s\S]*?aiProviderActionPreview = nil[\s\S]*?aiProviderPendingAction = nil/.test(files.store)
+      && /func confirmAIProviderConnectionTest\([\s\S]*?guard aiProviderPendingAction == \.test,[\s\S]*?let preview = aiProviderActionPreview[\s\S]*?defer \{[\s\S]*?aiProviderActionPreview = nil[\s\S]*?aiProviderPendingAction = nil/.test(files.store),
   },
   {
     label: "settings exposes screenshot privacy mode as app-local preference",

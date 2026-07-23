@@ -1,0 +1,8 @@
+{
+  "id": "fixture-llm-preview-delete-provider-profile",
+  "method": "llm.previewDeleteProviderProfile",
+  "params": {
+    "profile_id": "fixture-openai",
+    "delete_credential": true
+  }
+}

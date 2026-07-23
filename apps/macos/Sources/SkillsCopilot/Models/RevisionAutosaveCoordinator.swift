@@ -41,7 +41,6 @@ enum AutosaveDraftPresentation {
 struct AutosaveMutationLaneToken: Hashable {
     enum Family: Hashable {
         case config
-        case provider
     }
 
     let family: Family

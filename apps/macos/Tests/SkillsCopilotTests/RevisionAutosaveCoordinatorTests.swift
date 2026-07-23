@@ -387,7 +387,7 @@ struct RevisionAutosaveCoordinatorTests {
         let lane = AutosaveMutationLane()
         let ownerRecorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
         let ownerToken = AutosaveMutationLaneToken(family: .config, revision: 1)
-        let cancelledToken = AutosaveMutationLaneToken(family: .provider, revision: 2)
+        let cancelledToken = AutosaveMutationLaneToken(family: .config, revision: 2)
         var cancelledOperationCalls = 0
 
         let owner = Task { @MainActor in
@@ -429,7 +429,7 @@ struct RevisionAutosaveCoordinatorTests {
         let lane = AutosaveMutationLane()
         let ownerRecorder = ControlledAutosaveSaveRecorder<String>(suspends: true)
         let ownerToken = AutosaveMutationLaneToken(family: .config, revision: 1)
-        let cancelledToken = AutosaveMutationLaneToken(family: .provider, revision: 2)
+        let cancelledToken = AutosaveMutationLaneToken(family: .config, revision: 2)
         var cancelledOperationRan = false
 
         let owner = Task { @MainActor in
@@ -467,9 +467,9 @@ struct RevisionAutosaveCoordinatorTests {
         }
         try await waitUntil("FIFO lane owner starts") { ownerRecorder.calls.map(\.value) == ["owner"] }
 
-        let tokenB = AutosaveMutationLaneToken(family: .provider, revision: 2)
+        let tokenB = AutosaveMutationLaneToken(family: .config, revision: 2)
         let tokenC = AutosaveMutationLaneToken(family: .config, revision: 3)
-        let tokenD = AutosaveMutationLaneToken(family: .provider, revision: 4)
+        let tokenD = AutosaveMutationLaneToken(family: .config, revision: 4)
         let waiterB = Task { @MainActor in
             await lane.perform(token: tokenB) {
                 executionOrder.append("B")
@@ -513,7 +513,7 @@ struct RevisionAutosaveCoordinatorTests {
         try await waitUntil("shutdown lane owner starts") { ownerRecorder.calls.map(\.value) == ["owner"] }
 
         let waiterB = Task { @MainActor in
-            await lane.perform(token: AutosaveMutationLaneToken(family: .provider, revision: 2)) { "B" }
+            await lane.perform(token: AutosaveMutationLaneToken(family: .config, revision: 2)) { "B" }
         }
         let waiterC = Task { @MainActor in
             await lane.perform(token: AutosaveMutationLaneToken(family: .config, revision: 3)) { "C" }
@@ -526,7 +526,7 @@ struct RevisionAutosaveCoordinatorTests {
         try expectEqual(await waiterC.value, .cancelled, "Shutdown should cancel queued waiter C.")
 
         let future = await lane.perform(
-            token: AutosaveMutationLaneToken(family: .provider, revision: 4)
+            token: AutosaveMutationLaneToken(family: .config, revision: 4)
         ) { "future" }
         try expectEqual(future, .cancelled, "A shut down lane must reject future tracked operations.")
 

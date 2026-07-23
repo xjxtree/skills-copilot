@@ -227,8 +227,8 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingAIProvider = false
     @Published private(set) var isSavingAIProvider = false
     @Published private(set) var isTestingAIProvider = false
-    @Published private(set) var providerAutosavePhase: RevisionAutosavePhase = .idle
-    @Published private(set) var providerAutosaveDraft: AIProviderSettingsDraft?
+    @Published private(set) var aiProviderActionPreview: AIProviderActionPreview?
+    @Published private(set) var aiProviderPendingAction: AIProviderPendingAction?
     @Published private(set) var lastMutationMessage: String? {
         didSet { scheduleLastMutationMessageDismissal() }
     }
@@ -482,39 +482,6 @@ final class SkillStore: ObservableObject {
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
     private let autosaveDelayNanoseconds: UInt64
     private let autosaveMutationLane = AutosaveMutationLane()
-    private var latestProviderAutosaveRevision: UInt64?
-    private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>(
-        delayNanoseconds: autosaveDelayNanoseconds,
-        workerWillStart: { [weak self] revision in
-            self?.autosaveMutationLane.register(
-                AutosaveMutationLaneToken(family: .provider, revision: revision)
-            )
-        },
-        save: { [weak self] draft, revision in
-            guard let lane = self?.autosaveMutationLane else { return .cancelled }
-            let result = await lane.perform(
-                token: AutosaveMutationLaneToken(family: .provider, revision: revision)
-            ) { [weak self] in
-                guard let self else { return false }
-                return await self.saveAIProviderSettingsInsideMutationLane(
-                    draft: draft,
-                    autosaveRevision: revision
-                )
-            }
-            switch result {
-            case .completed(true): return .succeeded
-            case .completed(false): return .failed
-            case .cancelled: return .cancelled
-            }
-        },
-        phaseChanged: { [weak self] phase in
-            self?.providerAutosavePhase = phase
-        },
-        completion: { [weak self] completion in
-            self?.handleProviderAutosaveCompletion(completion)
-        }
-    )
-
     init(
         service: ServiceClient,
         taskCockpitTimeoutSeconds: TimeInterval = 300,
@@ -2332,9 +2299,9 @@ final class SkillStore: ObservableObject {
     func confirmPromptForSelectedLLMAction(_ action: LLMAction) async {
         guard let skill = selectedSkill else { return }
         let key = llmPromptActionKey(action: action, skillID: skill.id)
-        await confirmLLMPrompt(key: key) { previewID in
+        await confirmLLMPrompt(key: key) { preview in
             try await service.confirmPromptAndSendForLLMAction(
-                previewID: previewID,
+                preview: preview,
                 action: action,
                 skill: skill
             )
@@ -2454,7 +2421,6 @@ final class SkillStore: ObservableObject {
         let taskText = pending.taskText
         let selectedAgents = pending.agentIDs
         let candidateSkillIDs = pending.instanceIDs
-        let previewID = pending.preview.previewID
         let operationID = UUID()
         taskCockpitOperationID = operationID
         isBuildingTaskCockpit = true
@@ -2469,7 +2435,7 @@ final class SkillStore: ObservableObject {
 
         let serviceTask = Task {
             let sendResult = try await service.confirmPromptAndSendForTaskCockpit(
-                previewID: previewID,
+                preview: pending.preview,
                 taskText: taskText,
                 agents: selectedAgents,
                 instanceIDs: candidateSkillIDs
@@ -3474,51 +3440,6 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    @discardableResult
-    func submitProviderAutosave(draft: AIProviderSettingsDraft) -> UInt64 {
-        providerAutosaveDraft = draft
-        if draft.validationMessage != nil,
-           let activeRevision = providerAutosaveCoordinator.activeSaveRevision {
-            autosaveMutationLane.cancelQueued(
-                AutosaveMutationLaneToken(family: .provider, revision: activeRevision)
-            )
-        }
-        let revision = providerAutosaveCoordinator.submit(
-            draft,
-            validationError: draft.validationMessage
-        )
-        latestProviderAutosaveRevision = revision
-        return revision
-    }
-
-    func cancelPendingProviderAutosave() {
-        if let activeRevision = providerAutosaveCoordinator.activeSaveRevision {
-            autosaveMutationLane.cancelQueued(
-                AutosaveMutationLaneToken(family: .provider, revision: activeRevision)
-            )
-        }
-        providerAutosaveCoordinator.cancelPendingDebounce()
-        latestProviderAutosaveRevision = nil
-        providerAutosaveDraft = nil
-    }
-
-    func flushPendingAutosaves() async {
-        await providerAutosaveCoordinator.flush()
-    }
-
-    var providerAutosaveHasActiveSave: Bool {
-        providerAutosaveCoordinator.hasActiveSave
-    }
-
-    private func handleProviderAutosaveCompletion(
-        _ completion: RevisionAutosaveCompletion<AIProviderSettingsDraft>
-    ) {
-        guard completion.revision == latestProviderAutosaveRevision,
-              completion.succeeded else { return }
-        latestProviderAutosaveRevision = nil
-        providerAutosaveDraft = nil
-    }
-
     func loadAIProviderStatusIfNeeded() async {
         guard !hasLoadedAIProviderStatus else { return }
         await loadAIProviderStatus(force: false)
@@ -3620,110 +3541,151 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    @discardableResult
-    func saveAIProviderSettings(draft: AIProviderSettingsDraft) async -> Bool {
-        await autosaveMutationLane.perform { [self] in
-            await saveAIProviderSettingsInsideMutationLane(draft: draft, autosaveRevision: nil)
-        }
-    }
-
-    private func saveAIProviderSettingsInsideMutationLane(
-        draft: AIProviderSettingsDraft,
-        autosaveRevision: UInt64?
-    ) async -> Bool {
-        guard !isRefreshBusy else {
-            publishProviderSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: UIStrings.operationUnavailableBusy
-            )
-            return false
-        }
-        if let validationMessage = draft.validationMessage {
-            publishProviderSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: validationMessage
-            )
-            return false
-        }
-
-        isSavingAIProvider = true
-        publishProviderSaveFeedback(
-            autosaveRevision: autosaveRevision,
-            message: nil,
-            error: nil
-        )
-        defer { isSavingAIProvider = false }
-
-        do {
-            let savedStatus = try await service.saveAIProviderSettings(draft: draft)
-            guard savedStatus.serviceAvailable else {
-                aiProviderStatus = savedStatus
-                hasLoadedAIProviderStatus = true
-                publishProviderSaveFeedback(
-                    autosaveRevision: autosaveRevision,
-                    message: nil,
-                    error: UIStrings.aiProviderUnavailable
-                )
-                return false
-            }
-            aiProviderStatus = savedStatus
-            aiProviderTestResult = aiProviderStatus.lastTest
-            hasLoadedAIProviderStatus = true
-            publishProviderSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: UIStrings.aiProviderSaved,
-                error: nil
-            )
-            return true
-        } catch ServiceClient.ClientError.service(let error) where error.code == "unknown_method" {
-            publishProviderSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: UIStrings.aiProviderUnavailable
-            )
-            return false
-        } catch {
-            publishProviderSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: error.localizedDescription
-            )
-            return false
-        }
-    }
-
-    private func publishProviderSaveFeedback(
-        autosaveRevision: UInt64?,
-        message: String?,
-        error: String?
-    ) {
-        guard autosaveRevision == nil || autosaveRevision == latestProviderAutosaveRevision else {
-            return
-        }
-        aiProviderMessage = message
-        aiProviderErrorMessage = error
-    }
-
-    @discardableResult
-    func testAIProviderConnection(draft: AIProviderSettingsDraft) async -> AIProviderTestResult? {
+    func previewSaveAIProviderSettings(draft: AIProviderSettingsDraft) async {
         guard !isRefreshBusy else {
             aiProviderErrorMessage = UIStrings.operationUnavailableBusy
-            return nil
+            return
         }
         if let validationMessage = draft.validationMessage {
             aiProviderErrorMessage = validationMessage
-            return nil
+            return
         }
 
+        isSavingAIProvider = true
+        aiProviderMessage = nil
+        aiProviderErrorMessage = nil
+        defer { isSavingAIProvider = false }
+
+        do {
+            aiProviderActionPreview = try await service.previewSaveAIProviderSettings(draft: draft)
+            aiProviderPendingAction = .save
+        } catch {
+            aiProviderActionPreview = nil
+            aiProviderPendingAction = nil
+            aiProviderErrorMessage = error.localizedDescription
+        }
+    }
+
+    func confirmSaveAIProviderSettings(draft: AIProviderSettingsDraft) async -> Bool {
+        guard aiProviderPendingAction == .save,
+              let preview = aiProviderActionPreview else { return false }
+        isSavingAIProvider = true
+        aiProviderMessage = nil
+        aiProviderErrorMessage = nil
+        defer {
+            isSavingAIProvider = false
+            aiProviderActionPreview = nil
+            aiProviderPendingAction = nil
+        }
+        do {
+            let status = try await service.saveAIProviderSettings(draft: draft, preview: preview)
+            aiProviderStatus = status
+            aiProviderTestResult = status.lastTest
+            hasLoadedAIProviderStatus = true
+            aiProviderMessage = UIStrings.aiProviderSaved
+            return true
+        } catch {
+            if let refreshedStatus = try? await service.aiProviderStatus() {
+                aiProviderStatus = refreshedStatus
+                hasLoadedAIProviderStatus = true
+            }
+            aiProviderErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func previewDeleteAIProviderSettings(deleteCredential: Bool = true) async {
+        guard let profileID = aiProviderStatus.activeProfile?.id else { return }
+        guard !isRefreshBusy else {
+            aiProviderErrorMessage = UIStrings.operationUnavailableBusy
+            return
+        }
+        isSavingAIProvider = true
+        aiProviderMessage = nil
+        aiProviderErrorMessage = nil
+        defer { isSavingAIProvider = false }
+        do {
+            aiProviderActionPreview = try await service.previewDeleteAIProviderSettings(
+                profileID: profileID,
+                deleteCredential: deleteCredential
+            )
+            aiProviderPendingAction = .delete
+        } catch {
+            aiProviderActionPreview = nil
+            aiProviderPendingAction = nil
+            aiProviderErrorMessage = error.localizedDescription
+        }
+    }
+
+    func confirmDeleteAIProviderSettings(deleteCredential: Bool = true) async -> Bool {
+        guard aiProviderPendingAction == .delete,
+              let preview = aiProviderActionPreview else { return false }
+        isSavingAIProvider = true
+        aiProviderMessage = nil
+        aiProviderErrorMessage = nil
+        defer {
+            isSavingAIProvider = false
+            aiProviderActionPreview = nil
+            aiProviderPendingAction = nil
+        }
+        do {
+            aiProviderStatus = try await service.deleteAIProviderSettings(
+                preview: preview,
+                deleteCredential: deleteCredential
+            )
+            aiProviderTestResult = nil
+            hasLoadedAIProviderStatus = true
+            aiProviderMessage = UIStrings.text(
+                "settings.aiProvider.deleted",
+                "Provider profile deleted."
+            )
+            return true
+        } catch {
+            if let refreshedStatus = try? await service.aiProviderStatus() {
+                aiProviderStatus = refreshedStatus
+                hasLoadedAIProviderStatus = true
+            }
+            aiProviderErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func previewAIProviderConnectionTest() async {
+        guard !isRefreshBusy else {
+            aiProviderErrorMessage = UIStrings.operationUnavailableBusy
+            return
+        }
+        guard let profileID = aiProviderStatus.activeProfile?.id else { return }
         isTestingAIProvider = true
         aiProviderErrorMessage = nil
         aiProviderMessage = nil
         defer { isTestingAIProvider = false }
-
         do {
-            let result = try await service.testAIProviderConnection(draft: draft)
+            aiProviderActionPreview = try await service.previewAIProviderConnectionTest(
+                profileID: profileID
+            )
+            aiProviderPendingAction = .test
+        } catch {
+            aiProviderActionPreview = nil
+            aiProviderPendingAction = nil
+            aiProviderErrorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func confirmAIProviderConnectionTest() async -> AIProviderTestResult? {
+        guard aiProviderPendingAction == .test,
+              let preview = aiProviderActionPreview else { return nil }
+        isTestingAIProvider = true
+        aiProviderErrorMessage = nil
+        aiProviderMessage = nil
+        defer {
+            isTestingAIProvider = false
+            aiProviderActionPreview = nil
+            aiProviderPendingAction = nil
+        }
+        do {
+            let result = try await service.testAIProviderConnection(preview: preview)
             if let refreshedStatus = try? await service.aiProviderStatus() {
                 aiProviderStatus = refreshedStatus
                 hasLoadedAIProviderStatus = true
@@ -3735,11 +3697,20 @@ final class SkillStore: ObservableObject {
             }
             return result
         } catch {
+            if let refreshedStatus = try? await service.aiProviderStatus() {
+                aiProviderStatus = refreshedStatus
+                hasLoadedAIProviderStatus = true
+            }
             let result = AIProviderTestResult.unavailable(reason: error.localizedDescription)
             aiProviderTestResult = result
             aiProviderErrorMessage = result.message
             return result
         }
+    }
+
+    func cancelAIProviderActionPreview() {
+        aiProviderActionPreview = nil
+        aiProviderPendingAction = nil
     }
 
     func previewClaudeSettingsSave(content: String) async -> ConfigSaveConfirmation? {
@@ -4634,6 +4605,7 @@ final class SkillStore: ObservableObject {
             && preview.enabled
             && !preview.previewID.isEmpty
             && preview.confirmationRequired
+            && preview.actionConfirmation != nil
             && !preview.rawPromptPersisted
             && !preview.rawResponsePersisted
     }
@@ -4681,7 +4653,7 @@ final class SkillStore: ObservableObject {
 
     private func confirmLLMPrompt(
         key: String,
-        send: (String) async throws -> LLMPromptSendResult
+        send: (LLMPromptPreview) async throws -> LLMPromptSendResult
     ) async {
         guard let preview = llmPromptPreviews[key] else { return }
         guard canSendLLMPrompt(preview) else {
@@ -4697,10 +4669,17 @@ final class SkillStore: ObservableObject {
         }
 
         sendingLLMPromptKeys.insert(key)
-        defer { sendingLLMPromptKeys.remove(key) }
+        defer {
+            sendingLLMPromptKeys.remove(key)
+            // A confirmed action reference is single-use even when the
+            // provider or local read-back reports a partial/failed outcome.
+            // Require a fresh preview instead of leaving a replayable-looking
+            // confirmation in UI state.
+            llmPromptPreviews.removeValue(forKey: key)
+        }
 
         do {
-            llmPromptSendResults[key] = try await send(preview.previewID)
+            llmPromptSendResults[key] = try await send(preview)
             await loadLLMPromptRuns()
         } catch {
             llmPromptSendResults[key] = .unavailable(previewID: preview.previewID, reason: error.localizedDescription)

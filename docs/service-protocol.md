@@ -65,8 +65,9 @@ that clients may infer for arbitrary mutations.
   `action_token_unavailable`; there is no production fallback.
 - Apply accepts the exact preview reference plus token and explicit
   confirmation. `batch.applySkillToggles` uses `confirmation`;
-  `skill.install` uses `action_confirmation`; mutating `skillManager.*` methods
-  use `action_reference`, `preview_token`, and `confirmed=true`.
+  `skill.install`, provider profile actions, provider connection tests, and LLM
+  prompt sends use `action_confirmation`; mutating `skillManager.*` methods use
+  `action_reference`, `preview_token`, and `confirmed=true`.
 - Before the first side effect, apply reprojects the action, checks its method
   and intent ownership, locks every target, and revalidates each accepted
   revision. Success returns a typed `readback` covering every domain declared
@@ -84,9 +85,11 @@ that clients may infer for arbitrary mutations.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, Skill Manager
   install/remove/update/local-create, eligible app-owned local deletion,
-  explicit Claude settings saves, and config snapshot rollback. Other callable
-  mutations retain their documented method-specific consistency contracts
-  until they explicitly adopt these fields.
+  explicit Claude settings saves, config snapshot rollback, provider profile
+  save/delete, provider connection tests, and confirmed LLM prompt sends.
+  Other callable mutations retain their documented
+  method-specific consistency contracts until they explicitly adopt these
+  fields.
 
 `script.execute`, `catalog.importSkill`, and `skill.exportBundle` are
 compatibility-only blocked methods. Each returns `mutation_disabled` before
@@ -187,8 +190,11 @@ the client.
 | `session.listLocalSessionMessages` | None | Never | Never | None |
 | `llm.status` | None | Never | Never | None |
 | `llm.listProviderProfiles` | None | Never | Never | None |
-| `llm.saveProviderProfile` | App-local data, Keychain | Never | Never | None |
-| `llm.deleteProviderProfile` | App-local data, Keychain | Never | Never | None |
+| `llm.previewSaveProviderProfile` | None | Never | Never | None |
+| `llm.saveProviderProfile` | App-local data, Keychain | Never | Never | Required |
+| `llm.previewDeleteProviderProfile` | None | Never | Never | None |
+| `llm.deleteProviderProfile` | App-local data, Keychain | Never | Never | Required |
+| `llm.previewProviderConnectionTest` | None | Never | Never | None |
 | `llm.testProviderConnection` | App-local data | Never | Always | Required |
 | `llm.previewPrompt` | None | Never | Never | None |
 | `llm.confirmPromptAndSend` | App-local data | Never | Always | Required |
@@ -328,6 +334,54 @@ silently removed by the client. Only redacted titles, subtitles, status, stable
 IDs, and evidence references cross the service boundary. The method does not
 read credentials, send provider traffic, persist raw prompts/responses/traces,
 or expose write controls.
+
+## Provider Profile And Request Actions
+
+Provider settings do not autosave. The native client first presents the typed
+preview and sends an apply request only after explicit confirmation:
+
+| Preview | Apply |
+| --- | --- |
+| `llm.previewSaveProviderProfile` | `llm.saveProviderProfile` |
+| `llm.previewDeleteProviderProfile` | `llm.deleteProviderProfile` |
+| `llm.previewProviderConnectionTest` | `llm.testProviderConnection` |
+| `llm.previewPrompt` | `llm.confirmPromptAndSend` |
+
+Each apply carries `action_confirmation` with the exact action reference,
+opaque preview token, and `confirmed=true`. Provider previews bind the current
+profile-store revision and bounded replay-state revision. Save previews also
+bind normalized non-secret input; when an API key is supplied, an
+authorization-keyed opaque secret binding distinguishes different submitted
+secrets without serializing, displaying, logging, or persisting either the raw
+secret or a reusable digest.
+
+After confirmation is accepted under the provider lock, the service writes a
+one-time reservation to private `provider-action-state.json`. This is a bounded
+single replay-state record, not action history: it contains only a monotonic
+generation, token digest, action id, source revision, phase, state, and
+timestamp. Atomic `0600` replacement changes `reservation/not_started` to one
+`outcome/not_started|verified|partial`, and the next action replaces the same
+record at a higher generation. Malformed, oversized, symlinked, or non-regular
+state fails closed. Every consumed token is rejected on replay. The native
+client clears the pending token after every confirmed attempt and requires a
+new preview for recovery. Stale or mismatched confirmations are rejected before
+the lock or replay-state file can create an app-data directory.
+
+Provider profile saves stage and verify credential replacement in Keychain
+before committing the profile. If the profile commit fails, the service
+restores the previous credential and verifies the restoration. Delete and save
+responses classify unverified local or credential effects as `partial` with
+`effect=applied_unverified`; callers must reload provider state and must not
+retry automatically.
+
+Connection tests and prompt sends classify all failures that occur after a
+request may have left the process as `partial` with
+`remote_effect=remote_unknown`. This includes failures while parsing or
+persisting post-request metadata. A verified provider apply returns typed
+`readback` observations for every domain declared in the action: provider
+profiles, provider credentials, provider activity, and/or prompt runs as
+applicable. Credential read-back is a semantic Keychain presence/value or
+absence verification, not secret exposure.
 
 ## Full-Access Local Lists
 
@@ -793,6 +847,16 @@ or expose write controls.
   `parse_failed` with `response_schema_invalid`. Provider metadata timestamps
   are epoch milliseconds; plausible legacy epoch-second records are normalized
   on read.
+- `llm.previewPrompt` returns the same signed action descriptor, preconditions,
+  and opaque token used by the provider profile lifecycle.
+  `llm.confirmPromptAndSend` accepts only the exact `action_confirmation`; a
+  consumed, stale, mismatched, or forged reference is never retried
+  automatically.
+- A verified send returns read-back over `provider_activity` and
+  `prompt_runs`. When the request may have reached the provider but either
+  local metadata record cannot be verified, the result is `status=partial`
+  with a typed `partial_outcome`, `remote_effect=remote_unknown`, no verified
+  read-back, and recovery guidance requiring inspection and a new preview.
 
 ## Environment Overrides
 

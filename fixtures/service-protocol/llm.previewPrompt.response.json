@@ -3,14 +3,57 @@
   "ok": true,
   "result": {
     "preview_id": "prompt-preview-fixture",
-    "status": "blocked",
-    "allowed": false,
-    "reason": "No enabled provider profile is configured; no provider request can be sent.",
-    "action": "recommend",
-    "profile_id": null,
-    "provider": null,
-    "model": null,
-    "destination_host": null,
+    "status": "ready",
+    "allowed": true,
+    "reason": "Redacted prompt preview is ready for explicit confirmation.",
+    "request_kind": "recommend",
+    "action": {
+      "id": "provider-prompt-fixture",
+      "kind": "provider_prompt",
+      "intent": "send_provider_prompt",
+      "target": {
+        "kind": "provider_profile",
+        "id": "fixture-openai",
+        "agent": null,
+        "scope": null
+      },
+      "project_id": null,
+      "impacts": ["app_local_data"],
+      "preview_method": "llm.previewPrompt",
+      "apply_method": "llm.confirmPromptAndSend",
+      "source_revision": "sha256:provider-prompt-source-fixture",
+      "confirmation_required": true,
+      "network": "required",
+      "readback": ["provider_activity", "prompt_runs"],
+      "evidence_refs": [
+        "provider-profile:fixture-openai",
+        "redacted-prompt:sha256:redacted-prompt-fixture",
+        "prompt-preview:prompt-preview-fixture"
+      ]
+    },
+    "preconditions": [
+      {
+        "kind": "provider_profile",
+        "target_id": "provider-profiles",
+        "expected_revision": "sha256:provider-store-before"
+      },
+      {
+        "kind": "prompt_context",
+        "target_id": "redacted-prompt",
+        "expected_revision": "sha256:redacted-prompt-fixture"
+      },
+      {
+        "kind": "prompt_context",
+        "target_id": "provider-action-state",
+        "expected_revision": "sha256:provider-action-state-before"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:fixture-prompt",
+    "profile_id": "fixture-openai",
+    "provider": "openai-compatible",
+    "model": "fixture-model",
+    "endpoint": "https://example.invalid/v1",
+    "destination_host": "example.invalid",
     "prompt_scope": [
       "operation metadata",
       "safety boundaries",
@@ -51,9 +94,9 @@
     "estimated_input_tokens": 235,
     "estimated_output_tokens": 500,
     "estimated_total_tokens": 735,
-    "estimated_cost_usd": 0,
-    "single_request_token_limit": 8000,
-    "monthly_budget_usd": 5,
+    "estimated_cost_usd": 0.0018375,
+    "single_request_token_limit": 4096,
+    "monthly_budget_usd": 3.5,
     "requires_confirmation": true,
     "confirmation": {
       "required": true,

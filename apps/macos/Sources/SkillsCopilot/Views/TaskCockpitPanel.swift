@@ -475,6 +475,44 @@ private struct TaskCockpitPromptPreviewCard: View {
                     value: preview.estimate.map { "\($0.totalTokens)" } ?? UIStrings.unknown,
                     systemImage: "sum"
                 )
+                if let action = preview.actionDescriptor {
+                    promptFact(
+                        title: UIStrings.text("action.target", "Target"),
+                        value: "\(action.target.kind): \(action.target.id)",
+                        systemImage: "scope"
+                    )
+                    promptFact(
+                        title: UIStrings.text("action.scope", "Scope"),
+                        value: action.target.scope
+                            ?? UIStrings.text("action.scope.providerGlobal", "Provider global"),
+                        systemImage: "folder"
+                    )
+                    promptFact(
+                        title: UIStrings.text("action.impact", "Impact"),
+                        value: action.impacts.joined(separator: ", "),
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    promptFact(
+                        title: UIStrings.text("action.network", "Network"),
+                        value: action.network,
+                        systemImage: "network"
+                    )
+                    promptFact(
+                        title: UIStrings.text("action.expectedRevision", "Expected revision"),
+                        value: action.sourceRevision,
+                        systemImage: "number"
+                    )
+                    promptFact(
+                        title: UIStrings.text("action.readback", "Read-back"),
+                        value: action.readback.joined(separator: ", "),
+                        systemImage: "checkmark.seal"
+                    )
+                    promptFact(
+                        title: UIStrings.text("action.evidence", "Evidence"),
+                        value: action.evidenceRefs.joined(separator: ", "),
+                        systemImage: "doc.text.magnifyingglass"
+                    )
+                }
             }
 
             if !preview.redaction.summary.isEmpty {

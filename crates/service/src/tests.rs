@@ -33,6 +33,7 @@ mod local_session_sqlite;
 mod local_session_summary_detail;
 mod method_effects;
 mod protocol_fixtures;
+mod provider_action_lifecycle;
 mod skill_manager_fixtures;
 mod support_and_status;
 mod support_seed;
@@ -54,4 +55,79 @@ fn encoded_project_session_dir(project: &Path) -> String {
 
 fn json_path_text(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
+}
+
+fn confirmed_action_request(
+    host: &ServiceHost,
+    preview_method: &str,
+    apply_method: &str,
+    mut params: Value,
+) -> (Value, ServiceResponse) {
+    let preview = host.handle(ServiceRequest {
+        id: Some(format!("{preview_method}-preview")),
+        method: preview_method.to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("action preview result");
+    let action_confirmation = action_confirmation_from_preview(&preview_result);
+    params
+        .as_object_mut()
+        .expect("action params object")
+        .insert("action_confirmation".to_string(), action_confirmation);
+    let response = host.handle(ServiceRequest {
+        id: Some(format!("{apply_method}-apply")),
+        method: apply_method.to_string(),
+        params,
+    });
+    (preview_result, response)
+}
+
+fn confirmed_llm_prompt_request(
+    host: &ServiceHost,
+    request: Value,
+    timeout_ms: u64,
+) -> (Value, ServiceResponse) {
+    let preview = host.handle(ServiceRequest {
+        id: Some("llm-preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("LLM prompt preview result");
+    let response = host.handle(ServiceRequest {
+        id: Some("llm-confirm".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: json!({
+            "action_confirmation": action_confirmation_from_preview(&preview_result),
+            "request": request,
+            "timeout_ms": timeout_ms
+        }),
+    });
+    (preview_result, response)
+}
+
+fn action_confirmation_from_preview(preview_result: &Value) -> Value {
+    let action = preview_result
+        .get("action")
+        .cloned()
+        .expect("action descriptor");
+    let preview_token = preview_result
+        .get("preview_token")
+        .and_then(Value::as_str)
+        .expect("preview token")
+        .to_string();
+    json!({
+        "reference": {
+            "action_id": action.get("id").and_then(Value::as_str).expect("action id"),
+            "source_revision": action
+                .get("source_revision")
+                .and_then(Value::as_str)
+                .expect("action source revision"),
+            "project_id": action.get("project_id").cloned().unwrap_or(Value::Null),
+            "target": action.get("target").cloned().expect("action target")
+        },
+        "preview_token": preview_token,
+        "confirmed": true
+    })
 }

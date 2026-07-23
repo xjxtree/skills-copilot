@@ -3,6 +3,21 @@
   "method": "llm.deleteProviderProfile",
   "params": {
     "profile_id": "fixture-openai",
-    "delete_credential": false
+    "delete_credential": true,
+    "action_confirmation": {
+      "reference": {
+        "action_id": "provider-profile-delete-fixture",
+        "source_revision": "sha256:provider-delete-source-fixture",
+        "project_id": null,
+        "target": {
+          "kind": "provider_profile",
+          "id": "fixture-openai",
+          "agent": null,
+          "scope": null
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:fixture-delete",
+      "confirmed": true
+    }
   }
 }
