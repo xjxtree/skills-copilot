@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skills_copilot_commands::{
-    lock_app_mutations, lock_or_create_app_mutations, ActionConfirmation, AppMutationLock,
-    CommandError,
+    lock_app_mutations, ActionConfirmation, AppMutationLock, CommandError,
 };
 use thiserror::Error;
 use ureq::Error as UreqError;
@@ -23,10 +22,10 @@ use url::Url;
 
 const KEYCHAIN_SERVICE: &str = "dev.skills-copilot.native.llm";
 const PROFILE_STORE_VERSION: u32 = 1;
-const PROVIDER_PROFILE_STORE_RELATIVE_PATH: &str = "llm/provider-profiles.json";
-const PROVIDER_CALL_METADATA_RELATIVE_PATH: &str = "llm/provider-call-metadata.jsonl";
-const PROVIDER_PROFILE_STORE_MAX_BYTES: u64 = 1024 * 1024;
-const PROVIDER_CALL_METADATA_MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const PROVIDER_PROFILE_STORE_RELATIVE_PATH: &str = "llm/provider-profiles.json";
+pub(crate) const PROVIDER_CALL_METADATA_RELATIVE_PATH: &str = "llm/provider-call-metadata.jsonl";
+pub(crate) const PROVIDER_PROFILE_STORE_MAX_BYTES: u64 = 1024 * 1024;
+pub(crate) const PROVIDER_CALL_METADATA_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT: u32 = 8_000;
 const DEFAULT_MONTHLY_BUDGET_USD: f64 = 5.0;
 const TEST_INPUT_TOKEN_ESTIMATE: u32 = 12;
@@ -911,14 +910,6 @@ pub(crate) fn test_provider_connection_while_locked(
     }
 }
 
-pub fn send_provider_prompt(
-    app_data_dir: &Path,
-    params: SendProviderPromptParams,
-) -> Result<SendProviderPromptResult, ProviderError> {
-    let owner = lock_or_create_app_mutations(app_data_dir)?;
-    send_provider_prompt_while_locked(app_data_dir, &owner, params)
-}
-
 pub(crate) fn send_provider_prompt_while_locked(
     app_data_dir: &Path,
     owner: &AppMutationLock,
@@ -1157,19 +1148,6 @@ pub(crate) fn provider_profiles_revision_while_locked(
         "provider-profiles",
         PROVIDER_PROFILE_STORE_MAX_BYTES,
     )
-}
-
-pub(crate) fn provider_call_metadata_revision(
-    app_data_dir: &Path,
-) -> Result<String, ProviderError> {
-    let owner = match lock_app_mutations(app_data_dir) {
-        Ok(owner) => owner,
-        Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(digest_revision("provider-call-metadata:missing", &[]))
-        }
-        Err(error) => return Err(error.into()),
-    };
-    provider_call_metadata_revision_while_locked(&owner)
 }
 
 pub(crate) fn provider_call_metadata_revision_while_locked(

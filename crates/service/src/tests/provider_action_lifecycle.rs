@@ -1002,6 +1002,101 @@ fn provider_request_reports_remote_unknown_if_app_data_owner_is_rebound_after_se
 }
 
 #[test]
+#[cfg(unix)]
+fn llm_prompt_reports_remote_unknown_and_keeps_writes_on_locked_owner_after_rebind() {
+    use std::os::unix::fs::symlink;
+
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-llm-owner-rebind-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = root.join("app-data");
+    let moved_owner = root.join("locked-owner");
+    let victim = root.join("victim");
+    fs::create_dir_all(&root).expect("create app-data parent");
+    let (base_url, server) = spawn_mock_openai_server();
+    let host = test_host(app_data_dir.clone());
+    let profile_id = "llm-owner-rebind-provider";
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params(profile_id, &base_url),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_LLM_OWNER_REBIND_PROVIDER",
+        "test-secret-key",
+    );
+    let request = json!({
+        "action":"recommend",
+        "user_intent":"verify prompt owner anchoring"
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("llm-owner-rebind-preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+
+    fs::create_dir_all(victim.join("llm")).expect("create victim");
+    let victim_prompt_runs = victim.join("prompt-runs.json");
+    let victim_metadata = victim.join("llm/provider-call-metadata.jsonl");
+    fs::write(&victim_prompt_runs, b"victim-prompt-runs").expect("seed victim prompt runs");
+    fs::write(&victim_metadata, b"victim-provider-metadata").expect("seed victim metadata");
+
+    let hook_app_data = app_data_dir.clone();
+    let hook_moved_owner = moved_owner.clone();
+    let hook_victim = victim.clone();
+    crate::service_provider_actions::inject_provider_action_post_effect_hook_for_test(move || {
+        fs::rename(&hook_app_data, &hook_moved_owner).expect("move accepted owner");
+        symlink(&hook_victim, &hook_app_data).expect("replace app-data path");
+    });
+    let response = host.handle(ServiceRequest {
+        id: Some("llm-owner-rebind-apply".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: json!({
+            "action_confirmation": action_confirmation_from_preview(
+                &preview.result.expect("prompt preview")
+            ),
+            "request": request,
+            "timeout_ms": 2_000
+        }),
+    });
+
+    assert!(!response.ok);
+    let error = response.error.expect("remote partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("remote_unknown")
+    );
+    assert_eq!(
+        fs::read(&victim_prompt_runs).expect("victim prompt runs"),
+        b"victim-prompt-runs"
+    );
+    assert_eq!(
+        fs::read(&victim_metadata).expect("victim provider metadata"),
+        b"victim-provider-metadata"
+    );
+    assert!(moved_owner.join("prompt-runs.json").is_file());
+    assert!(moved_owner
+        .join("llm/provider-call-metadata.jsonl")
+        .is_file());
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&moved_owner)
+            .expect("moved replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _request_text = server.join().expect("mock provider request");
+
+    fs::remove_file(&app_data_dir).expect("remove replacement link");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn credential_compensation_failure_returns_partial_and_records_terminal_outcome() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-compensation-partial-{}-{}",
@@ -1208,7 +1303,7 @@ fn llm_prompt_action_is_one_time_and_replay_has_no_second_network_effect() {
 }
 
 #[test]
-fn llm_remote_success_with_prompt_record_failure_is_explicit_partial_outcome() {
+fn llm_remote_success_with_prompt_record_failure_returns_remote_unknown() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-llm-action-partial-{}-{}",
         std::process::id(),
@@ -1234,21 +1329,11 @@ fn llm_remote_success_with_prompt_record_failure_is_explicit_partial_outcome() {
         json!({"action":"recommend","user_intent":"partial outcome test"}),
         2_000,
     );
-    assert!(send.ok, "{:?}", send.error);
-    let result = send.result.expect("partial prompt result");
+    assert!(!send.ok);
+    let error = send.error.expect("remote outcome error");
+    assert_eq!(error.code, "partial_effect");
     assert_eq!(
-        result.get("status").and_then(Value::as_str),
-        Some("partial")
-    );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(true)
-    );
-    assert!(result.get("readback").is_some_and(Value::is_null));
-    assert_eq!(
-        result
-            .pointer("/partial_outcome/remote_effect")
-            .and_then(Value::as_str),
+        error.details.as_ref().map(|details| details.state.as_str()),
         Some("remote_unknown")
     );
     assert_eq!(
@@ -1420,24 +1505,18 @@ fn prompt_body_read_and_schema_failures_are_partial_remote_unknown() {
             "instance_ids":[]
         });
         let (_, response) = confirmed_llm_prompt_request(&host, request, 2_000);
-        assert!(response.ok, "{label}: {:?}", response.error);
-        let result = response.result.expect("prompt partial result");
+        assert!(!response.ok, "{label}");
+        let error = response.error.expect("remote outcome error");
+        assert_eq!(error.code, "partial_effect", "{label}");
         assert_eq!(
-            result.get("status").and_then(Value::as_str),
-            Some("partial"),
-            "{label}"
-        );
-        assert_eq!(
-            result
-                .pointer("/partial_outcome/remote_effect")
-                .and_then(Value::as_str),
+            error.details.as_ref().map(|details| details.state.as_str()),
             Some("remote_unknown"),
             "{label}"
         );
-        assert!(result.get("readback").is_some_and(Value::is_null));
-        assert_eq!(
-            result.pointer("/audit/error_code").and_then(Value::as_str),
-            Some(expected_error),
+        let activity =
+            fs::read_to_string(provider_call_metadata_path(&app_data_dir)).expect("provider audit");
+        assert!(
+            activity.contains(&format!("\"error_code\":\"{expected_error}\"")),
             "{label}"
         );
         assert_eq!(
@@ -1732,11 +1811,12 @@ fn replay_state_cleans_fixed_crash_residue_and_directory_sync_failure_is_partial
             "timeout_ms": 2_000
         }),
     });
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("replay sync result");
+    assert!(!response.ok);
+    let error = response.error.expect("remote outcome error");
+    assert_eq!(error.code, "partial_effect");
     assert_eq!(
-        result.get("status").and_then(Value::as_str),
-        Some("partial")
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("remote_unknown")
     );
     assert_eq!(
         crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)

@@ -1,6 +1,11 @@
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 
+pub(crate) const LLM_PROMPT_RUNS_RELATIVE_PATH: &str = "prompt-runs.json";
+pub(crate) const LLM_PROMPT_RUNS_MAX_BYTES: u64 = 8 * 1_024 * 1_024;
+pub(crate) const MODEL_TASK_MATCHES_RELATIVE_PATH: &str = "model-task-matches.json";
+pub(crate) const MODEL_TASK_MATCHES_MAX_BYTES: u64 = 8 * 1_024 * 1_024;
+
 #[cfg(test)]
 thread_local! {
     static INJECT_NEXT_SCAN_COMMIT_FAILURE: std::cell::Cell<bool> =
@@ -859,6 +864,15 @@ impl ServiceHost {
         self.list_visible_skill_records_for_context(catalog, &adapter_ctx)
     }
 
+    pub(crate) fn list_visible_skill_records_while_locked(
+        &self,
+        catalog: &Catalog,
+        owner: &AppMutationLock,
+    ) -> Result<Vec<SkillRecord>, ServiceError> {
+        let adapter_ctx = self.effective_adapter_ctx_while_mutation_owner_held(owner)?;
+        self.list_visible_skill_records_for_context(catalog, &adapter_ctx)
+    }
+
     fn list_visible_skill_records_for_context(
         &self,
         catalog: &Catalog,
@@ -1167,6 +1181,25 @@ impl ServiceHost {
         }
     }
 
+    pub(crate) fn open_existing_catalog_read_only_while_locked(
+        &self,
+        owner: &AppMutationLock,
+    ) -> Result<Option<Catalog>, ServiceError> {
+        #[cfg(unix)]
+        {
+            Catalog::open_read_only_current_anchored_if_exists(owner.open_owner_directory()?)
+                .map_err(ServiceError::from)
+        }
+        #[cfg(not(unix))]
+        {
+            let catalog_path = self.catalog_path();
+            if !catalog_path.exists() {
+                return Ok(None);
+            }
+            Ok(Some(Catalog::open_read_only_current(&catalog_path)?))
+        }
+    }
+
     pub(crate) fn catalog_path(&self) -> PathBuf {
         self.app_data_dir.join("catalog.sqlite")
     }
@@ -1177,59 +1210,90 @@ impl ServiceHost {
             .join("script-execution.jsonl")
     }
 
+    #[cfg(test)]
     pub(crate) fn llm_prompt_runs_path(&self) -> PathBuf {
-        self.app_data_dir.join("prompt-runs.json")
-    }
-
-    pub(crate) fn model_task_matches_path(&self) -> PathBuf {
-        self.app_data_dir.join("model-task-matches.json")
+        self.app_data_dir.join(LLM_PROMPT_RUNS_RELATIVE_PATH)
     }
 
     pub(crate) fn load_llm_prompt_runs(&self) -> Result<Vec<LlmPromptRunRecord>, ServiceError> {
-        let path = self.llm_prompt_runs_path();
-        if !path.exists() {
+        let owner = match lock_app_mutations(&self.app_data_dir) {
+            Ok(owner) => owner,
+            Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new())
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.load_llm_prompt_runs_while_locked(&owner)
+    }
+
+    pub(crate) fn load_llm_prompt_runs_while_locked(
+        &self,
+        owner: &AppMutationLock,
+    ) -> Result<Vec<LlmPromptRunRecord>, ServiceError> {
+        let Some(content) = owner.owner_fs().read_bounded_regular_file(
+            Path::new(LLM_PROMPT_RUNS_RELATIVE_PATH),
+            LLM_PROMPT_RUNS_MAX_BYTES,
+            "LLM prompt run history",
+        )?
+        else {
             return Ok(Vec::new());
-        }
-        let content = fs::read_to_string(path)?;
-        let mut runs: Vec<LlmPromptRunRecord> = serde_json::from_str(&content)?;
+        };
+        let mut runs: Vec<LlmPromptRunRecord> = serde_json::from_slice(&content)?;
         runs.sort_by(llm_prompt_run_record_sort);
         Ok(runs)
     }
 
-    pub(crate) fn load_model_task_matches(
+    pub(crate) fn load_model_task_matches_while_locked(
         &self,
+        owner: &AppMutationLock,
     ) -> Result<Vec<ModelTaskMatchRecord>, ServiceError> {
-        let path = self.model_task_matches_path();
-        if !path.exists() {
+        let Some(content) = owner.owner_fs().read_bounded_regular_file(
+            Path::new(MODEL_TASK_MATCHES_RELATIVE_PATH),
+            MODEL_TASK_MATCHES_MAX_BYTES,
+            "model task match history",
+        )?
+        else {
             return Ok(Vec::new());
-        }
-        let content = fs::read_to_string(path)?;
-        let mut records: Vec<ModelTaskMatchRecord> = serde_json::from_str(&content)?;
+        };
+        let mut records: Vec<ModelTaskMatchRecord> = serde_json::from_slice(&content)?;
         records.sort_by(model_task_match_record_sort);
         Ok(records)
     }
 
+    #[cfg(test)]
     pub(crate) fn save_model_task_matches(
         &self,
         records: &[ModelTaskMatchRecord],
     ) -> Result<(), ServiceError> {
-        let path = self.model_task_matches_path();
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        self.save_model_task_matches_while_locked(&owner, records)
+    }
+
+    pub(crate) fn save_model_task_matches_while_locked(
+        &self,
+        owner: &AppMutationLock,
+        records: &[ModelTaskMatchRecord],
+    ) -> Result<(), ServiceError> {
         let mut sorted = records.to_vec();
         sorted.sort_by(model_task_match_record_sort);
-        let content = serde_json::to_string_pretty(&sorted)?;
-        write_private_text_file(&path, &content)?;
+        let content = serde_json::to_vec_pretty(&sorted)?;
+        owner.owner_fs().atomic_replace_private_file(
+            Path::new(MODEL_TASK_MATCHES_RELATIVE_PATH),
+            &content,
+            "model-task-matches",
+        )?;
         Ok(())
     }
 
     pub(crate) fn load_llm_prompt_runs_for_observability(
         &self,
+        owner: Option<&AppMutationLock>,
         redaction_roots: &[(String, &'static str)],
     ) -> (
         Vec<LlmPromptRunRecord>,
         Vec<LlmProviderObservabilityStatusRow>,
     ) {
-        let path = self.llm_prompt_runs_path();
-        if !path.exists() {
+        let Some(owner) = owner else {
             return (
                 Vec::new(),
                 vec![provider_observability_status_row(
@@ -1242,9 +1306,27 @@ impl ServiceHost {
                     vec!["app-data:prompt-runs.json".to_string()],
                 )],
             );
-        }
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
+        };
+        let content = match owner.owner_fs().read_bounded_regular_file(
+            Path::new(LLM_PROMPT_RUNS_RELATIVE_PATH),
+            LLM_PROMPT_RUNS_MAX_BYTES,
+            "LLM prompt run history",
+        ) {
+            Ok(Some(content)) => content,
+            Ok(None) => {
+                return (
+                    Vec::new(),
+                    vec![provider_observability_status_row(
+                        "file:prompt-runs",
+                        "prompt-runs.json",
+                        "absent",
+                        "info",
+                        "No app-local prompt run history file exists yet.",
+                        0,
+                        vec!["app-data:prompt-runs.json".to_string()],
+                    )],
+                );
+            }
             Err(error) => {
                 return (
                     Vec::new(),
@@ -1263,7 +1345,7 @@ impl ServiceHost {
                 );
             }
         };
-        match serde_json::from_str::<Vec<LlmPromptRunRecord>>(&content) {
+        match serde_json::from_slice::<Vec<LlmPromptRunRecord>>(&content) {
             Ok(mut runs) => {
                 runs.sort_by(llm_prompt_run_record_sort);
                 let count = runs.len();
@@ -1300,13 +1382,13 @@ impl ServiceHost {
 
     pub(crate) fn load_provider_call_metadata_for_observability(
         &self,
+        owner: Option<&AppMutationLock>,
         redaction_roots: &[(String, &'static str)],
     ) -> (
         Vec<ProviderCallMetadata>,
         Vec<LlmProviderObservabilityStatusRow>,
     ) {
-        let path = provider_call_metadata_path(&self.app_data_dir);
-        if !path.exists() {
+        let Some(owner) = owner else {
             return (
                 Vec::new(),
                 vec![provider_observability_status_row(
@@ -1319,9 +1401,27 @@ impl ServiceHost {
                     vec!["app-data:llm/provider-call-metadata.jsonl".to_string()],
                 )],
             );
-        }
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
+        };
+        let content = match owner.owner_fs().read_bounded_regular_file(
+            Path::new(provider::PROVIDER_CALL_METADATA_RELATIVE_PATH),
+            provider::PROVIDER_CALL_METADATA_MAX_BYTES,
+            "provider call metadata",
+        ) {
+            Ok(Some(content)) => content,
+            Ok(None) => {
+                return (
+                    Vec::new(),
+                    vec![provider_observability_status_row(
+                        "file:provider-call-metadata",
+                        "provider-call-metadata.jsonl",
+                        "absent",
+                        "info",
+                        "No app-local provider call metadata file exists yet.",
+                        0,
+                        vec!["app-data:llm/provider-call-metadata.jsonl".to_string()],
+                    )],
+                );
+            }
             Err(error) => {
                 return (
                     Vec::new(),
@@ -1332,6 +1432,26 @@ impl ServiceHost {
                         "warning",
                         format!(
                             "Could not read app-local provider call metadata: {}",
+                            observability_redact(&error.to_string(), redaction_roots, 300)
+                        ),
+                        0,
+                        vec!["app-data:llm/provider-call-metadata.jsonl".to_string()],
+                    )],
+                );
+            }
+        };
+        let content = match std::str::from_utf8(&content) {
+            Ok(content) => content,
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    vec![provider_observability_status_row(
+                        "file:provider-call-metadata",
+                        "provider-call-metadata.jsonl",
+                        "parse_error",
+                        "warning",
+                        format!(
+                            "Could not parse app-local provider call metadata: {}",
                             observability_redact(&error.to_string(), redaction_roots, 300)
                         ),
                         0,
@@ -1392,16 +1512,54 @@ impl ServiceHost {
 
     pub(crate) fn load_provider_profiles_for_observability(
         &self,
+        owner: Option<&AppMutationLock>,
         redaction_roots: &[(String, &'static str)],
     ) -> (
         Vec<ProviderProfileRecord>,
         Vec<LlmProviderObservabilityStatusRow>,
     ) {
-        let path = provider_profiles_path(&self.app_data_dir);
-        match list_provider_profiles(&self.app_data_dir) {
+        let Some(owner) = owner else {
+            return (
+                Vec::new(),
+                vec![provider_observability_status_row(
+                    "file:provider-profiles",
+                    "provider-profiles.json",
+                    "absent",
+                    "info",
+                    "No provider profile metadata file exists yet.",
+                    0,
+                    vec!["app-data:llm/provider-profiles.json".to_string()],
+                )],
+            );
+        };
+        let present = match owner.owner_fs().read_bounded_regular_file(
+            Path::new(provider::PROVIDER_PROFILE_STORE_RELATIVE_PATH),
+            provider::PROVIDER_PROFILE_STORE_MAX_BYTES,
+            "provider profile store",
+        ) {
+            Ok(content) => content.is_some(),
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    vec![provider_observability_status_row(
+                        "file:provider-profiles",
+                        "provider-profiles.json",
+                        "read_error",
+                        "warning",
+                        format!(
+                            "Could not read provider profile metadata without credential access: {}",
+                            observability_redact(&error.to_string(), redaction_roots, 300)
+                        ),
+                        0,
+                        vec!["app-data:llm/provider-profiles.json".to_string()],
+                    )],
+                );
+            }
+        };
+        match crate::provider::list_provider_profiles_while_locked(owner) {
             Ok(result) => {
-                let status = if path.exists() { "loaded" } else { "absent" };
-                let message = if path.exists() {
+                let status = if present { "loaded" } else { "absent" };
+                let message = if present {
                     format!(
                         "Loaded {} configured provider profile metadata record(s) without reading credentials.",
                         result.profiles.len()
@@ -1441,25 +1599,39 @@ impl ServiceHost {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn save_llm_prompt_runs(
         &self,
         runs: &[LlmPromptRunRecord],
     ) -> Result<(), ServiceError> {
-        let path = self.llm_prompt_runs_path();
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        self.save_llm_prompt_runs_while_locked(&owner, runs)
+    }
+
+    pub(crate) fn save_llm_prompt_runs_while_locked(
+        &self,
+        owner: &AppMutationLock,
+        runs: &[LlmPromptRunRecord],
+    ) -> Result<(), ServiceError> {
         let mut sorted = runs.to_vec();
         sorted.sort_by(llm_prompt_run_record_sort);
-        let content = serde_json::to_string_pretty(&sorted)?;
-        write_private_text_file(&path, &content)?;
+        let content = serde_json::to_vec_pretty(&sorted)?;
+        owner.owner_fs().atomic_replace_private_file(
+            Path::new(LLM_PROMPT_RUNS_RELATIVE_PATH),
+            &content,
+            "prompt-runs",
+        )?;
         Ok(())
     }
 
-    pub(crate) fn record_llm_prompt_run(
+    pub(crate) fn record_llm_prompt_run_while_locked(
         &self,
+        owner: &AppMutationLock,
         params: &LlmConfirmPromptAndSendParams,
         preview: &LlmPreviewPromptResult,
         send: &provider::SendProviderPromptResult,
     ) -> Result<(), ServiceError> {
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let adapter_ctx = self.effective_adapter_ctx_while_mutation_owner_held(owner)?;
         let roots = self.trace_redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&roots);
         let task = params
@@ -1544,9 +1716,9 @@ impl ServiceHost {
             ),
         };
 
-        let mut runs = self.load_llm_prompt_runs()?;
+        let mut runs = self.load_llm_prompt_runs_while_locked(owner)?;
         runs.push(record);
-        self.save_llm_prompt_runs(&runs)?;
+        self.save_llm_prompt_runs_while_locked(owner, &runs)?;
         Ok(())
     }
 
@@ -1623,7 +1795,7 @@ impl ServiceHost {
         Ok(ctx)
     }
 
-    fn effective_adapter_ctx_while_mutation_owner_held(
+    pub(crate) fn effective_adapter_ctx_while_mutation_owner_held(
         &self,
         owner: &AppMutationLock,
     ) -> Result<AdapterContext, ServiceError> {

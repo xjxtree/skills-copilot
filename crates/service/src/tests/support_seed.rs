@@ -89,6 +89,13 @@ pub(super) fn find_header_end(bytes: &[u8]) -> Option<usize> {
 
 pub(super) fn seed_catalog_with_llm_skill(host: &ServiceHost, path: &Path) {
     fs::create_dir_all(&host.app_data_dir).expect("create app data");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&host.app_data_dir, fs::Permissions::from_mode(0o700))
+            .expect("make seeded app data private");
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create skill parent");
     }

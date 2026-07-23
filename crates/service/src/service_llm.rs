@@ -12,17 +12,30 @@ use skills_copilot_core::{
 const TASK_COCKPIT_MAX_EFFECTIVE_SKILLS: usize = 24;
 const TASK_COCKPIT_MAX_PROMPT_TOKENS: u32 = 12_000;
 
-fn llm_prompt_runs_revision(path: &Path) -> Result<String, ServiceError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
+fn llm_prompt_runs_revision_while_locked(owner: &AppMutationLock) -> Result<String, ServiceError> {
+    let bytes = owner
+        .owner_fs()
+        .read_bounded_regular_file(
+            Path::new(crate::service_host::LLM_PROMPT_RUNS_RELATIVE_PATH),
+            crate::service_host::LLM_PROMPT_RUNS_MAX_BYTES,
+            "LLM prompt run history",
+        )?
+        .unwrap_or_default();
     let mut hasher = Sha256::new();
     hasher.update(b"agent-copilot/prompt-runs-revision/v1");
     hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn llm_remote_unknown(detail: impl Into<String>) -> ServiceError {
+    CommandError::PartialEffect {
+        operation: "LLM provider prompt".to_string(),
+        state: "remote_unknown",
+        cleanup_required: false,
+        detail: detail.into(),
+    }
+    .into()
 }
 
 impl ServiceHost {
@@ -103,8 +116,16 @@ impl ServiceHost {
         &self,
         params: LlmPreviewPromptParams,
     ) -> Result<LlmPreviewPromptResult, ServiceError> {
-        let profile = self.resolve_llm_prompt_profile(params.profile_id.as_deref())?;
-        let built = self.build_llm_prompt(&params)?;
+        self.preview_llm_prompt_with_owner(params, None)
+    }
+
+    fn preview_llm_prompt_with_owner(
+        &self,
+        params: LlmPreviewPromptParams,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<LlmPreviewPromptResult, ServiceError> {
+        let profile = self.resolve_llm_prompt_profile_for(params.profile_id.as_deref(), owner)?;
+        let built = self.build_llm_prompt_for(&params, owner)?;
         let provider = profile
             .as_ref()
             .map(|profile| profile.provider_type.as_str().to_string());
@@ -169,20 +190,31 @@ impl ServiceHost {
             estimated_input_tokens,
             estimated_output_tokens,
         );
-        let profile_store_revision =
-            crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+        let profile_store_revision = match owner {
+            Some(owner) => crate::provider::provider_profiles_revision_while_locked(owner)?,
+            None => crate::provider::provider_profiles_revision(&self.app_data_dir)?,
+        };
         let profile_revision = profile
             .as_ref()
             .map(crate::provider::provider_profile_nonsecret_revision)
             .transpose()?
             .unwrap_or_else(|| "missing".to_string());
-        let action_state_revision =
-            crate::service_provider_actions::provider_action_state_revision(&self.app_data_dir)?;
+        let action_state_revision = match owner {
+            Some(owner) => {
+                crate::service_provider_actions::provider_action_state_revision_while_locked(owner)?
+            }
+            None => {
+                crate::service_provider_actions::provider_action_state_revision(&self.app_data_dir)?
+            }
+        };
         let prompt_revision =
             action_source_revision("llm.redactedPrompt", &[("prompt", &built.prompt_preview)])?;
-        let project_id = skills_copilot_commands::canonical_project_id(
-            self.effective_adapter_ctx()?.project_root.as_deref(),
-        );
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.effective_adapter_ctx()?,
+        };
+        let project_id =
+            skills_copilot_commands::canonical_project_id(adapter_ctx.project_root.as_deref());
         let target_id = profile_id
             .clone()
             .unwrap_or_else(|| "unconfigured-provider".to_string());
@@ -330,20 +362,26 @@ impl ServiceHost {
         &self,
         params: LlmConfirmPromptAndSendParams,
     ) -> Result<LlmConfirmPromptAndSendResult, ServiceError> {
-        let preliminary = self.preview_llm_prompt(params.request.clone())?;
+        let preliminary = self
+            .preview_llm_prompt(params.request.clone())
+            .map_err(crate::service_provider_actions::classify_provider_action_preflight_error)?;
         if !preliminary.allowed {
             return Err(ServiceError::InvalidRequest(preliminary.reason));
         }
         ensure_action_confirmed(&preliminary.binding, Some(&params.action_confirmation))?;
 
-        let _lock = crate::service_provider_actions::lock_provider_actions(&self.app_data_dir)?;
-        let preview = self.preview_llm_prompt(params.request.clone())?;
+        let owner = crate::service_provider_actions::lock_provider_action_owner_for_apply(
+            &self.app_data_dir,
+        )?;
+        let preview = self.preview_llm_prompt_with_owner(params.request.clone(), Some(&owner))?;
         if !preview.allowed {
             return Err(ServiceError::InvalidRequest(preview.reason));
         }
         ensure_action_confirmed(&preview.binding, Some(&params.action_confirmation))?;
-        crate::service_provider_actions::reserve_provider_action(
+        owner.validate_owner_path_binding()?;
+        crate::service_provider_actions::reserve_provider_action_while_locked(
             &self.app_data_dir,
+            &owner,
             &preview.binding,
             &params.action_confirmation,
         )?;
@@ -353,8 +391,9 @@ impl ServiceHost {
             )
         })?;
         let confirmation_id = preview.binding.action.id.clone();
-        let send = match send_provider_prompt(
+        let send = match crate::provider::send_provider_prompt_while_locked(
             &self.app_data_dir,
+            &owner,
             SendProviderPromptParams {
                 profile_id: profile_id.clone(),
                 confirmation_id: confirmation_id.clone(),
@@ -369,17 +408,19 @@ impl ServiceHost {
         ) {
             Ok(send) => send,
             Err(error) => {
-                let _ = crate::service_provider_actions::finalize_provider_action(
+                crate::service_provider_actions::finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &preview.binding,
                     &params.action_confirmation,
                     crate::service_provider_actions::ProviderActionState::NotStarted,
-                );
+                )?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider prompt did not start: {error}; create a new preview before retrying"
                 )));
             }
         };
+        crate::service_provider_actions::run_provider_action_post_effect_hook();
         let target_matches = send.profile_id == profile_id
             && preview.model.as_deref() == Some(send.model.as_str())
             && preview.destination_host.as_deref() == Some(send.destination_host.as_str());
@@ -390,17 +431,17 @@ impl ServiceHost {
                 .error_code
                 .as_deref()
                 .is_some_and(|code| code.starts_with("http_"));
-        // A target mismatch is handled below as an explicit partial outcome:
-        // the provider request may already have left the process.
-        let prompt_record_persisted = self.record_llm_prompt_run(&params, &preview, &send).is_ok();
+        let prompt_record_persisted = self
+            .record_llm_prompt_run_while_locked(&owner, &params, &preview, &send)
+            .is_ok();
         let mut readback = if target_matches
             && remote_result_verified
             && send.local_metadata_persisted
             && prompt_record_persisted
         {
             let activity_revision =
-                crate::provider::provider_call_metadata_revision(&self.app_data_dir);
-            let prompt_runs_revision = llm_prompt_runs_revision(&self.llm_prompt_runs_path());
+                crate::provider::provider_call_metadata_revision_while_locked(&owner);
+            let prompt_runs_revision = llm_prompt_runs_revision_while_locked(&owner);
             match (activity_revision, prompt_runs_revision) {
                 (Ok(activity_revision), Ok(prompt_runs_revision)) => {
                     ActionReadbackRecord::verified(
@@ -425,9 +466,13 @@ impl ServiceHost {
         } else {
             None
         };
+        if readback.is_some() && owner.validate_owner_path_binding().is_err() {
+            readback = None;
+        }
         if readback.is_some()
-            && crate::service_provider_actions::finalize_provider_action(
+            && crate::service_provider_actions::finalize_provider_action_while_locked(
                 &self.app_data_dir,
+                &owner,
                 &preview.binding,
                 &params.action_confirmation,
                 crate::service_provider_actions::ProviderActionState::Verified,
@@ -437,18 +482,40 @@ impl ServiceHost {
             readback = None;
         }
         let partial_outcome = if readback.is_none() {
-            let _ = crate::service_provider_actions::finalize_provider_action(
-                &self.app_data_dir,
-                &preview.binding,
-                &params.action_confirmation,
-                crate::service_provider_actions::ProviderActionState::Partial,
-            );
-            Some(LlmPromptPartialOutcome {
-                remote_effect: if send.provider_request_sent {
-                    "remote_unknown".to_string()
+            let finalization =
+                crate::service_provider_actions::finalize_provider_action_while_locked(
+                    &self.app_data_dir,
+                    &owner,
+                    &preview.binding,
+                    &params.action_confirmation,
+                    crate::service_provider_actions::ProviderActionState::Partial,
+                );
+            if send.provider_request_sent {
+                return Err(llm_remote_unknown(if !target_matches {
+                    "the provider response target did not match the confirmed prompt target"
+                } else if !remote_result_verified {
+                    "the provider request may have left the process, but its remote result could not be verified"
+                } else if !send.local_metadata_persisted {
+                    "the provider request completed, but app-local provider audit persistence failed"
+                } else if !prompt_record_persisted {
+                    "the provider request completed, but app-local prompt-run persistence failed"
+                } else if finalization.is_err() {
+                    "the provider request completed, but replay finalization could not be verified"
                 } else {
-                    "not_sent".to_string()
-                },
+                    "the provider request completed, but semantic read-back or app-data owner binding could not be verified"
+                }));
+            }
+            finalization?;
+            owner.validate_owner_path_binding().map_err(|_| {
+                CommandError::PartialEffect {
+                    operation: "LLM provider prompt".to_string(),
+                    state: "applied_unverified",
+                    cleanup_required: false,
+                    detail: "LLM prompt metadata was updated on an app-data owner that is no longer bound to the configured path".to_string(),
+                }
+            })?;
+            Some(LlmPromptPartialOutcome {
+                remote_effect: "not_sent".to_string(),
                 local_record: if send.local_metadata_persisted && prompt_record_persisted {
                     "applied_unverified".to_string()
                 } else {
@@ -562,17 +629,25 @@ impl ServiceHost {
         params: LlmProviderObservabilityParams,
     ) -> Result<LlmProviderObservabilityResult, ServiceError> {
         let limit = params.limit.unwrap_or(50).clamp(1, 500);
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let owner = match lock_app_mutations(&self.app_data_dir) {
+            Ok(owner) => Some(owner),
+            Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let adapter_ctx = match owner.as_ref() {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.adapter_ctx.clone(),
+        };
         let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
         let filters = ProviderObservabilityFilters::from_params(&params);
 
         let (prompt_runs, mut status_rows) =
-            self.load_llm_prompt_runs_for_observability(&redaction_roots);
+            self.load_llm_prompt_runs_for_observability(owner.as_ref(), &redaction_roots);
         let (call_metadata, call_status_rows) =
-            self.load_provider_call_metadata_for_observability(&redaction_roots);
+            self.load_provider_call_metadata_for_observability(owner.as_ref(), &redaction_roots);
         status_rows.extend(call_status_rows);
         let (profiles, profile_status_rows) =
-            self.load_provider_profiles_for_observability(&redaction_roots);
+            self.load_provider_profiles_for_observability(owner.as_ref(), &redaction_roots);
         status_rows.extend(profile_status_rows);
 
         let matched_prompt_runs = prompt_runs
@@ -648,15 +723,18 @@ impl ServiceHost {
             call_metadata.len(),
         );
         let model_task_history_rows = self
-            .list_model_task_matches(ModelTaskMatchListParams {
-                provider: params.provider.clone(),
-                model: params.model.clone(),
-                task_kind: params.action.clone(),
-                match_status: None,
-                agent: None,
-                source_kind: None,
-                limit: Some(limit),
-            })?
+            .list_model_task_matches_for_owner(
+                ModelTaskMatchListParams {
+                    provider: params.provider.clone(),
+                    model: params.model.clone(),
+                    task_kind: params.action.clone(),
+                    match_status: None,
+                    agent: None,
+                    source_kind: None,
+                    limit: Some(limit),
+                },
+                owner.as_ref(),
+            )?
             .recent_evidence_rows;
         let evidence_references = provider_observability_evidence_references(
             &all_history_rows,
@@ -739,17 +817,28 @@ impl ServiceHost {
                 "cursor does not match this list query".to_string(),
             ));
         }
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let owner = match lock_app_mutations(&self.app_data_dir) {
+            Ok(owner) => Some(owner),
+            Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let adapter_ctx = match owner.as_ref() {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.adapter_ctx.clone(),
+        };
         let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
         let filters = ProviderObservabilityFilters::from_activity_bounds(
             &params,
             query.resolved_start_at,
             query.resolved_end_at,
         );
-        let raw_snapshot = read_consistent_provider_activity_raw_snapshot(
-            &self.llm_prompt_runs_path(),
-            &provider_call_metadata_path(&self.app_data_dir),
-        )?;
+        let raw_snapshot = match owner.as_ref() {
+            Some(owner) => read_consistent_provider_activity_raw_snapshot_while_locked(owner)?,
+            None => ProviderActivityRawSnapshot {
+                prompt_runs: ProviderActivityRawSource::missing(),
+                provider_calls: ProviderActivityRawSource::missing(),
+            },
+        };
         let source_revision = provider_activity_raw_source_revision(&raw_snapshot);
         let prompt_runs = parse_provider_activity_prompt_runs(&raw_snapshot.prompt_runs)?;
         let call_metadata = parse_provider_activity_provider_calls(&raw_snapshot.provider_calls)?;
@@ -867,13 +956,34 @@ impl ServiceHost {
         &self,
         params: ModelTaskMatchListParams,
     ) -> Result<ModelTaskMatchListResult, ServiceError> {
+        let owner = match lock_app_mutations(&self.app_data_dir) {
+            Ok(owner) => Some(owner),
+            Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        self.list_model_task_matches_for_owner(params, owner.as_ref())
+    }
+
+    fn list_model_task_matches_for_owner(
+        &self,
+        params: ModelTaskMatchListParams,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<ModelTaskMatchListResult, ServiceError> {
         let limit = params.limit.map(|limit| limit.clamp(1, 500));
         let row_limit = limit.unwrap_or(usize::MAX);
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.adapter_ctx.clone(),
+        };
         let redaction_roots = self.trace_redaction_roots(&adapter_ctx);
         let filters = ModelTaskMatchFilters::from_params(&params);
-        let stored_records = self.load_model_task_matches()?;
-        let prompt_runs = self.load_llm_prompt_runs()?;
+        let (stored_records, prompt_runs) = match owner {
+            Some(owner) => (
+                self.load_model_task_matches_while_locked(owner)?,
+                self.load_llm_prompt_runs_while_locked(owner)?,
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
 
         let mut records = stored_records
             .iter()
@@ -982,7 +1092,8 @@ impl ServiceHost {
             ));
         }
 
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let adapter_ctx = self.effective_adapter_ctx_while_mutation_owner_held(&owner)?;
         let roots = self.trace_redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&roots);
         let now = unix_timestamp_millis();
@@ -1052,7 +1163,7 @@ impl ServiceHost {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| stable_model_task_match_id(&redacted_task, &redacted_model, now));
 
-        let mut records = self.load_model_task_matches()?;
+        let mut records = self.load_model_task_matches_while_locked(&owner)?;
         let created_at = records
             .iter()
             .find(|record| record.id == id)
@@ -1087,7 +1198,7 @@ impl ServiceHost {
         };
         records.retain(|existing| existing.id != id);
         records.push(record.clone());
-        self.save_model_task_matches(&records)?;
+        self.save_model_task_matches_while_locked(&owner, &records)?;
 
         Ok(ModelTaskMatchRecordResult {
             generated_by: "local-v2.91",
@@ -1116,11 +1227,12 @@ impl ServiceHost {
                 "llm.deleteModelTaskMatch requires a non-empty id".to_string(),
             ));
         }
-        let mut records = self.load_model_task_matches()?;
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let mut records = self.load_model_task_matches_while_locked(&owner)?;
         let before = records.len();
         records.retain(|record| record.id != id);
         let deleted = records.len() != before;
-        self.save_model_task_matches(&records)?;
+        self.save_model_task_matches_while_locked(&owner, &records)?;
 
         Ok(ModelTaskMatchDeleteResult {
             record_id: id,
@@ -1149,11 +1261,15 @@ impl ServiceHost {
         }
     }
 
-    pub(crate) fn resolve_llm_prompt_profile(
+    fn resolve_llm_prompt_profile_for(
         &self,
         requested_profile_id: Option<&str>,
+        owner: Option<&AppMutationLock>,
     ) -> Result<Option<ProviderProfileRecord>, ServiceError> {
-        let profiles = list_provider_profiles(&self.app_data_dir)?;
+        let profiles = match owner {
+            Some(owner) => crate::provider::list_provider_profiles_while_locked(owner)?,
+            None => list_provider_profiles(&self.app_data_dir)?,
+        };
         if let Some(profile_id) = requested_profile_id.filter(|id| !id.trim().is_empty()) {
             return profiles
                 .profiles
@@ -1175,11 +1291,15 @@ impl ServiceHost {
             .cloned())
     }
 
-    pub(crate) fn build_llm_prompt(
+    fn build_llm_prompt_for(
         &self,
         params: &LlmPreviewPromptParams,
+        owner: Option<&AppMutationLock>,
     ) -> Result<BuiltLlmPrompt, ServiceError> {
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.effective_adapter_ctx()?,
+        };
         let roots = self.redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&roots);
         let mut prompt_scope = vec![
@@ -1223,7 +1343,7 @@ impl ServiceHost {
                         params.action.as_str()
                     ))
                 })?;
-                let skill = self.get_llm_skill_detail(instance_id)?;
+                let skill = self.get_llm_skill_detail_for(instance_id, owner)?;
                 prompt_scope.extend([
                     "selected skill metadata".to_string(),
                     "selected skill redacted frontmatter".to_string(),
@@ -1241,7 +1361,11 @@ impl ServiceHost {
                     "redacted skill body".to_string(),
                     "rule finding ids and messages".to_string(),
                 ]);
-                sections.push(self.render_skill_prompt_section(&skill, &mut redactor)?);
+                sections.push(self.render_skill_prompt_section_for(
+                    &skill,
+                    &mut redactor,
+                    owner,
+                )?);
             }
             LlmPromptActionKind::Recommend => {
                 prompt_scope.extend([
@@ -1267,7 +1391,7 @@ impl ServiceHost {
                     "finding severities".to_string(),
                 ]);
                 excluded_fields.push("raw skill bodies".to_string());
-                let summary = self.llm_conflict_summary()?;
+                let summary = self.llm_conflict_summary_for(owner)?;
                 sections.push(format!(
                     "Conflict and finding summary:\n{}",
                     redactor.redact(&summary)
@@ -1307,11 +1431,12 @@ impl ServiceHost {
                     "write/apply instructions".to_string(),
                     "snapshot creation or rollback commands".to_string(),
                 ]);
-                sections.push(self.render_task_cockpit_provider_prompt_section(
+                sections.push(self.render_task_cockpit_provider_prompt_section_for(
                     task,
                     &params.agents,
                     &params.instance_ids,
                     &mut redactor,
+                    owner,
                 )?);
             }
         }
@@ -1341,12 +1466,13 @@ impl ServiceHost {
         })
     }
 
-    pub(crate) fn render_skill_prompt_section(
+    fn render_skill_prompt_section_for(
         &self,
         skill: &SkillDetailRecord,
         redactor: &mut PromptRedactor<'_>,
+        owner: Option<&AppMutationLock>,
     ) -> Result<String, ServiceError> {
-        let findings = self.llm_findings_for_skill(skill)?;
+        let findings = self.llm_findings_for_skill_for(skill, owner)?;
         let finding_lines = if findings.is_empty() {
             "none".to_string()
         } else {
@@ -1383,20 +1509,30 @@ impl ServiceHost {
         ))
     }
 
-    pub(crate) fn render_task_cockpit_provider_prompt_section(
+    fn render_task_cockpit_provider_prompt_section_for(
         &self,
         task: &str,
         agents: &[String],
         instance_ids: &[String],
         redactor: &mut PromptRedactor<'_>,
+        owner: Option<&AppMutationLock>,
     ) -> Result<String, ServiceError> {
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.effective_adapter_ctx()?,
+        };
         let capabilities = list_adapter_capabilities(&adapter_ctx);
         let diagnostics = list_adapter_diagnostics(&adapter_ctx);
-        let catalog = self.open_existing_catalog_read_only()?;
+        let catalog = match owner {
+            Some(owner) => self.open_existing_catalog_read_only_while_locked(owner)?,
+            None => self.open_existing_catalog_read_only()?,
+        };
         let catalog_available = catalog.is_some();
         let visible_skills = match catalog.as_ref() {
-            Some(catalog) => self.list_visible_skill_records(catalog)?,
+            Some(catalog) => match owner {
+                Some(owner) => self.list_visible_skill_records_while_locked(catalog, owner)?,
+                None => self.list_visible_skill_records(catalog)?,
+            },
             None => Vec::new(),
         };
         let selected_agents = selected_task_cockpit_agents(agents, &visible_skills, &capabilities);
@@ -1604,11 +1740,16 @@ impl ServiceHost {
         ))
     }
 
-    pub(crate) fn llm_findings_for_skill(
+    fn llm_findings_for_skill_for(
         &self,
         skill: &SkillDetailRecord,
+        owner: Option<&AppMutationLock>,
     ) -> Result<Vec<RuleFindingRecord>, ServiceError> {
-        let Some(catalog) = self.open_existing_catalog_read_only()? else {
+        let catalog = match owner {
+            Some(owner) => self.open_existing_catalog_read_only_while_locked(owner)?,
+            None => self.open_existing_catalog_read_only()?,
+        };
+        let Some(catalog) = catalog else {
             return Ok(Vec::new());
         };
         let findings = catalog.list_rule_findings()?;
@@ -1726,10 +1867,25 @@ impl ServiceHost {
         &self,
         instance_id: &str,
     ) -> Result<SkillDetailRecord, ServiceError> {
-        let Some(catalog) = self.open_existing_catalog_read_only()? else {
+        self.get_llm_skill_detail_for(instance_id, None)
+    }
+
+    fn get_llm_skill_detail_for(
+        &self,
+        instance_id: &str,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<SkillDetailRecord, ServiceError> {
+        let catalog = match owner {
+            Some(owner) => self.open_existing_catalog_read_only_while_locked(owner)?,
+            None => self.open_existing_catalog_read_only()?,
+        };
+        let Some(catalog) = catalog else {
             return Err(ServiceError::SkillNotFound(instance_id.to_string()));
         };
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.effective_adapter_ctx()?,
+        };
         let mut detail = catalog
             .get_skill_detail(instance_id)?
             .ok_or_else(|| ServiceError::SkillNotFound(instance_id.to_string()))?;
@@ -1738,12 +1894,26 @@ impl ServiceHost {
     }
 
     pub(crate) fn llm_conflict_summary(&self) -> Result<String, ServiceError> {
-        let Some(catalog) = self.open_existing_catalog_read_only()? else {
+        self.llm_conflict_summary_for(None)
+    }
+
+    fn llm_conflict_summary_for(
+        &self,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<String, ServiceError> {
+        let catalog = match owner {
+            Some(owner) => self.open_existing_catalog_read_only_while_locked(owner)?,
+            None => self.open_existing_catalog_read_only()?,
+        };
+        let Some(catalog) = catalog else {
             return Ok(
                 "No catalog is available; no conflicts or findings were loaded.".to_string(),
             );
         };
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.effective_adapter_ctx()?,
+        };
         let conflicts = list_conflicts_for_context(&catalog, &adapter_ctx)?;
         let findings = user_visible_rule_findings(&catalog.list_rule_findings()?);
         let mut lines = Vec::new();
@@ -1912,20 +2082,43 @@ where
     Err(ServiceError::SourceChanged)
 }
 
-fn read_consistent_provider_activity_raw_snapshot(
-    prompt_runs_path: &Path,
-    provider_calls_path: &Path,
+fn read_consistent_provider_activity_raw_snapshot_while_locked(
+    owner: &AppMutationLock,
 ) -> Result<ProviderActivityRawSnapshot, ServiceError> {
     read_consistent_provider_activity_raw_snapshot_with(|source| match source {
-        ProviderActivitySource::PromptRuns => {
-            read_provider_activity_raw_source(prompt_runs_path, "prompt-runs")
-        }
-        ProviderActivitySource::ProviderCalls => {
-            read_provider_activity_raw_source(provider_calls_path, "provider-call-metadata")
-        }
+        ProviderActivitySource::PromptRuns => read_provider_activity_raw_source_while_locked(
+            owner,
+            Path::new(crate::service_host::LLM_PROMPT_RUNS_RELATIVE_PATH),
+            "prompt-runs",
+        ),
+        ProviderActivitySource::ProviderCalls => read_provider_activity_raw_source_while_locked(
+            owner,
+            Path::new(crate::provider::PROVIDER_CALL_METADATA_RELATIVE_PATH),
+            "provider-call-metadata",
+        ),
     })
 }
 
+fn read_provider_activity_raw_source_while_locked(
+    owner: &AppMutationLock,
+    relative_path: &Path,
+    label: &'static str,
+) -> Result<ProviderActivityRawSource, ServiceError> {
+    match owner.owner_fs().read_bounded_regular_file(
+        relative_path,
+        PROVIDER_ACTIVITY_MAX_SOURCE_BYTES as u64,
+        label,
+    ) {
+        Ok(Some(bytes)) => Ok(ProviderActivityRawSource::present(bytes)),
+        Ok(None) => Ok(ProviderActivityRawSource::missing()),
+        Err(CommandError::UnsafeConfigPath(_)) => {
+            Err(ServiceError::ProviderActivitySourceInvalid(label))
+        }
+        Err(_) => Err(ServiceError::ProviderActivitySourceUnreadable(label)),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn read_provider_activity_raw_source(
     path: &Path,
     label: &'static str,
@@ -1945,6 +2138,7 @@ pub(crate) fn read_provider_activity_raw_source(
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 fn open_provider_activity_source(path: &Path) -> std::io::Result<fs::File> {
     use rustix::fs::{open, Mode, OFlags};
 
@@ -1956,10 +2150,12 @@ fn open_provider_activity_source(path: &Path) -> std::io::Result<fs::File> {
 }
 
 #[cfg(not(unix))]
+#[cfg(test)]
 fn open_provider_activity_source(path: &Path) -> std::io::Result<fs::File> {
     fs::File::open(path)
 }
 
+#[cfg(test)]
 fn classify_provider_activity_open_failure(
     path: &Path,
     label: &'static str,
@@ -1975,6 +2171,7 @@ fn classify_provider_activity_open_failure(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn read_provider_activity_bounded<R: std::io::Read>(
     reader: &mut R,
     label: &'static str,

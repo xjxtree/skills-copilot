@@ -91,9 +91,9 @@ pub use protocol::{
 use provider::{
     default_monthly_budget_usd, default_token_limit, estimate_prompt_cost_usd,
     list_provider_profiles, provider_call_metadata_path, provider_profiles_path,
-    send_provider_prompt, DeleteProviderProfileParams, ListProviderProfilesResult,
-    ProviderCallMetadata, ProviderError, ProviderProfileRecord, SaveProviderProfileParams,
-    SendProviderPromptParams, TestProviderConnectionParams,
+    DeleteProviderProfileParams, ListProviderProfilesResult, ProviderCallMetadata, ProviderError,
+    ProviderProfileRecord, SaveProviderProfileParams, SendProviderPromptParams,
+    TestProviderConnectionParams,
 };
 pub(crate) use service_llm_prompt_helpers::*;
 pub(crate) use service_observability_helpers::*;

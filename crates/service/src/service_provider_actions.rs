@@ -1,5 +1,4 @@
 use super::*;
-use fs4::FileExt;
 use skills_copilot_commands::{
     action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,
     opaque_sensitive_action_input_binding, ActionPrecondition, ActionPreconditionKind,
@@ -49,7 +48,7 @@ pub(crate) fn inject_provider_action_post_effect_hook_for_test(hook: impl FnOnce
 }
 
 #[cfg(test)]
-fn run_provider_action_post_effect_hook() {
+pub(crate) fn run_provider_action_post_effect_hook() {
     PROVIDER_ACTION_POST_EFFECT_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
@@ -58,7 +57,7 @@ fn run_provider_action_post_effect_hook() {
 }
 
 #[cfg(not(test))]
-fn run_provider_action_post_effect_hook() {}
+pub(crate) fn run_provider_action_post_effect_hook() {}
 
 #[cfg(test)]
 pub(crate) fn install_test_provider_action_state_fault(
@@ -247,10 +246,12 @@ impl ServiceHost {
         params: SaveProviderProfileParams,
     ) -> Result<SaveProviderProfileApplyResult, ServiceError> {
         let confirmation = params.action_confirmation.clone();
-        let preliminary = self.preview_save_provider_profile(&params)?;
+        let preliminary = self
+            .preview_save_provider_profile(&params)
+            .map_err(classify_provider_action_preflight_error)?;
         ensure_action_confirmed(&preliminary.binding, confirmation.as_ref())?;
 
-        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let owner = lock_provider_action_owner_for_apply(&self.app_data_dir)?;
         let current = self.preview_save_provider_profile_with_owner(&params, Some(&owner))?;
         ensure_action_confirmed(&current.binding, confirmation.as_ref())?;
         owner.validate_owner_path_binding()?;
@@ -490,10 +491,12 @@ impl ServiceHost {
         params: DeleteProviderProfileParams,
     ) -> Result<DeleteProviderProfileApplyResult, ServiceError> {
         let confirmation = params.action_confirmation.clone();
-        let preliminary = self.preview_delete_provider_profile(&params)?;
+        let preliminary = self
+            .preview_delete_provider_profile(&params)
+            .map_err(classify_provider_action_preflight_error)?;
         ensure_action_confirmed(&preliminary.binding, confirmation.as_ref())?;
 
-        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let owner = lock_provider_action_owner_for_apply(&self.app_data_dir)?;
         let current = self.preview_delete_provider_profile_with_owner(&params, Some(&owner))?;
         ensure_action_confirmed(&current.binding, confirmation.as_ref())?;
         owner.validate_owner_path_binding()?;
@@ -708,10 +711,12 @@ impl ServiceHost {
         mut params: TestProviderConnectionParams,
     ) -> Result<TestProviderConnectionApplyResult, ServiceError> {
         let confirmation = params.action_confirmation.clone();
-        let preliminary = self.preview_provider_connection_test(&params)?;
+        let preliminary = self
+            .preview_provider_connection_test(&params)
+            .map_err(classify_provider_action_preflight_error)?;
         ensure_action_confirmed(&preliminary.binding, confirmation.as_ref())?;
 
-        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let owner = lock_provider_action_owner_for_apply(&self.app_data_dir)?;
         let current = self.preview_provider_connection_test_with_owner(&params, Some(&owner))?;
         ensure_action_confirmed(&current.binding, confirmation.as_ref())?;
         owner.validate_owner_path_binding()?;
@@ -1263,13 +1268,27 @@ pub(crate) fn provider_action_state_revision_while_locked(
     ))
 }
 
-pub(crate) fn reserve_provider_action(
+pub(crate) fn lock_provider_action_owner_for_apply(
     app_data_dir: &Path,
-    binding: &ActionPreviewBinding,
-    confirmation: &ActionConfirmation,
-) -> Result<(), ServiceError> {
-    let owner = lock_or_create_app_mutations(app_data_dir)?;
-    reserve_provider_action_while_locked(app_data_dir, &owner, binding, confirmation)
+) -> Result<AppMutationLock, ServiceError> {
+    lock_or_create_app_mutations(app_data_dir).map_err(|_| {
+        ServiceError::ActionNotStarted(
+            "provider replay state could not be replaced before the action started".to_string(),
+        )
+    })
+}
+
+pub(crate) fn classify_provider_action_preflight_error(error: ServiceError) -> ServiceError {
+    if matches!(
+        &error,
+        ServiceError::Provider(ProviderError::Command(CommandError::UnsafeConfigPath(_)))
+            | ServiceError::Command(CommandError::UnsafeConfigPath(_))
+    ) {
+        return ServiceError::ActionNotStarted(
+            "provider replay state could not be replaced before the action started".to_string(),
+        );
+    }
+    error
 }
 
 pub(crate) fn reserve_provider_action_while_locked(
@@ -1322,16 +1341,6 @@ pub(crate) fn reserve_provider_action_while_locked(
             updated_at: unix_timestamp_millis(),
         },
     )
-}
-
-pub(crate) fn finalize_provider_action(
-    app_data_dir: &Path,
-    binding: &ActionPreviewBinding,
-    confirmation: &ActionConfirmation,
-    state: ProviderActionState,
-) -> Result<(), ServiceError> {
-    let owner = lock_app_mutations(app_data_dir)?;
-    finalize_provider_action_while_locked(app_data_dir, &owner, binding, confirmation, state)
 }
 
 pub(crate) fn finalize_provider_action_while_locked(
@@ -1558,19 +1567,4 @@ fn action_token_digest(token: &str) -> String {
     hasher.update((token.len() as u64).to_be_bytes());
     hasher.update(token.as_bytes());
     format!("sha256:{:x}", hasher.finalize())
-}
-
-pub(crate) fn lock_provider_actions(app_data_dir: &Path) -> Result<fs::File, ServiceError> {
-    let parent = app_data_dir.parent().ok_or_else(|| {
-        ServiceError::InvalidRequest("provider app-data path has no parent".to_string())
-    })?;
-    let canonical_parent = fs::canonicalize(parent)?;
-    if !fs::metadata(&canonical_parent)?.is_dir() {
-        return Err(ServiceError::InvalidRequest(
-            "provider app-data parent must be an existing directory".to_string(),
-        ));
-    }
-    let file = fs::File::open(canonical_parent)?;
-    file.lock_exclusive()?;
-    Ok(file)
 }
