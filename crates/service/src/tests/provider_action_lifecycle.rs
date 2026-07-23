@@ -610,13 +610,17 @@ fn provider_credential_save_has_semantic_credential_readback() {
 }
 
 #[test]
-fn provider_save_accepts_verified_candidate_after_post_rename_sync_error() {
+fn provider_save_reports_applied_unverified_after_post_rename_sync_error() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-post-rename-sync-{}-{}",
         std::process::id(),
         unique_suffix(),
     ));
     let host = test_host(app_data_dir.clone());
+    let profile_id = "post-rename-sync-provider";
+    crate::provider::manage_test_provider_credential(profile_id, None);
+    let mut params = provider_save_params(profile_id, "https://example.invalid/v1");
+    params["api_key"] = json!("post-rename-sync-secret");
     crate::provider::install_test_provider_io_fault(
         &app_data_dir,
         crate::provider::TestProviderIoFault::SaveStorePostRenameSync,
@@ -626,23 +630,29 @@ fn provider_save_accepts_verified_candidate_after_post_rename_sync_error() {
         &host,
         "llm.previewSaveProviderProfile",
         "llm.saveProviderProfile",
-        provider_save_params("post-rename-sync-provider", "https://example.invalid/v1"),
+        params,
     );
 
-    assert!(response.ok, "{:?}", response.error);
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
     assert_eq!(
-        response
-            .result
-            .as_ref()
-            .and_then(|result| result.pointer("/outcome/state"))
-            .and_then(Value::as_str),
-        Some("verified")
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("applied_unverified")
     );
+    crate::provider::verify_provider_credential_matches(profile_id, "post-rename-sync-secret")
+        .expect("credential must not be compensated after an unverified durable replacement");
     assert!(crate::provider::list_provider_profiles(&app_data_dir)
         .expect("provider profiles")
         .profiles
         .iter()
-        .any(|profile| profile.id == "post-rename-sync-provider"));
+        .any(|profile| profile.id == profile_id));
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("provider replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
     let _ = fs::remove_dir_all(app_data_dir);
 }
 
@@ -727,6 +737,55 @@ fn provider_delete_reports_unknown_after_post_rename_readback_failure() {
     assert_eq!(
         error.details.as_ref().map(|details| details.state.as_str()),
         Some("outcome_unknown")
+    );
+    assert!(!crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles")
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id));
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("provider replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_delete_reports_applied_unverified_after_post_rename_sync_error() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-delete-sync-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let profile_id = "delete-sync-provider";
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params(profile_id, "https://example.invalid/v1"),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    crate::provider::install_test_provider_io_fault(
+        &app_data_dir,
+        crate::provider::TestProviderIoFault::SaveStorePostRenameSync,
+    );
+
+    let (_, response) = confirmed_action_request(
+        &host,
+        "llm.previewDeleteProviderProfile",
+        "llm.deleteProviderProfile",
+        json!({"profile_id":profile_id,"delete_credential":false}),
+    );
+
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("applied_unverified")
     );
     assert!(!crate::provider::list_provider_profiles(&app_data_dir)
         .expect("provider profiles")

@@ -1477,7 +1477,18 @@ fn save_store(
         read_profile_store_bytes_while_locked(owner)
     };
     match (write_result, readback) {
-        (_, Ok(Some(persisted))) if persisted == content => Ok(()),
+        (Ok(()), Ok(Some(persisted))) if persisted == content => Ok(()),
+        (Err(_), Ok(Some(persisted))) if persisted == content => {
+            Err(CommandError::PartialEffect {
+                operation: "provider profile store".to_string(),
+                state: "applied_unverified",
+                cleanup_required: false,
+                detail:
+                    "provider profile bytes match the candidate, but replacement durability could not be verified"
+                        .to_string(),
+            }
+            .into())
+        }
         (Err(write_error), Ok(persisted)) if persisted == original => Err(write_error.into()),
         _ => Err(CommandError::PartialEffect {
             operation: "provider profile store".to_string(),
