@@ -303,7 +303,7 @@ private enum WindowChromeToolbarMetrics {
     static let searchResultsTopPadding: CGFloat = 10
 
     static var trailingWidth: CGFloat {
-        searchWidth + iconButtonWidth * 2 + trailingSpacing * 2
+        searchWidth + iconButtonWidth + trailingSpacing
     }
 
     static var totalWidth: CGFloat {
@@ -315,7 +315,7 @@ private enum WindowChromeToolbarMetrics {
     }
 
     static var searchResultsTrailingPadding: CGFloat {
-        titlebarTrailingPadding + iconButtonWidth * 2 + trailingSpacing * 2
+        titlebarTrailingPadding + iconButtonWidth + trailingSpacing
     }
 }
 
@@ -327,11 +327,11 @@ private struct WindowChromeToolbarControls: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            TitlebarAgentSelectorControl()
-                .frame(width: agentWidth, height: controlHeight, alignment: .leading)
-
             TitlebarProjectPickerControl(isCompact: false)
                 .frame(width: projectWidth, height: controlHeight, alignment: .leading)
+
+            TitlebarAgentSelectorControl()
+                .frame(width: agentWidth, height: controlHeight, alignment: .leading)
 
             WindowChromeTrailingControls(
                 text: $text,
@@ -496,6 +496,7 @@ private struct TitlebarProjectPickerControl: View {
                         Spacer(minLength: 8)
 
                         Button(role: .destructive) {
+                            isPopoverPresented = false
                             Task { await store.previewClearRecentProjects() }
                         } label: {
                             Text(UIStrings.clearRecentProjectsCompact)
@@ -857,7 +858,6 @@ private struct WindowChromeTrailingControls: View {
                 onSubmit: onSubmit
             )
 
-            WindowChromeHelpButton()
             WindowChromeSettingsControl()
         }
         .fixedSize()
