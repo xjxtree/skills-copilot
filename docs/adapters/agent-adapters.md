@@ -170,22 +170,28 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   and opaque HMAC token. Apply requires the exact action reference and token,
   then returns the declared catalog, skill-file, and manager-inventory
   read-back. Install/remove/update/local-create and app-owned local deletion
-  share one cross-sidecar lock. Apply rechecks the bounded complete target
+  share the same artifact-free cross-sidecar app-data owner lock used by batch
+  toggles and direct `skill.install`. Apply rechecks the bounded complete target
   trees, inventory, and relevant catalog facts after taking the lock; stale
-  state runs no process and writes no target or app data. Exit zero is accepted
-  only when at least one preview-bound target tree changed and the refreshed
-  catalog proves the operation-specific postcondition. Install and update
+  state runs no process and writes no target or app data. The lock is held
+  through semantic read-back and catalog commit. Exit zero is accepted only
+  when each selected skill's preview-bound source identity and content
+  fingerprint proves the operation-specific postcondition; an unrelated tree
+  change is insufficient. Install and update
   require an explicit non-empty skill list. Multi-agent read-back retains one
   catalog and skill-file observation per selected target.
 - Project manager targets are `.claude/skills` for Claude Code,
   `.agents/skills` for Codex and opencode, `.pi/skills` for Pi,
   `.hermes/skills` for Hermes, and `skills` for OpenClaw. Global targets use
-  each adapter's verified native global root. Inventory revisions also include
+  each adapter's verified native global root; Codex manager installs use the
+  shared user `.agents/skills` root rather than `$CODEX_HOME/skills`. Inventory revisions also include
   project `skills-lock.json` or global `~/.agents/.skill-lock.json`.
 - A relative local install source is resolved against the previewed manager
   working directory and canonicalized before it is classified as local.
-  Credential-bearing URL forms with userinfo, query, or fragment data are
-  rejected without including the source in an error.
+  Credential-bearing standard or SCP-style URL forms with disallowed userinfo,
+  query, fragment, percent encoding, or credential material are rejected
+  without including the source in an error. The only accepted SCP username
+  form is the literal `git@host:path`.
 - Search preserves every row returned by the manager, but the current CLI does
   not prove a remote total or advertise a continuation token. Responses must
   therefore distinguish returned rows from an unknown, source-limited total;

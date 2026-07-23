@@ -305,6 +305,7 @@ pub fn ensure_action_confirmed(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn action_descriptor(
     kind: ActionKind,
     intent: ActionIntent,

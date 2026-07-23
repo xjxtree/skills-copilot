@@ -1046,6 +1046,7 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
     let deleted: Bool
     let summary: String
     let readback: ActionReadbackWire?
+    let followUp: SkillManagerCleanupFollowUp?
 
     enum CodingKeys: String, CodingKey {
         case action
@@ -1060,6 +1061,21 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
         case deleted
         case summary
         case readback
+        case followUp = "follow_up"
+    }
+}
+
+struct SkillManagerCleanupFollowUp: Codable, Hashable {
+    let kind: String
+    let state: String
+    let cleanupRequired: Bool
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case state
+        case cleanupRequired = "cleanup_required"
+        case message
     }
 }
 

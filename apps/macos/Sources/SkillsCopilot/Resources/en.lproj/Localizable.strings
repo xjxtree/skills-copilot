@@ -277,6 +277,7 @@
 "skillManager.apply.applied" = "Skill Manager operation applied.";
 "skillManager.localCreate.applied" = "Local skill template created and imported.";
 "skillManager.localDelete.applied" = "Local skill deleted.";
+"skillManager.localDelete.cleanupPending" = "Local skill deleted, but private cleanup is still pending.";
 "skillManager.confirm.title" = "Confirm Skill Manager Operation";
 "skillManager.confirm.install.title" = "Confirm Skill Install";
 "skillManager.confirm.remove.title" = "Confirm Skill Removal";

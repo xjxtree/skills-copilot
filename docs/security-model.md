@@ -86,13 +86,16 @@ confirmation, and network posture.
   all preconditions before the first write. Unknown, mismatched, forged, or
   stale references have zero write, process, catalog, snapshot, and audit side
   effects.
-- Catalog-sensitive apply paths hold a SQLite immediate transaction while
-  revalidating the accepted catalog record. Batch toggles acquire config locks
-  in stable order before that transaction; `skill.install` acquires its target
-  file lock first. A changed record, reference set, source tree, or target
-  revision returns a stale-action failure before any owned write.
-- Skill Manager install/remove/update/local-create and app-owned local deletion
-  share one cross-sidecar mutation lock. Under that lock, the service rechecks
+- Catalog-sensitive apply paths acquire the shared app-data owner lock, then
+  hold a SQLite immediate transaction while revalidating the accepted catalog
+  record, writing targets, proving read-back, and committing. Batch targets are
+  precomputed in stable order and `skill.install` validates a non-creating
+  target before locking. A changed record, reference set, source tree, or
+  target revision returns a stale-action failure before any owned write.
+- Batch toggles, `skill.install`, Skill Manager
+  install/remove/update/local-create, and app-owned local deletion share one
+  cross-sidecar mutation lock on the existing app-data owner directory; the
+  lock creates no persistent filesystem artifact. Under that lock, the service rechecks
   the complete bounded target trees and manager inventory accepted at preview.
   It holds the lock through process execution, catalog refresh, semantic
   verification, and read-back. A stale preview runs no manager process and
@@ -121,9 +124,11 @@ confirmation, and network posture.
   exact runtime allowlist. Parent credentials, provider tokens, cloud
   credentials, and action secrets are never inherited by the manager.
   Relative local install sources resolve and canonicalize against the displayed
-  manager working directory. Source URLs containing userinfo, query, or
-  fragment data are rejected without echo, and credential-shaped URLs in child
-  output are replaced as a whole before parsing or returning diagnostics.
+  manager working directory. Standard and SCP-style sources containing
+  userinfo other than the literal `git` SCP form, query, fragment, percent
+  encoding, or credential material are rejected without echo, and
+  credential-shaped URLs in child output are replaced as a whole before
+  parsing or returning diagnostics.
   Process exit zero is insufficient: install/remove/update must prove their
   selected agent/scope postconditions in the refreshed catalog, while local
   create must prove the exact source, `SKILL.md`, imported file, and catalog
@@ -136,6 +141,16 @@ confirmation, and network posture.
   Large installed-inventory stdout is captured only in a private `0600`
   temporary regular file, size-checked before reading, and removed by scoped
   cleanup on success and failure; it is never cataloged or retained.
+  Process-start failure restores any manager working-directory components
+  created for the attempt. After a process starts, an unobserved/nonzero
+  result, failed semantic proof, refresh failure, or uncertain commit returns
+  structured `partial_effect` with `retry_allowed=false`; compensation never
+  overwrites a target whose current revision is neither the accepted original
+  nor this operation's candidate revision.
+  A local delete whose catalog and missing-source read-back committed remains a
+  successful delete if only private quarantine cleanup fails; its typed
+  path-free `follow_up` reports `cleanup_required=true` so the client cannot
+  claim complete physical erasure.
 - Local ZIP import and updates are the explicitly scoped ZIP exception. Import
   writes only to the app-owned local library. Update may replace either an
   app-owned source or one canonical descendant of the active project/global

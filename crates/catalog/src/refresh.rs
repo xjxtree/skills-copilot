@@ -5,6 +5,9 @@ impl Catalog {
     where
         F: FnOnce() -> Result<(), CatalogError>,
     {
+        if !self.conn.is_autocommit() {
+            return operation();
+        }
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         match operation() {
             Ok(()) => match self.conn.execute_batch("COMMIT") {

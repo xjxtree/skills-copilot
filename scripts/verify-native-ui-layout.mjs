@@ -838,7 +838,7 @@ const checks = [
   {
     label: "tool-global install confirmation uses verified write copy",
     text: files.detailSurface,
-    pattern: /store\.confirmToolInstall\(skill:\s*skill,\s*target:\s*preview\.target\)/,
+    pattern: /store\.confirmToolInstall\(skill:\s*skill,\s*preview:\s*preview\)/,
   },
   {
     label: "sidebar labels read-only preview rows",

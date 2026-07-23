@@ -75,4 +75,11 @@ pub enum CommandError {
     InvalidSkillManagerRequest(String),
     #[error("skill manager command failed: {0}")]
     SkillManagerCommandFailed(String),
+    #[error("{operation} reached {state}; cleanup_required={cleanup_required}: {detail}")]
+    PartialEffect {
+        operation: String,
+        state: &'static str,
+        cleanup_required: bool,
+        detail: String,
+    },
 }

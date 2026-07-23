@@ -16,10 +16,10 @@ use skills_copilot_commands::{
     analyze_catalog, apply_current_config_overrides_to_skill_detail,
     apply_current_config_overrides_to_skill_records, apply_install_with_manager,
     apply_local_archive_import, apply_local_archive_update, apply_local_create_with_manager,
-    apply_remove_with_manager, apply_skill_toggles, apply_update_with_manager,
+    apply_remove_with_manager, apply_skill_toggles_guarded, apply_update_with_manager,
     clear_finding_triage, clear_rule_severity_override, clear_rule_suppression,
     commit_prepared_claude_settings_save, delete_local_skill_with_manager, get_skill,
-    install_skill_from_tool_global, list_adapter_capabilities, list_adapter_diagnostics,
+    install_skill_from_tool_global_guarded, list_adapter_capabilities, list_adapter_diagnostics,
     list_agent_config_snapshot_page_snapshot, list_agent_config_snapshots,
     list_conflicts_for_context, list_finding_triage, list_findings,
     list_installed_skills_with_manager, list_rule_tuning, list_skill_event_page_snapshot,
@@ -70,8 +70,8 @@ use project_context::{
     ProjectContextSummary,
 };
 pub use protocol::{
-    ServiceErrorRecord, ServiceRequest, ServiceResponse, DEFAULT_BUNDLE_ID, LEGACY_BUNDLE_ID,
-    SERVICE_PROTOCOL_VERSION, SUPPORTED_METHODS,
+    ServiceErrorDetails, ServiceErrorRecord, ServiceRequest, ServiceResponse, DEFAULT_BUNDLE_ID,
+    LEGACY_BUNDLE_ID, SERVICE_PROTOCOL_VERSION, SUPPORTED_METHODS,
 };
 use provider::{
     default_monthly_budget_usd, default_token_limit, delete_provider_profile,
@@ -1606,6 +1606,9 @@ impl ServiceError {
             Self::Command(skills_copilot_commands::CommandError::VerificationFailed) => {
                 "verification_failed"
             }
+            Self::Command(skills_copilot_commands::CommandError::PartialEffect { .. }) => {
+                "partial_effect"
+            }
             Self::Command(_) => "command_error",
             Self::Provider(_) => "provider_error",
             Self::Json(_) => "json_error",
@@ -1615,6 +1618,23 @@ impl ServiceError {
             Self::SourceChanged => "source_changed",
             Self::ProviderActivitySourceUnreadable(_) => "provider_activity_source_unreadable",
             Self::ProviderActivitySourceInvalid(_) => "provider_activity_source_invalid",
+        }
+    }
+
+    fn details(&self) -> Option<ServiceErrorDetails> {
+        match self {
+            Self::Command(skills_copilot_commands::CommandError::PartialEffect {
+                operation,
+                state,
+                cleanup_required,
+                ..
+            }) => Some(ServiceErrorDetails {
+                operation: operation.clone(),
+                state: (*state).to_string(),
+                cleanup_required: *cleanup_required,
+                retry_allowed: false,
+            }),
+            _ => None,
         }
     }
 }

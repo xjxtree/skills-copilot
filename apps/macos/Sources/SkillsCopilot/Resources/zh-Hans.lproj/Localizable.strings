@@ -277,6 +277,7 @@
 "skillManager.apply.applied" = "技能包管理操作已应用。";
 "skillManager.localCreate.applied" = "本地技能模板已创建并导入。";
 "skillManager.localDelete.applied" = "本地技能已删除。";
+"skillManager.localDelete.cleanupPending" = "本地技能已删除，但私有清理仍待完成。";
 "skillManager.confirm.title" = "确认技能包管理操作";
 "skillManager.confirm.install.title" = "确认安装技能";
 "skillManager.confirm.remove.title" = "确认移除技能";

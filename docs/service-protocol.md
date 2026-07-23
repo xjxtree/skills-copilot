@@ -75,7 +75,12 @@ that clients may infer for arbitrary mutations.
   `confirmation_required`, `action_token_unavailable`, and
   `verification_failed`. The last code means execution completed but the
   required semantic postcondition could not be proved; it is never reported as
-  a successful apply.
+  a successful apply. A mutation that may have crossed its external effect
+  boundary returns `partial_effect` with structured `details` containing
+  `operation`, `state`, `cleanup_required`, and `retry_allowed=false`.
+  `state` distinguishes `not_started`, `applied_verified`,
+  `applied_unverified`, and `outcome_unknown`; clients must not automatically
+  retry any such response.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, Skill Manager
   install/remove/update/local-create, and eligible app-owned local deletion.
@@ -504,7 +509,10 @@ or expose write controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.
 - Mutating manager actions and app-owned local deletion serialize through one
-  cross-sidecar target lock. Install/remove/update previews bind the complete
+  cross-sidecar app-data owner lock that creates no lock artifact. Batch
+  toggles and `skill.install` use the same lock, acquire it before the SQLite
+  immediate transaction, and retain it through writes, semantic read-back,
+  and commit. Install/remove/update previews bind the complete
   bounded target skill trees and manager inventory, including the applicable
   manager lock file; local-create binds its exact destination tree. Apply
   revalidates these facts after taking the lock and before creating a process
@@ -512,9 +520,12 @@ or expose write controls.
   verification, and read-back.
 - Install/remove/update success declares and verifies `catalog_skills`,
   `skill_files`, and `manager_inventory` read-back. Install proves every named
-  skill exists for every selected agent/scope target; remove proves selected
-  target links/records are gone; update proves its named target remains in the
-  refreshed target inventory. Local-create verifies `catalog_skills` and
+  skill exists with the selected source identity and content fingerprint for
+  every selected agent/scope target; remove proves selected target
+  links/records are gone; update proves the preview-bound skill content
+  fingerprint changed while preserving the selected identity. An unrelated
+  tree change cannot satisfy any operation. Local-create verifies
+  `catalog_skills` and
   `skill_files`, including the exact app-owned source and imported catalog ID.
   Install and update previews reject an empty skill selection. Every operation
   must also change at least one preview-bound target tree, so a preexisting
@@ -524,6 +535,20 @@ or expose write controls.
   every selected target, including an empty catalog projection after a
   successful removal; one aggregate observation never stands in for target
   coverage.
+- App-owned local deletion commits only after its missing-file and missing-row
+  read-back verifies. If removal of the private quarantine then fails, the
+  method remains a successful verified delete and returns typed
+  `follow_up={kind:"quarantine_cleanup",
+  state:"delete_applied_cleanup_pending",cleanup_required:true,...}`. The
+  follow-up never contains the quarantine path; clients must show it as
+  “deletion applied, cleanup pending,” not as either complete physical erasure
+  or a failed delete.
+- A manager working directory created for process startup is removed back to
+  its original missing state if process creation fails. Once a manager process
+  starts, nonzero exit, output/read failure, catalog refresh failure, semantic
+  verification failure, or commit uncertainty is `partial_effect` with
+  `retry_allowed=false`; it is never returned as an ordinary retryable command
+  failure.
 - Enable/disable is agent config state, not manager package state. The native
   UI routes both single and multi-skill changes through
   `batch.previewSkillToggles` and `batch.applySkillToggles`;

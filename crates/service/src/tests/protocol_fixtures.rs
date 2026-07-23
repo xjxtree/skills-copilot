@@ -359,6 +359,18 @@ struct WireSkillManagerLocalDeleteRecord {
     summary: String,
     #[serde(default)]
     readback: Option<WireActionReadbackRecord>,
+    #[serde(default)]
+    follow_up: Option<WireSkillManagerCleanupFollowUp>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireSkillManagerCleanupFollowUp {
+    kind: String,
+    state: String,
+    cleanup_required: bool,
+    message: String,
 }
 
 #[allow(dead_code)]
@@ -926,6 +938,7 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(delete.app_owned);
             assert!(!delete.deleted);
             assert!(!delete.blocked_by_references.is_empty());
+            assert!(delete.follow_up.is_none());
         }
         "skillManager.previewLocalArchiveImport" | "skillManager.applyLocalArchiveImport" => {
             let import: WireSkillManagerLocalArchiveImportRecord =

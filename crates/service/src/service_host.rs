@@ -49,6 +49,7 @@ impl ServiceHost {
                 error: Some(ServiceErrorRecord {
                     code: error.code().to_string(),
                     message: error.to_string(),
+                    details: error.details(),
                 }),
             },
         }
@@ -234,8 +235,9 @@ impl ServiceHost {
                 )?;
                 drop(read_catalog);
                 let catalog = self.open_catalog()?;
-                let applied: BatchToggleApplyRecord = apply_skill_toggles(
+                let applied: BatchToggleApplyRecord = apply_skill_toggles_guarded(
                     &catalog,
+                    &self.app_data_dir,
                     &adapter_ctx,
                     &params.instance_ids,
                     params.target_enabled,
@@ -681,8 +683,9 @@ impl ServiceHost {
                 } else {
                     self.open_catalog_for_read()?
                 };
-                let preview: SkillInstallPreviewRecord = install_skill_from_tool_global(
+                let preview: SkillInstallPreviewRecord = install_skill_from_tool_global_guarded(
                     &catalog,
+                    &self.app_data_dir,
                     &adapter_ctx,
                     &params.instance_id,
                     target_agent,

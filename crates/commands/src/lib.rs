@@ -40,6 +40,7 @@ mod config_support;
 mod error;
 mod history;
 mod local_skill_import;
+mod mutation_lock;
 mod product_projection;
 mod script_execution;
 mod skill_manager;
@@ -50,9 +51,9 @@ use analysis::{
     validate_rule_tuning_key,
 };
 use config_consistency::{
-    canonical_snapshot_project_root, ensure_expected_revision, ensure_rollback_preview_token,
-    read_config_state, rollback_preview_token, snapshot_project_root_for_scope,
-    validate_snapshot_project_binding,
+    canonical_snapshot_project_root, config_revision, ensure_expected_revision,
+    ensure_rollback_preview_token, read_config_state, rollback_preview_token,
+    snapshot_project_root_for_scope, validate_snapshot_project_binding, ConfigState,
 };
 use config_support::{
     agent_from_snapshot, batch_capability_label, batch_capability_labels, batch_skip_reason,
@@ -1858,8 +1859,32 @@ pub fn install_skill_from_tool_global(
     project_path: Option<&Path>,
     action_confirmation: Option<&ActionConfirmation>,
 ) -> Result<SkillInstallPreviewRecord, CommandError> {
-    install_skill_from_tool_global_with_after_confirmation(
+    install_skill_from_tool_global_guarded(
         catalog,
+        &ctx.user_home,
+        ctx,
+        instance_id,
+        target_agent,
+        target_scope,
+        project_path,
+        action_confirmation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn install_skill_from_tool_global_guarded(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    instance_id: &str,
+    target_agent: AgentId,
+    target_scope: Scope,
+    project_path: Option<&Path>,
+    action_confirmation: Option<&ActionConfirmation>,
+) -> Result<SkillInstallPreviewRecord, CommandError> {
+    install_skill_from_tool_global_guarded_with_after_confirmation(
+        catalog,
+        app_data_dir,
         ctx,
         instance_id,
         target_agent,
@@ -1871,8 +1896,9 @@ pub fn install_skill_from_tool_global(
 }
 
 #[allow(clippy::too_many_arguments)] // The final closure is a test-only race injection seam.
-fn install_skill_from_tool_global_with_after_confirmation<F>(
+fn install_skill_from_tool_global_guarded_with_after_confirmation<F>(
     catalog: &Catalog,
+    app_data_dir: &Path,
     ctx: &AdapterContext,
     instance_id: &str,
     target_agent: AgentId,
@@ -1910,10 +1936,16 @@ where
 
     let target = PathBuf::from(&preview.target_path);
     let source = PathBuf::from(&preview.source_path);
-    validate_skill_install_target(ctx, target_agent, target_scope, &target, project_path, true)?;
+    validate_skill_install_target(
+        ctx,
+        target_agent,
+        target_scope,
+        &target,
+        project_path,
+        false,
+    )?;
     validate_tool_global_source(&source)?;
-    let lock_file = lock_install_target(ctx, target_agent, target_scope, &target, project_path)?;
-    let transaction = catalog.begin_immediate_transaction()?;
+    let _mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
     let expected_catalog = preview
         .preconditions
         .iter()
@@ -1959,13 +1991,14 @@ where
     if locked_source.revision != expected_source.expected_revision
         || locked_target.revision != expected_target.expected_revision
     {
-        lock_file.unlock()?;
         return Err(CommandError::StaleActionReference);
     }
 
-    let original_text = locked_target.content.clone();
     let new_text = locked_source.content.clone();
-    let write_result = (|| {
+    let applied_target_revision = skill_file_revision(&target, true, &new_text)?;
+    let created_parent_candidates = missing_parent_directories(&target)?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let apply_result = (|| {
         write_skill_file_atomic(
             ctx,
             target_agent,
@@ -1976,99 +2009,118 @@ where
         )?;
         let written = fs::read_to_string(&target)?;
         if written != new_text {
-            let _ = write_skill_file_atomic(
+            return Err(CommandError::VerificationFailed);
+        }
+        let scan_ctx = install_scan_context(ctx, target_agent, target_scope, project_path)?;
+        scan_agent_id_to_catalog(target_agent, &scan_ctx, catalog)?;
+        let target_state = read_skill_file_state(&target, true)?;
+        let canonical_target = target.canonicalize()?;
+        let expected_project_root = if target_scope == Scope::AgentProject {
+            Some(
+                scan_ctx
+                    .project_root
+                    .as_deref()
+                    .ok_or(CommandError::VerificationFailed)?
+                    .canonicalize()?,
+            )
+        } else {
+            None
+        };
+        let target_record = catalog
+            .list_skill_records()?
+            .into_iter()
+            .find(|record| {
+                record.agent == target_agent.as_str()
+                    && record.scope == target_scope.as_str()
+                    && record
+                        .path
+                        .canonicalize()
+                        .is_ok_and(|path| path == canonical_target)
+            })
+            .ok_or(CommandError::VerificationFailed)?;
+        let target_meta = catalog
+            .get_skill_instance_meta(&target_record.id)?
+            .ok_or(CommandError::VerificationFailed)?;
+        let project_matches = match (
+            expected_project_root.as_deref(),
+            target_meta.project_root.as_deref(),
+        ) {
+            (None, None) => true,
+            (Some(expected), Some(actual)) => {
+                actual.canonicalize().is_ok_and(|actual| actual == expected)
+            }
+            _ => false,
+        };
+        if !project_matches {
+            return Err(CommandError::VerificationFailed);
+        }
+        let target_record_json = serde_json::to_string(&target_record)?;
+        ActionReadbackRecord::verified(
+            &preview.action,
+            vec![
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::SkillFiles,
+                    target_id: preview.target_path.clone(),
+                    revision: target_state.revision,
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::CatalogSkills,
+                    target_id: target_record.id,
+                    revision: action_source_revision(
+                        "catalog.skill.readback",
+                        &[("record", &target_record_json)],
+                    )?,
+                },
+            ],
+        )
+    })();
+
+    let readback = match apply_result {
+        Ok(readback) => readback,
+        Err(error) => {
+            drop(transaction);
+            restore_skill_install_target(
                 ctx,
                 target_agent,
                 target_scope,
                 &target,
-                &original_text,
                 project_path,
-            );
-            return Err(CommandError::VerificationFailed);
+                &locked_target,
+                &applied_target_revision,
+                &created_parent_candidates,
+            )
+            .map_err(|cleanup_error| CommandError::PartialEffect {
+                operation: "skill.install".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "apply failed ({error}); target restoration failed ({cleanup_error})"
+                ),
+            })?;
+            return Err(error);
         }
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        drop(transaction);
-        lock_file.unlock()?;
-        return Err(error);
-    }
-    if let Err(error) = transaction.commit() {
-        let _ = write_skill_file_atomic(
+    };
+    if let Err(commit_error) = transaction.commit() {
+        restore_skill_install_target(
             ctx,
             target_agent,
             target_scope,
             &target,
-            &original_text,
             project_path,
-        );
-        lock_file.unlock()?;
-        return Err(error.into());
-    }
-    lock_file.unlock()?;
-
-    let scan_ctx = install_scan_context(ctx, target_agent, target_scope, project_path)?;
-    scan_agent_id_to_catalog(target_agent, &scan_ctx, catalog)?;
-    let target_state = read_skill_file_state(&target, true)?;
-    let canonical_target = target.canonicalize()?;
-    let expected_project_root = if target_scope == Scope::AgentProject {
-        Some(
-            scan_ctx
-                .project_root
-                .as_deref()
-                .ok_or(CommandError::VerificationFailed)?
-                .canonicalize()?,
+            &locked_target,
+            &applied_target_revision,
+            &created_parent_candidates,
         )
-    } else {
-        None
-    };
-    let target_record = catalog
-        .list_skill_records()?
-        .into_iter()
-        .find(|record| {
-            record.agent == target_agent.as_str()
-                && record.scope == target_scope.as_str()
-                && record
-                    .path
-                    .canonicalize()
-                    .is_ok_and(|path| path == canonical_target)
-        })
-        .ok_or(CommandError::VerificationFailed)?;
-    let target_meta = catalog
-        .get_skill_instance_meta(&target_record.id)?
-        .ok_or(CommandError::VerificationFailed)?;
-    let project_matches = match (
-        expected_project_root.as_deref(),
-        target_meta.project_root.as_deref(),
-    ) {
-        (None, None) => true,
-        (Some(expected), Some(actual)) => {
-            actual.canonicalize().is_ok_and(|actual| actual == expected)
-        }
-        _ => false,
-    };
-    if !project_matches {
-        return Err(CommandError::VerificationFailed);
+        .map_err(|cleanup_error| CommandError::PartialEffect {
+            operation: "skill.install".to_string(),
+            state: "outcome_unknown",
+            cleanup_required: true,
+            detail: format!(
+                "catalog commit failed ({commit_error}); target restoration failed ({cleanup_error})"
+            ),
+        })?;
+        return Err(commit_error.into());
     }
-    let target_record_json = serde_json::to_string(&target_record)?;
-    let readback = ActionReadbackRecord::verified(
-        &preview.action,
-        vec![
-            ActionReadbackObservation {
-                domain: ActionReadbackDomain::SkillFiles,
-                target_id: preview.target_path.clone(),
-                revision: target_state.revision,
-            },
-            ActionReadbackObservation {
-                domain: ActionReadbackDomain::CatalogSkills,
-                target_id: target_record.id,
-                revision: action_source_revision(
-                    "catalog.skill.readback",
-                    &[("record", &target_record_json)],
-                )?,
-            },
-        ],
-    )?;
 
     Ok(SkillInstallPreviewRecord {
         wrote: true,
@@ -2080,6 +2132,34 @@ where
         },
         ..preview
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn install_skill_from_tool_global_with_after_confirmation<F>(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_id: &str,
+    target_agent: AgentId,
+    target_scope: Scope,
+    project_path: Option<&Path>,
+    action_confirmation: Option<&ActionConfirmation>,
+    after_confirmation: F,
+) -> Result<SkillInstallPreviewRecord, CommandError>
+where
+    F: FnOnce(),
+{
+    install_skill_from_tool_global_guarded_with_after_confirmation(
+        catalog,
+        &ctx.user_home,
+        ctx,
+        instance_id,
+        target_agent,
+        target_scope,
+        project_path,
+        action_confirmation,
+        after_confirmation,
+    )
 }
 
 pub fn validate_skill_install_confirmation(
@@ -2260,6 +2340,7 @@ fn preview_skill_install_from_tool_global(
 struct SkillFileState {
     revision: String,
     content: String,
+    exists: bool,
 }
 
 fn read_skill_file_state(path: &Path, required: bool) -> Result<SkillFileState, CommandError> {
@@ -2270,16 +2351,24 @@ fn read_skill_file_state(path: &Path, required: bool) -> Result<SkillFileState, 
         }
         Err(error) => return Err(error.into()),
     };
+    let revision = skill_file_revision(path, exists, &content)?;
+    Ok(SkillFileState {
+        revision,
+        content,
+        exists,
+    })
+}
+
+fn skill_file_revision(path: &Path, exists: bool, content: &str) -> Result<String, CommandError> {
     let path_text = path.to_string_lossy();
-    let revision = action_source_revision(
+    action_source_revision(
         "skill.file",
         &[
             ("path", &path_text),
             ("exists", if exists { "true" } else { "false" }),
-            ("content", &content),
+            ("content", content),
         ],
-    )?;
-    Ok(SkillFileState { revision, content })
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3402,6 +3491,14 @@ pub fn preview_skill_toggles(
     })
 }
 
+struct BatchToggleConfigPlan {
+    target: ConfigTarget,
+    metas: Vec<SkillInstanceMeta>,
+    original: ConfigState,
+    new_text: String,
+    created_parent_candidates: Vec<PathBuf>,
+}
+
 pub fn apply_skill_toggles(
     catalog: &Catalog,
     ctx: &AdapterContext,
@@ -3409,8 +3506,27 @@ pub fn apply_skill_toggles(
     target_enabled: bool,
     confirmation: &ActionConfirmation,
 ) -> Result<BatchToggleApplyRecord, CommandError> {
-    apply_skill_toggles_with_after_confirmation(
+    apply_skill_toggles_guarded(
         catalog,
+        &ctx.user_home,
+        ctx,
+        instance_ids,
+        target_enabled,
+        confirmation,
+    )
+}
+
+pub fn apply_skill_toggles_guarded(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    instance_ids: &[String],
+    target_enabled: bool,
+    confirmation: &ActionConfirmation,
+) -> Result<BatchToggleApplyRecord, CommandError> {
+    apply_skill_toggles_guarded_with_after_confirmation(
+        catalog,
+        app_data_dir,
         ctx,
         instance_ids,
         target_enabled,
@@ -3419,8 +3535,32 @@ pub fn apply_skill_toggles(
     )
 }
 
+#[cfg(test)]
 fn apply_skill_toggles_with_after_confirmation<F>(
     catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_ids: &[String],
+    target_enabled: bool,
+    confirmation: &ActionConfirmation,
+    after_confirmation: F,
+) -> Result<BatchToggleApplyRecord, CommandError>
+where
+    F: FnOnce(),
+{
+    apply_skill_toggles_guarded_with_after_confirmation(
+        catalog,
+        &ctx.user_home,
+        ctx,
+        instance_ids,
+        target_enabled,
+        confirmation,
+        after_confirmation,
+    )
+}
+
+fn apply_skill_toggles_guarded_with_after_confirmation<F>(
+    catalog: &Catalog,
+    app_data_dir: &Path,
     ctx: &AdapterContext,
     instance_ids: &[String],
     target_enabled: bool,
@@ -3444,6 +3584,7 @@ where
         ));
     }
 
+    let _mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
     let mut groups: BTreeMap<(String, String, String, String), Vec<SkillInstanceMeta>> =
         BTreeMap::new();
     for item in &preview.affected_items {
@@ -3462,14 +3603,13 @@ where
             .push(meta);
     }
 
-    let mut updated_records = Vec::new();
-    let mut group_locks = Vec::new();
+    let mut plans = Vec::new();
     for ((_, _, _, expected_revision), metas) in &groups {
         let Some(first_meta) = metas.first() else {
             continue;
         };
         let config_target = config_target_for_instance(ctx, first_meta)?;
-        let lock_file = lock_config(
+        validate_config_write_target_noncreating(
             ctx,
             config_target.agent,
             config_target.scope,
@@ -3477,10 +3617,26 @@ where
         )?;
         let locked_state = read_config_state(&config_target.path)?;
         if locked_state.revision != *expected_revision {
-            lock_file.unlock()?;
             return Err(CommandError::StaleActionReference);
         }
-        group_locks.push(lock_file);
+        let normalized_original =
+            normalize_initial_config_text(&config_target, locked_state.content.clone());
+        let mut doc = AgentConfigDocument {
+            path: config_target.path.clone(),
+            format: config_target.format,
+            text: normalized_original,
+        };
+        for meta in metas {
+            let instance_for_patch = minimal_skill_instance(meta);
+            patch_enabled_for_agent(meta.agent, &mut doc, &instance_for_patch, target_enabled)?;
+        }
+        plans.push(BatchToggleConfigPlan {
+            created_parent_candidates: missing_parent_directories(&config_target.path)?,
+            target: config_target,
+            metas: metas.clone(),
+            original: locked_state,
+            new_text: doc.text,
+        });
     }
     let transaction = catalog.begin_immediate_transaction()?;
     for item in &preview.affected_items {
@@ -3499,51 +3655,76 @@ where
             return Err(CommandError::StaleActionReference);
         }
     }
-    for ((_, _, _, expected_revision), metas) in &groups {
-        let Some(first_meta) = metas.first() else {
-            continue;
-        };
-        let config_target = config_target_for_instance(ctx, first_meta)?;
-        let locked_state = read_config_state(&config_target.path)?;
-        if locked_state.revision != *expected_revision {
+    for plan in &plans {
+        if read_config_state(&plan.target.path)?.revision != plan.original.revision {
             return Err(CommandError::StaleActionReference);
         }
     }
-    for ((_, _, _, _expected_revision), metas) in &groups {
-        let Some(first_meta) = metas.first() else {
-            continue;
-        };
-        let config_target = config_target_for_instance(ctx, first_meta)?;
-        apply_skill_toggle_group_locked(catalog, ctx, &config_target, metas, target_enabled)?;
-        for meta in metas {
-            let record = catalog
-                .get_skill_record(&meta.id)?
-                .ok_or_else(|| CommandError::InstanceNotFound(meta.id.clone()))?;
-            updated_records.push(record);
+    let apply_result = (|| {
+        for plan in &mut plans {
+            apply_skill_toggle_plan(catalog, ctx, plan, target_enabled)?;
         }
+        let mut updated_records = Vec::new();
+        for plan in &plans {
+            for meta in &plan.metas {
+                let record = catalog
+                    .get_skill_record(&meta.id)?
+                    .ok_or_else(|| CommandError::InstanceNotFound(meta.id.clone()))?;
+                updated_records.push(record);
+            }
+        }
+        let mut observations = Vec::new();
+        for plan in &plans {
+            observations.push(ActionReadbackObservation {
+                domain: ActionReadbackDomain::AgentConfig,
+                target_id: plan.target.path.to_string_lossy().to_string(),
+                revision: read_config_state(&plan.target.path)?.revision,
+            });
+        }
+        for record in &updated_records {
+            let serialized = serde_json::to_string(record)?;
+            observations.push(ActionReadbackObservation {
+                domain: ActionReadbackDomain::CatalogSkills,
+                target_id: record.id.clone(),
+                revision: action_source_revision(
+                    "catalog.skill.readback",
+                    &[("record", &serialized)],
+                )?,
+            });
+        }
+        let readback = ActionReadbackRecord::verified(&preview.action, observations)?;
+        Ok((updated_records, readback))
+    })();
+    let (updated_records, readback) = match apply_result {
+        Ok(result) => result,
+        Err(error) => {
+            drop(transaction);
+            restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
+                CommandError::PartialEffect {
+                    operation: "batch.applySkillToggles".to_string(),
+                    state: "outcome_unknown",
+                    cleanup_required: true,
+                    detail: format!(
+                        "batch apply failed ({error}); reverse restoration failed ({cleanup_error})"
+                    ),
+                }
+            })?;
+            return Err(error);
+        }
+    };
+    if let Err(commit_error) = transaction.commit() {
+        restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
+            CommandError::PartialEffect {
+                operation: "batch.applySkillToggles".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "catalog commit failed ({commit_error}); reverse restoration failed ({cleanup_error})"
+                ),
+            }
+        })?;
+        return Err(commit_error.into());
     }
-    transaction.commit()?;
-    for lock_file in group_locks {
-        lock_file.unlock()?;
-    }
-
-    let mut observations = Vec::new();
-    for (_, _, config_path, _) in groups.keys() {
-        observations.push(ActionReadbackObservation {
-            domain: ActionReadbackDomain::AgentConfig,
-            target_id: config_path.clone(),
-            revision: read_config_state(Path::new(config_path))?.revision,
-        });
-    }
-    for record in &updated_records {
-        let serialized = serde_json::to_string(record)?;
-        observations.push(ActionReadbackObservation {
-            domain: ActionReadbackDomain::CatalogSkills,
-            target_id: record.id.clone(),
-            revision: action_source_revision("catalog.skill.readback", &[("record", &serialized)])?,
-        });
-    }
-    let readback = ActionReadbackRecord::verified(&preview.action, observations)?;
     Ok(BatchToggleApplyRecord {
         action: preview.action,
         preview_token: preview.preview_token,
@@ -3579,74 +3760,44 @@ pub fn validate_skill_toggle_confirmation(
     Ok(preview)
 }
 
-fn apply_skill_toggle_group_locked(
+fn apply_skill_toggle_plan(
     catalog: &Catalog,
     ctx: &AdapterContext,
-    config_target: &ConfigTarget,
-    metas: &[SkillInstanceMeta],
+    plan: &mut BatchToggleConfigPlan,
     target_enabled: bool,
 ) -> Result<(), CommandError> {
-    validate_config_write_target(
-        ctx,
-        config_target.agent,
-        config_target.scope,
-        &config_target.path,
-    )?;
-    let original_text = if config_target.path.exists() {
-        fs::read_to_string(&config_target.path)?
-    } else {
-        String::new()
-    };
-    let original_text = normalize_initial_config_text(config_target, original_text);
-
+    validate_config_write_target(ctx, plan.target.agent, plan.target.scope, &plan.target.path)?;
+    let snapshot_original =
+        normalize_initial_config_text(&plan.target, plan.original.content.clone());
     let snapshot_id = generate_snapshot_id();
     let now_ms = current_time_ms();
-    let snapshot_content = redact_snapshot_content(&original_text);
-    let snapshot_project_root = snapshot_project_root_for_scope(ctx, config_target.scope)?;
+    let snapshot_content = redact_snapshot_content(&snapshot_original);
+    let snapshot_project_root = snapshot_project_root_for_scope(ctx, plan.target.scope)?;
     catalog.create_config_snapshot(ConfigSnapshotDraft {
         id: &snapshot_id,
-        agent: config_target.agent.as_str(),
-        scope: config_target.scope.as_str(),
+        agent: plan.target.agent.as_str(),
+        scope: plan.target.scope.as_str(),
         project_root: snapshot_project_root.as_deref(),
-        target: &config_target.path.to_string_lossy(),
+        target: &plan.target.path.to_string_lossy(),
         content: &snapshot_content,
         reason: "pre-batch-toggle",
         created_at_ms: now_ms,
     })?;
-
-    let mut doc = AgentConfigDocument {
-        path: config_target.path.clone(),
-        format: config_target.format,
-        text: original_text.clone(),
-    };
-    for meta in metas {
-        let instance_for_patch = minimal_skill_instance(meta);
-        patch_enabled_for_agent(meta.agent, &mut doc, &instance_for_patch, target_enabled)?;
-    }
-
     write_config_atomic(
         ctx,
-        config_target.agent,
-        config_target.scope,
-        &config_target.path,
-        &doc.text,
+        plan.target.agent,
+        plan.target.scope,
+        &plan.target.path,
+        &plan.new_text,
     )?;
-
-    let written = fs::read_to_string(&config_target.path)?;
-    if written != doc.text {
-        let _ = write_config_atomic(
-            ctx,
-            config_target.agent,
-            config_target.scope,
-            &config_target.path,
-            &original_text,
-        );
+    let written = fs::read_to_string(&plan.target.path)?;
+    if written != plan.new_text {
         return Err(CommandError::VerificationFailed);
     }
 
     let new_state = if target_enabled { "loaded" } else { "disabled" };
-    let target = config_target.path.to_string_lossy().to_string();
-    for meta in metas {
+    let target = plan.target.path.to_string_lossy().to_string();
+    for meta in &plan.metas {
         catalog.set_skill_toggle(&meta.id, target_enabled, new_state)?;
         let event_payload = serde_json::json!({
             "enabled": target_enabled,
@@ -3654,7 +3805,7 @@ fn apply_skill_toggle_group_locked(
             "scope": meta.scope.as_str(),
             "target": target,
             "skill_name": meta.name.clone(),
-            "config_scope": config_target.scope.as_str(),
+            "config_scope": plan.target.scope.as_str(),
             "previous_enabled": meta.enabled,
             "batch": true,
             "snapshot_id": snapshot_id,
@@ -3668,6 +3819,76 @@ fn apply_skill_toggle_group_locked(
         })?;
     }
 
+    Ok(())
+}
+
+fn restore_batch_toggle_plans(
+    ctx: &AdapterContext,
+    plans: &[BatchToggleConfigPlan],
+) -> Result<(), CommandError> {
+    let mut first_error = None;
+    for plan in plans.iter().rev() {
+        if let Err(error) = restore_config_state(
+            ctx,
+            &plan.target,
+            &plan.original,
+            &config_revision(true, &plan.new_text),
+            &plan.created_parent_candidates,
+        ) {
+            first_error.get_or_insert(error);
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn restore_config_state(
+    ctx: &AdapterContext,
+    target: &ConfigTarget,
+    original: &ConfigState,
+    expected_applied_revision: &str,
+    created_parent_candidates: &[PathBuf],
+) -> Result<(), CommandError> {
+    let current = read_config_state(&target.path)?;
+    if current.revision == original.revision {
+        return Ok(());
+    }
+    if current.revision != expected_applied_revision {
+        return Err(CommandError::InvalidBatchAction(
+            "config target changed to an unowned third state during compensation".to_string(),
+        ));
+    }
+    if original.exists {
+        write_config_atomic(
+            ctx,
+            target.agent,
+            target.scope,
+            &target.path,
+            &original.content,
+        )?;
+    } else {
+        match fs::remove_file(&target.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        for directory in created_parent_candidates {
+            match fs::remove_dir(directory) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    if read_config_state(&target.path)?.revision != original.revision {
+        return Err(CommandError::VerificationFailed);
+    }
     Ok(())
 }
 
@@ -4928,6 +5149,84 @@ fn validate_config_write_target(
     Ok(())
 }
 
+fn validate_config_write_target_noncreating(
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    path: &Path,
+) -> Result<(), CommandError> {
+    if agent == AgentId::Pi {
+        match scope {
+            Scope::AgentGlobal
+                if path != ctx.user_home.join(".pi/agent/settings.json").as_path() =>
+            {
+                return Err(CommandError::UnsafeConfigPath(
+                    "Pi global config target does not match the guarded path".to_string(),
+                ));
+            }
+            Scope::AgentProject
+                if path.file_name().and_then(|name| name.to_str()) != Some("settings.json")
+                    || path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        != Some(".pi") =>
+            {
+                return Err(CommandError::UnsafeConfigPath(
+                    "Pi project config target does not match the guarded path".to_string(),
+                ));
+            }
+            Scope::AgentGlobal | Scope::AgentProject => {}
+            _ => return Err(CommandError::UnsupportedScope(scope)),
+        }
+    } else {
+        let expected = expected_config_target(ctx, agent, scope)?;
+        if path != expected.path {
+            return Err(CommandError::UnsafeConfigPath(
+                "config target does not match the guarded adapter path".to_string(),
+            ));
+        }
+    }
+
+    let allowed_root = match scope {
+        Scope::AgentGlobal => &ctx.user_home,
+        Scope::AgentProject => ctx
+            .project_root
+            .as_ref()
+            .ok_or(CommandError::UnsupportedScope(scope))?,
+        _ => return Err(CommandError::UnsupportedScope(scope)),
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| CommandError::UnsafeConfigPath("config path has no parent".to_string()))?;
+    let normalized_parent = normalize_path_lexically(parent);
+    let normalized_root = normalize_path_lexically(allowed_root);
+    if !normalized_parent.starts_with(&normalized_root) {
+        return Err(CommandError::UnsafeConfigPath(
+            "config parent is outside the guarded owner root".to_string(),
+        ));
+    }
+    reject_symlink(path, "config file")?;
+    let mut existing = parent;
+    while !existing.exists() {
+        reject_symlink(existing, "config directory")?;
+        existing = existing.parent().ok_or_else(|| {
+            CommandError::UnsafeConfigPath(
+                "config parent has no existing guarded ancestor".to_string(),
+            )
+        })?;
+    }
+    reject_symlink(existing, "config directory")?;
+    let canonical_root = allowed_root.canonicalize()?;
+    let canonical_existing = existing.canonicalize()?;
+    if !canonical_existing.starts_with(&canonical_root) {
+        return Err(CommandError::UnsafeConfigPath(
+            "config parent resolves outside the guarded owner root".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_tool_global_source(path: &Path) -> Result<(), CommandError> {
     if path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
         return Err(CommandError::UnsafeConfigPath(format!(
@@ -5093,6 +5392,7 @@ fn write_config_atomic(
         let _ = fs::remove_file(&tmp);
     }
     rename_result?;
+    run_atomic_post_rename_test_hook(path)?;
     set_private_path_permissions(path)?;
     validate_config_write_target(ctx, agent, scope, path)?;
     if let Ok(parent_dir) = fs::File::open(parent) {
@@ -5138,10 +5438,121 @@ fn write_skill_file_atomic(
         let _ = fs::remove_file(&tmp);
     }
     rename_result?;
+    run_atomic_post_rename_test_hook(path)?;
     set_private_path_permissions(path)?;
     validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
     if let Ok(parent_dir) = fs::File::open(parent) {
         let _ = parent_dir.sync_all();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+struct AtomicPostRenameTestHook {
+    path: PathBuf,
+    action: Box<dyn FnOnce(&Path) + Send>,
+}
+
+#[cfg(test)]
+static ATOMIC_POST_RENAME_TEST_HOOKS: std::sync::Mutex<Vec<AtomicPostRenameTestHook>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn install_atomic_post_rename_test_hook(
+    path: PathBuf,
+    action: impl FnOnce(&Path) + Send + 'static,
+) {
+    let mut hooks = ATOMIC_POST_RENAME_TEST_HOOKS
+        .lock()
+        .expect("lock atomic post-rename test hook");
+    hooks.push(AtomicPostRenameTestHook {
+        path,
+        action: Box::new(action),
+    });
+}
+
+#[cfg(test)]
+fn run_atomic_post_rename_test_hook(path: &Path) -> Result<(), CommandError> {
+    let action = {
+        let mut hooks = ATOMIC_POST_RENAME_TEST_HOOKS
+            .lock()
+            .expect("lock atomic post-rename test hook");
+        hooks
+            .iter()
+            .position(|hook| hook.path == path)
+            .map(|position| hooks.remove(position).action)
+    };
+    if let Some(action) = action {
+        action(path);
+        return Err(CommandError::VerificationFailed);
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_atomic_post_rename_test_hook(_path: &Path) -> Result<(), CommandError> {
+    Ok(())
+}
+
+fn missing_parent_directories(path: &Path) -> Result<Vec<PathBuf>, CommandError> {
+    let mut missing = Vec::new();
+    let mut current = path.parent().ok_or_else(|| {
+        CommandError::UnsafeConfigPath("mutation target has no parent".to_string())
+    })?;
+    while !current.exists() {
+        missing.push(current.to_path_buf());
+        current = current.parent().ok_or_else(|| {
+            CommandError::UnsafeConfigPath(
+                "mutation target has no existing owner ancestor".to_string(),
+            )
+        })?;
+    }
+    Ok(missing)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_skill_install_target(
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    target: &Path,
+    project_path: Option<&Path>,
+    original: &SkillFileState,
+    expected_applied_revision: &str,
+    created_parent_candidates: &[PathBuf],
+) -> Result<(), CommandError> {
+    let current = read_skill_file_state(target, false)?;
+    if current.revision == original.revision {
+        return Ok(());
+    }
+    if current.revision != expected_applied_revision {
+        return Err(CommandError::InvalidBatchAction(
+            "install target changed to an unowned third state during compensation".to_string(),
+        ));
+    }
+    if original.exists {
+        write_skill_file_atomic(ctx, agent, scope, target, &original.content, project_path)?;
+    } else {
+        match fs::remove_file(target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        for directory in created_parent_candidates {
+            match fs::remove_dir(directory) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let restored = read_skill_file_state(target, false)?;
+    if restored.revision != original.revision {
+        return Err(CommandError::VerificationFailed);
     }
     Ok(())
 }
@@ -5191,30 +5602,6 @@ fn lock_config(
     let lock_file = options.open(&lock_path)?;
     set_private_file_permissions(&lock_file)?;
     reject_symlink(&lock_path, "config lock file")?;
-    lock_file.lock_exclusive()?;
-    Ok(lock_file)
-}
-
-fn lock_install_target(
-    ctx: &AdapterContext,
-    agent: AgentId,
-    scope: Scope,
-    path: &Path,
-    project_path: Option<&Path>,
-) -> Result<fs::File, CommandError> {
-    validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-    let lock_path = path.with_extension("lock");
-    reject_symlink(&lock_path, "install lock file")?;
-    let mut options = fs::OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let lock_file = options.open(&lock_path)?;
-    set_private_file_permissions(&lock_file)?;
-    reject_symlink(&lock_path, "install lock file")?;
     lock_file.lock_exclusive()?;
     Ok(lock_file)
 }

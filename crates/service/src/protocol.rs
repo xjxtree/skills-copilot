@@ -106,4 +106,14 @@ pub struct ServiceResponse {
 pub struct ServiceErrorRecord {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<ServiceErrorDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceErrorDetails {
+    pub operation: String,
+    pub state: String,
+    pub cleanup_required: bool,
+    pub retry_allowed: bool,
 }

@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     convert::TryFrom,
     path::{Path, PathBuf},
@@ -27,6 +28,7 @@ use mapping::*;
 #[derive(Debug)]
 pub struct Catalog {
     conn: Connection,
+    fail_next_commit: Cell<bool>,
 }
 
 /// Holds an immediate SQLite transaction on a catalog connection.
@@ -37,6 +39,7 @@ pub struct Catalog {
 /// read-back checks pass.
 pub struct CatalogImmediateTransaction<'catalog> {
     transaction: Transaction<'catalog>,
+    fail_commit: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -250,18 +253,22 @@ pub enum CatalogError {
     SourceChanged,
     #[error("catalog schema migration did not reach the current version")]
     SchemaOutdated,
+    #[error("injected catalog commit failure")]
+    InjectedCommitFailure,
 }
 
 impl Catalog {
     pub fn open(path: &Path) -> Result<Self, CatalogError> {
         Ok(Self {
             conn: Connection::open(path)?,
+            fail_next_commit: Cell::new(false),
         })
     }
 
     pub fn open_read_only(path: &Path) -> Result<Self, CatalogError> {
         Ok(Self {
             conn: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+            fail_next_commit: Cell::new(false),
         })
     }
 
@@ -289,6 +296,7 @@ impl Catalog {
     pub fn in_memory() -> Result<Self, CatalogError> {
         Ok(Self {
             conn: Connection::open_in_memory()?,
+            fail_next_commit: Cell::new(false),
         })
     }
 
@@ -303,7 +311,14 @@ impl Catalog {
     ) -> Result<CatalogImmediateTransaction<'_>, CatalogError> {
         Ok(CatalogImmediateTransaction {
             transaction: Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?,
+            fail_commit: self.fail_next_commit.replace(false),
         })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn inject_next_commit_failure_for_test(&self) {
+        self.fail_next_commit.set(true);
     }
 
     /// Migrate records whose `path` was stored as a display path (pre-refactor)
@@ -520,7 +535,10 @@ impl Catalog {
             .try_into()
             .unwrap_or(i64::MAX);
 
-        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let owns_transaction = self.conn.is_autocommit();
+        if owns_transaction {
+            self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        }
         let result = (|| -> Result<usize, CatalogError> {
             let mut stmt = self.conn.prepare(
                 "SELECT id, scope, project_root, path, state
@@ -592,6 +610,9 @@ impl Catalog {
             Ok(transitioned)
         })();
 
+        if !owns_transaction {
+            return result;
+        }
         match result {
             Ok(count) => match self.conn.execute_batch("COMMIT") {
                 Ok(()) => Ok(count),
@@ -837,6 +858,9 @@ impl Catalog {
 
 impl CatalogImmediateTransaction<'_> {
     pub fn commit(self) -> Result<(), CatalogError> {
+        if self.fail_commit {
+            return Err(CatalogError::InjectedCommitFailure);
+        }
         self.transaction.commit().map_err(Into::into)
     }
 }

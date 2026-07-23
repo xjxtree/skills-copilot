@@ -46,6 +46,7 @@ pub fn handle_request_json(input: &str) -> String {
                 error: Some(ServiceErrorRecord {
                     code: error.code().to_string(),
                     message: error.to_string(),
+                    details: error.details(),
                 }),
             },
         },
@@ -56,6 +57,7 @@ pub fn handle_request_json(input: &str) -> String {
             error: Some(ServiceErrorRecord {
                 code: "parse_error".to_string(),
                 message: error.to_string(),
+                details: None,
             }),
         },
     };

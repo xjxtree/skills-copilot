@@ -22,4 +22,5 @@ url.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+skills-copilot-catalog = { workspace = true, features = ["test-support"] }
 rusqlite.workspace = true

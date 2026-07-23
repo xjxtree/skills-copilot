@@ -1,6 +1,32 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[test]
+fn partial_effect_errors_expose_structured_non_retryable_cleanup_details() {
+    let error = ServiceError::Command(CommandError::PartialEffect {
+        operation: "skillManager.applyInstall".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: true,
+        detail: "fixture redacted fact".to_string(),
+    });
+    assert_eq!(error.code(), "partial_effect");
+    let details = error.details().expect("partial effect details");
+    assert_eq!(details.operation, "skillManager.applyInstall");
+    assert_eq!(details.state, "outcome_unknown");
+    assert!(details.cleanup_required);
+    assert!(!details.retry_allowed);
+    let serialized = serde_json::to_value(ServiceErrorRecord {
+        code: error.code().to_string(),
+        message: error.to_string(),
+        details: Some(details),
+    })
+    .expect("serialize error");
+    assert_eq!(
+        serialized.pointer("/details/retry_allowed"),
+        Some(&serde_json::Value::Bool(false))
+    );
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TreeEntry {
     Directory,
@@ -144,7 +170,8 @@ fn request_fixture(method: &str, home: &Path, project: &Path) -> ServiceRequest 
     let request: ServiceRequest = serde_json::from_value(value)
         .unwrap_or_else(|error| panic!("deserialize request fixture {}: {error}", path.display()));
     assert_eq!(
-        request.method, method,
+        request.method,
+        method,
         "request fixture {} does not exercise {method}",
         path.display()
     );

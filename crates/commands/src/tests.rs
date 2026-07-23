@@ -1960,6 +1960,140 @@ fn batch_toggle_prelocks_all_groups_before_the_first_write() {
 }
 
 #[test]
+fn batch_toggle_restores_every_group_when_a_later_atomic_write_fails_after_rename() {
+    let temp_root = temp_test_dir("batch-toggle-post-rename-failure");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "restore-claude");
+    write_pi_global_skill(&home, "restore-pi");
+
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let records = catalog.list_skill_records().expect("records");
+    let selection = vec![
+        records
+            .iter()
+            .find(|record| record.agent == "claude-code" && record.name == "restore-claude")
+            .expect("Claude record")
+            .id
+            .clone(),
+        records
+            .iter()
+            .find(|record| record.agent == "pi" && record.name == "restore-pi")
+            .expect("Pi record")
+            .id
+            .clone(),
+    ];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let failing_target = home.join(".pi/agent/settings.json");
+    install_atomic_post_rename_test_hook(failing_target.clone(), |_| {});
+
+    let error = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation)
+        .expect_err("post-rename failure must fail the batch");
+
+    assert!(matches!(error, CommandError::VerificationFailed));
+    assert!(
+        !home.join(".claude/settings.json").exists(),
+        "the earlier group must be restored to missing"
+    );
+    assert!(
+        !failing_target.exists(),
+        "the failed group must be restored even though rename completed"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("snapshots")
+            .is_empty(),
+        "the catalog transaction must roll back"
+    );
+    assert!(catalog
+        .list_skill_records()
+        .expect("records")
+        .iter()
+        .filter(|record| selection.contains(&record.id))
+        .all(|record| record.enabled));
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn batch_toggle_restores_every_group_and_catalog_when_commit_fails() {
+    let temp_root = temp_test_dir("batch-toggle-commit-failure");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "commit-claude");
+    write_pi_global_skill(&home, "commit-pi");
+
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let records = catalog.list_skill_records().expect("records");
+    let selection = vec![
+        records
+            .iter()
+            .find(|record| record.agent == "claude-code" && record.name == "commit-claude")
+            .expect("Claude record")
+            .id
+            .clone(),
+        records
+            .iter()
+            .find(|record| record.agent == "pi" && record.name == "commit-pi")
+            .expect("Pi record")
+            .id
+            .clone(),
+    ];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    catalog.inject_next_commit_failure_for_test();
+
+    let error = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation)
+        .expect_err("injected commit failure must fail the batch");
+
+    assert!(error
+        .to_string()
+        .contains("injected catalog commit failure"));
+    assert!(!home.join(".claude/settings.json").exists());
+    assert!(!home.join(".pi/agent/settings.json").exists());
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("snapshots")
+            .is_empty(),
+        "snapshots created in the failed transaction must roll back"
+    );
+    for instance_id in &selection {
+        let record = catalog
+            .get_skill_record(instance_id)
+            .expect("record lookup")
+            .expect("record remains");
+        assert!(record.enabled);
+        assert!(
+            list_skill_events(&catalog, instance_id, Some(10))
+                .expect("events")
+                .is_empty(),
+            "events created in the failed transaction must roll back"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
     let temp_root = temp_test_dir("pi-toggle-global");
     let home = temp_root.join("home");
@@ -4182,6 +4316,91 @@ fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
 }
 
 #[test]
+fn local_delete_reports_applied_verified_when_only_quarantine_cleanup_fails() {
+    let temp_root = temp_test_dir("local-delete-cleanup-failure");
+    let app_data = temp_root.join("app-data");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join("cleanup-failure")
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        "---\nname: cleanup-failure\ndescription: cleanup failure\n---\nbody",
+    )
+    .expect("write source");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let mut instance = install_tool_global_instance(
+        "tool-global-cleanup-failure",
+        source_path.clone(),
+        "cleanup-failure",
+    );
+    instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&instance)
+        .expect("upsert tool-global");
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance.id.clone(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    let canonical_source = source_path.canonicalize().expect("canonical source");
+    skill_manager::install_local_delete_cleanup_failure_test_hook(canonical_source);
+
+    let record = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance.id.clone(),
+            confirmed: true,
+            preview_token: preview.preview_token.clone(),
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    )
+    .expect("verified delete remains a successful apply");
+
+    assert!(record.deleted);
+    assert!(record.readback.as_ref().is_some_and(|item| item.verified));
+    let follow_up = record
+        .follow_up
+        .expect("cleanup failure must be explicit in the success record");
+    assert_eq!(follow_up.kind, "quarantine_cleanup");
+    assert_eq!(follow_up.state, "delete_applied_cleanup_pending");
+    assert!(follow_up.cleanup_required);
+    assert!(!follow_up
+        .message
+        .contains(&temp_root.to_string_lossy().to_string()));
+    assert!(!source_path.exists(), "committed delete remains applied");
+    assert!(
+        catalog
+            .get_skill_record(&instance.id)
+            .expect("catalog lookup")
+            .is_none(),
+        "catalog delete is committed before quarantine cleanup"
+    );
+    let source_parent = source_path.parent().expect("source parent");
+    let library_root = source_parent.parent().expect("library root");
+    assert!(
+        std::fs::read_dir(library_root)
+            .expect("read library")
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".agent-copilot-delete-cleanup-failure-")),
+        "the partial-effect cleanup target remains available for explicit cleanup"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn local_delete_rechecks_catalog_references_under_the_shared_lock() {
     let temp_root = temp_test_dir("local-delete-reference-race");
     let app_data = temp_root.join("app-data");
@@ -4328,6 +4547,213 @@ fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
         .expect("records")
         .iter()
         .any(|record| record.agent == "claude-code" && record.name == "portable-beta"));
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_rename() {
+    let temp_root = temp_test_dir("install-post-rename-failure");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "restore-install");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            "tool-global-restore-install",
+            source_path,
+            "restore-install",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-restore-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview");
+    let target = PathBuf::from(&preview.target_path);
+    install_atomic_post_rename_test_hook(target.clone(), |_| {});
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+
+    let error = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-restore-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    )
+    .expect_err("post-rename failure must fail install");
+
+    assert!(matches!(error, CommandError::VerificationFailed));
+    assert!(!target.exists(), "candidate target must be removed");
+    assert!(
+        !home.join(".claude/skills/restore-install").exists(),
+        "directories created only for the failed install must be removed"
+    );
+    assert!(!catalog
+        .list_skill_records()
+        .expect("records")
+        .iter()
+        .any(|record| {
+            record.agent == "claude-code"
+                && record.scope == Scope::AgentGlobal.as_str()
+                && record.name == "restore-install"
+        }));
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn confirmed_install_preserves_a_concurrent_third_state_and_reports_partial_effect() {
+    let temp_root = temp_test_dir("install-third-state");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "third-state-install");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            "tool-global-third-state-install",
+            source_path,
+            "third-state-install",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-third-state-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview");
+    let target = PathBuf::from(&preview.target_path);
+    let third_state = "---\nname: third-state-install\n---\nconcurrent third state\n";
+    install_atomic_post_rename_test_hook(target.clone(), move |path| {
+        std::fs::write(path, third_state).expect("write third state");
+    });
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+
+    let error = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-third-state-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    )
+    .expect_err("third state must make the outcome partial");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("third state remains"),
+        third_state,
+        "compensation must never overwrite an unowned concurrent state"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn confirmed_install_restores_files_and_catalog_when_commit_fails() {
+    let temp_root = temp_test_dir("install-commit-failure");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "commit-fail-install");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            "tool-global-commit-fail-install",
+            source_path,
+            "commit-fail-install",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-commit-fail-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview");
+    let target = PathBuf::from(&preview.target_path);
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    catalog.inject_next_commit_failure_for_test();
+
+    let error = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-commit-fail-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    )
+    .expect_err("injected commit failure must fail install");
+
+    assert!(error
+        .to_string()
+        .contains("injected catalog commit failure"));
+    assert!(
+        !target.exists(),
+        "installed file must be restored to missing"
+    );
+    assert!(!catalog
+        .list_skill_records()
+        .expect("records")
+        .iter()
+        .any(|record| {
+            record.agent == "claude-code"
+                && record.scope == Scope::AgentGlobal.as_str()
+                && record.name == "commit-fail-install"
+        }));
+    assert!(
+        catalog
+            .list_config_snapshots("claude-code", &target.to_string_lossy())
+            .expect("snapshots")
+            .is_empty(),
+        "no transaction-owned catalog state may commit"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_root);
 }

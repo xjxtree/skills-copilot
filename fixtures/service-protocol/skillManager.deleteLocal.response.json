@@ -18,6 +18,7 @@
     ],
     "confirmed": false,
     "deleted": false,
-    "summary": "Local skill cannot be physically deleted until supported-agent references are removed, or because the source is not app-owned."
+    "summary": "Local skill cannot be physically deleted until supported-agent references are removed, or because the source is not app-owned.",
+    "follow_up": null
   }
 }

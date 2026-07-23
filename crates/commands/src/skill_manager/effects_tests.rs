@@ -335,6 +335,61 @@ fn prohibited_previewed_command_does_not_create_cwd() {
 }
 
 #[test]
+fn manager_spawn_failure_removes_the_working_directory_tree_it_created() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-spawn-failure-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).expect("create owner root");
+    let cwd = root.join("created/by/manager");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    let preview = SkillManagerCommandPreview {
+        action: None,
+        preconditions: Vec::new(),
+        tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+        operation: "install".to_string(),
+        command: vec![root.join("missing-manager").to_string_lossy().to_string()],
+        cwd: cwd.to_string_lossy().to_string(),
+        env: Vec::new(),
+        requires_confirmation: true,
+        confirmed: true,
+        network_required: false,
+        network_allowed: true,
+        will_run: true,
+        preview_token: "test-token".to_string(),
+        summary: "test".to_string(),
+        risks: Vec::new(),
+        source: None,
+        skills: Vec::new(),
+    };
+
+    let error = match run_previewed_command(&ctx, &preview) {
+        Ok(_) => panic!("spawn must fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        CommandError::SkillManagerCommandFailed(detail)
+            if detail.contains("did not start")
+    ));
+    assert!(
+        !root.join("created").exists(),
+        "failed startup must restore the original zero-tree state"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn confirmed_manager_apply_requires_the_exact_preview_token() {
     let mut preview = test_preview("install");
     preview.requires_confirmation = true;

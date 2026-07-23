@@ -1747,11 +1747,16 @@ final class SkillStore: ObservableObject {
         }
         await runSkillManagerConfirmedWrite { [self] in
             do {
-                _ = try await service.applySkillManagerLocalDelete(
+                let result = try await service.applySkillManagerLocalDelete(
                     preview: confirmation.result
                 )
                 retireSkillManagerLocalDeleteConfirmation(confirmation)
-                skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
+                skillManagerMessage = result.followUp == nil
+                    ? UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
+                    : UIStrings.text(
+                        "skillManager.localDelete.cleanupPending",
+                        "Local skill deleted, but private cleanup is still pending."
+                    )
                 do {
                     try await refreshCatalogProjectionAfterWrite()
                     recordLocalRefresh(message: UIStrings.refreshAfterWrite)
@@ -1948,9 +1953,15 @@ final class SkillStore: ObservableObject {
                         do {
                             let cleanupPreview = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
                             if cleanupPreview.physicalDeleteAllowed {
-                                _ = try await service.applySkillManagerLocalDelete(
+                                let cleanup = try await service.applySkillManagerLocalDelete(
                                     preview: cleanupPreview
                                 )
+                                if cleanup.followUp != nil {
+                                    followUpWarning = UIStrings.text(
+                                        "skillManager.localDelete.cleanupPending",
+                                        "Local skill deleted, but private cleanup is still pending."
+                                    )
+                                }
                             } else {
                                 followUpWarning = UIStrings.text(
                                     "skillManager.remove.cleanupBlocked",

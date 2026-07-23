@@ -207,6 +207,211 @@ fn manager_child_process_never_inherits_the_action_preview_secret() {
     assert_success(&response);
 }
 
+#[test]
+#[cfg(unix)]
+fn manager_exit_zero_noop_fails_install_verification_for_a_preexisting_skill() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("manager-noop-verification");
+    let existing = fixture.home.join(".agents/skills/already-installed");
+    fs::create_dir_all(&existing).expect("create preexisting manager target");
+    fs::write(
+        existing.join("SKILL.md"),
+        "---\nname: already-installed\ndescription: Existing target\n---\n",
+    )
+    .expect("write preexisting manager target");
+    let fake_npx = fixture.root.join("fake-npx-noop");
+    fs::write(&fake_npx, "#!/bin/sh\nexit 0\n").expect("write fake manager");
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+    let fake_npx_text = fake_npx.to_string_lossy().to_string();
+    let manager_env = [("SKILLS_COPILOT_NPX_PATH", fake_npx_text.as_str())];
+    let preview = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"manager-preview",
+            "method":"skillManager.previewInstall",
+            "params":{
+                "source":"owner/repository",
+                "skills":["already-installed"],
+                "agents":["codex"],
+                "scope":"global",
+                "network_allowed":true
+            }
+        }),
+    );
+    assert_success(&preview);
+    let action = preview
+        .pointer("/result/preview/action")
+        .expect("manager action");
+    let preview_token = preview
+        .pointer("/result/preview/preview_token")
+        .and_then(Value::as_str)
+        .expect("manager preview token");
+    let applied = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"manager-apply",
+            "method":"skillManager.applyInstall",
+            "params":{
+                "source":"owner/repository",
+                "skills":["already-installed"],
+                "agents":["codex"],
+                "scope":"global",
+                "network_allowed":true,
+                "confirmed":true,
+                "preview_token":preview_token,
+                "action_reference":{
+                    "action_id":action["id"],
+                    "source_revision":action["source_revision"],
+                    "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                    "target":action["target"]
+                }
+            }
+        }),
+    );
+
+    assert_error_code(&applied, "partial_effect");
+    assert_eq!(
+        applied
+            .pointer("/error/details/state")
+            .and_then(Value::as_str),
+        Some("applied_unverified")
+    );
+    assert_eq!(
+        applied
+            .pointer("/error/details/retry_allowed")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(applied.pointer("/result/readback").is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn manager_exit_zero_noop_fails_remove_update_and_local_create_verification() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("manager-noop-other-operations");
+    let existing = fixture.home.join(".agents/skills/update-existing");
+    fs::create_dir_all(&existing).expect("create update target");
+    fs::write(
+        existing.join("SKILL.md"),
+        "---\nname: update-existing\ndescription: Existing update target\n---\n",
+    )
+    .expect("write update target");
+    let fake_npx = fixture.root.join("fake-npx-noop-other");
+    fs::write(&fake_npx, "#!/bin/sh\nexit 0\n").expect("write fake manager");
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+    let fake_npx_text = fake_npx.to_string_lossy().to_string();
+    let manager_env = [("SKILLS_COPILOT_NPX_PATH", fake_npx_text.as_str())];
+
+    for (label, preview_method, apply_method, params) in [
+        (
+            "remove",
+            "skillManager.previewRemove",
+            "skillManager.applyRemove",
+            json!({
+                "skill":"not-installed",
+                "agents":["codex"],
+                "scope":"global"
+            }),
+        ),
+        (
+            "update",
+            "skillManager.previewUpdate",
+            "skillManager.applyUpdate",
+            json!({
+                "skills":["update-existing"],
+                "scope":"global",
+                "network_allowed":true
+            }),
+        ),
+        (
+            "local-create",
+            "skillManager.previewLocalCreate",
+            "skillManager.applyLocalCreate",
+            json!({"name":"not-created"}),
+        ),
+    ] {
+        let applied = invoke_manager_preview_and_apply(
+            &fixture,
+            &manager_env,
+            preview_method,
+            apply_method,
+            params,
+        );
+        assert_error_code(&applied, "partial_effect");
+        assert_eq!(
+            applied
+                .pointer("/error/details/state")
+                .and_then(Value::as_str),
+            Some("applied_unverified"),
+            "{label} must expose the post-start outcome state"
+        );
+        assert!(
+            applied.pointer("/result/readback").is_none(),
+            "{label} no-op must not return verified read-back"
+        );
+    }
+}
+
+fn invoke_manager_preview_and_apply(
+    fixture: &Fixture,
+    manager_env: &[(&str, &str)],
+    preview_method: &str,
+    apply_method: &str,
+    params: Value,
+) -> Value {
+    let preview = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        manager_env,
+        json!({"id":"manager-preview","method":preview_method,"params":params}),
+    );
+    assert_success(&preview);
+    let action = preview
+        .pointer("/result/preview/action")
+        .expect("manager action");
+    let preview_token = preview
+        .pointer("/result/preview/preview_token")
+        .and_then(Value::as_str)
+        .expect("manager preview token");
+    let mut apply_params = params;
+    let apply_params = apply_params
+        .as_object_mut()
+        .expect("manager params must be an object");
+    apply_params.insert("confirmed".to_string(), Value::Bool(true));
+    apply_params.insert(
+        "preview_token".to_string(),
+        Value::String(preview_token.to_string()),
+    );
+    apply_params.insert(
+        "action_reference".to_string(),
+        json!({
+            "action_id":action["id"],
+            "source_revision":action["source_revision"],
+            "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+            "target":action["target"]
+        }),
+    );
+    invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        manager_env,
+        json!({"id":"manager-apply","method":apply_method,"params":apply_params}),
+    )
+}
+
 fn invoke(home: &Path, app_data: &Path, secret: Option<&str>, request: Value) -> Value {
     invoke_with_extra_env(home, app_data, secret, &[], request)
 }
