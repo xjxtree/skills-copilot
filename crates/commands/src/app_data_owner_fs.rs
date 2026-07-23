@@ -629,7 +629,10 @@ fn guarded_fallback_path(root: &Path, relative: &Path) -> Result<PathBuf, Comman
 }
 
 fn command_error_to_io(error: CommandError) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())
+    match error {
+        CommandError::Io(error) => error,
+        other => io::Error::new(io::ErrorKind::PermissionDenied, other.to_string()),
+    }
 }
 
 fn owner_fs_timestamp_millis() -> i64 {
@@ -770,6 +773,29 @@ mod tests {
 
         assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
         assert_eq!(std::fs::read(&victim).expect("victim"), b"private");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bounded_read_treats_a_missing_nested_parent_as_absent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-fs-missing-parent-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("owner");
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock owner");
+
+        assert_eq!(
+            lock.owner_fs()
+                .read_bounded_regular_file(Path::new("missing/state.json"), 1024, "missing state",)
+                .expect("missing nested state"),
+            None
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

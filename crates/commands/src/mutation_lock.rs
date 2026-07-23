@@ -96,9 +96,7 @@ pub fn lock_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, Comman
 /// non-symlink parent. Callers must finish typed confirmation and non-creating
 /// preflight validation before invoking this function, so every rejection
 /// known before coordination bootstrap remains zero-write.
-pub(crate) fn lock_or_create_app_mutations(
-    app_data_dir: &Path,
-) -> Result<AppMutationLock, CommandError> {
+pub fn lock_or_create_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, CommandError> {
     let file = open_or_create_app_mutation_owner(app_data_dir)?;
     file.lock_exclusive()?;
     Ok(AppMutationLock {

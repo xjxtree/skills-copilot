@@ -9,7 +9,6 @@ use skills_copilot_core::{
     ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture, ActionReadbackDomain,
     ActionTargetKind, ActionTargetRef,
 };
-use std::io::{self, Read, Write};
 
 #[cfg(test)]
 use std::sync::{LazyLock, Mutex};
@@ -18,6 +17,10 @@ const PROVIDER_ACTION_STATE_DOMAIN: &str = "agent-copilot/provider-action-state/
 const PROVIDER_ACTION_STATE_VERSION: u32 = 1;
 const PROVIDER_ACTION_STATE_MAX_BYTES: usize = 4 * 1024;
 const PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES: usize = 256;
+const PROVIDER_ACTION_STATE_RELATIVE_PATH: &str = "llm/provider-action-state.json";
+const PROVIDER_ACTION_STATE_DIRECTORY: &str = "llm";
+const PROVIDER_ACTION_STATE_FIXED_REPLACEMENT: &str = ".provider-action-state.replacement";
+const PROVIDER_ACTION_STATE_REPLACEMENT_PREFIX: &str = ".provider-action-state.";
 const PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_PREFIX: &str = ".provider-action-state.json.";
 const PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX: &str = ".tmp";
 
@@ -31,6 +34,31 @@ pub(crate) enum TestProviderActionStateFault {
 static TEST_PROVIDER_ACTION_STATE_FAULTS: LazyLock<
     Mutex<Vec<(PathBuf, TestProviderActionStateFault)>>,
 > = LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(test)]
+thread_local! {
+    static PROVIDER_ACTION_POST_EFFECT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn inject_provider_action_post_effect_hook_for_test(hook: impl FnOnce() + 'static) {
+    PROVIDER_ACTION_POST_EFFECT_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_provider_action_post_effect_hook() {
+    PROVIDER_ACTION_POST_EFFECT_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_provider_action_post_effect_hook() {}
 
 #[cfg(test)]
 pub(crate) fn install_test_provider_action_state_fault(
@@ -142,10 +170,19 @@ impl ServiceHost {
         &self,
         params: &SaveProviderProfileParams,
     ) -> Result<ProviderActionPreviewResult, ServiceError> {
+        self.preview_save_provider_profile_with_owner(params, None)
+    }
+
+    fn preview_save_provider_profile_with_owner(
+        &self,
+        params: &SaveProviderProfileParams,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<ProviderActionPreviewResult, ServiceError> {
         let normalized = crate::provider::normalize_save_provider_profile_params(params)?;
-        let store_revision = crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+        let store_revision = provider_profiles_revision_for(&self.app_data_dir, owner)?;
         let input_revision = crate::provider::normalized_provider_input_revision(&normalized)?;
-        let action_state_revision = provider_action_state_revision(&self.app_data_dir)?;
+        let action_state_revision =
+            provider_action_state_revision_for_owner(&self.app_data_dir, owner)?;
         let credential_input_binding = match params
             .api_key
             .as_deref()
@@ -213,11 +250,13 @@ impl ServiceHost {
         let preliminary = self.preview_save_provider_profile(&params)?;
         ensure_action_confirmed(&preliminary.binding, confirmation.as_ref())?;
 
-        let _lock = lock_provider_actions(&self.app_data_dir)?;
-        let current = self.preview_save_provider_profile(&params)?;
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let current = self.preview_save_provider_profile_with_owner(&params, Some(&owner))?;
         ensure_action_confirmed(&current.binding, confirmation.as_ref())?;
-        reserve_provider_action(
+        owner.validate_owner_path_binding()?;
+        reserve_provider_action_while_locked(
             &self.app_data_dir,
+            &owner,
             &current.binding,
             confirmation.as_ref().expect("confirmed above"),
         )?;
@@ -229,40 +268,51 @@ impl ServiceHost {
             .map(str::trim)
             .filter(|secret| !secret.is_empty())
             .map(ToOwned::to_owned);
-        let result = match crate::provider::save_provider_profile(&self.app_data_dir, params) {
+        let result = match crate::provider::save_provider_profile_while_locked(
+            &self.app_data_dir,
+            &owner,
+            params,
+        ) {
             Ok(result) => result,
             Err(ProviderError::CredentialMutationPartial(message)) => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::Partial,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 return Err(ServiceError::AppliedUnverified(format!(
                     "{message}; inspect Keychain state before creating a new preview"
                 )));
             }
             Err(error) => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider save did not start: {error}; create a new preview before retrying"
                 )));
             }
         };
+        run_provider_action_post_effect_hook();
 
         match result.operation_state {
             crate::provider::ProviderMutationState::NotStarted => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 Ok(SaveProviderProfileApplyResult {
                     outcome: action_outcome(
                         "not_started",
@@ -280,12 +330,14 @@ impl ServiceHost {
                 })
             }
             crate::provider::ProviderMutationState::Partial => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::Partial,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 Ok(SaveProviderProfileApplyResult {
                     outcome: action_outcome(
                         "partial",
@@ -311,7 +363,7 @@ impl ServiceHost {
             crate::provider::ProviderMutationState::Applied => {
                 let readback = (|| -> Result<ActionReadbackRecord, ServiceError> {
                     ensure_saved_profile_matches(&result.profile, &normalized)?;
-                    let persisted = crate::provider::list_provider_profiles(&self.app_data_dir)?
+                    let persisted = crate::provider::list_provider_profiles_while_locked(&owner)?
                         .profiles
                         .into_iter()
                         .find(|profile| profile.id == normalized.id)
@@ -322,7 +374,8 @@ impl ServiceHost {
                             )
                         })?;
                     ensure_saved_profile_matches(&persisted, &normalized)?;
-                    let revision = crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+                    let revision =
+                        crate::provider::provider_profiles_revision_while_locked(&owner)?;
                     let mut observations = vec![ActionReadbackObservation {
                         domain: ActionReadbackDomain::ProviderProfiles,
                         target_id: normalized.id.clone(),
@@ -343,6 +396,7 @@ impl ServiceHost {
                 })();
                 finish_save_readback(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     result,
@@ -356,10 +410,19 @@ impl ServiceHost {
         &self,
         params: &DeleteProviderProfileParams,
     ) -> Result<ProviderActionPreviewResult, ServiceError> {
-        let profile = required_provider_profile(&self.app_data_dir, &params.profile_id)?;
-        let store_revision = crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+        self.preview_delete_provider_profile_with_owner(params, None)
+    }
+
+    fn preview_delete_provider_profile_with_owner(
+        &self,
+        params: &DeleteProviderProfileParams,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<ProviderActionPreviewResult, ServiceError> {
+        let profile = required_provider_profile_for(&self.app_data_dir, owner, &params.profile_id)?;
+        let store_revision = provider_profiles_revision_for(&self.app_data_dir, owner)?;
         let profile_revision = crate::provider::provider_profile_nonsecret_revision(&profile)?;
-        let action_state_revision = provider_action_state_revision(&self.app_data_dir)?;
+        let action_state_revision =
+            provider_action_state_revision_for_owner(&self.app_data_dir, owner)?;
         let delete_credential = params.delete_credential.to_string();
         let source_revision = action_source_revision(
             "llm.deleteProviderProfile",
@@ -419,38 +482,49 @@ impl ServiceHost {
         let preliminary = self.preview_delete_provider_profile(&params)?;
         ensure_action_confirmed(&preliminary.binding, confirmation.as_ref())?;
 
-        let _lock = lock_provider_actions(&self.app_data_dir)?;
-        let current = self.preview_delete_provider_profile(&params)?;
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let current = self.preview_delete_provider_profile_with_owner(&params, Some(&owner))?;
         ensure_action_confirmed(&current.binding, confirmation.as_ref())?;
-        reserve_provider_action(
+        owner.validate_owner_path_binding()?;
+        reserve_provider_action_while_locked(
             &self.app_data_dir,
+            &owner,
             &current.binding,
             confirmation.as_ref().expect("confirmed above"),
         )?;
         let profile_id = current.profile_id.clone();
         let delete_credential = params.delete_credential;
-        let result = match crate::provider::delete_provider_profile(&self.app_data_dir, params) {
+        let result = match crate::provider::delete_provider_profile_while_locked(
+            &self.app_data_dir,
+            &owner,
+            params,
+        ) {
             Ok(result) => result,
             Err(error) => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider delete did not start: {error}; create a new preview before retrying"
                 )));
             }
         };
+        run_provider_action_post_effect_hook();
         match result.operation_state {
             crate::provider::ProviderMutationState::NotStarted => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
                 Ok(DeleteProviderProfileApplyResult {
                     outcome: action_outcome(
                         "not_started",
@@ -468,12 +542,14 @@ impl ServiceHost {
                 })
             }
             crate::provider::ProviderMutationState::Partial => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::Partial,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
                 Ok(DeleteProviderProfileApplyResult {
                     outcome: action_outcome(
                         "partial",
@@ -498,7 +574,7 @@ impl ServiceHost {
             }
             crate::provider::ProviderMutationState::Applied => {
                 let readback = (|| -> Result<ActionReadbackRecord, ServiceError> {
-                    if crate::provider::list_provider_profiles(&self.app_data_dir)?
+                    if crate::provider::list_provider_profiles_while_locked(&owner)?
                         .profiles
                         .iter()
                         .any(|profile| profile.id == profile_id)
@@ -508,7 +584,8 @@ impl ServiceHost {
                                 .to_string(),
                         ));
                     }
-                    let revision = crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+                    let revision =
+                        crate::provider::provider_profiles_revision_while_locked(&owner)?;
                     let mut observations = vec![ActionReadbackObservation {
                         domain: ActionReadbackDomain::ProviderProfiles,
                         target_id: profile_id.clone(),
@@ -528,6 +605,7 @@ impl ServiceHost {
                 })();
                 finish_delete_readback(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     result,
@@ -541,10 +619,19 @@ impl ServiceHost {
         &self,
         params: &TestProviderConnectionParams,
     ) -> Result<ProviderActionPreviewResult, ServiceError> {
-        let profile = required_provider_profile(&self.app_data_dir, &params.profile_id)?;
-        let store_revision = crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+        self.preview_provider_connection_test_with_owner(params, None)
+    }
+
+    fn preview_provider_connection_test_with_owner(
+        &self,
+        params: &TestProviderConnectionParams,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<ProviderActionPreviewResult, ServiceError> {
+        let profile = required_provider_profile_for(&self.app_data_dir, owner, &params.profile_id)?;
+        let store_revision = provider_profiles_revision_for(&self.app_data_dir, owner)?;
         let profile_revision = crate::provider::provider_profile_nonsecret_revision(&profile)?;
-        let action_state_revision = provider_action_state_revision(&self.app_data_dir)?;
+        let action_state_revision =
+            provider_action_state_revision_for_owner(&self.app_data_dir, owner)?;
         let timeout_ms = params.timeout_ms.unwrap_or(4_000).clamp(250, 15_000);
         let timeout = timeout_ms.to_string();
         let source_revision = action_source_revision(
@@ -602,30 +689,38 @@ impl ServiceHost {
         let preliminary = self.preview_provider_connection_test(&params)?;
         ensure_action_confirmed(&preliminary.binding, confirmation.as_ref())?;
 
-        let _lock = lock_provider_actions(&self.app_data_dir)?;
-        let current = self.preview_provider_connection_test(&params)?;
+        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
+        let current = self.preview_provider_connection_test_with_owner(&params, Some(&owner))?;
         ensure_action_confirmed(&current.binding, confirmation.as_ref())?;
-        reserve_provider_action(
+        owner.validate_owner_path_binding()?;
+        reserve_provider_action_while_locked(
             &self.app_data_dir,
+            &owner,
             &current.binding,
             confirmation.as_ref().expect("confirmed above"),
         )?;
         params.confirmation_id = current.binding.action.id.clone();
-        let mut result = match crate::provider::test_provider_connection(&self.app_data_dir, params)
-        {
+        let mut result = match crate::provider::test_provider_connection_while_locked(
+            &self.app_data_dir,
+            &owner,
+            params,
+        ) {
             Ok(result) => result,
             Err(error) => {
-                let _ = finalize_provider_action(
+                let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
+                    &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider connection test")?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider test did not start: {error}; create a new preview before retrying"
                 )));
             }
         };
+        run_provider_action_post_effect_hook();
         let target_matches = result.profile_id == current.profile_id
             && result.model == current.model
             && result.destination_host == current.destination_host;
@@ -639,9 +734,9 @@ impl ServiceHost {
             if target_matches && result.local_metadata_persisted && remote_result_verified {
                 (|| -> Result<ActionReadbackRecord, ServiceError> {
                     let profile_revision =
-                        crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+                        crate::provider::provider_profiles_revision_while_locked(&owner)?;
                     let activity_revision =
-                        crate::provider::provider_call_metadata_revision(&self.app_data_dir)?;
+                        crate::provider::provider_call_metadata_revision_while_locked(&owner)?;
                     ActionReadbackRecord::verified(
                         &current.binding.action,
                         vec![
@@ -664,14 +759,23 @@ impl ServiceHost {
                 None
             };
         if let Some(readback) = readback {
-            if finalize_provider_action(
+            if finalize_provider_action_while_locked(
                 &self.app_data_dir,
+                &owner,
                 &current.binding,
                 confirmation.as_ref().expect("confirmed above"),
                 ProviderActionState::Verified,
             )
             .is_ok()
             {
+                if result.provider_request_sent {
+                    ensure_provider_owner_binding_after_remote_effect(
+                        &owner,
+                        "provider connection test",
+                    )?;
+                } else {
+                    ensure_provider_owner_binding_after_effect(&owner, "provider connection test")?;
+                }
                 return Ok(TestProviderConnectionApplyResult {
                     outcome: action_outcome(
                         "verified",
@@ -708,12 +812,22 @@ impl ServiceHost {
         } else {
             "Provider request returned, but semantic read-back could not be verified.".to_string()
         });
-        let _ = finalize_provider_action(
+        let _ = finalize_provider_action_while_locked(
             &self.app_data_dir,
+            &owner,
             &current.binding,
             confirmation.as_ref().expect("confirmed above"),
             ProviderActionState::Partial,
         );
+        if result.provider_request_sent {
+            return Err(provider_remote_unknown(
+                "provider connection test",
+                result.error_message.clone().unwrap_or_else(|| {
+                    "the provider request may have left the process, but its audit, read-back, or replay finalization could not be verified".to_string()
+                }),
+            ));
+        }
+        ensure_provider_owner_binding_after_effect(&owner, "provider connection test")?;
         Ok(TestProviderConnectionApplyResult {
             outcome: action_outcome(
                 "partial",
@@ -762,22 +876,64 @@ fn action_outcome(
     }
 }
 
+fn ensure_provider_owner_binding_after_effect(
+    owner: &AppMutationLock,
+    operation: &str,
+) -> Result<(), ServiceError> {
+    if owner.validate_owner_path_binding().is_ok() {
+        return Ok(());
+    }
+    Err(CommandError::PartialEffect {
+        operation: operation.to_string(),
+        state: "outcome_unknown",
+        cleanup_required: false,
+        detail: "provider state was updated on the accepted app-data owner, but that owner is no longer bound to the configured app-data path".to_string(),
+    }
+    .into())
+}
+
+fn ensure_provider_owner_binding_after_remote_effect(
+    owner: &AppMutationLock,
+    operation: &str,
+) -> Result<(), ServiceError> {
+    if owner.validate_owner_path_binding().is_ok() {
+        return Ok(());
+    }
+    Err(provider_remote_unknown(
+        operation,
+        "the provider request may have left the process, and the accepted app-data owner is no longer bound to the configured path",
+    ))
+}
+
+fn provider_remote_unknown(operation: &str, detail: impl Into<String>) -> ServiceError {
+    CommandError::PartialEffect {
+        operation: operation.to_string(),
+        state: "remote_unknown",
+        cleanup_required: false,
+        detail: detail.into(),
+    }
+    .into()
+}
+
 fn finish_save_readback(
     app_data_dir: &Path,
+    owner: &AppMutationLock,
     binding: &ActionPreviewBinding,
     confirmation: &ActionConfirmation,
     mut result: crate::provider::SaveProviderProfileResult,
     readback: Result<ActionReadbackRecord, ServiceError>,
 ) -> Result<SaveProviderProfileApplyResult, ServiceError> {
     if let Ok(readback) = readback {
-        if finalize_provider_action(
+        if finalize_provider_action_while_locked(
             app_data_dir,
+            owner,
             binding,
             confirmation,
             ProviderActionState::Verified,
         )
         .is_ok()
         {
+            ensure_provider_owner_binding_after_effect(owner, "provider profile save")?;
             return Ok(SaveProviderProfileApplyResult {
                 outcome: action_outcome(
                     "verified",
@@ -792,12 +948,14 @@ fn finish_save_readback(
             });
         }
     }
-    let _ = finalize_provider_action(
+    let _ = finalize_provider_action_while_locked(
         app_data_dir,
+        owner,
         binding,
         confirmation,
         ProviderActionState::Partial,
     );
+    ensure_provider_owner_binding_after_effect(owner, "provider profile save")?;
     result.error_code = Some("provider_save_readback_unverified".to_string());
     result.error_message = Some(
         "Provider save may have completed, but semantic read-back could not be verified."
@@ -826,20 +984,23 @@ fn finish_save_readback(
 
 fn finish_delete_readback(
     app_data_dir: &Path,
+    owner: &AppMutationLock,
     binding: &ActionPreviewBinding,
     confirmation: &ActionConfirmation,
     mut result: crate::provider::DeleteProviderProfileResult,
     readback: Result<ActionReadbackRecord, ServiceError>,
 ) -> Result<DeleteProviderProfileApplyResult, ServiceError> {
     if let Ok(readback) = readback {
-        if finalize_provider_action(
+        if finalize_provider_action_while_locked(
             app_data_dir,
+            owner,
             binding,
             confirmation,
             ProviderActionState::Verified,
         )
         .is_ok()
         {
+            ensure_provider_owner_binding_after_effect(owner, "provider profile delete")?;
             return Ok(DeleteProviderProfileApplyResult {
                 outcome: action_outcome(
                     "verified",
@@ -854,12 +1015,14 @@ fn finish_delete_readback(
             });
         }
     }
-    let _ = finalize_provider_action(
+    let _ = finalize_provider_action_while_locked(
         app_data_dir,
+        owner,
         binding,
         confirmation,
         ProviderActionState::Partial,
     );
+    ensure_provider_owner_binding_after_effect(owner, "provider profile delete")?;
     result.error_code = Some("provider_delete_readback_unverified".to_string());
     result.error_message = Some(
         "Provider delete may have completed, but semantic read-back could not be verified."
@@ -913,15 +1076,42 @@ fn provider_preconditions(
     ]
 }
 
-fn required_provider_profile(
+fn required_provider_profile_for(
     app_data_dir: &Path,
+    owner: Option<&AppMutationLock>,
     profile_id: &str,
 ) -> Result<ProviderProfileRecord, ServiceError> {
-    crate::provider::list_provider_profiles(app_data_dir)?
+    let profiles = match owner {
+        Some(owner) => crate::provider::list_provider_profiles_while_locked(owner)?,
+        None => crate::provider::list_provider_profiles(app_data_dir)?,
+    };
+    profiles
         .profiles
         .into_iter()
         .find(|profile| profile.id == profile_id)
         .ok_or_else(|| ProviderError::ProfileNotFound(profile_id.to_string()).into())
+}
+
+fn provider_profiles_revision_for(
+    app_data_dir: &Path,
+    owner: Option<&AppMutationLock>,
+) -> Result<String, ServiceError> {
+    match owner {
+        Some(owner) => {
+            crate::provider::provider_profiles_revision_while_locked(owner).map_err(Into::into)
+        }
+        None => crate::provider::provider_profiles_revision(app_data_dir).map_err(Into::into),
+    }
+}
+
+fn provider_action_state_revision_for_owner(
+    app_data_dir: &Path,
+    owner: Option<&AppMutationLock>,
+) -> Result<String, ServiceError> {
+    match owner {
+        Some(owner) => provider_action_state_revision_while_locked(owner),
+        None => provider_action_state_revision(app_data_dir),
+    }
 }
 
 fn ensure_saved_profile_matches(
@@ -948,10 +1138,12 @@ fn ensure_saved_profile_matches(
     }
 }
 
+#[cfg(test)]
 fn provider_action_state_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("llm").join("provider-action-state.json")
 }
 
+#[cfg(test)]
 fn provider_action_state_replacement_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir
         .join("llm")
@@ -973,7 +1165,20 @@ fn provider_action_state_revision_for_bytes(bytes: Option<&[u8]>) -> String {
 }
 
 pub(crate) fn provider_action_state_revision(app_data_dir: &Path) -> Result<String, ServiceError> {
-    let state = read_provider_action_state(app_data_dir)?;
+    let owner = match lock_app_mutations(app_data_dir) {
+        Ok(owner) => owner,
+        Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(provider_action_state_revision_for_bytes(None))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    provider_action_state_revision_while_locked(&owner)
+}
+
+pub(crate) fn provider_action_state_revision_while_locked(
+    owner: &AppMutationLock,
+) -> Result<String, ServiceError> {
+    let state = read_provider_action_state_while_locked(owner)?;
     Ok(provider_action_state_revision_for_bytes(
         state.as_ref().map(|(bytes, _)| bytes.as_slice()),
     ))
@@ -984,8 +1189,18 @@ pub(crate) fn reserve_provider_action(
     binding: &ActionPreviewBinding,
     confirmation: &ActionConfirmation,
 ) -> Result<(), ServiceError> {
+    let owner = lock_or_create_app_mutations(app_data_dir)?;
+    reserve_provider_action_while_locked(app_data_dir, &owner, binding, confirmation)
+}
+
+pub(crate) fn reserve_provider_action_while_locked(
+    app_data_dir: &Path,
+    owner: &AppMutationLock,
+    binding: &ActionPreviewBinding,
+    confirmation: &ActionConfirmation,
+) -> Result<(), ServiceError> {
     let token_digest = action_token_digest(&confirmation.preview_token);
-    let current = read_provider_action_state(app_data_dir)?;
+    let current = read_provider_action_state_while_locked(owner)?;
     let current_revision = provider_action_state_revision_for_bytes(
         current.as_ref().map(|(bytes, _)| bytes.as_slice()),
     );
@@ -1016,6 +1231,7 @@ pub(crate) fn reserve_provider_action(
     };
     write_provider_action_state(
         app_data_dir,
+        owner,
         &ProviderActionStateRecord {
             version: PROVIDER_ACTION_STATE_VERSION,
             generation,
@@ -1035,8 +1251,19 @@ pub(crate) fn finalize_provider_action(
     confirmation: &ActionConfirmation,
     state: ProviderActionState,
 ) -> Result<(), ServiceError> {
+    let owner = lock_app_mutations(app_data_dir)?;
+    finalize_provider_action_while_locked(app_data_dir, &owner, binding, confirmation, state)
+}
+
+pub(crate) fn finalize_provider_action_while_locked(
+    app_data_dir: &Path,
+    owner: &AppMutationLock,
+    binding: &ActionPreviewBinding,
+    confirmation: &ActionConfirmation,
+    state: ProviderActionState,
+) -> Result<(), ServiceError> {
     let token_digest = action_token_digest(&confirmation.preview_token);
-    let (_, current) = read_provider_action_state(app_data_dir)?.ok_or_else(|| {
+    let (_, current) = read_provider_action_state_while_locked(owner)?.ok_or_else(|| {
         ServiceError::InvalidRequest(
             "provider action outcome has no matching reservation".to_string(),
         )
@@ -1050,6 +1277,7 @@ pub(crate) fn finalize_provider_action(
     }
     write_provider_action_state(
         app_data_dir,
+        owner,
         &ProviderActionStateRecord {
             version: PROVIDER_ACTION_STATE_VERSION,
             generation: current.generation,
@@ -1065,6 +1293,7 @@ pub(crate) fn finalize_provider_action(
 
 fn write_provider_action_state(
     app_data_dir: &Path,
+    owner: &AppMutationLock,
     record: &ProviderActionStateRecord,
 ) -> Result<(), ServiceError> {
     validate_provider_action_state(record)?;
@@ -1072,66 +1301,85 @@ fn write_provider_action_state(
     if bytes.len() > PROVIDER_ACTION_STATE_MAX_BYTES {
         return Err(invalid_provider_action_state());
     }
-    write_provider_action_state_atomic(app_data_dir, record, &bytes)
+    write_provider_action_state_atomic(app_data_dir, owner, record, &bytes)
 }
 
 fn write_provider_action_state_atomic(
     app_data_dir: &Path,
+    owner: &AppMutationLock,
     record: &ProviderActionStateRecord,
     bytes: &[u8],
 ) -> Result<(), ServiceError> {
-    let path = provider_action_state_path(app_data_dir);
-    let replacement = provider_action_state_replacement_path(app_data_dir);
-    let parent = path.parent().ok_or_else(|| {
-        ServiceError::InvalidRequest("provider action state has no parent".to_string())
-    })?;
-    let mut renamed = false;
-    let result = (|| -> io::Result<()> {
-        create_private_dir_all(parent)?;
-        ensure_provider_action_state_destination_safe(&path)?;
-        remove_legacy_provider_action_state_replacements(parent)?;
-        remove_provider_action_state_replacement(&replacement)?;
+    let owner_fs = owner.owner_fs();
+    owner_fs.ensure_directory_all(Path::new(PROVIDER_ACTION_STATE_DIRECTORY))?;
+    cleanup_provider_action_state_replacements(owner)?;
 
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-            options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-        }
-        let mut file = options.open(&replacement)?;
-        set_provider_action_state_file_permissions(&file)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-
-        ensure_provider_action_state_destination_safe(&path)?;
-        fs::rename(&replacement, &path)?;
-        renamed = true;
-        set_provider_action_state_path_permissions(&path)?;
-
-        if should_fail_provider_action_state_directory_sync(app_data_dir, record.phase) {
-            return Err(io::Error::other(
-                "injected provider action-state directory sync failure",
-            ));
-        }
-        fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = remove_provider_action_state_replacement(&replacement);
+    if let Err(write_error) = owner_fs.atomic_replace_private_file(
+        Path::new(PROVIDER_ACTION_STATE_RELATIVE_PATH),
+        bytes,
+        "provider-action-state",
+    ) {
+        return match read_provider_action_state_while_locked(owner) {
+            Ok(Some((persisted, _))) if persisted == bytes => Ok(()),
+            Ok(_) => Err(ServiceError::ActionNotStarted(format!(
+                "provider replay state could not be replaced before the action started: {write_error}"
+            ))),
+            Err(_) => Err(CommandError::PartialEffect {
+                operation: "provider replay state".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: false,
+                detail:
+                    "provider replay-state persistence failed after its outcome became unverifiable"
+                        .to_string(),
+            }
+            .into()),
+        };
     }
-    match result {
-        Ok(()) => Ok(()),
-        Err(_) if renamed => Err(ServiceError::AppliedUnverified(
-            "provider replay state was replaced, but its durable directory update could not be verified"
-                .to_string(),
-        )),
-        Err(_) => Err(ServiceError::ActionNotStarted(
-            "provider replay state could not be replaced before the action started".to_string(),
-        )),
+    if should_fail_provider_action_state_directory_sync(app_data_dir, record.phase) {
+        return Err(CommandError::PartialEffect {
+            operation: "provider replay state".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail:
+                "provider replay state was replaced, but its durable update could not be verified"
+                    .to_string(),
+        }
+        .into());
     }
+    match read_provider_action_state_while_locked(owner) {
+        Ok(Some((persisted, _))) if persisted == bytes => Ok(()),
+        _ => Err(CommandError::PartialEffect {
+            operation: "provider replay state".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail: "provider replay state was replaced, but semantic read-back failed".to_string(),
+        }
+        .into()),
+    }
+}
+
+fn cleanup_provider_action_state_replacements(owner: &AppMutationLock) -> Result<(), ServiceError> {
+    let owner_fs = owner.owner_fs();
+    let directory = Path::new(PROVIDER_ACTION_STATE_DIRECTORY);
+    owner_fs.remove_regular_files_matching(
+        directory,
+        PROVIDER_ACTION_STATE_FIXED_REPLACEMENT,
+        PROVIDER_ACTION_STATE_FIXED_REPLACEMENT,
+        1,
+    )?;
+    owner_fs.remove_regular_files_matching(
+        directory,
+        PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_PREFIX,
+        PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX,
+        PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES,
+    )?;
+    owner_fs.remove_regular_files_matching(
+        directory,
+        PROVIDER_ACTION_STATE_REPLACEMENT_PREFIX,
+        PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX,
+        PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES,
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1154,118 +1402,20 @@ fn should_fail_provider_action_state_directory_sync(
     false
 }
 
-fn ensure_provider_action_state_destination_safe(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "provider action-state destination is not a regular file",
-            ))
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-fn remove_provider_action_state_replacement(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "provider action-state replacement is not a regular file",
-            ))
-        }
-        Ok(_) => fs::remove_file(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-fn remove_legacy_provider_action_state_replacements(parent: &Path) -> io::Result<()> {
-    for (index, entry) in fs::read_dir(parent)?.enumerate() {
-        if index >= PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES {
-            return Err(io::Error::other(
-                "provider action-state directory exceeds the bounded cleanup scan",
-            ));
-        }
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !name.starts_with(PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_PREFIX)
-            || !name.ends_with(PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX)
-        {
-            continue;
-        }
-        remove_provider_action_state_replacement(&entry.path())?;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_provider_action_state_file_permissions(file: &fs::File) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_provider_action_state_file_permissions(_file: &fs::File) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_provider_action_state_path_permissions(path: &Path) -> io::Result<()> {
-    use rustix::fs::{fchmod, open, Mode, OFlags};
-
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = fs::File::from(open(path, flags, Mode::empty()).map_err(io::Error::from)?);
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "provider action-state destination is not a regular file",
-        ));
-    }
-    fchmod(&file, Mode::from_bits_truncate(0o600)).map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-fn set_provider_action_state_path_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
-
-fn read_provider_action_state(
-    app_data_dir: &Path,
+fn read_provider_action_state_while_locked(
+    owner: &AppMutationLock,
 ) -> Result<Option<(Vec<u8>, ProviderActionStateRecord)>, ServiceError> {
-    let path = provider_action_state_path(app_data_dir);
-    let mut file = match open_provider_action_state(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(invalid_provider_action_state()),
+    let Some(bytes) = owner
+        .owner_fs()
+        .read_bounded_regular_file(
+            Path::new(PROVIDER_ACTION_STATE_RELATIVE_PATH),
+            PROVIDER_ACTION_STATE_MAX_BYTES as u64,
+            "provider action replay state",
+        )
+        .map_err(|_| invalid_provider_action_state())?
+    else {
+        return Ok(None);
     };
-    let metadata = file
-        .metadata()
-        .map_err(|_| invalid_provider_action_state())?;
-    if !metadata.is_file() || metadata.len() > PROVIDER_ACTION_STATE_MAX_BYTES as u64 {
-        return Err(invalid_provider_action_state());
-    }
-    let mut bytes = vec![0_u8; PROVIDER_ACTION_STATE_MAX_BYTES + 1];
-    let mut length = 0;
-    while length < bytes.len() {
-        let read = file
-            .read(&mut bytes[length..])
-            .map_err(|_| invalid_provider_action_state())?;
-        if read == 0 {
-            break;
-        }
-        length += read;
-    }
-    bytes.truncate(length);
-    if bytes.len() > PROVIDER_ACTION_STATE_MAX_BYTES {
-        return Err(invalid_provider_action_state());
-    }
     let record = serde_json::from_slice::<ProviderActionStateRecord>(&bytes)
         .map_err(|_| invalid_provider_action_state())?;
     validate_provider_action_state(&record)?;
@@ -1302,32 +1452,12 @@ fn invalid_provider_action_state() -> ServiceError {
     ServiceError::InvalidRequest("provider action replay state is invalid".to_string())
 }
 
-#[cfg(unix)]
-fn open_provider_action_state(path: &Path) -> io::Result<fs::File> {
-    use rustix::fs::{open, Mode, OFlags};
-
-    let flags =
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    open(path, flags, Mode::empty())
-        .map(fs::File::from)
-        .map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-fn open_provider_action_state(path: &Path) -> io::Result<fs::File> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err(io::Error::new(io::ErrorKind::InvalidInput, "symlink"))
-        }
-        _ => fs::File::open(path),
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn provider_action_state_snapshot(
     app_data_dir: &Path,
 ) -> Result<(u64, ProviderActionStatePhase, ProviderActionState, usize), ServiceError> {
-    let (bytes, record) = read_provider_action_state(app_data_dir)?.ok_or_else(|| {
+    let owner = lock_app_mutations(app_data_dir)?;
+    let (bytes, record) = read_provider_action_state_while_locked(&owner)?.ok_or_else(|| {
         ServiceError::InvalidRequest("provider action state is missing".to_string())
     })?;
     Ok((record.generation, record.phase, record.state, bytes.len()))
@@ -1361,9 +1491,6 @@ pub(crate) fn lock_provider_actions(app_data_dir: &Path) -> Result<fs::File, Ser
             "provider app-data parent must be an existing directory".to_string(),
         ));
     }
-    // Lock the already-existing canonical parent directory itself. This
-    // creates no lock file or app-data directory, so stale or mismatched
-    // confirmations remain a zero-artifact rejection.
     let file = fs::File::open(canonical_parent)?;
     file.lock_exclusive()?;
     Ok(file)

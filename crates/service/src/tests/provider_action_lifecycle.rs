@@ -176,6 +176,38 @@ fn provider_apply_requires_confirmation_before_creating_app_data() {
 }
 
 #[test]
+fn provider_apply_does_not_create_missing_app_data_ancestors() {
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-provider-missing-parent-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = root.join("missing-parent/app-data");
+    let host = test_host(app_data_dir.clone());
+    let mut params = provider_save_params("missing-parent-provider", "https://example.invalid/v1");
+    let preview = host.handle(ServiceRequest {
+        id: Some("missing-parent-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    params["action_confirmation"] =
+        action_confirmation_from_preview(&preview.result.expect("provider preview"));
+
+    let response = host.handle(ServiceRequest {
+        id: Some("missing-parent-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params,
+    });
+
+    assert!(!response.ok);
+    assert!(
+        !root.exists(),
+        "provider apply may create only the app-data leaf below an existing canonical parent"
+    );
+}
+
+#[test]
 fn provider_save_rejects_target_mismatch_and_replay_without_rewriting_profile() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-action-replay-{}-{}",
@@ -578,6 +610,141 @@ fn provider_credential_save_has_semantic_credential_readback() {
 }
 
 #[test]
+#[cfg(unix)]
+fn provider_save_reports_partial_effect_if_app_data_owner_is_rebound_after_write() {
+    use std::os::unix::fs::symlink;
+
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-provider-owner-rebind-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = root.join("app-data");
+    let moved_owner = root.join("locked-owner");
+    let victim = root.join("victim");
+    fs::create_dir_all(victim.join("llm")).expect("create victim");
+    let victim_profiles = victim.join("llm/provider-profiles.json");
+    fs::write(&victim_profiles, b"victim-unchanged").expect("seed victim");
+    let host = test_host(app_data_dir.clone());
+    let mut params = provider_save_params("owner-rebind-provider", "https://example.invalid/v1");
+    let preview = host.handle(ServiceRequest {
+        id: Some("owner-rebind-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    params["action_confirmation"] =
+        action_confirmation_from_preview(&preview.result.expect("provider preview"));
+
+    let hook_app_data = app_data_dir.clone();
+    let hook_moved_owner = moved_owner.clone();
+    let hook_victim = victim.clone();
+    crate::service_provider_actions::inject_provider_action_post_effect_hook_for_test(move || {
+        fs::rename(&hook_app_data, &hook_moved_owner).expect("move accepted owner");
+        symlink(&hook_victim, &hook_app_data).expect("replace app-data path");
+    });
+    let response = host.handle(ServiceRequest {
+        id: Some("owner-rebind-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params,
+    });
+
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("outcome_unknown")
+    );
+    assert_eq!(
+        fs::read(&victim_profiles).expect("victim profiles"),
+        b"victim-unchanged"
+    );
+    assert!(!victim.join("llm/provider-action-state.json").exists());
+    assert!(moved_owner.join("llm/provider-profiles.json").is_file());
+    assert!(moved_owner.join("llm/provider-action-state.json").is_file());
+
+    fs::remove_file(&app_data_dir).expect("remove replacement link");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
+fn provider_request_reports_remote_unknown_if_app_data_owner_is_rebound_after_send() {
+    use std::os::unix::fs::symlink;
+
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-provider-remote-owner-rebind-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = root.join("app-data");
+    let moved_owner = root.join("locked-owner");
+    let victim = root.join("victim");
+    fs::create_dir_all(&root).expect("create app-data parent");
+    let (base_url, server) = spawn_mock_openai_server();
+    let host = test_host(app_data_dir.clone());
+    let profile_id = "remote-owner-rebind-provider";
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params(profile_id, &base_url),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_REMOTE_OWNER_REBIND_PROVIDER",
+        "test-secret-key",
+    );
+    let params = json!({"profile_id":profile_id,"timeout_ms":2_000});
+    let preview = host.handle(ServiceRequest {
+        id: Some("remote-owner-rebind-preview".to_string()),
+        method: "llm.previewProviderConnectionTest".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    fs::create_dir_all(victim.join("llm")).expect("create victim");
+    let victim_sentinel = victim.join("llm/sentinel");
+    fs::write(&victim_sentinel, b"victim-unchanged").expect("seed victim");
+
+    let hook_app_data = app_data_dir.clone();
+    let hook_moved_owner = moved_owner.clone();
+    let hook_victim = victim.clone();
+    crate::service_provider_actions::inject_provider_action_post_effect_hook_for_test(move || {
+        fs::rename(&hook_app_data, &hook_moved_owner).expect("move accepted owner");
+        symlink(&hook_victim, &hook_app_data).expect("replace app-data path");
+    });
+    let mut apply = params;
+    apply["action_confirmation"] =
+        action_confirmation_from_preview(&preview.result.expect("provider preview"));
+    let response = host.handle(ServiceRequest {
+        id: Some("remote-owner-rebind-apply".to_string()),
+        method: "llm.testProviderConnection".to_string(),
+        params: apply,
+    });
+
+    assert!(!response.ok);
+    let error = response.error.expect("remote partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("remote_unknown")
+    );
+    assert_eq!(
+        fs::read(&victim_sentinel).expect("victim sentinel"),
+        b"victim-unchanged"
+    );
+    assert!(!victim.join("llm/provider-call-metadata.jsonl").exists());
+    assert!(moved_owner
+        .join("llm/provider-call-metadata.jsonl")
+        .is_file());
+    let _request_text = server.join().expect("mock provider request");
+
+    fs::remove_file(&app_data_dir).expect("remove replacement link");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn credential_compensation_failure_returns_partial_and_records_terminal_outcome() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-compensation-partial-{}-{}",
@@ -880,21 +1047,13 @@ fn provider_network_postprocessing_failure_returns_remote_unknown() {
         method: "llm.testProviderConnection".to_string(),
         params: apply,
     });
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("network partial result");
+    assert!(!response.ok);
+    let error = response.error.expect("network partial effect");
+    assert_eq!(error.code, "partial_effect");
     assert_eq!(
-        result.pointer("/outcome/state").and_then(Value::as_str),
-        Some("partial")
-    );
-    assert_eq!(
-        result.pointer("/outcome/effect").and_then(Value::as_str),
+        error.details.as_ref().map(|details| details.state.as_str()),
         Some("remote_unknown")
     );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(true)
-    );
-    assert!(result.get("readback").is_some_and(Value::is_null));
     assert_eq!(
         crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
             .expect("network replay state")
@@ -939,23 +1098,13 @@ fn provider_transport_failure_is_partial_remote_unknown_and_does_not_rewrite_pro
         "llm.testProviderConnection",
         json!({"profile_id":profile_id,"timeout_ms":250}),
     );
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("transport partial result");
+    assert!(!response.ok);
+    let error = response.error.expect("transport partial effect");
+    assert_eq!(error.code, "partial_effect");
     assert_eq!(
-        result.pointer("/outcome/state").and_then(Value::as_str),
-        Some("partial")
-    );
-    assert_eq!(
-        result
-            .pointer("/outcome/remote_effect")
-            .and_then(Value::as_str),
+        error.details.as_ref().map(|details| details.state.as_str()),
         Some("remote_unknown")
     );
-    assert_eq!(
-        result.get("provider_request_sent").and_then(Value::as_bool),
-        Some(true)
-    );
-    assert!(result.get("readback").is_some_and(Value::is_null));
     assert_eq!(
         fs::read(provider_profiles_path(&app_data_dir)).expect("profile bytes after transport"),
         profile_before,

@@ -66,7 +66,8 @@ use config_support::{
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
 pub use mutation_lock::{
-    lock_app_mutations, lock_or_create_app_mutations_with_parents, AppMutationLock,
+    lock_app_mutations, lock_or_create_app_mutations, lock_or_create_app_mutations_with_parents,
+    AppMutationLock,
 };
 use transaction_lifecycle::rollback_catalog_before_compensation;
 

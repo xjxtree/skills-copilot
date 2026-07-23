@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skills_copilot_commands::{
-    lock_app_mutations, lock_or_create_app_mutations_with_parents, ActionConfirmation,
-    AppMutationLock, CommandError,
+    lock_app_mutations, lock_or_create_app_mutations, ActionConfirmation, AppMutationLock,
+    CommandError,
 };
 use thiserror::Error;
 use ureq::Error as UreqError;
@@ -487,6 +487,13 @@ pub fn list_provider_profiles(
     Ok(provider_profile_list(store))
 }
 
+pub(crate) fn list_provider_profiles_while_locked(
+    owner: &AppMutationLock,
+) -> Result<ListProviderProfilesResult, ProviderError> {
+    let store = load_store_while_locked(owner)?;
+    Ok(provider_profile_list(store))
+}
+
 fn provider_profile_list(store: ProviderProfileStore) -> ListProviderProfilesResult {
     ListProviderProfilesResult {
         profiles: store.profiles,
@@ -495,14 +502,6 @@ fn provider_profile_list(store: ProviderProfileStore) -> ListProviderProfilesRes
         credential_persistence_allowed: true,
         raw_secrets_returned: false,
     }
-}
-
-pub fn save_provider_profile(
-    app_data_dir: &Path,
-    params: SaveProviderProfileParams,
-) -> Result<SaveProviderProfileResult, ProviderError> {
-    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
-    save_provider_profile_while_locked(app_data_dir, &owner, params)
 }
 
 pub(crate) fn save_provider_profile_while_locked(
@@ -682,14 +681,6 @@ pub(crate) fn normalize_save_provider_profile_params(
     })
 }
 
-pub fn delete_provider_profile(
-    app_data_dir: &Path,
-    params: DeleteProviderProfileParams,
-) -> Result<DeleteProviderProfileResult, ProviderError> {
-    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
-    delete_provider_profile_while_locked(app_data_dir, &owner, params)
-}
-
 pub(crate) fn delete_provider_profile_while_locked(
     app_data_dir: &Path,
     owner: &AppMutationLock,
@@ -766,14 +757,6 @@ pub(crate) fn delete_provider_profile_while_locked(
         raw_secret_returned: false,
         operation_state,
     })
-}
-
-pub fn test_provider_connection(
-    app_data_dir: &Path,
-    params: TestProviderConnectionParams,
-) -> Result<TestProviderConnectionResult, ProviderError> {
-    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
-    test_provider_connection_while_locked(app_data_dir, &owner, params)
 }
 
 pub(crate) fn test_provider_connection_while_locked(
@@ -924,7 +907,7 @@ pub fn send_provider_prompt(
     app_data_dir: &Path,
     params: SendProviderPromptParams,
 ) -> Result<SendProviderPromptResult, ProviderError> {
-    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
+    let owner = lock_or_create_app_mutations(app_data_dir)?;
     send_provider_prompt_while_locked(app_data_dir, &owner, params)
 }
 
