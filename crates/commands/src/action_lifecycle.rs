@@ -1108,7 +1108,7 @@ mod tests {
             "project id"
         );
         assert_descriptor_field_bound!(
-            |changed: &mut ActionDescriptor| changed.impacts.push(ActionImpact::AppLocalData),
+            |changed: &mut ActionDescriptor| changed.impacts[0] = ActionImpact::SkillFiles,
             "impacts"
         );
         assert_descriptor_field_bound!(
