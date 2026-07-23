@@ -137,10 +137,46 @@
     {
       "id": "skills-workspace.aggregates",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SkillsWorkspaceListView.swift",
-      "owner": "SkillsWorkspaceListView",
-      "source": "presentation.rows",
+      "strategy": "bounded-cache-complete",
+      "pagination": null,
+      "emptyState": "explicit",
+      "loadingState": "explicit",
+      "errorState": "explicit"
+    },
+    {
+      "id": "skill-aggregate-detail.state-counts",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillAggregateDetailView.swift",
+      "owner": "SkillAggregateDetailView",
+      "source": "presentation.stateCounts",
       "policy": "complete",
-      "total_count_source": "accepted skill-aggregate list total_count with visible aggregate and instance counts presented separately",
+      "total_count_source": "effectiveness state-count row count in the accepted skill aggregate",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "skill-aggregate-detail.instances",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillAggregateDetailView.swift",
+      "owner": "SkillAggregateDetailView",
+      "source": "presentation.instances",
+      "policy": "complete",
+      "total_count_source": "instance-effectiveness member count in the accepted skill aggregate",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "skill-aggregate-detail.evidence",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillAggregateDetailView.swift",
+      "owner": "SkillAggregateDetailView",
+      "source": "presentation.evidence",
+      "policy": "complete",
+      "total_count_source": "evidence reference count in the accepted skill aggregate",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "skill-aggregate-detail.actions",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillAggregateDetailView.swift",
+      "owner": "SkillAggregateDetailView",
+      "source": "presentation.typedActions",
+      "policy": "complete",
+      "total_count_source": "typed action descriptor count in the accepted skill aggregate",
       "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
     },
     {
