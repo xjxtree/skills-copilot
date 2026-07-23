@@ -5,6 +5,21 @@ enum SidebarSelection: Hashable {
     case configDocument(String)
     case configSnapshot(String)
 
+    var appRoute: AppRoute {
+        switch self {
+        case .session:
+            return .sessions
+        case .skill:
+            return .skills
+        case .configOverview, .configDocument, .configSnapshot:
+            return .advanced
+        }
+    }
+
+    func belongs(to route: AppRoute) -> Bool {
+        appRoute == route
+    }
+
     var isSkill: Bool {
         if case .skill = self {
             return true
@@ -27,5 +42,4 @@ enum SidebarSelection: Hashable {
             return false
         }
     }
-
 }
