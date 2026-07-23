@@ -374,6 +374,8 @@ impl CredentialCommit {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum TestProviderIoFault {
     SaveStore,
+    SaveStorePostRenameSync,
+    SaveStorePostRenameReadback,
     AppendCallMetadata,
 }
 
@@ -571,6 +573,12 @@ pub(crate) fn save_provider_profile_while_locked(
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
     if let Err(error) = save_store(app_data_dir, owner, &store) {
+        if matches!(
+            &error,
+            ProviderError::Command(CommandError::PartialEffect { .. })
+        ) {
+            return Err(error);
+        }
         if let Some(commit) = credential_commit.as_ref() {
             return match commit.compensate() {
                 Ok(()) => Ok(SaveProviderProfileResult {
@@ -1438,13 +1446,59 @@ fn save_store(
     }
     let mut content = serde_json::to_vec_pretty(store)?;
     content.push(b'\n');
+    let original = read_profile_store_bytes_while_locked(owner)?;
     owner.owner_fs().ensure_directory_all(Path::new("llm"))?;
-    owner.owner_fs().atomic_replace_private_file(
+    let write_result = owner.owner_fs().atomic_replace_private_file(
         Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
         &content,
         "provider-profiles",
-    )?;
-    Ok(())
+    );
+    #[cfg(test)]
+    let write_result =
+        if take_test_provider_io_fault(_app_data_dir, TestProviderIoFault::SaveStorePostRenameSync)
+        {
+            Err(io::Error::other("injected provider profile post-rename sync failure").into())
+        } else {
+            write_result
+        };
+    #[cfg(test)]
+    let inject_readback_failure = take_test_provider_io_fault(
+        _app_data_dir,
+        TestProviderIoFault::SaveStorePostRenameReadback,
+    );
+    #[cfg(not(test))]
+    let inject_readback_failure = false;
+
+    let readback = if inject_readback_failure {
+        Err(CommandError::UnsafeConfigPath(
+            "injected provider profile read-back failure".to_string(),
+        ))
+    } else {
+        read_profile_store_bytes_while_locked(owner)
+    };
+    match (write_result, readback) {
+        (_, Ok(Some(persisted))) if persisted == content => Ok(()),
+        (Err(write_error), Ok(persisted)) if persisted == original => Err(write_error.into()),
+        _ => Err(CommandError::PartialEffect {
+            operation: "provider profile store".to_string(),
+            state: "outcome_unknown",
+            cleanup_required: false,
+            detail:
+                "provider profile bytes may have been replaced, but the persisted candidate could not be verified"
+                    .to_string(),
+        }
+        .into()),
+    }
+}
+
+fn read_profile_store_bytes_while_locked(
+    owner: &AppMutationLock,
+) -> Result<Option<Vec<u8>>, CommandError> {
+    owner.owner_fs().read_bounded_regular_file(
+        Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
+        PROVIDER_PROFILE_STORE_MAX_BYTES,
+        "provider profile store",
+    )
 }
 
 fn append_call_metadata(

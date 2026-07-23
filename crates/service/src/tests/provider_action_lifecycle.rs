@@ -610,6 +610,204 @@ fn provider_credential_save_has_semantic_credential_readback() {
 }
 
 #[test]
+fn provider_save_accepts_verified_candidate_after_post_rename_sync_error() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-post-rename-sync-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    crate::provider::install_test_provider_io_fault(
+        &app_data_dir,
+        crate::provider::TestProviderIoFault::SaveStorePostRenameSync,
+    );
+
+    let (_, response) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("post-rename-sync-provider", "https://example.invalid/v1"),
+    );
+
+    assert!(response.ok, "{:?}", response.error);
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .and_then(|result| result.pointer("/outcome/state"))
+            .and_then(Value::as_str),
+        Some("verified")
+    );
+    assert!(crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles")
+        .profiles
+        .iter()
+        .any(|profile| profile.id == "post-rename-sync-provider"));
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_save_does_not_compensate_credential_when_store_readback_is_unknown() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-post-rename-readback-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let profile_id = "post-rename-readback-provider";
+    crate::provider::manage_test_provider_credential(profile_id, None);
+    let mut params = provider_save_params(profile_id, "https://example.invalid/v1");
+    params["api_key"] = json!("post-rename-secret");
+    crate::provider::install_test_provider_io_fault(
+        &app_data_dir,
+        crate::provider::TestProviderIoFault::SaveStorePostRenameReadback,
+    );
+
+    let (_, response) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        params,
+    );
+
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("outcome_unknown")
+    );
+    crate::provider::verify_provider_credential_matches(profile_id, "post-rename-secret")
+        .expect("credential must not be compensated after an unknown file outcome");
+    assert!(crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles")
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id));
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("provider replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_delete_reports_unknown_after_post_rename_readback_failure() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-delete-readback-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let profile_id = "delete-readback-provider";
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params(profile_id, "https://example.invalid/v1"),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    crate::provider::install_test_provider_io_fault(
+        &app_data_dir,
+        crate::provider::TestProviderIoFault::SaveStorePostRenameReadback,
+    );
+
+    let (_, response) = confirmed_action_request(
+        &host,
+        "llm.previewDeleteProviderProfile",
+        "llm.deleteProviderProfile",
+        json!({"profile_id":profile_id,"delete_credential":false}),
+    );
+
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("outcome_unknown")
+    );
+    assert!(!crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles")
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id));
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("provider replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_profile_effects_report_partial_when_replay_finalization_is_unverified() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-finalize-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    crate::service_provider_actions::install_test_provider_action_state_fault(
+        &app_data_dir,
+        crate::service_provider_actions::TestProviderActionStateFault::OutcomeDirectorySync,
+    );
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("finalize-partial-provider", "https://example.invalid/v1"),
+    );
+    assert!(!save.ok);
+    let save_error = save.error.expect("save partial effect");
+    assert_eq!(save_error.code, "partial_effect");
+    assert_eq!(
+        save_error
+            .details
+            .as_ref()
+            .map(|details| details.state.as_str()),
+        Some("applied_unverified")
+    );
+    assert!(crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles after save")
+        .profiles
+        .iter()
+        .any(|profile| profile.id == "finalize-partial-provider"));
+
+    crate::service_provider_actions::install_test_provider_action_state_fault(
+        &app_data_dir,
+        crate::service_provider_actions::TestProviderActionStateFault::OutcomeDirectorySync,
+    );
+    let (_, delete) = confirmed_action_request(
+        &host,
+        "llm.previewDeleteProviderProfile",
+        "llm.deleteProviderProfile",
+        json!({
+            "profile_id":"finalize-partial-provider",
+            "delete_credential":false
+        }),
+    );
+    assert!(!delete.ok);
+    let delete_error = delete.error.expect("delete partial effect");
+    assert_eq!(delete_error.code, "partial_effect");
+    assert_eq!(
+        delete_error
+            .details
+            .as_ref()
+            .map(|details| details.state.as_str()),
+        Some("applied_unverified")
+    );
+    assert!(!crate::provider::list_provider_profiles(&app_data_dir)
+        .expect("provider profiles after delete")
+        .profiles
+        .iter()
+        .any(|profile| profile.id == "finalize-partial-provider"));
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 #[cfg(unix)]
 fn provider_save_reports_partial_effect_if_app_data_owner_is_rebound_after_write() {
     use std::os::unix::fs::symlink;

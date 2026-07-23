@@ -275,6 +275,19 @@ impl ServiceHost {
         ) {
             Ok(result) => result,
             Err(ProviderError::CredentialMutationPartial(message)) => {
+                finalize_provider_action_while_locked(
+                    &self.app_data_dir,
+                    &owner,
+                    &current.binding,
+                    confirmation.as_ref().expect("confirmed above"),
+                    ProviderActionState::Partial,
+                )?;
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
+                return Err(ServiceError::AppliedUnverified(format!(
+                    "{message}; inspect Keychain state before creating a new preview"
+                )));
+            }
+            Err(error @ ProviderError::Command(CommandError::PartialEffect { .. })) => {
                 let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
@@ -283,18 +296,16 @@ impl ServiceHost {
                     ProviderActionState::Partial,
                 );
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
-                return Err(ServiceError::AppliedUnverified(format!(
-                    "{message}; inspect Keychain state before creating a new preview"
-                )));
+                return Err(error.into());
             }
             Err(error) => {
-                let _ = finalize_provider_action_while_locked(
+                finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
-                );
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider save did not start: {error}; create a new preview before retrying"
@@ -305,13 +316,13 @@ impl ServiceHost {
 
         match result.operation_state {
             crate::provider::ProviderMutationState::NotStarted => {
-                let _ = finalize_provider_action_while_locked(
+                finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
-                );
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 Ok(SaveProviderProfileApplyResult {
                     outcome: action_outcome(
@@ -330,13 +341,13 @@ impl ServiceHost {
                 })
             }
             crate::provider::ProviderMutationState::Partial => {
-                let _ = finalize_provider_action_while_locked(
+                finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::Partial,
-                );
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile save")?;
                 Ok(SaveProviderProfileApplyResult {
                     outcome: action_outcome(
@@ -500,14 +511,25 @@ impl ServiceHost {
             params,
         ) {
             Ok(result) => result,
-            Err(error) => {
+            Err(error @ ProviderError::Command(CommandError::PartialEffect { .. })) => {
                 let _ = finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
-                    ProviderActionState::NotStarted,
+                    ProviderActionState::Partial,
                 );
+                ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
+                return Err(error.into());
+            }
+            Err(error) => {
+                finalize_provider_action_while_locked(
+                    &self.app_data_dir,
+                    &owner,
+                    &current.binding,
+                    confirmation.as_ref().expect("confirmed above"),
+                    ProviderActionState::NotStarted,
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider delete did not start: {error}; create a new preview before retrying"
@@ -517,13 +539,13 @@ impl ServiceHost {
         run_provider_action_post_effect_hook();
         match result.operation_state {
             crate::provider::ProviderMutationState::NotStarted => {
-                let _ = finalize_provider_action_while_locked(
+                finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
-                );
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
                 Ok(DeleteProviderProfileApplyResult {
                     outcome: action_outcome(
@@ -542,13 +564,13 @@ impl ServiceHost {
                 })
             }
             crate::provider::ProviderMutationState::Partial => {
-                let _ = finalize_provider_action_while_locked(
+                finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::Partial,
-                );
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider profile delete")?;
                 Ok(DeleteProviderProfileApplyResult {
                     outcome: action_outcome(
@@ -707,13 +729,13 @@ impl ServiceHost {
         ) {
             Ok(result) => result,
             Err(error) => {
-                let _ = finalize_provider_action_while_locked(
+                finalize_provider_action_while_locked(
                     &self.app_data_dir,
                     &owner,
                     &current.binding,
                     confirmation.as_ref().expect("confirmed above"),
                     ProviderActionState::NotStarted,
-                );
+                )?;
                 ensure_provider_owner_binding_after_effect(&owner, "provider connection test")?;
                 return Err(ServiceError::ActionNotStarted(format!(
                     "provider test did not start: {error}; create a new preview before retrying"
@@ -812,7 +834,7 @@ impl ServiceHost {
         } else {
             "Provider request returned, but semantic read-back could not be verified.".to_string()
         });
-        let _ = finalize_provider_action_while_locked(
+        let finalization = finalize_provider_action_while_locked(
             &self.app_data_dir,
             &owner,
             &current.binding,
@@ -827,6 +849,7 @@ impl ServiceHost {
                 }),
             ));
         }
+        finalization?;
         ensure_provider_owner_binding_after_effect(&owner, "provider connection test")?;
         Ok(TestProviderConnectionApplyResult {
             outcome: action_outcome(
@@ -924,15 +947,14 @@ fn finish_save_readback(
     readback: Result<ActionReadbackRecord, ServiceError>,
 ) -> Result<SaveProviderProfileApplyResult, ServiceError> {
     if let Ok(readback) = readback {
-        if finalize_provider_action_while_locked(
+        let finalization = finalize_provider_action_while_locked(
             app_data_dir,
             owner,
             binding,
             confirmation,
             ProviderActionState::Verified,
-        )
-        .is_ok()
-        {
+        );
+        if finalization.is_ok() {
             ensure_provider_owner_binding_after_effect(owner, "provider profile save")?;
             return Ok(SaveProviderProfileApplyResult {
                 outcome: action_outcome(
@@ -947,14 +969,43 @@ fn finish_save_readback(
                 readback: Some(readback),
             });
         }
+        let _ = finalize_provider_action_while_locked(
+            app_data_dir,
+            owner,
+            binding,
+            confirmation,
+            ProviderActionState::Partial,
+        );
+        ensure_provider_owner_binding_after_effect(owner, "provider profile save")?;
+        return Err(CommandError::PartialEffect {
+            operation: "provider profile save".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail:
+                "provider profile write was verified, but replay finalization could not be verified"
+                    .to_string(),
+        }
+        .into());
     }
-    let _ = finalize_provider_action_while_locked(
+    if finalize_provider_action_while_locked(
         app_data_dir,
         owner,
         binding,
         confirmation,
         ProviderActionState::Partial,
-    );
+    )
+    .is_err()
+    {
+        ensure_provider_owner_binding_after_effect(owner, "provider profile save")?;
+        return Err(CommandError::PartialEffect {
+            operation: "provider profile save".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail: "provider profile read-back and replay finalization could not be verified"
+                .to_string(),
+        }
+        .into());
+    }
     ensure_provider_owner_binding_after_effect(owner, "provider profile save")?;
     result.error_code = Some("provider_save_readback_unverified".to_string());
     result.error_message = Some(
@@ -991,15 +1042,14 @@ fn finish_delete_readback(
     readback: Result<ActionReadbackRecord, ServiceError>,
 ) -> Result<DeleteProviderProfileApplyResult, ServiceError> {
     if let Ok(readback) = readback {
-        if finalize_provider_action_while_locked(
+        let finalization = finalize_provider_action_while_locked(
             app_data_dir,
             owner,
             binding,
             confirmation,
             ProviderActionState::Verified,
-        )
-        .is_ok()
-        {
+        );
+        if finalization.is_ok() {
             ensure_provider_owner_binding_after_effect(owner, "provider profile delete")?;
             return Ok(DeleteProviderProfileApplyResult {
                 outcome: action_outcome(
@@ -1014,14 +1064,43 @@ fn finish_delete_readback(
                 readback: Some(readback),
             });
         }
+        let _ = finalize_provider_action_while_locked(
+            app_data_dir,
+            owner,
+            binding,
+            confirmation,
+            ProviderActionState::Partial,
+        );
+        ensure_provider_owner_binding_after_effect(owner, "provider profile delete")?;
+        return Err(CommandError::PartialEffect {
+            operation: "provider profile delete".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail:
+                "provider profile deletion was verified, but replay finalization could not be verified"
+                    .to_string(),
+        }
+        .into());
     }
-    let _ = finalize_provider_action_while_locked(
+    if finalize_provider_action_while_locked(
         app_data_dir,
         owner,
         binding,
         confirmation,
         ProviderActionState::Partial,
-    );
+    )
+    .is_err()
+    {
+        ensure_provider_owner_binding_after_effect(owner, "provider profile delete")?;
+        return Err(CommandError::PartialEffect {
+            operation: "provider profile delete".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail: "provider profile absence and replay finalization could not be verified"
+                .to_string(),
+        }
+        .into());
+    }
     ensure_provider_owner_binding_after_effect(owner, "provider profile delete")?;
     result.error_code = Some("provider_delete_readback_unverified".to_string());
     result.error_message = Some(
