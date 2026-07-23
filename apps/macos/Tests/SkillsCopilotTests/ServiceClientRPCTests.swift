@@ -145,6 +145,24 @@ struct ServiceClientRPCTests {
         } catch ActionReadbackValidationError.actionMismatch {
             // Expected.
         }
+
+        let duplicateObservation = ActionReadbackWire(
+            actionID: valid.actionID,
+            sourceRevision: valid.sourceRevision,
+            projectID: valid.projectID,
+            domains: valid.domains,
+            targetIDs: valid.targetIDs,
+            observations: valid.observations + [valid.observations[0]],
+            verified: true
+        )
+        do {
+            try duplicateObservation.validated(for: action)
+            throw NativeModelTestFailure(
+                description: "Duplicate read-back observations must fail closed."
+            )
+        } catch ActionReadbackValidationError.invalidObservation {
+            // Expected.
+        }
     }
 
     private func ruleSuppressionRequestsMatchServiceContract() async throws {

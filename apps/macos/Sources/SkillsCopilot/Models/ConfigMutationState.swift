@@ -126,6 +126,30 @@ struct ConfigSaveConfirmation: Identifiable, Hashable {
     var wire: ActionConfirmationWire { preview.confirmation }
 }
 
+enum ConfigDraftReconciliation {
+    static func draft(
+        current: String,
+        previousBaseline: String,
+        incomingBaseline: String,
+        force: Bool
+    ) -> String {
+        if force || current == previousBaseline {
+            return incomingBaseline
+        }
+        return current
+    }
+
+    static func shouldHydrateAfterApply(
+        confirmedEditGeneration: UInt64,
+        currentEditGeneration: UInt64,
+        currentDraft: String,
+        confirmedCandidate: String
+    ) -> Bool {
+        confirmedEditGeneration == currentEditGeneration
+            && currentDraft == confirmedCandidate
+    }
+}
+
 struct RollbackConfirmation: Identifiable, Hashable {
     let snapshotID: String
     let action: ActionDescriptorWire

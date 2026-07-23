@@ -83,6 +83,10 @@ private struct AgentConfigOverviewDetailPanel: View {
     @State private var revealsSensitiveConfig = false
     @State private var isConfirmingConfigEdit = false
     @State private var configConfirmationToApply: ConfigSaveConfirmation?
+    @State private var configPreviewGeneration: UInt64 = 0
+    @State private var configPreviewTask: Task<Void, Never>?
+    @State private var configBaselineContent = ""
+    @State private var configEditGeneration: UInt64 = 0
 
     private var validationMessage: String? {
         guard let data = draft.data(using: .utf8) else {
@@ -97,7 +101,7 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private var hasDraftChanges: Bool {
-        draft != (store.claudeSettings?.content ?? "")
+        draft != configBaselineContent
     }
 
     private var hasWritableConfigBinding: Bool {
@@ -171,7 +175,7 @@ private struct AgentConfigOverviewDetailPanel: View {
             }
         }
         .onChange(of: store.claudeSettings) { _ in
-            hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
+            reconcileConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
         }
         .onChange(of: store.selectedAgentConfigRefreshKey) { _ in
             revealsSensitiveConfig = false
@@ -327,7 +331,7 @@ private struct AgentConfigOverviewDetailPanel: View {
                 get: { configConfirmationToApply != nil },
                 set: { isPresented in
                     if !isPresented {
-                        configConfirmationToApply = nil
+                        invalidateConfigPreview()
                     }
                 }
             ),
@@ -335,16 +339,27 @@ private struct AgentConfigOverviewDetailPanel: View {
         ) {
             Button(UIStrings.text("settings.agentConfig.save", "Save"), role: .destructive) {
                 guard let confirmation = configConfirmationToApply else { return }
+                guard draft == confirmation.content else {
+                    invalidateConfigPreview()
+                    return
+                }
+                let confirmedEditGeneration = configEditGeneration
                 configConfirmationToApply = nil
                 Task {
                     let succeeded = await store.applyClaudeSettingsSave(confirmation)
-                    if succeeded {
+                    if succeeded,
+                       ConfigDraftReconciliation.shouldHydrateAfterApply(
+                           confirmedEditGeneration: confirmedEditGeneration,
+                           currentEditGeneration: configEditGeneration,
+                           currentDraft: draft,
+                           confirmedCandidate: confirmation.content
+                       ) {
                         hydrateConfigDraftFromStore(revealsSensitive: true)
                     }
                 }
             }
             Button(UIStrings.cancel, role: .cancel) {
-                configConfirmationToApply = nil
+                invalidateConfigPreview()
             }
         } message: {
             if let confirmation = configConfirmationToApply {
@@ -354,8 +369,25 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func hydrateConfigDraftFromStore(revealsSensitive: Bool = false) {
-        draft = store.claudeSettings?.content ?? ""
-        configConfirmationToApply = nil
+        invalidateConfigPreview()
+        let incoming = store.claudeSettings?.content ?? ""
+        configBaselineContent = incoming
+        configEditGeneration &+= 1
+        draft = incoming
+        revealsSensitiveConfig = revealsSensitive
+    }
+
+    private func reconcileConfigDraftFromStore(revealsSensitive: Bool) {
+        invalidateConfigPreview()
+        let incoming = store.claudeSettings?.content ?? ""
+        let reconciledDraft = ConfigDraftReconciliation.draft(
+            current: draft,
+            previousBaseline: configBaselineContent,
+            incomingBaseline: incoming,
+            force: false
+        )
+        configBaselineContent = incoming
+        draft = reconciledDraft
         revealsSensitiveConfig = revealsSensitive
     }
 
@@ -365,7 +397,7 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func reloadClaudeConfig() {
-        configConfirmationToApply = nil
+        invalidateConfigPreview()
         Task {
             await store.refreshSelectedAgentConfigData()
             resetDraftFromStore()
@@ -391,7 +423,8 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func handleConfigDraftChange() {
-        configConfirmationToApply = nil
+        configEditGeneration &+= 1
+        invalidateConfigPreview()
         if !store.isSavingSettings {
             store.clearSettingsFeedback()
         }
@@ -399,10 +432,27 @@ private struct AgentConfigOverviewDetailPanel: View {
 
     private func previewConfigSave() {
         guard canSaveConfig else { return }
-        configConfirmationToApply = nil
-        Task {
-            configConfirmationToApply = await store.previewClaudeSettingsSave(content: draft)
+        invalidateConfigPreview()
+        let candidate = draft
+        let generation = configPreviewGeneration
+        configPreviewTask = Task {
+            let confirmation = await store.previewClaudeSettingsSave(content: candidate)
+            guard !Task.isCancelled,
+                  generation == configPreviewGeneration,
+                  draft == candidate,
+                  confirmation?.content == candidate else {
+                return
+            }
+            configConfirmationToApply = confirmation
         }
+    }
+
+    private func invalidateConfigPreview() {
+        configPreviewGeneration &+= 1
+        configPreviewTask?.cancel()
+        configPreviewTask = nil
+        configConfirmationToApply = nil
+        store.invalidateConfigSavePreview()
     }
 
     private func configConfirmationSummary(_ preview: ConfigSavePreviewRecord) -> String {
@@ -419,6 +469,7 @@ private struct AgentConfigOverviewDetailPanel: View {
             "\(UIStrings.text("action.impact", "Impact")): \(impacts)",
             "\(UIStrings.text("action.network", "Network")): \(action.network)",
             "\(UIStrings.text("action.revision", "Current revision")): \(preview.currentRevision)",
+            "\(UIStrings.text("action.candidateDigest", "Candidate digest")): \(preview.candidateContentDigest)",
             "\(UIStrings.text("action.readback", "Read-back")): \(readback)",
             "\(UIStrings.text("action.evidence", "Evidence")):\n\(evidence)"
         ].joined(separator: "\n")

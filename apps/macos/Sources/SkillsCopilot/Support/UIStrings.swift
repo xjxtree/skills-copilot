@@ -487,6 +487,7 @@ enum UIStrings {
     static var configRevisionUnavailable: String { text("settings.agentConfig.revisionUnavailable", "This service did not provide a config revision. Reload with protocol v2; settings remain read-only.") }
     static var configConflict: String { text("settings.agentConfig.conflict", "Settings changed outside Agent Copilot. Your draft was kept; compare it with the latest config before saving again.") }
     static var rollbackPreviewAgain: String { text("snapshot.rollback.previewAgain", "The rollback preview is no longer current. Preview again before applying.") }
+    static var configSavePreviewAgain: String { text("settings.agentConfig.previewAgain", "The config draft changed after preview. Preview again before saving.") }
     static var rollbackBindingUnavailable: String { text("snapshot.rollback.bindingUnavailable", "This service did not provide a rollback preview token. Rollback remains read-only until you reconnect with protocol v2.") }
     static var agentConfigEditConfirmationTitle: String { text("settings.agentConfig.editConfirmation.title", "Show and edit raw config?") }
     static var agentConfigEditConfirmationMessage: String { text("settings.agentConfig.editConfirmation.message", "This reveals sensitive config values and enables raw editing. Changes remain local until you preview and explicitly confirm Save.") }

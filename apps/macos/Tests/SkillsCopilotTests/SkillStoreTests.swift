@@ -146,6 +146,9 @@ struct SkillStoreTests {
         try await runCase("explicitConfigSaveRequiresPreviewAndVerifiedApply") {
             try await explicitConfigSaveRequiresPreviewAndVerifiedApply()
         }
+        try await runCase("configSaveDraftChangeInvalidatesDelayedPreviewAndApply") {
+            try await configSaveDraftChangeInvalidatesDelayedPreviewAndApply()
+        }
         try await runCase("staleConfigSaveDoesNotRetryAndReloadsCurrentDocument") {
             try await staleConfigSaveDoesNotRetryAndReloadsCurrentDocument()
         }
@@ -1539,6 +1542,42 @@ struct SkillStoreTests {
         try expectEqual(store.claudeSettings?.content, Optional(candidate), "Verified apply should publish the returned current document.")
         try expectContains(store.lastMutationMessage, UIStrings.savedSettings, "Verified apply should publish success feedback.")
         try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), 1, "A config apply should not trigger an unrelated full-state refresh.")
+    }
+
+    private func configSaveDraftChangeInvalidatesDelayedPreviewAndApply() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-save-preview-delay")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        await store.loadClaudeSettings()
+        let candidate = "{\"theme\":\"dark\"}\n"
+        let delayedPreview = Task {
+            await store.previewClaudeSettingsSave(content: candidate)
+        }
+        try await waitUntil("The delayed config preview should reach the service.") {
+            countMethodCalls("config.previewSaveClaudeSettings", in: fake.calls()) == 1
+        }
+
+        store.invalidateConfigSavePreview()
+        let staleConfirmation = await delayedPreview.value
+
+        try expectNil(staleConfirmation, "A preview completed after the draft changed must not re-establish confirmation.")
+        try expectEqual(store.configMutationState, .idle, "Invalidating an in-flight preview should restore the editor to an unconfirmed state.")
+        try expectEqual(store.isSavingSettings, false, "A stale preview completion must not leave the editor busy.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Draft invalidation must never apply the stale candidate.")
+
+        fake.activate(scenario: "config-cas")
+        guard let confirmation = await store.previewClaudeSettingsSave(content: candidate) else {
+            throw NativeModelTestFailure(description: "A fresh candidate should still produce a confirmation.")
+        }
+        store.invalidateConfigSavePreview()
+        let applied = await store.applyClaudeSettingsSave(confirmation)
+
+        try expectEqual(applied, false, "An invalidated confirmation must be rejected before the apply RPC.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "An invalidated confirmation must not reach the service write method.")
+        try expectEqual(store.settingsErrorMessage, UIStrings.configSavePreviewAgain, "The editor should require a new preview for the changed draft.")
     }
 
     private func staleConfigSaveDoesNotRetryAndReloadsCurrentDocument() async throws {

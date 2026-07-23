@@ -418,6 +418,8 @@ final class SkillStore: ObservableObject {
     private var skillEventAccumulatorsByID: [SkillRecord.ID: ListPageAccumulator<SkillEventRecord>] = [:]
     private var skillEventLoadGenerations: [SkillRecord.ID: Int] = [:]
     private var rollbackPreviewGeneration = 0
+    private var configSavePreviewGeneration: UInt64 = 0
+    private var activeConfigSaveConfirmation: ConfigSaveConfirmation?
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
     private var selectedDetailLoadGeneration = 0
@@ -3452,6 +3454,18 @@ final class SkillStore: ObservableObject {
         }
     }
 
+    func invalidateConfigSavePreview() {
+        configSavePreviewGeneration &+= 1
+        activeConfigSaveConfirmation = nil
+        switch configMutationState {
+        case .previewing, .awaitingConfirmation:
+            isSavingSettings = false
+            configMutationState = .idle
+        case .idle, .saving, .conflict, .failed:
+            break
+        }
+    }
+
     @discardableResult
     func submitProviderAutosave(draft: AIProviderSettingsDraft) -> UInt64 {
         providerAutosaveDraft = draft
@@ -3747,19 +3761,30 @@ final class SkillStore: ObservableObject {
             )
             return nil
         }
+        configSavePreviewGeneration &+= 1
+        let previewGeneration = configSavePreviewGeneration
+        activeConfigSaveConfirmation = nil
         isSavingSettings = true
         publishConfigSaveFeedback(
             message: nil,
             error: nil,
             mutationState: .previewing
         )
-        defer { isSavingSettings = false }
+        defer {
+            if previewGeneration == configSavePreviewGeneration {
+                isSavingSettings = false
+            }
+        }
 
         do {
             let preview = try await service.previewClaudeSettingsSave(
                 content: content,
                 expectedRevision: currentRevision
             )
+            guard previewGeneration == configSavePreviewGeneration,
+                  claudeSettings == currentDocument else {
+                return nil
+            }
             guard preview.action.previewMethod == "config.previewSaveClaudeSettings",
                   preview.action.applyMethod == "config.saveClaudeSettings",
                   preview.action.confirmationRequired,
@@ -3770,6 +3795,7 @@ final class SkillStore: ObservableObject {
                   preview.action.target.scope == currentDocument.scope,
                   preview.current == currentDocument,
                   preview.currentRevision == currentRevision,
+                  preview.changed,
                   preview.action.readback.contains("agent_config"),
                   preview.action.readback.contains("config_snapshots"),
                   !preview.candidateContentDigest
@@ -3783,14 +3809,19 @@ final class SkillStore: ObservableObject {
                     "Config save preview does not match the loaded AgentConfig target."
                 )
             }
+            let confirmation = ConfigSaveConfirmation(content: content, preview: preview)
+            activeConfigSaveConfirmation = confirmation
             publishConfigSaveFeedback(
                 message: nil,
                 error: nil,
                 mutationState: .awaitingConfirmation
             )
-            return ConfigSaveConfirmation(content: content, preview: preview)
+            return confirmation
         } catch ServiceClient.ClientError.service(let error) where error.code == "config_conflict" {
             let latestDocument = try? await service.readClaudeSettings()
+            guard previewGeneration == configSavePreviewGeneration else {
+                return nil
+            }
             let conflict = ConfigConflictState(
                 attemptedRevision: currentRevision,
                 latestRevision: latestDocument?.revision,
@@ -3806,6 +3837,9 @@ final class SkillStore: ObservableObject {
             }
             return nil
         } catch {
+            guard previewGeneration == configSavePreviewGeneration else {
+                return nil
+            }
             publishConfigSaveFeedback(
                 message: nil,
                 error: error.localizedDescription,
@@ -3827,20 +3861,17 @@ final class SkillStore: ObservableObject {
         guard supportsConfigActionLifecycle,
               let loadedDocument = claudeSettings,
               loadedDocument == confirmation.preview.current,
-              loadedDocument.revision == confirmation.preview.currentRevision else {
+              loadedDocument.revision == confirmation.preview.currentRevision,
+              activeConfigSaveConfirmation == confirmation else {
             publishConfigSaveFeedback(
                 message: nil,
-                error: UIStrings.configConflict,
-                mutationState: .conflict(
-                    ConfigConflictState(
-                        attemptedRevision: confirmation.preview.currentRevision,
-                        latestRevision: claudeSettings?.revision,
-                        displayMessage: UIStrings.configConflict
-                    )
-                )
+                error: UIStrings.configSavePreviewAgain,
+                mutationState: .failed(UIStrings.configSavePreviewAgain)
             )
             return false
         }
+        configSavePreviewGeneration &+= 1
+        activeConfigSaveConfirmation = nil
 
         return await autosaveMutationLane.perform { [self] in
             isSavingSettings = true

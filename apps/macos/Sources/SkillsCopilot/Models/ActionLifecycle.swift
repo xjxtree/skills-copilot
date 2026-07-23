@@ -201,12 +201,16 @@ struct ActionReadbackWire: Codable, Hashable {
         let declaredDomains = Set(action.readback)
         let observedDomains = Set(observations.map(\.domain))
         guard !declaredDomains.isEmpty,
+              declaredDomains.count == action.readback.count,
+              Set(domains).count == domains.count,
               Set(domains) == declaredDomains,
               observedDomains == declaredDomains else {
             throw ActionReadbackValidationError.domainMismatch
         }
 
+        let observationKeys = Set(observations.map { "\($0.domain)\u{0}\($0.targetID)" })
         guard !observations.isEmpty,
+              observationKeys.count == observations.count,
               observations.allSatisfy({
                   !$0.targetID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                       && !$0.revision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -216,6 +220,7 @@ struct ActionReadbackWire: Codable, Hashable {
 
         let observedTargetIDs = Set(observations.map(\.targetID))
         guard !observedTargetIDs.isEmpty,
+              Set(targetIDs).count == targetIDs.count,
               Set(targetIDs) == observedTargetIDs else {
             throw ActionReadbackValidationError.targetMismatch
         }

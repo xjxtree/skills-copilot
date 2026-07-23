@@ -613,7 +613,7 @@ final class FakeServiceScript: ServiceProcessRunning {
                 respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"external\\"}\\n","exists":true,"revision":"sha256:external-revision"}}'
               fi
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"}}'
-            elif [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
+            elif [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-preview-delay" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
               save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
               if [ "$save_count" -gt 0 ]; then
                 respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"}}'
@@ -623,7 +623,10 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings"}}'
             ;;
           *\\"config.previewSaveClaudeSettings\\"*)
-            if [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-stale" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
+            if [ "$scenario" = "config-save-preview-delay" ]; then
+              sleep 1
+              respond '{"id":"test","ok":true,"result":{"action":'"$config_save_action"',"preconditions":[{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:settings-revision"}],"preview_token":"action-preview:v1:hmac-sha256:config-save-delayed-preview","current":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"},"candidate_content_digest":"sha256:config-save-delayed-candidate","current_revision":"sha256:settings-revision","changed":true}}'
+            elif [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-stale" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
               respond '{"id":"test","ok":true,"result":{"action":'"$config_save_action"',"preconditions":[{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:settings-revision"}],"preview_token":"action-preview:v1:hmac-sha256:config-save-preview","current":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"},"candidate_content_digest":"sha256:config-save-candidate","current_revision":"sha256:settings-revision","changed":true}}'
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings save preview"}}'

@@ -883,6 +883,7 @@
 "settings.agentConfig.protocolV2Required" = "配置写入需要服务协议 v2。请更新服务后重新加载；在此之前设置与回滚保持只读。";
 "settings.agentConfig.conflict" = "设置已在 Agent Copilot 外部发生变化。你的草稿已保留；请与最新配置比较后再保存。";
 "snapshot.rollback.previewAgain" = "回滚预览已不再是最新状态。请重新预览后再应用。";
+"settings.agentConfig.previewAgain" = "配置草稿在预览后已变化。请重新预览后再保存。";
 "snapshot.rollback.bindingUnavailable" = "服务未提供回滚预览令牌。重新连接协议 v2 前，回滚保持只读。";
 "settings.agentConfig.editConfirmation.title" = "显示并编辑原始配置？";
 "settings.agentConfig.editConfirmation.message" = "这会显示敏感配置值并启用原始编辑。改动只保留在本地，直到你预览并明确确认保存。";

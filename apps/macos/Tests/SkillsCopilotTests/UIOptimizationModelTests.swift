@@ -11,6 +11,7 @@ struct UIOptimizationModelTests {
         try detailHeaderUsesCompactCopyableMetadata()
         try detailFeedbackUsesInlineToast()
         try configEditorUsesExplicitSaveCodeCardPresentation()
+        try configDraftReconciliationPreservesNewerEdits()
         try settingsWindowUsesSidebarAndCloseOnlyControls()
         try settingsProviderObservabilityUsesBoundedScopedRendering()
         try modalWorkflowsUseSharedSheetChromeAndColumns()
@@ -239,6 +240,55 @@ struct UIOptimizationModelTests {
             UIOptimizationPresentation.configEditor.autosaveEnabled,
             false,
             "Editable JSON config changes must not write without preview and explicit confirmation."
+        )
+    }
+
+    private func configDraftReconciliationPreservesNewerEdits() throws {
+        let cleanAdoption = ConfigDraftReconciliation.draft(
+            current: #"{"theme":"light"}"#,
+            previousBaseline: #"{"theme":"light"}"#,
+            incomingBaseline: #"{"theme":"external"}"#,
+            force: false
+        )
+        try expectEqual(
+            cleanAdoption,
+            #"{"theme":"external"}"#,
+            "A clean config editor should adopt a newly verified baseline."
+        )
+
+        let newerEditDuringApply = ConfigDraftReconciliation.draft(
+            current: #"{"theme":"blue"}"#,
+            previousBaseline: #"{"theme":"light"}"#,
+            incomingBaseline: #"{"theme":"dark"}"#,
+            force: false
+        )
+        try expectEqual(
+            newerEditDuringApply,
+            #"{"theme":"blue"}"#,
+            "A verified apply response must not overwrite a newer local edit."
+        )
+
+        let staleConflict = ConfigDraftReconciliation.draft(
+            current: #"{"theme":"dark"}"#,
+            previousBaseline: #"{"theme":"light"}"#,
+            incomingBaseline: #"{"theme":"external"}"#,
+            force: false
+        )
+        try expectEqual(
+            staleConflict,
+            #"{"theme":"dark"}"#,
+            "A stale-save conflict should update the baseline without discarding the local draft."
+        )
+
+        try expectEqual(
+            ConfigDraftReconciliation.shouldHydrateAfterApply(
+                confirmedEditGeneration: 7,
+                currentEditGeneration: 8,
+                currentDraft: #"{"theme":"blue"}"#,
+                confirmedCandidate: #"{"theme":"dark"}"#
+            ),
+            false,
+            "An apply that completed after another edit must not force-hydrate the editor."
         )
     }
 
