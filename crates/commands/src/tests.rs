@@ -253,6 +253,7 @@ fn scans_claude_fixtures_into_catalog() {
             scope: Scope::AgentGlobal,
             path: fixture_path("fixtures/claude-code/personal"),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -276,6 +277,7 @@ fn scan_all_includes_claude_and_codex_fixtures() {
             scope: Scope::AgentGlobal,
             path: fixture_path("fixtures/claude-code/personal"),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -363,6 +365,7 @@ fn scan_all_report_splits_agent_counts_and_roots() {
             scope: Scope::AgentGlobal,
             path: fixture_path("fixtures/claude-code/personal"),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -1019,6 +1022,7 @@ fn dangling_link_scan_reconciles_stale_rows_without_degrading_root() {
             scope: Scope::AgentGlobal,
             path: scan_root.clone(),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -1085,6 +1089,7 @@ fn complete_scan_marks_removed_rows_missing() {
             scope: Scope::AgentGlobal,
             path: scan_root.clone(),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -1141,6 +1146,7 @@ fn marks_deleted_fixture_as_missing_on_rescan() {
             scope: Scope::AgentGlobal,
             path: personal.clone(),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -1235,6 +1241,7 @@ fn sweep_does_not_touch_records_outside_scanned_roots() {
             scope: Scope::AgentGlobal,
             path: personal,
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 
@@ -2951,6 +2958,7 @@ fn scan_records_rule_findings_and_conflicts() {
             scope: Scope::AgentGlobal,
             path: fixture_path("fixtures/claude-code/project"),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 

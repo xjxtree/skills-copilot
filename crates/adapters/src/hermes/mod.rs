@@ -29,6 +29,7 @@ impl AgentAdapter for HermesAdapter {
             scope: Scope::AgentGlobal,
             path: hermes_home.join("skills"),
             source: RootSource::UserHome,
+            logical_source_id: Some("hermes-user-skills".to_string()),
         }];
         roots.extend(hermes_external_skill_roots(&hermes_home, &ctx.user_home));
         roots
@@ -122,10 +123,12 @@ fn hermes_external_skill_roots(hermes_home: &Path, user_home: &Path) -> Vec<Adap
     let config_dir = config_path.parent().unwrap_or(hermes_home);
     parse_external_dirs(&config_text, config_dir, user_home)
         .into_iter()
-        .map(|path| AdapterRoot {
+        .enumerate()
+        .map(|(index, path)| AdapterRoot {
             scope: Scope::AgentGlobal,
             path,
             source: RootSource::Extra,
+            logical_source_id: Some(format!("configured-external:{index}")),
         })
         .collect()
 }
@@ -346,6 +349,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: PathBuf::from("/tmp/unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
@@ -384,6 +388,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: temp_root.join("unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 

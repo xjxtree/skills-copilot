@@ -149,6 +149,46 @@ fn projected_visible_catalog_instances(
     Ok(instances)
 }
 
+/// Returns the adapter-normalized catalog cache used by product projections.
+///
+/// This reads only the accepted catalog snapshot plus guarded configuration
+/// overlays. It does not scan adapter roots or invoke an external process.
+pub fn list_projected_skill_instances(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+) -> Result<Vec<SkillInstance>, CommandError> {
+    Ok(list_projected_skill_instances_with_config_revision(catalog, ctx)?.instances)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ProjectedSkillInstancesSnapshot {
+    pub instances: Vec<SkillInstance>,
+    pub config_revision: String,
+}
+
+/// Applies exactly one accepted Codex config byte snapshot and returns the
+/// revision of those same bytes.
+pub fn list_projected_skill_instances_with_config_revision(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+) -> Result<ProjectedSkillInstancesSnapshot, CommandError> {
+    let mut instances = visible_catalog_instances(
+        catalog.list_skill_instances_for_project_context(ctx.project_root.as_deref())?,
+    );
+    let (projection, config_revision) = codex_config_projection_snapshot(ctx)?;
+    apply_codex_config_projection(&mut instances, &projection);
+    Ok(ProjectedSkillInstancesSnapshot {
+        instances,
+        config_revision,
+    })
+}
+
+/// Opaque revision for the only mutable config overlay applied by
+/// `list_projected_skill_instances`.
+pub fn product_skill_config_revision(ctx: &AdapterContext) -> Result<String, CommandError> {
+    codex_config_projection_snapshot(ctx).map(|(_, revision)| revision)
+}
+
 fn projected_runtime_conflicts(
     instances: &[SkillInstance],
     ctx: &AdapterContext,

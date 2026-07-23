@@ -10,7 +10,8 @@ const MIGRATION_0005: &str = include_str!("migrations/0005_add_rule_tuning.sql")
 const MIGRATION_0006: &str = include_str!("migrations/0006_add_config_snapshot_project_root.sql");
 const MIGRATION_0007: &str = include_str!("migrations/0007_remove_non_file_skill_history.sql");
 const MIGRATION_0008: &str = include_str!("migrations/0008_add_catalog_scan_revision.sql");
-const SCHEMA_VERSION: i64 = 8;
+const MIGRATION_0009: &str = include_str!("migrations/0009_add_catalog_scan_coverage.sql");
+const SCHEMA_VERSION: i64 = 9;
 
 pub(crate) fn init_schema(conn: &Connection) -> Result<(), CatalogError> {
     if is_current(conn)? {
@@ -42,6 +43,7 @@ fn init_schema_in_transaction(conn: &Connection) -> Result<(), CatalogError> {
     )?;
     conn.execute_batch(MIGRATION_0007)?;
     conn.execute_batch(MIGRATION_0008)?;
+    conn.execute_batch(MIGRATION_0009)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -58,6 +60,8 @@ pub(crate) fn is_current(conn: &Connection) -> Result<bool, CatalogError> {
         ("config_snapshot", "project_root"),
         ("catalog_scan_state", "generation"),
         ("catalog_scan_state", "revision"),
+        ("catalog_scan_coverage", "coverage_json"),
+        ("catalog_skill_projection", "runtime_identity"),
     ] {
         if !table_has_column(conn, table, column)? {
             return Ok(false);

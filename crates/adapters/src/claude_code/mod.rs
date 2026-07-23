@@ -4,8 +4,9 @@ use std::{
 };
 
 use skills_copilot_core::{
-    AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
-    AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
+    adapter_logical_source_token, AdapterContext, AdapterError, AdapterRoot, AgentAdapter,
+    AgentConfigAdapter, AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope,
+    SkillInstance, SkillState,
 };
 
 use crate::environment::absolute_env_path;
@@ -27,6 +28,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             scope: Scope::AgentGlobal,
             path: claude_config_dir(ctx).join("skills"),
             source: RootSource::UserHome,
+            logical_source_id: Some("claude-user-skills".to_string()),
         };
         let mut roots = vec![personal_root.clone()];
         roots.extend(claude_declared_skill_link_roots(&personal_root));
@@ -34,14 +36,16 @@ impl AgentAdapter for ClaudeCodeAdapter {
             &mut roots,
             Scope::AgentGlobal,
             claude_config_dir(ctx).join("commands"),
+            0,
         );
 
         if let Some(project_root) = &ctx.project_root {
-            for directory in claude_project_directories(ctx, project_root) {
+            for (level, directory) in claude_project_directories(ctx, project_root).enumerate() {
                 let root = AdapterRoot {
                     scope: Scope::AgentProject,
                     path: directory.join(".claude/skills"),
                     source: RootSource::Project,
+                    logical_source_id: Some(format!("claude-project-skills:{level}")),
                 };
                 roots.push(root.clone());
                 roots.extend(claude_declared_skill_link_roots(&root));
@@ -49,6 +53,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     &mut roots,
                     Scope::AgentProject,
                     directory.join(".claude/commands"),
+                    level,
                 );
             }
         }
@@ -63,14 +68,18 @@ impl AgentAdapter for ClaudeCodeAdapter {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some("agents-shared-skills".to_string()),
         }];
         if let Some(project_root) = &ctx.project_root {
             roots.extend(
-                claude_project_directories(ctx, project_root).map(|directory| AdapterRoot {
-                    scope: Scope::AgentProject,
-                    path: directory.join(".agents/skills"),
-                    source: RootSource::Compatibility,
-                }),
+                claude_project_directories(ctx, project_root)
+                    .enumerate()
+                    .map(|(level, directory)| AdapterRoot {
+                        scope: Scope::AgentProject,
+                        path: directory.join(".agents/skills"),
+                        source: RootSource::Compatibility,
+                        logical_source_id: Some(format!("agents-project-skills:{level}")),
+                    }),
             );
         }
         roots
@@ -219,7 +228,12 @@ fn claude_project_directories<'a>(
     })
 }
 
-fn push_claude_commands_root(roots: &mut Vec<AdapterRoot>, scope: Scope, path: PathBuf) {
+fn push_claude_commands_root(
+    roots: &mut Vec<AdapterRoot>,
+    scope: Scope,
+    path: PathBuf,
+    level: usize,
+) {
     if path.is_dir() {
         roots.push(AdapterRoot {
             scope,
@@ -229,6 +243,11 @@ fn push_claude_commands_root(roots: &mut Vec<AdapterRoot>, scope: Scope, path: P
                 Scope::AgentProject => RootSource::Project,
                 _ => RootSource::Project,
             },
+            logical_source_id: Some(if scope == Scope::AgentGlobal {
+                "claude-user-commands".to_string()
+            } else {
+                format!("claude-project-commands:{level}")
+            }),
         });
     }
 }
@@ -271,6 +290,10 @@ fn claude_declared_skill_link_roots(root: &AdapterRoot) -> Vec<AdapterRoot> {
                 // a narrow authorized root, never a reason to allow a broad
                 // directory outside the normal Claude locations.
                 source: RootSource::Configured,
+                logical_source_id: root
+                    .logical_source_id
+                    .as_ref()
+                    .map(|logical| format!("{logical}:declared-link")),
             })
         })
         .collect()
@@ -326,6 +349,7 @@ fn claude_enabled_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
         let manifest_skills = manifest
             .as_ref()
             .and_then(|manifest| manifest.get("skills"));
+        let logical_source_id = adapter_logical_source_token("claude-plugin", plugin_id);
 
         let default_skills = canonical_install.join("skills");
         if default_skills.is_dir() {
@@ -333,6 +357,7 @@ fn claude_enabled_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
                 scope: Scope::AgentGlobal,
                 path: default_skills,
                 source: RootSource::Plugin,
+                logical_source_id: logical_source_id.clone(),
             });
         }
         for raw in manifest_skills.into_iter().flat_map(json_string_or_array) {
@@ -343,6 +368,7 @@ fn claude_enabled_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
                 scope: Scope::AgentGlobal,
                 path: candidate,
                 source: RootSource::Plugin,
+                logical_source_id: logical_source_id.clone(),
             });
         }
         if manifest_skills.is_none()
@@ -353,6 +379,7 @@ fn claude_enabled_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
                 scope: Scope::AgentGlobal,
                 path: canonical_install.join("SKILL.md"),
                 source: RootSource::Plugin,
+                logical_source_id: logical_source_id.clone(),
             });
         }
     }

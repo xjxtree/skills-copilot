@@ -347,6 +347,7 @@ fn optional_missing_roots_do_not_degrade_scan_coverage_but_missing_scan_evidence
         skipped_roots: Vec::new(),
         issues: Vec::new(),
         root_aliases: Vec::new(),
+        product_projections: Vec::new(),
         budget_exhausted: false,
     };
     let coverage = source_coverage_from_scan_report(&report);

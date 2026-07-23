@@ -346,6 +346,69 @@ fn catalog_list_skills_does_not_create_app_data_or_catalog() {
 }
 
 #[test]
+fn product_projection_reads_leave_seeded_catalog_and_project_files_unchanged() {
+    let root = temp_test_dir("effects-product-projections");
+    let home = root.join("home");
+    let project = root.join("project");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let host = ServiceHost {
+        app_data_dir: root.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: home,
+            project_root: Some(project.clone()),
+            project_cwd: Some(project.clone()),
+            extra_roots: vec![],
+        },
+    };
+    fs::create_dir_all(&host.app_data_dir).expect("create product app data");
+    let catalog = Catalog::open(&host.catalog_path()).expect("create product catalog");
+    catalog.init().expect("initialize product catalog");
+    drop(catalog);
+    let context_revision =
+        effective_project_context_revision(&host.app_data_dir, host.env_project_context().as_ref())
+            .expect("project context revision");
+    let project_id = skills_copilot_core::canonical_project_id(&project.to_string_lossy());
+    let requests = [
+        (
+            "project.getReadiness",
+            json!({
+                "project_id": project_id,
+                "expected_project_context_revision": context_revision
+            }),
+        ),
+        (
+            "catalog.listSkillAggregates",
+            json!({
+                "project_id": project_id,
+                "expected_project_context_revision": context_revision,
+                "agent": "codex",
+                "limit": 12
+            }),
+        ),
+    ];
+
+    for (method, params) in requests {
+        let before = tree_snapshot(&root);
+        let before_catalog = catalog_file_snapshot(&host.app_data_dir);
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("effects-{method}")),
+            method: method.to_string(),
+            params,
+        });
+        assert!(response.ok, "{method} failed: {response:?}");
+        assert_tree_unchanged(
+            &format!("{method} catalog bytes or SQLite sidecars"),
+            &before_catalog,
+            &catalog_file_snapshot(&host.app_data_dir),
+        );
+        assert_tree_unchanged(method, &before, &tree_snapshot(&root));
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn read_claude_settings_does_not_create_claude_directory() {
     let root = temp_test_dir("effects-read-settings");
     let home = root.join("home");

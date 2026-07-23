@@ -31,7 +31,7 @@ use skills_copilot_core::{
     AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess, PermissionRequest, RootSource,
     Scope, SkillInstance, SkillState,
 };
-use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport};
+use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport, ScannedSkillProjection};
 
 #[cfg(test)]
 use skills_copilot_core::SkillScript;
@@ -153,6 +153,7 @@ pub struct AgentCatalogScanReport {
     pub skipped_roots: Vec<PathBuf>,
     pub issues: Vec<AgentCatalogScanIssue>,
     pub root_aliases: Vec<AgentCatalogScanPathAlias>,
+    pub product_projections: Vec<ScannedSkillProjection>,
     pub budget_exhausted: bool,
 }
 
@@ -548,6 +549,7 @@ fn agent_catalog_scan_report(
                 canonical: alias.canonical.clone(),
             })
             .collect(),
+        product_projections: report.product_projections.clone(),
         budget_exhausted: report.stats.budget_exhausted,
     }
 }
@@ -4640,6 +4642,14 @@ fn apply_codex_config_overrides(
     instances: &mut [SkillInstance],
 ) -> Result<(), CommandError> {
     let projection = codex_config_projection(ctx)?;
+    apply_codex_config_projection(instances, &projection);
+    Ok(())
+}
+
+fn apply_codex_config_projection(
+    instances: &mut [SkillInstance],
+    projection: &CodexConfigProjection,
+) {
     for instance in instances.iter_mut() {
         if instance.agent != AgentId::Codex {
             continue;
@@ -4653,7 +4663,6 @@ fn apply_codex_config_overrides(
             instance.state = SkillState::Disabled;
         }
     }
-    Ok(())
 }
 
 fn apply_pi_config_overrides(
@@ -4724,20 +4733,30 @@ impl CodexConfigProjection {
 }
 
 fn codex_config_projection(ctx: &AdapterContext) -> Result<CodexConfigProjection, CommandError> {
-    let content = match fs::read_to_string(codex_user_config_path(ctx)) {
-        Ok(content) => content,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+    codex_config_projection_snapshot(ctx).map(|(projection, _)| projection)
+}
+
+fn codex_config_projection_snapshot(
+    ctx: &AdapterContext,
+) -> Result<(CodexConfigProjection, String), CommandError> {
+    let (exists, content) = match fs::read_to_string(codex_user_config_path(ctx)) {
+        Ok(content) => (true, content),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (false, String::new()),
         Err(error) => return Err(error.into()),
     };
-    Ok(CodexConfigProjection {
-        codex_home: codex_home_dir(ctx),
-        disabled_paths: parse_codex_skill_config_entries(&content)
-            .into_iter()
-            .filter(|block| block.enabled == Some(false))
-            .filter_map(|block| block.path.map(PathBuf::from))
-            .collect(),
-        plugin_states: parse_codex_plugin_states(&content),
-    })
+    let revision = config_revision(exists, &content);
+    Ok((
+        CodexConfigProjection {
+            codex_home: codex_home_dir(ctx),
+            disabled_paths: parse_codex_skill_config_entries(&content)
+                .into_iter()
+                .filter(|block| block.enabled == Some(false))
+                .filter_map(|block| block.path.map(PathBuf::from))
+                .collect(),
+            plugin_states: parse_codex_plugin_states(&content),
+        },
+        revision,
+    ))
 }
 
 const REDACTED_SNAPSHOT_PREFIX: &str = "# skills-copilot: snapshot content redacted\n";

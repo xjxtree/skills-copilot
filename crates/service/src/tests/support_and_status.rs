@@ -93,12 +93,14 @@ fn status_request_returns_supported_methods() {
     assert!(methods.contains(&Value::String("script.previewExecution".to_string())));
     assert!(methods.contains(&Value::String("script.execute".to_string())));
     assert!(methods.contains(&Value::String("project.getContext".to_string())));
+    assert!(methods.contains(&Value::String("project.getReadiness".to_string())));
     assert!(methods.contains(&Value::String("project.setContext".to_string())));
     assert!(methods.contains(&Value::String("project.clearContext".to_string())));
     assert!(methods.contains(&Value::String("project.removeRecentContext".to_string())));
     assert!(methods.contains(&Value::String("project.clearRecentContexts".to_string())));
     assert!(methods.contains(&Value::String("project.validateContext".to_string())));
     assert!(methods.contains(&Value::String("catalog.listSkills".to_string())));
+    assert!(methods.contains(&Value::String("catalog.listSkillAggregates".to_string())));
     assert!(methods.contains(&Value::String("catalog.getSkill".to_string())));
     assert!(methods.contains(&Value::String("catalog.analysis".to_string())));
     assert!(methods.contains(&Value::String("catalog.scanAll".to_string())));

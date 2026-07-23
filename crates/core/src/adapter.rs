@@ -86,6 +86,30 @@ pub struct AdapterRoot {
     pub scope: Scope,
     pub path: PathBuf,
     pub source: RootSource,
+    /// Adapter-owned logical provenance. It must not contain a physical path
+    /// or be reconstructed from one. `None` means product projection identity
+    /// is unavailable for instances discovered through this root.
+    pub logical_source_id: Option<String>,
+}
+
+/// Encodes a manifest/config-owned logical identifier without treating a
+/// filesystem path as provenance.
+pub fn adapter_logical_source_token(namespace: &str, logical_id: &str) -> Option<String> {
+    let logical_id = logical_id.trim();
+    if namespace.is_empty()
+        || logical_id.is_empty()
+        || logical_id.len() > 512
+        || logical_id.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let mut encoded = String::with_capacity(logical_id.len().saturating_mul(2));
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in logical_id.as_bytes() {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Some(format!("{namespace}:hex:{encoded}"))
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

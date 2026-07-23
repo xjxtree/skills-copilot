@@ -573,6 +573,10 @@ impl ServiceHost {
                 let state: ProjectContextState = load_project_context_state(&self.app_data_dir)?;
                 serde_json::to_value(state).map_err(Into::into)
             }
+            "project.getReadiness" => {
+                let params: ProductReadParams = serde_json::from_value(request.params)?;
+                serde_json::to_value(self.project_readiness(params)?).map_err(Into::into)
+            }
             "project.previewSetContext" => {
                 let params: ProjectContextSetPreviewParams =
                     serde_json::from_value(request.params)?;
@@ -636,6 +640,10 @@ impl ServiceHost {
             "catalog.listSkills" => {
                 let catalog = self.open_catalog_for_read()?;
                 serde_json::to_value(self.list_visible_skill_records(&catalog)?).map_err(Into::into)
+            }
+            "catalog.listSkillAggregates" => {
+                let params: SkillAggregateListParams = serde_json::from_value(request.params)?;
+                serde_json::to_value(self.list_skill_aggregates(params)?).map_err(Into::into)
             }
             "catalog.getSkill" => {
                 let params: GetSkillParams = serde_json::from_value(request.params)?;
@@ -913,7 +921,7 @@ impl ServiceHost {
         self.list_visible_skill_records_for_context(catalog, &adapter_ctx)
     }
 
-    fn list_visible_skill_records_for_context(
+    pub(crate) fn list_visible_skill_records_for_context(
         &self,
         catalog: &Catalog,
         adapter_ctx: &AdapterContext,
@@ -1094,6 +1102,42 @@ impl ServiceHost {
             );
             let catalog_scan_revision =
                 catalog.advance_catalog_scan_revision(operation, &accepted_context_revision)?;
+            let coverage_by_agent = reports
+                .iter()
+                .map(|report| (report.agent, source_coverage_from_scan_report(report)))
+                .collect::<Vec<_>>();
+            let scanned_agents = reports
+                .iter()
+                .map(|report| report.agent)
+                .collect::<Vec<_>>();
+            let unresolved_instances = conflicts
+                .iter()
+                .filter(|conflict| conflict.winner_id.is_none())
+                .flat_map(|conflict| conflict.instance_ids.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            let mut skill_projections = Vec::new();
+            for report in &reports {
+                let coverage = source_coverage_from_scan_report(report);
+                skill_projections.extend(report.product_projections.iter().map(|projection| {
+                    CatalogSkillProjectionDraft {
+                        instance_id: projection.instance_id.clone(),
+                        agent: projection.agent,
+                        source_kind: projection.source_kind.clone(),
+                        source_identity: projection.source_identity.clone(),
+                        runtime_identity: projection.runtime_identity.clone(),
+                        linked: true,
+                        precedence_proven: !unresolved_instances.contains(&projection.instance_id),
+                        coverage: coverage.clone(),
+                    }
+                }));
+            }
+            catalog.replace_catalog_product_projection(
+                &accepted_context_revision,
+                &catalog_scan_revision,
+                &coverage_by_agent,
+                &scanned_agents,
+                &skill_projections,
+            )?;
             if catalog.catalog_scan_revision()? != catalog_scan_revision {
                 return Err(CommandError::VerificationFailed.into());
             }

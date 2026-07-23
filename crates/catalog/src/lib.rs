@@ -9,7 +9,7 @@ use rusqlite::{params, Connection, OpenFlags, Row, Transaction, TransactionBehav
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use skills_copilot_core::{
-    AgentId, NetworkAccess, PermissionRequest, Scope, SkillInstance, SkillState,
+    AgentId, NetworkAccess, PermissionRequest, Scope, SkillInstance, SkillState, SourceCoverage,
 };
 use thiserror::Error;
 
@@ -273,6 +273,42 @@ pub struct CatalogScanRevisionRecord {
     pub revision: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CatalogScanCoverageRecord {
+    pub agent: AgentId,
+    pub context_revision: String,
+    pub catalog_scan_generation: i64,
+    pub catalog_scan_revision: String,
+    pub coverage: SourceCoverage,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CatalogSkillProjectionDraft {
+    pub instance_id: String,
+    pub agent: AgentId,
+    pub source_kind: String,
+    pub source_identity: String,
+    pub runtime_identity: String,
+    pub linked: bool,
+    pub precedence_proven: bool,
+    pub coverage: SourceCoverage,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CatalogSkillProjectionRecord {
+    pub instance_id: String,
+    pub agent: AgentId,
+    pub context_revision: String,
+    pub catalog_scan_generation: i64,
+    pub catalog_scan_revision: String,
+    pub source_kind: String,
+    pub source_identity: String,
+    pub runtime_identity: String,
+    pub linked: bool,
+    pub precedence_proven: bool,
+    pub coverage: SourceCoverage,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct ConflictGroupRecord {
     pub id: String,
@@ -320,6 +356,34 @@ pub enum CatalogError {
 }
 
 impl Catalog {
+    /// Executes read-only queries against one stable SQLite snapshot.
+    ///
+    /// The catalog may have been opened read-only or writable by its caller;
+    /// this boundary always uses a deferred transaction and never commits.
+    pub fn with_read_snapshot<T, E>(
+        &self,
+        read: impl FnOnce(&Catalog) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<CatalogError>,
+    {
+        self.conn
+            .execute_batch("BEGIN DEFERRED")
+            .map_err(CatalogError::from)
+            .map_err(E::from)?;
+        let result = read(self);
+        let rollback = self
+            .conn
+            .execute_batch("ROLLBACK")
+            .map_err(CatalogError::from)
+            .map_err(E::from);
+        match (result, rollback) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
+    }
+
     pub fn open(path: &Path) -> Result<Self, CatalogError> {
         let path = normalize_sqlite_root_alias(path);
         #[cfg(unix)]
@@ -615,6 +679,176 @@ impl Catalog {
                 },
             )
             .map_err(Into::into)
+    }
+
+    pub fn replace_catalog_product_projection(
+        &self,
+        context_revision: &str,
+        scan_revision: &CatalogScanRevisionRecord,
+        coverages: &[(AgentId, SourceCoverage)],
+        scanned_agents: &[AgentId],
+        skills: &[CatalogSkillProjectionDraft],
+    ) -> Result<(), CatalogError> {
+        self.conn.execute(
+            "DELETE FROM catalog_scan_coverage WHERE context_revision <> ?1",
+            [context_revision],
+        )?;
+        self.conn.execute(
+            "DELETE FROM catalog_skill_projection WHERE context_revision <> ?1",
+            [context_revision],
+        )?;
+        let mut statement = self.conn.prepare(
+            "INSERT INTO catalog_scan_coverage (
+                agent, context_revision, catalog_scan_generation,
+                catalog_scan_revision, coverage_json
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(agent) DO UPDATE SET
+                context_revision = excluded.context_revision,
+                catalog_scan_generation = excluded.catalog_scan_generation,
+                catalog_scan_revision = excluded.catalog_scan_revision,
+                coverage_json = excluded.coverage_json",
+        )?;
+        for (agent, coverage) in coverages {
+            statement.execute(params![
+                agent.as_str(),
+                context_revision,
+                scan_revision.generation,
+                scan_revision.revision,
+                serde_json::to_string(coverage)?
+            ])?;
+        }
+
+        for agent in scanned_agents {
+            self.conn.execute(
+                "DELETE FROM catalog_skill_projection WHERE agent = ?1",
+                [agent.as_str()],
+            )?;
+        }
+        let mut skill_statement = self.conn.prepare(
+            "INSERT INTO catalog_skill_projection (
+                instance_id, agent, context_revision, catalog_scan_generation,
+                catalog_scan_revision, source_kind, source_identity,
+                runtime_identity, linked, precedence_proven, coverage_json
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(instance_id) DO UPDATE SET
+                agent = excluded.agent,
+                context_revision = excluded.context_revision,
+                catalog_scan_generation = excluded.catalog_scan_generation,
+                catalog_scan_revision = excluded.catalog_scan_revision,
+                source_kind = excluded.source_kind,
+                source_identity = excluded.source_identity,
+                runtime_identity = excluded.runtime_identity,
+                linked = excluded.linked,
+                precedence_proven = excluded.precedence_proven,
+                coverage_json = excluded.coverage_json",
+        )?;
+        for skill in skills {
+            skill_statement.execute(params![
+                skill.instance_id,
+                skill.agent.as_str(),
+                context_revision,
+                scan_revision.generation,
+                scan_revision.revision,
+                skill.source_kind,
+                skill.source_identity,
+                skill.runtime_identity,
+                i64::from(skill.linked),
+                i64::from(skill.precedence_proven),
+                serde_json::to_string(&skill.coverage)?
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn list_catalog_scan_coverages(
+        &self,
+        context_revision: &str,
+    ) -> Result<Vec<CatalogScanCoverageRecord>, CatalogError> {
+        let mut statement = self.conn.prepare(
+            "SELECT agent, context_revision, catalog_scan_generation,
+                    catalog_scan_revision, coverage_json
+             FROM catalog_scan_coverage
+             WHERE context_revision = ?1
+             ORDER BY agent",
+        )?;
+        let rows = statement.query_map([context_revision], |row| {
+            let agent = agent_id_from_wire(row.get::<_, String>(0)?).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "catalog scan coverage contains an unknown agent",
+                    )),
+                )
+            })?;
+            let coverage_json: String = row.get(4)?;
+            let coverage = serde_json::from_str(&coverage_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok(CatalogScanCoverageRecord {
+                agent,
+                context_revision: row.get(1)?,
+                catalog_scan_generation: row.get(2)?,
+                catalog_scan_revision: row.get(3)?,
+                coverage,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn list_catalog_skill_projections(
+        &self,
+        context_revision: &str,
+    ) -> Result<Vec<CatalogSkillProjectionRecord>, CatalogError> {
+        let mut statement = self.conn.prepare(
+            "SELECT instance_id, agent, context_revision, catalog_scan_generation,
+                    catalog_scan_revision, source_kind, source_identity,
+                    runtime_identity, linked, precedence_proven, coverage_json
+             FROM catalog_skill_projection
+             WHERE context_revision = ?1
+             ORDER BY instance_id",
+        )?;
+        let rows = statement.query_map([context_revision], |row| {
+            let agent = agent_id_from_wire(row.get::<_, String>(1)?).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "catalog skill projection contains an unknown agent",
+                    )),
+                )
+            })?;
+            let coverage_json: String = row.get(10)?;
+            let coverage = serde_json::from_str(&coverage_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    10,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok(CatalogSkillProjectionRecord {
+                instance_id: row.get(0)?,
+                agent,
+                context_revision: row.get(2)?,
+                catalog_scan_generation: row.get(3)?,
+                catalog_scan_revision: row.get(4)?,
+                source_kind: row.get(5)?,
+                source_identity: row.get(6)?,
+                runtime_identity: row.get(7)?,
+                linked: row.get::<_, i64>(8)? != 0,
+                precedence_proven: row.get::<_, i64>(9)? != 0,
+                coverage,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Advances the scan-only catalog revision inside the caller's transaction.
@@ -1277,6 +1511,19 @@ fn normalize_sqlite_root_alias(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn agent_id_from_wire(value: String) -> Option<AgentId> {
+    match value.as_str() {
+        "tool-global" => Some(AgentId::ToolGlobal),
+        "claude-code" => Some(AgentId::ClaudeCode),
+        "codex" => Some(AgentId::Codex),
+        "pi" => Some(AgentId::Pi),
+        "hermes" => Some(AgentId::Hermes),
+        "openclaw" => Some(AgentId::Openclaw),
+        "opencode" => Some(AgentId::Opencode),
+        _ => None,
+    }
 }
 
 #[cfg(not(unix))]
@@ -2754,6 +3001,65 @@ mod tests {
             std::fs::read(&path).expect("read catalog after strict open"),
             before
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_to_product_projection_schema_does_not_invent_coverage() {
+        let path = std::env::temp_dir().join(format!(
+            "skills-copilot-product-projection-migration-{}-{}.sqlite",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let catalog = Catalog::open(&path).expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let skill = catalog_test_instance(
+            AgentId::Codex,
+            Scope::AgentGlobal,
+            "/tmp/home/.codex/skills/existing/SKILL.md",
+            "existing",
+            SkillState::Loaded,
+        );
+        catalog
+            .upsert_skill_instance(&skill)
+            .expect("seed pre-migration skill");
+        catalog
+            .conn
+            .execute_batch(
+                "DROP TABLE catalog_skill_projection;
+                 DROP TABLE catalog_scan_coverage;",
+            )
+            .expect("remove product projection tables");
+        catalog
+            .conn
+            .pragma_update(None, "user_version", 8_i64)
+            .expect("mark catalog as schema v8");
+        drop(catalog);
+
+        let migrated =
+            Catalog::open_read_only_after_migration(&path).expect("migrate catalog for read");
+        assert_eq!(
+            migrated
+                .list_skill_records()
+                .expect("pre-existing skill survives")
+                .len(),
+            1
+        );
+        assert!(
+            migrated
+                .list_catalog_scan_coverages("context-fixture")
+                .expect("coverage rows")
+                .is_empty(),
+            "migration must not reinterpret historical presence as complete scan evidence"
+        );
+        assert!(
+            migrated
+                .list_catalog_skill_projections("context-fixture")
+                .expect("projection rows")
+                .is_empty(),
+            "migration must not invent logical source or effectiveness metadata"
+        );
+        drop(migrated);
         let _ = std::fs::remove_file(path);
     }
 

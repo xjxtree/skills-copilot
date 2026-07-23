@@ -6,8 +6,9 @@ use std::{
 
 use crate::shared::{optional_frontmatter_string, split_yaml_frontmatter, stable_path_id};
 use skills_copilot_core::{
-    AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
-    AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
+    adapter_logical_source_token, AdapterContext, AdapterError, AdapterRoot, AgentAdapter,
+    AgentConfigAdapter, AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope,
+    SkillInstance, SkillState,
 };
 
 use crate::environment::{absolute_env_path, expand_local_path, normalize_path_lexically};
@@ -27,16 +28,21 @@ impl AgentAdapter for OpenclawAdapter {
     fn roots(&self, ctx: &AdapterContext) -> Vec<AdapterRoot> {
         let state_dir = openclaw_state_dir(ctx);
         let mut roots = Vec::new();
-        for workspace_root in openclaw_selected_workspace_roots(ctx, &state_dir) {
+        for (level, workspace_root) in openclaw_selected_workspace_roots(ctx, &state_dir)
+            .into_iter()
+            .enumerate()
+        {
             roots.push(AdapterRoot {
                 scope: Scope::AgentProject,
                 path: workspace_root.join("skills"),
                 source: RootSource::Project,
+                logical_source_id: Some(format!("openclaw-workspace-skills:{level}")),
             });
             roots.push(AdapterRoot {
                 scope: Scope::AgentProject,
                 path: workspace_root.join(".agents/skills"),
                 source: RootSource::Compatibility,
+                logical_source_id: Some(format!("agents-workspace-skills:{level}")),
             });
         }
 
@@ -44,11 +50,13 @@ impl AgentAdapter for OpenclawAdapter {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some("agents-shared-skills".to_string()),
         });
         roots.push(AdapterRoot {
             scope: Scope::AgentGlobal,
             path: state_dir.join("skills"),
             source: RootSource::UserHome,
+            logical_source_id: Some("openclaw-user-skills".to_string()),
         });
         roots.extend(openclaw_bundled_skill_roots());
         roots.extend(openclaw_plugin_skill_roots(ctx, &state_dir));
@@ -69,7 +77,7 @@ impl AgentAdapter for OpenclawAdapter {
         }
         if let Ok(content) = std::fs::read_to_string(openclaw_config_path(ctx)) {
             if let Ok(config) = json5::from_str::<serde_json::Value>(&content) {
-                for path in config
+                for (declaration_index, path) in config
                     .get("skills")
                     .and_then(|skills| skills.get("load"))
                     .and_then(|load| load.get("allowSymlinkTargets"))
@@ -78,12 +86,17 @@ impl AgentAdapter for OpenclawAdapter {
                     .flatten()
                     .filter_map(serde_json::Value::as_str)
                     .filter_map(|raw| expand_local_path(raw, &ctx.user_home, &state_dir))
+                    .enumerate()
                 {
                     for scope in [Scope::AgentGlobal, Scope::AgentProject] {
                         roots.push(AdapterRoot {
                             scope,
                             path: path.clone(),
                             source: RootSource::Configured,
+                            logical_source_id: Some(format!(
+                                "symlink-target:{declaration_index}:{}",
+                                scope.as_str()
+                            )),
                         });
                     }
                 }
@@ -418,6 +431,7 @@ fn openclaw_bundled_skill_roots() -> Vec<AdapterRoot> {
             scope: Scope::AgentGlobal,
             path: package_root.join("skills"),
             source: RootSource::System,
+            logical_source_id: Some("system".to_string()),
         })
         .collect()
 }
@@ -455,10 +469,12 @@ fn openclaw_extra_skill_roots(ctx: &AdapterContext, state_dir: &Path) -> Vec<Ada
         .flatten()
         .filter_map(serde_json::Value::as_str)
         .filter_map(|raw| expand_local_path(raw, &ctx.user_home, state_dir))
-        .map(|path| AdapterRoot {
+        .enumerate()
+        .map(|(index, path)| AdapterRoot {
             scope: Scope::AgentGlobal,
             path,
             source: RootSource::Configured,
+            logical_source_id: Some(format!("configured-extra:{index}")),
         })
         .collect()
 }
@@ -567,6 +583,7 @@ fn openclaw_plugin_skill_roots(ctx: &AdapterContext, state_dir: &Path) -> Vec<Ad
                 },
                 path,
                 source: RootSource::Plugin,
+                logical_source_id: adapter_logical_source_token("openclaw-plugin", id),
             });
         }
     }
@@ -626,6 +643,10 @@ fn openclaw_declared_skill_link_targets(root: &AdapterRoot) -> Vec<AdapterRoot> 
                         scope: root.scope,
                         path,
                         source: RootSource::Configured,
+                        logical_source_id: root
+                            .logical_source_id
+                            .as_ref()
+                            .map(|logical| format!("{logical}:declared-link")),
                     });
                 }
             } else if metadata.is_dir() {
@@ -724,6 +745,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: PathBuf::from("/tmp/unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
@@ -867,11 +889,13 @@ mod tests {
             scope: Scope::AgentGlobal,
             path: enabled.join("declared-skill"),
             source: RootSource::Plugin,
+            logical_source_id: None,
         };
         let managed_root = AdapterRoot {
             scope: Scope::AgentGlobal,
             path: state.join("skills"),
             source: RootSource::UserHome,
+            logical_source_id: Some("native-user".to_string()),
         };
         assert!(OpenclawAdapter.accepts_skill_path(&plugin_root, Path::new("SKILL.md")));
         assert!(!OpenclawAdapter.accepts_skill_path(&managed_root, Path::new("SKILL.md")));

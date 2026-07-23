@@ -34,6 +34,10 @@ pub struct ScanIssue {
 #[derive(Debug, Default)]
 pub struct ScanReport {
     pub instances: Vec<SkillInstance>,
+    /// Adapter-owned logical identities captured with each accepted instance.
+    /// Physical roots are excluded; read projections never reconstruct
+    /// provenance from paths or content hashes.
+    pub product_projections: Vec<ScannedSkillProjection>,
     pub skipped_roots: Vec<PathBuf>,
     /// Canonical paths of roots that were completely enumerated this round.
     /// Callers (e.g. catalog sweep) should only consider records whose
@@ -53,6 +57,15 @@ pub struct ScanReport {
     /// path after the scan.
     pub root_aliases: Vec<ScanRootAlias>,
     pub stats: ScanStats,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ScannedSkillProjection {
+    pub instance_id: String,
+    pub agent: AgentId,
+    pub source_kind: String,
+    pub source_identity: String,
+    pub runtime_identity: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -362,6 +375,20 @@ where
         }
     }
     report.instances = dedup_instances(report.instances);
+    let accepted_ids = report
+        .instances
+        .iter()
+        .map(|instance| instance.id.as_str())
+        .collect::<HashSet<_>>();
+    report
+        .product_projections
+        .retain(|projection| accepted_ids.contains(projection.instance_id.as_str()));
+    report
+        .product_projections
+        .sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+    report
+        .product_projections
+        .dedup_by(|left, right| left.instance_id == right.instance_id);
     let mut alias_keys = HashSet::new();
     report
         .root_aliases
@@ -954,6 +981,9 @@ fn visit_skill_file(
         display_path,
     );
     finalize_discovered_instance(ctx, &root.declared, overrides, &mut instance);
+    if let Some(projection) = scanned_skill_projection(adapter, root, &instance) {
+        report.product_projections.push(projection);
+    }
     report.instances.push(instance);
     SkillVisitStatus::Complete
 }
@@ -984,7 +1014,61 @@ fn push_broken_instance(
         display_path,
     );
     finalize_discovered_instance(ctx, &root.declared, overrides, &mut instance);
+    if let Some(projection) = scanned_skill_projection(adapter, root, &instance) {
+        report.product_projections.push(projection);
+    }
     report.instances.push(instance);
+}
+
+fn scanned_skill_projection(
+    adapter: &dyn AgentAdapter,
+    root: &ResolvedScanRoot,
+    instance: &SkillInstance,
+) -> Option<ScannedSkillProjection> {
+    let source_kind = match &root.declared.source {
+        RootSource::UserHome => "user_home",
+        RootSource::Project => "project",
+        RootSource::Extra => "extra",
+        RootSource::Compatibility => "compatibility",
+        RootSource::Configured => "configured",
+        RootSource::Admin => "admin",
+        RootSource::Plugin => "plugin",
+        RootSource::System => "system",
+    };
+    let logical_source_id = root.declared.logical_source_id.as_deref()?;
+    if logical_source_id.is_empty()
+        || logical_source_id
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | '\0'))
+    {
+        return None;
+    }
+    let runtime_identity = if root.declared.source == RootSource::Plugin {
+        format!(
+            "runtime:{}:plugin:{}:{}",
+            instance.agent.as_str(),
+            logical_source_id,
+            instance.definition_id
+        )
+    } else {
+        format!(
+            "runtime:{}:native:{}",
+            instance.agent.as_str(),
+            instance.definition_id
+        )
+    };
+    Some(ScannedSkillProjection {
+        instance_id: instance.id.clone(),
+        agent: instance.agent,
+        source_kind: format!("adapter_{source_kind}"),
+        source_identity: format!(
+            "source:{}:{}:{}",
+            adapter.id().as_str(),
+            instance.scope.as_str(),
+            logical_source_id
+        ),
+        runtime_identity,
+    })
 }
 
 fn record_budget_exceeded(
@@ -2022,6 +2106,7 @@ mod tests {
                     "/home/.codex/plugins/cache/openai-bundled/browser/1.2.3/skills"
                 ),
                 source: RootSource::Plugin,
+                logical_source_id: None,
             })
             .as_deref(),
             Some("browser")
@@ -2033,6 +2118,7 @@ mod tests {
                     "/home/.codex/plugins/cache/openai-curated-remote/product-design/0.1.52/skills"
                 ),
                 source: RootSource::Plugin,
+                logical_source_id: None,
             })
             .as_deref(),
             Some("product-design"),
@@ -2337,11 +2423,13 @@ mod tests {
                     scope: Scope::AgentGlobal,
                     path: first_root,
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
                 AdapterRoot {
                     scope: Scope::AgentGlobal,
                     path: second_root,
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
             ],
         };
@@ -2450,6 +2538,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: scan_root.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
             link_target_roots: Vec::new(),
         };
@@ -2612,11 +2701,13 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: scan_root.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             },
             AdapterRoot {
                 scope: Scope::AgentProject,
                 path: scan_root.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             },
         ];
         let mut limits = test_scan_limits();
@@ -2824,6 +2915,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: fixture_path("fixtures/claude-code/personal"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
@@ -3173,11 +3265,13 @@ mod tests {
                     scope: Scope::AgentGlobal,
                     path: unavailable_root.clone(),
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
                 AdapterRoot {
                     scope: Scope::AgentGlobal,
                     path: valid_root,
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
             ],
             link_target_roots: Vec::new(),
@@ -3229,11 +3323,13 @@ mod tests {
                     scope: Scope::AgentProject,
                     path: missing_project_root,
                     source: RootSource::Project,
+                    logical_source_id: None,
                 },
                 AdapterRoot {
                     scope: Scope::AgentGlobal,
                     path: valid_root,
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
             ],
             link_target_roots: Vec::new(),
@@ -3267,6 +3363,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: missing_root.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
             link_target_roots: Vec::new(),
         };
@@ -3315,11 +3412,13 @@ mod tests {
                     scope: Scope::AgentGlobal,
                     path: uninspectable_root.clone(),
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
                 AdapterRoot {
                     scope: Scope::AgentGlobal,
                     path: valid_root.clone(),
                     source: RootSource::Extra,
+                    logical_source_id: None,
                 },
             ],
             link_target_roots: Vec::new(),
@@ -3391,6 +3490,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: skills_dir.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
@@ -3422,6 +3522,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: scan_root.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
             link_target_roots: Vec::new(),
         };
@@ -3468,6 +3569,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: scan_root.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
             link_target_roots: Vec::new(),
         };
@@ -3561,11 +3663,13 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: declared_path.clone(),
                 source: RootSource::UserHome,
+                logical_source_id: None,
             }],
             link_target_roots: vec![AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: explicit_target.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
         let ctx = AdapterContext {
@@ -3619,11 +3723,13 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: declared_path.clone(),
                 source: RootSource::UserHome,
+                logical_source_id: None,
             }],
             link_target_roots: vec![AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: target.clone(),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
         let ctx = AdapterContext {
@@ -3670,11 +3776,13 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: declared_path.clone(),
                 source: RootSource::UserHome,
+                logical_source_id: None,
             }],
             link_target_roots: vec![AdapterRoot {
                 scope: Scope::AgentProject,
                 path: explicit_target,
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
         let ctx = AdapterContext {
@@ -4408,6 +4516,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: temp_root.join("unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 

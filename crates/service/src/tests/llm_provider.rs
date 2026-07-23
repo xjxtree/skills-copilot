@@ -3766,6 +3766,21 @@ fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
         .and_then(Value::as_str)
         .expect("initial scan revision")
         .to_string();
+    let accepted_context_revision = initial
+        .get("accepted_context_revision")
+        .and_then(Value::as_str)
+        .expect("accepted context revision")
+        .to_string();
+    let catalog = host
+        .open_catalog()
+        .expect("open catalog after initial scan");
+    let initial_coverages = catalog
+        .list_catalog_scan_coverages(&accepted_context_revision)
+        .expect("initial scan coverages");
+    let initial_projections = catalog
+        .list_catalog_skill_projections(&accepted_context_revision)
+        .expect("initial skill projections");
+    drop(catalog);
 
     let second = skills_root.join("second");
     fs::create_dir_all(&second).expect("create second skill");
@@ -3795,6 +3810,18 @@ fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
         .expect("list skills after failed scan");
     assert!(skills.iter().any(|skill| skill.name == "first"));
     assert!(!skills.iter().any(|skill| skill.name == "second"));
+    assert_eq!(
+        catalog
+            .list_catalog_scan_coverages(&accepted_context_revision)
+            .expect("scan coverages after failed scan"),
+        initial_coverages
+    );
+    assert_eq!(
+        catalog
+            .list_catalog_skill_projections(&accepted_context_revision)
+            .expect("skill projections after failed scan"),
+        initial_projections
+    );
     let _ = fs::remove_dir_all(temp_root);
 }
 
@@ -3896,6 +3923,7 @@ fn scan_claude_returns_refresh_activity() {
                 scope: Scope::AgentGlobal,
                 path: fixture_root,
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         },
     };
@@ -4104,6 +4132,7 @@ fn scan_all_returns_multi_agent_refresh_activity() {
                 scope: Scope::AgentGlobal,
                 path: repo_root.join("fixtures/claude-code/personal"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         },
     };
@@ -4334,6 +4363,7 @@ fn scan_all_label_formats_four_agent_reports() {
             skipped_roots: Vec::new(),
             issues: Vec::new(),
             root_aliases: Vec::new(),
+            product_projections: Vec::new(),
             budget_exhausted: false,
         },
         AgentCatalogScanReport {
@@ -4346,6 +4376,7 @@ fn scan_all_label_formats_four_agent_reports() {
             skipped_roots: Vec::new(),
             issues: Vec::new(),
             root_aliases: Vec::new(),
+            product_projections: Vec::new(),
             budget_exhausted: false,
         },
         AgentCatalogScanReport {
@@ -4358,6 +4389,7 @@ fn scan_all_label_formats_four_agent_reports() {
             skipped_roots: Vec::new(),
             issues: Vec::new(),
             root_aliases: Vec::new(),
+            product_projections: Vec::new(),
             budget_exhausted: false,
         },
         AgentCatalogScanReport {
@@ -4370,6 +4402,7 @@ fn scan_all_label_formats_four_agent_reports() {
             skipped_roots: Vec::new(),
             issues: Vec::new(),
             root_aliases: Vec::new(),
+            product_projections: Vec::new(),
             budget_exhausted: false,
         },
     ];
@@ -4416,6 +4449,7 @@ fn partial_agent_refresh_summary_is_warning_and_redacts_issue_details() {
             ),
         }],
         root_aliases: Vec::new(),
+        product_projections: Vec::new(),
         budget_exhausted: false,
     };
 
@@ -4526,6 +4560,7 @@ fn scan_summary_uses_immutable_nested_aliases_after_declared_symlink_changes() {
                 canonical: canonical_nested,
             },
         ],
+        product_projections: Vec::new(),
         budget_exhausted: false,
     };
     fs::remove_file(&declared_root).expect("remove original symlink");
@@ -4610,6 +4645,7 @@ fn scan_all_uses_stored_project_context_when_env_context_is_absent() {
                 scope: Scope::AgentGlobal,
                 path: repo_root.join("fixtures/claude-code/personal"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         },
     };

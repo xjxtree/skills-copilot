@@ -33,6 +33,7 @@ mod local_session_sqlite;
 mod local_session_summary_detail;
 mod method_effects;
 mod privacy_cleanup;
+mod product_reads;
 mod protocol_fixtures;
 mod provider_action_lifecycle;
 mod skill_manager_fixtures;

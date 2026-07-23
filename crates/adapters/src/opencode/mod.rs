@@ -138,6 +138,7 @@ fn opencode_roots(ctx: &AdapterContext, environment: &OpencodeEnvironment) -> Ve
         scope: Scope::AgentGlobal,
         path: config_dir.join("skills"),
         source: RootSource::UserHome,
+        logical_source_id: Some("opencode-user-skills".to_string()),
     }];
 
     if !environment.disable_external_skills {
@@ -146,12 +147,14 @@ fn opencode_roots(ctx: &AdapterContext, environment: &OpencodeEnvironment) -> Ve
                 scope: Scope::AgentGlobal,
                 path: ctx.user_home.join(".claude/skills"),
                 source: RootSource::Compatibility,
+                logical_source_id: Some("claude-user-compatibility".to_string()),
             });
         }
         roots.push(AdapterRoot {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some("agents-shared-skills".to_string()),
         });
     }
 
@@ -187,6 +190,10 @@ fn opencode_declared_skill_link_targets(root: &AdapterRoot) -> Vec<AdapterRoot> 
                 // compatibility roots. Authorize only that declared link's
                 // exact target instead of broadening the external allowlist.
                 source: RootSource::Configured,
+                logical_source_id: root
+                    .logical_source_id
+                    .as_ref()
+                    .map(|logical| format!("{logical}:declared-link")),
             })
         })
         .collect()
@@ -292,12 +299,14 @@ fn opencode_project_skill_roots(
         .unwrap_or(project_root);
     let mut roots = Vec::new();
     let mut current = Some(start);
+    let mut level = 0usize;
 
     while let Some(dir) = current {
         roots.push(AdapterRoot {
             scope: Scope::AgentProject,
             path: dir.join(".opencode/skills"),
             source: RootSource::Project,
+            logical_source_id: Some(format!("opencode-project-skills:{level}")),
         });
         if external_skills_enabled {
             if claude_skills_enabled {
@@ -305,12 +314,14 @@ fn opencode_project_skill_roots(
                     scope: Scope::AgentProject,
                     path: dir.join(".claude/skills"),
                     source: RootSource::Compatibility,
+                    logical_source_id: Some(format!("claude-project-compatibility:{level}")),
                 });
             }
             roots.push(AdapterRoot {
                 scope: Scope::AgentProject,
                 path: dir.join(".agents/skills"),
                 source: RootSource::Compatibility,
+                logical_source_id: Some(format!("agents-project-skills:{level}")),
             });
         }
         if dir == project_root {
@@ -319,6 +330,7 @@ fn opencode_project_skill_roots(
         current = dir
             .parent()
             .filter(|parent| parent.starts_with(project_root));
+        level = level.saturating_add(1);
     }
 
     roots
@@ -403,15 +415,17 @@ fn opencode_configured_skill_roots(
     let relative_base = opencode_relative_path_base(ctx);
     opencode_config_sources(ctx, environment)
         .into_iter()
-        .flat_map(|source| {
+        .enumerate()
+        .flat_map(|(source_index, source)| {
             read_opencode_config_skill_paths(
                 source.path.as_deref(),
                 source.inline_content.as_deref(),
             )
             .into_iter()
+            .enumerate()
             .filter_map({
                 let relative_base = relative_base.clone();
-                move |raw_path| {
+                move |(path_index, raw_path)| {
                     let expanded =
                         expand_opencode_skill_path(&raw_path, &ctx.user_home, &relative_base)?;
                     if !opencode_configured_path_allowed(ctx, source.scope, &expanded) {
@@ -421,6 +435,7 @@ fn opencode_configured_skill_roots(
                         scope: opencode_configured_scope(ctx, source.scope, &raw_path),
                         path: expanded,
                         source: RootSource::Configured,
+                        logical_source_id: Some(format!("configured:{source_index}:{path_index}")),
                     })
                 }
             })
@@ -830,6 +845,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: PathBuf::from("/tmp/unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
@@ -958,6 +974,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: declared_link,
                 source: RootSource::Configured,
+                logical_source_id: Some("agents-shared-skills:declared-link".to_string()),
             }]
         );
         assert!(roots
@@ -1014,6 +1031,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: temp_root.join("unverified-extra"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 

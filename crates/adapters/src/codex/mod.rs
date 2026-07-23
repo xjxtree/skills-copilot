@@ -8,8 +8,9 @@ use std::{
 
 use crate::shared::{required_frontmatter_string, split_yaml_frontmatter, stable_path_id};
 use skills_copilot_core::{
-    AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
-    AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
+    adapter_logical_source_token, AdapterContext, AdapterError, AdapterRoot, AgentAdapter,
+    AgentConfigAdapter, AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope,
+    SkillInstance, SkillState,
 };
 
 mod paths;
@@ -136,6 +137,7 @@ impl AgentAdapter for CodexAdapter {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::UserHome,
+            logical_source_id: Some("agents-shared-skills".to_string()),
         };
         let mut roots = vec![shared_root.clone()];
         roots.extend(codex_declared_symlink_roots(&shared_root));
@@ -144,6 +146,7 @@ impl AgentAdapter for CodexAdapter {
             scope: Scope::AgentGlobal,
             path: codex_home_dir(ctx).join("skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some("codex-user-skills".to_string()),
         });
 
         roots.extend(codex_plugin_skill_roots(ctx));
@@ -160,6 +163,7 @@ impl AgentAdapter for CodexAdapter {
             scope: Scope::AgentGlobal,
             path: PathBuf::from("/etc/codex/skills"),
             source: RootSource::Admin,
+            logical_source_id: Some("codex-admin-skills".to_string()),
         });
         dedup_roots(roots)
     }
@@ -169,6 +173,7 @@ impl AgentAdapter for CodexAdapter {
             scope: Scope::AgentGlobal,
             path: ctx.user_home.join(".agents/skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some("agents-link-targets".to_string()),
         });
         if let Some(project_root) = &ctx.project_root {
             for root in codex_project_skill_roots(project_root, ctx.project_cwd.as_deref()) {
@@ -292,6 +297,10 @@ fn codex_declared_symlink_roots(parent: &AdapterRoot) -> Vec<AdapterRoot> {
             scope: parent.scope,
             path: entry.path(),
             source: RootSource::Compatibility,
+            logical_source_id: parent
+                .logical_source_id
+                .as_ref()
+                .map(|logical| format!("{logical}:declared-link")),
         })
         .collect::<Vec<_>>();
     roots.sort_by(|left, right| left.path.cmp(&right.path));
@@ -321,13 +330,17 @@ fn codex_plugin_skill_roots(ctx: &AdapterContext) -> Vec<AdapterRoot> {
                 .into_iter()
                 .filter_map(plugin_manifest_skill_root)
                 .max_by(compare_version_names);
-            let Some((_, skill_root)) = selected else {
+            let Some((version, skill_root)) = selected else {
                 continue;
             };
             roots.push(AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: skill_root,
                 source: RootSource::Plugin,
+                logical_source_id: adapter_logical_source_token(
+                    "codex-plugin",
+                    &format!("{plugin_id}:{version}"),
+                ),
             });
         }
     }
@@ -470,10 +483,12 @@ fn codex_user_config_path(ctx: &AdapterContext) -> PathBuf {
 
 fn codex_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Vec<AdapterRoot> {
     codex_project_directories(project_root, project_cwd)
-        .map(|dir| AdapterRoot {
+        .enumerate()
+        .map(|(level, dir)| AdapterRoot {
             scope: Scope::AgentProject,
             path: dir.join(".agents/skills"),
             source: RootSource::Project,
+            logical_source_id: Some(format!("agents-project-skills:{level}")),
         })
         .collect()
 }
@@ -1034,6 +1049,7 @@ enabled = true
                 scope: Scope::AgentGlobal,
                 path: PathBuf::from("/tmp/unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
@@ -1071,6 +1087,7 @@ enabled = true
             scope: Scope::AgentGlobal,
             path: PathBuf::from("/tmp/home/.codex/skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some("compatibility".to_string()),
         };
 
         assert!(adapter.accepts_skill_path(&root, Path::new(".system/imagegen/SKILL.md")));

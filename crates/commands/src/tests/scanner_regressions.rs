@@ -21,6 +21,7 @@ fn scan_claude_report_keeps_dangling_link_diagnostic_without_partial_root() {
             scope: Scope::AgentGlobal,
             path: scan_root.clone(),
             source: RootSource::Extra,
+            logical_source_id: None,
         }],
     };
 

@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skills_copilot_catalog::{
-    Catalog, CatalogCommitError, CatalogError, ConfigSnapshotRecord, ConflictGroupRecord,
-    FindingTriageRecord, RuleFindingRecord, RuleTuningRecord, SkillDetailRecord, SkillEventRecord,
-    SkillRecord,
+    Catalog, CatalogCommitError, CatalogError, CatalogSkillProjectionDraft, ConfigSnapshotRecord,
+    ConflictGroupRecord, FindingTriageRecord, RuleFindingRecord, RuleTuningRecord,
+    SkillDetailRecord, SkillEventRecord, SkillRecord,
 };
 use skills_copilot_commands::{
     analyze_catalog, apply_current_config_overrides_to_skill_detail,
@@ -31,21 +31,21 @@ use skills_copilot_commands::{
     preview_skill_toggles, preview_snapshot_rollback_with_context, preview_update_with_manager,
     read_agent_config, read_claude_settings, reject_non_applicable_confirmation, rollback_snapshot,
     scan_all_catalog_report, scan_claude_catalog_report, skill_health_summary,
-    user_visible_rule_findings, validate_local_archive_import_confirmation,
-    validate_local_archive_update_confirmation, validate_local_delete_confirmation,
-    validate_skill_install_confirmation, validate_skill_manager_confirmation,
-    validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
-    ActionConfirmation, ActionPreviewBinding, ActionReadbackRecord, AdapterCapabilityRecord,
-    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport,
-    AppDataPrivateLeafSnapshot, AppMutationLock, BatchToggleApplyRecord, BatchTogglePreviewRecord,
-    CommandError, ConfigDocumentRecord, ConfigSaveApplyRecord, ConfigSavePreviewRecord,
-    CrossAgentAnalysisRecord, ScriptExecutionPreviewRecord, ScriptExecutionRequest,
-    SkillHealthSummary, SkillInstallPreviewRecord, SkillManagerDeleteLocalParams,
-    SkillManagerInstallParams, SkillManagerListInstalledParams,
-    SkillManagerLocalArchiveImportParams, SkillManagerLocalArchiveUpdateParams,
-    SkillManagerLocalCreateParams, SkillManagerRemoveParams, SkillManagerSearchApplyParams,
-    SkillManagerSearchParams, SkillManagerUpdateParams, SnapshotRollbackApplyRecord,
-    SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
+    source_coverage_from_scan_report, user_visible_rule_findings,
+    validate_local_archive_import_confirmation, validate_local_archive_update_confirmation,
+    validate_local_delete_confirmation, validate_skill_install_confirmation,
+    validate_skill_manager_confirmation, validate_skill_toggle_confirmation,
+    validate_snapshot_rollback_confirmation, ActionConfirmation, ActionPreviewBinding,
+    ActionReadbackRecord, AdapterCapabilityRecord, AdapterDiagnosticsRecord,
+    AgentCatalogScanPathAlias, AgentCatalogScanReport, AppDataPrivateLeafSnapshot, AppMutationLock,
+    BatchToggleApplyRecord, BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord,
+    ConfigSaveApplyRecord, ConfigSavePreviewRecord, CrossAgentAnalysisRecord,
+    ScriptExecutionPreviewRecord, ScriptExecutionRequest, SkillHealthSummary,
+    SkillInstallPreviewRecord, SkillManagerDeleteLocalParams, SkillManagerInstallParams,
+    SkillManagerListInstalledParams, SkillManagerLocalArchiveImportParams,
+    SkillManagerLocalArchiveUpdateParams, SkillManagerLocalCreateParams, SkillManagerRemoveParams,
+    SkillManagerSearchApplyParams, SkillManagerSearchParams, SkillManagerUpdateParams,
+    SnapshotRollbackApplyRecord, SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_commands::{
     apply_search_skills_with_manager, preview_search_skills_with_manager,
@@ -70,6 +70,7 @@ mod service_llm_prompt_helpers;
 mod service_local_session_io;
 mod service_local_sessions;
 mod service_observability_helpers;
+mod service_product_reads;
 mod service_provider_actions;
 mod service_support_helpers;
 
@@ -99,6 +100,7 @@ use provider::{
 };
 pub(crate) use service_llm_prompt_helpers::*;
 pub(crate) use service_observability_helpers::*;
+pub(crate) use service_product_reads::*;
 pub use service_support_helpers::handle_request_json;
 pub(crate) use service_support_helpers::*;
 
@@ -1630,6 +1632,12 @@ pub enum ServiceError {
     MutationDisabled(&'static str),
     #[error("list source changed during pagination")]
     SourceChanged,
+    #[error("an active project context is required")]
+    ProjectContextRequired,
+    #[error("requested project does not match the active project context")]
+    ProjectContextMismatch,
+    #[error("the accepted project context revision is stale")]
+    StaleProjectContext,
     #[error("provider activity source is unreadable: {0}")]
     ProviderActivitySourceUnreadable(&'static str),
     #[error("provider activity source is invalid: {0}")]
@@ -1688,6 +1696,9 @@ impl ServiceError {
             Self::ConfirmationRequired(_) => "confirmation_required",
             Self::MutationDisabled(_) => "mutation_disabled",
             Self::SourceChanged => "source_changed",
+            Self::ProjectContextRequired => "project_context_required",
+            Self::ProjectContextMismatch => "project_context_mismatch",
+            Self::StaleProjectContext => "stale_project_context",
             Self::ProviderActivitySourceUnreadable(_) => "provider_activity_source_unreadable",
             Self::ProviderActivitySourceInvalid(_) => "provider_activity_source_invalid",
             Self::ActionNotStarted(_) => "action_not_started",

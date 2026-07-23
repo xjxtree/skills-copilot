@@ -9,8 +9,9 @@ use crate::shared::{
 
 use crate::environment::{absolute_env_path, expand_local_path, normalize_path_lexically};
 use skills_copilot_core::{
-    AdapterContext, AdapterError, AdapterRoot, AgentAdapter, AgentConfigAdapter,
-    AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
+    adapter_logical_source_token, AdapterContext, AdapterError, AdapterRoot, AgentAdapter,
+    AgentConfigAdapter, AgentConfigDocument, AgentId, PermissionRequest, RootSource, Scope,
+    SkillInstance, SkillState,
 };
 
 #[derive(Debug, Default)]
@@ -44,11 +45,13 @@ impl AgentAdapter for PiAdapter {
                 scope: Scope::AgentGlobal,
                 path: agent_dir.join("skills"),
                 source: RootSource::UserHome,
+                logical_source_id: Some("pi-user-skills".to_string()),
             },
             AdapterRoot {
                 scope: Scope::AgentGlobal,
                 path: ctx.user_home.join(".agents/skills"),
                 source: RootSource::Compatibility,
+                logical_source_id: Some("agents-shared-skills".to_string()),
             },
         ]);
 
@@ -174,6 +177,10 @@ fn pi_declared_skill_link_targets(root: &AdapterRoot) -> Vec<AdapterRoot> {
                         scope: root.scope,
                         path,
                         source: RootSource::Configured,
+                        logical_source_id: root
+                            .logical_source_id
+                            .as_ref()
+                            .map(|logical| format!("{logical}:declared-link")),
                     });
                 }
             } else if metadata.is_dir()
@@ -239,12 +246,14 @@ fn pi_project_skill_roots(project_root: &Path, project_cwd: Option<&Path>) -> Ve
         scope: Scope::AgentProject,
         path: cwd.join(".pi/skills"),
         source: RootSource::Project,
+        logical_source_id: Some("pi-project-skills".to_string()),
     });
-    for dir in pi_project_directories(project_root, Some(cwd)) {
+    for (level, dir) in pi_project_directories(project_root, Some(cwd)).enumerate() {
         roots.push(AdapterRoot {
             scope: Scope::AgentProject,
             path: dir.join(".agents/skills"),
             source: RootSource::Compatibility,
+            logical_source_id: Some(format!("agents-project-skills:{level}")),
         });
     }
 
@@ -322,7 +331,8 @@ fn pi_project_is_trusted(ctx: &AdapterContext, agent_dir: &Path) -> bool {
 fn pi_configured_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<AdapterRoot> {
     pi_settings_sources(ctx, agent_dir)
         .into_iter()
-        .flat_map(|(scope, config_path)| {
+        .enumerate()
+        .flat_map(|(config_index, (scope, config_path))| {
             let Ok(content) = std::fs::read_to_string(&config_path) else {
                 return Vec::new();
             };
@@ -344,10 +354,12 @@ fn pi_configured_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<Adap
                     !matches!(raw.as_bytes().first(), Some(b'!') | Some(b'+') | Some(b'-'))
                 })
                 .filter_map(|raw| expand_local_path(raw, &ctx.user_home, base))
-                .map(|path| AdapterRoot {
+                .enumerate()
+                .map(|(path_index, path)| AdapterRoot {
                     scope,
                     path,
                     source: RootSource::Configured,
+                    logical_source_id: Some(format!("configured:{config_index}:{path_index}")),
                 })
                 .collect()
         })
@@ -395,6 +407,10 @@ fn pi_package_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<Adapter
                 .and_then(|pi| pi.get("skills"))
                 .and_then(serde_json::Value::as_array)
                 .cloned();
+            let logical_source_id = manifest
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|name| adapter_logical_source_token("pi-package", name));
             let skill_paths = declared_skill_paths.unwrap_or_else(|| {
                 let convention_path = package_root.join("skills");
                 match std::fs::symlink_metadata(&convention_path) {
@@ -411,6 +427,7 @@ fn pi_package_skill_roots(ctx: &AdapterContext, agent_dir: &Path) -> Vec<Adapter
                         scope,
                         path,
                         source: RootSource::Plugin,
+                        logical_source_id: logical_source_id.clone(),
                     }),
             );
         }
@@ -658,6 +675,7 @@ mod tests {
                 scope: Scope::AgentGlobal,
                 path: PathBuf::from("/tmp/unverified"),
                 source: RootSource::Extra,
+                logical_source_id: None,
             }],
         };
 
