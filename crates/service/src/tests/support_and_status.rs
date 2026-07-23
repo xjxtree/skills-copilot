@@ -235,7 +235,7 @@ fn explicit_catalog_scan_migrates_legacy_catalog_before_refreshing() {
     let response = host.handle(ServiceRequest {
         id: Some("legacy-explicit-scan".to_string()),
         method: "catalog.scanAll".to_string(),
-        params: json!({}),
+        params: json!({"explicit_refresh": true}),
     });
     assert!(response.ok, "{response:?}");
 
