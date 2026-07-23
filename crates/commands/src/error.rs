@@ -42,24 +42,12 @@ pub enum CommandError {
     InvalidJson(String),
     #[error("unsafe config path: {0}")]
     UnsafeConfigPath(String),
-    #[error("invalid skill bundle: {0}")]
-    InvalidSkillBundle(String),
-    #[error("invalid skill source: {0}")]
-    InvalidSkillSource(String),
-    #[error("invalid import source: {0}")]
-    InvalidImportSource(String),
-    #[error("unsupported import source: {0}")]
-    UnsupportedImportSource(String),
     #[error("install is not supported: {0}")]
     InstallUnsupported(String),
     #[error("invalid script execution request: {0}")]
     InvalidScriptExecutionRequest(String),
     #[error("invalid finding triage status: {0}")]
     InvalidFindingTriageStatus(String),
-    #[error("invalid rule severity override: {0}")]
-    InvalidRuleSeverityOverride(String),
-    #[error("invalid rule tuning request: {0}")]
-    InvalidRuleTuningRequest(String),
     #[error("invalid batch action: {0}")]
     InvalidBatchAction(String),
     #[error("invalid product projection: {0}")]

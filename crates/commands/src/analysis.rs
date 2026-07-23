@@ -655,50 +655,12 @@ fn stable_finding_key(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn validate_finding_triage_status(status: &str) -> Result<(), CommandError> {
     match status {
         "reviewed" | "ignored" | "needs-follow-up" => Ok(()),
         _ => Err(CommandError::InvalidFindingTriageStatus(status.to_string())),
     }
-}
-
-pub(crate) fn validate_rule_tuning_key(rule_id: &str) -> Result<(), CommandError> {
-    if rule_id.trim().is_empty() {
-        return Err(CommandError::InvalidRuleTuningRequest(
-            "rule_id is required".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_rule_scope(
-    agent: Option<&str>,
-    scope: Option<&str>,
-) -> Result<(), CommandError> {
-    if agent.is_none() && scope.is_some() {
-        return Err(CommandError::InvalidRuleTuningRequest(
-            "scope-specific tuning requires agent".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_rule_severity_override(severity: &str) -> Result<(), CommandError> {
-    match severity.trim() {
-        "critical" | "error" | "warn" | "warning" | "info" => Ok(()),
-        _ => Err(CommandError::InvalidRuleSeverityOverride(
-            severity.to_string(),
-        )),
-    }
-}
-
-pub(crate) fn validate_rule_suppression_reason(reason: &str) -> Result<(), CommandError> {
-    if reason.trim().is_empty() {
-        return Err(CommandError::InvalidRuleTuningRequest(
-            "suppression reason is required".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn health_analysis_group_counts(analysis: &CrossAgentAnalysisRecord) -> HealthAnalysisGroupCounts {

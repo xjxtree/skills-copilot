@@ -178,22 +178,6 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         try container.encodeIfPresent(readback, forKey: .readback)
     }
 
-    static func localPreview(skill: SkillRecord, target: ToolInstallTarget) -> ToolGlobalInstallPreview {
-        ToolGlobalInstallPreview(
-            skillID: skill.id,
-            skillName: skill.name,
-            sourcePath: skill.displayPath,
-            target: target,
-            targetPath: nil,
-            confirmationRequired: true,
-            writeBackEnabled: false,
-            wrote: false,
-            summary: UIStrings.toolGlobalInstallPreviewSummary(skill.name, target.title),
-            confirmationMessage: UIStrings.toolGlobalInstallConfirmation(skill.name, target.title),
-            risks: [],
-            snapshotID: nil
-        )
-    }
 }
 
 private struct ConfirmationPayload: Codable, Hashable {

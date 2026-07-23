@@ -16,21 +16,6 @@ extension ServiceClient {
         }
     }
 
-    func scriptExecutionAuditStatus(skill: SkillRecord) async throws -> ScriptExecutionPreview {
-        do {
-            return try await call(
-                method: "script.auditStatus",
-                params: ScriptExecutionParams(
-                    instanceId: skill.id,
-                    definitionId: skill.definitionId,
-                    agent: skill.agent
-                )
-            )
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(skill: skill)
-        }
-    }
-
     func scanAll(expectedContextRevision: String? = nil) async throws -> ScanResult {
         try await call(
             method: "catalog.scanAll",
@@ -171,20 +156,6 @@ extension ServiceClient {
         try await call(method: "catalog.listFindingTriage", params: EmptyParams())
     }
 
-    func setFindingTriage(triageKey: String, status: FindingTriageStatus, note: String? = nil) async throws -> FindingTriageRecord {
-        try await call(
-            method: "catalog.setFindingTriage",
-            params: SetFindingTriageParams(triageKey: triageKey, status: status.rawValue, note: note)
-        )
-    }
-
-    func clearFindingTriage(triageKey: String) async throws -> Bool {
-        try await call(
-            method: "catalog.clearFindingTriage",
-            params: ClearFindingTriageParams(triageKey: triageKey)
-        )
-    }
-
     func listRuleTuning() async throws -> [RuleTuningRecord] {
         do {
             let list: RuleTuningList = try await call(method: "rules.listTuning", params: EmptyParams())
@@ -192,58 +163,6 @@ extension ServiceClient {
         } catch ClientError.service(let error) where error.code == "unknown_method" {
             return []
         }
-    }
-
-    func setSeverityOverride(ruleId: String, severity: String) async throws -> RuleTuningRecord? {
-        let result: RuleTuningMutationResult = try await call(
-            method: "rules.setSeverityOverride",
-            params: SetRuleSeverityOverrideParams(ruleId: ruleId, severity: severity)
-        )
-        return result.record
-    }
-
-    func clearSeverityOverride(ruleId: String) async throws -> RuleTuningRecord? {
-        let result: RuleTuningMutationResult = try await call(
-            method: "rules.clearSeverityOverride",
-            params: ClearRuleSeverityOverrideParams(ruleId: ruleId)
-        )
-        return result.record
-    }
-
-    func setSuppression(ruleId: String, scope: RuleTuningScope, findingGroupId: String?, note: String? = nil) async throws -> RuleTuningRecord? {
-        guard scope == .rule else {
-            throw ClientError.service(
-                ServiceErrorPayload(
-                    code: "unsupported_scope",
-                    message: "Finding-group suppression is not part of the service contract; choose rule-wide suppression."
-                )
-            )
-        }
-        let result: RuleTuningMutationResult = try await call(
-            method: "rules.setSuppression",
-            params: SetRuleSuppressionParams(
-                ruleId: ruleId,
-                reason: "Suppressed locally in Agent Copilot after user review.",
-                note: note
-            )
-        )
-        return result.record
-    }
-
-    func clearSuppression(ruleId: String, scope: RuleTuningScope, findingGroupId: String?) async throws -> RuleTuningRecord? {
-        guard scope == .rule else {
-            throw ClientError.service(
-                ServiceErrorPayload(
-                    code: "unsupported_scope",
-                    message: "Finding-group suppression is not part of the service contract; choose rule-wide suppression."
-                )
-            )
-        }
-        let result: RuleTuningMutationResult = try await call(
-            method: "rules.clearSuppression",
-            params: ClearRuleSuppressionParams(ruleId: ruleId)
-        )
-        return result.record
     }
 
     func listConflicts() async throws -> [ConflictGroupRecord] {
@@ -352,20 +271,16 @@ extension ServiceClient {
     }
 
     func previewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
-        do {
-            return try await call(
-                method: "skill.install",
-                params: ToolInstallPreviewParams(
-                    instanceId: skill.id,
-                    targetAgent: target.rawValue,
-                    targetScope: "agent-global",
-                    confirmed: false,
-                    actionConfirmation: nil
-                )
+        try await call(
+            method: "skill.install",
+            params: ToolInstallPreviewParams(
+                instanceId: skill.id,
+                targetAgent: target.rawValue,
+                targetScope: "agent-global",
+                confirmed: false,
+                actionConfirmation: nil
             )
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return try await legacyPreviewToolInstall(skill: skill, target: target)
-        }
+        )
     }
 
     func confirmToolInstall(
@@ -404,23 +319,6 @@ extension ServiceClient {
             throw ClientError.invalidOutput(error.localizedDescription)
         }
         return result
-    }
-
-    private func legacyPreviewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
-        do {
-            return try await call(
-                method: "tool.previewInstall",
-                params: ToolInstallPreviewParams(
-                    instanceId: skill.id,
-                    targetAgent: target.rawValue,
-                    targetScope: "agent-global",
-                    confirmed: false,
-                    actionConfirmation: nil
-                )
-            )
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .localPreview(skill: skill, target: target)
-        }
     }
 
     func readClaudeSettings() async throws -> ConfigDocumentRecord {

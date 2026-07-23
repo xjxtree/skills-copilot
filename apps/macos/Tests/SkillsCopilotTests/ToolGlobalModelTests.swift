@@ -6,7 +6,6 @@ struct ToolGlobalModelTests {
         try toolGlobalScopeDisplaysAsReadOnlyPreview()
         try piNativeSkillsRequireGuardedToggleCapabilityButDoNotDisplayAsReadOnly()
         try piInstallTargetRemainsBlockedEvenIfCapabilityPayloadClaimsSupport()
-        try installPreviewRequiresConfirmationWithoutWriteBack()
         try backendInstallPreviewDecodesAsConfirmable()
     }
 
@@ -21,16 +20,6 @@ struct ToolGlobalModelTests {
             UIStrings.toggleUnavailableToolGlobal,
             "Tool-global records should expose the install/copy confirmation disabled reason."
         )
-    }
-
-    private func installPreviewRequiresConfirmationWithoutWriteBack() throws {
-        let record = toolGlobalSkill()
-        let preview = ToolGlobalInstallPreview.localPreview(skill: record, target: .claudeCode)
-
-        try expectEqual(preview.confirmationRequired, true, "Install preview should require confirmation.")
-        try expectEqual(preview.writeBackEnabled, false, "Local fallback preview should not enable writes without backend install support.")
-        try expectContains(preview.summary, record.name, "Install preview summary should name the skill.")
-        try expectContains(preview.confirmationMessage, UIStrings.claudeCode, "Install preview confirmation should name the target agent.")
     }
 
     private func piNativeSkillsRequireGuardedToggleCapabilityButDoNotDisplayAsReadOnly() throws {

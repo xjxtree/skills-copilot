@@ -147,35 +147,6 @@ struct RuleTuningList: Decodable, Hashable {
     }
 }
 
-struct RuleTuningMutationResult: Decodable, Hashable {
-    let record: RuleTuningRecord?
-
-    enum CodingKeys: String, CodingKey {
-        case record
-        case rule
-        case item
-    }
-
-    init(record: RuleTuningRecord?) {
-        self.record = record
-    }
-
-    init(from decoder: Decoder) throws {
-        if let record = try? RuleTuningRecord(from: decoder) {
-            self.record = record.ruleId.isEmpty ? nil : record
-            return
-        }
-        if (try? Bool(from: decoder)) != nil {
-            record = nil
-            return
-        }
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        record = try container.decodeIfPresent(RuleTuningRecord.self, forKey: .record)
-            ?? container.decodeIfPresent(RuleTuningRecord.self, forKey: .rule)
-            ?? container.decodeIfPresent(RuleTuningRecord.self, forKey: .item)
-    }
-}
-
 enum RuleTuningModel {
     static let overrideSeverities = ["critical", "error", "warning", "info"]
 

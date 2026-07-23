@@ -18,6 +18,62 @@ mod scanner_regressions;
 #[path = "tests/product_projection_tests.rs"]
 mod product_projection_tests;
 
+#[test]
+fn disabled_compatibility_writes_have_no_public_command_bypass() {
+    let command_source = include_str!("lib.rs");
+    let config_source = include_str!("config_lifecycle.rs");
+    let bundle_source = include_str!("skill_bundle.rs");
+    let error_source = include_str!("error.rs");
+
+    for function in [
+        "scan_claude_to_catalog",
+        "scan_all_to_catalog",
+        "ensure_tool_global_staging_skills_root",
+        "upsert_tool_global_staging_skill",
+        "set_finding_triage",
+        "clear_finding_triage",
+        "set_rule_severity_override",
+        "clear_rule_severity_override",
+        "set_rule_suppression",
+        "clear_rule_suppression",
+        "install_skill_from_tool_global",
+        "toggle_skill",
+        "apply_skill_toggles",
+    ] {
+        assert!(
+            !command_source.contains(&format!("pub fn {function}(")),
+            "{function} must not be callable through the production commands API"
+        );
+    }
+    assert!(
+        !config_source.contains("pub fn save_claude_settings("),
+        "config writes must use the prepared guarded lifecycle"
+    );
+    for removed in [
+        "export_skill_bundle",
+        "export_staging_skill_bundle",
+        "reimport_skill_bundle",
+        "import_local_skill_to_tool_global",
+        "import_github_skill_to_tool_global_deferred",
+    ] {
+        assert!(
+            !bundle_source.contains(&format!("fn {removed}(")),
+            "{removed} must stay removed because its wire mutation is disabled"
+        );
+    }
+    for removed in [
+        "InvalidSkillBundle",
+        "InvalidSkillSource",
+        "InvalidImportSource",
+        "UnsupportedImportSource",
+    ] {
+        assert!(
+            !error_source.contains(removed),
+            "{removed} must not preserve a removed compatibility write surface"
+        );
+    }
+}
+
 fn confirmed_install_skill_from_tool_global(
     catalog: &Catalog,
     ctx: &AdapterContext,
@@ -46,27 +102,6 @@ fn confirmed_install_skill_from_tool_global(
         project_path,
         Some(&confirmation),
     )
-}
-
-#[test]
-fn yaml_contract_preserves_permissions_scalars_sequences_bools_and_nested_mapping() {
-    let raw = "name: sample-skill\ndescription: Sample\nallowed-tools:\n  - Read\n  - Search\npermissions:\n  network: none\n  exec: false\n  requires_human: true\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
-    let value: serde_norway::Value = serde_norway::from_str(raw).expect("yaml parses");
-    let permissions = permissions_from_frontmatter(&value);
-
-    assert_eq!(permissions["tools"], serde_json::json!(["Read", "Search"]));
-    assert_eq!(permissions["network"], "none");
-    assert_eq!(permissions["exec"], false);
-    assert_eq!(permissions["requires_human"], true);
-    assert_eq!(
-        value
-            .get("metadata")
-            .and_then(|item| item.get("openclaw"))
-            .and_then(|item| item.get("skillKey"))
-            .and_then(serde_norway::Value::as_str),
-        Some("routed-key")
-    );
-    assert!(serde_norway::from_str::<serde_norway::Value>("name: [unterminated\n").is_err());
 }
 
 #[test]
@@ -105,130 +140,6 @@ fn script_execution_preview_is_disabled_and_redacts_env_values() {
     assert!(preview.confirmation.required);
     let serialized = serde_json::to_string(&preview).expect("serialize preview");
     assert!(!serialized.contains("fixture-redacted-value"));
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn imports_local_skill_to_tool_global_staging_and_refreshes_audit() {
-    let root = temp_test_dir("tool-global-import");
-    let source = root.join("source/local-skill");
-    let staging = root.join("app-data/tool-global-staging");
-    let user_home = root.join("home");
-    std::fs::create_dir_all(&source).expect("create source");
-    std::fs::create_dir_all(user_home.join(".claude")).expect("create claude dir");
-    let claude_settings = user_home.join(".claude/settings.json");
-    std::fs::write(
-        &claude_settings,
-        "{\"skillOverrides\":{\"existing\":\"off\"}}\n",
-    )
-    .expect("write claude settings");
-    std::fs::write(
-            source.join("SKILL.md"),
-            "---\nname: Imported Skill\ndescription: Imported fixture\ntools:\n  - bash\n---\nRun `curl https://example.test/data.json`.\n",
-        )
-        .expect("write skill");
-    std::fs::write(source.join("notes.txt"), "copied supporting file").expect("write support file");
-    let catalog = Catalog::in_memory().expect("catalog");
-    catalog.init().expect("init catalog");
-    let ctx = AdapterContext {
-        user_home: user_home.clone(),
-        project_root: None,
-        project_cwd: None,
-        extra_roots: Vec::new(),
-    };
-
-    let result =
-        import_local_skill_to_tool_global(&catalog, &ctx, &staging, &source).expect("import");
-
-    assert_eq!(result.imported.agent, "tool-global");
-    assert_eq!(result.imported.scope, "tool-global");
-    assert_eq!(result.imported.name, "Imported Skill");
-    assert!(result.audit.read_only_preview);
-    assert!(PathBuf::from(&result.staging_path).starts_with(
-        staging
-            .join("skills")
-            .canonicalize()
-            .expect("canonical staging skills root")
-    ));
-    assert!(PathBuf::from(&result.staging_path).exists());
-    assert!(PathBuf::from(&result.staging_path)
-        .parent()
-        .expect("staged parent")
-        .join("notes.txt")
-        .exists());
-    assert_eq!(
-        std::fs::read_to_string(&claude_settings).expect("read settings"),
-        "{\"skillOverrides\":{\"existing\":\"off\"}}\n"
-    );
-    assert!(
-        result
-            .findings
-            .iter()
-            .any(|finding| finding.rule_id == "name.canonical-case"),
-        "import should run local rule audit for staged content"
-    );
-    let catalog_findings = list_findings(&catalog).expect("list findings");
-    assert!(
-        catalog_findings
-            .iter()
-            .any(|finding| finding.instance_id.as_deref() == Some(result.instance_id.as_str())),
-        "import should refresh catalog findings"
-    );
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn import_local_skill_rejects_missing_skill_md() {
-    let root = temp_test_dir("tool-global-import-missing");
-    let source = root.join("source/no-skill");
-    std::fs::create_dir_all(&source).expect("create source");
-    let catalog = Catalog::in_memory().expect("catalog");
-    catalog.init().expect("init catalog");
-    let ctx = AdapterContext {
-        user_home: root.join("home"),
-        project_root: None,
-        project_cwd: None,
-        extra_roots: Vec::new(),
-    };
-
-    let error = import_local_skill_to_tool_global(&catalog, &ctx, &root.join("staging"), &source)
-        .expect_err("missing SKILL.md should fail");
-
-    assert!(matches!(error, CommandError::InvalidImportSource(_)));
-    assert!(!root.join("staging/skills").exists());
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[cfg(unix)]
-#[test]
-fn import_local_skill_rejects_source_symlink_escape() {
-    let root = temp_test_dir("tool-global-import-symlink");
-    let source = root.join("source/symlink-skill");
-    let outside = root.join("outside");
-    std::fs::create_dir_all(&source).expect("create source");
-    std::fs::create_dir_all(&outside).expect("create outside");
-    std::fs::write(
-        source.join("SKILL.md"),
-        "---\nname: symlink-skill\ndescription: symlink fixture\n---\nbody\n",
-    )
-    .expect("write skill");
-    std::os::unix::fs::symlink(&outside, source.join("outside-link")).expect("create symlink");
-    let catalog = Catalog::in_memory().expect("catalog");
-    catalog.init().expect("init catalog");
-    let ctx = AdapterContext {
-        user_home: root.join("home"),
-        project_root: None,
-        project_cwd: None,
-        extra_roots: Vec::new(),
-    };
-
-    let error = import_local_skill_to_tool_global(&catalog, &ctx, &root.join("staging"), &source)
-        .expect_err("symlink should fail");
-
-    assert!(matches!(error, CommandError::InvalidImportSource(_)));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -581,87 +492,6 @@ fn scan_all_includes_opencode_configured_local_paths_and_preserves_config_on_tog
             .expect("config json");
     assert_eq!(config["skills"]["paths"][0], path_text(&configured_root));
     assert_eq!(config["permission"]["skill"]["custom-review"], "deny");
-
-    let _ = std::fs::remove_dir_all(&temp_root);
-}
-
-#[test]
-fn exports_tool_global_manifest_stably_without_absolute_reproducible_paths() {
-    let temp_root = std::env::temp_dir().join(format!(
-        "skills-copilot-export-stable-{}",
-        std::process::id()
-    ));
-    let catalog = Catalog::in_memory().expect("catalog opens");
-    catalog.init().expect("catalog initializes");
-    let instance = tool_global_instance(
-        "tool-global-export-id",
-        &temp_root.join("staging/prompt/SKILL.md"),
-    );
-    catalog
-        .upsert_skill_instance(&instance)
-        .expect("upsert tool-global instance");
-
-    let first = export_skill_bundle(&catalog, "tool-global-export-id", &temp_root.join("out-a"))
-        .expect("first export");
-    let second = export_skill_bundle(&catalog, "tool-global-export-id", &temp_root.join("out-b"))
-        .expect("second export");
-    let first_manifest =
-        std::fs::read_to_string(&first.manifest_path).expect("read first manifest");
-    let second_manifest =
-        std::fs::read_to_string(&second.manifest_path).expect("read second manifest");
-
-    assert_eq!(
-        first_manifest, second_manifest,
-        "manifest content must be byte-stable across repeated exports"
-    );
-    assert!(
-        !first_manifest.contains(&temp_root.to_string_lossy().to_string()),
-        "reproducible manifest fields must not include absolute local paths"
-    );
-    assert!(first_manifest.contains("\"skill_path\": \"skill/SKILL.md\""));
-    assert_eq!(first.fingerprint, instance.fingerprint);
-    assert_eq!(first.metadata.source_scope, "tool-global");
-    assert_eq!(first.metadata.version.as_deref(), Some("2.9.0"));
-
-    let _ = std::fs::remove_dir_all(&temp_root);
-}
-
-#[test]
-fn reimports_export_bundle_with_stable_fingerprint_and_metadata() {
-    let temp_root = std::env::temp_dir().join(format!(
-        "skills-copilot-reimport-stable-{}",
-        std::process::id()
-    ));
-    let source_dir = temp_root.join("incoming/review-helper");
-    std::fs::create_dir_all(&source_dir).expect("create staging skill");
-    std::fs::write(
-            source_dir.join("SKILL.md"),
-            "---\nname: review-helper\ndescription: Review helper\nversion: 2.9.0\npermissions:\n  network: none\n  requires_human: true\n---\nReview local changes only.\n",
-        )
-        .expect("write staging skill");
-
-    let exported = export_staging_skill_bundle(&source_dir, &temp_root.join("exports"))
-        .expect("export staging skill");
-    let reimported =
-        reimport_skill_bundle(&exported.bundle_path).expect("reimport exported bundle");
-
-    assert_eq!(reimported.fingerprint, exported.fingerprint);
-    assert_eq!(reimported.metadata, exported.metadata);
-    assert_eq!(reimported.metadata.source_scope, "tool-global");
-    assert_eq!(
-        reimported
-            .permissions
-            .get("network")
-            .and_then(serde_json::Value::as_str),
-        Some("none")
-    );
-    assert_eq!(
-        reimported
-            .permissions
-            .get("requires_human")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
 
     let _ = std::fs::remove_dir_all(&temp_root);
 }
@@ -4268,38 +4098,6 @@ fn write_codex_skill_file(root: &Path, dir_name: &str, content: &str) -> PathBuf
     let skill_path = skill_dir.join("SKILL.md");
     std::fs::write(&skill_path, content).expect("write codex skill");
     skill_path.canonicalize().expect("canonicalize skill path")
-}
-
-fn tool_global_instance(id: &str, path: &Path) -> SkillInstance {
-    let frontmatter =
-            "name: exportable\ndescription: Exportable fixture\nversion: 2.9.0\nallowed-tools:\n  - Read";
-    let body = "Use local read-only context.\n";
-    SkillInstance {
-        id: id.to_string(),
-        agent: AgentId::Codex,
-        scope: Scope::ToolGlobal,
-        project_root: None,
-        path: path.to_path_buf(),
-        display_path: PathBuf::from("tool-global/exportable/SKILL.md"),
-        definition_id: "exportable-definition".to_string(),
-        name: "exportable".to_string(),
-        display_name: "exportable".to_string(),
-        description: "Exportable fixture".to_string(),
-        version: Some("2.9.0".to_string()),
-        state: SkillState::Loaded,
-        enabled: true,
-        frontmatter_raw: frontmatter.to_string(),
-        body: body.to_string(),
-        scripts: Vec::new(),
-        permissions: PermissionRequest {
-            tools: vec!["Read".to_string()],
-            ..PermissionRequest::default()
-        },
-        fingerprint: content_fingerprint(frontmatter, body),
-        mtime: 0,
-        first_seen: 0,
-        last_seen: 0,
-    }
 }
 
 fn has_rule_for_name(

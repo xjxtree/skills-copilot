@@ -390,64 +390,6 @@ struct ListSkillEventsPageParams: Encodable {
     }
 }
 
-struct SetFindingTriageParams: Encodable {
-    let triageKey: String
-    let status: String
-    let note: String?
-
-    enum CodingKeys: String, CodingKey {
-        case triageKey = "triage_key"
-        case status
-        case note
-    }
-}
-
-struct ClearFindingTriageParams: Encodable {
-    let triageKey: String
-
-    enum CodingKeys: String, CodingKey {
-        case triageKey = "triage_key"
-    }
-}
-
-struct SetRuleSeverityOverrideParams: Encodable {
-    let ruleId: String
-    let severity: String
-
-    enum CodingKeys: String, CodingKey {
-        case ruleId = "rule_id"
-        case severity
-    }
-}
-
-struct ClearRuleSeverityOverrideParams: Encodable {
-    let ruleId: String
-
-    enum CodingKeys: String, CodingKey {
-        case ruleId = "rule_id"
-    }
-}
-
-struct SetRuleSuppressionParams: Encodable {
-    let ruleId: String
-    let reason: String
-    let note: String?
-
-    enum CodingKeys: String, CodingKey {
-        case ruleId = "rule_id"
-        case reason
-        case note
-    }
-}
-
-struct ClearRuleSuppressionParams: Encodable {
-    let ruleId: String
-
-    enum CodingKeys: String, CodingKey {
-        case ruleId = "rule_id"
-    }
-}
-
 struct PreviewSaveClaudeSettingsParams: Encodable {
     let content: String
     let expectedRevision: String

@@ -51,7 +51,8 @@ struct ServiceClientRPCTests {
         try await providerActivityPageRequestUsesExactBindings()
         try await localSessionCursorRequestDecodesCompleteness()
         try await localSessionMessagePageRequestUsesExactBindings()
-        try await ruleSuppressionRequestsMatchServiceContract()
+        try await ruleTuningReadRequestMatchesServiceContract()
+        try await toolInstallPreviewUsesOnlyTheTypedServiceMethod()
         try await nativeScriptPreviewUsesIdentityOnlyAndDecodesBlockedResponse()
         try legacyConfigResponsesFailClosed()
         try unrelatedWritesDoNotGainConfigCASFields()
@@ -167,58 +168,54 @@ struct ServiceClientRPCTests {
         }
     }
 
-    private func ruleSuppressionRequestsMatchServiceContract() async throws {
+    private func ruleTuningReadRequestMatchesServiceContract() async throws {
         let runner = RecordingServiceProcessRunner()
         let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
 
-        let setRecord = try await client.setSuppression(
-            ruleId: "dependency.unknown",
-            scope: .rule,
-            findingGroupId: nil,
-            note: "Reviewed locally."
-        )
         let listedRecords = try await client.listRuleTuning()
-        _ = try await client.clearSuppression(
-            ruleId: "dependency.unknown",
-            scope: .rule,
-            findingGroupId: nil
-        )
-
-        let setParams = try runner.params(for: "rules.setSuppression")
-        try expectEqual(
-            setParams["reason"] as? String,
-            Optional("Suppressed locally in Agent Copilot after user review."),
-            "Suppression requests must include the Rust-required reason."
-        )
-        try expectNil(setParams["suppressed"], "Suppression requests must not send an unsupported suppressed flag.")
-        try expectNil(setParams["finding_group_id"], "Rule-wide suppression must not send an unsupported finding group.")
-        try expectNil(setParams["scope"], "Native rule-wide suppression must not overload adapter scope.")
-        try expectEqual(setRecord?.suppressed, true, "A suppression reason in the canonical response must decode as suppressed.")
         try expectEqual(
             listedRecords.first?.suppressed,
             true,
             "Suppression read-back must preserve the state encoded by suppression_reason."
         )
+        try expectEqual(
+            runner.methods,
+            ["rules.listTuning"],
+            "The read-only tuning wrapper must use the canonical service method."
+        )
+    }
 
-        let clearParams = try runner.params(for: "rules.clearSuppression")
-        try expectNil(clearParams["finding_group_id"], "Clear suppression must use the Rust rule tuning key.")
-        try expectNil(clearParams["scope"], "Clear suppression must not overload adapter scope.")
+    private func toolInstallPreviewUsesOnlyTheTypedServiceMethod() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(
+            processRunner: runner,
+            serviceURL: URL(fileURLWithPath: "/tmp/fake-service")
+        )
+        let source = skill(
+            id: "tool-alpha",
+            agent: "tool-global",
+            scope: "tool-global",
+            path: "$APP_DATA/tool-global/skills/tool-alpha/SKILL.md",
+            definitionId: "tool:alpha",
+            name: "Tool Alpha"
+        )
 
-        let requestCountBeforeUnsupportedScope = runner.requests.count
         do {
-            _ = try await client.setSuppression(
-                ruleId: "dependency.unknown",
-                scope: .findingGroup,
-                findingGroupId: "group-a"
+            _ = try await client.previewToolInstall(skill: source, target: .codex)
+            throw NativeModelTestFailure(
+                description: "An unsupported typed install method must fail closed."
             )
-            throw NativeModelTestFailure(description: "Finding-group suppression must fail closed.")
         } catch ServiceClient.ClientError.service(let error) {
-            try expectEqual(error.code, "unsupported_scope", "Finding-group suppression should report its unsupported scope.")
+            try expectEqual(
+                error.code,
+                "unknown_method",
+                "A sidecar version mismatch must remain visible to the client."
+            )
         }
         try expectEqual(
-            runner.requests.count,
-            requestCountBeforeUnsupportedScope,
-            "Unsupported finding-group suppression must not be silently sent as rule-wide."
+            runner.methods,
+            ["skill.install"],
+            "Install preview must not fall back to an unsupported method or local pseudo-preview."
         )
     }
 
@@ -1205,12 +1202,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.previewResponse.utf8)
         case "llm.confirmPromptAndSend":
             return Data(Self.sendResponse.utf8)
-        case "rules.setSuppression":
-            return Data(Self.ruleSuppressionResponse.utf8)
         case "rules.listTuning":
             return Data(Self.ruleTuningListResponse.utf8)
-        case "rules.clearSuppression":
-            return Data(Self.clearSuppressionResponse.utf8)
         case "script.previewExecution":
             return Data(Self.scriptPreviewResponse.utf8)
         default:
@@ -1222,16 +1215,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
     {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","request_kind":"task_cockpit","action":{"id":"prompt-preview-task","kind":"provider_prompt","intent":"send_provider_prompt","target":{"kind":"provider_profile","id":"openai-compatible","agent":null,"scope":null},"project_id":null,"impacts":["app_local_data"],"preview_method":"llm.previewPrompt","apply_method":"llm.confirmPromptAndSend","source_revision":"sha256:prompt-preview","confirmation_required":true,"network":"required","readback":["provider_activity","prompt_runs"],"evidence_refs":["provider-profile:openai-compatible"]},"preconditions":[{"kind":"provider_profile","target_id":"provider-profiles","expected_revision":"sha256:profile"},{"kind":"prompt_context","target_id":"redacted-prompt","expected_revision":"sha256:redacted-prompt"},{"kind":"prompt_context","target_id":"provider-action-state","expected_revision":"sha256:provider-action-state-before"}],"preview_token":"action-preview:v1:hmac-sha256:fixture","scope":"agents","prompt_scope":"Task Preflight","enabled":true,"provider":"openai-compatible","model":"gpt-test","endpoint":"https://llm.example.com/v1","destination_host":"llm.example.com","included_fields":[],"excluded_fields":[],"redaction":{"status":"redacted","summary":"ok","redacted_fields":[],"placeholders":[]},"confirmation_required":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"draft_copy_only":true,"redacted_prompt_preview":"preview"}}
     """
 
-    private static let ruleSuppressionResponse = """
-    {"id":"test","ok":true,"result":{"rule_id":"dependency.unknown","agent":null,"scope":null,"severity_override":null,"suppression_reason":"Suppressed locally in Agent Copilot after user review.","suppression_note":"Reviewed locally.","updated_at":1}}
-    """
-
     private static let ruleTuningListResponse = """
     {"id":"test","ok":true,"result":[{"rule_id":"dependency.unknown","agent":null,"scope":null,"severity_override":null,"suppression_reason":"Suppressed locally in Agent Copilot after user review.","suppression_note":"Reviewed locally.","updated_at":1}]}
-    """
-
-    private static let clearSuppressionResponse = """
-    {"id":"test","ok":true,"result":true}
     """
 
     private static let scriptPreviewResponse = """

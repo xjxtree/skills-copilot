@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(not(unix))]
 pub(super) fn register_tool_global_staged_skill(
     catalog: &Catalog,
     ctx: &AdapterContext,

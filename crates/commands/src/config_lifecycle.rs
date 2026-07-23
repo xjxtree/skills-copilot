@@ -147,7 +147,8 @@ fn build_claude_settings_save_preview(
     })
 }
 
-pub fn save_claude_settings(
+#[cfg(test)]
+pub(crate) fn save_claude_settings(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,

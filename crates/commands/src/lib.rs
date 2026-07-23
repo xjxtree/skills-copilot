@@ -1,11 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs, io,
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use std::io::Write;
+
+#[cfg(test)]
 use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -51,11 +54,9 @@ mod skill_install_guard;
 mod skill_manager;
 mod transaction_lifecycle;
 
-use analysis::{
-    dedupe_rule_finding_records, dedupe_rule_findings, validate_finding_triage_status,
-    validate_rule_scope, validate_rule_severity_override, validate_rule_suppression_reason,
-    validate_rule_tuning_key,
-};
+#[cfg(test)]
+use analysis::validate_finding_triage_status;
+use analysis::{dedupe_rule_finding_records, dedupe_rule_findings};
 pub use app_data_owner_fs::{AppDataOwnerFs, AppDataPrivateLeafKind, AppDataPrivateLeafSnapshot};
 use config_consistency::{
     canonical_snapshot_project_root, config_content_digest, config_revision,
@@ -84,16 +85,17 @@ pub use config_lifecycle::*;
 pub use config_support::read_agent_config;
 pub use error::*;
 pub use history::*;
+#[cfg(not(unix))]
+pub(crate) use local_skill_import::register_tool_global_staged_skill;
 pub(crate) use local_skill_import::{
-    register_tool_global_staged_skill, register_tool_global_staged_skill_content,
-    tool_global_skill_name_from_content,
+    register_tool_global_staged_skill_content, tool_global_skill_name_from_content,
 };
 pub use product_projection::*;
 pub use script_execution::*;
-pub use skill_bundle::*;
 pub(crate) use skill_bundle::{
     import_audit_summary, parse_tool_global_skill, short_hash, stable_tool_global_instance_id,
 };
+pub use skill_bundle::{ToolGlobalImportAudit, ToolGlobalImportResult};
 pub use skill_manager::*;
 
 fn verify_app_data_owner_binding_after_effect(
@@ -116,19 +118,14 @@ fn verify_app_data_owner_binding_after_effect(
 pub(crate) use config_lifecycle::{
     commit_prepared_claude_settings_save_with_after_lock,
     commit_prepared_claude_settings_save_with_hooks, rollback_snapshot_with_after_lock,
-    rollback_snapshot_with_hooks,
+    rollback_snapshot_with_hooks, save_claude_settings,
 };
-#[cfg(test)]
-pub(crate) use skill_bundle::permissions_from_frontmatter;
-
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-pub fn scan_claude_to_catalog(
-    ctx: &AdapterContext,
-    catalog: &Catalog,
-) -> Result<usize, CommandError> {
+#[cfg(test)]
+fn scan_claude_to_catalog(ctx: &AdapterContext, catalog: &Catalog) -> Result<usize, CommandError> {
     Ok(scan_claude_catalog_report(ctx, catalog)?.scanned_count)
 }
 
@@ -338,7 +335,8 @@ pub struct BatchToggleSkippedItem {
     pub capability_label: Option<String>,
 }
 
-pub fn scan_all_to_catalog(ctx: &AdapterContext, catalog: &Catalog) -> Result<usize, CommandError> {
+#[cfg(test)]
+fn scan_all_to_catalog(ctx: &AdapterContext, catalog: &Catalog) -> Result<usize, CommandError> {
     Ok(scan_all_catalog_report(ctx, catalog)?.scanned_count)
 }
 
@@ -346,15 +344,15 @@ pub fn tool_global_staging_skills_root(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("tool-global").join("skills")
 }
 
-pub fn ensure_tool_global_staging_skills_root(
-    app_data_dir: &Path,
-) -> Result<PathBuf, CommandError> {
+#[cfg(test)]
+fn ensure_tool_global_staging_skills_root(app_data_dir: &Path) -> Result<PathBuf, CommandError> {
     let root = tool_global_staging_skills_root(app_data_dir);
     fs::create_dir_all(&root)?;
     Ok(root)
 }
 
-pub fn upsert_tool_global_staging_skill(
+#[cfg(test)]
+fn upsert_tool_global_staging_skill(
     catalog: &Catalog,
     ctx: &AdapterContext,
     app_data_dir: &Path,
@@ -397,6 +395,7 @@ pub fn upsert_tool_global_staging_skill(
         .ok_or(CommandError::InstanceNotFound(id))
 }
 
+#[cfg(test)]
 fn validate_tool_global_staging_skill_path(
     staging_root: &Path,
     skill_path: &Path,
@@ -420,6 +419,7 @@ fn validate_tool_global_staging_skill_path(
     Ok(canonical_path)
 }
 
+#[cfg(test)]
 fn display_path_under_app_data(app_data_dir: &Path, canonical_path: &Path) -> PathBuf {
     match app_data_dir.canonicalize() {
         Ok(canonical_app_data_dir) => canonical_path
@@ -430,6 +430,7 @@ fn display_path_under_app_data(app_data_dir: &Path, canonical_path: &Path) -> Pa
     }
 }
 
+#[cfg(test)]
 fn stable_catalog_id(agent: &str, scope: &str, path: &Path) -> String {
     hash_string(&format!("{}|{}|{}", agent, scope, path.to_string_lossy()))
 }
@@ -1023,7 +1024,8 @@ pub fn list_finding_triage(catalog: &Catalog) -> Result<Vec<FindingTriageRecord>
     Ok(catalog.list_finding_triage()?)
 }
 
-pub fn set_finding_triage(
+#[cfg(test)]
+fn set_finding_triage(
     catalog: &Catalog,
     triage_key: &str,
     status: &str,
@@ -1035,68 +1037,13 @@ pub fn set_finding_triage(
         .ok_or_else(|| CommandError::FindingNotFound(triage_key.to_string()))
 }
 
-pub fn clear_finding_triage(catalog: &Catalog, triage_key: &str) -> Result<bool, CommandError> {
+#[cfg(test)]
+fn clear_finding_triage(catalog: &Catalog, triage_key: &str) -> Result<bool, CommandError> {
     Ok(catalog.clear_finding_triage(triage_key)?)
 }
 
 pub fn list_rule_tuning(catalog: &Catalog) -> Result<Vec<RuleTuningRecord>, CommandError> {
     Ok(catalog.list_rule_tuning()?)
-}
-
-pub fn set_rule_severity_override(
-    catalog: &Catalog,
-    rule_id: &str,
-    agent: Option<&str>,
-    scope: Option<&str>,
-    severity: &str,
-) -> Result<RuleTuningRecord, CommandError> {
-    validate_rule_tuning_key(rule_id)?;
-    validate_rule_scope(agent, scope)?;
-    validate_rule_severity_override(severity)?;
-    Ok(catalog.set_rule_severity_override(rule_id, agent, scope, severity, current_time_ms())?)
-}
-
-pub fn clear_rule_severity_override(
-    catalog: &Catalog,
-    rule_id: &str,
-    agent: Option<&str>,
-    scope: Option<&str>,
-) -> Result<bool, CommandError> {
-    validate_rule_tuning_key(rule_id)?;
-    validate_rule_scope(agent, scope)?;
-    Ok(catalog.clear_rule_severity_override(rule_id, agent, scope, current_time_ms())?)
-}
-
-pub fn set_rule_suppression(
-    catalog: &Catalog,
-    rule_id: &str,
-    agent: Option<&str>,
-    scope: Option<&str>,
-    reason: &str,
-    note: Option<&str>,
-) -> Result<RuleTuningRecord, CommandError> {
-    validate_rule_tuning_key(rule_id)?;
-    validate_rule_scope(agent, scope)?;
-    validate_rule_suppression_reason(reason)?;
-    Ok(catalog.set_rule_suppression(
-        rule_id,
-        agent,
-        scope,
-        reason.trim(),
-        note.map(str::trim).filter(|value| !value.is_empty()),
-        current_time_ms(),
-    )?)
-}
-
-pub fn clear_rule_suppression(
-    catalog: &Catalog,
-    rule_id: &str,
-    agent: Option<&str>,
-    scope: Option<&str>,
-) -> Result<bool, CommandError> {
-    validate_rule_tuning_key(rule_id)?;
-    validate_rule_scope(agent, scope)?;
-    Ok(catalog.clear_rule_suppression(rule_id, agent, scope, current_time_ms())?)
 }
 
 pub fn list_snapshots(
@@ -1160,7 +1107,8 @@ pub struct SkillInstallPreviewRecord {
     pub readback: Option<ActionReadbackRecord>,
 }
 
-pub fn install_skill_from_tool_global(
+#[cfg(test)]
+fn install_skill_from_tool_global(
     catalog: &Catalog,
     ctx: &AdapterContext,
     instance_id: &str,
@@ -2243,7 +2191,8 @@ fn refresh_rule_outputs(catalog: &Catalog, report: RuleReport) -> Result<(), Com
 /// Toggle a skill's `skillOverrides` entry in the agent's settings file, with
 /// snapshot + atomic write + verification + rollback semantics. Returns the
 /// updated `SkillRecord` so the UI can refresh the row in place.
-pub fn toggle_skill(
+#[cfg(test)]
+fn toggle_skill(
     catalog: &Catalog,
     ctx: &AdapterContext,
     instance_id: &str,
@@ -2478,7 +2427,8 @@ struct BatchToggleConfigPlan<'lock> {
     new_text: String,
 }
 
-pub fn apply_skill_toggles(
+#[cfg(test)]
+fn apply_skill_toggles(
     catalog: &Catalog,
     ctx: &AdapterContext,
     instance_ids: &[String],
@@ -3683,6 +3633,7 @@ fn pi_project_compatibility_skill_root(skill_path: &Path) -> Option<&Path> {
     })
 }
 
+#[cfg(test)]
 fn validate_pi_config_write_target(
     ctx: &AdapterContext,
     scope: Scope,
@@ -4094,6 +4045,7 @@ pub(crate) fn expected_config_target(
     }
 }
 
+#[cfg(test)]
 fn validate_config_write_target(
     ctx: &AdapterContext,
     agent: AgentId,
@@ -4429,6 +4381,7 @@ pub(crate) fn reject_symlink(path: &Path, label: &str) -> Result<(), CommandErro
     }
 }
 
+#[cfg(test)]
 fn write_config_atomic(
     ctx: &AdapterContext,
     agent: AgentId,
@@ -4478,6 +4431,7 @@ fn write_config_atomic(
     finish_atomic_write_with_temp_cleanup("config.write", write_result, &tmp)
 }
 
+#[cfg(test)]
 fn finish_atomic_write_with_temp_cleanup(
     operation: &str,
     result: Result<(), CommandError>,
@@ -4605,7 +4559,7 @@ fn restore_skill_install_target(
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn set_private_file_permissions(file: &fs::File) -> Result<(), CommandError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -4613,12 +4567,12 @@ fn set_private_file_permissions(file: &fs::File) -> Result<(), CommandError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
 fn set_private_file_permissions(_file: &fs::File) -> Result<(), CommandError> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn set_private_path_permissions(path: &Path) -> Result<(), CommandError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -4626,11 +4580,12 @@ fn set_private_path_permissions(path: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
 fn set_private_path_permissions(_path: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn lock_config(
     ctx: &AdapterContext,
     agent: AgentId,
