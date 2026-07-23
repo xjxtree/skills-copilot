@@ -3,6 +3,7 @@
   "method": "skillManager.previewLocalCreate",
   "params": {
     "name": "local-review-helper",
+    "network_allowed": true,
     "confirmed": false
   }
 }

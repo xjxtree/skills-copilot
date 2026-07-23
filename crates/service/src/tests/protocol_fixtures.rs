@@ -1149,7 +1149,11 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         | "skillManager.applyUpdate" => {
             let mutation: WireSkillManagerMutationRecord =
                 decode_fixture_result(method, result, path);
-            assert!(mutation.preview.command.iter().any(|arg| arg == "skills"));
+            assert!(mutation
+                .preview
+                .command
+                .iter()
+                .any(|arg| arg == "skills@1.5.20"));
             assert!(!mutation.preview.command.iter().any(|arg| arg == "*"));
             let action = mutation
                 .preview

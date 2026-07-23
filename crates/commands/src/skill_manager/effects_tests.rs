@@ -4,12 +4,6 @@ use skills_copilot_core::{ListIncompleteReason, ListSourceCompleteness};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-#[cfg(unix)]
-static MANAGER_PRE_EXECUTE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[cfg(unix)]
-static MANAGER_POST_COMMIT_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn test_preview(operation: &str) -> SkillManagerCommandPreview {
     SkillManagerCommandPreview {
         action: None,
@@ -374,7 +368,129 @@ fn prohibited_previewed_command_does_not_create_cwd() {
 }
 
 #[test]
-fn manager_spawn_failure_removes_the_working_directory_tree_it_created() {
+fn every_raw_npx_mutation_requires_network_permission_before_app_data_bootstrap() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-network-gate-{}-{unique}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let project = root.join("project");
+    let local_source = project.join("local-source");
+    fs::create_dir_all(&home).expect("home");
+    fs::create_dir_all(&local_source).expect("local source");
+    fs::write(
+        local_source.join("SKILL.md"),
+        "---\nname: local-source\ndescription: fixture\n---\n",
+    )
+    .expect("local source skill");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: Some(project.clone()),
+        project_cwd: Some(project),
+        extra_roots: Vec::new(),
+    };
+
+    let install_app_data = root.join("install-app-data");
+    let install_params = SkillManagerInstallParams {
+        source: "local-source".to_string(),
+        skills: vec!["local-source".to_string()],
+        agents: vec!["codex".to_string()],
+        scope: Some("project".to_string()),
+        distribution: None,
+        network_allowed: false,
+        confirmed: false,
+        preview_token: None,
+        action_reference: None,
+    };
+    let install_preview = preview_install_with_manager(&ctx, &install_params)
+        .expect("blocked install still has an inspectable preview");
+    assert!(install_preview.preview.network_required);
+    assert!(!install_preview.preview.network_allowed);
+    assert!(!install_preview.preview.will_run);
+    assert!(matches!(
+        apply_install_with_manager(&install_app_data, &ctx, &install_params),
+        Err(CommandError::InvalidSkillManagerRequest(detail))
+            if detail.contains("network_allowed=true")
+    ));
+    assert!(!install_app_data.exists());
+
+    let remove_app_data = root.join("remove-app-data");
+    let remove_params = SkillManagerRemoveParams {
+        skill: "local-source".to_string(),
+        agents: vec!["codex".to_string()],
+        scope: Some("project".to_string()),
+        cleanup_local_instance_id: None,
+        network_allowed: false,
+        confirmed: false,
+        preview_token: None,
+        action_reference: None,
+    };
+    let remove_preview =
+        preview_remove_with_manager(&ctx, &remove_params).expect("blocked remove preview");
+    assert!(remove_preview.preview.network_required);
+    assert!(!remove_preview.preview.network_allowed);
+    assert!(!remove_preview.preview.will_run);
+    assert!(matches!(
+        apply_remove_with_manager(None, &remove_app_data, &ctx, &remove_params),
+        Err(CommandError::InvalidSkillManagerRequest(detail))
+            if detail.contains("network_allowed=true")
+    ));
+    assert!(!remove_app_data.exists());
+
+    let update_app_data = root.join("update-app-data");
+    let update_params = SkillManagerUpdateParams {
+        skills: vec!["local-source".to_string()],
+        agents: Vec::new(),
+        scope: Some("project".to_string()),
+        network_allowed: false,
+        confirmed: false,
+        preview_token: None,
+        action_reference: None,
+    };
+    let update_preview =
+        preview_update_with_manager(&ctx, &update_params).expect("blocked update preview");
+    assert!(update_preview.preview.network_required);
+    assert!(!update_preview.preview.network_allowed);
+    assert!(!update_preview.preview.will_run);
+    assert!(matches!(
+        apply_update_with_manager(&update_app_data, &ctx, &update_params),
+        Err(CommandError::InvalidSkillManagerRequest(detail))
+            if detail.contains("network_allowed=true")
+    ));
+    assert!(!update_app_data.exists());
+
+    let local_create_app_data = root.join("local-create-app-data");
+    let local_create_params = SkillManagerLocalCreateParams {
+        name: "new-local".to_string(),
+        network_allowed: false,
+        confirmed: false,
+        preview_token: None,
+        action_reference: None,
+    };
+    let local_create_preview =
+        preview_local_create_with_manager(&local_create_app_data, &ctx, &local_create_params)
+            .expect("blocked local-create preview");
+    assert!(local_create_preview.preview.network_required);
+    assert!(!local_create_preview.preview.network_allowed);
+    assert!(!local_create_preview.preview.will_run);
+    assert!(matches!(
+        apply_local_create_with_manager(&local_create_app_data, &ctx, &local_create_params),
+        Err(CommandError::InvalidSkillManagerRequest(detail))
+            if detail.contains("network_allowed=true")
+    ));
+    assert!(!local_create_app_data.exists());
+
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn manager_apply_rejects_a_missing_working_directory_without_creating_it() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -418,14 +534,215 @@ fn manager_spawn_failure_removes_the_working_directory_tree_it_created() {
 
     assert!(matches!(
         error,
-        CommandError::SkillManagerCommandFailed(detail)
-            if detail.contains("did not start")
+        CommandError::InvalidSkillManagerRequest(detail)
+            if detail.contains("must already exist")
     ));
     assert!(
         !root.join("created").exists(),
         "failed startup must restore the original zero-tree state"
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
+fn manager_rejects_working_directory_replacement_before_spawn_without_touching_victim() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-cwd-replacement-{}-{unique}",
+        std::process::id()
+    ));
+    let cwd = root.join("project");
+    let moved_cwd = root.join("accepted-project");
+    let victim = root.join("victim");
+    let process_marker = root.join("manager-process-started");
+    let executable = root.join("fake-manager");
+    fs::create_dir_all(&cwd).expect("create accepted cwd");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::write(cwd.join("accepted"), b"unchanged").expect("accepted cwd sentinel");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    fs::write(
+        &executable,
+        format!("#!/bin/sh\n/usr/bin/touch '{}'\n", process_marker.display()),
+    )
+    .expect("fake manager");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+    let victim_mode = fs::metadata(&victim)
+        .expect("victim metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(cwd.clone()),
+        project_cwd: Some(cwd.clone()),
+        extra_roots: Vec::new(),
+    };
+    let preview = SkillManagerCommandPreview {
+        action: None,
+        preconditions: Vec::new(),
+        tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+        operation: "install".to_string(),
+        command: vec![executable.to_string_lossy().to_string()],
+        cwd: cwd.to_string_lossy().to_string(),
+        env: Vec::new(),
+        requires_confirmation: true,
+        confirmed: true,
+        network_required: false,
+        network_allowed: true,
+        will_run: true,
+        preview_token: "test-token".to_string(),
+        summary: "test".to_string(),
+        risks: Vec::new(),
+        source: None,
+        skills: Vec::new(),
+    };
+
+    let raced_cwd = cwd.clone();
+    let raced_moved_cwd = moved_cwd.clone();
+    let raced_victim = victim.clone();
+    install_manager_cwd_pre_spawn_test_hook("install", move || {
+        fs::rename(&raced_cwd, &raced_moved_cwd).expect("move accepted cwd");
+        symlink(&raced_victim, &raced_cwd).expect("replace cwd with victim link");
+    });
+    let result = run_previewed_command(&ctx, &preview);
+
+    assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
+    assert!(
+        !process_marker.exists(),
+        "the manager process must not start"
+    );
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        victim_mode
+    );
+    assert_eq!(
+        fs::read_dir(&victim).expect("victim entries").count(),
+        1,
+        "the replacement target receives no manager files"
+    );
+    assert_eq!(
+        fs::read(moved_cwd.join("accepted")).expect("accepted cwd sentinel"),
+        b"unchanged"
+    );
+    fs::remove_file(&cwd).expect("remove replacement link");
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+#[cfg(unix)]
+fn manager_cwd_replacement_during_process_is_partial_and_rolls_back_catalog_transaction() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-cwd-during-process-{}-{unique}",
+        std::process::id()
+    ));
+    let cwd = root.join("project");
+    let moved_cwd = root.join("accepted-project");
+    let app_data = root.join("app-data");
+    let executable = root.join("fake-manager");
+    fs::create_dir_all(&cwd).expect("create accepted cwd");
+    fs::create_dir_all(&app_data).expect("create app data");
+    fs::write(cwd.join("accepted"), b"unchanged").expect("accepted cwd sentinel");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\n/bin/mv '{}' '{}'\n/bin/mkdir '{}'\n/usr/bin/touch child-wrote-here\n",
+            cwd.display(),
+            moved_cwd.display(),
+            cwd.display()
+        ),
+    )
+    .expect("fake manager");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(cwd.clone()),
+        project_cwd: Some(cwd.clone()),
+        extra_roots: Vec::new(),
+    };
+    let preview = SkillManagerCommandPreview {
+        action: None,
+        preconditions: Vec::new(),
+        tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+        operation: "install".to_string(),
+        command: vec![executable.to_string_lossy().to_string()],
+        cwd: cwd.to_string_lossy().to_string(),
+        env: Vec::new(),
+        requires_confirmation: true,
+        confirmed: true,
+        network_required: false,
+        network_allowed: true,
+        will_run: true,
+        preview_token: "test-token".to_string(),
+        summary: "test".to_string(),
+        risks: Vec::new(),
+        source: None,
+        skills: Vec::new(),
+    };
+    let catalog = Catalog::open(&app_data.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let before = catalog
+        .catalog_scan_revision()
+        .expect("catalog revision before test");
+    let transaction = catalog
+        .begin_immediate_transaction()
+        .expect("catalog transaction");
+    catalog
+        .advance_catalog_scan_revision("test-cwd-swap", "accepted")
+        .expect("stage a transaction-only revision");
+
+    let execution_error = match run_previewed_command(&ctx, &preview) {
+        Ok(_) => panic!("cwd replacement during execution must not verify"),
+        Err(error) => error,
+    };
+    let error = rollback_manager_catalog_transaction(&ctx, &preview, transaction, execution_error);
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state,
+            cleanup_required: true,
+            ..
+        } if state == "applied_unverified"
+    ));
+    assert!(
+        moved_cwd.join("child-wrote-here").is_file(),
+        "the child stayed on the retained original cwd inode"
+    );
+    assert!(
+        !cwd.join("child-wrote-here").exists(),
+        "the replacement path must not be accepted as readback"
+    );
+    assert_eq!(
+        catalog
+            .catalog_scan_revision()
+            .expect("catalog revision after rollback"),
+        before,
+        "post-process cwd drift must not commit catalog state"
+    );
+
+    fs::remove_dir_all(root).ok();
 }
 
 #[test]
@@ -449,9 +766,6 @@ fn confirmed_manager_apply_requires_the_exact_preview_token() {
 #[test]
 #[cfg(unix)]
 fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
-    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
-        .lock()
-        .expect("serialize manager pre-execute hooks");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -497,12 +811,112 @@ fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
 
 #[test]
 #[cfg(unix)]
+fn fresh_manager_mutation_locked_stale_keeps_only_the_private_empty_owner() {
+    for operation in ["install", "remove", "update", "localCreate"] {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-fresh-{operation}-locked-stale-{}-{unique}",
+            std::process::id()
+        ));
+        let app_data = root.join("app-data");
+        let process_marker = root.join("manager-process-started");
+        let target_marker = root.join("manager-target-written");
+        fs::create_dir_all(&root).expect("create owner parent");
+        let ctx = AdapterContext {
+            user_home: root.join("home"),
+            project_root: Some(root.join("project")),
+            project_cwd: Some(root.join("project")),
+            extra_roots: Vec::new(),
+        };
+        let mut preview = test_preview(operation);
+        preview.requires_confirmation = true;
+        preview.confirmed = true;
+
+        install_manager_pre_execute_test_hook(operation, || {});
+        let result = prepare_manager_mutation(&app_data, &ctx, &preview, |_| {
+            Err(CommandError::StaleActionReference)
+        });
+
+        assert!(
+            matches!(result, Err(CommandError::StaleActionReference)),
+            "{operation} must preserve the locked stale result"
+        );
+        assert!(app_data.is_dir(), "{operation} retains the owner inode");
+        assert_eq!(
+            fs::metadata(&app_data)
+                .expect("owner metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+            "{operation} bootstrap owner must remain private"
+        );
+        assert_eq!(
+            fs::read_dir(&app_data)
+                .expect("read bootstrap owner")
+                .count(),
+            0,
+            "{operation} stale revalidation must precede catalog, replay, and audit writes"
+        );
+        assert!(!app_data.join("catalog.sqlite").exists());
+        assert!(!app_data.join("skill-manager-discovery-state.json").exists());
+        assert!(!app_data.join("audit").exists());
+        assert!(!process_marker.exists());
+        assert!(!target_marker.exists());
+        fs::remove_dir_all(root).ok();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn fresh_manager_mutation_initializes_catalog_only_after_locked_validation() {
+    for operation in ["install", "remove", "update", "localCreate"] {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-fresh-{operation}-valid-{}-{unique}",
+            std::process::id()
+        ));
+        let app_data = root.join("app-data");
+        fs::create_dir_all(&root).expect("create owner parent");
+        let ctx = AdapterContext {
+            user_home: root.join("home"),
+            project_root: Some(root.join("project")),
+            project_cwd: Some(root.join("project")),
+            extra_roots: Vec::new(),
+        };
+        let mut preview = test_preview(operation);
+        preview.requires_confirmation = true;
+        preview.confirmed = true;
+        let (_mutation_lock, catalog) =
+            prepare_manager_mutation(&app_data, &ctx, &preview, |_| Ok(()))
+                .expect("locked validation initializes catalog");
+        let _ = catalog
+            .list_skill_records()
+            .expect("catalog-backed action is available");
+        assert_eq!(
+            fs::metadata(&app_data)
+                .expect("owner metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert!(app_data.join("catalog.sqlite").is_file());
+        fs::remove_dir_all(root).ok();
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn search_rejects_an_owner_path_replaced_after_lock_without_touching_the_victim() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
-    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
-        .lock()
-        .expect("serialize manager pre-execute hooks");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -570,9 +984,6 @@ fn search_rejects_an_owner_path_replaced_after_lock_without_touching_the_victim(
 fn app_owned_manager_mutations_reject_owner_replacement_before_any_effect() {
     use std::os::unix::fs::symlink;
 
-    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
-        .lock()
-        .expect("serialize manager pre-execute hooks");
     for operation in ["localCreate", "remove"] {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -588,7 +999,13 @@ fn app_owned_manager_mutations_reject_owner_replacement_before_any_effect() {
         fs::create_dir_all(&app_data).expect("create app data");
         fs::create_dir_all(&victim).expect("create victim");
         fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
-        let catalog = Catalog::in_memory().expect("catalog");
+        let ctx = AdapterContext {
+            user_home: root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+        let preview = test_preview(operation);
 
         let raced_app_data = app_data.clone();
         let raced_moved_owner = moved_owner.clone();
@@ -597,13 +1014,7 @@ fn app_owned_manager_mutations_reject_owner_replacement_before_any_effect() {
             fs::rename(&raced_app_data, &raced_moved_owner).expect("move locked owner");
             symlink(&raced_victim, &raced_app_data).expect("replace owner path");
         });
-        let result = with_manager_mutation_lock(&catalog, &app_data, operation, |owner| {
-            owner.atomic_replace_private_file(
-                Path::new("should-not-exist"),
-                b"effect",
-                "should-not-exist",
-            )
-        });
+        let result = prepare_manager_mutation(&app_data, &ctx, &preview, |_| Ok(()));
 
         assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
         assert_eq!(
@@ -630,44 +1041,45 @@ fn app_owned_manager_mutations_reject_owner_replacement_before_any_effect() {
 
 #[test]
 #[cfg(unix)]
-fn manager_rejects_a_lock_on_owner_b_when_catalog_is_anchored_to_owner_a() {
-    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
-        .lock()
-        .expect("serialize manager pre-execute hooks");
+fn manager_catalog_initializes_under_the_existing_locked_owner() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "skill-manager-catalog-owner-gap-{}-{unique}",
+        "skill-manager-existing-owner-catalog-{}-{unique}",
         std::process::id()
     ));
     let app_data = root.join("app-data");
-    let accepted_owner = root.join("accepted-owner");
-    fs::create_dir_all(&app_data).expect("create owner A");
-    let owner_a = File::open(&app_data).expect("open owner A");
-    let catalog =
-        Catalog::open_anchored(owner_a.try_clone().expect("clone owner A")).expect("catalog");
-    catalog.init().expect("catalog schema");
-    fs::rename(&app_data, &accepted_owner).expect("move owner A");
-    fs::create_dir(&app_data).expect("create owner B");
-    fs::write(app_data.join("sentinel"), b"unchanged").expect("seed owner B");
+    fs::create_dir_all(&app_data).expect("create existing owner");
+    fs::write(app_data.join("sentinel"), b"unchanged").expect("seed existing owner");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    let preview = test_preview("install");
 
-    let result = with_manager_mutation_lock(&catalog, &app_data, "install", |owner| {
-        owner.atomic_replace_private_file(Path::new("effect"), b"effect", "effect")
-    });
-
-    assert!(matches!(result, Err(CommandError::Catalog(_))));
+    let (mutation_lock, catalog) = prepare_manager_mutation(&app_data, &ctx, &preview, |_| Ok(()))
+        .expect("prepare existing owner manager mutation");
+    let _ = catalog.list_skill_records().expect("catalog schema");
+    mutation_lock
+        .owner_fs()
+        .atomic_replace_private_file(Path::new("effect"), b"effect", "effect")
+        .expect("owner-relative effect");
     assert_eq!(
-        fs::read(app_data.join("sentinel")).expect("owner B sentinel"),
+        fs::read(app_data.join("sentinel")).expect("existing owner sentinel"),
         b"unchanged"
     );
     assert_eq!(
-        fs::read_dir(&app_data).expect("owner B entries").count(),
-        1,
-        "owner identity mismatch must fail before any file or process effect"
+        fs::read(app_data.join("effect")).expect("manager effect"),
+        b"effect"
     );
-    drop(catalog);
+    assert!(
+        app_data.join("catalog.sqlite").is_file(),
+        "the catalog is initialized only after locked validation succeeds"
+    );
     fs::remove_dir_all(root).ok();
 }
 
@@ -676,9 +1088,6 @@ fn manager_rejects_a_lock_on_owner_b_when_catalog_is_anchored_to_owner_a() {
 fn committed_manager_mutations_report_partial_when_owner_rebinds_before_return() {
     use std::os::unix::fs::symlink;
 
-    let _serial = MANAGER_POST_COMMIT_TEST_SERIAL
-        .lock()
-        .expect("serialize manager post-commit hooks");
     for operation in ["install", "update", "localCreate"] {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -740,9 +1149,6 @@ fn committed_manager_mutations_report_partial_when_owner_rebinds_before_return()
 #[test]
 #[cfg(unix)]
 fn stale_manager_target_tree_is_rejected_before_the_process_starts() {
-    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
-        .lock()
-        .expect("serialize manager pre-execute hooks");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -802,9 +1208,8 @@ fn stale_manager_target_tree_is_rejected_before_the_process_starts() {
     install_manager_pre_execute_test_hook("install", move || {
         fs::write(&raced_skill_file, "after confirmation").expect("drift target tree")
     });
-    let catalog = Catalog::in_memory().expect("in-memory catalog");
-    let result = with_manager_mutation_lock(&catalog, &app_data, "install", |_| {
-        run_previewed_command(&ctx, &preview)
+    let result = prepare_manager_mutation(&app_data, &ctx, &preview, |_| {
+        validate_manager_preconditions(&ctx, &preview)
     });
 
     assert!(

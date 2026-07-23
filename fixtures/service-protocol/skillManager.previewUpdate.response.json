@@ -7,23 +7,54 @@
         "id": "action:manager_update:3131313131313131313131313131313131313131313131313131313131313131",
         "kind": "manager_update",
         "intent": "manager_update",
-        "target": {"kind": "skill", "id": "manager:update-fixture", "scope": "agent-project"},
+        "target": {
+          "kind": "skill",
+          "id": "manager:update-fixture",
+          "scope": "agent-project"
+        },
         "project_id": "project-0123456789abcdef",
-        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "impacts": [
+          "app_local_data",
+          "external_manager",
+          "skill_files"
+        ],
         "preview_method": "skillManager.previewUpdate",
         "apply_method": "skillManager.applyUpdate",
         "source_revision": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
         "confirmation_required": true,
         "network": "required",
-        "readback": ["catalog_skills", "skill_files", "manager_inventory"],
-        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+        "readback": [
+          "catalog_skills",
+          "skill_files",
+          "manager_inventory"
+        ],
+        "evidence_refs": [
+          "coverage:claude-code",
+          "coverage:codex",
+          "coverage:opencode",
+          "coverage:pi",
+          "coverage:hermes",
+          "coverage:openclaw"
+        ]
       },
-      "preconditions": [{"kind": "target_file", "target_id": "/tmp/skills-copilot-project", "expected_revision": "sha256:3232323232323232323232323232323232323232323232323232323232323232"}],
+      "preconditions": [
+        {
+          "kind": "target_file",
+          "target_id": "/tmp/skills-copilot-project",
+          "expected_revision": "sha256:3232323232323232323232323232323232323232323232323232323232323232"
+        },
+        {
+          "kind": "source_file",
+          "target_id": "/usr/local/bin/npx",
+          "expected_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      ],
       "tool_id": "npx-skills",
       "operation": "update",
       "command": [
         "/usr/local/bin/npx",
-        "skills",
+        "--yes",
+        "skills@1.5.20",
         "update",
         "frontend-design",
         "-y"
@@ -67,6 +98,58 @@
           "value": "false"
         },
         {
+          "key": "npm_config_ignore_scripts",
+          "value": "true"
+        },
+        {
+          "key": "npm_config_registry",
+          "value": "https://registry.npmjs.org/"
+        },
+        {
+          "key": "npm_config_userconfig",
+          "value": "/dev/null"
+        },
+        {
+          "key": "npm_config_globalconfig",
+          "value": "/.agent-copilot-no-global-npmrc"
+        },
+        {
+          "key": "npm_config_cache",
+          "value": "/tmp/skills-copilot-home/Library/Application Support/dev.agent-copilot.native/external-manager/npm-cache"
+        },
+        {
+          "key": "GIT_CONFIG_NOSYSTEM",
+          "value": "1"
+        },
+        {
+          "key": "GIT_CONFIG_GLOBAL",
+          "value": "/dev/null"
+        },
+        {
+          "key": "GIT_TERMINAL_PROMPT",
+          "value": "0"
+        },
+        {
+          "key": "GCM_INTERACTIVE",
+          "value": "never"
+        },
+        {
+          "key": "GIT_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "SSH_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "GIT_SSH_COMMAND",
+          "value": "/usr/bin/ssh -F /dev/null -oBatchMode=yes -oIdentityAgent=none -oIdentitiesOnly=yes -oIdentityFile=/dev/null -oStrictHostKeyChecking=yes"
+        },
+        {
+          "key": "XDG_CONFIG_HOME",
+          "value": "/.agent-copilot-no-user-config"
+        },
+        {
           "key": "PATH",
           "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
@@ -79,14 +162,19 @@
       "preview_token": "action-preview:v1:hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "summary": "Update the selected managed skill source for every linked agent.",
       "risks": [
-        "Update may contact remote source repositories or indexes through the external CLI."
+        "Update may contact remote source repositories or indexes through the external CLI.",
+        "This action executes the pinned external manager package skills@1.5.20 through /usr/local/bin/npx unsandboxed with the user's filesystem authority; it may read HOME files, and the executable/runtime is an explicit external-code trust boundary."
       ],
-      "skills": ["frontend-design"]
+      "skills": [
+        "frontend-design"
+      ]
     },
     "output": null,
     "applied": false,
     "scanned_count": 0,
-    "updated_skills": [],
+    "updated_skills": [
+
+    ],
     "readback": null
   }
 }

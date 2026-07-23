@@ -34,7 +34,7 @@ fn semantic_test_catalog_record(
         scope: Scope::AgentGlobal.as_str().to_string(),
         path: path.clone(),
         display_path: path,
-        definition_id: id.to_string(),
+        definition_id: name.to_string(),
         name: name.to_string(),
         state: "loaded".to_string(),
         enabled: true,
@@ -43,6 +43,93 @@ fn semantic_test_catalog_record(
         package_version: None,
         source_kind: None,
         read_only_reason: None,
+    }
+}
+
+fn semantic_test_catalog_details(records: &[SkillRecord]) -> Vec<SkillDetailRecord> {
+    records
+        .iter()
+        .map(|record| {
+            let content = fs::read_to_string(&record.path).expect("read semantic fixture");
+            let parsed = crate::parse_tool_global_skill(&content, &record.name);
+            SkillDetailRecord {
+                id: record.id.clone(),
+                agent: record.agent.clone(),
+                scope: record.scope.clone(),
+                path: record.path.clone(),
+                display_path: record.display_path.clone(),
+                definition_id: record.definition_id.clone(),
+                name: parsed.name,
+                description: parsed.description,
+                state: record.state.clone(),
+                enabled: record.enabled,
+                frontmatter_raw: parsed.frontmatter_raw.clone(),
+                body: parsed.body.clone(),
+                permissions: serde_json::json!({}),
+                fingerprint: crate::content_fingerprint(&parsed.frontmatter_raw, &parsed.body),
+                publisher: None,
+                package_name: None,
+                package_version: None,
+                source_kind: None,
+                read_only_reason: None,
+            }
+        })
+        .collect()
+}
+
+fn semantic_test_state(
+    agent: AgentId,
+    root: PathBuf,
+    skill: &str,
+    skill_file: Option<PathBuf>,
+    content_fingerprint: Option<&str>,
+) -> ManagerSelectedSkillState {
+    let Some(skill_file) = skill_file else {
+        return ManagerSelectedSkillState {
+            agent,
+            root,
+            skill: skill.to_string(),
+            exists: false,
+            canonical_skill_file: None,
+            source_identity: None,
+            content_fingerprint: None,
+            definition_id: None,
+            semantic_name: None,
+            frontmatter_raw: None,
+            body: None,
+            catalog_fingerprint: None,
+        };
+    };
+    let canonical_skill_file = skill_file.canonicalize().expect("canonical test skill");
+    let canonical_source = canonical_skill_file
+        .parent()
+        .expect("test skill source")
+        .to_string_lossy()
+        .to_string();
+    let content = fs::read_to_string(&canonical_skill_file).expect("test skill content");
+    let parsed = crate::parse_tool_global_skill(&content, skill);
+    ManagerSelectedSkillState {
+        agent,
+        root,
+        skill: skill.to_string(),
+        exists: true,
+        canonical_skill_file: Some(canonical_skill_file),
+        source_identity: Some(
+            action_source_revision(
+                "manager.skill.source-identity",
+                &[("canonical_source", &canonical_source)],
+            )
+            .expect("test source identity"),
+        ),
+        content_fingerprint: content_fingerprint.map(str::to_string),
+        definition_id: Some(parsed.name.clone()),
+        semantic_name: Some(parsed.name),
+        frontmatter_raw: Some(parsed.frontmatter_raw.clone()),
+        body: Some(parsed.body.clone()),
+        catalog_fingerprint: Some(crate::content_fingerprint(
+            &parsed.frontmatter_raw,
+            &parsed.body,
+        )),
     }
 }
 
@@ -70,6 +157,7 @@ fn local_create_preview_refuses_an_existing_staging_destination_without_modifyin
         &ctx,
         &SkillManagerLocalCreateParams {
             name: "existing".to_string(),
+            network_allowed: true,
             confirmed: false,
             preview_token: None,
             action_reference: None,
@@ -114,6 +202,7 @@ fn local_create_preview_rejects_an_app_owned_intermediate_symlink_without_readin
         &ctx,
         &SkillManagerLocalCreateParams {
             name: "linked".to_string(),
+            network_allowed: true,
             confirmed: false,
             preview_token: None,
             action_reference: None,
@@ -152,6 +241,7 @@ fn local_create_preview_keeps_a_missing_app_data_owner_absent() {
         &ctx,
         &SkillManagerLocalCreateParams {
             name: "new-skill".to_string(),
+            network_allowed: true,
             confirmed: false,
             preview_token: None,
             action_reference: None,
@@ -159,7 +249,11 @@ fn local_create_preview_keeps_a_missing_app_data_owner_absent() {
     )
     .expect("zero-write preview");
 
-    assert_eq!(preview.preconditions.len(), 2);
+    assert_eq!(preview.preconditions.len(), 3);
+    assert!(preview.preconditions.iter().any(|precondition| {
+        precondition.kind == ActionPreconditionKind::SourceFile
+            && Path::new(&precondition.target_id) == Path::new(&preview.command[0])
+    }));
     assert!(
         !app_data.exists(),
         "a local-create preview must not bootstrap app data"
@@ -188,6 +282,335 @@ fn machine_stdout_capture_is_private_and_removed_on_drop() {
         path
     };
     assert!(!path.exists(), "capture should be removed by RAII");
+}
+
+#[test]
+#[cfg(unix)]
+fn machine_stdout_capture_drop_preserves_a_replacement_created_after_quarantine_validation() {
+    let capture = MachineStdoutCapture::create().expect("private machine capture");
+    let path = capture.path.clone();
+    install_machine_capture_pre_unlink_test_hook(path.clone(), |path| {
+        fs::write(path, b"replacement").expect("create replacement after quarantine validation");
+    });
+
+    drop(capture);
+
+    assert_eq!(
+        fs::read(&path).expect("replacement entry remains"),
+        b"replacement",
+        "cleanup must unlink only the quarantined capture inode"
+    );
+    fs::remove_file(path).expect("remove replacement");
+}
+
+#[test]
+#[cfg(unix)]
+fn machine_stdout_capture_read_preserves_a_post_validation_replacement() {
+    let mut capture = MachineStdoutCapture::create().expect("private machine capture");
+    let path = capture.path.clone();
+    install_machine_capture_pre_unlink_test_hook(path.clone(), |path| {
+        fs::write(path, b"replacement").expect("create replacement after quarantine validation");
+    });
+
+    assert!(capture
+        .read()
+        .expect("read and finalize capture")
+        .is_empty());
+    assert_eq!(
+        fs::read(&path).expect("replacement entry remains"),
+        b"replacement"
+    );
+    drop(capture);
+    assert_eq!(
+        fs::read(&path).expect("drop leaves replacement"),
+        b"replacement"
+    );
+    fs::remove_file(path).expect("remove replacement");
+}
+
+#[test]
+#[cfg(unix)]
+fn machine_stdout_capture_sync_failure_is_partial_and_retains_quarantine() {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut capture = MachineStdoutCapture::create().expect("private machine capture");
+    let path = capture.path.clone();
+    let expected = capture.file.metadata().expect("capture metadata");
+    inject_machine_capture_sync_failure_for_test("quarantine");
+
+    let error = capture.read().expect_err("sync failure must be reported");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            operation,
+            state,
+            cleanup_required: true,
+            ..
+        } if operation == "skillManager.machineCaptureCleanup" && state == "outcome_unknown"
+    ));
+    assert!(
+        !path.exists(),
+        "the original name was atomically quarantined"
+    );
+    let quarantine = fs::read_dir(std::env::temp_dir())
+        .expect("temporary directory")
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".agent-copilot-skill-manager-quarantine-")
+                && entry.metadata().is_ok_and(|metadata| {
+                    metadata.dev() == expected.dev() && metadata.ino() == expected.ino()
+                })
+        })
+        .expect("failed sync retains the matching quarantine")
+        .path();
+    fs::remove_file(quarantine).expect("remove retained test quarantine");
+    drop(capture);
+}
+
+#[test]
+#[cfg(unix)]
+fn explicit_early_return_finalize_surfaces_machine_capture_cleanup_failure() {
+    use std::os::unix::fs::MetadataExt;
+
+    let capture = MachineStdoutCapture::create().expect("private machine capture");
+    let expected = capture.file.metadata().expect("capture metadata");
+    let mut capture = Some(capture);
+    inject_machine_capture_sync_failure_for_test("quarantine");
+    let error = finalize_machine_capture_after_error(
+        &AdapterContext {
+            user_home: PathBuf::from("/tmp"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+        &semantic_test_preview("search", Vec::new()),
+        &mut capture,
+        "not_started",
+        CommandError::SkillManagerCommandFailed("spawn failed".to_string()),
+    );
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect { ref detail, cleanup_required: true, .. }
+            if detail.contains("private output cleanup also failed")
+    ));
+    let quarantine = fs::read_dir(std::env::temp_dir())
+        .expect("temp dir")
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".agent-copilot-skill-manager-quarantine-")
+                && entry.metadata().is_ok_and(|metadata| {
+                    metadata.dev() == expected.dev() && metadata.ino() == expected.ino()
+                })
+        })
+        .expect("retained quarantine")
+        .path();
+    fs::remove_file(quarantine).expect("remove retained quarantine");
+}
+
+#[test]
+#[cfg(unix)]
+fn machine_stdout_capture_hardlink_fails_closed_without_claiming_cleanup() {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut capture = MachineStdoutCapture::create().expect("private machine capture");
+    let path = capture.path.clone();
+    let hardlink = path.with_extension("hardlink");
+    fs::hard_link(&path, &hardlink).expect("add unexpected hardlink");
+
+    let error = capture
+        .read()
+        .expect_err("single-link invariant must be enforced");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            operation,
+            state,
+            cleanup_required: true,
+            ..
+        } if operation == "skillManager.machineCaptureCleanup" && state == "applied_unverified"
+    ));
+    let original = fs::metadata(&path).expect("original retained");
+    let linked = fs::metadata(&hardlink).expect("hardlink retained");
+    assert_eq!(original.ino(), linked.ino());
+    assert_eq!(original.nlink(), 2);
+    fs::remove_file(path).expect("remove original test capture");
+    fs::remove_file(hardlink).expect("remove test hardlink");
+    drop(capture);
+}
+
+#[test]
+#[cfg(unix)]
+fn machine_stdout_capture_chmods_only_its_descriptor_and_preserves_a_replacement_entry() {
+    use std::{
+        os::unix::fs::{symlink, PermissionsExt},
+        sync::{Arc, Mutex},
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-machine-capture-race-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let victim = root.join("victim");
+    let moved_capture = root.join("moved-capture");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).expect("victim mode");
+    let raced_path = Arc::new(Mutex::new(None::<PathBuf>));
+    let hook_raced_path = Arc::clone(&raced_path);
+    let hook_victim = victim.clone();
+    let hook_moved_capture = moved_capture.clone();
+    install_machine_capture_post_create_test_hook(move |path| {
+        fs::rename(path, &hook_moved_capture).expect("move created capture");
+        symlink(&hook_victim, path).expect("replace capture path");
+        *hook_raced_path.lock().expect("record raced path") = Some(path.to_path_buf());
+    });
+
+    let error = match MachineStdoutCapture::create() {
+        Ok(_) => panic!("capture path replacement must fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            operation,
+            state,
+            cleanup_required: false,
+            ..
+        } if operation == "skillManager.machineCaptureCleanup" && state == "applied_unverified"
+    ));
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "descriptor chmod must not follow the replacement symlink"
+    );
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::metadata(&moved_capture)
+            .expect("moved capture metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let raced_path = raced_path
+        .lock()
+        .expect("read raced path")
+        .take()
+        .expect("raced path");
+    assert!(
+        fs::symlink_metadata(&raced_path)
+            .expect("replacement entry remains")
+            .file_type()
+            .is_symlink(),
+        "inode-bound cleanup must not unlink a replacement entry"
+    );
+    fs::remove_file(raced_path).expect("remove replacement link");
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+#[cfg(unix)]
+fn machine_stdout_capture_restore_conflict_preserves_original_replacement_and_quarantine() {
+    use std::{
+        os::unix::fs::{symlink, MetadataExt},
+        sync::{Arc, Mutex},
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-machine-capture-restore-conflict-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let victim = root.join("victim");
+    let moved_capture = root.join("moved-capture");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    let raced_path = Arc::new(Mutex::new(None::<PathBuf>));
+    let hook_raced_path = Arc::clone(&raced_path);
+    let hook_victim = victim.clone();
+    let hook_moved_capture = moved_capture.clone();
+    install_machine_capture_post_create_test_hook(move |path| {
+        fs::rename(path, &hook_moved_capture).expect("move created capture");
+        symlink(&hook_victim, path).expect("install mismatched entry");
+        *hook_raced_path.lock().expect("record raced path") = Some(path.to_path_buf());
+    });
+    let restore_raced_path = Arc::clone(&raced_path);
+    install_machine_capture_pre_restore_test_hook(move || {
+        let path = restore_raced_path
+            .lock()
+            .expect("read raced path")
+            .clone()
+            .expect("raced path recorded");
+        fs::write(path, b"blocking replacement").expect("create restore conflict");
+    });
+
+    let error = match MachineStdoutCapture::create() {
+        Ok(_) => panic!("restore conflict must fail closed"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            operation,
+            state,
+            cleanup_required: true,
+            ..
+        } if operation == "skillManager.machineCaptureCleanup" && state == "outcome_unknown"
+    ));
+    let raced_path = raced_path
+        .lock()
+        .expect("read raced path")
+        .clone()
+        .expect("raced path");
+    assert_eq!(
+        fs::read(&raced_path).expect("blocking replacement remains"),
+        b"blocking replacement"
+    );
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim remains"),
+        b"unchanged"
+    );
+    let quarantine = fs::read_dir(std::env::temp_dir())
+        .expect("temporary directory")
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".agent-copilot-skill-manager-quarantine-")
+                && fs::read_link(entry.path()).is_ok_and(|target| target == victim)
+        })
+        .expect("restore conflict retains quarantine")
+        .path();
+    assert_eq!(
+        fs::read_link(&quarantine).expect("quarantined link"),
+        victim
+    );
+    let moved = fs::metadata(&moved_capture).expect("moved capture");
+    assert!(moved.is_file());
+    assert_eq!(moved.nlink(), 1);
+
+    fs::remove_file(quarantine).expect("remove retained quarantine");
+    fs::remove_file(raced_path).expect("remove blocker");
+    fs::remove_dir_all(root).ok();
 }
 
 #[test]
@@ -280,6 +703,26 @@ fn preview_and_runtime_env_share_the_same_allowlisted_keys() {
             .map(|env_var| env_var.key.as_str())
             .collect::<BTreeSet<_>>()
     );
+    for (key, expected) in [
+        ("npm_config_userconfig", "/dev/null"),
+        ("npm_config_globalconfig", "/.agent-copilot-no-global-npmrc"),
+        ("npm_config_ignore_scripts", "true"),
+        ("npm_config_registry", "https://registry.npmjs.org/"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GCM_INTERACTIVE", "never"),
+    ] {
+        assert!(runtime_env
+            .iter()
+            .any(|env_var| env_var.key == key && env_var.value == expected));
+    }
+    assert!(runtime_env.iter().any(|env_var| {
+        env_var.key == "npm_config_cache"
+            && env_var
+                .value
+                .contains("dev.agent-copilot.native/external-manager/npm-cache")
+    }));
 }
 
 #[test]
@@ -300,6 +743,7 @@ fn default_agents_cover_supported_app_agents() {
 #[test]
 fn install_preview_uses_symlink_by_default_and_copy_only_when_requested() {
     let temp = std::env::temp_dir().join(format!("skill-manager-preview-{}", std::process::id()));
+    fs::create_dir_all(temp.join("project")).expect("create manager cwd");
     let ctx = AdapterContext {
         user_home: temp.join("home"),
         project_cwd: Some(temp.join("project")),
@@ -321,6 +765,13 @@ fn install_preview_uses_symlink_by_default_and_copy_only_when_requested() {
         action_reference: None,
     };
     let preview = build_install_preview(&ctx, &params).expect("preview");
+    assert_eq!(preview.command[1], "--yes");
+    assert_eq!(preview.command[2], "skills@1.5.20");
+    assert!(preview.risks.iter().any(|risk| {
+        risk.contains("unsandboxed with the user's filesystem authority")
+            && risk.contains("may read HOME files")
+            && risk.contains("explicit external-code trust boundary")
+    }));
     assert!(preview.command.contains(&"--skill".to_string()));
     assert!(
         preview.command.contains(&"--full-depth".to_string()),
@@ -345,6 +796,136 @@ fn install_preview_uses_symlink_by_default_and_copy_only_when_requested() {
     )
     .expect("copy preview");
     assert!(copy_preview.command.contains(&"--copy".to_string()));
+    fs::remove_dir_all(temp).ok();
+}
+
+#[test]
+#[cfg(unix)]
+fn every_manager_spawn_action_binds_and_rejects_a_stale_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join(format!(
+        "manager-executable-binding-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let project = root.join("project");
+    let app_data = root.join("app-data");
+    let executable = root.join("npx");
+    fs::create_dir_all(&project).expect("project");
+    fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("manager executable");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).expect("executable mode");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(project.clone()),
+        project_cwd: Some(project.clone()),
+        extra_roots: Vec::new(),
+    };
+    let cases = [
+        (
+            "install",
+            project.clone(),
+            vec![
+                executable.to_string_lossy().to_string(),
+                "--yes".to_string(),
+                SKILLS_CLI_BINARY.to_string(),
+                "add".to_string(),
+                "owner/repository".to_string(),
+                "--skill".to_string(),
+                "selected".to_string(),
+                "--agent".to_string(),
+                "codex".to_string(),
+            ],
+            None,
+        ),
+        (
+            "remove",
+            project.clone(),
+            vec![
+                executable.to_string_lossy().to_string(),
+                "--yes".to_string(),
+                SKILLS_CLI_BINARY.to_string(),
+                "remove".to_string(),
+                "selected".to_string(),
+                "--agent".to_string(),
+                "codex".to_string(),
+            ],
+            None,
+        ),
+        (
+            "update",
+            project.clone(),
+            vec![
+                executable.to_string_lossy().to_string(),
+                "--yes".to_string(),
+                SKILLS_CLI_BINARY.to_string(),
+                "update".to_string(),
+                "selected".to_string(),
+                "--agent".to_string(),
+                "codex".to_string(),
+            ],
+            None,
+        ),
+        (
+            "localCreate",
+            local_create_root(&app_data),
+            vec![
+                executable.to_string_lossy().to_string(),
+                "--yes".to_string(),
+                SKILLS_CLI_BINARY.to_string(),
+                "init".to_string(),
+                "selected".to_string(),
+            ],
+            Some(app_data.as_path()),
+        ),
+    ];
+    for (index, (operation, cwd, command, owner)) in cases.into_iter().enumerate() {
+        fs::write(&executable, format!("#!/bin/sh\n# accepted {index}\n"))
+            .expect("accepted executable");
+        let binding = manager_action_binding(
+            &ctx,
+            &command,
+            &cwd,
+            operation,
+            ManagerActionBindingOptions {
+                network_required: true,
+                network_allowed: true,
+                accepted_revision: None,
+                app_data_dir: owner,
+            },
+        )
+        .expect("action binding")
+        .expect("typed manager action");
+        assert!(binding.preconditions.iter().any(|precondition| {
+            precondition.kind == ActionPreconditionKind::SourceFile
+                && Path::new(&precondition.target_id) == executable
+        }));
+        let preview = SkillManagerCommandPreview {
+            action: Some(binding.action),
+            preconditions: binding.preconditions,
+            tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+            operation: operation.to_string(),
+            command,
+            cwd: cwd.to_string_lossy().to_string(),
+            env: manager_command_env(&ctx, &executable.to_string_lossy()),
+            requires_confirmation: true,
+            confirmed: true,
+            network_required: true,
+            network_allowed: true,
+            will_run: true,
+            preview_token: binding.preview_token,
+            summary: "test".to_string(),
+            risks: Vec::new(),
+            source: None,
+            skills: vec!["selected".to_string()],
+        };
+        fs::write(&executable, format!("#!/bin/sh\n# stale {index}\n")).expect("stale executable");
+        assert!(matches!(
+            validate_manager_preconditions(&ctx, &preview),
+            Err(CommandError::StaleActionReference)
+        ));
+    }
+    fs::remove_dir_all(root).ok();
 }
 
 #[test]
@@ -378,7 +959,8 @@ fn install_preview_resolves_relative_local_sources_from_the_manager_cwd() {
     let preview = build_install_preview(&ctx, &params).expect("local preview");
     let canonical_source = local_source.canonicalize().expect("canonical local source");
 
-    assert!(!preview.network_required);
+    assert!(preview.network_required);
+    assert!(!preview.network_allowed);
     assert!(preview.preconditions.iter().any(|precondition| {
         precondition.kind == ActionPreconditionKind::SourceFile
             && Path::new(&precondition.target_id) == canonical_source
@@ -580,69 +1162,117 @@ fn multi_agent_install_allows_an_unchanged_valid_target_when_another_target_is_a
         std::process::id(),
         unix_timestamp_millis()
     ));
-    let existing_file = temp_root.join("claude/shared/SKILL.md");
-    let added_file = temp_root.join("codex/shared/SKILL.md");
-    fs::create_dir_all(existing_file.parent().expect("existing parent"))
-        .expect("create existing target");
-    fs::create_dir_all(added_file.parent().expect("added parent")).expect("create added target");
-    fs::write(&existing_file, "existing").expect("write existing target");
-    fs::write(&added_file, "added").expect("write added target");
-    let existing_file = existing_file.canonicalize().expect("canonical existing");
-    let added_file = added_file.canonicalize().expect("canonical added");
+    let shared_file = temp_root.join(".agents/skills/shared/SKILL.md");
+    fs::create_dir_all(shared_file.parent().expect("shared parent")).expect("create shared target");
+    fs::write(
+        &shared_file,
+        "---\nname: shared\ndescription: shared\n---\ninstalled\n",
+    )
+    .expect("write shared target");
+    let shared_file = shared_file.canonicalize().expect("canonical shared");
     let before = vec![
-        ManagerSelectedSkillState {
-            agent: AgentId::ClaudeCode,
-            root: temp_root.join("claude"),
-            skill: "shared".to_string(),
-            exists: true,
-            canonical_skill_file: Some(existing_file.clone()),
-            source_identity: Some("claude-source".to_string()),
-            content_fingerprint: Some("same-content".to_string()),
-        },
-        ManagerSelectedSkillState {
-            agent: AgentId::Codex,
-            root: temp_root.join("codex"),
-            skill: "shared".to_string(),
-            exists: false,
-            canonical_skill_file: None,
-            source_identity: None,
-            content_fingerprint: None,
-        },
+        semantic_test_state(
+            AgentId::ClaudeCode,
+            temp_root.join("claude"),
+            "shared",
+            Some(shared_file.clone()),
+            Some("same-content"),
+        ),
+        semantic_test_state(
+            AgentId::Codex,
+            temp_root.join("codex"),
+            "shared",
+            None,
+            None,
+        ),
     ];
     let after = vec![
         before[0].clone(),
-        ManagerSelectedSkillState {
-            agent: AgentId::Codex,
-            root: temp_root.join("codex"),
-            skill: "shared".to_string(),
-            exists: true,
-            canonical_skill_file: Some(added_file.clone()),
-            source_identity: Some("codex-source".to_string()),
-            content_fingerprint: Some("same-content".to_string()),
-        },
+        semantic_test_state(
+            AgentId::Codex,
+            temp_root.join("codex"),
+            "shared",
+            Some(shared_file.clone()),
+            Some("same-content"),
+        ),
     ];
     let records = vec![
         semantic_test_catalog_record(
             "claude-shared",
             AgentId::ClaudeCode,
             "shared",
-            existing_file,
+            shared_file.clone(),
         ),
-        semantic_test_catalog_record("codex-shared", AgentId::Codex, "shared", added_file),
+        semantic_test_catalog_record("codex-shared", AgentId::Codex, "shared", shared_file),
     ];
+    let details = semantic_test_catalog_details(&records);
     fs::create_dir_all(temp_root.join(".agents")).expect("create manager state root");
     fs::write(
         temp_root.join(".agents/.skill-lock.json"),
-        r#"{"version":3,"skills":{"shared":{"source":"owner/repository","sourceType":"github"}}}"#,
+        r#"{"version":3,"skills":{"shared":{"source":"owner/repository","sourceType":"github","skillPath":"skills/shared/SKILL.md"}}}"#,
     )
     .expect("write manager lock");
     let mut preview = semantic_test_preview("install", vec!["shared"]);
     preview.cwd = temp_root.to_string_lossy().to_string();
     preview.source = Some("https://github.com/owner/repository.git".to_string());
 
-    verify_manager_operation(&preview, &records, &before, &after)
+    verify_manager_operation(&preview, &records, &details, &before, &after)
         .expect("all selected postconditions are valid and another target changed");
     let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
+fn install_rejects_same_path_catalog_content_from_a_scan_window_third_state() {
+    let temp_root = std::env::temp_dir().join(format!(
+        "agent-copilot-manager-catalog-third-state-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let skill_file = temp_root.join(".agents/skills/shared/SKILL.md");
+    fs::create_dir_all(skill_file.parent().expect("skill parent")).expect("create skill");
+    fs::write(
+        &skill_file,
+        "---\nname: shared\ndescription: final\n---\nfinal-a\n",
+    )
+    .expect("final skill");
+    fs::write(
+        temp_root.join(".agents/.skill-lock.json"),
+        r#"{"version":3,"skills":{"shared":{"source":"owner/repository","sourceType":"github","skillPath":"skills/shared/SKILL.md"}}}"#,
+    )
+    .expect("manager lock");
+    let before = vec![semantic_test_state(
+        AgentId::Codex,
+        temp_root.join(".agents/skills"),
+        "shared",
+        None,
+        None,
+    )];
+    let after = vec![semantic_test_state(
+        AgentId::Codex,
+        temp_root.join(".agents/skills"),
+        "shared",
+        Some(skill_file.clone()),
+        Some("final"),
+    )];
+    let records = vec![semantic_test_catalog_record(
+        "codex-shared",
+        AgentId::Codex,
+        "shared",
+        skill_file,
+    )];
+    let mut details = semantic_test_catalog_details(&records);
+    details[0].body = "final-b\n".to_string();
+    details[0].fingerprint =
+        crate::content_fingerprint(&details[0].frontmatter_raw, &details[0].body);
+    let mut preview = semantic_test_preview("install", vec!["shared"]);
+    preview.cwd = temp_root.to_string_lossy().to_string();
+    preview.source = Some("owner/repository".to_string());
+
+    assert!(matches!(
+        verify_manager_operation(&preview, &records, &details, &before, &after),
+        Err(CommandError::VerificationFailed)
+    ));
+    fs::remove_dir_all(temp_root).ok();
 }
 
 #[test]
@@ -662,36 +1292,33 @@ fn install_rejects_postconditions_owned_by_a_different_manager_source() {
         r#"{"version":3,"skills":{"shared":{"source":"other/repository","sourceType":"github"}}}"#,
     )
     .expect("write mismatched manager lock");
-    let before = vec![ManagerSelectedSkillState {
-        agent: AgentId::Codex,
-        root: temp_root.join("codex"),
-        skill: "shared".to_string(),
-        exists: false,
-        canonical_skill_file: None,
-        source_identity: None,
-        content_fingerprint: None,
-    }];
-    let after = vec![ManagerSelectedSkillState {
-        agent: AgentId::Codex,
-        root: temp_root.join("codex"),
-        skill: "shared".to_string(),
-        exists: true,
-        canonical_skill_file: Some(skill_file.clone()),
-        source_identity: Some("different-source".to_string()),
-        content_fingerprint: Some("installed".to_string()),
-    }];
+    let before = vec![semantic_test_state(
+        AgentId::Codex,
+        temp_root.join("codex"),
+        "shared",
+        None,
+        None,
+    )];
+    let after = vec![semantic_test_state(
+        AgentId::Codex,
+        temp_root.join("codex"),
+        "shared",
+        Some(skill_file.clone()),
+        Some("installed"),
+    )];
     let records = vec![semantic_test_catalog_record(
         "codex-shared",
         AgentId::Codex,
         "shared",
         skill_file,
     )];
+    let details = semantic_test_catalog_details(&records);
     let mut preview = semantic_test_preview("install", vec!["shared"]);
     preview.cwd = temp_root.to_string_lossy().to_string();
     preview.source = Some("owner/repository".to_string());
 
     assert!(matches!(
-        verify_manager_operation(&preview, &records, &before, &after),
+        verify_manager_operation(&preview, &records, &details, &before, &after),
         Err(CommandError::VerificationFailed)
     ));
     let _ = fs::remove_dir_all(temp_root);
@@ -708,15 +1335,13 @@ fn update_rejects_a_changed_skill_that_swaps_source_identity() {
     fs::create_dir_all(skill_file.parent().expect("skill parent")).expect("create selected target");
     fs::write(&skill_file, "after").expect("write selected target");
     let skill_file = skill_file.canonicalize().expect("canonical skill");
-    let before = vec![ManagerSelectedSkillState {
-        agent: AgentId::Codex,
-        root: temp_root.join("codex"),
-        skill: "selected".to_string(),
-        exists: true,
-        canonical_skill_file: Some(skill_file.clone()),
-        source_identity: Some("expected-source".to_string()),
-        content_fingerprint: Some("before".to_string()),
-    }];
+    let before = vec![semantic_test_state(
+        AgentId::Codex,
+        temp_root.join("codex"),
+        "selected",
+        Some(skill_file.clone()),
+        Some("before"),
+    )];
     let after = vec![ManagerSelectedSkillState {
         source_identity: Some("different-source".to_string()),
         content_fingerprint: Some("after".to_string()),
@@ -728,11 +1353,13 @@ fn update_rejects_a_changed_skill_that_swaps_source_identity() {
         "selected",
         skill_file,
     )];
+    let details = semantic_test_catalog_details(&records);
 
     assert!(matches!(
         verify_manager_operation(
             &semantic_test_preview("update", vec!["selected"]),
             &records,
+            &details,
             &before,
             &after,
         ),
@@ -816,9 +1443,10 @@ fn unrelated_target_tree_change_cannot_satisfy_selected_skill_update() {
         source_kind: None,
         read_only_reason: None,
     }];
+    let details = semantic_test_catalog_details(&records);
 
     assert!(matches!(
-        verify_manager_operation(&preview, &records, &before, &after),
+        verify_manager_operation(&preview, &records, &details, &before, &after),
         Err(CommandError::VerificationFailed)
     ));
     let _ = fs::remove_dir_all(temp_root);

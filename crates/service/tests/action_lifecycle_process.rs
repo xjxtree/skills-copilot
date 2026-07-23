@@ -1034,7 +1034,8 @@ fn manager_exit_zero_noop_fails_remove_update_and_local_create_verification() {
             json!({
                 "skill":"not-installed",
                 "agents":["codex"],
-                "scope":"global"
+                "scope":"global",
+                "network_allowed":true
             }),
         ),
         (
@@ -1051,7 +1052,10 @@ fn manager_exit_zero_noop_fails_remove_update_and_local_create_verification() {
             "local-create",
             "skillManager.previewLocalCreate",
             "skillManager.applyLocalCreate",
-            json!({"name":"not-created"}),
+            json!({
+                "name":"not-created",
+                "network_allowed":true
+            }),
         ),
     ] {
         let applied = invoke_manager_preview_and_apply(

@@ -13,14 +13,27 @@
           "scope": "agent-project"
         },
         "project_id": "project-0123456789abcdef",
-        "impacts": ["read_only", "external_manager", "app_local_data"],
+        "impacts": [
+          "read_only",
+          "external_manager",
+          "app_local_data"
+        ],
         "preview_method": "skillManager.search",
         "apply_method": "skillManager.applySearch",
         "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "confirmation_required": true,
         "network": "required",
-        "readback": ["manager_inventory"],
-        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+        "readback": [
+          "manager_inventory"
+        ],
+        "evidence_refs": [
+          "coverage:claude-code",
+          "coverage:codex",
+          "coverage:opencode",
+          "coverage:pi",
+          "coverage:hermes",
+          "coverage:openclaw"
+        ]
       },
       "preconditions": [
         {
@@ -33,7 +46,8 @@
       "operation": "search",
       "command": [
         "/usr/local/bin/npx",
-        "skills",
+        "--yes",
+        "skills@1.5.20",
         "find",
         "frontend",
         "--owner",
@@ -68,6 +82,58 @@
         {
           "key": "npm_config_update_notifier",
           "value": "false"
+        },
+        {
+          "key": "npm_config_ignore_scripts",
+          "value": "true"
+        },
+        {
+          "key": "npm_config_registry",
+          "value": "https://registry.npmjs.org/"
+        },
+        {
+          "key": "npm_config_userconfig",
+          "value": "/dev/null"
+        },
+        {
+          "key": "npm_config_globalconfig",
+          "value": "/.agent-copilot-no-global-npmrc"
+        },
+        {
+          "key": "npm_config_cache",
+          "value": "/tmp/skills-copilot-home/Library/Application Support/dev.agent-copilot.native/external-manager/npm-cache"
+        },
+        {
+          "key": "GIT_CONFIG_NOSYSTEM",
+          "value": "1"
+        },
+        {
+          "key": "GIT_CONFIG_GLOBAL",
+          "value": "/dev/null"
+        },
+        {
+          "key": "GIT_TERMINAL_PROMPT",
+          "value": "0"
+        },
+        {
+          "key": "GCM_INTERACTIVE",
+          "value": "never"
+        },
+        {
+          "key": "GIT_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "SSH_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "GIT_SSH_COMMAND",
+          "value": "/usr/bin/ssh -F /dev/null -oBatchMode=yes -oIdentityAgent=none -oIdentitiesOnly=yes -oIdentityFile=/dev/null -oStrictHostKeyChecking=yes"
+        },
+        {
+          "key": "XDG_CONFIG_HOME",
+          "value": "/.agent-copilot-no-user-config"
         }
       ],
       "requires_confirmation": true,
@@ -76,13 +142,16 @@
       "network_allowed": true,
       "will_run": false,
       "preview_token": "action-preview:v1:hmac-sha256:1313131313131313131313131313131313131313131313131313131313131313",
-      "summary": "Search remote skill indexes with npx skills.",
+      "summary": "Search remote skill indexes with npx skills@1.5.20.",
       "risks": [
-        "Search may contact skills.sh, npm, or git-host metadata through the external CLI."
+        "Search may contact skills.sh, npm, or git-host metadata through the external CLI.",
+        "This action executes the pinned external manager package skills@1.5.20 through /usr/local/bin/npx unsandboxed with the user's filesystem authority; it may read HOME files, and the executable/runtime is an explicit external-code trust boundary."
       ]
     },
     "output": null,
-    "results": [],
+    "results": [
+
+    ],
     "returned_count": 0,
     "total_count": null,
     "has_more": false,

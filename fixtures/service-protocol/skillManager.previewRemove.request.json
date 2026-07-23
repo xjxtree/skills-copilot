@@ -12,6 +12,7 @@
       "openclaw"
     ],
     "scope": "project",
+    "network_allowed": true,
     "confirmed": false
   }
 }

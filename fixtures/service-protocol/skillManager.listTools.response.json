@@ -4,7 +4,7 @@
   "result": [
     {
       "id": "npx-skills",
-      "display_name": "npx skills",
+      "display_name": "npx skills@1.5.20",
       "status": "available",
       "executable": "/usr/local/bin/npx",
       "operations": [
@@ -34,8 +34,8 @@
         "openclaw"
       ],
       "notes": [
-        "Network-backed search/install/update run only after explicit app confirmation.",
-        "The native Skill Manager uses symlink distribution."
+        "Every raw npx skills operation uses the reviewed exact package version 1.5.20, is treated as potentially network-backed, and runs only with explicit network permission and app confirmation.",
+        "Symlink distribution is the default; copy is opt-in."
       ]
     },
     {

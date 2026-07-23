@@ -235,13 +235,13 @@ the client.
 | `skillManager.applySearch` | App-local data, External manager state may change when invoked | Always | Always | Required |
 | `skillManager.listInstalled` | None | Never | Never | None |
 | `skillManager.previewInstall` | None | Never | Never | None |
-| `skillManager.applyInstall` | Agent skill files, App-local data, External manager state may change when invoked | Always | Conditional | Required |
+| `skillManager.applyInstall` | Agent skill files, App-local data, External manager state may change when invoked | Always | Always | Required |
 | `skillManager.previewRemove` | None | Never | Never | None |
-| `skillManager.applyRemove` | Agent skill files, App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.applyRemove` | Agent skill files, App-local data, External manager state may change when invoked | Always | Always | Required |
 | `skillManager.previewUpdate` | None | Never | Never | None |
-| `skillManager.applyUpdate` | Agent skill files, App-local data, External manager state may change when invoked | Always | Conditional | Required |
+| `skillManager.applyUpdate` | Agent skill files, App-local data, External manager state may change when invoked | Always | Always | Required |
 | `skillManager.previewLocalCreate` | None | Never | Never | None |
-| `skillManager.applyLocalCreate` | Agent skill files, App-local data | Always | Never | Required |
+| `skillManager.applyLocalCreate` | Agent skill files, App-local data | Always | Always | Required |
 | `skillManager.deleteLocal` | App-local data | Never | Never | Required |
 | `skillManager.previewLocalArchiveImport` | None | Never | Never | None |
 | `skillManager.applyLocalArchiveImport` | App-local data | Never | Never | Required |
@@ -608,14 +608,58 @@ presence/value or absence verification, not secret exposure.
   revalidation stops before replay reservation and process start. The empty
   owner remains so existing waiters and future calls keep one coordination
   inode; no discovery state, catalog, audit, target, or manager effect occurs.
-- Install and update may require external network access through the manager
-  CLI. Their previews still show the destination command before any confirmed
-  write.
-- Every manager child starts from `env_clear()` and receives only the
-  previewed `HOME`, `PATH`, `LANG`, `LC_ALL`, `DISABLE_TELEMETRY`,
-  `DO_NOT_TRACK`, `CI`, and npm audit/fund/update-notifier values. It never
-  inherits app action secrets, provider tokens, Git-host credentials, or cloud
-  credentials.
+  Install, remove, update, and local-create perform their applicable target and
+  manager-inventory revalidation while that same owner is held, then open or
+  initialize the writable catalog beneath it without releasing or reacquiring
+  the lock. A locked stale result therefore precedes SQLite creation. An
+  unverified failure after writable catalog initialization crosses its local
+  effect boundary is returned as a non-retryable partial outcome.
+- Every raw `npx --yes skills@1.5.20`
+  search/install/remove/update/local-create operation is
+  `network_required=true`, including local-source install and local template
+  creation, because `npx` may resolve or download the manager package before
+  dispatching the subcommand. Its typed request must explicitly set
+  `network_allowed=true`; false or omitted permission is rejected before
+  app-data owner bootstrap, catalog access, target writes, or process creation.
+  The signed preview exposes this network posture and exact command before
+  confirmation. Process-free installed projection and local archive/delete
+  operations retain `network_required=false`.
+- Every manager child starts from `env_clear()`. The previewed exact allowlist
+  includes `HOME`, `PATH`, locale and telemetry-off values; a dedicated
+  app-owned npm cache; disabled npm user/global configuration and lifecycle
+  scripts; the fixed `https://registry.npmjs.org/` registry; and Git/credential
+  helper/interactive SSH discovery disablement. Parent secret environment
+  values are not inherited. The external package is not sandboxed, receives
+  the real `HOME` to preserve global target semantics, and runs with the user's
+  filesystem authority; confirmation therefore accepts an explicit external
+  code trust boundary rather than asserting that HOME files are inaccessible.
+- The exact `skills@1.5.20` package specifier and executable revision are
+  signed with the preview. Search, install, remove, update, and local-create
+  revalidate that executable under the app-data owner lock and at the final
+  safe point before command construction. macOS has no usable descriptor-exec
+  primitive for this script/runtime chain, so observed drift is rejected but a
+  malicious same-UID check-to-exec replacement cannot be claimed impossible.
+- A manager working directory must already exist. On Unix the service opens
+  every component without following symlinks, retains the accepted directory
+  descriptor, rechecks its path binding immediately before spawn, and uses
+  descriptor-based `fchdir` in the child. A retained clone is checked again
+  after process exit and before catalog scan or target read-back; external cwd,
+  app-data owner, or app-owned relative-cwd drift is a non-retryable partial
+  outcome and never a verified success. It never creates an external project
+  or home working-directory chain. Machine-readable stdout uses a
+  descriptor-created, current-user-owned, single-link `0600` regular file;
+  chmod and reads are descriptor-based. Cleanup atomically moves the current
+  entry to a cryptographically random same-directory quarantine with
+  no-replace semantics, verifies the quarantined inode against the retained
+  descriptor, and unlinks only a match. A mismatch is restored without
+  replacement or retained on conflict, so an entry substituted at the original
+  path is never deleted. Quarantine, restore, and unlink transitions sync the
+  parent directory; any post-quarantine verification, restore, unlink, or sync
+  failure is a typed partial outcome with retained cleanup material when its
+  removal cannot be proved. Explicit read completion returns cleanup failures;
+  every post-create early return explicitly finalizes the capture and combines
+  cleanup failure with its original error. Destructor cleanup is only a
+  no-misdelete best-effort unwind fallback.
 - Relative local install sources resolve against the previewed manager `cwd`,
   then require canonical regular-file or directory metadata. URL sources with
   userinfo, query, or fragment data are rejected without echo. Credential-shaped
@@ -727,11 +771,14 @@ presence/value or absence verification, not secret exposure.
   uncertainty always upgrades the result to `outcome_unknown`.
 - Install/remove/update success declares and verifies `catalog_skills`,
   `skill_files`, and `manager_inventory` read-back. Install proves every named
-  skill exists with the selected source identity and content fingerprint for
-  every selected agent/scope target; remove proves selected target
-  links/records are gone; update proves the preview-bound skill content
-  fingerprint changed while preserving the selected identity. An unrelated
-  tree change cannot satisfy any operation. Local-create verifies
+  skill's manager-lock source and safe package `skillPath`, then requires every
+  selected agent target to resolve to that lock-proven canonical shared source.
+  Its refreshed catalog record/detail must equal the post-process `SKILL.md`
+  path, definition id, name, frontmatter, body, and fingerprint. Remove proves
+  selected target links/records are gone; update repeats the lock/source proof
+  and proves the preview-bound skill content fingerprint changed without
+  rebinding to another source. An unrelated tree change or a same-path
+  scan-window third state cannot satisfy any operation. Local-create verifies
   `catalog_skills` and
   `skill_files`, including the exact app-owned source and imported catalog ID.
   Install and update previews reject an empty skill selection. Every operation
@@ -750,9 +797,11 @@ presence/value or absence verification, not secret exposure.
   follow-up never contains the quarantine path; clients must show it as
   “deletion applied, cleanup pending,” not as either complete physical erasure
   or a failed delete.
-- A manager working directory created for process startup is removed back to
-  its original missing state if process creation fails. Once a manager process
-  starts, nonzero exit, output/read failure, catalog refresh failure, semantic
+- Local-create may create only its app-owned working-directory components under
+  the retained owner and removes those components back to their original
+  missing state if process creation fails; external project/home working
+  directories are never created. Once a manager process starts, nonzero exit,
+  output/read or output-cleanup failure, catalog refresh failure, semantic
   verification failure, or commit uncertainty is `partial_effect` with
   `retry_allowed=false`; it is never returned as an ordinary retryable command
   failure.

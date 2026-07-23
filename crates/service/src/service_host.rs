@@ -328,9 +328,7 @@ impl ServiceHost {
                     params.preview_token.as_deref(),
                     params.action_reference.as_ref(),
                 )?;
-                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_install_with_manager(
-                    &catalog,
                     &self.app_data_dir,
                     &adapter_ctx,
                     &params,
@@ -357,10 +355,21 @@ impl ServiceHost {
             "skillManager.applyRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let preflight = if params.cleanup_local_instance_id.is_some() {
-                    let read_catalog = self.open_catalog_for_action_preflight()?;
+                if !params.network_allowed {
+                    return Err(CommandError::InvalidSkillManagerRequest(
+                        "remove requires network_allowed=true before reading the action-preflight catalog"
+                            .to_string(),
+                    )
+                    .into());
+                }
+                let read_catalog = if params.cleanup_local_instance_id.is_some() {
+                    Some(self.open_catalog_for_action_preflight()?)
+                } else {
+                    None
+                };
+                let preflight = if let Some(read_catalog) = read_catalog.as_ref() {
                     preview_remove_with_manager_guarded(
-                        &read_catalog,
+                        read_catalog,
                         &self.app_data_dir,
                         &adapter_ctx,
                         &params,
@@ -374,9 +383,8 @@ impl ServiceHost {
                     params.preview_token.as_deref(),
                     params.action_reference.as_ref(),
                 )?;
-                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_remove_with_manager(
-                    &catalog,
+                    read_catalog.as_ref(),
                     &self.app_data_dir,
                     &adapter_ctx,
                     &params,
@@ -399,9 +407,7 @@ impl ServiceHost {
                     params.preview_token.as_deref(),
                     params.action_reference.as_ref(),
                 )?;
-                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_update_with_manager(
-                    &catalog,
                     &self.app_data_dir,
                     &adapter_ctx,
                     &params,
@@ -429,9 +435,7 @@ impl ServiceHost {
                     params.preview_token.as_deref(),
                     params.action_reference.as_ref(),
                 )?;
-                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_local_create_with_manager(
-                    &catalog,
                     &self.app_data_dir,
                     &adapter_ctx,
                     &params,

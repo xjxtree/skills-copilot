@@ -140,6 +140,7 @@ extension ServiceClient {
             agents: agents,
             scope: scope,
             cleanupLocalInstanceID: cleanupLocalInstanceID,
+            networkAllowed: true,
             confirmed: false,
             previewToken: nil,
             actionReference: nil
@@ -160,6 +161,7 @@ extension ServiceClient {
             agents: agents,
             scope: scope,
             cleanupLocalInstanceID: cleanupLocalInstanceID,
+            networkAllowed: true,
             confirmed: true,
             previewToken: preview.preview.previewToken,
             actionReference: actionReference
@@ -210,6 +212,7 @@ extension ServiceClient {
             method: "skillManager.previewLocalCreate",
             params: SkillManagerLocalCreateParams(
                 name: name,
+                networkAllowed: true,
                 confirmed: false,
                 previewToken: nil,
                 actionReference: nil
@@ -223,6 +226,7 @@ extension ServiceClient {
             method: "skillManager.applyLocalCreate",
             params: SkillManagerLocalCreateParams(
                 name: name,
+                networkAllowed: true,
                 confirmed: true,
                 previewToken: preview.preview.previewToken,
                 actionReference: actionReference
@@ -389,6 +393,7 @@ extension ServiceClient {
         agents: [String],
         scope: SkillManagerScope,
         cleanupLocalInstanceID: String?,
+        networkAllowed: Bool,
         confirmed: Bool,
         previewToken: String?,
         actionReference: ActionReferenceWire?
@@ -400,6 +405,7 @@ extension ServiceClient {
                 agents: agents,
                 scope: scope.rawValue,
                 cleanupLocalInstanceID: cleanupLocalInstanceID,
+                networkAllowed: networkAllowed,
                 confirmed: confirmed,
                 previewToken: previewToken,
                 actionReference: actionReference

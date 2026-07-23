@@ -880,6 +880,7 @@ struct SkillManagerRemoveParams: Encodable {
     let agents: [String]
     let scope: String?
     let cleanupLocalInstanceID: String?
+    let networkAllowed: Bool
     let confirmed: Bool
     let previewToken: String?
     let actionReference: ActionReferenceWire?
@@ -889,6 +890,7 @@ struct SkillManagerRemoveParams: Encodable {
         case agents
         case scope
         case cleanupLocalInstanceID = "cleanup_local_instance_id"
+        case networkAllowed = "network_allowed"
         case confirmed
         case previewToken = "preview_token"
         case actionReference = "action_reference"
@@ -917,12 +919,14 @@ struct SkillManagerUpdateParams: Encodable {
 
 struct SkillManagerLocalCreateParams: Encodable {
     let name: String
+    let networkAllowed: Bool
     let confirmed: Bool
     let previewToken: String?
     let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case name
+        case networkAllowed = "network_allowed"
         case confirmed
         case previewToken = "preview_token"
         case actionReference = "action_reference"

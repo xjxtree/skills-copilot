@@ -517,7 +517,7 @@ fn build_search_preview_with_revision(
             network_required: true,
             network_allowed: true,
             confirmed,
-            summary: "Search remote skill indexes with npx skills.".to_string(),
+            summary: format!("Search remote skill indexes with npx {SKILLS_CLI_BINARY}."),
             risks: vec![
                 "Search contacts the external manager's configured index and may contact npm or git-host metadata."
                     .to_string(),

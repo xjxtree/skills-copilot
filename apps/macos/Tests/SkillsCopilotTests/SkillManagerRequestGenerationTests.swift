@@ -402,6 +402,7 @@ struct SkillManagerRequestGenerationTests {
             throw NativeModelTestFailure(description: "Current local-create preview B should apply.")
         }
         try expectEqual(apply.name, currentB.name, "Current local-create apply should use B's captured name.")
+        try expectEqual(apply.networkAllowed, true, "Raw npx local-create apply must explicitly allow network resolution.")
         try expectEqual(apply.previewToken, currentB.previewToken, "Current local-create apply should use B's exact token.")
     }
 
@@ -966,6 +967,16 @@ struct SkillManagerRequestGenerationTests {
             "local-owned-instance",
             "Composite apply should reuse the exact cleanup target bound by preview."
         )
+        try expectEqual(
+            previewCalls.first?.networkAllowed,
+            true,
+            "Raw npx remove preview must explicitly allow the disclosed network posture."
+        )
+        try expectEqual(
+            applyCalls.first?.networkAllowed,
+            true,
+            "Raw npx remove apply must reuse explicit network permission."
+        )
     }
 
     private func oldCompletionDoesNotClearCurrentLoadingState() async throws {
@@ -1423,7 +1434,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             "env": [],
             "requires_confirmation": ["search", "install", "remove", "update", "localCreate"].contains(operation),
             "confirmed": false,
-            "network_required": ["search", "install", "update"].contains(operation),
+            "network_required": ["search", "install", "remove", "update", "localCreate"].contains(operation),
             "network_allowed": true,
             "will_run": false,
             "preview_token": token,
@@ -1475,7 +1486,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             "apply_method": methods.apply,
             "source_revision": "sha256:fixture",
             "confirmation_required": true,
-            "network": ["search", "install", "update"].contains(operation) ? "required" : "none",
+            "network": ["search", "install", "remove", "update", "localCreate"].contains(operation) ? "required" : "none",
             "readback": operation == "search" ? ["manager_inventory"] : ["catalog_skills"],
             "evidence_refs": ["skill:\(targetID)"]
         ]

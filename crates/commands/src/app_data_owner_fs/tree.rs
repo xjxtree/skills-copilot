@@ -119,6 +119,30 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
     }
 
+    pub(crate) fn validate_directory_binding(
+        &self,
+        relative: &Path,
+        accepted: &File,
+    ) -> Result<(), CommandError> {
+        self.validate_owner_path_binding()?;
+        let current = self.open_directory_clone(relative)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let accepted = accepted.metadata()?;
+            let current = current.metadata()?;
+            if accepted.dev() != current.dev() || accepted.ino() != current.ino() {
+                return Err(CommandError::StaleActionReference);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (accepted, current);
+        }
+        Ok(())
+    }
+
     pub(crate) fn create_directory(&self, relative: &Path) -> Result<(), CommandError> {
         validate_relative_path(relative)?;
         #[cfg(unix)]

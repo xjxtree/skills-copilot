@@ -3,6 +3,7 @@
   "method": "skillManager.applyLocalCreate",
   "params": {
     "name": "local-review-helper",
+    "network_allowed": true,
     "confirmed": true,
     "preview_token": "action-preview:v1:hmac-sha256:4343434343434343434343434343434343434343434343434343434343434343",
     "action_reference": {

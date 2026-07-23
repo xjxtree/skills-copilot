@@ -31,11 +31,15 @@ This file describes security and privacy boundaries.
 
 - No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
   outbound network calls.
-- Skill Manager search/install/update may make outbound network calls only
-  through a supported external manager CLI. Search first produces a local-only
-  signed preview and starts the external process only after a separate explicit
-  confirmation. Write commands likewise expose destination, scope, affected
-  targets, and a confirmation-bound preview in typed service requests.
+- Every raw `npx skills` search/install/remove/update/local-create invocation is
+  treated as potentially network-backed because `npx` may resolve or download
+  the manager package even when the skill source or requested operation is
+  local. Each operation first produces a local-only signed preview and starts
+  the external process only after the typed request explicitly sets
+  `network_allowed=true` and the user separately confirms the disclosed
+  destination, scope, and affected targets. A false or omitted network
+  permission is rejected before app-data owner bootstrap, catalog access,
+  target writes, or process creation.
 - Provider calls made by Agent Copilot's optional AI features require user
   enablement, prompt preview, redaction, destination visibility, and explicit
   confirmation.
@@ -123,11 +127,17 @@ confirmation, and network posture.
   sidecar may be waiting on it. Missing parent chains and symlink owners fail
   closed. Under the lock, the service rechecks the complete bounded target
   trees, archive bytes, relevant catalog identity, and manager inventory
-  accepted at preview. It holds the lock through process execution or staged
-  filesystem replacement, catalog refresh, semantic verification, and
-  read-back. A stale preview runs no manager process and writes neither targets
-  nor replay, catalog, or audit state; only the already-authorized empty owner
-  bootstrap may remain after a post-preflight race.
+  accepted at preview. Install, remove, update, and local-create open or
+  initialize the writable catalog only after the applicable locked target and
+  manager checks succeed, using the same retained owner; catalog
+  initialization never acquires a second owner lock. Once writable SQLite
+  initialization crosses its local effect boundary, an unverified failure is
+  a non-retryable partial outcome rather than an ordinary retryable error. The
+  service holds the owner through process execution or staged filesystem
+  replacement, catalog refresh, semantic verification, and read-back. A stale
+  preview runs no manager process and writes neither targets nor replay,
+  catalog, or audit state; only the already-authorized empty owner bootstrap
+  may remain after a post-preflight race.
 - App-owned private-file helpers apply the same component-wise no-follow rule
   before creating a parent directory or opening a write destination. This
   covers project context, provider replay/profile/activity state, prompt-run
@@ -280,19 +290,64 @@ confirmation, and network posture.
 - Adapter writes stay limited to the documented guarded toggles and install
   roots in `AGENTS.md` and `docs/adapters/agent-adapters.md`.
 - Skill Manager writes must use the manager tool when the tool supports the
-  operation. The service may run `npx skills` with argv-only commands,
+  operation. The reviewed CLI contract is pinned to
+  `npx --yes skills@1.5.20`; the exact package specifier, executable revision,
+  argv, registry (`https://registry.npmjs.org/`), environment, cwd, and targets
+  are part of the signed preview. The service runs it with argv-only commands,
   a cleared environment, an explicit `HOME`/`PATH`/locale/telemetry-off
   allowlist, redacted logs, and read-back catalog refresh; enable/disable uses
   the guarded batch agent-config lifecycle. Previewed environment keys are the
-  exact runtime allowlist. Parent credentials, provider tokens, cloud
-  credentials, and action secrets are never inherited by the manager.
+  exact runtime allowlist. npm user/global config is disabled, lifecycle
+  scripts are ignored, cache writes are redirected to the displayed dedicated
+  app path, and normal Git credential-helper, global/system config, interactive
+  prompt, and SSH identity discovery are disabled. Parent secret environment
+  values are not inherited. This is configuration isolation, not a process
+  sandbox: the confirmed external npm package still executes as the user with
+  the real `HOME` and user filesystem access, so it is an explicit external
+  code trust boundary and could deliberately read files.
   Relative local install sources resolve and canonicalize against the displayed
   manager working directory. Standard and SCP-style sources containing
   userinfo other than the literal `git` SCP form, query, fragment, percent
   encoding, or credential material are rejected without echo, and
   credential-shaped URLs in child output are replaced as a whole before
   parsing or returning diagnostics.
-  Process exit zero is insufficient: install/remove/update must prove their
+  The displayed manager working directory must already exist. On Unix it is
+  opened component-wise without following symlinks and retained as a directory
+  capability; the child changes directory with that descriptor rather than
+  resolving the path again. A path replacement detected before spawn stops the
+  action without starting the manager or touching the replacement target. A
+  retained clone is checked again after the child exits and before catalog scan
+  or target read-back; project, home, app-data owner, or app-owned relative-cwd
+  rebinding at that point is a non-retryable partial outcome and cannot become
+  verified success.
+  Every operation that can spawn the manager binds the canonical executable
+  tree revision and revalidates it while the app owner lock is held and again
+  immediately before `Command` construction. macOS provides neither
+  `fexecve`/`execveat` nor an executable `/dev/fd` path, so the final program
+  launch necessarily reopens the path. Observed drift fails closed, but the
+  app does not claim atomic protection from a malicious same-UID replacement
+  in the final check-to-exec interval; confirmation accepts this external
+  executable/runtime boundary.
+  Machine-readable manager output is captured in a descriptor-created regular
+  file owned by the current user, with one link and mode `0600`; permission
+  changes and reads use the descriptor. Cleanup atomically moves the current
+  directory entry to a cryptographically random same-directory quarantine with
+  no-replace semantics, verifies that quarantine against the retained
+  descriptor, and unlinks only the matching quarantine entry. A mismatched
+  entry is restored with no-replace semantics or retained on conflict, never
+  deleted. Every quarantine, restore, and unlink transition is followed by a
+  parent-directory sync. A post-quarantine validation, restore, unlink, or sync
+  failure is a typed partial outcome and retains recovery material whenever
+  cleanup cannot be proved. The explicit read path reports cleanup failure;
+  every post-create early return explicitly finalizes and combines cleanup
+  failure with the original error. Destructor cleanup is only a best-effort
+  unwind fallback and cannot unlink an unrelated replacement.
+  Process exit zero is insufficient: install/update parse the bounded manager
+  lock, prove the requested/retained source and safe package `skillPath`, and
+  require every selected agent target to resolve to that lock-proven canonical
+  shared source. The refreshed catalog record and detail must match the
+  post-process `SKILL.md` definition id, name, frontmatter, body, and
+  fingerprint at the same canonical path. Install/remove/update must prove their
   selected agent/scope postconditions in the refreshed catalog, while local
   create must prove the exact source, `SKILL.md`, imported file, and catalog
   identity. Install and update require an explicit non-empty skill selection.

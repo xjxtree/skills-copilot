@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 use skills_copilot_adapters::{
     claude_config_dir, hermes_home_dir, openclaw_state_dir, opencode_user_skills_dir, pi_agent_dir,
 };
-use skills_copilot_catalog::{Catalog, CatalogCommitError, SkillEventDraft, SkillRecord};
+use skills_copilot_catalog::{
+    Catalog, CatalogCommitError, SkillDetailRecord, SkillEventDraft, SkillRecord,
+};
 use skills_copilot_core::{
     ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
     ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AdapterContext, AgentId,
@@ -34,6 +36,8 @@ mod archive;
 mod commit_outcome;
 mod composite_remove;
 mod discovery;
+mod machine_capture;
+mod manager_runtime;
 pub use archive::{
     apply_local_archive_import, apply_local_archive_update, preview_local_archive_import,
     preview_local_archive_update, validate_local_archive_import_confirmation,
@@ -47,17 +51,25 @@ use commit_outcome::{
 };
 use composite_remove::{
     apply_composite_local_delete, bind_composite_local_delete, commit_composite_local_delete,
-    composite_local_delete_plan, rollback_composite_local_delete, CompositeLocalDeleteCommit,
+    composite_local_delete_plan, rollback_composite_local_delete,
+    validate_composite_local_delete_tree, CompositeLocalDeleteCommit,
 };
 pub use discovery::{
     apply_search_skills_with_manager, list_installed_skills_from_projection,
     preview_search_skills_with_manager,
 };
+#[cfg(test)]
+use machine_capture::{
+    inject_machine_capture_sync_failure_for_test, install_machine_capture_post_create_test_hook,
+    install_machine_capture_pre_restore_test_hook, install_machine_capture_pre_unlink_test_hook,
+};
+use machine_capture::{
+    open_existing_manager_working_directory, validate_manager_working_directory_binding,
+    MachineStdoutCapture,
+};
+pub use manager_runtime::SUPPORTED_MANAGER_AGENTS;
+use manager_runtime::*;
 
-const DEFAULT_MANAGER_TOOL: &str = "npx-skills";
-const SKILLS_NPM_TOOL: &str = "skills-npm";
-const SKILLS_CLI_BINARY: &str = "skills";
-const NPX_BINARY: &str = "npx";
 const MAX_CAPTURE_BYTES: usize = 32_000;
 const MAX_MACHINE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MANAGER_LOCK_BYTES: u64 = 2 * 1024 * 1024;
@@ -65,15 +77,6 @@ const MAX_MANAGER_TARGET_ENTRIES: usize = 16_384;
 const MAX_MANAGER_TARGET_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_MANAGER_SEARCH_QUERY_BYTES: usize = 512;
 const MAX_MANAGER_SEARCH_OWNER_BYTES: usize = 256;
-
-pub const SUPPORTED_MANAGER_AGENTS: [&str; 6] = [
-    "claude-code",
-    "pi",
-    "opencode",
-    "codex",
-    "hermes-agent",
-    "openclaw",
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillManagerToolRecord {
@@ -229,6 +232,8 @@ pub struct SkillManagerRemoveParams {
     #[serde(default)]
     pub cleanup_local_instance_id: Option<String>,
     #[serde(default)]
+    pub network_allowed: bool,
+    #[serde(default)]
     pub confirmed: bool,
     #[serde(default)]
     pub preview_token: Option<String>,
@@ -257,6 +262,8 @@ pub struct SkillManagerUpdateParams {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillManagerLocalCreateParams {
     pub name: String,
+    #[serde(default)]
+    pub network_allowed: bool,
     #[serde(default)]
     pub confirmed: bool,
     #[serde(default)]
@@ -348,7 +355,7 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
     vec![
         SkillManagerToolRecord {
             id: DEFAULT_MANAGER_TOOL.to_string(),
-            display_name: "npx skills".to_string(),
+            display_name: format!("npx {SKILLS_CLI_BINARY}"),
             status: if npx.is_some() { "available" } else { "missing" }.to_string(),
             executable: npx.map(|path| path.to_string_lossy().to_string()),
             operations: [
@@ -374,8 +381,7 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
             .collect(),
             default_agents: default_agent_targets(),
             notes: vec![
-                "Network-backed search/install/update run only after explicit app confirmation."
-                    .to_string(),
+                format!("Every raw npx skills operation uses the reviewed exact package version {SKILLS_CLI_VERSION}, is treated as potentially network-backed, and runs only with explicit network permission and app confirmation."),
                 "Symlink distribution is the default; copy is opt-in.".to_string(),
             ],
         },
@@ -455,73 +461,81 @@ pub fn preview_install_with_manager(
 }
 
 pub fn apply_install_with_manager(
-    catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     params: &SkillManagerInstallParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let preview = build_install_preview(ctx, params)?;
+    ensure_manager_network_allowed(&preview)?;
     ensure_confirmed(
         &preview,
         params.confirmed,
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
-    let operation = preview.operation.clone();
-    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
-        validate_manager_preconditions(ctx, &preview)?;
-        let before = manager_selected_skill_snapshot(ctx, &preview)?;
-        let transaction = catalog.begin_immediate_transaction()?;
-        let output = match run_previewed_command(ctx, &preview) {
-            Ok(command) => command.output,
-            Err(error) => {
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        let mutation = (|| {
-            let scan = scan_all_catalog_report(ctx, catalog)?;
-            let updated_skills = catalog.list_skill_records()?;
-            let after = manager_selected_skill_snapshot(ctx, &preview)?;
-            verify_manager_operation(&preview, &updated_skills, &before, &after)?;
-            let readback = Some(manager_mutation_readback(
+    let (mutation_lock, catalog_storage) =
+        prepare_manager_mutation(app_data_dir, ctx, &preview, |_| {
+            validate_manager_preconditions(ctx, &preview)
+        })?;
+    let owner = mutation_lock.owner_fs();
+    let catalog = &catalog_storage;
+    let before = manager_selected_skill_snapshot(ctx, &preview)?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let output = match run_previewed_command(ctx, &preview) {
+        Ok(command) => command.output,
+        Err(error) => {
+            return Err(rollback_manager_catalog_transaction(
                 ctx,
                 &preview,
-                &updated_skills,
-                &[],
-                &[],
-            )?);
-            owner.validate_owner_path_binding()?;
-            Ok(SkillManagerMutationRecord {
-                preview: preview.clone(),
-                output: Some(output),
-                applied: true,
-                scanned_count: scan.scanned_count,
-                updated_skills,
-                readback,
-                follow_up: None,
-            })
-        })();
-        let record = match mutation {
-            Ok(record) => record,
-            Err(error) => {
-                let error = manager_post_process_error(ctx, &preview, error);
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        commit_manager_catalog_transaction(ctx, &preview, transaction)?;
-        validate_manager_owner_after_commit(ctx, &preview, owner)?;
-        Ok(record)
-    })
+                transaction,
+                error,
+            ));
+        }
+    };
+    let mutation = (|| {
+        let scan = scan_all_catalog_report(ctx, catalog)?;
+        let updated_skills = catalog.list_skill_records()?;
+        let updated_details = catalog.list_skill_details_by_ids(
+            &updated_skills
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let after = manager_selected_skill_snapshot(ctx, &preview)?;
+        verify_manager_operation(&preview, &updated_skills, &updated_details, &before, &after)?;
+        let readback = Some(manager_mutation_readback(
+            ctx,
+            &preview,
+            &updated_skills,
+            &[],
+            &[],
+        )?);
+        owner.validate_owner_path_binding()?;
+        Ok(SkillManagerMutationRecord {
+            preview: preview.clone(),
+            output: Some(output),
+            applied: true,
+            scanned_count: scan.scanned_count,
+            updated_skills,
+            readback,
+            follow_up: None,
+        })
+    })();
+    let record = match mutation {
+        Ok(record) => record,
+        Err(error) => {
+            let error = manager_post_process_error(ctx, &preview, error);
+            return Err(rollback_manager_catalog_transaction(
+                ctx,
+                &preview,
+                transaction,
+                error,
+            ));
+        }
+    };
+    commit_manager_catalog_transaction(ctx, &preview, transaction)?;
+    validate_manager_owner_after_commit(ctx, &preview, &owner)?;
+    Ok(record)
 }
 
 pub fn preview_remove_with_manager(
@@ -573,15 +587,21 @@ fn skill_manager_mutation_preview_record(
 }
 
 pub fn apply_remove_with_manager(
-    catalog: &Catalog,
+    preflight_catalog: Option<&Catalog>,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let mut preview = build_remove_preview(ctx, params)?;
+    ensure_manager_network_allowed(&preview)?;
     let cleanup_plan = if let Some(instance_id) = params.cleanup_local_instance_id.as_deref() {
+        let preflight_catalog = preflight_catalog.ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "full uninstall apply requires the read-only preview catalog".to_string(),
+            )
+        })?;
         bind_composite_local_delete(
-            catalog,
+            preflight_catalog,
             app_data_dir,
             ctx,
             params,
@@ -589,7 +609,7 @@ pub fn apply_remove_with_manager(
             &mut preview,
         )?;
         Some(composite_local_delete_plan(
-            catalog,
+            preflight_catalog,
             app_data_dir,
             ctx,
             params,
@@ -604,83 +624,93 @@ pub fn apply_remove_with_manager(
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
-    let operation = preview.operation.clone();
-    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
-        let locked_cleanup_plan =
-            if let Some(instance_id) = params.cleanup_local_instance_id.as_deref() {
-                let plan =
-                    composite_local_delete_plan(catalog, app_data_dir, ctx, params, instance_id)?;
-                if cleanup_plan.as_ref() != Some(&plan) {
-                    return Err(CommandError::StaleActionReference);
-                }
-                Some(plan)
-            } else {
-                None
-            };
-        validate_manager_preconditions_except(
-            ctx,
-            &preview,
-            locked_cleanup_plan
-                .as_ref()
-                .map(|plan| plan.skill_path.as_path()),
-        )?;
-        let before = manager_selected_skill_snapshot(ctx, &preview)?;
-        let transaction = catalog.begin_immediate_transaction()?;
-        let output = match run_previewed_command(ctx, &preview) {
-            Ok(command) => command.output,
-            Err(error) => {
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        let mut cleanup = None;
-        let mutation = (|| {
-            let scan = scan_all_catalog_report(ctx, catalog)?;
-            let mut updated_skills = catalog.list_skill_records()?;
-            let after = manager_selected_skill_snapshot(ctx, &preview)?;
-            verify_manager_operation(&preview, &updated_skills, &before, &after)?;
-            let mut extra_observations = Vec::new();
-            if let Some(plan) = locked_cleanup_plan.as_ref() {
-                let applied =
-                    apply_composite_local_delete(catalog, app_data_dir, owner, plan, &mut cleanup)?;
-                extra_observations.extend(applied.observations.clone());
-                cleanup = Some(applied);
-                updated_skills = catalog.list_skill_records()?;
-            }
-            let readback = Some(manager_mutation_readback(
+    let (mutation_lock, catalog_storage) =
+        prepare_manager_mutation(app_data_dir, ctx, &preview, |owner| {
+            validate_manager_preconditions_except(
                 ctx,
                 &preview,
-                &updated_skills,
-                &[],
-                &extra_observations,
-            )?);
-            owner.validate_owner_path_binding()?;
-            Ok(SkillManagerMutationRecord {
-                preview: preview.clone(),
-                output: Some(output),
-                applied: true,
-                scanned_count: scan.scanned_count,
-                updated_skills,
-                readback,
-                follow_up: None,
-            })
-        })();
-        let mut record = match mutation {
-            Ok(record) => record,
-            Err(error) => {
-                let error = manager_post_process_error(ctx, &preview, error);
-                rollback_composite_local_delete(transaction, owner, cleanup.as_mut(), &error)?;
-                return Err(error);
+                cleanup_plan.as_ref().map(|plan| plan.skill_path.as_path()),
+            )?;
+            if let Some(plan) = cleanup_plan.as_ref() {
+                validate_composite_local_delete_tree(owner, plan)?;
             }
-        };
-        match commit_composite_local_delete(transaction, owner, cleanup.as_mut()) {
-            CompositeLocalDeleteCommit::Committed => {}
-            CompositeLocalDeleteCommit::NotCommitted(error) => {
-                return Err(manager_partial_effect(
+            Ok(())
+        })?;
+    let owner = mutation_lock.owner_fs();
+    let catalog = &catalog_storage;
+    let locked_cleanup_plan = if let Some(instance_id) = params.cleanup_local_instance_id.as_deref()
+    {
+        let plan = composite_local_delete_plan(catalog, app_data_dir, ctx, params, instance_id)?;
+        if cleanup_plan.as_ref() != Some(&plan) {
+            return Err(CommandError::StaleActionReference);
+        }
+        Some(plan)
+    } else {
+        None
+    };
+    let before = manager_selected_skill_snapshot(ctx, &preview)?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let output = match run_previewed_command(ctx, &preview) {
+        Ok(command) => command.output,
+        Err(error) => {
+            return Err(rollback_manager_catalog_transaction(
+                ctx,
+                &preview,
+                transaction,
+                error,
+            ));
+        }
+    };
+    let mut cleanup = None;
+    let mutation = (|| {
+        let scan = scan_all_catalog_report(ctx, catalog)?;
+        let mut updated_skills = catalog.list_skill_records()?;
+        let updated_details = catalog.list_skill_details_by_ids(
+            &updated_skills
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let after = manager_selected_skill_snapshot(ctx, &preview)?;
+        verify_manager_operation(&preview, &updated_skills, &updated_details, &before, &after)?;
+        let mut extra_observations = Vec::new();
+        if let Some(plan) = locked_cleanup_plan.as_ref() {
+            let applied =
+                apply_composite_local_delete(catalog, app_data_dir, &owner, plan, &mut cleanup)?;
+            extra_observations.extend(applied.observations.clone());
+            cleanup = Some(applied);
+            updated_skills = catalog.list_skill_records()?;
+        }
+        let readback = Some(manager_mutation_readback(
+            ctx,
+            &preview,
+            &updated_skills,
+            &[],
+            &extra_observations,
+        )?);
+        owner.validate_owner_path_binding()?;
+        Ok(SkillManagerMutationRecord {
+            preview: preview.clone(),
+            output: Some(output),
+            applied: true,
+            scanned_count: scan.scanned_count,
+            updated_skills,
+            readback,
+            follow_up: None,
+        })
+    })();
+    let mut record = match mutation {
+        Ok(record) => record,
+        Err(error) => {
+            let error = manager_post_process_error(ctx, &preview, error);
+            rollback_composite_local_delete(transaction, &owner, cleanup.as_mut(), &error)?;
+            return Err(error);
+        }
+    };
+    match commit_composite_local_delete(transaction, &owner, cleanup.as_mut()) {
+        CompositeLocalDeleteCommit::Committed => {}
+        CompositeLocalDeleteCommit::NotCommitted(error) => {
+            return Err(manager_partial_effect(
                     ctx,
                     &preview,
                     "applied_unverified",
@@ -689,9 +719,9 @@ pub fn apply_remove_with_manager(
                         "catalog commit was rejected after manager execution and the local source was restored: {error}"
                     ),
                 ));
-            }
-            CompositeLocalDeleteCommit::OutcomeUnknown(error) => {
-                return Err(manager_partial_effect(
+        }
+        CompositeLocalDeleteCommit::OutcomeUnknown(error) => {
+            return Err(manager_partial_effect(
                     ctx,
                     &preview,
                     "outcome_unknown",
@@ -700,12 +730,12 @@ pub fn apply_remove_with_manager(
                         "catalog commit outcome is unknown after manager execution; private local restoration material was retained: {error}"
                     ),
                 ));
-            }
-            CompositeLocalDeleteCommit::RestorationFailed {
-                commit_error,
-                cleanup_error,
-            } => {
-                return Err(manager_partial_effect(
+        }
+        CompositeLocalDeleteCommit::RestorationFailed {
+            commit_error,
+            cleanup_error,
+        } => {
+            return Err(manager_partial_effect(
                     ctx,
                     &preview,
                     "outcome_unknown",
@@ -714,11 +744,11 @@ pub fn apply_remove_with_manager(
                         "catalog commit was rejected ({commit_error}); local source restoration failed ({cleanup_error})"
                     ),
                 ));
-            }
         }
-        if let Some(cleanup) = cleanup.as_mut() {
-            if cleanup.finish(owner).is_err() {
-                record.follow_up = Some(SkillManagerCleanupFollowUp {
+    }
+    if let Some(cleanup) = cleanup.as_mut() {
+        if cleanup.finish(&owner).is_err() {
+            record.follow_up = Some(SkillManagerCleanupFollowUp {
                     kind: "quarantine_cleanup".to_string(),
                     state: "delete_applied_cleanup_pending".to_string(),
                     cleanup_required: true,
@@ -726,11 +756,10 @@ pub fn apply_remove_with_manager(
                         "The agent links and local source were removed and verified, but private cleanup remains pending."
                             .to_string(),
                 });
-            }
         }
-        validate_manager_owner_after_commit(ctx, &preview, owner)?;
-        Ok(record)
-    })
+    }
+    validate_manager_owner_after_commit(ctx, &preview, &owner)?;
+    Ok(record)
 }
 
 pub fn preview_update_with_manager(
@@ -750,73 +779,81 @@ pub fn preview_update_with_manager(
 }
 
 pub fn apply_update_with_manager(
-    catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     params: &SkillManagerUpdateParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let preview = build_update_preview(ctx, params)?;
+    ensure_manager_network_allowed(&preview)?;
     ensure_confirmed(
         &preview,
         params.confirmed,
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
-    let operation = preview.operation.clone();
-    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
-        validate_manager_preconditions(ctx, &preview)?;
-        let before = manager_selected_skill_snapshot(ctx, &preview)?;
-        let transaction = catalog.begin_immediate_transaction()?;
-        let output = match run_previewed_command(ctx, &preview) {
-            Ok(command) => command.output,
-            Err(error) => {
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        let mutation = (|| {
-            let scan = scan_all_catalog_report(ctx, catalog)?;
-            let updated_skills = catalog.list_skill_records()?;
-            let after = manager_selected_skill_snapshot(ctx, &preview)?;
-            verify_manager_operation(&preview, &updated_skills, &before, &after)?;
-            let readback = Some(manager_mutation_readback(
+    let (mutation_lock, catalog_storage) =
+        prepare_manager_mutation(app_data_dir, ctx, &preview, |_| {
+            validate_manager_preconditions(ctx, &preview)
+        })?;
+    let owner = mutation_lock.owner_fs();
+    let catalog = &catalog_storage;
+    let before = manager_selected_skill_snapshot(ctx, &preview)?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let output = match run_previewed_command(ctx, &preview) {
+        Ok(command) => command.output,
+        Err(error) => {
+            return Err(rollback_manager_catalog_transaction(
                 ctx,
                 &preview,
-                &updated_skills,
-                &[],
-                &[],
-            )?);
-            owner.validate_owner_path_binding()?;
-            Ok(SkillManagerMutationRecord {
-                preview: preview.clone(),
-                output: Some(output),
-                applied: true,
-                scanned_count: scan.scanned_count,
-                updated_skills,
-                readback,
-                follow_up: None,
-            })
-        })();
-        let record = match mutation {
-            Ok(record) => record,
-            Err(error) => {
-                let error = manager_post_process_error(ctx, &preview, error);
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        commit_manager_catalog_transaction(ctx, &preview, transaction)?;
-        validate_manager_owner_after_commit(ctx, &preview, owner)?;
-        Ok(record)
-    })
+                transaction,
+                error,
+            ));
+        }
+    };
+    let mutation = (|| {
+        let scan = scan_all_catalog_report(ctx, catalog)?;
+        let updated_skills = catalog.list_skill_records()?;
+        let updated_details = catalog.list_skill_details_by_ids(
+            &updated_skills
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let after = manager_selected_skill_snapshot(ctx, &preview)?;
+        verify_manager_operation(&preview, &updated_skills, &updated_details, &before, &after)?;
+        let readback = Some(manager_mutation_readback(
+            ctx,
+            &preview,
+            &updated_skills,
+            &[],
+            &[],
+        )?);
+        owner.validate_owner_path_binding()?;
+        Ok(SkillManagerMutationRecord {
+            preview: preview.clone(),
+            output: Some(output),
+            applied: true,
+            scanned_count: scan.scanned_count,
+            updated_skills,
+            readback,
+            follow_up: None,
+        })
+    })();
+    let record = match mutation {
+        Ok(record) => record,
+        Err(error) => {
+            let error = manager_post_process_error(ctx, &preview, error);
+            return Err(rollback_manager_catalog_transaction(
+                ctx,
+                &preview,
+                transaction,
+                error,
+            ));
+        }
+    };
+    commit_manager_catalog_transaction(ctx, &preview, transaction)?;
+    validate_manager_owner_after_commit(ctx, &preview, &owner)?;
+    Ok(record)
 }
 
 pub fn preview_local_create_with_manager(
@@ -838,155 +875,157 @@ pub fn preview_local_create_with_manager(
 }
 
 pub fn apply_local_create_with_manager(
-    catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     params: &SkillManagerLocalCreateParams,
 ) -> Result<SkillManagerLocalCreateRecord, CommandError> {
     let preview = build_local_create_preview(app_data_dir, ctx, params)?;
+    ensure_manager_network_allowed(&preview)?;
     ensure_confirmed(
         &preview,
         params.confirmed,
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
-    let operation = preview.operation.clone();
-    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
-        validate_local_create_manager_preconditions(owner, &preview)?;
-        let transaction = catalog.begin_immediate_transaction()?;
-        let output = match run_previewed_command_with_owner_cwd(
-            ctx,
-            &preview,
-            Some((owner, Path::new("local-skill-library/sources"))),
-        ) {
-            Ok(command) => command.output,
-            Err(error) => {
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        let mutation = (|| {
-            verify_local_create_target_transition(owner, app_data_dir, &preview)?;
-            let source_path = local_create_source_path(app_data_dir, &params.name)?;
-            let source_relative = local_create_source_relative(&params.name)?;
-            let source_skill_relative = source_relative.join("SKILL.md");
-            let source_content = owner.read_regular_file_to_string(
-                &source_skill_relative,
-                MAX_MANAGER_TARGET_BYTES,
-                "local skill source",
-            )?;
-            let parsed_name = crate::tool_global_skill_name_from_content(
-                &source_content,
-                &safe_skill_name(&params.name)?,
-            );
-            if crate::canonical_skill_name_suggestion(&parsed_name)
-                != crate::canonical_skill_name_suggestion(&params.name)
-            {
-                return Err(CommandError::VerificationFailed);
-            }
-            let destination_relative =
-                local_create_staging_destination_relative(app_data_dir, &params.name)?;
-            owner.ensure_directory_all(Path::new("tool-global/skills"))?;
-            let temp_relative = PathBuf::from("tool-global/skills").join(format!(
-                ".{}.tmp-{}",
-                destination_relative
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("import"),
-                unix_timestamp_millis()
+    let (mutation_lock, catalog_storage) =
+        prepare_manager_mutation(app_data_dir, ctx, &preview, |owner| {
+            validate_local_create_manager_preconditions(owner, &preview)
+        })?;
+    let owner = mutation_lock.owner_fs();
+    let catalog = &catalog_storage;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let output = match run_previewed_command_with_owner_cwd(
+        ctx,
+        &preview,
+        Some((&owner, Path::new("local-skill-library/sources"))),
+    ) {
+        Ok(command) => command.output,
+        Err(error) => {
+            return Err(rollback_manager_catalog_transaction(
+                ctx,
+                &preview,
+                transaction,
+                error,
             ));
-            owner.copy_regular_tree(
-                &source_relative,
-                &temp_relative,
+        }
+    };
+    let mutation = (|| {
+        verify_local_create_target_transition(&owner, app_data_dir, &preview)?;
+        let source_path = local_create_source_path(app_data_dir, &params.name)?;
+        let source_relative = local_create_source_relative(&params.name)?;
+        let source_skill_relative = source_relative.join("SKILL.md");
+        let source_content = owner.read_regular_file_to_string(
+            &source_skill_relative,
+            MAX_MANAGER_TARGET_BYTES,
+            "local skill source",
+        )?;
+        let parsed_name = crate::tool_global_skill_name_from_content(
+            &source_content,
+            &safe_skill_name(&params.name)?,
+        );
+        if crate::canonical_skill_name_suggestion(&parsed_name)
+            != crate::canonical_skill_name_suggestion(&params.name)
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        let destination_relative =
+            local_create_staging_destination_relative(app_data_dir, &params.name)?;
+        owner.ensure_directory_all(Path::new("tool-global/skills"))?;
+        let temp_relative = PathBuf::from("tool-global/skills").join(format!(
+            ".{}.tmp-{}",
+            destination_relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("import"),
+            unix_timestamp_millis()
+        ));
+        owner.copy_regular_tree(
+            &source_relative,
+            &temp_relative,
+            MAX_MANAGER_TARGET_ENTRIES,
+            MAX_MANAGER_TARGET_BYTES,
+            MAX_MANAGER_TARGET_BYTES,
+            "local skill source",
+        )?;
+        if owner
+            .snapshot_regular_tree(
+                &destination_relative,
                 MAX_MANAGER_TARGET_ENTRIES,
                 MAX_MANAGER_TARGET_BYTES,
                 MAX_MANAGER_TARGET_BYTES,
-                "local skill source",
-            )?;
-            if owner
-                .snapshot_regular_tree(
-                    &destination_relative,
-                    MAX_MANAGER_TARGET_ENTRIES,
-                    MAX_MANAGER_TARGET_BYTES,
-                    MAX_MANAGER_TARGET_BYTES,
-                    "local skill staging destination",
-                )?
-                .present
-            {
-                owner.remove_tree_if_exists(&temp_relative)?;
-                return Err(CommandError::StaleActionReference);
-            }
-            if let Err(error) = owner.rename(&temp_relative, &destination_relative) {
-                owner.remove_tree_if_exists(&temp_relative)?;
-                return Err(error);
-            }
-            let staged_skill_relative = destination_relative.join("SKILL.md");
-            let staged_content = owner.read_regular_file_to_string(
-                &staged_skill_relative,
-                MAX_MANAGER_TARGET_BYTES,
-                "staged local skill",
-            )?;
-            if staged_content != source_content {
-                return Err(CommandError::VerificationFailed);
-            }
-            let staged_skill_path = app_data_dir.join(&staged_skill_relative);
-            let imported = crate::register_tool_global_staged_skill_content(
-                catalog,
+                "local skill staging destination",
+            )?
+            .present
+        {
+            owner.remove_tree_if_exists(&temp_relative)?;
+            return Err(CommandError::StaleActionReference);
+        }
+        if let Err(error) = owner.rename(&temp_relative, &destination_relative) {
+            owner.remove_tree_if_exists(&temp_relative)?;
+            return Err(error);
+        }
+        let staged_skill_relative = destination_relative.join("SKILL.md");
+        let staged_content = owner.read_regular_file_to_string(
+            &staged_skill_relative,
+            MAX_MANAGER_TARGET_BYTES,
+            "staged local skill",
+        )?;
+        if staged_content != source_content {
+            return Err(CommandError::VerificationFailed);
+        }
+        let staged_skill_path = app_data_dir.join(&staged_skill_relative);
+        let imported = crate::register_tool_global_staged_skill_content(
+            catalog,
+            ctx,
+            &source_path,
+            &staged_skill_path,
+            &staged_content,
+            unix_timestamp_millis(),
+        )?;
+        let records = catalog.list_skill_records()?;
+        verify_local_create_operation_content(
+            catalog,
+            &params.name,
+            &source_path,
+            &source_content,
+            &imported,
+            &staged_content,
+            &records,
+        )?;
+        let readback = Some(local_create_mutation_readback(
+            &owner,
+            app_data_dir,
+            &preview,
+            &records,
+            &source_relative,
+            &destination_relative,
+        )?);
+        owner.validate_owner_path_binding()?;
+        Ok(SkillManagerLocalCreateRecord {
+            preview: preview.clone(),
+            output: Some(output),
+            imported: Some(imported.imported),
+            instance_id: Some(imported.instance_id),
+            source_path: source_path.to_string_lossy().to_string(),
+            applied: true,
+            readback,
+        })
+    })();
+    let record = match mutation {
+        Ok(record) => record,
+        Err(error) => {
+            let error = manager_post_process_error(ctx, &preview, error);
+            return Err(rollback_manager_catalog_transaction(
                 ctx,
-                &source_path,
-                &staged_skill_path,
-                &staged_content,
-                unix_timestamp_millis(),
-            )?;
-            let records = catalog.list_skill_records()?;
-            verify_local_create_operation_content(
-                catalog,
-                &params.name,
-                &source_path,
-                &source_content,
-                &imported,
-                &staged_content,
-                &records,
-            )?;
-            let readback = Some(local_create_mutation_readback(
-                owner,
-                app_data_dir,
                 &preview,
-                &records,
-                &source_relative,
-                &destination_relative,
-            )?);
-            owner.validate_owner_path_binding()?;
-            Ok(SkillManagerLocalCreateRecord {
-                preview: preview.clone(),
-                output: Some(output),
-                imported: Some(imported.imported),
-                instance_id: Some(imported.instance_id),
-                source_path: source_path.to_string_lossy().to_string(),
-                applied: true,
-                readback,
-            })
-        })();
-        let record = match mutation {
-            Ok(record) => record,
-            Err(error) => {
-                let error = manager_post_process_error(ctx, &preview, error);
-                return Err(rollback_manager_catalog_transaction(
-                    ctx,
-                    &preview,
-                    transaction,
-                    error,
-                ));
-            }
-        };
-        commit_manager_catalog_transaction(ctx, &preview, transaction)?;
-        validate_manager_owner_after_commit(ctx, &preview, owner)?;
-        Ok(record)
-    })
+                transaction,
+                error,
+            ));
+        }
+    };
+    commit_manager_catalog_transaction(ctx, &preview, transaction)?;
+    validate_manager_owner_after_commit(ctx, &preview, &owner)?;
+    Ok(record)
 }
 
 pub fn delete_local_skill_with_manager(
@@ -1506,18 +1545,69 @@ pub fn validate_local_delete_confirmation(
     )
 }
 
-fn with_manager_mutation_lock<T>(
-    catalog: &Catalog,
+fn prepare_manager_mutation(
     app_data_dir: &Path,
-    operation: &str,
-    action: impl FnOnce(&crate::AppDataOwnerFs<'_>) -> Result<T, CommandError>,
-) -> Result<T, CommandError> {
-    let mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
-    run_manager_pre_execute_test_hook(operation);
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    validate_locked_preconditions: impl FnOnce(&crate::AppDataOwnerFs<'_>) -> Result<(), CommandError>,
+) -> Result<(crate::AppMutationLock, Catalog), CommandError> {
+    let mutation_lock = crate::mutation_lock::lock_or_create_app_mutations(app_data_dir)?;
+    run_manager_pre_execute_test_hook(&preview.operation);
     mutation_lock.validate_owner_path_binding()?;
-    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
     let owner = mutation_lock.owner_fs();
-    action(&owner)
+    validate_locked_preconditions(&owner)?;
+    let catalog = open_manager_catalog_while_locked(app_data_dir, ctx, preview, &mutation_lock)?;
+    Ok((mutation_lock, catalog))
+}
+
+fn open_manager_catalog_while_locked(
+    _app_data_dir: &Path,
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    mutation_lock: &crate::AppMutationLock,
+) -> Result<Catalog, CommandError> {
+    mutation_lock.validate_owner_path_binding()?;
+    #[cfg(unix)]
+    let catalog_result =
+        Catalog::open_anchored(mutation_lock.open_owner_directory()?).map_err(CommandError::from);
+    #[cfg(not(unix))]
+    let catalog_result =
+        Catalog::open(&_app_data_dir.join("catalog.sqlite")).map_err(CommandError::from);
+    let catalog = catalog_result
+        .map_err(|error| manager_catalog_initialization_partial(ctx, preview, "open", error))?;
+    catalog
+        .ensure_mutation_owner(mutation_lock.owner_directory())
+        .map_err(CommandError::from)
+        .map_err(|error| manager_catalog_initialization_partial(ctx, preview, "bind", error))?;
+    catalog
+        .init()
+        .map_err(CommandError::from)
+        .map_err(|error| {
+            manager_catalog_initialization_partial(ctx, preview, "initialize", error)
+        })?;
+    mutation_lock
+        .validate_owner_path_binding()
+        .map_err(|error| {
+            manager_catalog_initialization_partial(ctx, preview, "read back owner binding", error)
+        })?;
+    Ok(catalog)
+}
+
+fn manager_catalog_initialization_partial(
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    stage: &str,
+    error: CommandError,
+) -> CommandError {
+    manager_partial_effect(
+        ctx,
+        preview,
+        "outcome_unknown",
+        true,
+        &format!(
+            "catalog initialization could not {stage} durably after its local effect boundary: {error}"
+        ),
+    )
 }
 
 fn with_search_mutation_lock<T>(
@@ -1538,26 +1628,33 @@ fn with_search_mutation_lock<T>(
 }
 
 #[cfg(test)]
-struct ManagerPreExecuteTestHook {
+struct ManagerOperationTestHook {
     operation: String,
-    action: Box<dyn FnOnce() + Send>,
+    action: Box<dyn FnOnce()>,
 }
 
 #[cfg(test)]
+type ManagerTestHookSlot =
+    std::thread::LocalKey<std::cell::RefCell<Option<ManagerOperationTestHook>>>;
+
+#[cfg(test)]
 thread_local! {
-    static MANAGER_PRE_EXECUTE_TEST_HOOK: std::cell::RefCell<Option<ManagerPreExecuteTestHook>> =
+    static MANAGER_PRE_EXECUTE_TEST_HOOK: std::cell::RefCell<Option<ManagerOperationTestHook>> =
+        const { std::cell::RefCell::new(None) };
+    static MANAGER_CWD_PRE_SPAWN_TEST_HOOK: std::cell::RefCell<Option<ManagerOperationTestHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(crate) fn install_manager_pre_execute_test_hook(
+fn install_manager_operation_test_hook(
+    slot: &'static ManagerTestHookSlot,
     operation: impl Into<String>,
     action: impl FnOnce() + Send + 'static,
 ) {
-    MANAGER_PRE_EXECUTE_TEST_HOOK.with(|hook| {
-        let mut hook = hook.borrow_mut();
-        assert!(hook.is_none(), "manager pre-execute test hook already set");
-        *hook = Some(ManagerPreExecuteTestHook {
+    slot.with(|slot| {
+        let mut hook = slot.borrow_mut();
+        assert!(hook.is_none(), "manager operation test hook already set");
+        *hook = Some(ManagerOperationTestHook {
             operation: operation.into(),
             action: Box::new(action),
         });
@@ -1565,25 +1662,51 @@ pub(crate) fn install_manager_pre_execute_test_hook(
 }
 
 #[cfg(test)]
-fn run_manager_pre_execute_test_hook(operation: &str) {
-    let action = MANAGER_PRE_EXECUTE_TEST_HOOK.with(|hook| {
-        let mut hook = hook.borrow_mut();
-        if hook
-            .as_ref()
-            .is_some_and(|scheduled| scheduled.operation == operation)
-        {
-            hook.take().map(|scheduled| scheduled.action)
-        } else {
-            None
+fn run_manager_operation_test_hook(slot: &'static ManagerTestHookSlot, operation: &str) {
+    slot.with(|slot| {
+        let action = {
+            let mut hook = slot.borrow_mut();
+            hook.as_ref()
+                .is_some_and(|scheduled| scheduled.operation == operation)
+                .then(|| hook.take().expect("matched manager test hook").action)
+        };
+        if let Some(action) = action {
+            action();
         }
     });
-    if let Some(action) = action {
-        action();
-    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_manager_pre_execute_test_hook(
+    operation: impl Into<String>,
+    action: impl FnOnce() + Send + 'static,
+) {
+    install_manager_operation_test_hook(&MANAGER_PRE_EXECUTE_TEST_HOOK, operation, action);
+}
+
+#[cfg(test)]
+fn run_manager_pre_execute_test_hook(operation: &str) {
+    run_manager_operation_test_hook(&MANAGER_PRE_EXECUTE_TEST_HOOK, operation);
 }
 
 #[cfg(not(test))]
 fn run_manager_pre_execute_test_hook(_operation: &str) {}
+
+#[cfg(test)]
+pub(crate) fn install_manager_cwd_pre_spawn_test_hook(
+    operation: impl Into<String>,
+    action: impl FnOnce() + Send + 'static,
+) {
+    install_manager_operation_test_hook(&MANAGER_CWD_PRE_SPAWN_TEST_HOOK, operation, action);
+}
+
+#[cfg(test)]
+fn run_manager_cwd_pre_spawn_test_hook(operation: &str) {
+    run_manager_operation_test_hook(&MANAGER_CWD_PRE_SPAWN_TEST_HOOK, operation);
+}
+
+#[cfg(not(test))]
+fn run_manager_cwd_pre_spawn_test_hook(_operation: &str) {}
 
 fn validate_manager_owner_after_commit(
     ctx: &AdapterContext,
@@ -2029,7 +2152,7 @@ fn build_install_preview(
         ));
     }
     let cwd = manager_cwd(ctx, params.scope.as_deref())?;
-    let source_resolution = resolve_manager_source(source, &cwd)?;
+    resolve_manager_source(source, &cwd)?;
     let mut args = vec![
         SKILLS_CLI_BINARY.to_string(),
         "add".to_string(),
@@ -2059,21 +2182,20 @@ fn build_install_preview(
         args.push("--copy".to_string());
     }
     args.push("-y".to_string());
-    let network_required = matches!(source_resolution, ManagerSourceResolution::Network);
     command_preview(
         ctx,
         CommandPreviewDraft {
             operation: "install",
             args,
             cwd,
-            network_required,
-            network_allowed: params.network_allowed || !network_required,
+            network_required: true,
+            network_allowed: params.network_allowed,
             confirmed: params.confirmed,
             summary: format!(
                 "Install {source} for {} supported agent target(s).",
                 agents.len()
             ),
-            risks: install_risks(source, network_required),
+            risks: install_risks(source, true),
             source: Some(source.to_string()),
             skills: skill_names,
             accepted_revision: None,
@@ -2106,14 +2228,16 @@ fn build_remove_preview(
             operation: "remove",
             args,
             cwd: manager_cwd(ctx, params.scope.as_deref())?,
-            network_required: false,
-            network_allowed: true,
+            network_required: true,
+            network_allowed: params.network_allowed,
             confirmed: params.confirmed,
             summary: format!(
                 "Remove {skill} from {} supported agent target(s).",
                 agents.len()
             ),
             risks: vec![
+                "Launching npx may resolve or download the external skills package before removal."
+                    .to_string(),
                 "The manager may delete its canonical copy when no selected or managed agent still references it."
                     .to_string(),
             ],
@@ -2180,11 +2304,13 @@ fn build_local_create_preview(
             operation: "localCreate",
             args,
             cwd,
-            network_required: false,
-            network_allowed: true,
+            network_required: true,
+            network_allowed: params.network_allowed,
             confirmed: params.confirmed,
             summary: format!("Create a local skill template named {name}."),
             risks: vec![
+                "Launching npx may resolve or download the external skills package before creating the local template."
+                    .to_string(),
                 "After creation, the app imports the local source through the existing Local Skill Library parser and rule checks."
                     .to_string(),
             ],
@@ -2214,81 +2340,6 @@ struct SkillManagerCommandExecution {
     machine_stdout: String,
 }
 
-struct MachineStdoutCapture {
-    path: PathBuf,
-    file: File,
-}
-
-impl MachineStdoutCapture {
-    fn create() -> Result<Self, CommandError> {
-        let temp_dir = env::temp_dir();
-        for attempt in 0..32 {
-            let path = temp_dir.join(format!(
-                "agent-copilot-skill-manager-{}-{}-{attempt}.json",
-                std::process::id(),
-                unix_timestamp_millis()
-            ));
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-                    }
-                    return Ok(Self { path, file });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err(CommandError::SkillManagerCommandFailed(
-            "could not allocate a private installed-inventory capture".to_string(),
-        ))
-    }
-
-    fn child_stdout(&self) -> Result<Stdio, CommandError> {
-        Ok(Stdio::from(self.file.try_clone()?))
-    }
-
-    fn read(&mut self) -> Result<Vec<u8>, CommandError> {
-        if self.file.metadata()?.len() > MAX_MACHINE_OUTPUT_BYTES as u64 {
-            return Err(CommandError::SkillManagerCommandFailed(
-                "manager machine output exceeded the safe capture limit".to_string(),
-            ));
-        }
-        self.file.seek(SeekFrom::Start(0))?;
-        let mut output = Vec::new();
-        self.file
-            .by_ref()
-            .take((MAX_MACHINE_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut output)?;
-        if output.len() > MAX_MACHINE_OUTPUT_BYTES {
-            return Err(CommandError::SkillManagerCommandFailed(
-                "manager machine output exceeded the safe capture limit".to_string(),
-            ));
-        }
-        Ok(output)
-    }
-}
-
-impl Drop for MachineStdoutCapture {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-impl SkillManagerCommandOutput {
-    fn without_machine_stdout(mut self) -> Self {
-        self.stdout.clear();
-        self
-    }
-}
-
 pub(super) fn command_preview(
     ctx: &AdapterContext,
     draft: CommandPreviewDraft,
@@ -2309,9 +2360,19 @@ fn command_preview_with_app_data_owner(
     mut draft: CommandPreviewDraft,
     app_data_dir: Option<&Path>,
 ) -> Result<SkillManagerCommandPreview, CommandError> {
+    if app_data_dir.is_none() {
+        let _ = open_existing_manager_working_directory(&draft.cwd)?;
+    }
     let executable = npx_executable()?;
+    draft.risks.push(format!(
+        "This action executes the pinned external manager package {SKILLS_CLI_BINARY} through {} unsandboxed with the user's filesystem authority; it may read HOME files, and the executable/runtime is an explicit external-code trust boundary.",
+        redact_command_output(ctx, &executable.to_string_lossy())
+    ));
     let command = {
-        let mut command = vec![executable.to_string_lossy().to_string()];
+        let mut command = vec![
+            executable.to_string_lossy().to_string(),
+            "--yes".to_string(),
+        ];
         command.append(&mut draft.args);
         command
     };
@@ -2410,38 +2471,77 @@ fn run_previewed_command_with_owner_cwd(
         ));
     };
     let cwd = PathBuf::from(&preview.cwd);
-    let mut created_cwd_candidates = Vec::new();
     let mut created_owner_cwd_candidates = Vec::new();
-    let mut owner_cwd_directory = None;
-    if let Some((owner, relative_cwd)) = owner_cwd {
+    let working_directory = if let Some((owner, relative_cwd)) = owner_cwd {
         created_owner_cwd_candidates = owner.ensure_directory_all(relative_cwd)?;
-        owner_cwd_directory = Some(owner.open_directory_clone(relative_cwd)?);
+        owner.open_directory_clone(relative_cwd)?
     } else {
-        created_cwd_candidates = missing_manager_directories(&cwd)?;
+        open_existing_manager_working_directory(&cwd)?
+    };
+    let cleanup_created_cwd = || match owner_cwd {
+        Some((owner, _)) => owner.remove_empty_directories(&created_owner_cwd_candidates),
+        None => Ok(()),
+    };
+    run_manager_cwd_pre_spawn_test_hook(&preview.operation);
+    let cwd_binding = match owner_cwd {
+        Some((owner, relative_cwd)) => {
+            owner.validate_directory_binding(relative_cwd, &working_directory)
+        }
+        None => validate_manager_working_directory_binding(&cwd, &working_directory),
+    };
+    if let Err(error) = cwd_binding {
+        return match cleanup_created_cwd() {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(manager_partial_effect(
+                ctx,
+                preview,
+                "not_started",
+                true,
+                &format!(
+                    "working directory binding validation failed ({error}); cleanup failed ({cleanup_error})"
+                ),
+            )),
+        };
     }
-    if owner_cwd.is_none() {
-        if let Err(error) = fs::create_dir_all(&cwd) {
-            return match remove_created_manager_directories(&created_cwd_candidates) {
-                Ok(()) => Err(CommandError::SkillManagerCommandFailed(format!(
-                    "{} did not start: {}",
-                    preview.operation,
-                    redact_command_output(ctx, &error.to_string())
-                ))),
+    // Re-read every accepted executable, inventory, source, and target
+    // precondition at the last safe point before constructing/spawning the
+    // external command. The app mutation owner lock is still held by every
+    // writable caller while this check runs.
+    let final_precondition_check = if let Some((owner, _)) = owner_cwd {
+        validate_local_create_manager_preconditions(owner, preview)
+    } else {
+        validate_manager_preconditions(ctx, preview)
+    };
+    if let Err(error) = final_precondition_check {
+        return match cleanup_created_cwd() {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(manager_partial_effect(
+                ctx,
+                preview,
+                "not_started",
+                true,
+                &format!(
+                    "final manager precondition validation failed ({error}); cleanup failed ({cleanup_error})"
+                ),
+            )),
+        };
+    }
+    let working_directory_readback = match working_directory.try_clone() {
+        Ok(directory) => directory,
+        Err(error) => {
+            return match cleanup_created_cwd() {
+                Ok(()) => Err(error.into()),
                 Err(cleanup_error) => Err(manager_partial_effect(
                     ctx,
                     preview,
                     "not_started",
                     true,
                     &format!(
-                        "working directory creation failed ({error}); cleanup failed ({cleanup_error})"
+                        "working directory capability could not be retained ({error}); cleanup failed ({cleanup_error})"
                     ),
                 )),
-            };
+            }
         }
-    }
-    let cleanup_created_cwd = || match owner_cwd {
-        Some((owner, _)) => owner.remove_empty_directories(&created_owner_cwd_candidates),
-        None => remove_created_manager_directories(&created_cwd_candidates),
     };
     let mut command = Command::new(executable);
     command.env_clear();
@@ -2449,26 +2549,21 @@ fn run_previewed_command_with_owner_cwd(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(directory) = owner_cwd_directory {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
 
-            // `fchdir` is the only child setup step: the directory descriptor
-            // is already validated, no-follow, private, and owned by the
-            // mutation-lock capability.
-            unsafe {
-                command.pre_exec(move || {
-                    rustix::process::fchdir(&directory).map_err(std::io::Error::from)
-                });
-            }
+        // The manager inherits one already-opened, no-follow directory
+        // capability. It never resolves the previewed cwd path again.
+        unsafe {
+            command.pre_exec(move || {
+                rustix::process::fchdir(&working_directory).map_err(std::io::Error::from)
+            });
         }
-        #[cfg(not(unix))]
-        {
-            let _ = directory;
-            command.current_dir(&cwd);
-        }
-    } else {
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = working_directory;
         command.current_dir(&cwd);
     }
     for env_var in manager_command_env(ctx, executable) {
@@ -2477,46 +2572,128 @@ fn run_previewed_command_with_owner_cwd(
     // Node's console writes asynchronously when stdout is a pipe. The external
     // manager exits immediately after printing large JSON, which can drop
     // everything beyond the 64 KiB pipe buffer. A private regular file makes
-    // that write synchronous; it is bounded, read only after exit, and removed
-    // by RAII on every return path.
+    // that write synchronous; it is bounded, read only after exit, and
+    // explicitly finalized on every observed return path. Drop is only the
+    // final process-unwind fallback.
     let mut machine_capture = if matches!(preview.operation.as_str(), "search" | "listInstalled") {
-        Some(MachineStdoutCapture::create()?)
+        match MachineStdoutCapture::create() {
+            Ok(capture) => Some(capture),
+            Err(error) => {
+                return match cleanup_created_cwd() {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => Err(manager_partial_effect(
+                        ctx,
+                        preview,
+                        "not_started",
+                        true,
+                        &format!(
+                            "manager output capture creation failed ({error}); working-directory cleanup also failed ({cleanup_error})"
+                        ),
+                    )),
+                }
+            }
+        }
     } else {
         None
     };
-    if let Some(capture) = &machine_capture {
-        command.stdout(capture.child_stdout()?);
+    if let Some(capture) = &mut machine_capture {
+        let stdout = match capture.child_stdout() {
+            Ok(stdout) => stdout,
+            Err(error) => {
+                let original = finalize_machine_capture_after_error(
+                    ctx,
+                    preview,
+                    &mut machine_capture,
+                    "not_started",
+                    error,
+                );
+                return match cleanup_created_cwd() {
+                    Ok(()) => Err(original),
+                    Err(cleanup_error) => Err(manager_partial_effect(
+                        ctx,
+                        preview,
+                        "not_started",
+                        true,
+                        &format!(
+                            "manager output setup failed ({original}); working-directory cleanup also failed ({cleanup_error})"
+                        ),
+                    )),
+                };
+            }
+        };
+        command.stdout(stdout);
     }
     let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            return match cleanup_created_cwd() {
-                Ok(()) => Err(CommandError::SkillManagerCommandFailed(format!(
+            let original = finalize_machine_capture_after_error(
+                ctx,
+                preview,
+                &mut machine_capture,
+                "not_started",
+                CommandError::SkillManagerCommandFailed(format!(
                     "{} did not start: {}",
                     preview.operation,
                     redact_command_output(ctx, &error.to_string())
-                ))),
+                )),
+            );
+            return match cleanup_created_cwd() {
+                Ok(()) => Err(original),
                 Err(cleanup_error) => Err(manager_partial_effect(
                     ctx,
                     preview,
                     "not_started",
                     true,
                     &format!(
-                    "working directory creation failed ({error}); cleanup failed ({cleanup_error})"
-                ),
+                        "manager process start failed ({original}); working-directory cleanup also failed ({cleanup_error})"
+                    ),
                 )),
             };
         }
     };
-    let output = child.wait_with_output().map_err(|error| {
-        manager_partial_effect(
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => {
+            let original = manager_partial_effect(
+                ctx,
+                preview,
+                "applied_unverified",
+                true,
+                &format!("manager process completion could not be observed: {error}"),
+            );
+            return Err(finalize_machine_capture_after_error(
+                ctx,
+                preview,
+                &mut machine_capture,
+                "applied_unverified",
+                original,
+            ));
+        }
+    };
+    let post_process_cwd_binding = match owner_cwd {
+        Some((owner, relative_cwd)) => {
+            owner.validate_directory_binding(relative_cwd, &working_directory_readback)
+        }
+        None => validate_manager_working_directory_binding(&cwd, &working_directory_readback),
+    };
+    if let Err(error) = post_process_cwd_binding {
+        let original = manager_partial_effect(
             ctx,
             preview,
             "applied_unverified",
             true,
-            &format!("manager process completion could not be observed: {error}"),
-        )
-    })?;
+            &format!(
+                "manager working directory binding changed while the process was running: {error}"
+            ),
+        );
+        return Err(finalize_machine_capture_after_error(
+            ctx,
+            preview,
+            &mut machine_capture,
+            "applied_unverified",
+            original,
+        ));
+    }
     let machine_stdout = match &mut machine_capture {
         Some(capture) => capture.read().map_err(|error| {
             manager_partial_effect(
@@ -2572,34 +2749,28 @@ fn run_previewed_command_with_owner_cwd(
     })
 }
 
-fn missing_manager_directories(path: &Path) -> Result<Vec<PathBuf>, CommandError> {
-    let mut missing = Vec::new();
-    let mut current = path;
-    while !current.exists() {
-        missing.push(current.to_path_buf());
-        current = current.parent().ok_or_else(|| {
-            CommandError::UnsafeConfigPath(
-                "manager working directory has no existing owner ancestor".to_string(),
-            )
-        })?;
+fn finalize_machine_capture_after_error(
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    capture: &mut Option<MachineStdoutCapture>,
+    state: &'static str,
+    original: CommandError,
+) -> CommandError {
+    let Some(capture) = capture.as_mut() else {
+        return original;
+    };
+    match capture.finalize() {
+        Ok(()) => original,
+        Err(cleanup_error) => manager_partial_effect(
+            ctx,
+            preview,
+            state,
+            true,
+            &format!(
+                "manager operation failed ({original}); private output cleanup also failed ({cleanup_error})"
+            ),
+        ),
     }
-    if fs::symlink_metadata(current)?.file_type().is_symlink() {
-        return Err(CommandError::UnsafeConfigPath(
-            "manager working directory owner cannot be a symlink".to_string(),
-        ));
-    }
-    Ok(missing)
-}
-
-fn remove_created_manager_directories(paths: &[PathBuf]) -> Result<(), CommandError> {
-    for path in paths {
-        match fs::remove_dir(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
 }
 
 fn manager_partial_effect(
@@ -2662,6 +2833,18 @@ fn ensure_confirmed(
         confirmed,
     };
     ensure_action_confirmed(&binding, Some(&confirmation))
+}
+
+fn ensure_manager_network_allowed(
+    preview: &SkillManagerCommandPreview,
+) -> Result<(), CommandError> {
+    if preview.network_required && !preview.network_allowed {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "{} requires network_allowed=true before any manager mutation state is created",
+            preview.operation
+        )));
+    }
+    Ok(())
 }
 
 pub fn validate_skill_manager_confirmation(
@@ -2779,6 +2962,11 @@ struct ManagerSelectedSkillState {
     canonical_skill_file: Option<PathBuf>,
     source_identity: Option<String>,
     content_fingerprint: Option<String>,
+    definition_id: Option<String>,
+    semantic_name: Option<String>,
+    frontmatter_raw: Option<String>,
+    body: Option<String>,
+    catalog_fingerprint: Option<String>,
 }
 
 fn manager_selected_skill_snapshot(
@@ -2878,6 +3066,7 @@ fn manager_selected_skill_state(
             })?
             .to_string_lossy()
             .to_string();
+        let catalog_fingerprint = super::content_fingerprint(&parsed.frontmatter_raw, &parsed.body);
         matching.push((
             canonical_skill_file,
             action_source_revision(
@@ -2885,13 +3074,24 @@ fn manager_selected_skill_state(
                 &[("canonical_source", &canonical_source)],
             )?,
             format!("sha256:{:x}", Sha256::digest(content.as_bytes())),
+            parsed.name,
+            parsed.frontmatter_raw,
+            parsed.body,
+            catalog_fingerprint,
         ));
     }
     if matching.len() > 1 {
         return Err(CommandError::VerificationFailed);
     }
-    let Some((canonical_skill_file, source_identity, content_fingerprint)) =
-        matching.into_iter().next()
+    let Some((
+        canonical_skill_file,
+        source_identity,
+        content_fingerprint,
+        semantic_name,
+        frontmatter_raw,
+        body,
+        catalog_fingerprint,
+    )) = matching.into_iter().next()
     else {
         return Ok(ManagerSelectedSkillState {
             agent,
@@ -2901,6 +3101,11 @@ fn manager_selected_skill_state(
             canonical_skill_file: None,
             source_identity: None,
             content_fingerprint: None,
+            definition_id: None,
+            semantic_name: None,
+            frontmatter_raw: None,
+            body: None,
+            catalog_fingerprint: None,
         });
     };
     Ok(ManagerSelectedSkillState {
@@ -2911,12 +3116,18 @@ fn manager_selected_skill_state(
         canonical_skill_file: Some(canonical_skill_file),
         source_identity: Some(source_identity),
         content_fingerprint: Some(content_fingerprint),
+        definition_id: Some(semantic_name.clone()),
+        semantic_name: Some(semantic_name),
+        frontmatter_raw: Some(frontmatter_raw),
+        body: Some(body),
+        catalog_fingerprint: Some(catalog_fingerprint),
     })
 }
 
 fn verify_manager_operation(
     preview: &SkillManagerCommandPreview,
     records: &[SkillRecord],
+    details: &[SkillDetailRecord],
     before: &[ManagerSelectedSkillState],
     after: &[ManagerSelectedSkillState],
 ) -> Result<(), CommandError> {
@@ -2937,20 +3148,55 @@ fn verify_manager_operation(
         })
     };
     let catalog_proves = |state: &ManagerSelectedSkillState, should_exist: bool| {
-        let matching = records.iter().any(|record| {
-            record.agent == state.agent.as_str()
-                && record.scope == scope.as_str()
-                && record.name.eq_ignore_ascii_case(&state.skill)
-                && record.state != "missing"
-                && record.state != "broken"
-                && state.canonical_skill_file.as_ref().is_some_and(|path| {
-                    record
-                        .path
-                        .canonicalize()
-                        .is_ok_and(|record_path| record_path == *path)
-                })
-        });
-        matching == should_exist
+        let matching = records
+            .iter()
+            .filter(|record| {
+                record.agent == state.agent.as_str()
+                    && record.scope == scope.as_str()
+                    && record.name.eq_ignore_ascii_case(&state.skill)
+                    && record.state != "missing"
+                    && record.state != "broken"
+                    && state.canonical_skill_file.as_ref().is_some_and(|path| {
+                        record
+                            .path
+                            .canonicalize()
+                            .is_ok_and(|record_path| record_path == *path)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if !should_exist {
+            return matching.is_empty();
+        }
+        let [record] = matching.as_slice() else {
+            return false;
+        };
+        let Some(detail) = details.iter().find(|detail| detail.id == record.id) else {
+            return false;
+        };
+        detail.agent == record.agent
+            && detail.scope == record.scope
+            && detail.path == record.path
+            && detail.definition_id == record.definition_id
+            && state
+                .definition_id
+                .as_ref()
+                .is_some_and(|expected| expected == &detail.definition_id)
+            && state
+                .semantic_name
+                .as_ref()
+                .is_some_and(|expected| expected == &detail.name)
+            && state
+                .frontmatter_raw
+                .as_ref()
+                .is_some_and(|expected| expected == &detail.frontmatter_raw)
+            && state
+                .body
+                .as_ref()
+                .is_some_and(|expected| expected == &detail.body)
+            && state
+                .catalog_fingerprint
+                .as_ref()
+                .is_some_and(|expected| expected == &detail.fingerprint)
     };
 
     match preview.operation.as_str() {
@@ -2958,7 +3204,7 @@ fn verify_manager_operation(
             if preview.skills.is_empty() || before.is_empty() {
                 return Err(CommandError::VerificationFailed);
             }
-            verify_manager_install_lock_source(preview)?;
+            verify_manager_lock_source_bindings(preview, after, preview.source.as_deref())?;
             for prior in before {
                 let current = after_for(prior).ok_or(CommandError::VerificationFailed)?;
                 if !current.exists
@@ -2989,6 +3235,7 @@ fn verify_manager_operation(
             if preview.skills.is_empty() || linked_before.is_empty() {
                 return Err(CommandError::VerificationFailed);
             }
+            verify_manager_lock_source_bindings(preview, after, None)?;
             for prior in linked_before {
                 let current = after_for(prior).ok_or(CommandError::VerificationFailed)?;
                 if !current.exists
@@ -3007,15 +3254,15 @@ fn verify_manager_operation(
     Ok(())
 }
 
-fn verify_manager_install_lock_source(
+fn verify_manager_lock_source_bindings(
     preview: &SkillManagerCommandPreview,
+    after: &[ManagerSelectedSkillState],
+    requested_source: Option<&str>,
 ) -> Result<(), CommandError> {
-    let requested_source = preview
-        .source
-        .as_deref()
-        .ok_or(CommandError::VerificationFailed)?;
     let cwd = Path::new(&preview.cwd);
-    let expected_identity = normalized_manager_source_identity(requested_source, cwd)?;
+    let expected_requested_identity = requested_source
+        .map(|source| normalized_manager_source_identity(source, cwd))
+        .transpose()?;
     let global = preview
         .command
         .iter()
@@ -3035,6 +3282,14 @@ fn verify_manager_install_lock_source(
     }
     let lock: ManagerLockFile = serde_json::from_slice(&fs::read(&lock_path)?)
         .map_err(|_| CommandError::VerificationFailed)?;
+    let shared_root = if global {
+        lock_path
+            .parent()
+            .ok_or(CommandError::VerificationFailed)?
+            .join("skills")
+    } else {
+        cwd.join(".agents/skills")
+    };
     for skill in &preview.skills {
         let entry = lock
             .skills
@@ -3050,7 +3305,57 @@ fn verify_manager_install_lock_source(
             .source
             .as_deref()
             .ok_or(CommandError::VerificationFailed)?;
-        if normalized_manager_source_identity(installed_source, cwd)? != expected_identity {
+        let installed_source_identity = normalized_manager_source_identity(installed_source, cwd)?;
+        if expected_requested_identity
+            .as_ref()
+            .is_some_and(|expected| expected != &installed_source_identity)
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        let package_skill_path = entry
+            .skill_path
+            .as_deref()
+            .ok_or(CommandError::VerificationFailed)?;
+        let package_skill_path = Path::new(package_skill_path);
+        if package_skill_path.is_absolute()
+            || package_skill_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                != Some("SKILL.md")
+            || package_skill_path.components().any(|component| {
+                !matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        let expected_skill_file = shared_root
+            .join(safe_skill_name(skill)?)
+            .join("SKILL.md")
+            .canonicalize()
+            .map_err(|_| CommandError::VerificationFailed)?;
+        let expected_source = expected_skill_file
+            .parent()
+            .ok_or(CommandError::VerificationFailed)?
+            .to_string_lossy()
+            .to_string();
+        let expected_source_identity = action_source_revision(
+            "manager.skill.source-identity",
+            &[("canonical_source", &expected_source)],
+        )?;
+        let selected = after
+            .iter()
+            .filter(|state| state.skill.eq_ignore_ascii_case(skill))
+            .collect::<Vec<_>>();
+        if selected.is_empty()
+            || selected.iter().any(|state| {
+                !state.exists
+                    || state.canonical_skill_file.as_ref() != Some(&expected_skill_file)
+                    || state.source_identity.as_ref() != Some(&expected_source_identity)
+            })
+        {
             return Err(CommandError::VerificationFailed);
         }
     }
@@ -3598,7 +3903,32 @@ fn validate_local_create_manager_preconditions(
             local_create_staging_destination_relative(app_data_dir, &name)?,
         ),
     ];
-    if preview.preconditions.len() != targets.len() {
+    let executable = preview.command.first().map(Path::new).ok_or_else(|| {
+        CommandError::MismatchedActionReference(
+            "local create action has no manager executable".to_string(),
+        )
+    })?;
+    let executable_precondition = preview
+        .preconditions
+        .iter()
+        .find(|precondition| {
+            precondition.kind == ActionPreconditionKind::SourceFile
+                && Path::new(&precondition.target_id) == executable
+        })
+        .ok_or_else(|| {
+            CommandError::MismatchedActionReference(
+                "local create action does not bind its manager executable".to_string(),
+            )
+        })?;
+    if manager_target_revision(executable)? != executable_precondition.expected_revision {
+        return Err(CommandError::StaleActionReference);
+    }
+    let target_precondition_count = preview
+        .preconditions
+        .iter()
+        .filter(|precondition| precondition.kind == ActionPreconditionKind::TargetFile)
+        .count();
+    if target_precondition_count != targets.len() {
         return Err(CommandError::MismatchedActionReference(
             "local create action must bind both app-owned target trees".to_string(),
         ));
@@ -3873,14 +4203,12 @@ fn manager_action_binding(
             expected_revision,
         });
     }
-    if discovery {
-        let executable = PathBuf::from(&command[0]);
-        preconditions.push(ActionPrecondition {
-            kind: ActionPreconditionKind::SourceFile,
-            target_id: executable.to_string_lossy().to_string(),
-            expected_revision: manager_target_revision(&executable)?,
-        });
-    }
+    let executable = PathBuf::from(&command[0]);
+    preconditions.push(ActionPrecondition {
+        kind: ActionPreconditionKind::SourceFile,
+        target_id: executable.to_string_lossy().to_string(),
+        expected_revision: manager_target_revision(&executable)?,
+    });
     if let Some(source) = manager_source_precondition(command, cwd)? {
         preconditions.push(source);
     }
@@ -4027,278 +4355,6 @@ fn manager_action_agents(command: &[String]) -> Vec<AgentId> {
     agents
 }
 
-fn manager_env(ctx: &AdapterContext) -> Vec<SkillManagerEnvPreview> {
-    vec![
-        env_preview("HOME", &ctx.user_home.to_string_lossy()),
-        env_preview("LANG", "en_US.UTF-8"),
-        env_preview("LC_ALL", "en_US.UTF-8"),
-        env_preview("DISABLE_TELEMETRY", "1"),
-        env_preview("DO_NOT_TRACK", "1"),
-        env_preview("CI", "1"),
-        env_preview("npm_config_audit", "false"),
-        env_preview("npm_config_fund", "false"),
-        env_preview("npm_config_update_notifier", "false"),
-    ]
-}
-
-fn manager_command_env(ctx: &AdapterContext, executable: &str) -> Vec<SkillManagerEnvPreview> {
-    let mut env_vars = manager_env(ctx);
-    env_vars.push(env_preview(
-        "PATH",
-        &manager_command_path(ctx, Path::new(executable)),
-    ));
-    env_vars
-}
-
-fn manager_command_path(ctx: &AdapterContext, executable: &Path) -> String {
-    let path_var = env::var_os("PATH");
-    let fallback_dirs = fallback_binary_search_dirs_for_home(Some(&ctx.user_home));
-    manager_command_path_from_sources(Some(executable), path_var.as_deref(), &fallback_dirs)
-}
-
-fn manager_command_path_from_sources(
-    executable: Option<&Path>,
-    path_var: Option<&std::ffi::OsStr>,
-    fallback_dirs: &[PathBuf],
-) -> String {
-    let mut dirs = Vec::new();
-    let mut seen = BTreeSet::new();
-
-    if let Some(parent) = executable
-        .and_then(Path::parent)
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        push_path_dir(&mut dirs, &mut seen, parent.to_path_buf());
-    }
-    for dir in path_var.into_iter().flat_map(env::split_paths) {
-        push_path_dir(&mut dirs, &mut seen, dir);
-    }
-    for dir in fallback_dirs {
-        push_path_dir(&mut dirs, &mut seen, dir.clone());
-    }
-
-    env::join_paths(&dirs)
-        .ok()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin"))
-        .to_string_lossy()
-        .to_string()
-}
-
-fn push_path_dir(dirs: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, dir: PathBuf) {
-    if dir.as_os_str().is_empty() {
-        return;
-    }
-    if seen.insert(dir.clone()) {
-        dirs.push(dir);
-    }
-}
-
-fn env_preview(key: &str, value: &str) -> SkillManagerEnvPreview {
-    SkillManagerEnvPreview {
-        key: key.to_string(),
-        value: value.to_string(),
-    }
-}
-
-fn npx_executable() -> Result<PathBuf, CommandError> {
-    resolve_binary(env::var_os("SKILLS_COPILOT_NPX_PATH"), NPX_BINARY).ok_or_else(|| {
-        CommandError::SkillManagerUnavailable(
-            "npx executable was not found; install Node/npm or set SKILLS_COPILOT_NPX_PATH"
-                .to_string(),
-        )
-    })
-}
-
-fn resolve_binary(override_path: Option<std::ffi::OsString>, binary_name: &str) -> Option<PathBuf> {
-    let path_var = env::var_os("PATH");
-    let fallback_dirs = fallback_binary_search_dirs();
-    resolve_binary_from_sources(
-        override_path,
-        binary_name,
-        path_var.as_deref(),
-        &fallback_dirs,
-    )
-}
-
-fn resolve_binary_from_sources(
-    override_path: Option<std::ffi::OsString>,
-    binary_name: &str,
-    path_var: Option<&std::ffi::OsStr>,
-    fallback_dirs: &[PathBuf],
-) -> Option<PathBuf> {
-    if let Some(path) = override_path
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        return Some(path);
-    }
-
-    path_var
-        .into_iter()
-        .flat_map(env::split_paths)
-        .chain(fallback_dirs.iter().cloned())
-        .map(|dir| dir.join(binary_name))
-        .find(|candidate| candidate.is_file())
-}
-
-fn fallback_binary_search_dirs() -> Vec<PathBuf> {
-    let home = env::var_os("HOME").map(PathBuf::from);
-    fallback_binary_search_dirs_for_home(home.as_deref())
-}
-
-fn fallback_binary_search_dirs_for_home(home: Option<&Path>) -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/opt/homebrew/sbin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/local/sbin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-        PathBuf::from("/usr/sbin"),
-        PathBuf::from("/sbin"),
-    ];
-
-    if let Some(home) = home.filter(|path| !path.as_os_str().is_empty()) {
-        dirs.extend([
-            home.join(".volta/bin"),
-            home.join(".asdf/shims"),
-            home.join(".local/bin"),
-            home.join(".npm-global/bin"),
-            home.join(".bun/bin"),
-        ]);
-        dirs.extend(nvm_node_bin_dirs(home));
-    }
-
-    dirs
-}
-
-fn nvm_node_bin_dirs(home: &Path) -> Vec<PathBuf> {
-    let versions_dir = home.join(".nvm/versions/node");
-    let mut dirs = fs::read_dir(versions_dir)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path().join("bin"))
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    dirs.sort();
-    dirs
-}
-
-fn default_agent_targets() -> Vec<String> {
-    SUPPORTED_MANAGER_AGENTS
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn normalize_manager_agents(agents: &[String]) -> Result<Vec<String>, CommandError> {
-    let source = if agents.is_empty() {
-        default_agent_targets()
-    } else {
-        agents
-            .iter()
-            .map(|agent| manager_agent_alias(agent))
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let mut seen = BTreeSet::new();
-    Ok(source
-        .into_iter()
-        .filter(|agent| seen.insert(agent.clone()))
-        .collect())
-}
-
-fn required_manager_agents(agents: &[String]) -> Result<Vec<String>, CommandError> {
-    if agents.is_empty() {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "skill manager mutation requires at least one explicit agent target".to_string(),
-        ));
-    }
-    normalize_manager_agents(agents)
-}
-
-fn manager_agent_alias(agent: &str) -> Result<String, CommandError> {
-    let normalized = agent.trim().to_ascii_lowercase().replace([' ', '_'], "-");
-    let mapped = match normalized.as_str() {
-        "claude" | "claude-code" => "claude-code",
-        "pi" => "pi",
-        "opencode" | "open-code" => "opencode",
-        "codex" => "codex",
-        "hermes" | "hermes-agent" => "hermes-agent",
-        "openclaw" | "open-claw" => "openclaw",
-        _ => {
-            return Err(CommandError::InvalidSkillManagerRequest(format!(
-                "unsupported skill manager agent target: {agent}"
-            )))
-        }
-    };
-    Ok(mapped.to_string())
-}
-
-fn normalized_skill_names(skills: &[String]) -> Result<Vec<String>, CommandError> {
-    let mut names = Vec::new();
-    for skill in skills {
-        let trimmed = skill.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.contains('\0') {
-            return Err(CommandError::InvalidSkillManagerRequest(
-                "skill name contains NUL".to_string(),
-            ));
-        }
-        names.push(trimmed.to_string());
-    }
-    Ok(names)
-}
-
-fn append_agent_args(args: &mut Vec<String>, agents: &[String]) {
-    for agent in agents {
-        args.push("--agent".to_string());
-        args.push(agent.clone());
-    }
-}
-
-fn append_scope_args(args: &mut Vec<String>, scope: Option<&str>) -> Result<(), CommandError> {
-    match normalize_manager_scope(scope)?.as_deref() {
-        Some("global") => args.push("--global".to_string()),
-        Some("project") | None => {}
-        Some(_) => unreachable!(),
-    }
-    Ok(())
-}
-
-fn normalize_manager_scope(scope: Option<&str>) -> Result<Option<String>, CommandError> {
-    match scope.map(str::trim).filter(|scope| !scope.is_empty()) {
-        None => Ok(None),
-        Some(scope)
-            if scope.eq_ignore_ascii_case("project") || scope == Scope::AgentProject.as_str() =>
-        {
-            Ok(Some("project".to_string()))
-        }
-        Some(scope)
-            if scope.eq_ignore_ascii_case("global") || scope == Scope::AgentGlobal.as_str() =>
-        {
-            Ok(Some("global".to_string()))
-        }
-        Some(other) => Err(CommandError::InvalidSkillManagerRequest(format!(
-            "unsupported skill manager scope: {other}"
-        ))),
-    }
-}
-
-fn manager_cwd(ctx: &AdapterContext, scope: Option<&str>) -> Result<PathBuf, CommandError> {
-    if normalize_manager_scope(scope)?.as_deref() == Some("global") {
-        return Ok(ctx.user_home.clone());
-    }
-    Ok(ctx
-        .project_cwd
-        .clone()
-        .or_else(|| ctx.project_root.clone())
-        .unwrap_or_else(|| ctx.user_home.clone()))
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum ManagerSourceResolution {
     Local(PathBuf),
@@ -4428,7 +4484,7 @@ fn install_risks(source: &str, network_required: bool) -> Vec<String> {
     ];
     if network_required {
         risks.push(format!(
-            "Source {source} may require network access through npx skills."
+            "Source {source} may require network access through npx {SKILLS_CLI_BINARY}."
         ));
     }
     risks

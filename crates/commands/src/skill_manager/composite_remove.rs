@@ -218,6 +218,18 @@ pub(super) fn composite_local_delete_plan(
     })
 }
 
+pub(super) fn validate_composite_local_delete_tree(
+    owner: &crate::AppDataOwnerFs<'_>,
+    plan: &CompositeLocalDeletePlan,
+) -> Result<(), CommandError> {
+    let current =
+        local_delete_tree_revision_owner(owner, &plan.skill_directory_relative, &plan.skill_path)?;
+    if current != plan.tree_revision {
+        return Err(CommandError::StaleActionReference);
+    }
+    Ok(())
+}
+
 pub(super) struct CompositeLocalDeleteMutation {
     quarantine_relative: PathBuf,
     original_directory_relative: PathBuf,
@@ -555,6 +567,7 @@ mod tests {
             agents: vec!["codex".to_string()],
             scope: Some("global".to_string()),
             cleanup_local_instance_id: Some("tool-owned-local".to_string()),
+            network_allowed: true,
             confirmed: false,
             preview_token: None,
             action_reference: None,

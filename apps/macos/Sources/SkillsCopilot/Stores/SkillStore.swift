@@ -1423,7 +1423,7 @@ final class SkillStore: ObservableObject {
             agents: agents,
             scope: scope,
             distribution: nil,
-            networkAllowed: false,
+            networkAllowed: true,
             cleanupLocalInstanceID: cleanupLocalInstanceID
         )
         await previewSkillManagerMutation(inputs: inputs) { [service] in

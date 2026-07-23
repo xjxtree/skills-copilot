@@ -23,7 +23,7 @@ pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
             })
         }
         "skillManager.previewRemove" | "skillManager.applyRemove" => {
-            json!({ "skill": "frontend-design", "agents": ["claude-code", "codex"], "scope": "project", "confirmed": false })
+            json!({ "skill": "frontend-design", "agents": ["claude-code", "codex"], "scope": "project", "network_allowed": true, "confirmed": false })
         }
         "skillManager.previewUpdate" | "skillManager.applyUpdate" => {
             json!({
@@ -34,7 +34,7 @@ pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
             })
         }
         "skillManager.previewLocalCreate" | "skillManager.applyLocalCreate" => {
-            json!({ "name": "dispatch-local-skill", "confirmed": false })
+            json!({ "name": "dispatch-local-skill", "network_allowed": true, "confirmed": false })
         }
         "skillManager.deleteLocal" => {
             json!({ "instance_id": "missing-skill", "confirmed": false })

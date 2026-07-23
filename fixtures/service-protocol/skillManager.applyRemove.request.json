@@ -12,6 +12,7 @@
       "openclaw"
     ],
     "scope": "project",
+    "network_allowed": true,
     "confirmed": true,
     "preview_token": "action-preview:v1:hmac-sha256:2323232323232323232323232323232323232323232323232323232323232323",
     "action_reference": {

@@ -7,23 +7,51 @@
         "id": "action:manager_local_create:4141414141414141414141414141414141414141414141414141414141414141",
         "kind": "manager_local_create",
         "intent": "manager_local_create",
-        "target": {"kind": "skill", "id": "manager:local-create-fixture"},
+        "target": {
+          "kind": "skill",
+          "id": "manager:local-create-fixture"
+        },
         "project_id": "project-0123456789abcdef",
-        "impacts": ["app_local_data", "skill_files"],
+        "impacts": [
+          "app_local_data",
+          "skill_files"
+        ],
         "preview_method": "skillManager.previewLocalCreate",
         "apply_method": "skillManager.applyLocalCreate",
         "source_revision": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
         "confirmation_required": true,
-        "network": "none",
-        "readback": ["catalog_skills", "skill_files"],
-        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+        "network": "required",
+        "readback": [
+          "catalog_skills",
+          "skill_files"
+        ],
+        "evidence_refs": [
+          "coverage:claude-code",
+          "coverage:codex",
+          "coverage:opencode",
+          "coverage:pi",
+          "coverage:hermes",
+          "coverage:openclaw"
+        ]
       },
-      "preconditions": [{"kind": "target_file", "target_id": "/tmp/skills-copilot-app/local-skill-library/sources", "expected_revision": "sha256:4242424242424242424242424242424242424242424242424242424242424242"}],
+      "preconditions": [
+        {
+          "kind": "target_file",
+          "target_id": "/tmp/skills-copilot-app/local-skill-library/sources",
+          "expected_revision": "sha256:4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        {
+          "kind": "source_file",
+          "target_id": "/usr/local/bin/npx",
+          "expected_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      ],
       "tool_id": "npx-skills",
       "operation": "localCreate",
       "command": [
         "/usr/local/bin/npx",
-        "skills",
+        "--yes",
+        "skills@1.5.20",
         "init",
         "local-review-helper"
       ],
@@ -66,21 +94,77 @@
           "value": "false"
         },
         {
+          "key": "npm_config_ignore_scripts",
+          "value": "true"
+        },
+        {
+          "key": "npm_config_registry",
+          "value": "https://registry.npmjs.org/"
+        },
+        {
+          "key": "npm_config_userconfig",
+          "value": "/dev/null"
+        },
+        {
+          "key": "npm_config_globalconfig",
+          "value": "/.agent-copilot-no-global-npmrc"
+        },
+        {
+          "key": "npm_config_cache",
+          "value": "/tmp/skills-copilot-home/Library/Application Support/dev.agent-copilot.native/external-manager/npm-cache"
+        },
+        {
+          "key": "GIT_CONFIG_NOSYSTEM",
+          "value": "1"
+        },
+        {
+          "key": "GIT_CONFIG_GLOBAL",
+          "value": "/dev/null"
+        },
+        {
+          "key": "GIT_TERMINAL_PROMPT",
+          "value": "0"
+        },
+        {
+          "key": "GCM_INTERACTIVE",
+          "value": "never"
+        },
+        {
+          "key": "GIT_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "SSH_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "GIT_SSH_COMMAND",
+          "value": "/usr/bin/ssh -F /dev/null -oBatchMode=yes -oIdentityAgent=none -oIdentitiesOnly=yes -oIdentityFile=/dev/null -oStrictHostKeyChecking=yes"
+        },
+        {
+          "key": "XDG_CONFIG_HOME",
+          "value": "/.agent-copilot-no-user-config"
+        },
+        {
           "key": "PATH",
           "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
       ],
       "requires_confirmation": true,
       "confirmed": true,
-      "network_required": false,
+      "network_required": true,
       "network_allowed": true,
       "will_run": true,
       "preview_token": "action-preview:v1:hmac-sha256:4343434343434343434343434343434343434343434343434343434343434343",
       "summary": "Create a local skill template named local-review-helper.",
       "risks": [
-        "After creation, the app imports the local source through the existing Local Skill Library parser and rule checks."
+        "Launching npx may resolve or download the external skills package before creating the local template.",
+        "After creation, the app imports the local source through the existing Local Skill Library parser and rule checks.",
+        "This action executes the pinned external manager package skills@1.5.20 through /usr/local/bin/npx unsandboxed with the user's filesystem authority; it may read HOME files, and the executable/runtime is an explicit external-code trust boundary."
       ],
-      "skills": ["local-review-helper"]
+      "skills": [
+        "local-review-helper"
+      ]
     },
     "output": {
       "status": "completed",
@@ -106,11 +190,24 @@
       "action_id": "action:manager_local_create:4141414141414141414141414141414141414141414141414141414141414141",
       "source_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "project_id": "project-0123456789abcdef",
-      "domains": ["catalog_skills", "skill_files"],
-      "target_ids": ["manager:local-create-fixture"],
+      "domains": [
+        "catalog_skills",
+        "skill_files"
+      ],
+      "target_ids": [
+        "manager:local-create-fixture"
+      ],
       "observations": [
-        {"domain": "catalog_skills", "target_id": "manager:local-create-fixture", "revision": "sha256:4545454545454545454545454545454545454545454545454545454545454545"},
-        {"domain": "skill_files", "target_id": "manager:local-create-fixture", "revision": "sha256:4646464646464646464646464646464646464646464646464646464646464646"}
+        {
+          "domain": "catalog_skills",
+          "target_id": "manager:local-create-fixture",
+          "revision": "sha256:4545454545454545454545454545454545454545454545454545454545454545"
+        },
+        {
+          "domain": "skill_files",
+          "target_id": "manager:local-create-fixture",
+          "revision": "sha256:4646464646464646464646464646464646464646464646464646464646464646"
+        }
       ],
       "verified": true
     }

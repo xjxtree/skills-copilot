@@ -13,27 +13,48 @@
           "scope": "agent-project"
         },
         "project_id": "project-0123456789abcdef",
-        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "impacts": [
+          "app_local_data",
+          "external_manager",
+          "skill_files"
+        ],
         "preview_method": "skillManager.previewInstall",
         "apply_method": "skillManager.applyInstall",
         "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "confirmation_required": true,
         "network": "required",
-        "readback": ["catalog_skills", "skill_files", "manager_inventory"],
-        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+        "readback": [
+          "catalog_skills",
+          "skill_files",
+          "manager_inventory"
+        ],
+        "evidence_refs": [
+          "coverage:claude-code",
+          "coverage:codex",
+          "coverage:opencode",
+          "coverage:pi",
+          "coverage:hermes",
+          "coverage:openclaw"
+        ]
       },
       "preconditions": [
         {
           "kind": "target_file",
           "target_id": "/tmp/skills-copilot-project",
           "expected_revision": "sha256:1212121212121212121212121212121212121212121212121212121212121212"
+        },
+        {
+          "kind": "source_file",
+          "target_id": "/usr/local/bin/npx",
+          "expected_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         }
       ],
       "tool_id": "npx-skills",
       "operation": "install",
       "command": [
         "/usr/local/bin/npx",
-        "skills",
+        "--yes",
+        "skills@1.5.20",
         "add",
         "vercel-labs/agent-skills",
         "--skill",
@@ -92,6 +113,58 @@
           "value": "false"
         },
         {
+          "key": "npm_config_ignore_scripts",
+          "value": "true"
+        },
+        {
+          "key": "npm_config_registry",
+          "value": "https://registry.npmjs.org/"
+        },
+        {
+          "key": "npm_config_userconfig",
+          "value": "/dev/null"
+        },
+        {
+          "key": "npm_config_globalconfig",
+          "value": "/.agent-copilot-no-global-npmrc"
+        },
+        {
+          "key": "npm_config_cache",
+          "value": "/tmp/skills-copilot-home/Library/Application Support/dev.agent-copilot.native/external-manager/npm-cache"
+        },
+        {
+          "key": "GIT_CONFIG_NOSYSTEM",
+          "value": "1"
+        },
+        {
+          "key": "GIT_CONFIG_GLOBAL",
+          "value": "/dev/null"
+        },
+        {
+          "key": "GIT_TERMINAL_PROMPT",
+          "value": "0"
+        },
+        {
+          "key": "GCM_INTERACTIVE",
+          "value": "never"
+        },
+        {
+          "key": "GIT_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "SSH_ASKPASS",
+          "value": "/usr/bin/false"
+        },
+        {
+          "key": "GIT_SSH_COMMAND",
+          "value": "/usr/bin/ssh -F /dev/null -oBatchMode=yes -oIdentityAgent=none -oIdentitiesOnly=yes -oIdentityFile=/dev/null -oStrictHostKeyChecking=yes"
+        },
+        {
+          "key": "XDG_CONFIG_HOME",
+          "value": "/.agent-copilot-no-user-config"
+        },
+        {
           "key": "PATH",
           "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
@@ -106,15 +179,20 @@
       "risks": [
         "The external manager writes canonical skill files and agent symlinks/copies for selected agents.",
         "Agent enablement state is not changed; use Agent Enablement toggles separately.",
-        "Source vercel-labs/agent-skills may require network access through npx skills."
+        "Source vercel-labs/agent-skills may require network access through npx skills@1.5.20.",
+        "This action executes the pinned external manager package skills@1.5.20 through /usr/local/bin/npx unsandboxed with the user's filesystem authority; it may read HOME files, and the executable/runtime is an explicit external-code trust boundary."
       ],
       "source": "vercel-labs/agent-skills",
-      "skills": ["frontend-design"]
+      "skills": [
+        "frontend-design"
+      ]
     },
     "output": null,
     "applied": false,
     "scanned_count": 0,
-    "updated_skills": [],
+    "updated_skills": [
+
+    ],
     "readback": null
   }
 }
