@@ -451,6 +451,7 @@ struct WireSkillManagerCommandPreview {
     network_required: bool,
     network_allowed: bool,
     will_run: bool,
+    #[serde(default)]
     preview_token: String,
     summary: String,
     risks: Vec<String>,
@@ -1140,7 +1141,10 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert_eq!(applied.action.apply_method.as_deref(), Some(method));
             assert!(applied.readback.verified);
             assert_eq!(applied.readback.action_id, applied.action.id);
-            assert!(!applied.preview_token.is_empty());
+            assert!(
+                applied.preview_token.is_empty(),
+                "batch apply must not echo its consumed authorization token"
+            );
             assert!(!applied.snapshot_rollback_notes.is_empty());
         }
         "script.previewExecution" => {
@@ -1183,10 +1187,12 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(search.preview.requires_confirmation);
             assert!(search.preview.network_required);
             if method == "skillManager.search" {
+                assert!(!search.preview.preview_token.is_empty());
                 assert!(!search.preview.will_run);
                 assert!(search.output.is_none());
                 assert!(search.readback.is_none());
             } else {
+                assert!(search.preview.preview_token.is_empty());
                 assert!(search.preview.will_run);
                 assert!(search.output.is_some());
                 assert!(search
@@ -1225,14 +1231,15 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 .as_ref()
                 .expect("mutating manager preview must expose a typed action");
             assert!(!mutation.preview.preconditions.is_empty());
-            assert!(!mutation.preview.preview_token.is_empty());
             assert_eq!(mutation.applied, method.contains(".apply"));
             if method.contains("preview") {
+                assert!(!mutation.preview.preview_token.is_empty());
                 assert!(mutation.output.is_none());
                 assert!(!mutation.preview.confirmed);
                 assert!(mutation.readback.is_none());
             }
             if method.contains("apply") {
+                assert!(mutation.preview.preview_token.is_empty());
                 assert!(mutation.output.is_some());
                 assert!(mutation.preview.confirmed);
                 let readback = mutation
@@ -1243,14 +1250,29 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert_eq!(readback.action_id, action.id);
             }
             if method.ends_with("Install") && method.contains("preview") {
+                let agents = mutation
+                    .preview
+                    .command
+                    .windows(2)
+                    .filter_map(|args| (args[0] == "--agent").then_some(args[1].as_str()))
+                    .collect::<Vec<_>>();
+                assert!(!agents.is_empty());
+                assert!(agents.iter().all(|agent| [
+                    "claude-code",
+                    "codex",
+                    "opencode",
+                    "pi",
+                    "hermes-agent",
+                    "openclaw",
+                ]
+                .contains(agent)));
                 assert_eq!(
-                    mutation
-                        .preview
-                        .command
+                    agents
                         .iter()
-                        .filter(|arg| arg.as_str() == "--agent")
-                        .count(),
-                    6
+                        .collect::<std::collections::HashSet<_>>()
+                        .len(),
+                    agents.len(),
+                    "manager install preview agents must be unique"
                 );
                 assert!(!mutation.preview.command.iter().any(|arg| arg == "--copy"));
             }
@@ -1268,6 +1290,7 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(create.source_path.contains("local-skill-library"));
             assert_eq!(create.applied, method.contains(".apply"));
             if create.applied {
+                assert!(create.preview.preview_token.is_empty());
                 assert_eq!(
                     create.imported.as_ref().expect("imported skill").agent,
                     "tool-global"
@@ -1279,6 +1302,7 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert!(readback.verified);
                 assert_eq!(readback.action_id, action.id);
             } else {
+                assert!(!create.preview.preview_token.is_empty());
                 assert!(create.readback.is_none());
             }
         }
@@ -1286,9 +1310,27 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let delete: WireSkillManagerLocalDeleteRecord =
                 decode_fixture_result(method, result, path);
             assert!(delete.app_owned);
-            assert!(!delete.deleted);
-            assert!(!delete.blocked_by_references.is_empty());
             assert!(delete.follow_up.is_none());
+            if delete.deleted {
+                assert!(delete.physical_delete_allowed);
+                assert!(delete.confirmed);
+                assert!(delete.preview_token.is_none());
+                assert!(delete
+                    .readback
+                    .as_ref()
+                    .is_some_and(|readback| readback.verified));
+            } else {
+                assert!(!delete.confirmed);
+                assert!(delete.readback.is_none());
+                if delete.physical_delete_allowed {
+                    assert!(delete.blocked_by_references.is_empty());
+                    assert!(delete.preview_token.is_some());
+                    assert!(!delete.preconditions.is_empty());
+                } else {
+                    assert!(!delete.blocked_by_references.is_empty());
+                    assert!(delete.preview_token.is_none());
+                }
+            }
         }
         "skillManager.previewLocalArchiveImport" | "skillManager.applyLocalArchiveImport" => {
             let import: WireSkillManagerLocalArchiveImportRecord =
@@ -1566,7 +1608,11 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert_eq!(install.action.preview_method, method);
             assert_eq!(install.action.apply_method.as_deref(), Some(method));
             assert!(!install.preconditions.is_empty());
-            assert!(!install.preview_token.is_empty());
+            assert_eq!(
+                install.preview_token.is_empty(),
+                install.wrote,
+                "only skill install previews expose an authorization token"
+            );
             assert!(install.confirmation.required);
             assert!(!install.files.is_empty());
         }

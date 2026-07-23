@@ -1768,6 +1768,7 @@ pub(super) struct WireBatchTogglePreviewRecord {
 #[serde(deny_unknown_fields)]
 pub(super) struct WireBatchToggleApplyRecord {
     pub(super) action: WireActionDescriptor,
+    #[serde(default)]
     pub(super) preview_token: String,
     pub(super) target_enabled: bool,
     pub(super) requested_count: usize,
@@ -1988,6 +1989,7 @@ pub(super) struct WireConfigSaveApplyRecord {
 pub(super) struct WireSkillInstallPreviewRecord {
     pub(super) action: WireActionDescriptor,
     pub(super) preconditions: Vec<WireActionPrecondition>,
+    #[serde(default)]
     pub(super) preview_token: String,
     pub(super) source_instance_id: String,
     pub(super) source_path: String,
