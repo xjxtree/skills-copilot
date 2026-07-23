@@ -42,7 +42,7 @@ extension ServiceClient {
         agents: [String],
         scope: SkillManagerScope
     ) async throws -> SkillManagerMutationRecord {
-        try await skillManagerInstall(
+        return try await skillManagerInstall(
             method: "skillManager.previewInstall",
             source: source,
             skills: skills,
@@ -51,7 +51,8 @@ extension ServiceClient {
             distribution: .symlink,
             networkAllowed: true,
             confirmed: false,
-            previewToken: nil
+            previewToken: nil,
+            actionReference: nil
         )
     }
 
@@ -62,7 +63,8 @@ extension ServiceClient {
         agents: [String],
         scope: SkillManagerScope
     ) async throws -> SkillManagerMutationRecord {
-        try await skillManagerInstall(
+        let actionReference = try requiredActionReference(preview.preview)
+        return try await skillManagerInstall(
             method: "skillManager.applyInstall",
             source: source,
             skills: skills,
@@ -71,95 +73,118 @@ extension ServiceClient {
             distribution: .symlink,
             networkAllowed: true,
             confirmed: true,
-            previewToken: preview.preview.previewToken
+            previewToken: preview.preview.previewToken,
+            actionReference: actionReference
         )
     }
 
     func previewSkillManagerRemove(skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
-        try await skillManagerRemove(
+        return try await skillManagerRemove(
             method: "skillManager.previewRemove",
             skill: skill,
             agents: agents,
             scope: scope,
             confirmed: false,
-            previewToken: nil
+            previewToken: nil,
+            actionReference: nil
         )
     }
 
     func applySkillManagerRemove(preview: SkillManagerMutationRecord, skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
-        try await skillManagerRemove(
+        let actionReference = try requiredActionReference(preview.preview)
+        return try await skillManagerRemove(
             method: "skillManager.applyRemove",
             skill: skill,
             agents: agents,
             scope: scope,
             confirmed: true,
-            previewToken: preview.preview.previewToken
+            previewToken: preview.preview.previewToken,
+            actionReference: actionReference
         )
     }
 
     func previewSkillManagerUpdate(skills: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
-        try await skillManagerUpdate(
+        return try await skillManagerUpdate(
             method: "skillManager.previewUpdate",
             skills: skills,
             agents: [],
             scope: scope,
             networkAllowed: true,
             confirmed: false,
-            previewToken: nil
+            previewToken: nil,
+            actionReference: nil
         )
     }
 
     func applySkillManagerUpdate(preview: SkillManagerMutationRecord, skills: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
-        try await skillManagerUpdate(
+        let actionReference = try requiredActionReference(preview.preview)
+        return try await skillManagerUpdate(
             method: "skillManager.applyUpdate",
             skills: skills,
             agents: [],
             scope: scope,
             networkAllowed: true,
             confirmed: true,
-            previewToken: preview.preview.previewToken
+            previewToken: preview.preview.previewToken,
+            actionReference: actionReference
         )
     }
 
     func previewSkillManagerLocalCreate(name: String) async throws -> SkillManagerLocalCreateRecord {
-        try await call(
+        return try await call(
             method: "skillManager.previewLocalCreate",
             params: SkillManagerLocalCreateParams(
                 name: name,
                 confirmed: false,
-                previewToken: nil
+                previewToken: nil,
+                actionReference: nil
             )
         )
     }
 
     func applySkillManagerLocalCreate(preview: SkillManagerLocalCreateRecord, name: String) async throws -> SkillManagerLocalCreateRecord {
-        try await call(
+        let actionReference = try requiredActionReference(preview.preview)
+        return try await call(
             method: "skillManager.applyLocalCreate",
             params: SkillManagerLocalCreateParams(
                 name: name,
                 confirmed: true,
-                previewToken: preview.preview.previewToken
+                previewToken: preview.preview.previewToken,
+                actionReference: actionReference
             ),
             timeoutMS: 120_000
         )
     }
 
     func previewSkillManagerLocalDelete(instanceID: String) async throws -> SkillManagerLocalDeleteRecord {
-        try await call(
+        return try await call(
             method: "skillManager.deleteLocal",
             params: SkillManagerDeleteLocalParams(
                 instanceId: instanceID,
-                confirmed: false
+                confirmed: false,
+                previewToken: nil,
+                actionReference: nil
             )
         )
     }
 
-    func applySkillManagerLocalDelete(instanceID: String) async throws -> SkillManagerLocalDeleteRecord {
-        try await call(
+    func applySkillManagerLocalDelete(
+        preview: SkillManagerLocalDeleteRecord
+    ) async throws -> SkillManagerLocalDeleteRecord {
+        guard let action = preview.action,
+              let previewToken = preview.previewToken,
+              !previewToken.isEmpty else {
+            throw ClientError.invalidOutput(
+                "The local delete preview is missing its typed action confirmation."
+            )
+        }
+        return try await call(
             method: "skillManager.deleteLocal",
             params: SkillManagerDeleteLocalParams(
-                instanceId: instanceID,
-                confirmed: true
+                instanceId: preview.instanceId,
+                confirmed: true,
+                previewToken: previewToken,
+                actionReference: action.reference
             )
         )
     }
@@ -235,7 +260,8 @@ extension ServiceClient {
         distribution: SkillManagerDistribution,
         networkAllowed: Bool,
         confirmed: Bool,
-        previewToken: String?
+        previewToken: String?,
+        actionReference: ActionReferenceWire?
     ) async throws -> SkillManagerMutationRecord {
         try await call(
             method: method,
@@ -247,7 +273,8 @@ extension ServiceClient {
                 distribution: distribution == .copy ? distribution.rawValue : nil,
                 networkAllowed: networkAllowed,
                 confirmed: confirmed,
-                previewToken: previewToken
+                previewToken: previewToken,
+                actionReference: actionReference
             ),
             timeoutMS: confirmed ? 180_000 : nil
         )
@@ -259,7 +286,8 @@ extension ServiceClient {
         agents: [String],
         scope: SkillManagerScope,
         confirmed: Bool,
-        previewToken: String?
+        previewToken: String?,
+        actionReference: ActionReferenceWire?
     ) async throws -> SkillManagerMutationRecord {
         try await call(
             method: method,
@@ -268,7 +296,8 @@ extension ServiceClient {
                 agents: agents,
                 scope: scope.rawValue,
                 confirmed: confirmed,
-                previewToken: previewToken
+                previewToken: previewToken,
+                actionReference: actionReference
             ),
             timeoutMS: confirmed ? 120_000 : nil
         )
@@ -281,7 +310,8 @@ extension ServiceClient {
         scope: SkillManagerScope,
         networkAllowed: Bool,
         confirmed: Bool,
-        previewToken: String?
+        previewToken: String?,
+        actionReference: ActionReferenceWire?
     ) async throws -> SkillManagerMutationRecord {
         try await call(
             method: method,
@@ -291,9 +321,22 @@ extension ServiceClient {
                 scope: scope.rawValue,
                 networkAllowed: networkAllowed,
                 confirmed: confirmed,
-                previewToken: previewToken
+                previewToken: previewToken,
+                actionReference: actionReference
             ),
             timeoutMS: confirmed ? 180_000 : nil
         )
+    }
+
+    private func requiredActionReference(
+        _ preview: SkillManagerCommandPreview
+    ) throws -> ActionReferenceWire {
+        guard let action = preview.action,
+              !preview.previewToken.isEmpty else {
+            throw ClientError.invalidOutput(
+                "The Skill Manager preview is missing its typed action confirmation."
+            )
+        }
+        return action.reference
     }
 }

@@ -4,6 +4,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use skills_copilot_core::canonical_project_id;
 
 use crate::{display_path, unix_timestamp_millis, write_private_bytes_file, ServiceError};
 
@@ -202,7 +203,7 @@ pub fn context_from_paths(root_path: &Path, current_cwd: &Path, is_active: bool)
     let root_path = display_path(root_path);
     let current_cwd = display_path(current_cwd);
     ProjectContext {
-        id: project_context_id(&root_path),
+        id: canonical_project_id(&root_path),
         name: default_project_name(Path::new(&root_path)),
         root_path,
         current_cwd,
@@ -240,7 +241,7 @@ fn validate_project_context(params: ProjectContextParams) -> Result<ProjectConte
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| default_project_name(&root));
     Ok(ProjectContext {
-        id: project_context_id(&root_path),
+        id: canonical_project_id(&root_path),
         name,
         root_path,
         current_cwd,
@@ -270,7 +271,7 @@ fn invalid_project_context(params: ProjectContextParams, message: String) -> Pro
         id: if root_path.is_empty() {
             String::new()
         } else {
-            project_context_id(&root_path)
+            canonical_project_id(&root_path)
         },
         name: params
             .name
@@ -361,14 +362,4 @@ fn default_project_name(path: &Path) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("Project")
         .to_string()
-}
-
-fn project_context_id(root_path: &str) -> String {
-    let hash = root_path
-        .as_bytes()
-        .iter()
-        .fold(0xcbf29ce484222325_u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-        });
-    format!("project-{hash:016x}")
 }

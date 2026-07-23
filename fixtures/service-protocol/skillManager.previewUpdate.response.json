@@ -3,6 +3,22 @@
   "ok": true,
   "result": {
     "preview": {
+      "action": {
+        "id": "action:manager_update:3131313131313131313131313131313131313131313131313131313131313131",
+        "kind": "manager_update",
+        "intent": "manager_update",
+        "target": {"kind": "skill", "id": "manager:update-fixture", "scope": "agent-project"},
+        "project_id": "project-0123456789abcdef",
+        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "preview_method": "skillManager.previewUpdate",
+        "apply_method": "skillManager.applyUpdate",
+        "source_revision": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
+        "confirmation_required": true,
+        "network": "required",
+        "readback": ["catalog_skills"],
+        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+      },
+      "preconditions": [{"kind": "target_file", "target_id": "/tmp/skills-copilot-project", "expected_revision": "sha256:3232323232323232323232323232323232323232323232323232323232323232"}],
       "tool_id": "npx-skills",
       "operation": "update",
       "command": [
@@ -24,15 +40,17 @@
       "network_required": true,
       "network_allowed": true,
       "will_run": false,
-      "preview_token": "skill-manager:fixture-update",
+      "preview_token": "action-preview:v1:hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "summary": "Update the selected managed skill source for every linked agent.",
       "risks": [
         "Update may contact remote source repositories or indexes through the external CLI."
-      ]
+      ],
+      "skills": ["frontend-design"]
     },
     "output": null,
     "applied": false,
     "scanned_count": 0,
-    "updated_skills": []
+    "updated_skills": [],
+    "readback": null
   }
 }

@@ -164,6 +164,11 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Commands must be executed as argv arrays with telemetry-off env
   (`DISABLE_TELEMETRY=1`, `DO_NOT_TRACK=1`) and redacted output logging. Shell
   string concatenation is forbidden.
+- Mutating manager previews expose a typed action, accepted target revision,
+  and opaque HMAC token. Apply requires the exact action reference and token,
+  then returns catalog read-back. The app-to-sidecar authorization secret is
+  removed before stdin dispatch and must be explicitly absent from every
+  manager child environment.
 - Search preserves every row returned by the manager, but the current CLI does
   not prove a remote total or advertise a continuation token. Responses must
   therefore distinguish returned rows from an unknown, source-limited total;
@@ -208,9 +213,11 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Local ZIP import rejects a name already present in the app-owned library or
   an installed shared `.agents/skills` source. The existing package must use its
   update flow instead of creating an ambiguous second package row.
-- Agent enable/disable remains in `config.toggleSkill`,
-  `batch.previewSkillToggles`, and `batch.applySkillToggles` outside the Skill
-  Manager surface; package manager state and agent config state are separate.
+- Agent enable/disable stays outside the Skill Manager surface; package manager
+  state and agent config state are separate. Native single and multi-skill UI
+  changes use `batch.previewSkillToggles` and
+  `batch.applySkillToggles`. `config.toggleSkill` remains a lower-level
+  compatibility method.
 - ChatGPT's Plugin Directory is also separate from Skill Manager. Only enabled,
   installed, manifest-declared plugin skills participate in current projections;
   arbitrary plugin cache content and Deleted cache noise remain excluded;

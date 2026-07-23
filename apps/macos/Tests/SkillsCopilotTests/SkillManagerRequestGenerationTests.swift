@@ -1200,6 +1200,11 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         case "skillManager.deleteLocal":
             let instanceID = call.instanceID ?? ""
             result = [
+                "action": action(
+                    operation: "localDelete",
+                    targetID: instanceID
+                ),
+                "preview_token": call.previewToken ?? "preview:localDelete:\(instanceID)",
                 "instance_id": instanceID,
                 "skill_name": instanceID,
                 "path": "/tmp/fixture/\(instanceID)",
@@ -1267,7 +1272,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         source: String?,
         skills: [String]
     ) -> [String: Any] {
-        [
+        var result: [String: Any] = [
             "tool_id": "npx-skills",
             "operation": operation,
             "command": ["npx", "skills", operation],
@@ -1283,6 +1288,49 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             "risks": [],
             "source": source ?? NSNull(),
             "skills": skills
+        ]
+        if ["install", "remove", "update", "localCreate"].contains(operation) {
+            result["action"] = action(
+                operation: operation,
+                targetID: source ?? skills.first ?? operation
+            )
+        }
+        return result
+    }
+
+    private static func action(
+        operation: String,
+        targetID: String
+    ) -> [String: Any] {
+        let methods: (kind: String, intent: String, preview: String, apply: String)
+        switch operation {
+        case "install":
+            methods = ("manager_install", "manager_install", "skillManager.previewInstall", "skillManager.applyInstall")
+        case "remove":
+            methods = ("manager_remove", "manager_remove", "skillManager.previewRemove", "skillManager.applyRemove")
+        case "update":
+            methods = ("manager_update", "manager_update", "skillManager.previewUpdate", "skillManager.applyUpdate")
+        case "localCreate":
+            methods = ("manager_local_create", "manager_local_create", "skillManager.previewLocalCreate", "skillManager.applyLocalCreate")
+        default:
+            methods = ("manager_local_delete", "manager_local_delete", "skillManager.deleteLocal", "skillManager.deleteLocal")
+        }
+        return [
+            "id": "action:\(methods.intent):\(targetID)",
+            "kind": methods.kind,
+            "intent": methods.intent,
+            "target": [
+                "kind": operation == "localDelete" ? "skill" : "package",
+                "id": targetID
+            ],
+            "impacts": ["skill_files", "app_local_data"],
+            "preview_method": methods.preview,
+            "apply_method": methods.apply,
+            "source_revision": "sha256:fixture",
+            "confirmation_required": true,
+            "network": ["install", "update"].contains(operation) ? "required" : "none",
+            "readback": ["catalog_skills"],
+            "evidence_refs": ["skill:\(targetID)"]
         ]
     }
 

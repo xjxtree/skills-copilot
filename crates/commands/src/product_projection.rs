@@ -9,14 +9,17 @@ use skills_copilot_catalog::{ConflictGroupRecord, RuleFindingRecord};
 use skills_copilot_core::{
     ActionDescriptor, ActionImpact, ActionTargetKind, ActionTargetRef, AgentId,
     AgentReadinessRecord, AttentionItem, AttentionKind, AttentionSeverity, EnvironmentHealthState,
-    EvidenceKind, EvidenceRef, ListIncompleteReason, ProjectReadinessRecord, ReadinessBlocker,
-    ResumeCapability, ResumeUnsupportedReason, Scope, SessionContinuationRecord,
+    EvidenceKind, EvidenceRef, ListIncompleteReason, NoSafeActionReason, ProjectReadinessRecord,
+    ReadinessBlocker, ResumeCapability, ResumeUnsupportedReason, Scope, SessionContinuationRecord,
     SkillAggregateRecord, SkillEffectivenessCount, SkillEffectivenessState,
     SkillInstanceEffectivenessRecord, SkillState, SourceCoverage,
 };
 use thiserror::Error;
 
 use super::AgentCatalogScanReport;
+use crate::action_lifecycle::{
+    deterministic_action_id, validate_action_intent, validate_action_method_ownership,
+};
 
 const PRODUCT_AGENTS: [AgentId; 6] = [
     AgentId::ClaudeCode,
@@ -675,6 +678,10 @@ fn derive_project_readiness(
                 agent: Some(source.agent),
                 evidence_refs: vec![coverage_projection_evidence_id(source.agent)],
                 action_ids: source.action_ids.clone(),
+                no_safe_action_reason: source
+                    .action_ids
+                    .is_empty()
+                    .then_some(NoSafeActionReason::IncompleteEvidence),
             });
         }
     }
@@ -723,6 +730,13 @@ fn derive_project_readiness(
                     agent: record.agent,
                     evidence_refs: record.evidence_refs.clone(),
                     action_ids: record.action_ids.clone(),
+                    no_safe_action_reason: record.action_ids.is_empty().then_some(
+                        if record.state == SkillEffectivenessState::Unavailable {
+                            NoSafeActionReason::IncompleteEvidence
+                        } else {
+                            NoSafeActionReason::NoGuardedWritePath
+                        },
+                    ),
                 });
             }
         }
@@ -754,6 +768,9 @@ fn derive_project_readiness(
             },
             agent: Some(agent),
             evidence_refs: vec![finding_projection_evidence_id(&finding.id)],
+            no_safe_action_reason: action_ids
+                .is_empty()
+                .then_some(NoSafeActionReason::ManualReviewRequired),
             action_ids,
         });
     }
@@ -793,6 +810,9 @@ fn derive_project_readiness(
             },
             agent,
             evidence_refs: vec![conflict_projection_evidence_id(&conflict.id)],
+            no_safe_action_reason: action_ids
+                .is_empty()
+                .then_some(NoSafeActionReason::ManualReviewRequired),
             action_ids,
         });
     }
@@ -1400,6 +1420,26 @@ fn action_map(
         action
             .validate()
             .map_err(|error| invalid(format!("invalid action capability: {error}")))?;
+        validate_action_method_ownership(
+            action.kind,
+            &action.preview_method,
+            action.apply_method.as_deref(),
+        )
+        .map_err(|error| invalid(format!("invalid action capability: {error}")))?;
+        validate_action_intent(action.kind, action.intent)
+            .map_err(|error| invalid(format!("invalid action capability: {error}")))?;
+        let expected_id = deterministic_action_id(
+            action.kind,
+            action.intent,
+            &action.target,
+            action.project_id.as_deref(),
+        )
+        .map_err(|error| invalid(format!("invalid action capability: {error}")))?;
+        if action.id != expected_id {
+            return Err(invalid(
+                "action capability id was not minted by the registry",
+            ));
+        }
         if action.source_revision != source_revision {
             return Err(invalid("action capability revision does not match project"));
         }
@@ -1415,6 +1455,7 @@ fn canonical_action(mut action: ActionDescriptor) -> ActionDescriptor {
     action
         .impacts
         .sort_by_key(|impact| action_impact_rank(*impact));
+    action.readback.sort();
     action.evidence_refs.sort();
     action
 }

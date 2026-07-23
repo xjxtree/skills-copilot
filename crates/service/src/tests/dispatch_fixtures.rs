@@ -1526,7 +1526,69 @@ pub(super) struct WireSkillRecord {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct WireActionTarget {
+    pub(super) kind: String,
+    pub(super) id: String,
+    pub(super) agent: Option<String>,
+    pub(super) scope: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireActionDescriptor {
+    pub(super) id: String,
+    pub(super) kind: String,
+    pub(super) intent: String,
+    pub(super) target: WireActionTarget,
+    pub(super) project_id: Option<String>,
+    pub(super) impacts: Vec<String>,
+    pub(super) preview_method: String,
+    pub(super) apply_method: Option<String>,
+    pub(super) source_revision: String,
+    pub(super) confirmation_required: bool,
+    pub(super) network: String,
+    pub(super) readback: Vec<String>,
+    pub(super) evidence_refs: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireActionPrecondition {
+    pub(super) kind: String,
+    pub(super) target_id: String,
+    pub(super) expected_revision: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireActionReadbackObservation {
+    pub(super) domain: String,
+    pub(super) target_id: String,
+    pub(super) revision: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireActionReadbackRecord {
+    pub(super) action_id: String,
+    pub(super) source_revision: String,
+    pub(super) project_id: Option<String>,
+    pub(super) domains: Vec<String>,
+    pub(super) target_ids: Vec<String>,
+    pub(super) observations: Vec<WireActionReadbackObservation>,
+    pub(super) verified: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WireBatchTogglePreviewRecord {
+    pub(super) action: WireActionDescriptor,
+    pub(super) preconditions: Vec<WireActionPrecondition>,
     pub(super) preview_token: String,
     pub(super) target_enabled: bool,
     pub(super) requested_count: usize,
@@ -1543,6 +1605,7 @@ pub(super) struct WireBatchTogglePreviewRecord {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WireBatchToggleApplyRecord {
+    pub(super) action: WireActionDescriptor,
     pub(super) preview_token: String,
     pub(super) target_enabled: bool,
     pub(super) requested_count: usize,
@@ -1555,6 +1618,7 @@ pub(super) struct WireBatchToggleApplyRecord {
     pub(super) capability_labels: Vec<String>,
     pub(super) snapshot_rollback_notes: Vec<String>,
     pub(super) updated_records: Vec<WireSkillRecord>,
+    pub(super) readback: WireActionReadbackRecord,
 }
 
 #[allow(dead_code)]
@@ -1569,6 +1633,8 @@ pub(super) struct WireBatchToggleAffectedItem {
     pub(super) target_enabled: bool,
     pub(super) config_scope: String,
     pub(super) config_target: String,
+    pub(super) config_revision: String,
+    pub(super) catalog_revision: String,
     pub(super) capability_label: String,
     pub(super) snapshot_plan: String,
     pub(super) rollback_plan: String,
@@ -1735,6 +1801,9 @@ pub(super) struct WireConfigDocumentRecord {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WireSkillInstallPreviewRecord {
+    pub(super) action: WireActionDescriptor,
+    pub(super) preconditions: Vec<WireActionPrecondition>,
+    pub(super) preview_token: String,
     pub(super) source_instance_id: String,
     pub(super) source_path: String,
     pub(super) target_agent: String,
@@ -1745,6 +1814,7 @@ pub(super) struct WireSkillInstallPreviewRecord {
     pub(super) confirmation: WireSkillInstallConfirmation,
     pub(super) wrote: bool,
     pub(super) snapshot_id: Option<String>,
+    pub(super) readback: Option<WireActionReadbackRecord>,
 }
 
 #[allow(dead_code)]

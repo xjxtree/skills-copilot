@@ -1,0 +1,8 @@
+{
+  "id": "fixture-skill-export-bundle",
+  "ok": false,
+  "error": {
+    "code": "mutation_disabled",
+    "message": "mutation disabled: skill.exportBundle is a compatibility-only RPC and performs no I/O until a typed preview/confirmation/readback export lifecycle is available"
+  }
+}

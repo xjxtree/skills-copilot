@@ -1295,7 +1295,16 @@ final class SkillStore: ObservableObject {
         defer { isWriting = false }
 
         do {
-            _ = try await service.toggleSkill(instanceID: skill.id, on: on)
+            let preview = try await service.previewBatchSkillToggles(
+                instanceIDs: [skill.id],
+                on: on
+            )
+            guard preview.hasWritableChanges, preview.applySupported else {
+                throw ServiceClient.ClientError.invalidOutput(
+                    "The skill toggle preview did not contain a safe writable action."
+                )
+            }
+            _ = try await service.applyBatchSkillToggles(preview: preview)
             invalidateDetailCaches(for: [skill.id])
             try await refreshCollections()
             lastMutationMessage = UIStrings.toggledSkill(on: on, name: skill.name, agent: skill.agent)
@@ -1727,7 +1736,9 @@ final class SkillStore: ObservableObject {
         }
         await runSkillManagerConfirmedWrite { [self] in
             do {
-                _ = try await service.applySkillManagerLocalDelete(instanceID: confirmation.instanceID)
+                _ = try await service.applySkillManagerLocalDelete(
+                    preview: confirmation.result
+                )
                 retireSkillManagerLocalDeleteConfirmation(confirmation)
                 try await refreshCollections()
                 skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
@@ -1752,7 +1763,10 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func confirmToolInstall(skill: SkillRecord, target: ToolInstallTarget) async -> ToolGlobalInstallPreview? {
+    func confirmToolInstall(
+        skill: SkillRecord,
+        preview: ToolGlobalInstallPreview
+    ) async -> ToolGlobalInstallPreview? {
         guard !isRefreshBusy else {
             errorMessage = UIStrings.operationUnavailableBusy
             return nil
@@ -1763,10 +1777,10 @@ final class SkillStore: ObservableObject {
         defer { isWriting = false }
 
         do {
-            let result = try await service.confirmToolInstall(skill: skill, target: target)
+            let result = try await service.confirmToolInstall(skill: skill, preview: preview)
             invalidateDetailCaches(for: [skill.id])
             try await refreshCollections()
-            lastMutationMessage = UIStrings.toolGlobalInstalled(skill.name, target.title)
+            lastMutationMessage = UIStrings.toolGlobalInstalled(skill.name, preview.target.title)
             recordLocalRefresh(message: UIStrings.refreshAfterWrite)
             await loadSelectedDetail()
             return result
@@ -1916,7 +1930,9 @@ final class SkillStore: ObservableObject {
                             ))
                             return
                         }
-                        _ = try await service.applySkillManagerLocalDelete(instanceID: instanceID)
+                        _ = try await service.applySkillManagerLocalDelete(
+                            preview: cleanupPreview
+                        )
                     }
                 case .update:
                     result = try await service.applySkillManagerUpdate(

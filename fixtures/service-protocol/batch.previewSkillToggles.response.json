@@ -2,7 +2,46 @@
   "id": "fixture-batch-preview-skill-toggles",
   "ok": true,
   "result": {
-    "preview_token": "fixture-preview-token-v233",
+    "action": {
+      "id": "action:disable_skill:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "toggle_skill",
+      "intent": "disable_skill",
+      "target": {
+        "kind": "skill",
+        "id": "selection:claude-global-fixture,pi-global-fixture"
+      },
+      "impacts": ["app_local_data", "agent_config"],
+      "preview_method": "batch.previewSkillToggles",
+      "apply_method": "batch.applySkillToggles",
+      "source_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["agent_config", "skill_aggregates"],
+      "evidence_refs": ["skill:claude-global-fixture", "skill:pi-global-fixture"]
+    },
+    "preconditions": [
+      {
+        "kind": "agent_config",
+        "target_id": "/tmp/skills-copilot-home/.claude/settings.json",
+        "expected_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "kind": "agent_config",
+        "target_id": "/tmp/skills-copilot-home/.pi/agent/settings.json",
+        "expected_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      {
+        "kind": "catalog_record",
+        "target_id": "claude-global-fixture",
+        "expected_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      {
+        "kind": "catalog_record",
+        "target_id": "pi-global-fixture",
+        "expected_revision": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "target_enabled": false,
     "requested_count": 2,
     "writable_count": 2,
@@ -18,6 +57,8 @@
         "target_enabled": false,
         "config_scope": "agent-global",
         "config_target": "/tmp/skills-copilot-home/.claude/settings.json",
+        "config_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "catalog_revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "capability_label": "Claude Code verified config toggle",
         "snapshot_plan": "Create a pre-batch-toggle agent config snapshot before writing.",
         "rollback_plan": "Rollback remains available through snapshot.previewRollback and snapshot.rollback."
@@ -31,6 +72,8 @@
         "target_enabled": false,
         "config_scope": "agent-global",
         "config_target": "/tmp/skills-copilot-home/.pi/agent/settings.json",
+        "config_revision": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "catalog_revision": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "capability_label": "Pi guarded config toggle",
         "snapshot_plan": "Create a pre-batch-toggle agent config snapshot before writing.",
         "rollback_plan": "Rollback remains available through snapshot.previewRollback and snapshot.rollback."

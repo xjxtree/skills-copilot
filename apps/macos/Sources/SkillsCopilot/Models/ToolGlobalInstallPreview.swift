@@ -23,6 +23,8 @@ enum ToolInstallTarget: String, Codable, CaseIterable, Identifiable, Hashable {
 
 struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     let skillID: String
+    let action: ActionDescriptorWire?
+    let previewToken: String?
     let skillName: String
     let sourcePath: String
     let target: ToolInstallTarget
@@ -39,6 +41,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case skillID = "skill_id"
+        case action
+        case previewToken = "preview_token"
         case sourceInstanceID = "source_instance_id"
         case skillName = "skill_name"
         case sourcePath = "source_path"
@@ -63,6 +67,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
 
     init(
         skillID: String,
+        action: ActionDescriptorWire? = nil,
+        previewToken: String? = nil,
         skillName: String,
         sourcePath: String,
         target: ToolInstallTarget,
@@ -76,6 +82,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         snapshotID: String?
     ) {
         self.skillID = skillID
+        self.action = action
+        self.previewToken = previewToken
         self.skillName = skillName
         self.sourcePath = sourcePath
         self.target = target
@@ -93,6 +101,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let skillID = try container.decodeIfPresent(String.self, forKey: .skillID)
             ?? container.decode(String.self, forKey: .sourceInstanceID)
+        let action = try container.decodeIfPresent(ActionDescriptorWire.self, forKey: .action)
+        let previewToken = try container.decodeIfPresent(String.self, forKey: .previewToken)
         let target = try container.decodeIfPresent(ToolInstallTarget.self, forKey: .target)
             ?? container.decode(ToolInstallTarget.self, forKey: .targetAgent)
         let sourcePath = try container.decode(String.self, forKey: .sourcePath)
@@ -110,6 +120,15 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
             ?? true
         let legacyWriteBack = try container.decodeIfPresent(Bool.self, forKey: .writeBackEnabled)
         let writeBackEnabled = legacyWriteBack ?? (confirmationRequired && !wrote && confirmation != nil)
+        if writeBackEnabled,
+           (action == nil
+               || previewToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .action,
+                in: container,
+                debugDescription: "A writable install preview requires a typed action and opaque preview token."
+            )
+        }
         let summary = try container.decodeIfPresent(String.self, forKey: .summary)
             ?? UIStrings.toolGlobalInstallPreviewSummary(skillName, target.title)
         let confirmationMessage = try container.decodeIfPresent(String.self, forKey: .confirmationMessage)
@@ -118,6 +137,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
 
         self.init(
             skillID: skillID,
+            action: action,
+            previewToken: previewToken,
             skillName: skillName,
             sourcePath: sourcePath,
             target: target,
@@ -135,6 +156,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(skillID, forKey: .skillID)
+        try container.encodeIfPresent(action, forKey: .action)
+        try container.encodeIfPresent(previewToken, forKey: .previewToken)
         try container.encode(skillName, forKey: .skillName)
         try container.encode(sourcePath, forKey: .sourcePath)
         try container.encode(target, forKey: .target)

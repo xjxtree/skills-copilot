@@ -4,6 +4,12 @@
   "params": {
     "name": "local-review-helper",
     "confirmed": true,
-    "preview_token": "skill-manager:fixture-local-create"
+    "preview_token": "action-preview:v1:hmac-sha256:4343434343434343434343434343434343434343434343434343434343434343",
+    "action_reference": {
+      "action_id": "action:manager_local_create:4141414141414141414141414141414141414141414141414141414141414141",
+      "source_revision": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+      "project_id": "project-0123456789abcdef",
+      "target": {"kind": "skill", "id": "manager:local-create-fixture"}
+    }
   }
 }

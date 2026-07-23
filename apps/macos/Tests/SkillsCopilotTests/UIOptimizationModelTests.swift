@@ -421,13 +421,13 @@ struct UIOptimizationModelTests {
         let rows = preview.compactMetadataRows
         try expectEqual(
             rows.map { $0.label },
-            ["CWD", "Confirmed", "Network", "Token"],
+            ["CWD", "Confirmed", "Network"],
             "Preview metadata should use a compact key-value row order."
         )
         try expectEqual(
             rows.filter { $0.isCopyable }.map { $0.label },
-            ["CWD", "Token"],
-            "Only path/token-like preview metadata should expose copy affordances."
+            ["CWD"],
+            "Opaque authorization capabilities must never expose copy affordances."
         )
         try expectEqual(
             preview.requiresExplicitApplyConfirmation,

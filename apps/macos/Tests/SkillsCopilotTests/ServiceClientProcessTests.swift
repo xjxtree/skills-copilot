@@ -24,6 +24,7 @@ struct ServiceClientProcessTests {
         try await cancellationWhileDrainingReapsProcess()
         try await callCancelledBeforeRunnerStartStillCompletes()
         try configuredTimeoutRejectsOverflowAndInvalidValues()
+        try await actionPreviewSecretGenerationFailureKeepsReadOnlyRunnerAvailable()
         try await malformedOutputMapsToInvalidOutput()
         try await emptyOutputMapsToInvalidOutput()
         try await truncatedOutputMapsToInvalidOutput()
@@ -538,6 +539,24 @@ struct ServiceClientProcessTests {
         try expectEqual(StdioServiceProcessRunner.configuredTimeoutNanoseconds(environment: ["SKILLS_COPILOT_SERVICE_TIMEOUT_MS": "not-a-number"]), 30_000_000_000, "Invalid timeout should use the default.")
     }
 
+    private func actionPreviewSecretGenerationFailureKeepsReadOnlyRunnerAvailable() async throws {
+        let unavailable = StdioServiceProcessRunner.makeActionPreviewSessionSecret { _ in -1 }
+        try expectEqual(
+            unavailable,
+            nil,
+            "Secure-random failure should leave the lifecycle secret unavailable instead of terminating the app."
+        )
+
+        let fake = try StaticServiceScript(mode: "action-secret-probe")
+        defer { fake.cleanup() }
+        let output = try await fake.runWithoutActionPreviewSecret()
+        try expectEqual(
+            String(data: output, encoding: .utf8),
+            "absent",
+            "A runner without a generated secret should still launch read-only sidecar requests without injecting an empty capability."
+        )
+    }
+
     private func malformedOutputMapsToInvalidOutput() async throws {
         let fake = try StaticServiceScript(mode: "malformed")
         defer { fake.cleanup() }
@@ -695,6 +714,17 @@ private final class StaticServiceScript {
         )
     }
 
+    func runWithoutActionPreviewSecret() async throws -> Data {
+        try await StdioServiceProcessRunner(
+            environmentOverrides: environment,
+            actionPreviewSecret: nil
+        ).run(
+            executableURL: executableURL,
+            input: Data(),
+            timeoutNanoseconds: 5_000_000_000
+        )
+    }
+
     private var environment: [String: String] {
         [
             "SKILLS_COPILOT_STATIC_SERVICE_MODE": mode,
@@ -711,6 +741,15 @@ private final class StaticServiceScript {
         status_prefix='{"id":"test","ok":true,"result":{"protocol_version":1,"version":"test","app_data_dir":"/tmp/app","catalog_path":"/tmp/catalog","user_home":"/tmp/home","supported_methods":[]'
         status_suffix='}}'
         case "${SKILLS_COPILOT_STATIC_SERVICE_MODE:-malformed}" in
+          action-secret-probe)
+            cat >/dev/null
+            if printenv SKILLS_COPILOT_ACTION_PREVIEW_SECRET >/dev/null 2>&1; then
+              printf 'present'
+            else
+              printf 'absent'
+            fi
+            exit 0
+            ;;
           malformed)
             cat >/dev/null
             printf 'not-json'

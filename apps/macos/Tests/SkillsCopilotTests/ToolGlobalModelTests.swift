@@ -100,6 +100,26 @@ struct ToolGlobalModelTests {
     private func backendInstallPreviewDecodesAsConfirmable() throws {
         let payload = """
         {
+          "action": {
+            "id": "action:install-skill:fixture",
+            "kind": "install_skill",
+            "intent": "install_skill",
+            "target": {
+              "kind": "skill",
+              "id": "tool-alpha",
+              "agent": "codex",
+              "scope": "agent-global"
+            },
+            "impacts": ["skill_files", "app_local_data"],
+            "preview_method": "skill.install",
+            "apply_method": "skill.install",
+            "source_revision": "sha256:source",
+            "confirmation_required": true,
+            "network": "none",
+            "readback": ["skill_files", "catalog_skills"],
+            "evidence_refs": ["skill:tool-alpha"]
+          },
+          "preview_token": "action-preview:v1:hmac-sha256:fixture",
           "source_instance_id": "tool-alpha",
           "source_path": "/tmp/app/tool-global/skills/tool-alpha/SKILL.md",
           "target_agent": "codex",

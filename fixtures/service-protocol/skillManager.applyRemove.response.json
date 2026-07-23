@@ -3,6 +3,32 @@
   "ok": true,
   "result": {
     "preview": {
+      "action": {
+        "id": "action:manager_remove:2121212121212121212121212121212121212121212121212121212121212121",
+        "kind": "manager_remove",
+        "intent": "manager_remove",
+        "target": {
+          "kind": "skill",
+          "id": "manager:remove-fixture",
+          "scope": "agent-project"
+        },
+        "project_id": "project-0123456789abcdef",
+        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "preview_method": "skillManager.previewRemove",
+        "apply_method": "skillManager.applyRemove",
+        "source_revision": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+        "confirmation_required": true,
+        "network": "none",
+        "readback": ["catalog_skills"],
+        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+      },
+      "preconditions": [
+        {
+          "kind": "target_file",
+          "target_id": "/tmp/skills-copilot-project",
+          "expected_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
       "tool_id": "npx-skills",
       "operation": "remove",
       "command": [
@@ -26,11 +52,12 @@
       "network_required": false,
       "network_allowed": true,
       "will_run": true,
-      "preview_token": "skill-manager:fixture-remove",
+      "preview_token": "action-preview:v1:hmac-sha256:2323232323232323232323232323232323232323232323232323232323232323",
       "summary": "Remove frontend-design from 1 supported agent target(s).",
       "risks": [
         "The manager may delete its canonical copy when no selected or managed agent still references it."
-      ]
+      ],
+      "skills": ["frontend-design"]
     },
     "output": {
       "status": "completed",
@@ -40,6 +67,21 @@
     },
     "applied": true,
     "scanned_count": 1,
-    "updated_skills": []
+    "updated_skills": [],
+    "readback": {
+      "action_id": "action:manager_remove:2121212121212121212121212121212121212121212121212121212121212121",
+      "source_revision": "sha256:2424242424242424242424242424242424242424242424242424242424242424",
+      "project_id": "project-0123456789abcdef",
+      "domains": ["catalog_skills"],
+      "target_ids": ["manager:remove-fixture"],
+      "observations": [
+        {
+          "domain": "catalog_skills",
+          "target_id": "manager:remove-fixture",
+          "revision": "sha256:2525252525252525252525252525252525252525252525252525252525252525"
+        }
+      ],
+      "verified": true
+    }
   }
 }

@@ -1,4 +1,3 @@
-use super::dispatch_fixtures::*;
 use super::*;
 use crate::service_llm::{
     read_consistent_provider_activity_raw_snapshot_with, read_provider_activity_bounded,
@@ -3589,7 +3588,7 @@ fn scan_claude_surfaces_dangling_link_without_degrading_refresh_activity() {
 }
 
 #[test]
-fn import_skill_imports_local_directory_to_tool_global_staging_only() {
+fn legacy_import_skill_is_rejected_before_staging_or_catalog_io() {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-service-import-test-{}-{unique}",
@@ -3626,27 +3625,19 @@ fn import_skill_imports_local_directory_to_tool_global_staging_only() {
         params: json!({ "source_path": source }),
     });
 
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("import result");
+    assert!(!response.ok);
     assert_eq!(
-        result.pointer("/imported/agent").and_then(Value::as_str),
-        Some("tool-global")
+        response.error.expect("blocked mutation error").code,
+        "mutation_disabled"
     );
-    assert_eq!(
-        result.pointer("/imported/scope").and_then(Value::as_str),
-        Some("tool-global")
+    assert!(
+        !host.tool_global_staging_root().exists(),
+        "legacy import must not initialize staging"
     );
-    let staging_path = result
-        .get("staging_path")
-        .and_then(Value::as_str)
-        .expect("staging path");
-    assert!(PathBuf::from(staging_path).starts_with(
-        host.tool_global_staging_root()
-            .join("skills")
-            .canonicalize()
-            .expect("canonical staging skills root")
-    ));
-    assert!(PathBuf::from(staging_path).exists());
+    assert!(
+        !host.catalog_path().exists(),
+        "legacy import must not initialize a catalog"
+    );
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read settings"),
         "{\"skillOverrides\":{\"keep\":\"off\"}}\n"
@@ -3654,19 +3645,6 @@ fn import_skill_imports_local_directory_to_tool_global_staging_only() {
     assert!(
         !user_home.join(".codex/config.toml").exists(),
         "tool-global import must not create agent config"
-    );
-    assert_eq!(
-        result
-            .pointer("/audit/read_only_preview")
-            .and_then(Value::as_bool),
-        Some(true)
-    );
-    assert!(
-        result
-            .get("findings")
-            .and_then(Value::as_array)
-            .is_some_and(|findings| !findings.is_empty()),
-        "import should return audit findings"
     );
 
     let _ = fs::remove_dir_all(app_data_dir);
@@ -3690,8 +3668,7 @@ fn import_skill_rejects_github_url_without_network_clone() {
 
     assert!(!response.ok);
     let error = response.error.expect("github unsupported error");
-    assert_eq!(error.code, "command_error");
-    assert!(error.message.contains("explicitly deferred"));
+    assert_eq!(error.code, "mutation_disabled");
     assert!(
         !host.tool_global_staging_root().exists(),
         "unsupported GitHub import must not initialize staging"
@@ -4324,7 +4301,7 @@ fn scan_all_uses_stored_project_context_when_env_context_is_absent() {
 }
 
 #[test]
-fn skill_export_bundle_exports_staging_skill_through_service() {
+fn legacy_skill_export_bundle_is_rejected_before_output_io() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-service-export-test-{}-{}",
         std::process::id(),
@@ -4349,19 +4326,12 @@ fn skill_export_bundle_exports_staging_skill_through_service() {
         }),
     });
 
-    assert!(response.ok);
-    let result = response.result.expect("export result");
-    let export: WireExportedSkillBundle =
-        serde_json::from_value(result).expect("decode export result");
-    assert!(export.manifest_path.exists());
-    assert!(export.bundle_path.join("skill/SKILL.md").exists());
-    assert_eq!(export.metadata.name, "service-demo");
-    assert_eq!(export.metadata.source_scope, "tool-global");
-    let manifest = fs::read_to_string(&export.manifest_path).expect("read manifest");
-    assert!(
-        !manifest.contains(&app_data_dir.to_string_lossy().to_string()),
-        "manifest reproducible fields should not include absolute app-data paths"
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("blocked mutation error").code,
+        "mutation_disabled"
     );
+    assert!(!output_dir.exists(), "legacy export must not create output");
 
     let _ = fs::remove_dir_all(app_data_dir);
 }

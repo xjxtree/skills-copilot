@@ -2,6 +2,43 @@
   "id": "fixture-skill-install",
   "ok": true,
   "result": {
+    "action": {
+      "id": "action:install_skill:6666666666666666666666666666666666666666666666666666666666666666",
+      "kind": "install_skill",
+      "intent": "install_skill",
+      "target": {
+        "kind": "skill",
+        "id": "install-target:imported-review",
+        "agent": "codex",
+        "scope": "agent-global"
+      },
+      "impacts": ["app_local_data", "skill_files"],
+      "preview_method": "skill.install",
+      "apply_method": "skill.install",
+      "source_revision": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["catalog_skills", "skill_files"],
+      "evidence_refs": ["skill:tool-global-fixture"]
+    },
+    "preconditions": [
+      {
+        "kind": "catalog_record",
+        "target_id": "tool-global-fixture",
+        "expected_revision": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      {
+        "kind": "source_file",
+        "target_id": "/tmp/skills-copilot-app/tool-global/imported-review/SKILL.md",
+        "expected_revision": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      {
+        "kind": "target_file",
+        "target_id": "/tmp/skills-copilot-home/.agents/skills/imported-review/SKILL.md",
+        "expected_revision": "missing"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "source_instance_id": "tool-global-fixture",
     "source_path": "/tmp/skills-copilot-app/tool-global/imported-review/SKILL.md",
     "target_agent": "codex",
@@ -36,6 +73,7 @@
       "message": "Confirm install to copy this tool-global skill into the selected agent root."
     },
     "wrote": false,
-    "snapshot_id": null
+    "snapshot_id": null,
+    "readback": null
   }
 }

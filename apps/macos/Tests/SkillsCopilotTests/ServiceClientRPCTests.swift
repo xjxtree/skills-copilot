@@ -352,18 +352,40 @@ struct ServiceClientRPCTests {
         try expectEqual(Set(toggle.keys), Set(["instance_id", "on"]), "Single-skill toggle should keep its existing request contract.")
         try expectNil(toggle["expected_revision"], "Single-skill toggle must not gain config-save CAS fields.")
 
+        let action = ActionDescriptorWire(
+            id: "action:disable-skill:fixture",
+            kind: "toggle_skill",
+            intent: "disable_skill",
+            target: ActionTargetWire(
+                kind: "skill",
+                id: "skill-1",
+                agent: "claude-code",
+                scope: "agent-global"
+            ),
+            projectID: nil,
+            impacts: ["agent_config"],
+            previewMethod: "batch.previewSkillToggles",
+            applyMethod: "batch.applySkillToggles",
+            sourceRevision: "sha256:source",
+            confirmationRequired: true,
+            network: "none",
+            readback: ["agent_config", "skill_aggregates"],
+            evidenceRefs: ["skill:skill-1"]
+        )
         let batch = try encodedObject(BatchToggleParams(
             instanceIDs: ["skill-1"],
             targetEnabled: false,
-            action: "apply",
-            previewToken: "batch:preview",
-            confirmed: true
+            confirmation: ActionConfirmationWire(
+                action: action,
+                previewToken: "action-preview:v1:hmac-sha256:fixture"
+            )
         ))
         try expectEqual(
             Set(batch.keys),
-            Set(["instance_ids", "target_enabled", "action", "preview_token", "confirmed"]),
-            "Batch toggle should keep its existing preview-token request contract."
+            Set(["instance_ids", "target_enabled", "confirmation"]),
+            "Batch toggle apply should send one typed confirmation envelope."
         )
+        try expectNil(batch["preview_token"], "The opaque token must stay nested inside confirmation.")
         try expectNil(batch["expected_revision"], "Batch toggle must not gain config-save CAS fields.")
         try expectNil(batch["current_revision"], "Batch toggle must not send rollback revision fields.")
     }

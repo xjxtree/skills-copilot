@@ -13,6 +13,16 @@
     ],
     "scope": "project",
     "confirmed": true,
-    "preview_token": "skill-manager:fixture-remove"
+    "preview_token": "action-preview:v1:hmac-sha256:2323232323232323232323232323232323232323232323232323232323232323",
+    "action_reference": {
+      "action_id": "action:manager_remove:2121212121212121212121212121212121212121212121212121212121212121",
+      "source_revision": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+      "project_id": "project-0123456789abcdef",
+      "target": {
+        "kind": "skill",
+        "id": "manager:remove-fixture",
+        "scope": "agent-project"
+      }
+    }
   }
 }

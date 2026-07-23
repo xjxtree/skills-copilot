@@ -3,6 +3,8 @@ use skills_copilot_core::{ListIncompleteReason, ListSourceCompleteness};
 
 fn test_preview(operation: &str) -> SkillManagerCommandPreview {
     SkillManagerCommandPreview {
+        action: None,
+        preconditions: Vec::new(),
         tool_id: DEFAULT_MANAGER_TOOL.to_string(),
         operation: operation.to_string(),
         command: vec!["/usr/bin/false".to_string()],
@@ -300,6 +302,8 @@ fn prohibited_previewed_command_does_not_create_cwd() {
         extra_roots: Vec::new(),
     };
     let preview = SkillManagerCommandPreview {
+        action: None,
+        preconditions: Vec::new(),
         tool_id: DEFAULT_MANAGER_TOOL.to_string(),
         operation: "search".to_string(),
         command: vec!["/usr/bin/false".to_string()],
@@ -325,4 +329,22 @@ fn prohibited_previewed_command_does_not_create_cwd() {
     ));
     assert!(!cwd.exists());
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn confirmed_manager_apply_requires_the_exact_preview_token() {
+    let mut preview = test_preview("install");
+    preview.requires_confirmation = true;
+    preview.confirmed = true;
+
+    let missing = ensure_confirmed(&preview, true, None, None);
+
+    assert!(
+        matches!(
+            missing,
+            Err(CommandError::ActionConfirmationRequired(detail))
+                if detail.contains("fresh preview_token")
+        ),
+        "a confirmed manager apply without its preview token must fail closed"
+    );
 }

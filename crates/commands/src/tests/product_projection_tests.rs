@@ -1,13 +1,25 @@
 use super::*;
 use skills_copilot_catalog::{ConflictGroupRecord, RuleFindingRecord};
 use skills_copilot_core::{
-    ActionDescriptor, ActionImpact, ActionNetworkPosture, ActionTargetKind, ActionTargetRef,
-    AttentionKind, EnvironmentHealthState, ListIncompleteReason, ResumeCapability,
-    ResumeUnsupportedReason, SkillEffectivenessState, SourceCoverage,
+    ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
+    ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AttentionKind, EnvironmentHealthState,
+    ListIncompleteReason, ResumeCapability, ResumeUnsupportedReason, SkillEffectivenessState,
+    SourceCoverage,
 };
 
 const REVISION: &str = "revision:v1";
 const PROJECT_ID: &str = "project:funnyaccount-system";
+
+fn registry_action(mut action: ActionDescriptor) -> ActionDescriptor {
+    action.id = deterministic_action_id(
+        action.kind,
+        action.intent,
+        &action.target,
+        action.project_id.as_deref(),
+    )
+    .expect("registry action id");
+    action
+}
 
 #[test]
 fn six_agent_projection_preserves_plugin_and_compatibility_provenance() {
@@ -374,7 +386,6 @@ fn active_findings_conflicts_and_existing_actions_form_one_attention_queue() {
         "native",
         "native:conflict",
     );
-    first.action_ids = vec!["action:disable-conflict".to_string()];
     let second = skill_fact(
         "conflict-two",
         AgentId::Codex,
@@ -383,22 +394,30 @@ fn active_findings_conflicts_and_existing_actions_form_one_attention_queue() {
         "native",
         "native:conflict",
     );
-    let action = ActionDescriptor {
-        id: "action:disable-conflict".to_string(),
+    let action = registry_action(ActionDescriptor {
+        id: String::new(),
+        kind: ActionKind::ToggleSkill,
+        intent: ActionIntent::DisableSkill,
         target: ActionTargetRef {
             kind: ActionTargetKind::Skill,
             id: first.instance_id.clone(),
             agent: first.agent,
             scope: Some(first.scope),
         },
+        project_id: None,
         impacts: vec![ActionImpact::AgentConfig],
         preview_method: "batch.previewSkillToggles".to_string(),
         apply_method: Some("batch.applySkillToggles".to_string()),
         source_revision: REVISION.to_string(),
         confirmation_required: true,
         network: ActionNetworkPosture::None,
+        readback: vec![
+            ActionReadbackDomain::AgentConfig,
+            ActionReadbackDomain::SkillAggregates,
+        ],
         evidence_refs: vec![skill_projection_evidence_id(&first.instance_id)],
-    };
+    });
+    first.action_ids = vec![action.id.clone()];
     let mut input = base_input();
     input.actions.push(action);
     let active = finding("active", &first.instance_id, "warning", false, "open");
@@ -557,26 +576,30 @@ fn session_continuations_require_exact_project_match_and_preserve_adapter_capabi
 #[test]
 fn session_actions_bind_the_product_snapshot_and_native_session_evidence() {
     let mut session = session_input(AgentId::Codex, "action-session", 10);
-    session.action_ids = vec!["action:resume-session".to_string()];
-    let action = ActionDescriptor {
-        id: "action:resume-session".to_string(),
+    let action = registry_action(ActionDescriptor {
+        id: String::new(),
+        kind: ActionKind::ResumeSession,
+        intent: ActionIntent::ResumeSession,
         target: ActionTargetRef {
             kind: ActionTargetKind::Session,
             id: session.id.clone(),
             agent: Some(session.agent),
             scope: Some(Scope::AgentProject),
         },
+        project_id: Some(PROJECT_ID.to_string()),
         impacts: vec![ActionImpact::ReadOnly],
         preview_method: "session.previewResume".to_string(),
         apply_method: None,
         source_revision: REVISION.to_string(),
         confirmation_required: false,
         network: ActionNetworkPosture::None,
+        readback: vec![ActionReadbackDomain::SessionContinuation],
         evidence_refs: vec![session_projection_evidence_id(
             &session.id,
             &session.source_revision,
         )],
-    };
+    });
+    session.action_ids = vec![action.id.clone()];
     let native_revision = session.source_revision.clone();
     let mut input = base_input();
     input.sessions = vec![session];
@@ -608,22 +631,26 @@ fn action_ownership_must_match_the_declaring_skill_agent_or_session() {
     );
     let mut second = first.clone();
     second.instance_id = "owner-second".to_string();
-    let unrelated_skill_action = ActionDescriptor {
-        id: "action:wrong-skill-owner".to_string(),
+    let unrelated_skill_action = registry_action(ActionDescriptor {
+        id: String::new(),
+        kind: ActionKind::RefreshEvidence,
+        intent: ActionIntent::InspectEvidence,
         target: ActionTargetRef {
             kind: ActionTargetKind::Skill,
             id: second.instance_id.clone(),
             agent: second.agent,
             scope: Some(second.scope),
         },
+        project_id: None,
         impacts: vec![ActionImpact::ReadOnly],
         preview_method: "catalog.getSkill".to_string(),
         apply_method: None,
         source_revision: REVISION.to_string(),
         confirmation_required: false,
         network: ActionNetworkPosture::None,
+        readback: vec![ActionReadbackDomain::CatalogSkills],
         evidence_refs: vec![skill_projection_evidence_id(&second.instance_id)],
-    };
+    });
     let mut wrong_skill_owner = first.clone();
     wrong_skill_owner.action_ids = vec![unrelated_skill_action.id.clone()];
     let mut input = base_input();
@@ -643,49 +670,59 @@ fn action_ownership_must_match_the_declaring_skill_agent_or_session() {
         .iter_mut()
         .find(|source| source.agent == AgentId::ClaudeCode)
         .expect("Claude source");
-    claude.action_ids = vec!["action:wrong-agent-owner".to_string()];
-    input.actions = vec![ActionDescriptor {
-        id: "action:wrong-agent-owner".to_string(),
+    let wrong_agent_action = registry_action(ActionDescriptor {
+        id: String::new(),
+        kind: ActionKind::RefreshEvidence,
+        intent: ActionIntent::InspectEvidence,
         target: ActionTargetRef {
             kind: ActionTargetKind::Agent,
             id: AgentId::Codex.as_str().to_string(),
             agent: Some(AgentId::Codex),
             scope: None,
         },
+        project_id: None,
         impacts: vec![ActionImpact::ReadOnly],
         preview_method: "catalog.scanAgent".to_string(),
         apply_method: None,
         source_revision: REVISION.to_string(),
         confirmation_required: false,
         network: ActionNetworkPosture::None,
+        readback: vec![ActionReadbackDomain::CatalogSkills],
         evidence_refs: vec![coverage_projection_evidence_id(AgentId::ClaudeCode)],
-    }];
+    });
+    claude.action_ids = vec![wrong_agent_action.id.clone()];
+    input.actions = vec![wrong_agent_action];
     let error = project(input, Vec::new(), Vec::new(), Vec::new())
         .expect_err("cross-agent action ownership must fail closed");
     assert!(error.to_string().contains("owning agent"));
 
     let mut session = session_input(AgentId::Codex, "owner-session", 10);
-    session.action_ids = vec!["action:wrong-session-owner".to_string()];
     let mut input = base_input();
-    input.actions = vec![ActionDescriptor {
-        id: "action:wrong-session-owner".to_string(),
+    let wrong_session_action = registry_action(ActionDescriptor {
+        id: String::new(),
+        kind: ActionKind::ResumeSession,
+        intent: ActionIntent::ResumeSession,
         target: ActionTargetRef {
             kind: ActionTargetKind::Session,
             id: "another-session".to_string(),
             agent: Some(AgentId::Codex),
             scope: Some(Scope::AgentProject),
         },
+        project_id: Some(PROJECT_ID.to_string()),
         impacts: vec![ActionImpact::ReadOnly],
         preview_method: "session.previewResume".to_string(),
         apply_method: None,
         source_revision: REVISION.to_string(),
         confirmation_required: false,
         network: ActionNetworkPosture::None,
+        readback: vec![ActionReadbackDomain::SessionContinuation],
         evidence_refs: vec![session_projection_evidence_id(
             &session.id,
             &session.source_revision,
         )],
-    }];
+    });
+    session.action_ids = vec![wrong_session_action.id.clone()];
+    input.actions = vec![wrong_session_action];
     input.sessions = vec![session];
     let error = project(input, Vec::new(), Vec::new(), Vec::new())
         .expect_err("cross-session action ownership must fail closed");
@@ -830,10 +867,6 @@ fn projection_serialization_is_stable_when_snapshot_inputs_are_reordered() {
         "native",
         "native:stable",
     );
-    stable_skill.action_ids = vec![
-        "action:stable-skill-b".to_string(),
-        "action:stable-skill-a".to_string(),
-    ];
     let mut skills = vec![
         plugin_skill_fact(),
         opencode_compatibility_fact(),
@@ -853,39 +886,73 @@ fn projection_serialization_is_stable_when_snapshot_inputs_are_reordered() {
     let finding_evidence = finding_projection_evidence_id("stable-a");
     let mut actions = ["a", "b"]
         .into_iter()
-        .map(|suffix| ActionDescriptor {
-            id: format!("action:stable-skill-{suffix}"),
-            target: ActionTargetRef {
-                kind: ActionTargetKind::Skill,
-                id: stable_skill.instance_id.clone(),
-                agent: stable_skill.agent,
-                scope: Some(stable_skill.scope),
-            },
-            impacts: vec![ActionImpact::SkillFiles, ActionImpact::AgentConfig],
-            preview_method: "batch.previewSkillToggles".to_string(),
-            apply_method: Some("batch.applySkillToggles".to_string()),
-            source_revision: REVISION.to_string(),
-            confirmation_required: true,
-            network: ActionNetworkPosture::None,
-            evidence_refs: vec![finding_evidence.clone(), skill_evidence.clone()],
+        .map(|suffix| {
+            registry_action(ActionDescriptor {
+                id: String::new(),
+                kind: ActionKind::ToggleSkill,
+                intent: if suffix == "a" {
+                    ActionIntent::DisableSkill
+                } else {
+                    ActionIntent::EnableSkill
+                },
+                target: ActionTargetRef {
+                    kind: ActionTargetKind::Skill,
+                    id: stable_skill.instance_id.clone(),
+                    agent: stable_skill.agent,
+                    scope: Some(stable_skill.scope),
+                },
+                project_id: None,
+                impacts: vec![ActionImpact::SkillFiles, ActionImpact::AgentConfig],
+                preview_method: "batch.previewSkillToggles".to_string(),
+                apply_method: Some("batch.applySkillToggles".to_string()),
+                source_revision: REVISION.to_string(),
+                confirmation_required: true,
+                network: ActionNetworkPosture::None,
+                readback: vec![
+                    ActionReadbackDomain::AgentConfig,
+                    ActionReadbackDomain::SkillAggregates,
+                ],
+                evidence_refs: vec![finding_evidence.clone(), skill_evidence.clone()],
+            })
         })
         .collect::<Vec<_>>();
-    actions.extend(["a", "b"].into_iter().map(|suffix| ActionDescriptor {
-        id: format!("action:stable-agent-{suffix}"),
+    actions.push(registry_action(ActionDescriptor {
+        id: String::new(),
+        kind: ActionKind::RefreshEvidence,
+        intent: ActionIntent::InspectEvidence,
         target: ActionTargetRef {
             kind: ActionTargetKind::Agent,
             id: AgentId::ClaudeCode.as_str().to_string(),
             agent: Some(AgentId::ClaudeCode),
             scope: None,
         },
+        project_id: None,
         impacts: vec![ActionImpact::ReadOnly],
         preview_method: "catalog.scanAgent".to_string(),
         apply_method: None,
         source_revision: REVISION.to_string(),
         confirmation_required: false,
         network: ActionNetworkPosture::None,
+        readback: vec![ActionReadbackDomain::CatalogSkills],
         evidence_refs: vec![coverage_projection_evidence_id(AgentId::ClaudeCode)],
     }));
+    let stable_skill_action_ids = actions
+        .iter()
+        .filter(|action| action.target.kind == ActionTargetKind::Skill)
+        .map(|action| action.id.clone())
+        .collect::<Vec<_>>();
+    stable_skill.action_ids = stable_skill_action_ids.clone();
+    skills
+        .iter_mut()
+        .find(|skill| skill.instance_id == stable_skill.instance_id)
+        .expect("stable skill")
+        .action_ids = stable_skill_action_ids;
+    let stable_agent_action_id = actions
+        .iter()
+        .find(|action| action.target.kind == ActionTargetKind::Agent)
+        .expect("agent action")
+        .id
+        .clone();
     let sessions = vec![
         session_input(AgentId::Codex, "stable-session-a", 20),
         session_input(AgentId::ClaudeCode, "stable-session-b", 10),
@@ -900,10 +967,7 @@ fn projection_serialization_is_stable_when_snapshot_inputs_are_reordered() {
         .expect("Claude source");
     first_claude.coverage =
         SourceCoverage::incomplete(1, Some(2), ListIncompleteReason::SourceLimited);
-    first_claude.action_ids = vec![
-        "action:stable-agent-b".to_string(),
-        "action:stable-agent-a".to_string(),
-    ];
+    first_claude.action_ids = vec![stable_agent_action_id.clone()];
     first_input.actions = actions.clone();
     let first = project(first_input, skills.clone(), findings.clone(), Vec::new())
         .expect("ordered projection");
@@ -925,10 +989,7 @@ fn projection_serialization_is_stable_when_snapshot_inputs_are_reordered() {
         .expect("Claude source");
     second_claude.coverage =
         SourceCoverage::incomplete(1, Some(2), ListIncompleteReason::SourceLimited);
-    second_claude.action_ids = vec![
-        "action:stable-agent-a".to_string(),
-        "action:stable-agent-b".to_string(),
-    ];
+    second_claude.action_ids = vec![stable_agent_action_id];
     actions.reverse();
     for action in &mut actions {
         action.impacts.reverse();

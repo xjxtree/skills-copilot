@@ -23,14 +23,17 @@ use skills_copilot_catalog::{
     SkillRecord,
 };
 use skills_copilot_core::{
-    AdapterContext, AgentAdapter, AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess,
-    PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
+    ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
+    ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AdapterContext, AgentAdapter,
+    AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess, PermissionRequest, RootSource,
+    Scope, SkillInstance, SkillState,
 };
 use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport};
 
 #[cfg(test)]
 use skills_copilot_core::SkillScript;
 
+mod action_lifecycle;
 mod analysis;
 mod config_consistency;
 mod config_support;
@@ -57,6 +60,7 @@ use config_support::{
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
 
+pub use action_lifecycle::*;
 pub use analysis::*;
 pub use config_support::read_agent_config;
 pub use error::*;
@@ -226,6 +230,8 @@ impl AdapterFeatureCapability {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BatchTogglePreviewRecord {
+    pub action: ActionDescriptor,
+    pub preconditions: Vec<ActionPrecondition>,
     pub preview_token: String,
     pub target_enabled: bool,
     pub requested_count: usize,
@@ -240,6 +246,7 @@ pub struct BatchTogglePreviewRecord {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BatchToggleApplyRecord {
+    pub action: ActionDescriptor,
     pub preview_token: String,
     pub target_enabled: bool,
     pub requested_count: usize,
@@ -252,6 +259,7 @@ pub struct BatchToggleApplyRecord {
     pub capability_labels: Vec<String>,
     pub snapshot_rollback_notes: Vec<String>,
     pub updated_records: Vec<SkillRecord>,
+    pub readback: ActionReadbackRecord,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -264,6 +272,8 @@ pub struct BatchToggleAffectedItem {
     pub target_enabled: bool,
     pub config_scope: String,
     pub config_target: String,
+    pub config_revision: String,
+    pub catalog_revision: String,
     pub capability_label: String,
     pub snapshot_plan: String,
     pub rollback_plan: String,
@@ -1823,6 +1833,9 @@ pub struct SkillInstallConfirmation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillInstallPreviewRecord {
+    pub action: ActionDescriptor,
+    pub preconditions: Vec<ActionPrecondition>,
+    pub preview_token: String,
     pub source_instance_id: String,
     pub source_path: String,
     pub target_agent: String,
@@ -1833,6 +1846,7 @@ pub struct SkillInstallPreviewRecord {
     pub confirmation: SkillInstallConfirmation,
     pub wrote: bool,
     pub snapshot_id: Option<String>,
+    pub readback: Option<ActionReadbackRecord>,
 }
 
 pub fn install_skill_from_tool_global(
@@ -1842,18 +1856,28 @@ pub fn install_skill_from_tool_global(
     target_agent: AgentId,
     target_scope: Scope,
     project_path: Option<&Path>,
-    confirmed: bool,
+    action_confirmation: Option<&ActionConfirmation>,
 ) -> Result<SkillInstallPreviewRecord, CommandError> {
-    let preview = preview_skill_install_from_tool_global(
+    let Some(action_confirmation) = action_confirmation else {
+        return preview_skill_install_from_tool_global(
+            catalog,
+            ctx,
+            instance_id,
+            target_agent,
+            target_scope,
+            project_path,
+        );
+    };
+    let preview = validate_skill_install_confirmation(
         catalog,
         ctx,
         instance_id,
         target_agent,
         target_scope,
         project_path,
-        confirmed,
+        action_confirmation,
     )?;
-    if !confirmed {
+    if !action_confirmation.confirmed {
         return Ok(preview);
     }
 
@@ -1862,14 +1886,36 @@ pub fn install_skill_from_tool_global(
     validate_skill_install_target(ctx, target_agent, target_scope, &target, project_path, true)?;
     validate_tool_global_source(&source)?;
     let lock_file = lock_install_target(ctx, target_agent, target_scope, &target, project_path)?;
+    let locked_source = read_skill_file_state(&source, true)?;
+    let locked_target = read_skill_file_state(&target, false)?;
+    let expected_source = preview
+        .preconditions
+        .iter()
+        .find(|item| item.kind == ActionPreconditionKind::SourceFile)
+        .ok_or_else(|| {
+            CommandError::MismatchedActionReference(
+                "install preview is missing its source precondition".to_string(),
+            )
+        })?;
+    let expected_target = preview
+        .preconditions
+        .iter()
+        .find(|item| item.kind == ActionPreconditionKind::TargetFile)
+        .ok_or_else(|| {
+            CommandError::MismatchedActionReference(
+                "install preview is missing its target precondition".to_string(),
+            )
+        })?;
+    if locked_source.revision != expected_source.expected_revision
+        || locked_target.revision != expected_target.expected_revision
+    {
+        lock_file.unlock()?;
+        return Err(CommandError::StaleActionReference);
+    }
 
     let write_result = (|| {
-        let original_text = match fs::read_to_string(&target) {
-            Ok(content) => content,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-            Err(err) => return Err(err.into()),
-        };
-        let new_text = fs::read_to_string(&source)?;
+        let original_text = locked_target.content.clone();
+        let new_text = locked_source.content.clone();
 
         write_skill_file_atomic(
             ctx,
@@ -1898,16 +1944,103 @@ pub fn install_skill_from_tool_global(
 
     let scan_ctx = install_scan_context(ctx, target_agent, target_scope, project_path)?;
     scan_agent_id_to_catalog(target_agent, &scan_ctx, catalog)?;
+    let target_state = read_skill_file_state(&target, true)?;
+    let canonical_target = target.canonicalize()?;
+    let expected_project_root = if target_scope == Scope::AgentProject {
+        Some(
+            scan_ctx
+                .project_root
+                .as_deref()
+                .ok_or(CommandError::VerificationFailed)?
+                .canonicalize()?,
+        )
+    } else {
+        None
+    };
+    let target_record = catalog
+        .list_skill_records()?
+        .into_iter()
+        .find(|record| {
+            record.agent == target_agent.as_str()
+                && record.scope == target_scope.as_str()
+                && record
+                    .path
+                    .canonicalize()
+                    .is_ok_and(|path| path == canonical_target)
+        })
+        .ok_or(CommandError::VerificationFailed)?;
+    let target_meta = catalog
+        .get_skill_instance_meta(&target_record.id)?
+        .ok_or(CommandError::VerificationFailed)?;
+    let project_matches = match (
+        expected_project_root.as_deref(),
+        target_meta.project_root.as_deref(),
+    ) {
+        (None, None) => true,
+        (Some(expected), Some(actual)) => {
+            actual.canonicalize().is_ok_and(|actual| actual == expected)
+        }
+        _ => false,
+    };
+    if !project_matches {
+        return Err(CommandError::VerificationFailed);
+    }
+    let target_record_json = serde_json::to_string(&target_record)?;
+    let readback = ActionReadbackRecord::verified(
+        &preview.action,
+        vec![
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::SkillFiles,
+                target_id: preview.target_path.clone(),
+                revision: target_state.revision,
+            },
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::CatalogSkills,
+                target_id: target_record.id,
+                revision: action_source_revision(
+                    "catalog.skill.readback",
+                    &[("record", &target_record_json)],
+                )?,
+            },
+        ],
+    )?;
 
     Ok(SkillInstallPreviewRecord {
         wrote: true,
         snapshot_id: None,
+        readback: Some(readback),
         confirmation: SkillInstallConfirmation {
             confirmed: true,
             ..preview.confirmation
         },
         ..preview
     })
+}
+
+pub fn validate_skill_install_confirmation(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_id: &str,
+    target_agent: AgentId,
+    target_scope: Scope,
+    project_path: Option<&Path>,
+    action_confirmation: &ActionConfirmation,
+) -> Result<SkillInstallPreviewRecord, CommandError> {
+    let preview = preview_skill_install_from_tool_global(
+        catalog,
+        ctx,
+        instance_id,
+        target_agent,
+        target_scope,
+        project_path,
+    )?;
+    let binding = ActionPreviewBinding {
+        action: preview.action.clone(),
+        preconditions: preview.preconditions.clone(),
+        preview_token: preview.preview_token.clone(),
+    };
+    ensure_action_confirmed(&binding, Some(action_confirmation))?;
+    Ok(preview)
 }
 
 fn preview_skill_install_from_tool_global(
@@ -1917,7 +2050,6 @@ fn preview_skill_install_from_tool_global(
     target_agent: AgentId,
     target_scope: Scope,
     project_path: Option<&Path>,
-    confirmed: bool,
 ) -> Result<SkillInstallPreviewRecord, CommandError> {
     if !matches!(
         target_agent,
@@ -1964,7 +2096,68 @@ fn preview_skill_install_from_tool_global(
     )?;
     let target_exists = target.exists();
     let risks = install_preview_risks(target_agent, target_scope, target_exists);
+    let source_state = read_skill_file_state(&source, true)?;
+    let target_state = read_skill_file_state(&target, false)?;
+    let catalog_revision = batch_catalog_record_revision(&meta)?;
+    let project_root = if target_scope == Scope::AgentProject {
+        Some(target_project_root(ctx, project_path)?)
+    } else {
+        ctx.project_root.clone()
+    };
+    let project_id = canonical_project_id(project_root.as_deref());
+    let source_revision = action_source_revision(
+        "skill.install.accepted-snapshot",
+        &[
+            ("catalog_record", &catalog_revision),
+            ("source_instance_id", instance_id),
+        ],
+    )?;
+    let descriptor = action_descriptor(
+        ActionKind::InstallSkill,
+        ActionIntent::InstallSkill,
+        ActionTargetRef {
+            kind: ActionTargetKind::Skill,
+            id: format!("install-target:{}", hash_string(&target.to_string_lossy())),
+            agent: Some(target_agent),
+            scope: Some(target_scope),
+        },
+        project_id,
+        vec![ActionImpact::SkillFiles, ActionImpact::AppLocalData],
+        "skill.install",
+        Some("skill.install"),
+        source_revision,
+        true,
+        ActionNetworkPosture::None,
+        canonical_readback_domains([
+            ActionReadbackDomain::SkillFiles,
+            ActionReadbackDomain::CatalogSkills,
+        ]),
+        vec![skill_projection_evidence_id(instance_id)],
+    )?;
+    let action_binding = action_preview_binding(
+        descriptor,
+        vec![
+            ActionPrecondition {
+                kind: ActionPreconditionKind::CatalogRecord,
+                target_id: instance_id.to_string(),
+                expected_revision: catalog_revision,
+            },
+            ActionPrecondition {
+                kind: ActionPreconditionKind::SourceFile,
+                target_id: source.to_string_lossy().to_string(),
+                expected_revision: source_state.revision,
+            },
+            ActionPrecondition {
+                kind: ActionPreconditionKind::TargetFile,
+                target_id: target.to_string_lossy().to_string(),
+                expected_revision: target_state.revision,
+            },
+        ],
+    )?;
     Ok(SkillInstallPreviewRecord {
+        action: action_binding.action,
+        preconditions: action_binding.preconditions,
+        preview_token: action_binding.preview_token,
         source_instance_id: instance_id.to_string(),
         source_path: source.to_string_lossy().to_string(),
         target_agent: target_agent.as_str().to_string(),
@@ -1980,7 +2173,7 @@ fn preview_skill_install_from_tool_global(
         risks,
         confirmation: SkillInstallConfirmation {
             required: true,
-            confirmed,
+            confirmed: false,
             fields: vec![
                 "source_instance_id",
                 "source_path",
@@ -1995,7 +2188,33 @@ fn preview_skill_install_from_tool_global(
         },
         wrote: false,
         snapshot_id: None,
+        readback: None,
     })
+}
+
+struct SkillFileState {
+    revision: String,
+    content: String,
+}
+
+fn read_skill_file_state(path: &Path, required: bool) -> Result<SkillFileState, CommandError> {
+    let (exists, content) = match fs::read_to_string(path) {
+        Ok(content) => (true, content),
+        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => {
+            (false, String::new())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let path_text = path.to_string_lossy();
+    let revision = action_source_revision(
+        "skill.file",
+        &[
+            ("path", &path_text),
+            ("exists", if exists { "true" } else { "false" }),
+            ("content", &content),
+        ],
+    )?;
+    Ok(SkillFileState { revision, content })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3078,6 +3297,8 @@ pub fn preview_skill_toggles(
             target_enabled,
             config_scope: config_target.scope.as_str().to_string(),
             config_target: config_target.path.to_string_lossy().to_string(),
+            config_revision: read_config_state(&config_target.path)?.revision,
+            catalog_revision: batch_catalog_record_revision(&meta)?,
             capability_label,
             snapshot_plan: "Create a pre-batch-toggle agent config snapshot before writing."
                 .to_string(),
@@ -3092,15 +3313,18 @@ pub fn preview_skill_toggles(
     let writes_allowed = writable_count > 0;
     let capability_labels = batch_capability_labels(&affected_items, &skipped_items);
     let snapshot_rollback_notes = batch_snapshot_rollback_notes(&affected_items);
-    let preview_token = batch_preview_token(
+    let action_binding = batch_toggle_action_binding(
+        ctx,
         target_enabled,
         requested_count,
         &affected_items,
         &skipped_items,
-    );
+    )?;
 
     Ok(BatchTogglePreviewRecord {
-        preview_token,
+        action: action_binding.action,
+        preconditions: action_binding.preconditions,
+        preview_token: action_binding.preview_token,
         target_enabled,
         requested_count,
         writable_count,
@@ -3118,21 +3342,45 @@ pub fn apply_skill_toggles(
     ctx: &AdapterContext,
     instance_ids: &[String],
     target_enabled: bool,
-    preview_token: &str,
+    confirmation: &ActionConfirmation,
 ) -> Result<BatchToggleApplyRecord, CommandError> {
-    let preview = preview_skill_toggles(catalog, ctx, instance_ids, target_enabled)?;
-    if preview.preview_token != preview_token {
-        return Err(CommandError::InvalidBatchAction(
-            "batch apply requires a fresh preview token for the same selection and target enabled state".to_string(),
-        ));
-    }
+    apply_skill_toggles_with_after_confirmation(
+        catalog,
+        ctx,
+        instance_ids,
+        target_enabled,
+        confirmation,
+        || {},
+    )
+}
+
+fn apply_skill_toggles_with_after_confirmation<F>(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_ids: &[String],
+    target_enabled: bool,
+    confirmation: &ActionConfirmation,
+    after_confirmation: F,
+) -> Result<BatchToggleApplyRecord, CommandError>
+where
+    F: FnOnce(),
+{
+    let preview = validate_skill_toggle_confirmation(
+        catalog,
+        ctx,
+        instance_ids,
+        target_enabled,
+        confirmation,
+    )?;
+    after_confirmation();
     if !preview.writes_allowed {
         return Err(CommandError::InvalidBatchAction(
             "batch apply has no writable items after read-only and no-op filtering".to_string(),
         ));
     }
 
-    let mut groups: BTreeMap<(String, String, String), Vec<SkillInstanceMeta>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String, String, String), Vec<SkillInstanceMeta>> =
+        BTreeMap::new();
     for item in &preview.affected_items {
         let meta = catalog
             .get_skill_instance_meta(&item.instance_id)?
@@ -3143,18 +3391,38 @@ pub fn apply_skill_toggles(
                 config_target.agent.as_str().to_string(),
                 config_target.scope.as_str().to_string(),
                 config_target.path.to_string_lossy().to_string(),
+                item.config_revision.clone(),
             ))
             .or_default()
             .push(meta);
     }
 
     let mut updated_records = Vec::new();
-    for metas in groups.values() {
+    let mut group_locks = Vec::new();
+    for ((_, _, _, expected_revision), metas) in &groups {
         let Some(first_meta) = metas.first() else {
             continue;
         };
         let config_target = config_target_for_instance(ctx, first_meta)?;
-        apply_skill_toggle_group(catalog, ctx, &config_target, metas, target_enabled)?;
+        let lock_file = lock_config(
+            ctx,
+            config_target.agent,
+            config_target.scope,
+            &config_target.path,
+        )?;
+        let locked_state = read_config_state(&config_target.path)?;
+        if locked_state.revision != *expected_revision {
+            lock_file.unlock()?;
+            return Err(CommandError::StaleActionReference);
+        }
+        group_locks.push(lock_file);
+    }
+    for ((_, _, _, _expected_revision), metas) in &groups {
+        let Some(first_meta) = metas.first() else {
+            continue;
+        };
+        let config_target = config_target_for_instance(ctx, first_meta)?;
+        apply_skill_toggle_group_locked(catalog, ctx, &config_target, metas, target_enabled)?;
         for meta in metas {
             let record = catalog
                 .get_skill_record(&meta.id)?
@@ -3162,8 +3430,29 @@ pub fn apply_skill_toggles(
             updated_records.push(record);
         }
     }
+    for lock_file in group_locks {
+        lock_file.unlock()?;
+    }
 
+    let mut observations = Vec::new();
+    for (_, _, config_path, _) in groups.keys() {
+        observations.push(ActionReadbackObservation {
+            domain: ActionReadbackDomain::AgentConfig,
+            target_id: config_path.clone(),
+            revision: read_config_state(Path::new(config_path))?.revision,
+        });
+    }
+    for record in &updated_records {
+        let serialized = serde_json::to_string(record)?;
+        observations.push(ActionReadbackObservation {
+            domain: ActionReadbackDomain::CatalogSkills,
+            target_id: record.id.clone(),
+            revision: action_source_revision("catalog.skill.readback", &[("record", &serialized)])?,
+        });
+    }
+    let readback = ActionReadbackRecord::verified(&preview.action, observations)?;
     Ok(BatchToggleApplyRecord {
+        action: preview.action,
         preview_token: preview.preview_token,
         target_enabled: preview.target_enabled,
         requested_count: preview.requested_count,
@@ -3176,10 +3465,28 @@ pub fn apply_skill_toggles(
         capability_labels: preview.capability_labels,
         snapshot_rollback_notes: preview.snapshot_rollback_notes,
         updated_records,
+        readback,
     })
 }
 
-fn apply_skill_toggle_group(
+pub fn validate_skill_toggle_confirmation(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_ids: &[String],
+    target_enabled: bool,
+    confirmation: &ActionConfirmation,
+) -> Result<BatchTogglePreviewRecord, CommandError> {
+    let preview = preview_skill_toggles(catalog, ctx, instance_ids, target_enabled)?;
+    let binding = ActionPreviewBinding {
+        action: preview.action.clone(),
+        preconditions: preview.preconditions.clone(),
+        preview_token: preview.preview_token.clone(),
+    };
+    ensure_action_confirmed(&binding, Some(confirmation))?;
+    Ok(preview)
+}
+
+fn apply_skill_toggle_group_locked(
     catalog: &Catalog,
     ctx: &AdapterContext,
     config_target: &ConfigTarget,
@@ -3192,13 +3499,6 @@ fn apply_skill_toggle_group(
         config_target.scope,
         &config_target.path,
     )?;
-    let lock_file = lock_config(
-        ctx,
-        config_target.agent,
-        config_target.scope,
-        &config_target.path,
-    )?;
-
     let original_text = if config_target.path.exists() {
         fs::read_to_string(&config_target.path)?
     } else {
@@ -3248,10 +3548,8 @@ fn apply_skill_toggle_group(
             &config_target.path,
             &original_text,
         );
-        lock_file.unlock()?;
         return Err(CommandError::VerificationFailed);
     }
-    lock_file.unlock()?;
 
     let new_state = if target_enabled { "loaded" } else { "disabled" };
     let target = config_target.path.to_string_lossy().to_string();
@@ -3280,35 +3578,167 @@ fn apply_skill_toggle_group(
     Ok(())
 }
 
-fn batch_preview_token(
+fn batch_toggle_action_binding(
+    ctx: &AdapterContext,
     target_enabled: bool,
     requested_count: usize,
     affected_items: &[BatchToggleAffectedItem],
     skipped_items: &[BatchToggleSkippedItem],
-) -> String {
-    let affected = affected_items
+) -> Result<ActionPreviewBinding, CommandError> {
+    let mut affected = affected_items.to_vec();
+    affected.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+    let mut skipped = skipped_items.to_vec();
+    skipped.sort_by(|left, right| {
+        left.instance_id
+            .cmp(&right.instance_id)
+            .then_with(|| left.reason.cmp(&right.reason))
+    });
+    let accepted_catalog_state = affected
         .iter()
         .map(|item| {
             format!(
-                "{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}",
                 item.instance_id,
                 item.agent,
                 item.scope,
                 item.current_enabled,
-                item.target_enabled,
-                item.config_target
+                item.catalog_revision
             )
         })
         .collect::<Vec<_>>()
         .join("|");
-    let skipped = skipped_items
+    let skipped_json = serde_json::to_string(&skipped)?;
+    let target_enabled_value = target_enabled.to_string();
+    let requested_count_value = requested_count.to_string();
+    let project_id = canonical_project_id(ctx.project_root.as_deref());
+    let project_id_value = project_id.as_deref().unwrap_or("<none>");
+    let source_revision = action_source_revision(
+        "batch.toggle",
+        &[
+            ("target_enabled", &target_enabled_value),
+            ("requested_count", &requested_count_value),
+            ("project_id", project_id_value),
+            ("accepted_catalog_state", &accepted_catalog_state),
+            ("skipped", &skipped_json),
+        ],
+    )?;
+    let mut selected_ids = affected
         .iter()
-        .map(|item| format!("{}:{}", item.instance_id, item.reason))
-        .collect::<Vec<_>>()
-        .join("|");
-    hash_string(&format!(
-        "v2.33-batch-toggle:{target_enabled}:{requested_count}:{affected}:{skipped}"
-    ))
+        .map(|item| item.instance_id.clone())
+        .chain(skipped.iter().map(|item| item.instance_id.clone()))
+        .collect::<Vec<_>>();
+    selected_ids.sort();
+    let target_id = format!("batch:{}", hash_string(&selected_ids.join("|")));
+    let agent = common_batch_agent(&affected);
+    let scope = common_batch_scope(&affected);
+    let evidence_refs = if selected_ids.is_empty() {
+        vec!["selection:empty".to_string()]
+    } else {
+        selected_ids
+            .iter()
+            .map(|id| skill_projection_evidence_id(id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    let descriptor = action_descriptor(
+        ActionKind::ToggleSkill,
+        if target_enabled {
+            ActionIntent::EnableSkill
+        } else {
+            ActionIntent::DisableSkill
+        },
+        ActionTargetRef {
+            kind: ActionTargetKind::Skill,
+            id: target_id,
+            agent,
+            scope,
+        },
+        project_id,
+        vec![ActionImpact::AppLocalData, ActionImpact::AgentConfig],
+        "batch.previewSkillToggles",
+        Some("batch.applySkillToggles"),
+        source_revision,
+        true,
+        ActionNetworkPosture::None,
+        canonical_readback_domains([
+            ActionReadbackDomain::CatalogSkills,
+            ActionReadbackDomain::AgentConfig,
+        ]),
+        evidence_refs,
+    )?;
+    let mut preconditions = Vec::new();
+    let mut config_revisions = BTreeMap::new();
+    for item in &affected {
+        config_revisions
+            .entry(item.config_target.clone())
+            .or_insert_with(|| item.config_revision.clone());
+        preconditions.push(ActionPrecondition {
+            kind: ActionPreconditionKind::CatalogRecord,
+            target_id: item.instance_id.clone(),
+            expected_revision: item.catalog_revision.clone(),
+        });
+    }
+    preconditions.extend(
+        config_revisions
+            .into_iter()
+            .map(|(target_id, expected_revision)| ActionPrecondition {
+                kind: ActionPreconditionKind::AgentConfig,
+                target_id,
+                expected_revision,
+            }),
+    );
+    action_preview_binding(descriptor, preconditions)
+}
+
+fn batch_catalog_record_revision(meta: &SkillInstanceMeta) -> Result<String, CommandError> {
+    let project_root = meta
+        .project_root
+        .as_deref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    action_source_revision(
+        "catalog.skill.precondition",
+        &[
+            ("id", &meta.id),
+            ("name", &meta.name),
+            ("agent", meta.agent.as_str()),
+            ("scope", meta.scope.as_str()),
+            ("enabled", if meta.enabled { "true" } else { "false" }),
+            ("path", &meta.path.to_string_lossy()),
+            ("project_root", &project_root),
+        ],
+    )
+}
+
+fn common_batch_agent(affected: &[BatchToggleAffectedItem]) -> Option<AgentId> {
+    let first = affected.first()?.agent.as_str();
+    if !affected.iter().all(|item| item.agent == first) {
+        return None;
+    }
+    match first {
+        "claude-code" => Some(AgentId::ClaudeCode),
+        "codex" => Some(AgentId::Codex),
+        "opencode" => Some(AgentId::Opencode),
+        "pi" => Some(AgentId::Pi),
+        "hermes" => Some(AgentId::Hermes),
+        "openclaw" => Some(AgentId::Openclaw),
+        "tool-global" => Some(AgentId::ToolGlobal),
+        _ => None,
+    }
+}
+
+fn common_batch_scope(affected: &[BatchToggleAffectedItem]) -> Option<Scope> {
+    let first = affected.first()?.scope.as_str();
+    if !affected.iter().all(|item| item.scope == first) {
+        return None;
+    }
+    match first {
+        "agent-global" => Some(Scope::AgentGlobal),
+        "agent-project" => Some(Scope::AgentProject),
+        "tool-global" => Some(Scope::ToolGlobal),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]

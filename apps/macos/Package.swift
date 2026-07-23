@@ -12,7 +12,8 @@ let package = Package(
         .executableTarget(
             name: "SkillsCopilot",
             path: "Sources/SkillsCopilot",
-            resources: [.process("Resources")]
+            resources: [.process("Resources")],
+            linkerSettings: [.linkedFramework("Security")]
         ),
         .target(
             name: "SkillsCopilotTestHarness",

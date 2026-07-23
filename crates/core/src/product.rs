@@ -4,6 +4,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentId, ListIncompleteReason, ListSourceCompleteness, Scope};
 
+/// Stable project identity shared by persisted project context and action
+/// bindings. Keep this wire format compatible with existing stored contexts.
+pub fn canonical_project_id(root_path: &str) -> String {
+    let hash = root_path
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("project-{hash:016x}")
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -118,10 +130,79 @@ pub enum ActionNetworkPosture {
     Required,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActionKind {
+    RefreshEvidence,
+    ToggleSkill,
+    InstallSkill,
+    ManagerInstall,
+    ManagerRemove,
+    ManagerUpdate,
+    ManagerLocalCreate,
+    ManagerLocalArchiveImport,
+    ManagerLocalArchiveUpdate,
+    ManagerLocalDelete,
+    RollbackConfig,
+    SaveConfig,
+    ResumeSession,
+    TriageFinding,
+    TuneRule,
+    ProjectContext,
+    ProviderProfile,
+    ProviderConnectionTest,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActionIntent {
+    RefreshEvidence,
+    InspectEvidence,
+    EnableSkill,
+    DisableSkill,
+    InstallSkill,
+    ManagerInstall,
+    ManagerRemove,
+    ManagerUpdate,
+    ManagerLocalCreate,
+    ManagerLocalArchiveImport,
+    ManagerLocalArchiveUpdate,
+    ManagerLocalDelete,
+    RollbackConfig,
+    SaveConfig,
+    ResumeSession,
+    TriageFinding,
+    TuneRule,
+    SetProjectContext,
+    SaveProviderProfile,
+    TestProviderConnection,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActionReadbackDomain {
+    ProjectContext,
+    CatalogSkills,
+    SkillAggregates,
+    SkillFiles,
+    AgentConfig,
+    ConfigSnapshots,
+    ManagerInventory,
+    SessionContinuation,
+    BlockedAttemptAudit,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActionDescriptor {
     pub id: String,
+    pub kind: ActionKind,
+    pub intent: ActionIntent,
     pub target: ActionTargetRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub impacts: Vec<ActionImpact>,
     pub preview_method: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +210,7 @@ pub struct ActionDescriptor {
     pub source_revision: String,
     pub confirmation_required: bool,
     pub network: ActionNetworkPosture,
+    pub readback: Vec<ActionReadbackDomain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<String>,
 }
@@ -137,6 +219,17 @@ impl ActionDescriptor {
     pub fn validate(&self) -> Result<(), &'static str> {
         validate_nonempty_display_value(&self.id, "action id is empty")?;
         validate_nonempty_display_value(&self.target.id, "action target id is empty")?;
+        if let Some(project_id) = self.project_id.as_deref() {
+            validate_safe_identity(project_id, "action project_id is empty")?;
+        }
+        if self.target.scope == Some(Scope::AgentProject) && self.project_id.is_none() {
+            return Err("project-scoped action requires project_id");
+        }
+        if self.target.kind == ActionTargetKind::Project
+            && self.project_id.as_deref() != Some(self.target.id.as_str())
+        {
+            return Err("project action target does not match project_id");
+        }
         validate_service_method(&self.preview_method, "invalid action preview method")?;
         validate_nonempty_display_value(&self.source_revision, "action source_revision is empty")?;
         if self.impacts.is_empty() {
@@ -146,6 +239,15 @@ impl ActionDescriptor {
         for impact in &self.impacts {
             if !impacts.insert(*impact) {
                 return Err("action impacts contain a duplicate");
+            }
+        }
+        if self.readback.is_empty() {
+            return Err("action readback domains are empty");
+        }
+        let mut readback_domains = HashSet::new();
+        for domain in &self.readback {
+            if !readback_domains.insert(*domain) {
+                return Err("action readback domains contain a duplicate");
             }
         }
         if self.evidence_refs.is_empty() {
@@ -332,6 +434,17 @@ pub enum AttentionSeverity {
     Information,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum NoSafeActionReason {
+    Unsupported,
+    ReadOnlySource,
+    IncompleteEvidence,
+    NoGuardedWritePath,
+    ManualReviewRequired,
+}
+
 impl AttentionSeverity {
     pub fn blocks_health(self) -> bool {
         matches!(self, Self::Critical | Self::Error)
@@ -378,8 +491,10 @@ pub struct AttentionItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentId>,
     pub evidence_refs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub action_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_safe_action_reason: Option<NoSafeActionReason>,
 }
 
 impl AttentionItem {
@@ -397,7 +512,14 @@ impl AttentionItem {
             &self.action_ids,
             "attention item action id is empty",
             "attention item action_ids contain a duplicate",
-        )
+        )?;
+        match (self.action_ids.is_empty(), self.no_safe_action_reason) {
+            (true, None) => Err("attention item without an action requires no_safe_action_reason"),
+            (false, Some(_)) => {
+                Err("attention item with actions cannot have no_safe_action_reason")
+            }
+            _ => Ok(()),
+        }
     }
 }
 

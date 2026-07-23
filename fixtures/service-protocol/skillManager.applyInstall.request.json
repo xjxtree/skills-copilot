@@ -17,6 +17,16 @@
     "scope": "project",
     "network_allowed": true,
     "confirmed": true,
-    "preview_token": "skill-manager:fixture-install"
+    "preview_token": "action-preview:v1:hmac-sha256:1313131313131313131313131313131313131313131313131313131313131313",
+    "action_reference": {
+      "action_id": "action:manager_install:1111111111111111111111111111111111111111111111111111111111111111",
+      "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "project_id": "project-0123456789abcdef",
+      "target": {
+        "kind": "skill",
+        "id": "manager:install-fixture",
+        "scope": "agent-project"
+      }
+    }
   }
 }

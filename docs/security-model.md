@@ -58,21 +58,54 @@ This file describes security and privacy boundaries.
 
 ## Writes And Scripts
 
-Every supported mutation follows Detect, Explain, Evidence, Preview, Confirm,
-Apply, and Read-back. A typed action descriptor may identify an existing
-service path, but it is not authorization. Preview and apply must independently
-validate project, agent, scope, target, revision, confirmation, and network
-posture.
+Every mutation admitted to the typed action lifecycle follows Detect, Explain,
+Evidence, Preview, Confirm, Apply, and Read-back. A typed action descriptor
+identifies one service-owned operation, but it is not authorization. Preview
+and apply independently validate project, agent, scope, target, revision,
+confirmation, and network posture.
+
+### Action Authorization
+
+- A preview returns a deterministic action descriptor, explicit preconditions,
+  and an opaque HMAC authorization token. The stable action ID binds kind,
+  intent, target, and project; the token additionally binds the accepted source
+  revision, impacts, network posture, read-back domains, evidence references,
+  and sorted preconditions.
+- The macOS app creates one cryptographically random 32-byte secret for its
+  lifetime. It passes only the hex-encoded secret to each Rust sidecar child in
+  that child's environment. The sidecar consumes and removes the variable
+  before reading stdin. Missing or invalid secret material returns
+  `action_token_unavailable`; production code never substitutes a public hash
+  or process-local random fallback.
+- The authorization token may cross only the typed app-to-sidecar preview and
+  confirmation payloads. It is never rendered, copied, persisted, logged,
+  included in accessibility metadata, or inherited by an external manager
+  child process.
+- Apply requires the exact confirmed action reference and token. The service
+  reprojects the action, acquires every required target lock, and revalidates
+  all preconditions before the first write. Unknown, mismatched, forged, or
+  stale references have zero write, process, catalog, snapshot, and audit side
+  effects.
+- The lifecycle currently covers single and batch agent-config toggles through
+  `batch.*`, `skill.install`, Skill Manager install/remove/update/local create,
+  and physical deletion of an eligible app-owned local source. Direct config
+  save/toggle compatibility methods, snapshot rollback, local archive
+  import/update, provider/profile calls, and LLM send keep their existing
+  method-specific guards and must not be presented as action-reference-backed
+  until their contracts are migrated.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not
   be triggered by imports, LLM output, analyzer recommendations, previews, or
   cleanup guidance.
+- `script.execute`, `catalog.importSkill`, and `skill.exportBundle` are
+  compatibility-only blocked RPCs. They return `mutation_disabled` before
+  parameter-dependent filesystem, catalog, process, network, or audit I/O.
 - Adapter writes stay limited to the documented guarded toggles and install
   roots in `AGENTS.md` and `docs/adapters/agent-adapters.md`.
 - Skill Manager writes must use the manager tool when the tool supports the
   operation. The service may run `npx skills` with argv-only commands,
   telemetry-off env, redacted logs, and read-back catalog refresh; enable/
-  disable still uses the existing guarded agent-config toggle APIs.
+  disable uses the guarded batch agent-config lifecycle.
   Large installed-inventory stdout is captured only in a private `0600`
   temporary regular file, size-checked before reading, and removed by scoped
   cleanup on success and failure; it is never cataloged or retained.

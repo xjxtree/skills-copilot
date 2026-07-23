@@ -46,6 +46,44 @@ verification.
 - Service method changes must update fixtures and pass
   `pnpm verify:service-protocol-drift`.
 
+## Typed Action Lifecycle
+
+The typed lifecycle is an allowlisted authorization contract, not a convention
+that clients may infer for arbitrary mutations.
+
+- A supported preview returns `action`, `preconditions`, and an opaque
+  `preview_token`. `action.id` is deterministic for kind, intent, target, and
+  project; `action.source_revision` identifies the accepted snapshot.
+- The token is an HMAC over the complete descriptor and sorted preconditions.
+  It additionally binds impacts, network posture, read-back domains, and
+  evidence references. It is opaque client state and must not be displayed,
+  copied, logged, persisted, or placed in accessibility metadata.
+- The macOS app generates one 32-byte random secret for its lifetime and passes
+  it only in each sidecar child's environment. The sidecar consumes and removes
+  it before reading stdin and explicitly removes it from external manager child
+  environments. A missing or malformed secret returns
+  `action_token_unavailable`; there is no production fallback.
+- Apply accepts the exact preview reference plus token and explicit
+  confirmation. `batch.applySkillToggles` uses `confirmation`;
+  `skill.install` uses `action_confirmation`; mutating `skillManager.*` methods
+  use `action_reference`, `preview_token`, and `confirmed=true`.
+- Before the first side effect, apply reprojects the action, checks its method
+  and intent ownership, locks every target, and revalidates each accepted
+  revision. Success returns a typed `readback` covering every domain declared
+  by the action. Stable failures are `unknown_action_reference`,
+  `stale_action_reference`, `action_target_mismatch`,
+  `confirmation_required`, and `action_token_unavailable`.
+- The action-reference contract currently covers single and multi-skill UI
+  toggles through `batch.*`, `skill.install`, Skill Manager
+  install/remove/update/local-create, and eligible app-owned local deletion.
+  Other callable mutations retain their documented method-specific
+  consistency contracts until they explicitly adopt these fields.
+
+`script.execute`, `catalog.importSkill`, and `skill.exportBundle` are
+compatibility-only blocked methods. Each returns `mutation_disabled` before
+parameter-dependent I/O; their zero-write rows in the method table are not an
+alternative apply path.
+
 ## Product Design Compatibility
 
 The Methods table below is the callable service inventory. Product design or
@@ -102,9 +140,11 @@ conditional on the exact local state that the client reviewed.
   as `stale_preview_token`; rollback does not read a rejected drifted target.
 - Clients must surface either conflict and ask the user to read or preview
   again. They must not automatically retry a stale save or rollback. A bare
-  revision is not a rollback authorization token. Toggle and batch operations
-  continue to patch the latest content read under their own existing lock and
-  do not accept client revisions or rollback preview tokens.
+  revision is not a rollback authorization token. Batch toggle confirmation
+  carries the accepted action source revision and opaque token, then rereads
+  every config and catalog precondition under its target locks. The low-level
+  `config.toggleSkill` compatibility method retains its separate guarded
+  latest-content behavior and is not the native UI toggle path.
 
 ## Methods
 
@@ -140,7 +180,7 @@ conditional on the exact local state that the client reviewed.
 | `batch.previewSkillToggles` | None | Never | Never | None |
 | `batch.applySkillToggles` | Agent config, App-local data | Never | Never | Required |
 | `script.previewExecution` | None | Never | Never | None |
-| `script.execute` | Blocked-attempt audit only | Never | Never | Required |
+| `script.execute` | None | Never | Never | None |
 | `skillManager.listTools` | None | Never | Never | None |
 | `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |
 | `skillManager.listInstalled` | External manager state may change when invoked | Always | Never | None |
@@ -171,10 +211,10 @@ conditional on the exact local state that the client reviewed.
 | `catalog.setFindingTriage` | App-local data | Never | Never | None |
 | `catalog.clearFindingTriage` | App-local data | Never | Never | None |
 | `catalog.listConflicts` | None | Never | Never | None |
-| `catalog.importSkill` | App-local data | Never | Never | None |
+| `catalog.importSkill` | None | Never | Never | None |
 | `catalog.scanClaude` | App-local data | Never | Never | None |
 | `catalog.scanAll` | App-local data | Never | Never | None |
-| `skill.exportBundle` | Export destination | Never | Never | None |
+| `skill.exportBundle` | None | Never | Never | None |
 | `skill.install` | Agent skill files, App-local data | Never | Never | Required |
 | `skill.listEvents` | None | Never | Never | None |
 | `skill.listEventsPage` | None | Never | Never | None |
@@ -450,9 +490,10 @@ or expose write controls.
 - The Skill Manager UI does not expose agent-layer enable/disable controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.
-- Enable/disable remains in `config.toggleSkill`,
-  `batch.previewSkillToggles`, and `batch.applySkillToggles` because it is
-  agent config state, not manager package state.
+- Enable/disable is agent config state, not manager package state. The native
+  UI routes both single and multi-skill changes through
+  `batch.previewSkillToggles` and `batch.applySkillToggles`;
+  `config.toggleSkill` remains a lower-level compatibility method.
 - The native client prewarms project and global skill inventories during app
   startup. Opening the Skill Manager performs no read; its Load Data button is
   the only page-local refresh trigger. Local app-owned skills are merged into

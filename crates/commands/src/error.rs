@@ -59,6 +59,16 @@ pub enum CommandError {
     InvalidBatchAction(String),
     #[error("invalid product projection: {0}")]
     InvalidProductProjection(#[from] ProductProjectionError),
+    #[error("unknown action reference: {0}")]
+    UnknownActionReference(String),
+    #[error("action reference is stale; preview again before confirming")]
+    StaleActionReference,
+    #[error("action reference does not match the current target: {0}")]
+    MismatchedActionReference(String),
+    #[error("action confirmation is required: {0}")]
+    ActionConfirmationRequired(String),
+    #[error("action preview signing is unavailable: {0}")]
+    ActionTokenUnavailable(String),
     #[error("skill manager unavailable: {0}")]
     SkillManagerUnavailable(String),
     #[error("invalid skill manager request: {0}")]

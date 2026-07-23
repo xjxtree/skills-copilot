@@ -31,6 +31,9 @@ impl ServiceHost {
     }
 
     pub fn handle(&self, request: ServiceRequest) -> ServiceResponse {
+        #[cfg(test)]
+        skills_copilot_commands::initialize_action_preview_secret_for_test([0xA5; 32])
+            .expect("initialize action preview test secret");
         let id = request.id.clone();
         match self.handle_result(request) {
             Ok(result) => ServiceResponse {
@@ -220,14 +223,23 @@ impl ServiceHost {
             }
             "batch.applySkillToggles" => {
                 let params: BatchApplySkillTogglesParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let read_catalog = self.open_catalog_for_read()?;
+                validate_skill_toggle_confirmation(
+                    &read_catalog,
+                    &adapter_ctx,
+                    &params.instance_ids,
+                    params.target_enabled,
+                    &params.confirmation,
+                )?;
+                drop(read_catalog);
+                let catalog = self.open_catalog()?;
                 let applied: BatchToggleApplyRecord = apply_skill_toggles(
                     &catalog,
                     &adapter_ctx,
                     &params.instance_ids,
                     params.target_enabled,
-                    &params.preview_token,
+                    &params.confirmation,
                 )?;
                 serde_json::to_value(applied).map_err(Into::into)
             }
@@ -239,20 +251,9 @@ impl ServiceHost {
                 serde_json::to_value(preview).map_err(Into::into)
             }
             "script.execute" => {
-                let params: ScriptExecutionRequest = serde_json::from_value(request.params)?;
-                if !params.confirmed {
-                    return Err(ServiceError::ConfirmationRequired(
-                        "script.execute requires confirmed=true on each request; use script.previewExecution to inspect the command, cwd, env, network, files, risks, and confirmation fields before confirming.".to_string(),
-                    ));
-                }
-                let adapter_ctx = self.effective_adapter_ctx()?;
-                let attempt: ScriptExecutionAttemptRecord = record_blocked_script_execution(
-                    &adapter_ctx,
-                    &self.app_data_dir.join("audit"),
-                    &self.script_execution_audit_path(),
-                    &params,
-                )?;
-                serde_json::to_value(attempt).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "script.execute is blocked-only: no process or audit file is created; use script.previewExecution for a read-only explanation",
+                ))
             }
             "skillManager.listTools" => {
                 serde_json::to_value(list_skill_management_tools()).map_err(Into::into)
@@ -281,8 +282,15 @@ impl ServiceHost {
             }
             "skillManager.applyInstall" => {
                 let params: SkillManagerInstallParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let preflight = preview_install_with_manager(&adapter_ctx, &params)?;
+                validate_skill_manager_confirmation(
+                    &preflight.preview,
+                    params.confirmed,
+                    params.preview_token.as_deref(),
+                    params.action_reference.as_ref(),
+                )?;
+                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_install_with_manager(&catalog, &adapter_ctx, &params)?)
                     .map_err(Into::into)
             }
@@ -294,8 +302,15 @@ impl ServiceHost {
             }
             "skillManager.applyRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let preflight = preview_remove_with_manager(&adapter_ctx, &params)?;
+                validate_skill_manager_confirmation(
+                    &preflight.preview,
+                    params.confirmed,
+                    params.preview_token.as_deref(),
+                    params.action_reference.as_ref(),
+                )?;
+                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_remove_with_manager(&catalog, &adapter_ctx, &params)?)
                     .map_err(Into::into)
             }
@@ -307,8 +322,15 @@ impl ServiceHost {
             }
             "skillManager.applyUpdate" => {
                 let params: SkillManagerUpdateParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let preflight = preview_update_with_manager(&adapter_ctx, &params)?;
+                validate_skill_manager_confirmation(
+                    &preflight.preview,
+                    params.confirmed,
+                    params.preview_token.as_deref(),
+                    params.action_reference.as_ref(),
+                )?;
+                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_update_with_manager(&catalog, &adapter_ctx, &params)?)
                     .map_err(Into::into)
             }
@@ -324,8 +346,16 @@ impl ServiceHost {
             }
             "skillManager.applyLocalCreate" => {
                 let params: SkillManagerLocalCreateParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let preflight =
+                    preview_local_create_with_manager(&self.app_data_dir, &adapter_ctx, &params)?;
+                validate_skill_manager_confirmation(
+                    &preflight.preview,
+                    params.confirmed,
+                    params.preview_token.as_deref(),
+                    params.action_reference.as_ref(),
+                )?;
+                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_local_create_with_manager(
                     &catalog,
                     &self.app_data_dir,
@@ -388,7 +418,20 @@ impl ServiceHost {
             }
             "skillManager.deleteLocal" => {
                 let params: SkillManagerDeleteLocalParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
+                if params.confirmed {
+                    let read_catalog = self.open_catalog_for_read()?;
+                    validate_local_delete_confirmation(
+                        &read_catalog,
+                        &self.app_data_dir,
+                        &params,
+                    )?;
+                    drop(read_catalog);
+                }
+                let catalog = if params.confirmed {
+                    self.open_catalog()?
+                } else {
+                    self.open_catalog_for_read()?
+                };
                 serde_json::to_value(delete_local_skill_with_manager(
                     &catalog,
                     &self.app_data_dir,
@@ -490,24 +533,9 @@ impl ServiceHost {
                 serde_json::to_value(conflicts).map_err(Into::into)
             }
             "catalog.importSkill" => {
-                let params: ImportSkillParams = serde_json::from_value(request.params)?;
-                if let Some(github_url) = params.github_url.as_deref() {
-                    import_github_skill_to_tool_global_deferred(github_url)?;
-                }
-                let source_path = params.source_path.ok_or_else(|| {
-                    ServiceError::InvalidRequest(
-                        "catalog.importSkill requires source_path for local imports".to_string(),
-                    )
-                })?;
-                let catalog = self.open_catalog()?;
-                let adapter_ctx = self.effective_adapter_ctx()?;
-                let result: ToolGlobalImportResult = import_local_skill_to_tool_global(
-                    &catalog,
-                    &adapter_ctx,
-                    &self.tool_global_staging_root(),
-                    Path::new(&source_path),
-                )?;
-                serde_json::to_value(result).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "catalog.importSkill is a compatibility-only RPC and performs no I/O; use the bounded skillManager.previewLocalArchiveImport/applyLocalArchiveImport lifecycle",
+                ))
             }
             "catalog.scanClaude" => {
                 let catalog = self.open_catalog()?;
@@ -592,27 +620,9 @@ impl ServiceHost {
                 .map_err(Into::into)
             }
             "skill.exportBundle" => {
-                let params: ExportSkillBundleParams = serde_json::from_value(request.params)?;
-                let output_dir = params
-                    .output_dir
-                    .unwrap_or_else(|| self.app_data_dir.join("exports"));
-                let exported: ExportedSkillBundle =
-                    match (params.instance_id.as_deref(), params.source_path.as_deref()) {
-                        (Some(instance_id), None) => {
-                            let catalog = self.open_catalog()?;
-                            export_skill_bundle(&catalog, instance_id, &output_dir)?
-                        }
-                        (None, Some(source_path)) => {
-                            export_staging_skill_bundle(source_path, &output_dir)?
-                        }
-                        _ => {
-                            return Err(ServiceError::InvalidRequest(
-                            "skill.exportBundle requires exactly one of instance_id or source_path"
-                                .to_string(),
-                        ));
-                        }
-                    };
-                serde_json::to_value(exported).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "skill.exportBundle is a compatibility-only RPC and performs no I/O until a typed preview/confirmation/readback export lifecycle is available",
+                ))
             }
             "config.toggleSkill" => {
                 let params: ToggleSkillParams = serde_json::from_value(request.params)?;
@@ -624,10 +634,38 @@ impl ServiceHost {
             }
             "skill.install" => {
                 let params: InstallSkillParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let target_agent = parse_agent_param(&params.target_agent)?;
                 let target_scope = parse_scope_param(&params.target_scope)?;
+                if params.confirmed && params.action_confirmation.is_none() {
+                    return Err(ServiceError::ConfirmationRequired(
+                        "skill.install apply requires the action_confirmation returned by the exact preview"
+                            .to_string(),
+                    ));
+                }
+                if !params.confirmed && params.action_confirmation.is_some() {
+                    return Err(ServiceError::InvalidRequest(
+                        "skill.install preview cannot include action_confirmation".to_string(),
+                    ));
+                }
+                if let Some(confirmation) = params.action_confirmation.as_ref() {
+                    let read_catalog = self.open_catalog_for_read()?;
+                    validate_skill_install_confirmation(
+                        &read_catalog,
+                        &adapter_ctx,
+                        &params.instance_id,
+                        target_agent,
+                        target_scope,
+                        params.project_path.as_deref(),
+                        confirmation,
+                    )?;
+                    drop(read_catalog);
+                }
+                let catalog = if params.confirmed {
+                    self.open_catalog()?
+                } else {
+                    self.open_catalog_for_read()?
+                };
                 let preview: SkillInstallPreviewRecord = install_skill_from_tool_global(
                     &catalog,
                     &adapter_ctx,
@@ -635,7 +673,7 @@ impl ServiceHost {
                     target_agent,
                     target_scope,
                     params.project_path.as_deref(),
-                    params.confirmed,
+                    params.action_confirmation.as_ref(),
                 )?;
                 serde_json::to_value(preview).map_err(Into::into)
             }
@@ -1199,6 +1237,7 @@ impl ServiceHost {
         roots
     }
 
+    #[cfg(test)]
     pub(crate) fn tool_global_staging_root(&self) -> PathBuf {
         self.app_data_dir.join("tool-global")
     }

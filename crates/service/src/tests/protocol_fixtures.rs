@@ -38,6 +38,56 @@ pub(super) fn service_protocol_fixtures_decode() {
                 });
                 assert!(!params.session_id.is_empty());
             }
+            match request.method.as_str() {
+                "batch.applySkillToggles" => {
+                    let params = serde_json::from_value::<BatchApplySkillTogglesParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.confirmation.confirmed);
+                    assert!(!params.confirmation.preview_token.is_empty());
+                }
+                "skillManager.applyInstall" => {
+                    let params =
+                        serde_json::from_value::<SkillManagerInstallParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(params.confirmed);
+                    assert!(params.action_reference.is_some());
+                }
+                "skillManager.applyRemove" => {
+                    let params =
+                        serde_json::from_value::<SkillManagerRemoveParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(params.confirmed);
+                    assert!(params.action_reference.is_some());
+                }
+                "skillManager.applyUpdate" => {
+                    let params =
+                        serde_json::from_value::<SkillManagerUpdateParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(params.confirmed);
+                    assert!(params.action_reference.is_some());
+                }
+                "skillManager.applyLocalCreate" => {
+                    let params = serde_json::from_value::<SkillManagerLocalCreateParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.confirmed);
+                    assert!(params.action_reference.is_some());
+                }
+                _ => {}
+            }
             request_methods.push(request.method);
         }
         if name.ends_with(".response.json") {
@@ -166,6 +216,10 @@ struct WireSkillManagerToolRecord {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireSkillManagerCommandPreview {
+    #[serde(default)]
+    action: Option<WireActionDescriptor>,
+    #[serde(default)]
+    preconditions: Vec<WireActionPrecondition>,
     tool_id: String,
     operation: String,
     command: Vec<String>,
@@ -179,6 +233,10 @@ struct WireSkillManagerCommandPreview {
     preview_token: String,
     summary: String,
     risks: Vec<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    skills: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -264,6 +322,7 @@ struct WireSkillManagerMutationRecord {
     applied: bool,
     scanned_count: usize,
     updated_skills: Vec<WireSkillRecord>,
+    readback: Option<WireActionReadbackRecord>,
 }
 
 #[allow(dead_code)]
@@ -276,12 +335,19 @@ struct WireSkillManagerLocalCreateRecord {
     instance_id: Option<String>,
     source_path: String,
     applied: bool,
+    readback: Option<WireActionReadbackRecord>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireSkillManagerLocalDeleteRecord {
+    #[serde(default)]
+    action: Option<WireActionDescriptor>,
+    #[serde(default)]
+    preconditions: Vec<WireActionPrecondition>,
+    #[serde(default)]
+    preview_token: Option<String>,
     instance_id: String,
     skill_name: String,
     path: String,
@@ -291,6 +357,8 @@ struct WireSkillManagerLocalDeleteRecord {
     confirmed: bool,
     deleted: bool,
     summary: String,
+    #[serde(default)]
+    readback: Option<WireActionReadbackRecord>,
 }
 
 #[allow(dead_code)]
@@ -706,6 +774,12 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert_eq!(preview.writable_count, preview.affected_items.len());
             assert_eq!(preview.skipped_count, preview.skipped_items.len());
             assert_eq!(preview.writes_allowed, preview.writable_count > 0);
+            assert_eq!(preview.action.preview_method, method);
+            assert_eq!(
+                preview.action.apply_method.as_deref(),
+                Some("batch.applySkillToggles")
+            );
+            assert!(!preview.preconditions.is_empty());
             assert!(!preview.preview_token.is_empty());
             assert!(!preview.capability_labels.is_empty());
             assert!(!preview.snapshot_rollback_notes.is_empty());
@@ -718,6 +792,9 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             );
             assert_eq!(applied.applied_count, applied.updated_records.len());
             assert!(applied.writes_allowed);
+            assert_eq!(applied.action.apply_method.as_deref(), Some(method));
+            assert!(applied.readback.verified);
+            assert_eq!(applied.readback.action_id, applied.action.id);
             assert!(!applied.preview_token.is_empty());
             assert!(!applied.snapshot_rollback_notes.is_empty());
         }
@@ -780,15 +857,28 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 decode_fixture_result(method, result, path);
             assert!(mutation.preview.command.iter().any(|arg| arg == "skills"));
             assert!(!mutation.preview.command.iter().any(|arg| arg == "*"));
+            let action = mutation
+                .preview
+                .action
+                .as_ref()
+                .expect("mutating manager preview must expose a typed action");
+            assert!(!mutation.preview.preconditions.is_empty());
             assert!(!mutation.preview.preview_token.is_empty());
             assert_eq!(mutation.applied, method.contains(".apply"));
             if method.contains("preview") {
                 assert!(mutation.output.is_none());
                 assert!(!mutation.preview.confirmed);
+                assert!(mutation.readback.is_none());
             }
             if method.contains("apply") {
                 assert!(mutation.output.is_some());
                 assert!(mutation.preview.confirmed);
+                let readback = mutation
+                    .readback
+                    .as_ref()
+                    .expect("manager apply must include readback");
+                assert!(readback.verified);
+                assert_eq!(readback.action_id, action.id);
             }
             if method.ends_with("Install") && method.contains("preview") {
                 assert_eq!(
@@ -807,6 +897,12 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let create: WireSkillManagerLocalCreateRecord =
                 decode_fixture_result(method, result, path);
             assert_eq!(create.preview.operation, "localCreate");
+            let action = create
+                .preview
+                .action
+                .as_ref()
+                .expect("local create preview must expose a typed action");
+            assert!(!create.preview.preconditions.is_empty());
             assert!(create.source_path.contains("local-skill-library"));
             assert_eq!(create.applied, method.contains(".apply"));
             if create.applied {
@@ -814,6 +910,14 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                     create.imported.as_ref().expect("imported skill").agent,
                     "tool-global"
                 );
+                let readback = create
+                    .readback
+                    .as_ref()
+                    .expect("local create apply must include readback");
+                assert!(readback.verified);
+                assert_eq!(readback.action_id, action.id);
+            } else {
+                assert!(create.readback.is_none());
             }
         }
         "skillManager.deleteLocal" => {
@@ -1031,6 +1135,10 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         "skill.install" => {
             let install: WireSkillInstallPreviewRecord =
                 decode_fixture_result(method, result, path);
+            assert_eq!(install.action.preview_method, method);
+            assert_eq!(install.action.apply_method.as_deref(), Some(method));
+            assert!(!install.preconditions.is_empty());
+            assert!(!install.preview_token.is_empty());
             assert!(install.confirmation.required);
             assert!(!install.files.is_empty());
         }

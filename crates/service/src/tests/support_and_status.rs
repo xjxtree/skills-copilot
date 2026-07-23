@@ -1108,7 +1108,7 @@ fn script_preview_accepts_native_skill_identity_without_guessing_a_command() {
 }
 
 #[test]
-fn script_execute_requires_per_request_confirmation() {
+fn script_execute_is_blocked_before_any_audit_io() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-script-confirm-test-{}-{}",
         std::process::id(),
@@ -1126,8 +1126,8 @@ fn script_execute_requires_per_request_confirmation() {
     });
 
     assert!(!response.ok);
-    let error = response.error.expect("confirmation error");
-    assert_eq!(error.code, "confirmation_required");
+    let error = response.error.expect("blocked mutation error");
+    assert_eq!(error.code, "mutation_disabled");
     assert!(
         !host.script_execution_audit_path().exists(),
         "unconfirmed execute must not write an audit record"
@@ -1137,39 +1137,7 @@ fn script_execute_requires_per_request_confirmation() {
 }
 
 #[test]
-fn script_execute_rejects_confirmed_identity_without_command_or_audit_write() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-script-empty-execute-test-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-
-    let response = host.handle(ServiceRequest {
-        id: Some("script-execute-empty".to_string()),
-        method: "script.execute".to_string(),
-        params: json!({
-            "instance_id": "skill-fixture",
-            "definition_id": "definition-fixture",
-            "agent": "codex",
-            "confirmed": true
-        }),
-    });
-
-    assert!(!response.ok);
-    let error = response.error.expect("invalid request error");
-    assert_eq!(error.code, "command_error");
-    assert!(error.message.contains("non-empty command argv"));
-    assert!(
-        !host.script_execution_audit_path().exists(),
-        "a command-less execute request must not write an audit record"
-    );
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
-fn script_execute_confirmed_writes_blocked_audit_without_spawning() {
+fn script_execute_confirmed_still_rejects_without_audit_or_process() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-script-audit-test-{}-{}",
         std::process::id(),
@@ -1186,36 +1154,19 @@ fn script_execute_confirmed_writes_blocked_audit_without_spawning() {
         }),
     });
 
-    assert!(response.ok);
-    let result = response.result.expect("attempt result");
+    assert!(!response.ok);
     assert_eq!(
-        result.get("status").and_then(Value::as_str),
-        Some("blocked")
+        response.error.expect("blocked mutation error").code,
+        "mutation_disabled"
     );
-    assert_eq!(
-        result.get("outcome").and_then(Value::as_str),
-        Some("execution_disabled")
-    );
-    assert_eq!(
-        result.get("spawned_process").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result
-            .pointer("/preview/execution_allowed")
-            .and_then(Value::as_bool),
-        Some(false)
-    );
-    let audit_path = host.script_execution_audit_path();
-    let audit_content = fs::read_to_string(&audit_path).expect("read audit");
-    assert!(audit_content.contains("\"status\":\"blocked\""));
+    assert!(!host.script_execution_audit_path().exists());
     assert!(!app_data_dir.join("spawned-marker").exists());
 
     let _ = fs::remove_dir_all(app_data_dir);
 }
 
 #[test]
-fn script_execute_confirmed_llm_initiator_is_audited_as_blocked() {
+fn script_execute_llm_initiator_is_rejected_without_audit_io() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-script-llm-test-{}-{}",
         std::process::id(),
@@ -1233,20 +1184,12 @@ fn script_execute_confirmed_llm_initiator_is_audited_as_blocked() {
         }),
     });
 
-    assert!(response.ok);
-    let result = response.result.expect("attempt result");
+    assert!(!response.ok);
     assert_eq!(
-        result.get("outcome").and_then(Value::as_str),
-        Some("llm_initiator_not_allowed")
+        response.error.expect("blocked mutation error").code,
+        "mutation_disabled"
     );
-    assert_eq!(
-        result
-            .pointer("/preview/initiator_allowed")
-            .and_then(Value::as_bool),
-        Some(false)
-    );
-    let audit_content = fs::read_to_string(host.script_execution_audit_path()).expect("read audit");
-    assert!(audit_content.contains("llm_initiator_not_allowed"));
+    assert!(!host.script_execution_audit_path().exists());
 
     let _ = fs::remove_dir_all(app_data_dir);
 }

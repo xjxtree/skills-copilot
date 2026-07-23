@@ -125,6 +125,8 @@ struct BatchToggleSnapshotPlan: Decodable, Hashable {
 struct BatchTogglePreview: Decodable, Identifiable, Hashable {
     let id: String
     let action: BatchToggleAction
+    let actionDescriptor: ActionDescriptorWire?
+    let previewToken: String?
     let targetEnabled: Bool
     let selectedCount: Int
     let writableCount: Int
@@ -145,10 +147,14 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
         affectedSkills: [BatchToggleSkillItem],
         skippedItems: [BatchToggleSkillItem],
         snapshotPlan: BatchToggleSnapshotPlan,
-        applySupported: Bool
+        applySupported: Bool,
+        actionDescriptor: ActionDescriptorWire? = nil,
+        previewToken: String? = nil
     ) {
         self.id = id
         self.action = action
+        self.actionDescriptor = actionDescriptor
+        self.previewToken = previewToken
         self.targetEnabled = action.targetEnabled
         self.selectedCount = selectedCount
         self.writableCount = affectedSkills.count
@@ -161,6 +167,11 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: FlexibleCodingKey.self)
+        let actionKey = FlexibleCodingKey(stringValue: "action")!
+        actionDescriptor = try? container.decodeIfPresent(
+            ActionDescriptorWire.self,
+            forKey: actionKey
+        )
         let decodedTarget = container.decodeBool(for: ["target_enabled", "targetEnabled", "on", "enabled"])
         let decodedAction = container.decodeString(for: ["action", "target", "operation"])
             .flatMap { BatchToggleAction(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
@@ -168,7 +179,9 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
             ?? .disable
         action = decodedAction
         targetEnabled = decodedTarget ?? decodedAction.targetEnabled
-        id = container.decodeString(for: ["preview_token", "previewToken", "preview_id", "previewId", "batch_id", "batchId", "id"])
+        previewToken = container.decodeString(for: ["preview_token", "previewToken"])
+        id = actionDescriptor?.id
+            ?? container.decodeString(for: ["preview_id", "previewId", "batch_id", "batchId", "id"])
             ?? "batch-\(decodedAction.rawValue)-preview"
         affectedSkills = container.decodeSkillItems(for: ["affected_items", "affectedItems", "affected_skills", "affectedSkills", "writable_skills", "writableSkills", "changes"])
         skippedItems = container.decodeSkillItems(for: ["skipped_items", "skippedItems", "skipped", "read_only_items", "readOnlyItems", "excluded"])
@@ -187,6 +200,15 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
             )
         applySupported = container.decodeBool(for: ["writes_allowed", "writesAllowed", "apply_supported", "applySupported", "can_apply", "canApply"])
             ?? true
+        if applySupported,
+           (actionDescriptor == nil
+               || previewToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false) {
+            throw DecodingError.dataCorruptedError(
+                forKey: actionKey,
+                in: container,
+                debugDescription: "A writable batch preview requires a typed action and opaque preview token."
+            )
+        }
     }
 
     static func local(

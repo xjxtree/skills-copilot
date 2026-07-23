@@ -3,6 +3,32 @@
   "ok": true,
   "result": {
     "preview": {
+      "action": {
+        "id": "action:manager_install:1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": "manager_install",
+        "intent": "manager_install",
+        "target": {
+          "kind": "skill",
+          "id": "manager:install-fixture",
+          "scope": "agent-project"
+        },
+        "project_id": "project-0123456789abcdef",
+        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "preview_method": "skillManager.previewInstall",
+        "apply_method": "skillManager.applyInstall",
+        "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "confirmation_required": true,
+        "network": "required",
+        "readback": ["catalog_skills"],
+        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+      },
+      "preconditions": [
+        {
+          "kind": "target_file",
+          "target_id": "/tmp/skills-copilot-project",
+          "expected_revision": "sha256:1212121212121212121212121212121212121212121212121212121212121212"
+        }
+      ],
       "tool_id": "npx-skills",
       "operation": "install",
       "command": [
@@ -39,11 +65,13 @@
       "network_required": true,
       "network_allowed": true,
       "will_run": true,
-      "preview_token": "skill-manager:fixture-install",
+      "preview_token": "action-preview:v1:hmac-sha256:1313131313131313131313131313131313131313131313131313131313131313",
       "summary": "Install vercel-labs/agent-skills for 6 supported agent target(s).",
       "risks": [
         "The external manager writes canonical skill files and agent symlinks/copies for selected agents."
-      ]
+      ],
+      "source": "vercel-labs/agent-skills",
+      "skills": ["frontend-design"]
     },
     "output": {
       "status": "completed",
@@ -65,6 +93,21 @@
         "state": "valid",
         "enabled": true
       }
-    ]
+    ],
+    "readback": {
+      "action_id": "action:manager_install:1111111111111111111111111111111111111111111111111111111111111111",
+      "source_revision": "sha256:1414141414141414141414141414141414141414141414141414141414141414",
+      "project_id": "project-0123456789abcdef",
+      "domains": ["catalog_skills"],
+      "target_ids": ["manager:install-fixture"],
+      "observations": [
+        {
+          "domain": "catalog_skills",
+          "target_id": "manager:install-fixture",
+          "revision": "sha256:1515151515151515151515151515151515151515151515151515151515151515"
+        }
+      ],
+      "verified": true
+    }
   }
 }

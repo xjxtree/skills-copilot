@@ -509,7 +509,7 @@ struct ToolGlobalPreviewCard: View {
                     Task {
                         isConfirming = true
                         defer { isConfirming = false }
-                        if let result = await store.confirmToolInstall(skill: skill, target: preview.target) {
+                        if let result = await store.confirmToolInstall(skill: skill, preview: preview) {
                             self.preview = result
                         }
                     }

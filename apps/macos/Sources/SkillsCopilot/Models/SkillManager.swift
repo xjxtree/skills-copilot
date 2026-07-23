@@ -120,6 +120,7 @@ struct SkillManagerEnvPreview: Codable, Hashable {
 }
 
 struct SkillManagerCommandPreview: Codable, Hashable {
+    let action: ActionDescriptorWire?
     let toolId: String
     let operation: String
     let command: [String]
@@ -137,6 +138,7 @@ struct SkillManagerCommandPreview: Codable, Hashable {
     let skills: [String]?
 
     enum CodingKeys: String, CodingKey {
+        case action
         case toolId = "tool_id"
         case operation
         case command
@@ -152,6 +154,93 @@ struct SkillManagerCommandPreview: Codable, Hashable {
         case risks
         case source
         case skills
+    }
+
+    init(
+        toolId: String,
+        operation: String,
+        command: [String],
+        cwd: String,
+        env: [SkillManagerEnvPreview],
+        requiresConfirmation: Bool,
+        confirmed: Bool,
+        networkRequired: Bool,
+        networkAllowed: Bool,
+        willRun: Bool,
+        previewToken: String,
+        summary: String,
+        risks: [String],
+        source: String?,
+        skills: [String]?,
+        action: ActionDescriptorWire? = nil
+    ) {
+        self.action = action
+        self.toolId = toolId
+        self.operation = operation
+        self.command = command
+        self.cwd = cwd
+        self.env = env
+        self.requiresConfirmation = requiresConfirmation
+        self.confirmed = confirmed
+        self.networkRequired = networkRequired
+        self.networkAllowed = networkAllowed
+        self.willRun = willRun
+        self.previewToken = previewToken
+        self.summary = summary
+        self.risks = risks
+        self.source = source
+        self.skills = skills
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let action = try container.decodeIfPresent(ActionDescriptorWire.self, forKey: .action)
+        let requiresConfirmation = try container.decode(Bool.self, forKey: .requiresConfirmation)
+        if requiresConfirmation, action == nil {
+            throw DecodingError.dataCorruptedError(
+                forKey: .action,
+                in: container,
+                debugDescription: "A mutating Skill Manager preview requires a typed action."
+            )
+        }
+        self.init(
+            toolId: try container.decode(String.self, forKey: .toolId),
+            operation: try container.decode(String.self, forKey: .operation),
+            command: try container.decode([String].self, forKey: .command),
+            cwd: try container.decode(String.self, forKey: .cwd),
+            env: try container.decode([SkillManagerEnvPreview].self, forKey: .env),
+            requiresConfirmation: requiresConfirmation,
+            confirmed: try container.decode(Bool.self, forKey: .confirmed),
+            networkRequired: try container.decode(Bool.self, forKey: .networkRequired),
+            networkAllowed: try container.decode(Bool.self, forKey: .networkAllowed),
+            willRun: try container.decode(Bool.self, forKey: .willRun),
+            previewToken: try container.decode(String.self, forKey: .previewToken),
+            summary: try container.decode(String.self, forKey: .summary),
+            risks: try container.decode([String].self, forKey: .risks),
+            source: try container.decodeIfPresent(String.self, forKey: .source),
+            skills: try container.decodeIfPresent([String].self, forKey: .skills),
+            action: action
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(action, forKey: .action)
+        try container.encode(toolId, forKey: .toolId)
+        try container.encode(operation, forKey: .operation)
+        try container.encode(command, forKey: .command)
+        try container.encode(cwd, forKey: .cwd)
+        try container.encode(env, forKey: .env)
+        try container.encode(requiresConfirmation, forKey: .requiresConfirmation)
+        try container.encode(confirmed, forKey: .confirmed)
+        try container.encode(networkRequired, forKey: .networkRequired)
+        try container.encode(networkAllowed, forKey: .networkAllowed)
+        try container.encode(willRun, forKey: .willRun)
+        try container.encode(previewToken, forKey: .previewToken)
+        try container.encode(summary, forKey: .summary)
+        try container.encode(risks, forKey: .risks)
+        try container.encodeIfPresent(source, forKey: .source)
+        try container.encodeIfPresent(skills, forKey: .skills)
     }
 
     var displayCommand: String {
@@ -203,7 +292,7 @@ struct SkillManagerCommandPreview: Codable, Hashable {
     }
 
     var compactMetadataRows: [CompactMetadataRow] {
-        [
+        var rows = [
             CompactMetadataRow(label: "CWD", value: cwd, systemImage: "folder", isCopyable: true),
             CompactMetadataRow(
                 label: UIStrings.text("skillManager.confirmed", "Confirmed"),
@@ -214,13 +303,29 @@ struct SkillManagerCommandPreview: Codable, Hashable {
                 label: UIStrings.text("skillManager.network", "Network"),
                 value: networkAllowed ? UIStrings.text("value.yes", "Yes") : UIStrings.text("value.no", "No"),
                 systemImage: "network"
-            ),
-            CompactMetadataRow(label: UIStrings.text("skillManager.token", "Token"), value: previewToken, systemImage: "key", isCopyable: true)
+            )
         ]
+        if let action {
+            rows.append(
+                CompactMetadataRow(
+                    label: UIStrings.text("skillManager.actionTarget", "Action target"),
+                    value: action.target.id,
+                    systemImage: "scope"
+                )
+            )
+            rows.append(
+                CompactMetadataRow(
+                    label: UIStrings.text("skillManager.impact", "Impact"),
+                    value: action.impacts.joined(separator: ", "),
+                    systemImage: "exclamationmark.shield"
+                )
+            )
+        }
+        return rows
     }
 
     var requiresExplicitApplyConfirmation: Bool {
-        requiresConfirmation && ["install", "remove", "update"].contains(operation)
+        requiresConfirmation && ["install", "remove", "update", "localCreate"].contains(operation)
     }
 }
 
@@ -737,6 +842,7 @@ struct SkillManagerInstallParams: Encodable {
     let networkAllowed: Bool
     let confirmed: Bool
     let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case source
@@ -747,6 +853,7 @@ struct SkillManagerInstallParams: Encodable {
         case networkAllowed = "network_allowed"
         case confirmed
         case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -756,6 +863,7 @@ struct SkillManagerRemoveParams: Encodable {
     let scope: String?
     let confirmed: Bool
     let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case skill
@@ -763,6 +871,7 @@ struct SkillManagerRemoveParams: Encodable {
         case scope
         case confirmed
         case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -773,6 +882,7 @@ struct SkillManagerUpdateParams: Encodable {
     let networkAllowed: Bool
     let confirmed: Bool
     let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case skills
@@ -781,6 +891,7 @@ struct SkillManagerUpdateParams: Encodable {
         case networkAllowed = "network_allowed"
         case confirmed
         case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -788,21 +899,27 @@ struct SkillManagerLocalCreateParams: Encodable {
     let name: String
     let confirmed: Bool
     let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case name
         case confirmed
         case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
 struct SkillManagerDeleteLocalParams: Encodable {
     let instanceId: String
     let confirmed: Bool
+    let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case instanceId = "instance_id"
         case confirmed
+        case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -913,6 +1030,8 @@ struct SkillManagerReferenceRecord: Codable, Identifiable, Hashable {
 }
 
 struct SkillManagerLocalDeleteRecord: Codable, Hashable {
+    let action: ActionDescriptorWire?
+    let previewToken: String?
     let instanceId: String
     let skillName: String
     let path: String
@@ -924,6 +1043,8 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
     let summary: String
 
     enum CodingKeys: String, CodingKey {
+        case action
+        case previewToken = "preview_token"
         case instanceId = "instance_id"
         case skillName = "skill_name"
         case path

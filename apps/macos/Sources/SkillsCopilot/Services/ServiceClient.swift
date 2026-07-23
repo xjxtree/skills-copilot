@@ -91,16 +91,12 @@ struct ReadAgentConfigParams: Encodable {
 struct BatchToggleParams: Encodable {
     let instanceIDs: [String]
     let targetEnabled: Bool
-    let action: String
-    let previewToken: String?
-    let confirmed: Bool?
+    let confirmation: ActionConfirmationWire?
 
     enum CodingKeys: String, CodingKey {
         case instanceIDs = "instance_ids"
         case targetEnabled = "target_enabled"
-        case action
-        case previewToken = "preview_token"
-        case confirmed
+        case confirmation
     }
 }
 
@@ -109,12 +105,14 @@ struct ToolInstallPreviewParams: Encodable {
     let targetAgent: String
     let targetScope: String
     let confirmed: Bool
+    let actionConfirmation: ActionConfirmationWire?
 
     enum CodingKeys: String, CodingKey {
         case instanceId = "instance_id"
         case targetAgent = "target_agent"
         case targetScope = "target_scope"
         case confirmed
+        case actionConfirmation = "action_confirmation"
     }
 }
 

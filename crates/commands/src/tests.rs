@@ -17,6 +17,36 @@ mod scanner_regressions;
 #[path = "tests/product_projection_tests.rs"]
 mod product_projection_tests;
 
+fn confirmed_install_skill_from_tool_global(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_id: &str,
+    target_agent: AgentId,
+    target_scope: Scope,
+    project_path: Option<&Path>,
+) -> Result<SkillInstallPreviewRecord, CommandError> {
+    let preview = install_skill_from_tool_global(
+        catalog,
+        ctx,
+        instance_id,
+        target_agent,
+        target_scope,
+        project_path,
+        None,
+    )?;
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    install_skill_from_tool_global(
+        catalog,
+        ctx,
+        instance_id,
+        target_agent,
+        target_scope,
+        project_path,
+        Some(&confirmation),
+    )
+}
+
 #[test]
 fn yaml_contract_preserves_permissions_scalars_sequences_bools_and_nested_mapping() {
     let raw = "name: sample-skill\ndescription: Sample\nallowed-tools:\n  - Read\n  - Search\npermissions:\n  network: none\n  exec: false\n  requires_human: true\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";
@@ -1683,12 +1713,15 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
         .iter()
         .any(|note| note.contains("pre-batch-toggle")));
 
-    let stale = apply_skill_toggles(&catalog, &ctx, &selection, false, "stale-token")
+    let stale_confirmation = ActionConfirmation::confirmed(&preview.action, "stale-token");
+    let stale = apply_skill_toggles(&catalog, &ctx, &selection, false, &stale_confirmation)
         .expect_err("stale token must be rejected");
-    assert!(matches!(stale, CommandError::InvalidBatchAction(_)));
+    assert!(matches!(stale, CommandError::StaleActionReference));
 
-    let applied = apply_skill_toggles(&catalog, &ctx, &selection, false, &preview.preview_token)
-        .expect("batch apply");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let applied =
+        apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation).expect("batch apply");
     assert_eq!(applied.applied_count, 2);
     assert_eq!(applied.updated_records.len(), 2);
     assert!(applied.updated_records.iter().all(|record| !record.enabled));
@@ -1726,6 +1759,137 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
         assert_eq!(events[0].payload["batch"], serde_json::json!(true));
         assert!(events[0].payload.get("snapshot_id").is_some());
     }
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn batch_toggle_rejects_config_drift_after_preview_without_writes() {
+    let temp_root = temp_test_dir("batch-toggle-config-drift");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "drifted-toggle");
+
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let instance_id = catalog
+        .list_skill_records()
+        .expect("records")
+        .into_iter()
+        .find(|record| record.agent == "claude-code" && record.name == "drifted-toggle")
+        .expect("Claude skill")
+        .id;
+    let selection = vec![instance_id];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("batch preview");
+
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings parent");
+    let externally_changed = "{\n  \"external\": true\n}\n";
+    std::fs::write(&settings_path, externally_changed).expect("external config change");
+
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let result = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation);
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "config bytes changed after preview must invalidate the action"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("settings after rejected apply"),
+        externally_changed
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("snapshots")
+            .is_empty(),
+        "rejected apply must not create a rollback snapshot"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn batch_toggle_prelocks_all_groups_before_the_first_write() {
+    let temp_root = temp_test_dir("batch-toggle-multi-group-drift");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "atomic-claude");
+    write_pi_global_skill(&home, "atomic-pi");
+
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let records = catalog.list_skill_records().expect("records");
+    let selection = vec![
+        records
+            .iter()
+            .find(|record| record.agent == "claude-code" && record.name == "atomic-claude")
+            .expect("Claude record")
+            .id
+            .clone(),
+        records
+            .iter()
+            .find(|record| record.agent == "pi" && record.name == "atomic-pi")
+            .expect("Pi record")
+            .id
+            .clone(),
+    ];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("batch preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let pi_settings = home.join(".pi/agent/settings.json");
+    let external = "{\n  \"external\": \"after-confirmation\"\n}\n";
+
+    let result = apply_skill_toggles_with_after_confirmation(
+        &catalog,
+        &ctx,
+        &selection,
+        false,
+        &confirmation,
+        || {
+            std::fs::write(&pi_settings, external).expect("race external Pi config write");
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
+    assert!(
+        !home.join(".claude/settings.json").exists(),
+        "the first group must remain untouched when a later group is stale"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&pi_settings).expect("Pi config remains external"),
+        external
+    );
+    assert!(
+        catalog
+            .list_skill_records()
+            .expect("records after rejection")
+            .iter()
+            .filter(|record| selection.contains(&record.id))
+            .all(|record| record.enabled),
+        "catalog rows must remain unchanged"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("snapshots")
+            .is_empty(),
+        "preflight rejection must not create partial snapshots"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_root);
 }
@@ -2043,7 +2207,9 @@ fn batch_toggle_preview_applies_hermes_config_writes() {
     assert_eq!(preview.writable_count, 1);
     assert_eq!(preview.skipped_count, 0);
     assert!(preview.writes_allowed);
-    let apply = apply_skill_toggles(&catalog, &ctx, &selection, false, &preview.preview_token)
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let apply = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation)
         .expect("Hermes batch apply succeeds");
     assert_eq!(apply.applied_count, 1);
     let content =
@@ -3641,7 +3807,7 @@ fn install_preview_from_tool_global_does_not_write_disk() {
         AgentId::Codex,
         Scope::AgentGlobal,
         None,
-        false,
+        None,
     )
     .expect("preview install");
 
@@ -3673,6 +3839,218 @@ fn install_preview_from_tool_global_does_not_write_disk() {
 }
 
 #[test]
+fn confirmed_install_rejects_source_drift_after_preview_without_writing_target() {
+    let temp_root = temp_test_dir("install-source-drift");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "portable-drift");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            "tool-global-drift",
+            source_path.clone(),
+            "portable-drift",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-drift",
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview install");
+    std::fs::write(
+        &source_path,
+        "---\nname: portable-drift\ndescription: externally changed\n---\nchanged",
+    )
+    .expect("change source after preview");
+
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let result = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-drift",
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    );
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "source drift after preview must invalidate install"
+    );
+    assert!(
+        !Path::new(&preview.target_path).exists(),
+        "a stale install must not create its target"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn local_delete_rejects_source_drift_after_preview_without_deleting() {
+    let temp_root = temp_test_dir("local-delete-source-drift");
+    let app_data = temp_root.join("app-data");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join("delete-drift")
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        "---\nname: delete-drift\ndescription: before\n---\nbefore",
+    )
+    .expect("write source");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let mut local_instance = install_tool_global_instance(
+        "tool-global-delete-drift",
+        source_path.clone(),
+        "delete-drift",
+    );
+    local_instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&local_instance)
+        .expect("upsert tool-global");
+
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: "tool-global-delete-drift".to_string(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    assert!(preview.physical_delete_allowed);
+    std::fs::write(
+        &source_path,
+        "---\nname: delete-drift\ndescription: after\n---\nafter",
+    )
+    .expect("change source after preview");
+
+    let result = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: "tool-global-delete-drift".to_string(),
+            confirmed: true,
+            preview_token: preview.preview_token.clone(),
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    );
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "source drift after preview must invalidate delete"
+    );
+    assert!(
+        source_path.exists(),
+        "a stale delete must preserve the source directory"
+    );
+    assert!(
+        catalog
+            .get_skill_record("tool-global-delete-drift")
+            .expect("catalog lookup")
+            .is_some(),
+        "a stale delete must preserve the catalog row"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
+    let temp_root = temp_test_dir("local-delete-pre-rename-drift");
+    let app_data = temp_root.join("app-data");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join("delete-race")
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        "---\nname: delete-race\ndescription: before\n---\nbefore",
+    )
+    .expect("write source");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let mut local_instance = install_tool_global_instance(
+        "tool-global-delete-race",
+        source_path.clone(),
+        "delete-race",
+    );
+    local_instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&local_instance)
+        .expect("upsert tool-global");
+
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: "tool-global-delete-race".to_string(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    let canonical_source = source_path.canonicalize().expect("canonical source");
+    let raced_asset = source_path
+        .parent()
+        .expect("source parent")
+        .join("added-after-confirmation.txt");
+    let hook_asset = raced_asset.clone();
+    skill_manager::install_local_delete_pre_rename_test_hook(canonical_source, move || {
+        std::fs::write(&hook_asset, "not previewed").expect("inject raced asset")
+    });
+
+    let result = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: "tool-global-delete-race".to_string(),
+            confirmed: true,
+            preview_token: preview.preview_token.clone(),
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    );
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "a file added after confirmation but before rename must invalidate delete"
+    );
+    assert!(source_path.exists(), "the skill file must remain");
+    assert!(
+        raced_asset.exists(),
+        "the unconfirmed raced asset must remain"
+    );
+    assert!(
+        catalog
+            .get_skill_record("tool-global-delete-race")
+            .expect("catalog lookup")
+            .is_some(),
+        "the catalog row must remain"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
     let temp_root = std::env::temp_dir().join(format!(
         "skills-copilot-install-confirmed-{}",
@@ -3698,14 +4076,13 @@ fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
         extra_roots: vec![],
     };
 
-    let result = install_skill_from_tool_global(
+    let result = confirmed_install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-beta",
         AgentId::ClaudeCode,
         Scope::AgentGlobal,
         None,
-        true,
     )
     .expect("confirmed install");
 
@@ -3761,14 +4138,13 @@ fn install_to_opencode_writes_native_user_skill_root() {
         extra_roots: vec![],
     };
 
-    let result = install_skill_from_tool_global(
+    let result = confirmed_install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-gamma",
         AgentId::Opencode,
         Scope::AgentGlobal,
         None,
-        true,
     )
     .expect("opencode install succeeds");
 
@@ -3813,14 +4189,13 @@ fn install_to_pi_writes_native_user_skill_root() {
         extra_roots: vec![],
     };
 
-    let result = install_skill_from_tool_global(
+    let result = confirmed_install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-pi",
         AgentId::Pi,
         Scope::AgentGlobal,
         None,
-        true,
     )
     .expect("Pi install succeeds");
 
@@ -3867,14 +4242,13 @@ fn install_to_hermes_writes_native_user_skill_root() {
         extra_roots: vec![],
     };
 
-    let result = install_skill_from_tool_global(
+    let result = confirmed_install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-hermes",
         AgentId::Hermes,
         Scope::AgentGlobal,
         None,
-        true,
     )
     .expect("Hermes install succeeds");
 
@@ -3933,7 +4307,7 @@ fn install_to_hermes_project_scope_remains_blocked() {
         AgentId::Hermes,
         Scope::AgentProject,
         Some(&project),
-        false,
+        None,
     )
     .expect_err("Hermes project install remains blocked");
 
@@ -3970,14 +4344,13 @@ fn install_to_openclaw_writes_native_user_skill_root() {
         extra_roots: vec![],
     };
 
-    let result = install_skill_from_tool_global(
+    let result = confirmed_install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-openclaw",
         AgentId::Openclaw,
         Scope::AgentGlobal,
         None,
-        true,
     )
     .expect("OpenClaw install succeeds");
 
@@ -4030,14 +4403,13 @@ fn install_to_openclaw_writes_confirmed_workspace_skill_root() {
         extra_roots: vec![],
     };
 
-    let result = install_skill_from_tool_global(
+    let result = confirmed_install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-openclaw-workspace",
         AgentId::Openclaw,
         Scope::AgentProject,
         Some(&repo),
-        true,
     )
     .expect("OpenClaw workspace install succeeds");
 
@@ -4097,7 +4469,7 @@ fn install_to_openclaw_project_scope_outside_workspace_is_rejected() {
         AgentId::Openclaw,
         Scope::AgentProject,
         Some(&project),
-        false,
+        None,
     )
     .expect_err("OpenClaw project install outside workspace must be rejected");
 
@@ -4249,7 +4621,7 @@ fn install_project_target_outside_current_root_is_rejected() {
         AgentId::Codex,
         Scope::AgentProject,
         Some(&project_b),
-        false,
+        None,
     )
     .expect_err("project install outside current context must be rejected");
 
@@ -4546,6 +4918,8 @@ fn fixture_path(relative: &str) -> PathBuf {
 }
 
 fn temp_test_dir(label: &str) -> PathBuf {
+    initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
     env::temp_dir().join(format!(
         "skills-copilot-{label}-{}-{}",
         std::process::id(),

@@ -8,6 +8,12 @@
     "scope": "project",
     "network_allowed": true,
     "confirmed": true,
-    "preview_token": "skill-manager:fixture-update"
+    "preview_token": "action-preview:v1:hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "action_reference": {
+      "action_id": "action:manager_update:3131313131313131313131313131313131313131313131313131313131313131",
+      "source_revision": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
+      "project_id": "project-0123456789abcdef",
+      "target": {"kind": "skill", "id": "manager:update-fixture", "scope": "agent-project"}
+    }
   }
 }

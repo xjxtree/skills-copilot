@@ -1,0 +1,264 @@
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use serde_json::{json, Value};
+
+const ACTION_SECRET_ENV: &str = "SKILLS_COPILOT_ACTION_PREVIEW_SECRET";
+const SECRET_A: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const SECRET_B: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+struct Fixture {
+    root: PathBuf,
+    home: PathBuf,
+    app_data: PathBuf,
+    instance_id: String,
+}
+
+impl Fixture {
+    fn new(label: &str) -> Self {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-action-process-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        let home = root.join("home");
+        let app_data = root.join("app-data");
+        let skill_dir = home.join(".claude/skills/process-lifecycle");
+        fs::create_dir_all(&skill_dir).expect("create fixture skill");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: process-lifecycle\ndescription: Process lifecycle fixture\n---\n# Fixture\n",
+        )
+        .expect("write fixture skill");
+        let scan = invoke(
+            &home,
+            &app_data,
+            Some(SECRET_A),
+            json!({"id":"scan","method":"catalog.scanAll","params":{}}),
+        );
+        assert_success(&scan);
+        let instance_id = scan
+            .pointer("/result/skills")
+            .and_then(Value::as_array)
+            .and_then(|skills| {
+                skills.iter().find(|skill| {
+                    skill.get("agent").and_then(Value::as_str) == Some("claude-code")
+                        && skill.get("name").and_then(Value::as_str) == Some("process-lifecycle")
+                })
+            })
+            .and_then(|skill| skill.get("id"))
+            .and_then(Value::as_str)
+            .expect("scanned fixture instance")
+            .to_string();
+        Self {
+            root,
+            home,
+            app_data,
+            instance_id,
+        }
+    }
+
+    fn preview(&self, secret: Option<&str>) -> Value {
+        invoke(
+            &self.home,
+            &self.app_data,
+            secret,
+            json!({
+                "id":"preview",
+                "method":"batch.previewSkillToggles",
+                "params":{
+                    "instance_ids":[self.instance_id],
+                    "target_enabled":false
+                }
+            }),
+        )
+    }
+
+    fn apply(&self, secret: Option<&str>, preview: &Value) -> Value {
+        let action = preview
+            .pointer("/result/action")
+            .expect("preview action")
+            .clone();
+        let preview_token = preview
+            .pointer("/result/preview_token")
+            .and_then(Value::as_str)
+            .expect("preview token");
+        invoke(
+            &self.home,
+            &self.app_data,
+            secret,
+            json!({
+                "id":"apply",
+                "method":"batch.applySkillToggles",
+                "params":{
+                    "instance_ids":[self.instance_id],
+                    "target_enabled":false,
+                    "confirmation":{
+                        "reference":{
+                            "action_id":action["id"],
+                            "source_revision":action["source_revision"],
+                            "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                            "target":action["target"]
+                        },
+                        "preview_token":preview_token,
+                        "confirmed":true
+                    }
+                }
+            }),
+        )
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.home.join(".claude/settings.json")
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn preview_and_apply_succeed_across_two_sidecar_processes_with_one_app_secret() {
+    let fixture = Fixture::new("same-secret");
+    let preview = fixture.preview(Some(SECRET_A));
+    assert_success(&preview);
+
+    let applied = fixture.apply(Some(SECRET_A), &preview);
+
+    assert_success(&applied);
+    let settings = fs::read_to_string(fixture.settings_path()).expect("read applied config");
+    assert!(settings.contains("process-lifecycle"));
+    assert!(settings.contains("off"));
+}
+
+#[test]
+fn a_different_sidecar_secret_rejects_apply_without_a_write() {
+    let fixture = Fixture::new("different-secret");
+    let preview = fixture.preview(Some(SECRET_A));
+    assert_success(&preview);
+
+    let applied = fixture.apply(Some(SECRET_B), &preview);
+
+    assert_error_code(&applied, "stale_action_reference");
+    assert!(
+        !fixture.settings_path().exists(),
+        "mismatched secret must fail before config I/O"
+    );
+}
+
+#[test]
+fn missing_or_invalid_sidecar_secret_fails_closed_without_a_write() {
+    for (label, secret) in [("missing", None), ("invalid", Some("not-a-secret"))] {
+        let fixture = Fixture::new(label);
+
+        let preview = fixture.preview(secret);
+
+        assert_error_code(&preview, "action_token_unavailable");
+        assert!(
+            !fixture.settings_path().exists(),
+            "{label} secret must fail before config I/O"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn manager_child_process_never_inherits_the_action_preview_secret() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("manager-child-env");
+    let fake_npx = fixture.root.join("fake-npx");
+    fs::write(
+        &fake_npx,
+        "#!/bin/sh\nif printenv SKILLS_COPILOT_ACTION_PREVIEW_SECRET >/dev/null 2>&1; then\n  echo inherited-secret >&2\n  exit 42\nfi\nprintf '[]\\n'\n",
+    )
+    .expect("write fake manager");
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+
+    let response = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[(
+            "SKILLS_COPILOT_NPX_PATH",
+            fake_npx.to_string_lossy().as_ref(),
+        )],
+        json!({
+            "id":"manager-search",
+            "method":"skillManager.search",
+            "params":{
+                "query":"fixture",
+                "network_allowed":true
+            }
+        }),
+    );
+
+    assert_success(&response);
+}
+
+fn invoke(home: &Path, app_data: &Path, secret: Option<&str>, request: Value) -> Value {
+    invoke_with_extra_env(home, app_data, secret, &[], request)
+}
+
+fn invoke_with_extra_env(
+    home: &Path,
+    app_data: &Path,
+    secret: Option<&str>,
+    extra_env: &[(&str, &str)],
+    request: Value,
+) -> Value {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_skills-copilot-service"));
+    command
+        .env("HOME", home)
+        .env("SKILLS_COPILOT_HOME", home)
+        .env("SKILLS_COPILOT_APP_DATA_DIR", app_data)
+        .env_remove(ACTION_SECRET_ENV)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(secret) = secret {
+        command.env(ACTION_SECRET_ENV, secret);
+    }
+    command.envs(extra_env.iter().copied());
+    let mut child = command.spawn().expect("spawn service sidecar");
+    child
+        .stdin
+        .take()
+        .expect("sidecar stdin")
+        .write_all(request.to_string().as_bytes())
+        .expect("write sidecar request");
+    let output = child.wait_with_output().expect("wait for sidecar");
+    assert!(
+        output.status.success(),
+        "sidecar failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("decode sidecar response")
+}
+
+fn assert_success(response: &Value) {
+    assert_eq!(
+        response.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "unexpected response: {response}"
+    );
+}
+
+fn assert_error_code(response: &Value, expected: &str) {
+    assert_eq!(
+        response.pointer("/error/code").and_then(Value::as_str),
+        Some(expected),
+        "unexpected response: {response}"
+    );
+}

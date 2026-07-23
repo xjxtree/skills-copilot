@@ -3034,7 +3034,9 @@ struct SkillStoreTests {
         await store.toggleSelectedSkill(on: true)
         await task.value
 
-        try expectEqual(countOccurrences("config.toggleSkill", in: fake.calls()), 1, "Busy write should ignore reentrant write attempts.")
+        try expectEqual(countMethodCalls("batch.previewSkillToggles", in: fake.calls()), 1, "Busy write should ignore reentrant preview attempts.")
+        try expectEqual(countMethodCalls("batch.applySkillToggles", in: fake.calls()), 1, "Busy write should authorize exactly one apply.")
+        try expectEqual(countMethodCalls("config.toggleSkill", in: fake.calls()), 0, "Single-skill UI toggles should use the typed batch lifecycle.")
     }
 
     private func codexToggleAddsRestartRequiredNotice() async throws {
@@ -3086,7 +3088,9 @@ struct SkillStoreTests {
 
         try expectFalse(store.isWriting, "opencode toggle should finish writing state.")
         try expectNil(store.errorMessage, "opencode toggle should not surface a read-only error.")
-        try expectContains(fake.calls(), "config.toggleSkill", "opencode toggle should call the write API.")
+        try expectContains(fake.calls(), "batch.previewSkillToggles", "opencode toggle should preview the typed action.")
+        try expectContains(fake.calls(), "batch.applySkillToggles", "opencode toggle should apply the confirmed typed action.")
+        try expectFalse(fake.calls().contains("config.toggleSkill"), "opencode UI toggles should not bypass the typed lifecycle.")
         try expectEqual(store.selectedSkill?.enabled, false, "opencode toggle refresh should expose the updated enabled state.")
         try expectEqual(store.selectedSkillDetail?.enabled, false, "opencode toggle refresh should reload detail for the updated skill.")
     }

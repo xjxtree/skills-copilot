@@ -3,6 +3,22 @@
   "ok": true,
   "result": {
     "preview": {
+      "action": {
+        "id": "action:manager_local_create:4141414141414141414141414141414141414141414141414141414141414141",
+        "kind": "manager_local_create",
+        "intent": "manager_local_create",
+        "target": {"kind": "skill", "id": "manager:local-create-fixture"},
+        "project_id": "project-0123456789abcdef",
+        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "preview_method": "skillManager.previewLocalCreate",
+        "apply_method": "skillManager.applyLocalCreate",
+        "source_revision": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+        "confirmation_required": true,
+        "network": "none",
+        "readback": ["catalog_skills"],
+        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+      },
+      "preconditions": [{"kind": "target_file", "target_id": "/tmp/skills-copilot-app/local-skill-library/sources", "expected_revision": "sha256:4242424242424242424242424242424242424242424242424242424242424242"}],
       "tool_id": "npx-skills",
       "operation": "localCreate",
       "command": [
@@ -23,11 +39,12 @@
       "network_required": false,
       "network_allowed": true,
       "will_run": true,
-      "preview_token": "skill-manager:fixture-local-create",
+      "preview_token": "action-preview:v1:hmac-sha256:4343434343434343434343434343434343434343434343434343434343434343",
       "summary": "Create a local skill template named local-review-helper.",
       "risks": [
         "After creation, the app imports the local source through the existing Local Skill Library parser and rule checks."
-      ]
+      ],
+      "skills": ["local-review-helper"]
     },
     "output": {
       "status": "completed",
@@ -48,6 +65,15 @@
     },
     "instance_id": "fixture-local-tool-global",
     "source_path": "/tmp/skills-copilot-app/local-skill-library/sources/local-review-helper",
-    "applied": true
+    "applied": true,
+    "readback": {
+      "action_id": "action:manager_local_create:4141414141414141414141414141414141414141414141414141414141414141",
+      "source_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "project_id": "project-0123456789abcdef",
+      "domains": ["catalog_skills"],
+      "target_ids": ["manager:local-create-fixture"],
+      "observations": [{"domain": "catalog_skills", "target_id": "manager:local-create-fixture", "revision": "sha256:4545454545454545454545454545454545454545454545454545454545454545"}],
+      "verified": true
+    }
   }
 }

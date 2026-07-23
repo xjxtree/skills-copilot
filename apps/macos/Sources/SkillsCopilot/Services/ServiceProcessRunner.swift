@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Security
 
 protocol ServiceProcessRunning {
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data
@@ -140,15 +141,37 @@ private final class StdioPipeCollector {
 }
 
 final class StdioServiceProcessRunner: ServiceProcessRunning {
+    private static let actionPreviewSecretEnvironmentKey =
+        "SKILLS_COPILOT_ACTION_PREVIEW_SECRET"
+    private static let actionPreviewSessionSecret = makeActionPreviewSessionSecret()
+
+    static func makeActionPreviewSessionSecret(
+        randomFill: (UnsafeMutableRawBufferPointer) -> OSStatus = { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+        }
+    ) -> String? {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = bytes.withUnsafeMutableBytes(randomFill)
+        guard status == errSecSuccess else { return nil }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
     private let timeoutNanoseconds: UInt64
     private let environmentOverrides: [String: String]
 
     init(
         timeoutNanoseconds: UInt64 = StdioServiceProcessRunner.configuredTimeoutNanoseconds(),
-        environmentOverrides: [String: String] = [:]
+        environmentOverrides: [String: String] = [:],
+        actionPreviewSecret: String? = StdioServiceProcessRunner.actionPreviewSessionSecret
     ) {
         self.timeoutNanoseconds = timeoutNanoseconds
-        self.environmentOverrides = environmentOverrides
+        var effectiveEnvironment = environmentOverrides
+        if effectiveEnvironment[Self.actionPreviewSecretEnvironmentKey] == nil,
+           let actionPreviewSecret {
+            effectiveEnvironment[Self.actionPreviewSecretEnvironmentKey] =
+                actionPreviewSecret
+        }
+        self.environmentOverrides = effectiveEnvironment
     }
 
     func run(executableURL: URL, input: Data, timeoutNanoseconds overrideTimeoutNanoseconds: UInt64? = nil) async throws -> Data {

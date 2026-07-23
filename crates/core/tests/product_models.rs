@@ -1,11 +1,11 @@
 use skills_copilot_core::{
-    ActionDescriptor, ActionImpact, ActionNetworkPosture, ActionTargetKind, ActionTargetRef,
-    AgentId, AgentReadinessRecord, AttentionItem, AttentionKind, AttentionSeverity,
-    EnvironmentHealthState, EvidenceKind, EvidenceRef, ListIncompleteReason,
-    ProjectReadinessRecord, ReadinessBlocker, ResumeCapability, ResumeCapabilityState,
-    ResumeUnsupportedReason, Scope, SessionContinuationRecord, SkillAggregateRecord,
-    SkillEffectivenessCount, SkillEffectivenessState, SkillInstanceEffectivenessRecord,
-    SourceCoverage,
+    ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
+    ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AgentId, AgentReadinessRecord,
+    AttentionItem, AttentionKind, AttentionSeverity, EnvironmentHealthState, EvidenceKind,
+    EvidenceRef, ListIncompleteReason, NoSafeActionReason, ProjectReadinessRecord,
+    ReadinessBlocker, ResumeCapability, ResumeCapabilityState, ResumeUnsupportedReason, Scope,
+    SessionContinuationRecord, SkillAggregateRecord, SkillEffectivenessCount,
+    SkillEffectivenessState, SkillInstanceEffectivenessRecord, SourceCoverage,
 };
 
 fn evidence(id: &str, revision: &str) -> EvidenceRef {
@@ -22,18 +22,22 @@ fn evidence(id: &str, revision: &str) -> EvidenceRef {
 fn read_only_action(revision: &str) -> ActionDescriptor {
     ActionDescriptor {
         id: "action:resume-preview".to_string(),
+        kind: ActionKind::ResumeSession,
+        intent: ActionIntent::ResumeSession,
         target: ActionTargetRef {
             kind: ActionTargetKind::Session,
             id: "session:1".to_string(),
             agent: Some(AgentId::Codex),
             scope: Some(Scope::AgentProject),
         },
+        project_id: Some("project:funnyaccount-system".to_string()),
         impacts: vec![ActionImpact::ReadOnly],
         preview_method: "session.previewResume".to_string(),
         apply_method: None,
         source_revision: revision.to_string(),
         confirmation_required: false,
         network: ActionNetworkPosture::None,
+        readback: vec![ActionReadbackDomain::SessionContinuation],
         evidence_refs: vec!["evidence:skill".to_string()],
     }
 }
@@ -565,6 +569,7 @@ fn blocker_attention_and_effectiveness_invariants_are_enforced() {
         agent: Some(AgentId::Codex),
         evidence_refs: vec![evidence.id.clone()],
         action_ids: Vec::new(),
+        no_safe_action_reason: Some(NoSafeActionReason::IncompleteEvidence),
     };
     let project = ProjectReadinessRecord {
         project_id: "project:1".to_string(),

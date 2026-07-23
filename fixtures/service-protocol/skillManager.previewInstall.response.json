@@ -3,6 +3,32 @@
   "ok": true,
   "result": {
     "preview": {
+      "action": {
+        "id": "action:manager_install:1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": "manager_install",
+        "intent": "manager_install",
+        "target": {
+          "kind": "skill",
+          "id": "manager:install-fixture",
+          "scope": "agent-project"
+        },
+        "project_id": "project-0123456789abcdef",
+        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "preview_method": "skillManager.previewInstall",
+        "apply_method": "skillManager.applyInstall",
+        "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "confirmation_required": true,
+        "network": "required",
+        "readback": ["catalog_skills"],
+        "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
+      },
+      "preconditions": [
+        {
+          "kind": "target_file",
+          "target_id": "/tmp/skills-copilot-project",
+          "expected_revision": "sha256:1212121212121212121212121212121212121212121212121212121212121212"
+        }
+      ],
       "tool_id": "npx-skills",
       "operation": "install",
       "command": [
@@ -43,17 +69,20 @@
       "network_required": true,
       "network_allowed": true,
       "will_run": false,
-      "preview_token": "skill-manager:fixture-install",
+      "preview_token": "action-preview:v1:hmac-sha256:1313131313131313131313131313131313131313131313131313131313131313",
       "summary": "Install vercel-labs/agent-skills for 6 supported agent target(s).",
       "risks": [
         "The external manager writes canonical skill files and agent symlinks/copies for selected agents.",
         "Agent enablement state is not changed; use Agent Enablement toggles separately.",
         "Source vercel-labs/agent-skills may require network access through npx skills."
-      ]
+      ],
+      "source": "vercel-labs/agent-skills",
+      "skills": ["frontend-design"]
     },
     "output": null,
     "applied": false,
     "scanned_count": 0,
-    "updated_skills": []
+    "updated_skills": [],
+    "readback": null
   }
 }

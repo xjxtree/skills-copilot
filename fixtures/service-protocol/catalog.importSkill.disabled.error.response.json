@@ -1,5 +1,5 @@
 {
-  "id": "fixture-import-skill-github",
+  "id": "fixture-import-skill",
   "ok": false,
   "error": {
     "code": "mutation_disabled",

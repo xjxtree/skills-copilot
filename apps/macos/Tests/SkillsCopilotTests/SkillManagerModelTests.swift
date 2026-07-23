@@ -586,6 +586,25 @@ struct SkillManagerModelTests {
         let payload = """
         {
           "preview": {
+            "action": {
+              "id": "action:manager-install:fixture",
+              "kind": "manager_install",
+              "intent": "manager_install",
+              "target": {
+                "kind": "package",
+                "id": "owner/repo",
+                "scope": "agent-project"
+              },
+              "project_id": "project-fixture",
+              "impacts": ["external_manager", "skill_files", "app_local_data"],
+              "preview_method": "skillManager.previewInstall",
+              "apply_method": "skillManager.applyInstall",
+              "source_revision": "sha256:source",
+              "confirmation_required": true,
+              "network": "required",
+              "readback": ["catalog_skills"],
+              "evidence_refs": ["coverage:codex"]
+            },
             "tool_id": "npx-skills",
             "operation": "install",
             "command": [

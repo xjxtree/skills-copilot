@@ -1,0 +1,8 @@
+{
+  "id": "fixture-script-execute",
+  "ok": false,
+  "error": {
+    "code": "mutation_disabled",
+    "message": "mutation disabled: script.execute is blocked-only: no process or audit file is created; use script.previewExecution for a read-only explanation"
+  }
+}

@@ -224,52 +224,35 @@ extension ServiceClient {
         )
     }
 
-    func toggleSkill(instanceID: String, on: Bool) async throws -> SkillRecord {
-        try await call(
-            method: "config.toggleSkill",
-            params: ToggleSkillParams(instanceId: instanceID, on: on)
-        )
-    }
-
     func previewBatchSkillToggles(instanceIDs: [String], on: Bool) async throws -> BatchTogglePreview {
         let params = BatchToggleParams(
             instanceIDs: instanceIDs,
             targetEnabled: on,
-            action: BatchToggleAction.from(targetEnabled: on).rawValue,
-            previewToken: nil,
-            confirmed: false
+            confirmation: nil
         )
-        do {
-            return try await call(method: "batch.previewSkillToggles", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return try await call(method: "batch.previewToggle", params: params)
-        }
+        return try await call(method: "batch.previewSkillToggles", params: params)
     }
 
     func applyBatchSkillToggles(preview: BatchTogglePreview) async throws -> BatchToggleApplyResult {
+        guard let action = preview.actionDescriptor,
+              let previewToken = preview.previewToken,
+              !previewToken.isEmpty else {
+            throw ClientError.invalidOutput(
+                "A writable batch preview is missing its typed action confirmation."
+            )
+        }
         let params = BatchToggleParams(
             instanceIDs: preview.affectedSkills.map(\.instanceID),
             targetEnabled: preview.targetEnabled,
-            action: preview.action.rawValue,
-            previewToken: preview.id,
-            confirmed: true
+            confirmation: ActionConfirmationWire(
+                action: action,
+                previewToken: previewToken
+            )
         )
-        do {
-            return try await call(method: "batch.applySkillToggles", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return try await call(method: "batch.applyToggle", params: params)
-        }
+        return try await call(method: "batch.applySkillToggles", params: params)
     }
 
     func previewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
-        try await installToolSkill(skill: skill, target: target, confirmed: false)
-    }
-
-    func confirmToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
-        try await installToolSkill(skill: skill, target: target, confirmed: true)
-    }
-
-    private func installToolSkill(skill: SkillRecord, target: ToolInstallTarget, confirmed: Bool) async throws -> ToolGlobalInstallPreview {
         do {
             return try await call(
                 method: "skill.install",
@@ -277,15 +260,39 @@ extension ServiceClient {
                     instanceId: skill.id,
                     targetAgent: target.rawValue,
                     targetScope: "agent-global",
-                    confirmed: confirmed
+                    confirmed: false,
+                    actionConfirmation: nil
                 )
             )
         } catch ClientError.service(let error) where error.code == "unknown_method" {
-            if confirmed {
-                throw ClientError.service(error)
-            }
             return try await legacyPreviewToolInstall(skill: skill, target: target)
         }
+    }
+
+    func confirmToolInstall(
+        skill: SkillRecord,
+        preview: ToolGlobalInstallPreview
+    ) async throws -> ToolGlobalInstallPreview {
+        guard let action = preview.action,
+              let previewToken = preview.previewToken,
+              !previewToken.isEmpty else {
+            throw ClientError.invalidOutput(
+                "The install preview is missing its typed action confirmation."
+            )
+        }
+        return try await call(
+            method: "skill.install",
+            params: ToolInstallPreviewParams(
+                instanceId: skill.id,
+                targetAgent: preview.target.rawValue,
+                targetScope: "agent-global",
+                confirmed: true,
+                actionConfirmation: ActionConfirmationWire(
+                    action: action,
+                    previewToken: previewToken
+                )
+            )
+        )
     }
 
     private func legacyPreviewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
@@ -296,7 +303,8 @@ extension ServiceClient {
                     instanceId: skill.id,
                     targetAgent: target.rawValue,
                     targetScope: "agent-global",
-                    confirmed: false
+                    confirmed: false,
+                    actionConfirmation: nil
                 )
             )
         } catch ClientError.service(let error) where error.code == "unknown_method" {
