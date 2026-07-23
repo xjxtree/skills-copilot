@@ -395,10 +395,30 @@ pub fn build_skill_health_summary(
 }
 
 pub fn user_visible_rule_findings(findings: &[RuleFindingRecord]) -> Vec<RuleFindingRecord> {
-    dedupe_rule_finding_records(findings)
-        .into_iter()
-        .filter(is_user_visible_rule_finding)
-        .collect()
+    let mut visible = findings
+        .iter()
+        .filter(|finding| is_user_visible_rule_finding(finding))
+        .cloned()
+        .collect::<Vec<_>>();
+    visible.sort_by(|left, right| {
+        rule_finding_record_key(left)
+            .cmp(&rule_finding_record_key(right))
+            .then_with(|| {
+                user_visible_severity_rank(&left.effective_severity)
+                    .cmp(&user_visible_severity_rank(&right.effective_severity))
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    dedupe_rule_finding_records(&visible)
+}
+
+fn user_visible_severity_rank(severity: &str) -> u8 {
+    match severity.trim().to_ascii_lowercase().as_str() {
+        "critical" => 0,
+        "error" => 1,
+        "warn" | "warning" => 2,
+        _ => 3,
+    }
 }
 
 pub fn is_user_visible_rule_finding(finding: &RuleFindingRecord) -> bool {

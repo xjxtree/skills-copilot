@@ -23,9 +23,9 @@ supported-method inventory.
 
 | Model | Required content | Persistence |
 | --- | --- | --- |
-| `ProjectReadinessRecord` | Project/source revision, coverage, per-agent environment health, blocking reasons, attention actions, and recent continuation summaries | Transient/cache only |
-| `SkillAggregateRecord` | Definition/source/package identity, instances, scopes, agents, effectiveness, findings, conflicts, completeness, evidence, and supported actions | Transient/cache only |
-| `SessionContinuationRecord` | Project/agent identity, stable session identity, timing, completeness, source revision, evidence, and native resume capability | Transient selected-project state only |
+| `ProjectReadinessRecord` | Project/source revision, coverage, six-agent environment health, typed blocking reasons, attention queue, evidence-bound actions, and recent continuation summaries | Transient/cache only |
+| `SkillAggregateRecord` | Definition fingerprint, logical source/package/scope/runtime identity, per-instance effectiveness, findings, conflicts, completeness, evidence, and supported actions | Transient/cache only |
+| `SessionContinuationRecord` | Project/agent identity, stable session identity, timing, completeness, native source revision, accepted snapshot revision, evidence, and native resume capability | Transient selected-project state only |
 | `EvidenceRef` | Stable typed id, evidence kind, source revision, and redacted display summary | Stored only when the owning existing metadata record is allowed to persist |
 | `ActionDescriptor` | Deterministic id, target, impact, preview/apply method, revision binding, network posture, and confirmation requirement | Transient; never write authorization by itself |
 
@@ -41,16 +41,44 @@ Core product records enforce these invariants before service exposure:
   Unix/Windows absolute paths and control characters while allowing logical
   placeholders such as `$HOME` and `<project-root>`.
 - Action descriptors name typed targets and service preview/apply methods,
-  contain unique evidence references, and bind one source revision. A
-  mutating impact requires both an apply method and explicit confirmation; a
-  read-only action cannot expose an apply method.
+  contain unique impacts and evidence references, and bind one source
+  revision. A mutating impact requires both an apply method and explicit
+  confirmation; a read-only action cannot expose an apply method.
 - Healthy project or agent readiness requires complete source coverage.
+- `partial`, stale, unavailable, source-limited, and uninspected required
+  evidence maps to typed incomplete coverage and blocks healthy readiness.
+- Skill aggregation keys include definition id/fingerprint, logical source
+  identity and kind, publisher/package/version, scope, and runtime identity.
+  Same-name records with any material identity difference remain separate.
+  Logical source and runtime identities are typed opaque values and cannot
+  contain filesystem path separators.
+- Each current aggregate carries exactly one effectiveness record per current
+  instance. Its effectiveness counts cover every projected instance, while
+  installed/enabled/effective counts remain independent. Historical `missing`
+  catalog rows are not current instances.
+- `effective` requires complete installed, linked, enabled, and
+  precedence-proven evidence. A proven loser is `shadowed`; unresolved
+  precedence or incomplete evidence is `unavailable`. `installed_unlinked`
+  requires complete manager inventory evidence.
+- Aggregate effectiveness state counts, primary state, agent/scope membership,
+  and coverage are recomputed from per-instance rows during validation.
+  Project coverage is the same canonical merge over agent rows.
 - Supported resume capability contains non-empty native argv and remains
   copy-only. Unsupported capability contains no argv and carries a typed
-  reason.
-- Project, skill aggregate, and session continuation records reject evidence or
-  actions bound to a different source revision and reject actions that refer to
-  unknown evidence.
+  reason; incomplete continuation coverage cannot carry supported resume. A
+  continuation's evidence binds its native source revision, while actions bind
+  its accepted product snapshot revision.
+- Project and skill aggregate records reject evidence or actions bound to their
+  source revision. Session continuation records enforce the native/snapshot
+  split above. Every record rejects actions that refer to unknown evidence.
+- Projection action ids are unique. Skill, agent, and session inputs may attach
+  an action only when its target and every evidence reference belong to that
+  exact owner. Action ids and evidence references serialize in lexical order,
+  impacts serialize in fixed enum order, and semantic sequences such as native
+  resume argv preserve adapter order.
+- Product projection input is accepted only when all component snapshot
+  revisions match. The projection performs no provider or mutable-source reads,
+  and its serialized ordering is deterministic.
 
 ## Persistence
 

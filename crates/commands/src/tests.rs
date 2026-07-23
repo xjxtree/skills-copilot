@@ -14,6 +14,9 @@ use super::*;
 mod runtime_conflict_regressions;
 mod scanner_regressions;
 
+#[path = "tests/product_projection_tests.rs"]
+mod product_projection_tests;
+
 #[test]
 fn yaml_contract_preserves_permissions_scalars_sequences_bools_and_nested_mapping() {
     let raw = "name: sample-skill\ndescription: Sample\nallowed-tools:\n  - Read\n  - Search\npermissions:\n  network: none\n  exec: false\n  requires_human: true\nmetadata:\n  openclaw:\n    skillKey: routed-key\n";

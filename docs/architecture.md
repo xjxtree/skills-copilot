@@ -101,6 +101,42 @@ and continuation capability must be computed from the same source revision and
 completeness evidence. Swift must not reinterpret a partial source as complete
 or derive an alternative enablement/precedence policy.
 
+Commands accepts only one adapter-normalized, immutable product snapshot at a
+time. Every agent source, skill, finding, conflict, action, and session
+snapshot membership must carry the accepted source revision; mixed revisions
+fail closed. Projection is pure and deterministic: it performs no filesystem,
+catalog, provider, or config reads, and input order cannot change serialized
+output. A continuation separately retains its native session-source revision:
+its evidence binds that native revision, while any action descriptor binds the
+accepted product snapshot revision. The core model validates both relationships.
+
+The normalized skill facts distinguish definition fingerprint, logical source
+identity, publisher/package/version, scope, and runtime identity. These are
+material aggregation dimensions, so same-name rows are never merged merely
+because their display names or physical files resemble one another. Logical
+source identity is adapter-owned provenance such as a native root,
+compatibility root, or manifest-declared plugin package; it is not inferred
+from a cache path or content hash. Physical paths remain scanner/audit
+evidence and do not become product identity.
+
+Current projections omit historical `missing` skill rows. Each retained
+instance has a separate effectiveness row covering installed, linked, enabled,
+precedence-proven, completeness, and the derived effective/disabled/shadowed/
+installed-unlinked/broken/unavailable state. Partial, stale, unreadable,
+source-limited, or uninspected required evidence cannot yield an effective
+instance or healthy agent/project result. Session continuation follows the
+same rule: incomplete source evidence cannot expose supported native resume.
+Aggregate and project coverage are the canonical merge of their child rows,
+not a separately trusted count.
+
+Typed actions remain capabilities, not authorization. A projection attaches an
+action only when its target and evidence belong to the declaring skill, agent,
+or session. Action ids and evidence references are canonical sets, and impacts
+use fixed enum order; semantic sequences such as native resume argv retain
+adapter order. Conflict precedence is equally fail-closed: a winner must be a
+current, complete, enabled candidate in the same agent/runtime identity;
+otherwise every member is unavailable and the conflict blocks readiness.
+
 Startup and manual reload reuse the catalog inventory, but read-only skill
 responses project the current guarded Codex `[[skills.config]]` overrides onto
 cached list, detail, analysis, conflict, and health records in memory. This

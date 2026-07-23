@@ -17,6 +17,8 @@ pub enum ListIncompleteReason {
     UnreadableSource,
     PageFailed,
     UnsupportedProtocol,
+    StaleSource,
+    NotInspected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

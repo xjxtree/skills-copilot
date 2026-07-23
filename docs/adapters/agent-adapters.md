@@ -50,6 +50,10 @@ blocked operations. It is a current contract, not a version history.
 - Adapters report documented local facts: roots, scope, config state,
   precedence inputs, source provenance, completeness, session identity, and
   supported native continuation behavior.
+- Snapshot assembly normalizes those facts under one immutable source revision
+  before product projection. Plugin enablement, compatibility-root ownership,
+  config state, manager linkage, precedence, and project/session matching are
+  adapter facts; the projector does not rediscover them from mutable files.
 - Rust product projections combine those facts into environment health, skill
   effectiveness, aggregates, evidence references, and typed action capability.
   Native UI code and optional AI must not reimplement adapter policy.
@@ -57,8 +61,23 @@ blocked operations. It is a current contract, not a version history.
   disabled, shadowed, unlinked, broken, or unavailable. `effective` means the
   adapter projection selects it; it does not mean a runtime invocation was
   observed.
+- Every skill fact carries a logical source identity and runtime identity.
+  Logical source identity names the adapter-declared native, compatibility, or
+  plugin source; it must not be derived from a physical cache path or content
+  hash. Definition fingerprint, source identity, publisher/package/version,
+  scope, and runtime identity are all material aggregation dimensions.
+- Precedence-sensitive adapters retain every current candidate. A loser becomes
+  `shadowed` only when adapter evidence proves a current, complete, installed,
+  linked, enabled winner in the same agent/runtime identity. An absent,
+  historical, cross-runtime, or otherwise unproved winner leaves every member
+  `unavailable`; it never produces a guessed effective result.
 - Missing, partial, stale, or source-limited required adapter evidence blocks a
   healthy product status and must carry a typed reason and recovery action.
+- Historical `missing` rows are excluded from current product skill inventory.
+  Session continuation is limited to exact normalized project matches and
+  retains only adapter-verified copy-only native resume capability; incomplete
+  session evidence removes supported resume. Continuations retain both the
+  native session-source revision and their accepted product snapshot revision.
 
 ## Adapter Matrix
 
