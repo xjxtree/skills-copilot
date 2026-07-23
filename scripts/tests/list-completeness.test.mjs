@@ -984,6 +984,7 @@ test("repository manifest inventories every planned formal list", () => {
     "skill-manager.inventory",
     "skill-manager.risks",
     "skill-manager.search",
+    "skills-workspace.aggregates",
     "task-cockpit.agents",
     "task-cockpit.blockers",
     "task-cockpit.candidate-alternatives",

@@ -135,6 +135,15 @@
       "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
     },
     {
+      "id": "skills-workspace.aggregates",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SkillsWorkspaceListView.swift",
+      "owner": "SkillsWorkspaceListView",
+      "source": "presentation.rows",
+      "policy": "complete",
+      "total_count_source": "accepted skill-aggregate list total_count with visible aggregate and instance counts presented separately",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
       "id": "skill-manager.search",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
       "owner": "SkillManagerPanel",
