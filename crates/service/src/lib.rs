@@ -21,15 +21,15 @@ use skills_copilot_commands::{
     install_skill_from_tool_global_guarded, list_adapter_capabilities, list_adapter_diagnostics,
     list_agent_config_snapshot_page_snapshot, list_agent_config_snapshots,
     list_conflicts_for_context, list_finding_triage, list_findings,
-    list_installed_skills_with_manager, list_rule_tuning, list_skill_event_page_snapshot,
+    list_installed_skills_from_projection, list_rule_tuning, list_skill_event_page_snapshot,
     list_skill_events, list_skill_management_tools, list_snapshots, prepare_claude_settings_save,
     preview_claude_settings_save, preview_install_with_manager, preview_local_archive_import,
     preview_local_archive_update, preview_local_create_with_manager, preview_remove_with_manager,
     preview_remove_with_manager_guarded, preview_script_execution, preview_skill_toggles,
     preview_snapshot_rollback_with_context, preview_update_with_manager, read_agent_config,
     read_claude_settings, reject_non_applicable_confirmation, rollback_snapshot,
-    scan_all_catalog_report, scan_claude_catalog_report, search_skills_with_manager,
-    skill_health_summary, user_visible_rule_findings, validate_local_archive_import_confirmation,
+    scan_all_catalog_report, scan_claude_catalog_report, skill_health_summary,
+    user_visible_rule_findings, validate_local_archive_import_confirmation,
     validate_local_archive_update_confirmation, validate_local_delete_confirmation,
     validate_skill_install_confirmation, validate_skill_manager_confirmation,
     validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
@@ -41,8 +41,11 @@ use skills_copilot_commands::{
     SkillInstallPreviewRecord, SkillManagerDeleteLocalParams, SkillManagerInstallParams,
     SkillManagerListInstalledParams, SkillManagerLocalArchiveImportParams,
     SkillManagerLocalArchiveUpdateParams, SkillManagerLocalCreateParams, SkillManagerRemoveParams,
-    SkillManagerSearchParams, SkillManagerUpdateParams, SnapshotRollbackApplyRecord,
-    SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
+    SkillManagerSearchApplyParams, SkillManagerSearchParams, SkillManagerUpdateParams,
+    SnapshotRollbackApplyRecord, SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
+};
+use skills_copilot_commands::{
+    apply_search_skills_with_manager, preview_search_skills_with_manager,
 };
 use skills_copilot_core::{
     AdapterContext, AgentId, ListIncompleteReason, ListPageMetadata, ListSourceCompleteness, Scope,

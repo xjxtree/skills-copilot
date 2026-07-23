@@ -36,8 +36,8 @@ verification.
 - Provider calls require preview, redaction, destination visibility, and
   explicit confirmation.
 - Skill scripts remain default-denied.
-- Skill Manager may invoke supported external manager CLIs for search,
-  install, remove, update, list, and local template creation when the request
+- Skill Manager may invoke supported external manager CLIs for confirmed
+  search, install, remove, update, and local template creation when the request
   exposes command preview, target agents, network posture, telemetry-off env,
   and confirmation state. Calls must use argv arrays, not shell strings.
 - App-local metadata writes must be redacted.
@@ -83,11 +83,11 @@ that clients may infer for arbitrary mutations.
   `applied_unverified`, and `outcome_unknown`; clients must not automatically
   retry any such response.
 - The action-reference contract currently covers single and multi-skill UI
-  toggles through `batch.*`, `skill.install`, Skill Manager
-  install/remove/update/local-create/local-archive-import/local-archive-update,
-  eligible app-owned local deletion, explicit Claude settings saves, config
-  snapshot rollback, provider profile save/delete, provider connection tests,
-  and confirmed LLM prompt sends.
+  toggles through `batch.*`, `skill.install`, confirmed Skill Manager search
+  and install/remove/update/local-create/local-archive-import/
+  local-archive-update, eligible app-owned local deletion, explicit Claude
+  settings saves, config snapshot rollback, provider profile save/delete,
+  provider connection tests, and confirmed LLM prompt sends.
   Other callable mutations retain their documented
   method-specific consistency contracts until they explicitly adopt these
   fields.
@@ -216,8 +216,9 @@ the client.
 | `script.previewExecution` | None | Never | Never | None |
 | `script.execute` | None | Never | Never | None |
 | `skillManager.listTools` | None | Never | Never | None |
-| `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |
-| `skillManager.listInstalled` | External manager state may change when invoked | Always | Never | None |
+| `skillManager.search` | None | Never | Never | None |
+| `skillManager.applySearch` | App-local data, External manager state may change when invoked | Always | Always | Required |
+| `skillManager.listInstalled` | None | Never | Never | None |
 | `skillManager.previewInstall` | None | Never | Never | None |
 | `skillManager.applyInstall` | Agent skill files, App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewRemove` | None | Never | Never | None |
@@ -523,9 +524,15 @@ presence/value or absence verification, not secret exposure.
   wildcard agent targeting.
 - Install uses symlink distribution. The native Skill Manager does not expose a
   copy-mode choice.
-- Search, install, and update may require external network access through the
-  manager CLI. The native client allows those scoped operations by default;
-  previews still show the destination command before any confirmed write.
+- Search first returns a signed, local-only preview. The preview binds the
+  normalized query and owner, manager executable, command, working directory,
+  exact allowlisted environment, project/scope target, network posture, and
+  the bounded one-time action state. `skillManager.applySearch` accepts only
+  that exact explicit confirmation, revalidates under the app-data owner lock,
+  and then starts the network-backed manager process.
+- Install and update may require external network access through the manager
+  CLI. Their previews still show the destination command before any confirmed
+  write.
 - Every manager child starts from `env_clear()` and receives only the
   previewed `HOME`, `PATH`, `LANG`, `LC_ALL`, `DISABLE_TELEMETRY`,
   `DO_NOT_TRACK`, `CI`, and npm audit/fund/update-notifier values. It never
@@ -536,40 +543,32 @@ presence/value or absence verification, not secret exposure.
   userinfo, query, or fragment data are rejected without echo. Credential-shaped
   URLs in manager output are replaced before parsing, diagnostics, or response
   serialization.
-- `skillManager.search` returns every row emitted by the invoked manager and
-  flattens list metadata into the response. Because the current manager output
+- A confirmed `skillManager.applySearch` returns every row emitted by the
+  invoked manager and flattens list metadata into the response. Because the current manager output
   does not advertise an authoritative total or continuation token, search uses
   `total_count=null`, `has_more=false`, `source_completeness=unknown`, and
   `incomplete_reason=source_limited`; `returned_count` is only the number of
-  rows actually returned and is never presented as the source total. A
-  network-blocked preview uses the same source semantics with zero rows.
-- `skillManager.listInstalled` runs once per project/global scope rather than
-  once per agent, consumes the CLI's complete JSON inventory, and
-  reports `returned_count=total_count`, `source_completeness=enumerable`, and
-  no incomplete reason. Machine-readable output is parsed in full behind a
-  4 MiB fail-closed limit; only bounded diagnostic output is returned. A
-  truncated, malformed, or unrecognized list fails closed with a stable error
-  instead of becoming an exact empty list.
-  Because the Node CLI can lose bytes when a large `console.log` exits while
-  stdout is a pipe, installed JSON is captured through a private `0600`
-  temporary regular file, bounded before reading, and removed on every return
-  path. This prevents the observed 64 KiB pipe-buffer truncation without
-  persisting inventory output.
+  rows actually returned and is never presented as the source total. Search
+  previews must declare `network_allowed=true` so the confirmation shows the
+  actual network posture; `network_allowed=false` is rejected locally and
+  never starts the manager.
+- `skillManager.listInstalled` is a process-free projection over the accepted
+  project-context catalog plus the applicable project/global manager lock. It
+  never invokes `npx`, performs network access, or treats a generic plugin or
+  cache path as package inventory. A missing lock is an exact empty manager
+  projection; malformed, oversized, symlinked, or non-regular lock state fails
+  closed without replacing the last accepted native cache.
   A row is `source_kind=manager` only when the matching scope lock file proves
   a managed source. Unlocked `.agents/skills` rows are `source_kind=local` and
-  retain a redacted local source path; every row also retains a dedicated,
-  redacted `path` identity so the native cache can associate the CLI row with
-  its scanned canonical source without treating that source as another package.
-  Appearing in `skills list` alone is not manager ownership evidence. No raw
-  manager payload is included in that
-  error. No pagination flags or
-  tokens are invented for either command. The native client may reveal an
+  retain a redacted local source path. No raw manager payload is stored or
+  returned by the local projection. No pagination flags or tokens are invented
+  for either command. The native client may reveal an
   already-returned search collection in 20-row steps without issuing another
   manager or network request, while installed JSON and the app-owned local
   library remain fully accessible.
-- The native inventory emits one row per installed package source. A matching
-  catalog row enriches the CLI row and is consumed rather than appended again.
-  Catalog-only fallback rows are limited to skill sources beneath the selected
+- The native inventory emits one row per lock-proven package source. Matching
+  catalog rows supply supported-agent linkage and are consumed rather than
+  appended again. Catalog-only fallback rows are limited to skill sources beneath the selected
   project/global `.agents/skills` root (including nested package layouts);
   plugin caches, configured read-only roots, and other catalog discovery paths
   never become editable local-package rows.
@@ -580,8 +579,9 @@ presence/value or absence verification, not secret exposure.
   invariants. Search accepts only terminal unknown/source-limited metadata;
   installed accepts only terminal exact enumerable metadata. Invalid refresh
   metadata is rejected without replacing a current record for the same inputs.
-  Empty and network-blocked searches still display zero loaded rows, unknown
-  total, the typed source limitation and recovery guidance, with no load action.
+  Empty completed searches display zero loaded rows, unknown total, and the
+  typed source limitation with no load action. A preview alone is displayed as
+  a pending confirmation, not as an empty search result.
 - The Skill Manager UI does not expose agent-layer enable/disable controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.
@@ -631,10 +631,11 @@ presence/value or absence verification, not secret exposure.
   UI routes both single and multi-skill changes through
   `batch.previewSkillToggles` and `batch.applySkillToggles`;
   `config.toggleSkill` is compatibility-only and returns `mutation_disabled`.
-- The native client prewarms project and global skill inventories during app
-  startup. Opening the Skill Manager performs no read; its Load Data button is
-  the only page-local refresh trigger. Local app-owned skills are merged into
-  the same skill-centric inventory.
+- The native client prewarms project and global catalog/lock projections during
+  app startup. Startup, reload, project switching, ordinary catalog refresh,
+  opening Skill Manager, and its Load Data action never invoke an external
+  manager process. Local app-owned skills are merged into the same
+  skill-centric inventory.
 - Search starts with a keyword and result selection. Install/remove agent
   targets and the shared install scope are chosen only after a skill is
   selected. Manager update changes a shared source and therefore reports all

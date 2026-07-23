@@ -3,49 +3,23 @@
   "ok": true,
   "result": {
     "preview": {
-      "tool_id": "npx-skills",
+      "tool_id": "catalog-projection",
       "operation": "listInstalled",
-      "command": [
-        "/usr/local/bin/npx",
-        "skills",
-        "list",
-        "--json",
-        "--agent",
-        "claude-code",
-        "--agent",
-        "pi",
-        "--agent",
-        "opencode",
-        "--agent",
-        "codex",
-        "--agent",
-        "hermes-agent",
-        "--agent",
-        "openclaw"
-      ],
+      "command": [],
       "cwd": "/tmp/skills-copilot-project",
-      "env": [
-        {
-          "key": "HOME",
-          "value": "/tmp/skills-copilot-home"
-        },
-        {
-          "key": "DISABLE_TELEMETRY",
-          "value": "1"
-        }
-      ],
+      "env": [],
       "requires_confirmation": false,
       "confirmed": false,
       "network_required": false,
-      "network_allowed": true,
+      "network_allowed": false,
       "will_run": false,
-      "preview_token": "skill-manager:fixture-list-installed",
-      "summary": "List skills currently managed by npx skills.",
+      "preview_token": "sha256:1414141414141414141414141414141414141414141414141414141414141414",
+      "summary": "List installed skills from the accepted catalog and manager lock projection.",
       "risks": []
     },
     "output": {
-      "status": "completed",
-      "exit_code": 0,
+      "status": "cached",
+      "exit_code": null,
       "stdout": "",
       "stderr": ""
     },
@@ -61,6 +35,7 @@
         "scope": "project"
       }
     ],
+    "source_revision": "sha256:1414141414141414141414141414141414141414141414141414141414141414",
     "returned_count": 1,
     "total_count": 1,
     "has_more": false,

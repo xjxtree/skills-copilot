@@ -196,6 +196,7 @@
 "skillManager.searchInstall" = "搜索与安装";
 "skillManager.query" = "搜索技能";
 "skillManager.owner" = "作者";
+"skillManager.owner.optional" = "所有者（可选）";
 "skillManager.source" = "来源";
 "skillManager.skillName" = "技能名称";
 "skillManager.installSkillName" = "技能名称";
@@ -206,6 +207,10 @@
 "skillManager.previewCreate" = "预览创建";
 "skillManager.previewDelete" = "预览删除";
 "skillManager.search" = "搜索技能";
+"skillManager.search.preview" = "预览搜索";
+"skillManager.search.run" = "执行搜索";
+"skillManager.search.completed" = "搜索已完成，并已验证外部管理器回读。";
+"skillManager.confirm.search.title" = "确认远程技能搜索";
 "skillManager.search.prompt" = "输入关键词；选择搜索结果后再设置安装选项。";
 "skillManager.search.returned" = "已返回 %d 项 · 远程总数不可用";
 "skillManager.inventory" = "技能清单";

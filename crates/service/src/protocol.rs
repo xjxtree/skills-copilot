@@ -41,6 +41,7 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "script.execute",
     "skillManager.listTools",
     "skillManager.search",
+    "skillManager.applySearch",
     "skillManager.listInstalled",
     "skillManager.previewInstall",
     "skillManager.applyInstall",

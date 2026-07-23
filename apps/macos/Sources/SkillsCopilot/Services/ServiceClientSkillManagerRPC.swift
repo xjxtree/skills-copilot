@@ -5,12 +5,15 @@ extension ServiceClient {
         try await call(method: "skillManager.listTools", params: EmptyParams())
     }
 
-    func searchSkillManager(query: String) async throws -> SkillManagerSearchRecord {
+    func searchSkillManager(
+        query: String,
+        owner: String?
+    ) async throws -> SkillManagerSearchRecord {
         let result: SkillManagerSearchRecord = try await call(
             method: "skillManager.search",
             params: SkillManagerSearchParams(
                 query: query,
-                owner: nil,
+                owner: owner,
                 networkAllowed: true
             ),
             timeoutMS: 120_000
@@ -18,6 +21,47 @@ extension ServiceClient {
         guard result.hasValidPageMetadata else {
             throw ClientError.invalidOutput("skillManager.search returned inconsistent page metadata")
         }
+        _ = try requiredAction(result.preview)
+        guard result.preview.requiresConfirmation,
+              result.preview.networkRequired,
+              result.preview.networkAllowed,
+              !result.preview.willRun,
+              result.output == nil,
+              result.results.isEmpty,
+              result.readback == nil else {
+            throw ClientError.invalidOutput(
+                "skillManager.search must return a local-only confirmation preview"
+            )
+        }
+        return result
+    }
+
+    func applySkillManagerSearch(
+        preview: SkillManagerSearchRecord,
+        query: String,
+        owner: String?
+    ) async throws -> SkillManagerSearchRecord {
+        let action = try requiredAction(preview.preview)
+        let result: SkillManagerSearchRecord = try await call(
+            method: "skillManager.applySearch",
+            params: SkillManagerSearchApplyParams(
+                query: query,
+                owner: owner,
+                networkAllowed: true,
+                confirmed: true,
+                previewToken: preview.preview.previewToken,
+                actionReference: action.reference
+            ),
+            timeoutMS: 120_000
+        )
+        guard result.hasValidPageMetadata else {
+            throw ClientError.invalidOutput("skillManager.applySearch returned inconsistent page metadata")
+        }
+        try requireVerifiedReadback(
+            result.readback,
+            action: action,
+            operation: "Skill Manager search"
+        )
         return result
     }
 

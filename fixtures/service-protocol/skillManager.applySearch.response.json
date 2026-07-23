@@ -1,5 +1,5 @@
 {
-  "id": "fixture-skill-manager-search",
+  "id": "fixture-skill-manager-apply-search",
   "ok": true,
   "result": {
     "preview": {
@@ -41,49 +41,62 @@
       ],
       "cwd": "/tmp/skills-copilot-project",
       "env": [
-        {
-          "key": "HOME",
-          "value": "/tmp/skills-copilot-home"
-        },
-        {
-          "key": "DISABLE_TELEMETRY",
-          "value": "1"
-        },
-        {
-          "key": "DO_NOT_TRACK",
-          "value": "1"
-        },
-        {
-          "key": "CI",
-          "value": "1"
-        },
-        {
-          "key": "npm_config_audit",
-          "value": "false"
-        },
-        {
-          "key": "npm_config_fund",
-          "value": "false"
-        },
-        {
-          "key": "npm_config_update_notifier",
-          "value": "false"
-        }
+        { "key": "HOME", "value": "/tmp/skills-copilot-home" },
+        { "key": "LANG", "value": "en_US.UTF-8" },
+        { "key": "LC_ALL", "value": "en_US.UTF-8" },
+        { "key": "DISABLE_TELEMETRY", "value": "1" },
+        { "key": "DO_NOT_TRACK", "value": "1" },
+        { "key": "CI", "value": "1" },
+        { "key": "npm_config_audit", "value": "false" },
+        { "key": "npm_config_fund", "value": "false" },
+        { "key": "npm_config_update_notifier", "value": "false" },
+        { "key": "PATH", "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" }
       ],
       "requires_confirmation": true,
-      "confirmed": false,
+      "confirmed": true,
       "network_required": true,
       "network_allowed": true,
-      "will_run": false,
+      "will_run": true,
       "preview_token": "action-preview:v1:hmac-sha256:1313131313131313131313131313131313131313131313131313131313131313",
       "summary": "Search remote skill indexes with npx skills.",
       "risks": [
-        "Search may contact skills.sh, npm, or git-host metadata through the external CLI."
+        "Search contacts the external manager's configured index and may contact npm or git-host metadata."
       ]
     },
-    "output": null,
-    "results": [],
-    "returned_count": 0,
+    "output": {
+      "status": "completed",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "results": [
+      {
+        "name": "frontend-design",
+        "source": "vercel-labs/agent-skills",
+        "description": "Frontend design skill",
+        "raw": {
+          "name": "frontend-design",
+          "source": "vercel-labs/agent-skills",
+          "description": "Frontend design skill"
+        }
+      }
+    ],
+    "readback": {
+      "action_id": "action:inspect_evidence:1111111111111111111111111111111111111111111111111111111111111111",
+      "source_revision": "sha256:1515151515151515151515151515151515151515151515151515151515151515",
+      "project_id": "project-0123456789abcdef",
+      "domains": ["manager_inventory"],
+      "target_ids": ["manager:search-fixture"],
+      "observations": [
+        {
+          "domain": "manager_inventory",
+          "target_id": "manager:search-fixture",
+          "revision": "sha256:1616161616161616161616161616161616161616161616161616161616161616"
+        }
+      ],
+      "verified": true
+    },
+    "returned_count": 1,
     "total_count": null,
     "has_more": false,
     "source_completeness": "unknown",

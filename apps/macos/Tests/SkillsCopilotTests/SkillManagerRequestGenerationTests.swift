@@ -5,6 +5,7 @@ import Foundation
 struct SkillManagerRequestGenerationTests {
     func run() async throws {
         try canonicalInputsNormalizeIdentity()
+        try await searchRequiresExplicitApplyBeforePublishingResults()
         try await newerSearchWinsWhenOlderResponseFinishesLast()
         try await staleSearchCannotChangeVisibleIDsOrUnknownTotal()
         try await staleSearchErrorDoesNotReplaceNewSuccess()
@@ -53,6 +54,11 @@ struct SkillManagerRequestGenerationTests {
         try await waitForPending("search:current-35", runner: runner)
         await runner.resumeSuccess("search:current-35")
         await current.value
+        guard let confirmation = store.skillManagerSearchConfirmation else {
+            throw NativeModelTestFailure(description: "Current search preview should be confirmable.")
+        }
+        try expectEqual(confirmation.owner, "current-owner", "Search preview must bind the normalized owner.")
+        await store.applySkillManagerSearch(confirmation: confirmation)
 
         let currentIDs = store.skillManagerVisibleSearchResults.map(\.id)
         try expectEqual(currentIDs.count, 20, "A returned remote collection should initially reveal twenty rows.")
@@ -86,8 +92,12 @@ struct SkillManagerRequestGenerationTests {
         store.skillManagerSearchQuery = "retain-search"
 
         await store.searchSkillManager()
+        guard let confirmation = store.skillManagerSearchConfirmation else {
+            throw NativeModelTestFailure(description: "Initial valid search preview should be confirmable.")
+        }
+        await store.applySkillManagerSearch(confirmation: confirmation)
         guard let validSearch = store.skillManagerSearchResult else {
-            throw NativeModelTestFailure(description: "Initial valid search record should load.")
+            throw NativeModelTestFailure(description: "Confirmed valid search record should load.")
         }
         await store.searchSkillManager()
         try expectEqual(
@@ -126,6 +136,44 @@ struct SkillManagerRequestGenerationTests {
         try expectEqual(inputs.agents, ["claude-code", "codex"], "Mutation agents should be unique and sorted.")
     }
 
+    private func searchRequiresExplicitApplyBeforePublishingResults() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        store.skillManagerSearchQuery = " guarded-search "
+        store.skillManagerOwner = " fixture-owner "
+
+        await store.searchSkillManager()
+
+        try expectNil(
+            store.skillManagerSearchResult,
+            "A local preview must not publish unverified external search results."
+        )
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.applySearch").count,
+            0,
+            "Previewing search must not call the external-manager apply method."
+        )
+        guard let confirmation = store.skillManagerSearchConfirmation else {
+            throw NativeModelTestFailure(description: "Search preview should create an immutable confirmation.")
+        }
+        try expectEqual(confirmation.query, "guarded-search", "Search confirmation must capture the normalized query.")
+        try expectEqual(confirmation.owner, "fixture-owner", "Search confirmation must capture the normalized owner.")
+
+        await store.applySkillManagerSearch(confirmation: confirmation)
+
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.applySearch").count,
+            1,
+            "Only explicit confirmation may call the external-manager apply method."
+        )
+        try expectEqual(
+            store.skillManagerSearchResult?.results.first?.name,
+            "guarded-search",
+            "Only verified apply output should become the visible search result."
+        )
+        try expectNil(store.skillManagerSearchConfirmation, "A consumed search confirmation must be retired.")
+    }
+
     private func newerSearchWinsWhenOlderResponseFinishesLast() async throws {
         let runner = SkillManagerGenerationServiceRunner()
         await runner.suspend("search:old")
@@ -146,9 +194,9 @@ struct SkillManagerRequestGenerationTests {
         await old.value
 
         try expectEqual(
-            store.skillManagerSearchResult?.results.first?.name,
+            store.skillManagerSearchConfirmation?.query,
             "new",
-            "An older search completion must not replace the newest result."
+            "An older search completion must not replace the newest preview."
         )
         let calls = await runner.recordedCalls(method: "skillManager.search")
         try expectEqual(
@@ -176,7 +224,7 @@ struct SkillManagerRequestGenerationTests {
         await runner.resumeServiceError("search:stale-error")
         await stale.value
 
-        try expectEqual(store.skillManagerSearchResult?.results.first?.name, "current", "Current search success should remain visible.")
+        try expectEqual(store.skillManagerSearchConfirmation?.query, "current", "Current search preview should remain visible.")
         try expectNil(store.skillManagerErrorMessage, "A stale search error must not replace current success feedback.")
     }
 
@@ -730,7 +778,7 @@ struct SkillManagerRequestGenerationTests {
         let second = Task { await store.searchSkillManager() }
         await second.value
         let firstCompletedBeforeServiceReturned = await waitForCompletion(firstCompletion)
-        let currentResultBeforeLateError = store.skillManagerSearchResult?.results.first?.name
+        let currentPreviewBeforeLateError = store.skillManagerSearchConfirmation?.query
         let loadingBeforeLateError = store.isSearchingSkillManager
 
         await runner.resumeServiceError("search:same-family")
@@ -742,9 +790,9 @@ struct SkillManagerRequestGenerationTests {
             "Beginning generation B should wake generation A's caller when A ignores cancellation."
         )
         try expectEqual(
-            currentResultBeforeLateError,
+            currentPreviewBeforeLateError,
             "same-family",
-            "Generation B should publish its own success before generation A is released."
+            "Generation B should publish its own preview before generation A is released."
         )
         try expectEqual(
             loadingBeforeLateError,
@@ -752,9 +800,9 @@ struct SkillManagerRequestGenerationTests {
             "Generation A must not keep generation B's completed loading state active."
         )
         try expectEqual(
-            store.skillManagerSearchResult?.results.first?.name,
+            store.skillManagerSearchConfirmation?.query,
             "same-family",
-            "Generation A's late service error must not replace generation B's success."
+            "Generation A's late service error must not replace generation B's preview."
         )
         try expectNil(store.skillManagerErrorMessage, "Generation A's late service error must remain silent.")
         try expectEqual(
@@ -1169,9 +1217,11 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
     ) -> Data {
         let result: Any
         switch call.method {
-        case "skillManager.search":
+        case "skillManager.search", "skillManager.applySearch":
             let query = call.query ?? ""
-            let count = query.hasSuffix("-35") ? 35 : 1
+            let count = call.method == "skillManager.applySearch"
+                ? (query.hasSuffix("-35") ? 35 : 1)
+                : 0
             let results = (0..<count).map { index in
                 [
                     "name": index == 0 ? query : "\(query)-\(index)",
@@ -1181,8 +1231,14 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                 ] as [String: Any]
             }
             var searchResult: [String: Any] = [
-                "preview": preview(operation: "search", token: "search:\(query)", source: nil, skills: []),
-                "output": NSNull(),
+                "preview": preview(
+                    operation: "search",
+                    token: "search:\(query)",
+                    source: nil,
+                    skills: [],
+                    targetID: query
+                ),
+                "output": call.method == "skillManager.applySearch" ? output : NSNull(),
                 "results": results,
                 "returned_count": results.count,
                 "total_count": NSNull(),
@@ -1191,6 +1247,12 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             ]
             if !injectInvalidMetadata {
                 searchResult["incomplete_reason"] = "source_limited"
+            }
+            if call.method == "skillManager.applySearch" {
+                searchResult["readback"] = readback(
+                    operation: "search",
+                    targetID: query
+                )
             }
             result = searchResult
         case "skillManager.listInstalled":
@@ -1209,6 +1271,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                 "preview": preview(operation: "listInstalled", token: "installed:\(name)", source: nil, skills: []),
                 "output": output,
                 "installed": installed,
+                "source_revision": "sha256:installed:\(name)",
                 "returned_count": installed.count,
                 "total_count": installed.count,
                 "has_more": false,
@@ -1307,7 +1370,8 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         operation: String,
         token: String,
         source: String?,
-        skills: [String]
+        skills: [String],
+        targetID: String? = nil
     ) -> [String: Any] {
         var result: [String: Any] = [
             "tool_id": "npx-skills",
@@ -1315,7 +1379,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             "command": ["npx", "skills", operation],
             "cwd": "/tmp/project",
             "env": [],
-            "requires_confirmation": ["install", "remove", "update", "localCreate"].contains(operation),
+            "requires_confirmation": ["search", "install", "remove", "update", "localCreate"].contains(operation),
             "confirmed": false,
             "network_required": ["search", "install", "update"].contains(operation),
             "network_allowed": true,
@@ -1326,10 +1390,10 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             "source": source ?? NSNull(),
             "skills": skills
         ]
-        if ["install", "remove", "update", "localCreate"].contains(operation) {
+        if ["search", "install", "remove", "update", "localCreate"].contains(operation) {
             result["action"] = action(
                 operation: operation,
-                targetID: source ?? skills.first ?? operation
+                targetID: targetID ?? source ?? skills.first ?? operation
             )
         }
         return result
@@ -1341,6 +1405,8 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
     ) -> [String: Any] {
         let methods: (kind: String, intent: String, preview: String, apply: String)
         switch operation {
+        case "search":
+            methods = ("refresh_evidence", "inspect_evidence", "skillManager.search", "skillManager.applySearch")
         case "install":
             methods = ("manager_install", "manager_install", "skillManager.previewInstall", "skillManager.applyInstall")
         case "remove":
@@ -1357,17 +1423,38 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             "kind": methods.kind,
             "intent": methods.intent,
             "target": [
-                "kind": operation == "localDelete" ? "skill" : "package",
+                "kind": ["search", "localDelete"].contains(operation) ? "skill" : "package",
                 "id": targetID
             ],
-            "impacts": ["skill_files", "app_local_data"],
+            "impacts": operation == "search"
+                ? ["read_only", "external_manager", "app_local_data"]
+                : ["skill_files", "app_local_data"],
             "preview_method": methods.preview,
             "apply_method": methods.apply,
             "source_revision": "sha256:fixture",
             "confirmation_required": true,
-            "network": ["install", "update"].contains(operation) ? "required" : "none",
-            "readback": ["catalog_skills"],
+            "network": ["search", "install", "update"].contains(operation) ? "required" : "none",
+            "readback": operation == "search" ? ["manager_inventory"] : ["catalog_skills"],
             "evidence_refs": ["skill:\(targetID)"]
+        ]
+    }
+
+    private static func readback(
+        operation: String,
+        targetID: String
+    ) -> [String: Any] {
+        let descriptor = action(operation: operation, targetID: targetID)
+        return [
+            "action_id": descriptor["id"]!,
+            "source_revision": "sha256:verified:\(operation):\(targetID)",
+            "domains": operation == "search" ? ["manager_inventory"] : ["catalog_skills"],
+            "target_ids": [targetID],
+            "observations": [[
+                "domain": operation == "search" ? "manager_inventory" : "catalog_skills",
+                "target_id": targetID,
+                "revision": "sha256:observed:\(operation):\(targetID)"
+            ]],
+            "verified": true
         ]
     }
 

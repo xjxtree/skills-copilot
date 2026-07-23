@@ -66,8 +66,12 @@ fn search_record_preserves_all_returned_rows_without_claiming_source_total() {
             .collect::<Vec<_>>(),
     )
     .expect("search JSON");
-    let search =
-        skill_manager_search_record(test_preview("search"), None, parse_search_results(&stdout));
+    let search = skill_manager_search_record(
+        test_preview("search"),
+        None,
+        parse_search_results(&stdout),
+        None,
+    );
 
     assert_eq!(search.results.len(), 35);
     assert_eq!(search.page.returned_count, 35);
@@ -102,6 +106,7 @@ fn installed_record_reports_exact_enumerable_total() {
             stderr: String::new(),
         },
         parse_installed_records(&stdout).expect("valid installed JSON"),
+        "sha256:fixture".to_string(),
     );
 
     assert_eq!(installed.installed.len(), 27);
@@ -245,7 +250,9 @@ fn installed_parser_accepts_a_recognized_exact_empty_list() {
 }
 
 #[test]
-fn search_without_network_does_not_create_manager_cwd() {
+fn search_preview_does_not_create_manager_cwd_or_run_the_manager() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -254,22 +261,25 @@ fn search_without_network_does_not_create_manager_cwd() {
         "skill-manager-search-no-network-{}-{unique}",
         std::process::id()
     ));
+    let user_home = root.join("home");
+    fs::create_dir_all(&user_home).expect("create existing manager cwd");
     let ctx = AdapterContext {
-        user_home: root.join("home"),
+        user_home: user_home.clone(),
         project_root: None,
         project_cwd: None,
         extra_roots: Vec::new(),
     };
 
-    let record = search_skills_with_manager(
+    let record = preview_search_skills_with_manager(
+        &root.join("app-data"),
         &ctx,
         &SkillManagerSearchParams {
             query: "local-only".to_string(),
             owner: None,
-            network_allowed: false,
+            network_allowed: true,
         },
     )
-    .expect("preview prohibited network search");
+    .expect("local search preview");
 
     assert!(record.output.is_none());
     assert!(record.results.is_empty());
@@ -283,7 +293,10 @@ fn search_without_network_does_not_create_manager_cwd() {
         record.page.incomplete_reason,
         Some(ListIncompleteReason::SourceLimited)
     );
-    assert!(!ctx.user_home.exists());
+    assert!(record.preview.requires_confirmation);
+    assert!(record.preview.action.is_some());
+    assert!(user_home.is_dir());
+    assert!(!root.join("app-data").exists());
     let _ = fs::remove_dir_all(root);
 }
 

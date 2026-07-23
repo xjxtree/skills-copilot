@@ -6,7 +6,7 @@ struct SkillManagerModelTests {
         try defaultTargetsMatchSupportedManagerOrder()
         try workflowsSeparatePackageOperations()
         try visibleResultsRevealReturnedRowsInTwentyRowSteps()
-        try searchRecordSeparatesNetworkBlockedFromEmptyResults()
+        try searchPreviewIsDistinctFromACompletedEmptyResult()
         try methodSpecificPageMetadataRejectsCrossMethodSemantics()
         try installedSourceOwnershipDecodesIndependentlyFromInventoryDiscovery()
         try localArchiveImportPreviewDecodes()
@@ -64,6 +64,7 @@ struct SkillManagerModelTests {
             {"name":"same","source":"owner/repo","agents":["codex"],"scope":"project","path":"<project-root>/same","raw":{}},
             {"name":"same","source":"owner/repo","agents":["codex"],"scope":"project","path":"<project-root>/same","raw":{"variant":2}}
           ],
+          "source_revision":"sha256:installed-fixture",
           "returned_count":2,"total_count":2,"has_more":false,
           "source_completeness":"enumerable"
         }
@@ -101,7 +102,7 @@ struct SkillManagerModelTests {
         )
     }
 
-    private func searchRecordSeparatesNetworkBlockedFromEmptyResults() throws {
+    private func searchPreviewIsDistinctFromACompletedEmptyResult() throws {
         let payload = """
         {
           "preview": {
@@ -113,10 +114,24 @@ struct SkillManagerModelTests {
               {"key": "DISABLE_TELEMETRY", "value": "1"},
               {"key": "DO_NOT_TRACK", "value": "1"}
             ],
-            "requires_confirmation": false,
+            "action": {
+              "id": "action:refresh_evidence:search-preview",
+              "kind": "refresh_evidence",
+              "intent": "inspect_evidence",
+              "target": {"kind":"skill","id":"manager:search-preview","scope":"agent-project"},
+              "impacts": ["read_only","external_manager","app_local_data"],
+              "preview_method": "skillManager.search",
+              "apply_method": "skillManager.applySearch",
+              "source_revision": "sha256:search-preview",
+              "confirmation_required": true,
+              "network": "required",
+              "readback": ["manager_inventory"],
+              "evidence_refs": ["coverage:codex"]
+            },
+            "requires_confirmation": true,
             "confirmed": false,
             "network_required": true,
-            "network_allowed": false,
+            "network_allowed": true,
             "will_run": false,
             "preview_token": "skill-manager:search",
             "summary": "Search remote skill indexes with npx skills.",
@@ -134,10 +149,14 @@ struct SkillManagerModelTests {
 
         let search = try JSONDecoder().decode(SkillManagerSearchRecord.self, from: payload)
 
-        try expectEqual(search.isBlockedByNetwork, true, "Network-blocked search should not be presented as an empty result set.")
-        try expectEqual(search.totalCount, nil, "Blocked remote search must not invent an enumerable total.")
-        try expectEqual(search.sourceCompleteness, .unknown, "Blocked remote search source completeness should remain unknown.")
-        try expectEqual(search.incompleteReason, .sourceLimited, "Blocked remote search should explain that the source was not enumerated.")
+        try expectEqual(search.preview.requiresConfirmation, true, "Search preview must remain pending explicit confirmation.")
+        try expectEqual(search.preview.networkAllowed, true, "Search preview must disclose the actual allowed network posture.")
+        try expectEqual(search.preview.willRun, false, "A local search preview must never claim that it ran the manager.")
+        try expectNil(search.output, "A local search preview has no external-manager output.")
+        try expectNil(search.readback, "A local search preview has no verified external-manager read-back.")
+        try expectEqual(search.totalCount, nil, "A remote search preview must not invent an enumerable total.")
+        try expectEqual(search.sourceCompleteness, .unknown, "Search preview source completeness should remain unknown.")
+        try expectEqual(search.incompleteReason, .sourceLimited, "Search preview should explain that the source was not enumerated.")
         try expectEqual(search.hasValidPageMetadata, true, "Matching flattened search metadata should validate.")
 
         let mismatchedPayload = String(data: payload, encoding: .utf8)!
@@ -184,6 +203,7 @@ struct SkillManagerModelTests {
           "installed": [
             {"name":"alpha","source":"owner/repo","agents":["codex"],"scope":"project","path":"/tmp/alpha","raw":{}}
           ],
+          "source_revision": "sha256:installed-fixture",
           "returned_count": 1,
           "total_count": 1,
           "has_more": false,

@@ -9,6 +9,7 @@
       "executable": "/usr/local/bin/npx",
       "operations": [
         "search",
+        "applySearch",
         "listInstalled",
         "previewInstall",
         "applyInstall",

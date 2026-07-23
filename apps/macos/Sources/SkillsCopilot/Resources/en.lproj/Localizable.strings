@@ -196,6 +196,7 @@
 "skillManager.searchInstall" = "Search & Install";
 "skillManager.query" = "Search skills";
 "skillManager.owner" = "Owner";
+"skillManager.owner.optional" = "Owner (optional)";
 "skillManager.source" = "Source";
 "skillManager.skillName" = "Skill name";
 "skillManager.installSkillName" = "Skill name";
@@ -206,6 +207,10 @@
 "skillManager.previewCreate" = "Preview Create";
 "skillManager.previewDelete" = "Preview Delete";
 "skillManager.search" = "Search Skills";
+"skillManager.search.preview" = "Preview Search";
+"skillManager.search.run" = "Run Search";
+"skillManager.search.completed" = "Search completed with verified external-manager read-back.";
+"skillManager.confirm.search.title" = "Confirm Remote Skill Search";
 "skillManager.search.prompt" = "Enter a keyword. Installation options appear after you select a result.";
 "skillManager.search.returned" = "%d returned · remote total unavailable";
 "skillManager.inventory" = "Skill Inventory";

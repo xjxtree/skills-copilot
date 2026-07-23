@@ -13,7 +13,7 @@ extension SkillStore {
         await loadSkillManagerInventory()
     }
 
-    func loadSkillManagerInventory() async {
+    func loadSkillManagerInventory(preservingVerifiedResult: Bool = false) async {
         let generation = beginSkillManagerInstalledList(for: .installedInventory)
         clearSkillManagerFeedback()
         let service = service
@@ -38,7 +38,17 @@ extension SkillStore {
             }
             if let firstError,
                self.currentSkillManagerInstalledGeneration == generation {
-                self.setSkillManagerError(firstError.localizedDescription)
+                if preservingVerifiedResult {
+                    let warning = UIStrings.text(
+                        "actionLifecycle.appliedRefreshFailed",
+                        "The action was verified, but the cached view could not refresh."
+                    ) + " \(firstError.localizedDescription)"
+                    self.skillManagerMessage = [self.skillManagerMessage, warning]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                } else {
+                    self.setSkillManagerError(firstError.localizedDescription)
+                }
             }
         }
         let handle = SkillManagerRequestTaskHandle(task: task)

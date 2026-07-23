@@ -44,6 +44,7 @@
       "script.execute",
       "skillManager.listTools",
       "skillManager.search",
+      "skillManager.applySearch",
       "skillManager.listInstalled",
       "skillManager.previewInstall",
       "skillManager.applyInstall",

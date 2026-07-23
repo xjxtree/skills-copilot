@@ -586,6 +586,7 @@ pub fn validate_action_method_ownership(
                 ("catalog.scanAll", Some("catalog.scanAll"))
                     | ("catalog.scanAgent", None)
                     | ("catalog.getSkill", None)
+                    | ("skillManager.search", Some("skillManager.applySearch"))
             )
         }
         ActionKind::ToggleSkill => {

@@ -132,11 +132,12 @@ test("rejects invalid process, network, and confirmation enums", () => {
 test("renders canonical audit and external-manager write labels", () => {
   const effects = new Map([
     ["script.execute", { ...readOnly, writes: ["audit"], confirmation: "required" }],
-    ["skillManager.search", {
+    ["skillManager.applySearch", {
       ...readOnly,
-      writes: ["external_manager_state"],
-      process: "conditional",
-      network: "conditional",
+      writes: ["app_data", "external_manager_state"],
+      process: "always",
+      network: "always",
+      confirmation: "required",
     }],
   ]);
 
@@ -144,7 +145,7 @@ test("renders canonical audit and external-manager write labels", () => {
     "| Method | Local writes | External process | Network | Confirmation |",
     "| --- | --- | --- | --- | --- |",
     "| `script.execute` | Blocked-attempt audit only | Never | Never | Required |",
-    "| `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |",
+    "| `skillManager.applySearch` | App-local data, External manager state may change when invoked | Always | Always | Required |",
   ].join("\n"));
 });
 
@@ -157,18 +158,19 @@ test("parses all five documentation columns back to effect enums", () => {
     "| Method | Local writes | External process | Network | Confirmation |",
     "| --- | --- | --- | --- | --- |",
     "| `script.execute` | Blocked-attempt audit only | Never | Never | Required |",
-    "| `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |",
+    "| `skillManager.applySearch` | App-local data, External manager state may change when invoked | Always | Always | Required |",
     "",
     "## Provider Observability",
   ].join("\n");
 
   assert.deepEqual(parseDocumentedMethodEffects(markdown), new Map([
     ["script.execute", { ...readOnly, writes: ["audit"], confirmation: "required" }],
-    ["skillManager.search", {
+    ["skillManager.applySearch", {
       ...readOnly,
-      writes: ["external_manager_state"],
-      process: "conditional",
-      network: "conditional",
+      writes: ["app_data", "external_manager_state"],
+      process: "always",
+      network: "always",
+      confirmation: "required",
     }],
   ]));
 });

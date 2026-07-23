@@ -31,6 +31,7 @@ use crate::{
 
 mod archive;
 mod composite_remove;
+mod discovery;
 pub use archive::{
     apply_local_archive_import, apply_local_archive_update, preview_local_archive_import,
     preview_local_archive_update, validate_local_archive_import_confirmation,
@@ -40,6 +41,10 @@ pub use archive::{
 };
 use composite_remove::{
     apply_composite_local_delete, bind_composite_local_delete, composite_local_delete_plan,
+};
+pub use discovery::{
+    apply_search_skills_with_manager, list_installed_skills_from_projection,
+    preview_search_skills_with_manager,
 };
 
 const DEFAULT_MANAGER_TOOL: &str = "npx-skills";
@@ -51,6 +56,8 @@ const MAX_MACHINE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MANAGER_LOCK_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MANAGER_TARGET_ENTRIES: usize = 16_384;
 const MAX_MANAGER_TARGET_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_MANAGER_SEARCH_QUERY_BYTES: usize = 512;
+const MAX_MANAGER_SEARCH_OWNER_BYTES: usize = 256;
 
 pub const SUPPORTED_MANAGER_AGENTS: [&str; 6] = [
     "claude-code",
@@ -121,6 +128,21 @@ pub struct SkillManagerSearchParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillManagerSearchApplyParams {
+    pub query: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub network_allowed: bool,
+    #[serde(default)]
+    pub confirmed: bool,
+    #[serde(default)]
+    pub preview_token: Option<String>,
+    #[serde(default)]
+    pub action_reference: Option<ActionReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillManagerSearchResult {
     pub name: String,
     pub source: Option<String>,
@@ -133,6 +155,8 @@ pub struct SkillManagerSearchRecord {
     pub preview: SkillManagerCommandPreview,
     pub output: Option<SkillManagerCommandOutput>,
     pub results: Vec<SkillManagerSearchResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readback: Option<ActionReadbackRecord>,
     #[serde(flatten)]
     pub page: ListPageMetadata,
 }
@@ -162,6 +186,7 @@ pub struct SkillManagerInstalledListRecord {
     pub preview: SkillManagerCommandPreview,
     pub output: SkillManagerCommandOutput,
     pub installed: Vec<SkillManagerInstalledRecord>,
+    pub source_revision: String,
     #[serde(flatten)]
     pub page: ListPageMetadata,
 }
@@ -321,6 +346,7 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
             executable: npx.map(|path| path.to_string_lossy().to_string()),
             operations: [
                 "search",
+                "applySearch",
                 "listInstalled",
                 "previewInstall",
                 "applyInstall",
@@ -366,104 +392,11 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
     ]
 }
 
-pub fn search_skills_with_manager(
-    ctx: &AdapterContext,
-    params: &SkillManagerSearchParams,
-) -> Result<SkillManagerSearchRecord, CommandError> {
-    let query = params.query.trim();
-    if query.is_empty() {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "skillManager.search requires a non-empty query".to_string(),
-        ));
-    }
-    let mut args = vec![
-        SKILLS_CLI_BINARY.to_string(),
-        "find".to_string(),
-        query.to_string(),
-    ];
-    if let Some(owner) = params
-        .owner
-        .as_deref()
-        .map(str::trim)
-        .filter(|owner| !owner.is_empty())
-    {
-        args.push("--owner".to_string());
-        args.push(owner.to_string());
-    }
-    let preview = command_preview(
-        ctx,
-        CommandPreviewDraft {
-            operation: "search",
-            args,
-            cwd: manager_cwd(ctx, None)?,
-            network_required: true,
-            network_allowed: params.network_allowed,
-            confirmed: false,
-            summary: "Search remote skill indexes with npx skills.".to_string(),
-            risks: vec![
-                "Search may contact skills.sh, npm, or git-host metadata through the external CLI."
-                    .to_string(),
-            ],
-            source: None,
-            skills: Vec::new(),
-        },
-    )?;
-    if !params.network_allowed {
-        return Ok(skill_manager_search_record(preview, None, Vec::new()));
-    }
-    let execution = run_previewed_command(ctx, &preview)?;
-    let results = parse_search_results(&execution.machine_stdout);
-    Ok(skill_manager_search_record(
-        preview,
-        Some(execution.output.without_machine_stdout()),
-        results,
-    ))
-}
-
-pub fn list_installed_skills_with_manager(
-    ctx: &AdapterContext,
-    params: &SkillManagerListInstalledParams,
-) -> Result<SkillManagerInstalledListRecord, CommandError> {
-    let mut args = vec![
-        SKILLS_CLI_BINARY.to_string(),
-        "list".to_string(),
-        "--json".to_string(),
-    ];
-    // The CLI otherwise enumerates every agent it knows about. Its JSON writer
-    // currently clips stdout at 64 KiB, so unrelated agent metadata can turn a
-    // successful list into invalid JSON. Keep the UI skill-centric while
-    // constraining this internal read to the adapters the app actually supports.
-    append_agent_args(&mut args, &default_agent_targets());
-    append_scope_args(&mut args, params.scope.as_deref())?;
-    let preview = command_preview(
-        ctx,
-        CommandPreviewDraft {
-            operation: "listInstalled",
-            args,
-            cwd: manager_cwd(ctx, params.scope.as_deref())?,
-            network_required: false,
-            network_allowed: true,
-            confirmed: false,
-            summary: "List skills currently managed by npx skills.".to_string(),
-            risks: Vec::new(),
-            source: None,
-            skills: Vec::new(),
-        },
-    )?;
-    let execution = run_previewed_command(ctx, &preview)?;
-    let mut installed = parse_installed_records(&execution.machine_stdout)?;
-    enrich_installed_records(ctx, params.scope.as_deref(), &mut installed);
-    Ok(skill_manager_installed_record(
-        preview,
-        execution.output.without_machine_stdout(),
-        installed,
-    ))
-}
-
 fn skill_manager_search_record(
     preview: SkillManagerCommandPreview,
     output: Option<SkillManagerCommandOutput>,
     results: Vec<SkillManagerSearchResult>,
+    readback: Option<ActionReadbackRecord>,
 ) -> SkillManagerSearchRecord {
     let page = ListPageMetadata {
         returned_count: results.len(),
@@ -477,6 +410,7 @@ fn skill_manager_search_record(
         preview,
         output,
         results,
+        readback,
         page,
     }
 }
@@ -485,12 +419,14 @@ fn skill_manager_installed_record(
     preview: SkillManagerCommandPreview,
     output: SkillManagerCommandOutput,
     installed: Vec<SkillManagerInstalledRecord>,
+    source_revision: String,
 ) -> SkillManagerInstalledListRecord {
     let page = ListPageMetadata::enumerable(installed.len(), Some(installed.len()), None);
     SkillManagerInstalledListRecord {
         preview,
         output,
         installed,
+        source_revision,
         page,
     }
 }
@@ -1734,6 +1670,7 @@ fn build_install_preview(
             risks: install_risks(source, network_required),
             source: Some(source.to_string()),
             skills: skill_names,
+            accepted_revision: None,
         },
     )
 }
@@ -1776,6 +1713,7 @@ fn build_remove_preview(
             ],
             source: None,
             skills: vec![skill.to_string()],
+            accepted_revision: None,
         },
     )
 }
@@ -1812,6 +1750,7 @@ fn build_update_preview(
             ],
             source: None,
             skills: skill_names,
+            accepted_revision: None,
         },
     )
 }
@@ -1844,11 +1783,12 @@ fn build_local_create_preview(
             ],
             source: None,
             skills: vec![name.clone()],
+            accepted_revision: None,
         },
     )
 }
 
-struct CommandPreviewDraft {
+pub(super) struct CommandPreviewDraft {
     operation: &'static str,
     args: Vec<String>,
     cwd: PathBuf,
@@ -1859,6 +1799,7 @@ struct CommandPreviewDraft {
     risks: Vec<String>,
     source: Option<String>,
     skills: Vec<String>,
+    accepted_revision: Option<String>,
 }
 
 struct SkillManagerCommandExecution {
@@ -1910,7 +1851,7 @@ impl MachineStdoutCapture {
     fn read(&mut self) -> Result<Vec<u8>, CommandError> {
         if self.file.metadata()?.len() > MAX_MACHINE_OUTPUT_BYTES as u64 {
             return Err(CommandError::SkillManagerCommandFailed(
-                "listInstalled output exceeded the safe capture limit".to_string(),
+                "manager machine output exceeded the safe capture limit".to_string(),
             ));
         }
         self.file.seek(SeekFrom::Start(0))?;
@@ -1921,7 +1862,7 @@ impl MachineStdoutCapture {
             .read_to_end(&mut output)?;
         if output.len() > MAX_MACHINE_OUTPUT_BYTES {
             return Err(CommandError::SkillManagerCommandFailed(
-                "listInstalled output exceeded the safe capture limit".to_string(),
+                "manager machine output exceeded the safe capture limit".to_string(),
             ));
         }
         Ok(output)
@@ -1941,7 +1882,7 @@ impl SkillManagerCommandOutput {
     }
 }
 
-fn command_preview(
+pub(super) fn command_preview(
     ctx: &AdapterContext,
     mut draft: CommandPreviewDraft,
 ) -> Result<SkillManagerCommandPreview, CommandError> {
@@ -1959,6 +1900,7 @@ fn command_preview(
         draft.operation,
         draft.network_required,
         draft.network_allowed,
+        draft.accepted_revision.as_deref(),
     )?;
     let preview_token = action_binding
         .as_ref()
@@ -1992,7 +1934,9 @@ fn command_preview(
         command,
         cwd: draft.cwd.to_string_lossy().to_string(),
         env: preview_env,
-        requires_confirmation: draft.operation != "search" && draft.operation != "listInstalled",
+        requires_confirmation: action_binding
+            .as_ref()
+            .is_some_and(|binding| binding.action.confirmation_required),
         confirmed: draft.confirmed,
         network_required: draft.network_required,
         network_allowed: draft.network_allowed,
@@ -2062,7 +2006,7 @@ fn run_previewed_command(
     // everything beyond the 64 KiB pipe buffer. A private regular file makes
     // that write synchronous; it is bounded, read only after exit, and removed
     // by RAII on every return path.
-    let mut machine_capture = if preview.operation == "listInstalled" {
+    let mut machine_capture = if matches!(preview.operation.as_str(), "search" | "listInstalled") {
         Some(MachineStdoutCapture::create()?)
     } else {
         None
@@ -2793,6 +2737,12 @@ fn manager_target_snapshot(
     cwd: &Path,
     operation: &str,
 ) -> Result<ManagerTargetSnapshot, CommandError> {
+    if operation == "search" {
+        return Ok(ManagerTargetSnapshot {
+            inventory_paths: Vec::new(),
+            skill_paths: Vec::new(),
+        });
+    }
     if operation == "localCreate" {
         let name = command
             .windows(2)
@@ -3060,8 +3010,15 @@ fn manager_action_binding(
     operation: &str,
     network_required: bool,
     network_allowed: bool,
+    accepted_revision: Option<&str>,
 ) -> Result<Option<ActionPreviewBinding>, CommandError> {
     let (kind, intent, preview_method, apply_method) = match operation {
+        "search" => (
+            ActionKind::RefreshEvidence,
+            ActionIntent::InspectEvidence,
+            "skillManager.search",
+            "skillManager.applySearch",
+        ),
         "install" => (
             ActionKind::ManagerInstall,
             ActionIntent::ManagerInstall,
@@ -3092,6 +3049,7 @@ fn manager_action_binding(
     let cwd_text = cwd.to_string_lossy().to_string();
     let network_required_value = network_required.to_string();
     let network_allowed_value = network_allowed.to_string();
+    let env_json = serde_json::to_string(&manager_command_env(ctx, &command[0]))?;
     let source_revision = action_source_revision(
         "manager.accepted-preview",
         &[
@@ -3100,6 +3058,8 @@ fn manager_action_binding(
             ("cwd", &cwd_text),
             ("network_required", &network_required_value),
             ("network_allowed", &network_allowed_value),
+            ("environment", &env_json),
+            ("accepted_revision", accepted_revision.unwrap_or("none")),
         ],
     )?;
     let project_id = canonical_project_id(ctx.project_root.as_deref());
@@ -3140,11 +3100,14 @@ fn manager_action_binding(
             .collect()
     };
     let local_create = operation == "localCreate";
+    let discovery = operation == "search";
     let readback = if local_create {
         canonical_readback_domains([
             ActionReadbackDomain::SkillFiles,
             ActionReadbackDomain::CatalogSkills,
         ])
+    } else if discovery {
+        canonical_readback_domains([ActionReadbackDomain::ManagerInventory])
     } else {
         canonical_readback_domains([
             ActionReadbackDomain::ManagerInventory,
@@ -3154,6 +3117,12 @@ fn manager_action_binding(
     };
     let impacts = if local_create {
         vec![ActionImpact::SkillFiles, ActionImpact::AppLocalData]
+    } else if discovery {
+        vec![
+            ActionImpact::ReadOnly,
+            ActionImpact::ExternalManager,
+            ActionImpact::AppLocalData,
+        ]
     } else {
         vec![
             ActionImpact::ExternalManager,
@@ -3198,6 +3167,14 @@ fn manager_action_binding(
             kind: ActionPreconditionKind::TargetFile,
             target_id: target.to_string_lossy().to_string(),
             expected_revision: manager_target_revision(&target)?,
+        });
+    }
+    if discovery {
+        let executable = PathBuf::from(&command[0]);
+        preconditions.push(ActionPrecondition {
+            kind: ActionPreconditionKind::SourceFile,
+            target_id: executable.to_string_lossy().to_string(),
+            expected_revision: manager_target_revision(&executable)?,
         });
     }
     if let Some(source) = manager_source_precondition(command, cwd)? {
@@ -3829,6 +3806,7 @@ fn strip_ansi_codes(value: &str) -> String {
     stripped
 }
 
+#[cfg(test)]
 fn parse_installed_records(stdout: &str) -> Result<Vec<SkillManagerInstalledRecord>, CommandError> {
     let value = serde_json::from_str::<Value>(stdout).map_err(|_| {
         CommandError::SkillManagerCommandFailed(
@@ -3905,6 +3883,7 @@ struct ManagerLockEntry {
     source_type: Option<String>,
 }
 
+#[cfg(test)]
 fn enrich_installed_records(
     ctx: &AdapterContext,
     scope: Option<&str>,
@@ -3948,6 +3927,7 @@ fn enrich_installed_records(
     }
 }
 
+#[cfg(test)]
 fn read_manager_lock(ctx: &AdapterContext, scope: Option<&str>) -> Option<ManagerLockFile> {
     let normalized_scope = normalize_manager_scope(scope).ok()?;
     let path = if normalized_scope.as_deref() == Some("global") {

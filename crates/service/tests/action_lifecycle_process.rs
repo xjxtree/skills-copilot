@@ -233,15 +233,39 @@ fn manager_child_process_never_inherits_the_action_preview_secret() {
 
     let fixture = Fixture::new("manager-child-env");
     let fake_npx = fixture.root.join("fake-npx");
+    let marker = fixture.root.join("manager-search-spawned");
     fs::write(
         &fake_npx,
-        "#!/bin/sh\nif printenv SKILLS_COPILOT_ACTION_PREVIEW_SECRET >/dev/null 2>&1; then\n  echo inherited-secret >&2\n  exit 42\nfi\nprintf '[]\\n'\n",
+        format!(
+            "#!/bin/sh\nif printenv SKILLS_COPILOT_ACTION_PREVIEW_SECRET >/dev/null 2>&1; then\n  echo inherited-secret >&2\n  exit 42\nfi\nprintf 'spawned\\n' >> '{}'\nprintf '[{{\"name\":\"fixture-skill\",\"source\":\"fixture/source\",\"description\":\"Fixture\"}}]\\n'\n",
+            marker.display()
+        ),
     )
     .expect("write fake manager");
     fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
         .expect("make fake manager executable");
 
-    let response = invoke_with_extra_env(
+    let installed = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[(
+            "SKILLS_COPILOT_NPX_PATH",
+            fake_npx.to_string_lossy().as_ref(),
+        )],
+        json!({
+            "id":"manager-installed",
+            "method":"skillManager.listInstalled",
+            "params":{"scope":"global"}
+        }),
+    );
+    assert_success(&installed);
+    assert!(
+        !marker.exists(),
+        "installed inventory projection must not start the external manager"
+    );
+
+    let preview = invoke_with_extra_env(
         &fixture.home,
         &fixture.app_data,
         Some(SECRET_A),
@@ -254,12 +278,288 @@ fn manager_child_process_never_inherits_the_action_preview_secret() {
             "method":"skillManager.search",
             "params":{
                 "query":"fixture",
+                "owner":"fixture-owner",
                 "network_allowed":true
             }
         }),
     );
+    assert_success(&preview);
+    assert!(
+        !marker.exists(),
+        "search preview must not start the external manager"
+    );
+    let action = preview
+        .pointer("/result/preview/action")
+        .expect("search preview action");
+    let preview_token = preview
+        .pointer("/result/preview/preview_token")
+        .and_then(Value::as_str)
+        .expect("search preview token");
+    let apply_request = json!({
+        "id":"manager-search-apply",
+        "method":"skillManager.applySearch",
+        "params":{
+            "query":"fixture",
+            "owner":"fixture-owner",
+            "network_allowed":true,
+            "confirmed":true,
+            "preview_token":preview_token,
+            "action_reference":{
+                "action_id":action["id"],
+                "source_revision":action["source_revision"],
+                "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                "target":action["target"]
+            }
+        }
+    });
+    let stale_query = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[(
+            "SKILLS_COPILOT_NPX_PATH",
+            fake_npx.to_string_lossy().as_ref(),
+        )],
+        json!({
+            "id":"manager-search-stale-query",
+            "method":"skillManager.applySearch",
+            "params":{
+                "query":"different-query",
+                "owner":"fixture-owner",
+                "network_allowed":true,
+                "confirmed":true,
+                "preview_token":preview_token,
+                "action_reference":{
+                    "action_id":action["id"],
+                    "source_revision":action["source_revision"],
+                    "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                    "target":action["target"]
+                }
+            }
+        }),
+    );
+    assert_error_code(&stale_query, "unknown_action_reference");
+    assert!(
+        !marker.exists(),
+        "a stale query must be rejected before the external manager starts"
+    );
+    let stale_owner = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[(
+            "SKILLS_COPILOT_NPX_PATH",
+            fake_npx.to_string_lossy().as_ref(),
+        )],
+        json!({
+            "id":"manager-search-stale-owner",
+            "method":"skillManager.applySearch",
+            "params":{
+                "query":"fixture",
+                "owner":"different-owner",
+                "network_allowed":true,
+                "confirmed":true,
+                "preview_token":preview_token,
+                "action_reference":{
+                    "action_id":action["id"],
+                    "source_revision":action["source_revision"],
+                    "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                    "target":action["target"]
+                }
+            }
+        }),
+    );
+    assert_error_code(&stale_owner, "unknown_action_reference");
+    assert!(
+        !marker.exists(),
+        "a stale owner must be rejected before the external manager starts"
+    );
+    let applied = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[(
+            "SKILLS_COPILOT_NPX_PATH",
+            fake_npx.to_string_lossy().as_ref(),
+        )],
+        apply_request.clone(),
+    );
+    assert_success(&applied);
+    assert_eq!(
+        fs::read_to_string(&marker).expect("search spawn marker"),
+        "spawned\n"
+    );
+    assert_eq!(
+        applied.pointer("/result/readback/verified"),
+        Some(&Value::Bool(true))
+    );
 
-    assert_success(&response);
+    let replay = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[(
+            "SKILLS_COPILOT_NPX_PATH",
+            fake_npx.to_string_lossy().as_ref(),
+        )],
+        apply_request,
+    );
+    assert_error_code(&replay, "stale_action_reference");
+    assert_eq!(
+        fs::read_to_string(&marker).expect("search spawn marker after replay"),
+        "spawned\n",
+        "a replay must be rejected before the external manager starts"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn unsafe_search_inputs_and_failed_external_searches_are_not_retryable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("manager-search-failure");
+    let fake_npx = fixture.root.join("fake-npx-failure");
+    let marker = fixture.root.join("manager-search-failed-spawn");
+    fs::write(
+        &fake_npx,
+        format!(
+            "#!/bin/sh\nprintf 'spawned\\n' >> '{}'\necho remote-failure >&2\nexit 7\n",
+            marker.display()
+        ),
+    )
+    .expect("write failing fake manager");
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
+        .expect("make failing fake manager executable");
+    let fake_npx_text = fake_npx.to_string_lossy().to_string();
+    let manager_env = [("SKILLS_COPILOT_NPX_PATH", fake_npx_text.as_str())];
+
+    for (query, owner) in [
+        ("--help", Some("fixture-owner")),
+        ("fixture", Some("--json")),
+    ] {
+        let rejected = invoke_with_extra_env(
+            &fixture.home,
+            &fixture.app_data,
+            Some(SECRET_A),
+            &manager_env,
+            json!({
+                "id":"unsafe-search-preview",
+                "method":"skillManager.search",
+                "params":{
+                    "query":query,
+                    "owner":owner,
+                    "network_allowed":true
+                }
+            }),
+        );
+        assert_error_code(&rejected, "command_error");
+    }
+    let network_blocked = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"network-blocked-search-preview",
+            "method":"skillManager.search",
+            "params":{
+                "query":"fixture",
+                "owner":"fixture-owner",
+                "network_allowed":false
+            }
+        }),
+    );
+    assert_error_code(&network_blocked, "command_error");
+    assert!(
+        !marker.exists(),
+        "unsafe search inputs must fail before the manager starts"
+    );
+    assert!(
+        !fixture
+            .app_data
+            .join("skill-manager-discovery-state.json")
+            .exists(),
+        "rejected previews must not write the replay state"
+    );
+
+    let preview = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"failed-search-preview",
+            "method":"skillManager.search",
+            "params":{
+                "query":"fixture",
+                "owner":"fixture-owner",
+                "network_allowed":true
+            }
+        }),
+    );
+    assert_success(&preview);
+    let action = preview
+        .pointer("/result/preview/action")
+        .expect("failed search action");
+    let preview_token = preview
+        .pointer("/result/preview/preview_token")
+        .and_then(Value::as_str)
+        .expect("failed search preview token");
+    let apply_request = json!({
+        "id":"failed-search-apply",
+        "method":"skillManager.applySearch",
+        "params":{
+            "query":"fixture",
+            "owner":"fixture-owner",
+            "network_allowed":true,
+            "confirmed":true,
+            "preview_token":preview_token,
+            "action_reference":{
+                "action_id":action["id"],
+                "source_revision":action["source_revision"],
+                "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                "target":action["target"]
+            }
+        }
+    });
+    let failed = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        apply_request.clone(),
+    );
+    assert_error_code(&failed, "partial_effect");
+    assert_eq!(
+        failed
+            .pointer("/error/details/state")
+            .and_then(Value::as_str),
+        Some("outcome_unknown")
+    );
+    assert_eq!(
+        failed
+            .pointer("/error/details/retry_allowed")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        fs::read_to_string(&marker).expect("failed search spawn marker"),
+        "spawned\n"
+    );
+
+    let replay = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        apply_request,
+    );
+    assert_error_code(&replay, "stale_action_reference");
+    assert_eq!(
+        fs::read_to_string(&marker).expect("failed search marker after replay"),
+        "spawned\n",
+        "a failed external action is still one-time and must not be retried"
+    );
 }
 
 #[test]

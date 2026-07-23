@@ -159,8 +159,10 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   `skillManager.*`.
 - `skills-npm` is registered for capability discovery only in this slice; write
   execution needs a future scoped adapter.
-- Manager-backed search/install/update use the scoped external network path by
-  default. Writes still require a command preview and explicit confirmation.
+- Manager-backed search first creates a signed local-only preview; only
+  `skillManager.applySearch` may start its scoped external network path after
+  explicit confirmation. Install/update likewise retain command preview and
+  explicit confirmation.
 - Commands must be executed as argv arrays after `env_clear()`, with only the
   previewed `HOME`, derived `PATH`, fixed locale, CI, telemetry-off, and npm
   audit/fund/update-notifier values. Parent credentials and action secrets are
@@ -192,26 +194,20 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   query, fragment, percent encoding, or credential material are rejected
   without including the source in an error. The only accepted SCP username
   form is the literal `git@host:path`.
-- Search preserves every row returned by the manager, but the current CLI does
+- A confirmed search preserves every row returned by the manager, but the current CLI does
   not prove a remote total or advertise a continuation token. Responses must
   therefore distinguish returned rows from an unknown, source-limited total;
   clients may reveal the in-memory returned collection progressively but must
   not label its count as complete or make a hidden follow-up network request.
-  Installed JSON is read once per project/global scope and merged with the
-  app-owned local library. The CLI row is authoritative for an installed
-  package; its redacted source path associates matching catalog instances and
-  consumes them, so the same `.agents/skills` source is never rendered once as
-  manager-owned and again as local. Catalog fallback is limited to guarded
+  Installed inventory is instead a process-free projection over the accepted
+  project-context catalog and the applicable project/global manager lock. A
+  lock-proven package consumes matching catalog instances so the same
+  `.agents/skills` source is never rendered once as manager-owned and again as
+  local. Catalog fallback is limited to guarded
   skill sources beneath the selected `.agents/skills` root, including nested
   package layouts; plugin caches and other read-only discovery roots are not
-  package-manager inventory. Machine JSON is parsed in
-  full behind a 4 MiB limit;
-  the smaller diagnostic capture is never fed back into the parser. Truncated,
-  malformed, or unrecognized list output fails closed and must never become an
-  exact empty list or expose raw manager output in an error.
-  Installed JSON stdout uses a private `0600` temporary regular-file capture
-  so the Node CLI cannot drop bytes at the 64 KiB pipe-buffer boundary; the
-  capture is bounded and removed on every return path.
+  package-manager inventory. Malformed, oversized, symlinked, or non-regular
+  lock state fails closed and does not replace an accepted native cache.
   An installed local source outside the selected guarded `.agents/skills` root
   remains visible as external local and may be unlinked, but cannot be replaced
   from ZIP by the app.
@@ -230,8 +226,9 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Manager update operates on the shared package source and does not accept
   per-agent targeting. The confirmation shows all currently linked supported
   agents affected by that source update.
-- The app prewarms project/global inventories at startup. Opening Skill Manager
-  is cache-only; its Load Data button is the page-local manual refresh.
+- The app prewarms project/global catalog/lock projections at startup. Startup,
+  reload, project switching, catalog refresh, opening Skill Manager, and its
+  Load Data action do not invoke the external manager.
 - App-owned local source replacement accepts a confirmed ZIP only through
   `skillManager.previewLocalArchiveUpdate` / `applyLocalArchiveUpdate`. The
   archive must contain exactly one matching skill root; traversal, symlinks,

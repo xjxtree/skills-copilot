@@ -32,9 +32,10 @@ This file describes security and privacy boundaries.
 - No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
   outbound network calls.
 - Skill Manager search/install/update may make outbound network calls only
-  through a supported external manager CLI. The UI enables that scoped path by
-  default; write commands still expose destination, scope, affected targets,
-  and a confirmation-bound preview in typed service requests.
+  through a supported external manager CLI. Search first produces a local-only
+  signed preview and starts the external process only after a separate explicit
+  confirmation. Write commands likewise expose destination, scope, affected
+  targets, and a confirmation-bound preview in typed service requests.
 - Provider calls made by Agent Copilot's optional AI features require user
   enablement, prompt preview, redaction, destination visibility, and explicit
   confirmation.
@@ -92,8 +93,9 @@ confirmation, and network posture.
   precomputed in stable order and `skill.install` validates a non-creating
   target before locking. A changed record, reference set, source tree, or
   target revision returns a stale-action failure before any owned write.
-- Batch toggles, `skill.install`, Skill Manager install/remove/update/local
-  create, local archive import/update, and app-owned local deletion share one
+- Batch toggles, `skill.install`, confirmed Skill Manager search,
+  install/remove/update/local-create, local archive import/update, and
+  app-owned local deletion share one
   cross-sidecar mutation lock on the existing app-data owner directory; the
   lock creates no persistent filesystem artifact. Under that lock, the service
   rechecks the complete bounded target trees, archive bytes, relevant catalog
@@ -102,11 +104,11 @@ confirmation, and network posture.
   semantic verification, and read-back. A stale preview runs no manager
   process and writes neither targets nor app data.
 - The lifecycle currently covers single and batch agent-config toggles through
-  `batch.*`, `skill.install`, Skill Manager install/remove/update/local create,
-  local archive import/update, physical deletion of an eligible app-owned local
-  source, explicit Claude settings saves, config snapshot rollback, provider
-  profile save/delete, provider connection tests, and confirmed LLM prompt
-  sends.
+  `batch.*`, `skill.install`, confirmed Skill Manager search,
+  install/remove/update/local create, local archive import/update,
+  physical deletion of an eligible app-owned local source, explicit Claude
+  settings saves, config snapshot rollback, provider profile save/delete,
+  provider connection tests, and confirmed LLM prompt sends.
   `config.toggleSkill` is compatibility-only and cannot mutate.
 
 ### Config Mutation Atomicity
@@ -195,9 +197,11 @@ confirmation, and network posture.
   remove, unchanged update, or uncreated local template, returns
   `verification_failed` without verified read-back. Multi-agent success records
   separate catalog and skill-file evidence for every selected target.
-  Large installed-inventory stdout is captured only in a private `0600`
-  temporary regular file, size-checked before reading, and removed by scoped
-  cleanup on success and failure; it is never cataloged or retained.
+  Remote-search stdout/stderr is bounded and redacted before parsing or
+  returning diagnostics. Its one-time reservation is a bounded private
+  app-local record; a stale query, owner, executable, working directory,
+  environment, target, or consumed confirmation is rejected before process
+  creation.
   Process-start failure restores any manager working-directory components
   created for the attempt. After a process starts, an unobserved/nonzero
   result, failed semantic proof, refresh failure, or uncertain commit returns
@@ -208,6 +212,10 @@ confirmation, and network posture.
   successful delete if only private quarantine cleanup fails; its typed
   path-free `follow_up` reports `cleanup_required=true` so the client cannot
   claim complete physical erasure.
+- Startup, reload, project switching, catalog refresh, and installed-package
+  reads use the accepted catalog and manager-lock projection. They never start
+  the external manager. A malformed or unsafe lock fails closed while the
+  native client keeps its last accepted projection.
 - Local ZIP import and updates are the explicitly scoped ZIP exception. Import
   writes only to the app-owned local library. Update may replace either an
   app-owned source or one canonical descendant of the active project/global

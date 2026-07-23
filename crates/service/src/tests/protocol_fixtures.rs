@@ -354,6 +354,8 @@ struct WireSkillManagerSearchRecord {
     preview: WireSkillManagerCommandPreview,
     output: Option<WireSkillManagerCommandOutput>,
     results: Vec<WireSkillManagerSearchResult>,
+    #[serde(default)]
+    readback: Option<WireActionReadbackRecord>,
     returned_count: usize,
     total_count: Option<usize>,
     has_more: bool,
@@ -381,6 +383,7 @@ struct WireSkillManagerInstalledListRecord {
     preview: WireSkillManagerCommandPreview,
     output: WireSkillManagerCommandOutput,
     installed: Vec<WireSkillManagerInstalledRecord>,
+    source_revision: String,
     returned_count: usize,
     total_count: Option<usize>,
     has_more: bool,
@@ -1040,20 +1043,33 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 .iter()
                 .any(|operation| operation == "applyInstall"));
         }
-        "skillManager.search" => {
+        "skillManager.search" | "skillManager.applySearch" => {
             let search: WireSkillManagerSearchRecord = decode_fixture_result(method, result, path);
             assert_skill_manager_page_metadata(method, result);
             assert_eq!(search.preview.operation, "search");
-            assert!(!search.preview.requires_confirmation);
+            assert!(search.preview.requires_confirmation);
             assert!(search.preview.network_required);
-            assert!(!search.preview.will_run);
+            if method == "skillManager.search" {
+                assert!(!search.preview.will_run);
+                assert!(search.output.is_none());
+                assert!(search.readback.is_none());
+            } else {
+                assert!(search.preview.will_run);
+                assert!(search.output.is_some());
+                assert!(search
+                    .readback
+                    .as_ref()
+                    .is_some_and(|readback| readback.verified));
+            }
         }
         "skillManager.listInstalled" => {
             let installed: WireSkillManagerInstalledListRecord =
                 decode_fixture_result(method, result, path);
             assert_skill_manager_page_metadata(method, result);
             assert_eq!(installed.preview.operation, "listInstalled");
-            assert!(installed.preview.command.iter().any(|arg| arg == "--json"));
+            assert_eq!(installed.preview.tool_id, "catalog-projection");
+            assert!(installed.preview.command.is_empty());
+            assert!(!installed.source_revision.is_empty());
             assert!(!installed.installed.is_empty());
         }
         "skillManager.previewInstall"

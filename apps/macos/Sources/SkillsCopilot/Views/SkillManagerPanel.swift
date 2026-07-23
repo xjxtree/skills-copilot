@@ -259,7 +259,14 @@ struct SkillManagerPanel: View {
                 )
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { Task { await store.searchSkillManager() } }
-                Button(UIStrings.text("action.search", "Search")) {
+                TextField(
+                    UIStrings.text("skillManager.owner.optional", "Owner (optional)"),
+                    text: $store.skillManagerOwner
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 180)
+                .onSubmit { Task { await store.searchSkillManager() } }
+                Button(UIStrings.text("skillManager.search.preview", "Preview Search")) {
                     Task { await store.searchSkillManager() }
                 }
                 .disabled(!canSearch)
@@ -705,6 +712,16 @@ struct SkillManagerPanel: View {
 
     @ViewBuilder
     private var previewSection: some View {
+        if let confirmation = store.skillManagerSearchConfirmation {
+            previewCard(title: confirmation.result.preview.localizedSummary) {
+                commandPreview(confirmation.result.preview)
+                Button(UIStrings.text("skillManager.search.run", "Run Search")) {
+                    pendingConfirmation = .search(confirmation)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isApplyingSkillManagerMutation)
+            }
+        }
         if let confirmation = store.skillManagerMutationConfirmation {
             previewCard(title: confirmation.result.preview.localizedSummary) {
                 commandPreview(confirmation.result.preview)
@@ -899,6 +916,8 @@ struct SkillManagerPanel: View {
 
     private func applyConfirmed(_ confirmation: SkillManagerWriteConfirmation) async {
         switch confirmation {
+        case .search(let value):
+            await store.applySkillManagerSearch(confirmation: value)
         case .mutation(let value):
             switch value.inputs.kind {
             case .install: await store.applySkillManagerInstall(confirmation: value)
@@ -916,6 +935,7 @@ struct SkillManagerPanel: View {
 
     private func isCurrentConfirmation(_ confirmation: SkillManagerWriteConfirmation) -> Bool {
         switch confirmation {
+        case .search(let value): return store.skillManagerSearchConfirmation == value
         case .mutation(let value): return store.skillManagerMutationConfirmation == value
         case .localDelete(let value): return store.skillManagerLocalDeleteConfirmation == value
         case .localArchiveImport(let value): return store.skillManagerLocalArchiveImportConfirmation == value
@@ -1023,6 +1043,7 @@ private enum SkillManagerAction: String, Identifiable {
 }
 
 private enum SkillManagerWriteConfirmation {
+    case search(SkillManagerSearchConfirmation)
     case mutation(SkillManagerMutationConfirmation)
     case localDelete(SkillManagerLocalDeleteConfirmation)
     case localArchiveImport(SkillManagerLocalArchiveImportConfirmation)
@@ -1030,6 +1051,8 @@ private enum SkillManagerWriteConfirmation {
 
     var title: String {
         switch self {
+        case .search:
+            return UIStrings.text("skillManager.confirm.search.title", "Confirm Remote Skill Search")
         case .mutation(let value):
             switch value.inputs.kind {
             case .install: return UIStrings.text("skillManager.confirm.install.title", "Confirm Skill Install")
@@ -1047,6 +1070,7 @@ private enum SkillManagerWriteConfirmation {
 
     var confirmButtonTitle: String {
         switch self {
+        case .search: return UIStrings.text("skillManager.search.run", "Run Search")
         case .mutation(let value):
             switch value.inputs.kind {
             case .install: return UIStrings.text("skillManager.applyInstall", "Install")
@@ -1069,6 +1093,16 @@ private enum SkillManagerWriteConfirmation {
 
     var message: String {
         switch self {
+        case .search(let value):
+            return [
+                value.result.preview.summary,
+                "\(UIStrings.text("skillManager.query", "Search skills")): \(value.query)",
+                "\(UIStrings.text("skillManager.confirm.command", "Command")): \(value.result.preview.displayCommand)",
+                "CWD: \(value.result.preview.cwd)",
+                value.result.preview.action?.confirmationSummary.disclosureText
+            ]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
         case .mutation(let value):
             let targets = value.inputs.kind == .update
                 ? value.inputs.agents.map(DisplayText.agent).joined(separator: ", ")

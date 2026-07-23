@@ -325,7 +325,7 @@ struct SkillManagerCommandPreview: Codable, Hashable {
     }
 
     var requiresExplicitApplyConfirmation: Bool {
-        requiresConfirmation && ["install", "remove", "update", "localCreate"].contains(operation)
+        requiresConfirmation && ["search", "install", "remove", "update", "localCreate"].contains(operation)
     }
 }
 
@@ -352,6 +352,24 @@ struct SkillManagerSearchParams: Encodable {
         case query
         case owner
         case networkAllowed = "network_allowed"
+    }
+}
+
+struct SkillManagerSearchApplyParams: Encodable {
+    let query: String
+    let owner: String?
+    let networkAllowed: Bool
+    let confirmed: Bool
+    let previewToken: String
+    let actionReference: ActionReferenceWire
+
+    enum CodingKeys: String, CodingKey {
+        case query
+        case owner
+        case networkAllowed = "network_allowed"
+        case confirmed
+        case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -390,6 +408,7 @@ struct SkillManagerSearchRecord: Codable, Hashable {
     let preview: SkillManagerCommandPreview
     let output: SkillManagerCommandOutput?
     let results: [SkillManagerSearchResult]
+    let readback: ActionReadbackWire?
     let returnedCount: Int
     let totalCount: Int?
     let hasMore: Bool
@@ -401,16 +420,13 @@ struct SkillManagerSearchRecord: Codable, Hashable {
         case preview
         case output
         case results
+        case readback
         case returnedCount = "returned_count"
         case totalCount = "total_count"
         case hasMore = "has_more"
         case nextCursor = "next_cursor"
         case sourceCompleteness = "source_completeness"
         case incompleteReason = "incomplete_reason"
-    }
-
-    var isBlockedByNetwork: Bool {
-        preview.networkRequired && !preview.networkAllowed && output == nil
     }
 
     var hasValidPageMetadata: Bool {
@@ -751,6 +767,7 @@ struct SkillManagerInstalledListRecord: Codable, Hashable {
     let preview: SkillManagerCommandPreview
     let output: SkillManagerCommandOutput
     let installed: [SkillManagerInstalledRecord]
+    let sourceRevision: String
     let returnedCount: Int
     let totalCount: Int?
     let hasMore: Bool
@@ -762,6 +779,7 @@ struct SkillManagerInstalledListRecord: Codable, Hashable {
         case preview
         case output
         case installed
+        case sourceRevision = "source_revision"
         case returnedCount = "returned_count"
         case totalCount = "total_count"
         case hasMore = "has_more"

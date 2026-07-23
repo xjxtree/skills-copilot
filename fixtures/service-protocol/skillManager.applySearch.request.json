@@ -1,0 +1,21 @@
+{
+  "id": "fixture-skill-manager-apply-search",
+  "method": "skillManager.applySearch",
+  "params": {
+    "query": "frontend",
+    "owner": "vercel-labs",
+    "network_allowed": true,
+    "confirmed": true,
+    "preview_token": "action-preview:v1:hmac-sha256:1313131313131313131313131313131313131313131313131313131313131313",
+    "action_reference": {
+      "action_id": "action:inspect_evidence:1111111111111111111111111111111111111111111111111111111111111111",
+      "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "project_id": "project-0123456789abcdef",
+      "target": {
+        "kind": "skill",
+        "id": "manager:search-fixture",
+        "scope": "agent-project"
+      }
+    }
+  }
+}

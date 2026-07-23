@@ -4,6 +4,6 @@
   "params": {
     "query": "frontend",
     "owner": "vercel-labs",
-    "network_allowed": false
+    "network_allowed": true
   }
 }

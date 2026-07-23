@@ -65,6 +65,13 @@ struct SkillManagerMutationConfirmation: Hashable {
     var previewToken: String { result.preview.previewToken }
 }
 
+struct SkillManagerSearchConfirmation: Hashable {
+    let generation: SkillManagerRequestGeneration
+    let query: String
+    let owner: String?
+    let result: SkillManagerSearchRecord
+}
+
 struct SkillManagerLocalCreateConfirmation: Hashable {
     let generation: SkillManagerRequestGeneration
     let name: String

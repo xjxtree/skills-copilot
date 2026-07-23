@@ -3,8 +3,14 @@ use super::*;
 pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
     match method {
         "skillManager.search" => {
-            json!({ "query": "frontend", "owner": "vercel-labs", "network_allowed": false })
+            json!({ "query": "frontend", "owner": "vercel-labs", "network_allowed": true })
         }
+        "skillManager.applySearch" => json!({
+            "query": "frontend",
+            "owner": "vercel-labs",
+            "network_allowed": true,
+            "confirmed": false
+        }),
         "skillManager.listInstalled" => json!({ "scope": "project" }),
         "skillManager.previewInstall" | "skillManager.applyInstall" => {
             json!({
@@ -56,7 +62,7 @@ pub(super) fn assert_skill_manager_page_metadata(method: &str, result: &Value) {
         .and_then(Value::as_u64)
         .unwrap_or_else(|| panic!("{method} fixture missing returned_count"));
     let rows = match method {
-        "skillManager.search" => result.get("results"),
+        "skillManager.search" | "skillManager.applySearch" => result.get("results"),
         "skillManager.listInstalled" => result.get("installed"),
         _ => None,
     }
@@ -65,7 +71,7 @@ pub(super) fn assert_skill_manager_page_metadata(method: &str, result: &Value) {
     assert_eq!(returned_count as usize, rows.len());
 
     match method {
-        "skillManager.search" => {
+        "skillManager.search" | "skillManager.applySearch" => {
             assert!(result.get("total_count").is_some_and(Value::is_null));
             assert_eq!(
                 result.get("source_completeness").and_then(Value::as_str),

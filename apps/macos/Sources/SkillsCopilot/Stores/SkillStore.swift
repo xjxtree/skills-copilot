@@ -113,6 +113,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isApplyingBatchToggle = false
     @Published private(set) var skillManagerTools: [SkillManagerToolRecord] = []
     @Published private(set) var skillManagerSearchResult: SkillManagerSearchRecord?
+    @Published private(set) var skillManagerSearchConfirmation: SkillManagerSearchConfirmation?
     @Published var skillManagerInstalledByScope: [SkillManagerScope: SkillManagerInstalledListRecord] = [:]
     @Published private(set) var skillManagerSearchVisibility = SkillManagerVisibleResults<String>()
     @Published private(set) var skillManagerMutationConfirmation: SkillManagerMutationConfirmation?
@@ -1313,13 +1314,15 @@ final class SkillStore: ObservableObject {
 
     func searchSkillManager() async {
         let query = skillManagerSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ownerText = skillManagerOwner.trimmingCharacters(in: .whitespacesAndNewlines)
+        let owner = ownerText.isEmpty ? nil : ownerText
         guard !query.isEmpty else {
             setSkillManagerError(UIStrings.text("skillManager.search.required", "Enter a skill search query."))
             return
         }
         let key = SkillManagerRequestKey.search(
             query: query,
-            owner: nil,
+            owner: owner,
             networkAllowed: true
         )
         let generation = beginSkillManagerSearch(for: key)
@@ -1330,13 +1333,18 @@ final class SkillStore: ObservableObject {
         let task = Task { @MainActor [weak self, service] in
             do {
                 let result = try await service.searchSkillManager(
-                    query: query
+                    query: query,
+                    owner: owner
                 )
                 guard let self else { return }
                 defer { self.finishSkillManagerSearch(generation) }
                 guard self.currentSkillManagerSearchGeneration == generation else { return }
-                self.skillManagerSearchVisibility.reset()
-                self.skillManagerSearchResult = result
+                self.skillManagerSearchConfirmation = SkillManagerSearchConfirmation(
+                    generation: generation,
+                    query: query,
+                    owner: owner,
+                    result: result
+                )
             } catch {
                 guard let self else { return }
                 defer { self.finishSkillManagerSearch(generation) }
@@ -1350,6 +1358,33 @@ final class SkillStore: ObservableObject {
         await handle.wait()
         if Task.isCancelled, currentSkillManagerSearchGeneration == generation {
             invalidateSkillManagerSearch()
+        }
+    }
+
+    func applySkillManagerSearch(confirmation: SkillManagerSearchConfirmation) async {
+        guard skillManagerSearchConfirmation == confirmation else { return }
+        await runSkillManagerConfirmedWrite { [self] in
+            defer {
+                if skillManagerSearchConfirmation == confirmation {
+                    skillManagerSearchConfirmation = nil
+                }
+            }
+            do {
+                let result = try await service.applySkillManagerSearch(
+                    preview: confirmation.result,
+                    query: confirmation.query,
+                    owner: confirmation.owner
+                )
+                guard currentSkillManagerSearchGeneration == confirmation.generation else { return }
+                skillManagerSearchVisibility.reset()
+                skillManagerSearchResult = result
+                skillManagerMessage = UIStrings.text(
+                    "skillManager.search.completed",
+                    "Search completed with verified external-manager read-back."
+                )
+            } catch {
+                setSkillManagerApplyFailure(error)
+            }
         }
     }
 
@@ -1699,6 +1734,7 @@ final class SkillStore: ObservableObject {
     }
 
     func clearSkillManagerWorkflowPreviews() {
+        skillManagerSearchConfirmation = nil
         clearSkillManagerWritePreviews()
         clearSkillManagerFeedback()
     }
@@ -1877,7 +1913,7 @@ final class SkillStore: ObservableObject {
                 } catch {
                     appendVerifiedWriteRefreshWarning(error)
                 }
-                await loadSkillManagerInventory()
+                await loadSkillManagerInventory(preservingVerifiedResult: true)
             } catch {
                 if skillManagerApplyMustRetirePreview(error) {
                     retireSkillManagerMutationConfirmation(confirmation)
@@ -1903,6 +1939,7 @@ final class SkillStore: ObservableObject {
         skillManagerSearchGenerationValue &+= 1
         let generation = SkillManagerRequestGeneration(value: skillManagerSearchGenerationValue, key: key)
         currentSkillManagerSearchGeneration = generation
+        skillManagerSearchConfirmation = nil
         isSearchingSkillManager = true
         return generation
     }
@@ -1920,6 +1957,7 @@ final class SkillStore: ObservableObject {
         currentSkillManagerSearchGeneration = nil
         skillManagerSearchVisibility.reset()
         skillManagerSearchResult = nil
+        skillManagerSearchConfirmation = nil
         isSearchingSkillManager = false
     }
 

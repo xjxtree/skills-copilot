@@ -254,7 +254,22 @@ impl ServiceHost {
             "skillManager.search" => {
                 let params: SkillManagerSearchParams = serde_json::from_value(request.params)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                serde_json::to_value(search_skills_with_manager(&adapter_ctx, &params)?)
+                serde_json::to_value(preview_search_skills_with_manager(
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
+            }
+            "skillManager.applySearch" => {
+                let params: SkillManagerSearchApplyParams =
+                    serde_json::from_value(request.params)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                serde_json::to_value(apply_search_skills_with_manager(
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
                     .map_err(Into::into)
             }
             "skillManager.listInstalled" => {
@@ -264,8 +279,13 @@ impl ServiceHost {
                     serde_json::from_value(request.params)?
                 };
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                serde_json::to_value(list_installed_skills_with_manager(&adapter_ctx, &params)?)
-                    .map_err(Into::into)
+                let catalog = self.open_catalog_for_read()?;
+                serde_json::to_value(list_installed_skills_from_projection(
+                    &catalog,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
             }
             "skillManager.previewInstall" => {
                 let params: SkillManagerInstallParams = serde_json::from_value(request.params)?;
