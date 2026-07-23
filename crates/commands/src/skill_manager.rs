@@ -110,6 +110,7 @@ pub struct SkillManagerCommandPreview {
     pub network_required: bool,
     pub network_allowed: bool,
     pub will_run: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preview_token: String,
     pub summary: String,
     pub risks: Vec<String>,
@@ -334,6 +335,13 @@ pub struct SkillManagerLocalDeleteRecord {
     pub follow_up: Option<SkillManagerCleanupFollowUp>,
 }
 
+impl SkillManagerCommandPreview {
+    fn without_authorization_material(mut self) -> Self {
+        self.preview_token.clear();
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillManagerCleanupFollowUp {
     pub kind: String,
@@ -517,7 +525,7 @@ pub fn apply_install_with_manager(
         )?);
         owner.validate_owner_path_binding()?;
         Ok(SkillManagerMutationRecord {
-            preview: preview.clone(),
+            preview: preview.clone().without_authorization_material(),
             output: Some(output),
             applied: true,
             scanned_count: scan.scanned_count,
@@ -695,7 +703,7 @@ pub fn apply_remove_with_manager(
         )?);
         owner.validate_owner_path_binding()?;
         Ok(SkillManagerMutationRecord {
-            preview: preview.clone(),
+            preview: preview.clone().without_authorization_material(),
             output: Some(output),
             applied: true,
             scanned_count: scan.scanned_count,
@@ -835,7 +843,7 @@ pub fn apply_update_with_manager(
         )?);
         owner.validate_owner_path_binding()?;
         Ok(SkillManagerMutationRecord {
-            preview: preview.clone(),
+            preview: preview.clone().without_authorization_material(),
             output: Some(output),
             applied: true,
             scanned_count: scan.scanned_count,
@@ -1007,7 +1015,7 @@ pub fn apply_local_create_with_manager(
         )?);
         owner.validate_owner_path_binding()?;
         Ok(SkillManagerLocalCreateRecord {
-            preview: preview.clone(),
+            preview: preview.clone().without_authorization_material(),
             output: Some(output),
             imported: Some(imported.imported),
             instance_id: Some(imported.instance_id),
@@ -1419,9 +1427,13 @@ pub fn delete_local_skill_with_manager(
             .as_ref()
             .map(|binding| binding.preconditions.clone())
             .unwrap_or_default(),
-        preview_token: action_binding
-            .as_ref()
-            .map(|binding| binding.preview_token.clone()),
+        preview_token: if params.confirmed {
+            None
+        } else {
+            action_binding
+                .as_ref()
+                .map(|binding| binding.preview_token.clone())
+        },
         instance_id: meta.id,
         skill_name: meta.name,
         path: canonical_path.to_string_lossy().to_string(),
@@ -4137,7 +4149,11 @@ fn manager_action_binding(
         ])
     };
     let impacts = if local_create {
-        vec![ActionImpact::SkillFiles, ActionImpact::AppLocalData]
+        vec![
+            ActionImpact::ExternalManager,
+            ActionImpact::SkillFiles,
+            ActionImpact::AppLocalData,
+        ]
     } else if discovery {
         vec![
             ActionImpact::ReadOnly,

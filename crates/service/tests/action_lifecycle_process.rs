@@ -241,6 +241,62 @@ impl Fixture {
             }
         })
     }
+
+    fn provider_save_preview(&self) -> Value {
+        invoke(
+            &self.home,
+            &self.app_data,
+            Some(SECRET_A),
+            json!({
+                "id":"provider-preview",
+                "method":"llm.previewSaveProviderProfile",
+                "params":{
+                    "id":"process-provider",
+                    "display_name":"Process Provider",
+                    "provider_type":"openai-compatible",
+                    "base_url":"https://example.invalid/v1",
+                    "model":"fixture-model",
+                    "enabled":true,
+                    "single_request_token_limit":4096,
+                    "monthly_budget_usd":10.0
+                }
+            }),
+        )
+    }
+
+    fn provider_save_request(&self, preview: &Value) -> Value {
+        let action = preview
+            .pointer("/result/action")
+            .expect("provider preview action");
+        let preview_token = preview
+            .pointer("/result/preview_token")
+            .and_then(Value::as_str)
+            .expect("provider preview token");
+        json!({
+            "id":"provider-apply",
+            "method":"llm.saveProviderProfile",
+            "params":{
+                "id":"process-provider",
+                "display_name":"Process Provider",
+                "provider_type":"openai-compatible",
+                "base_url":"https://example.invalid/v1",
+                "model":"fixture-model",
+                "enabled":true,
+                "single_request_token_limit":4096,
+                "monthly_budget_usd":10.0,
+                "action_confirmation":{
+                    "reference":{
+                        "action_id":action["id"],
+                        "source_revision":action["source_revision"],
+                        "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                        "target":action["target"]
+                    },
+                    "preview_token":preview_token,
+                    "confirmed":true
+                }
+            }
+        })
+    }
 }
 
 impl Drop for Fixture {
@@ -291,6 +347,51 @@ fn missing_or_invalid_sidecar_secret_fails_closed_without_a_write() {
             "{label} secret must fail before config I/O"
         );
     }
+}
+
+#[test]
+fn provider_action_is_cross_process_signed_and_one_time() {
+    let fixture = Fixture::new("provider-cross-process");
+    let profile_path = fixture.app_data.join("llm/provider-profiles.json");
+    let preview = fixture.provider_save_preview();
+    assert_success(&preview);
+    let request = fixture.provider_save_request(&preview);
+
+    let wrong_secret = invoke(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_B),
+        request.clone(),
+    );
+    assert_error_code(&wrong_secret, "stale_action_reference");
+    assert!(
+        !profile_path.exists(),
+        "a provider token signed by another sidecar secret must cause no profile write"
+    );
+
+    let applied = invoke(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        request.clone(),
+    );
+    assert_success(&applied);
+    assert_eq!(
+        applied
+            .pointer("/result/readback/verified")
+            .and_then(Value::as_bool),
+        Some(true),
+        "provider apply must return semantic profile read-back"
+    );
+    let applied_bytes = fs::read(&profile_path).expect("read applied provider profile store");
+
+    let replay = invoke(&fixture.home, &fixture.app_data, Some(SECRET_A), request);
+    assert_error_code(&replay, "stale_action_reference");
+    assert_eq!(
+        fs::read(&profile_path).expect("read profile store after replay"),
+        applied_bytes,
+        "a consumed provider action must not rewrite its durable profile state"
+    );
 }
 
 #[test]

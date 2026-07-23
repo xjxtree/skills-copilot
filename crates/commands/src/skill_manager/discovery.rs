@@ -130,7 +130,7 @@ pub fn apply_search_skills_with_manager(
             }
         })?;
         Ok(skill_manager_search_record(
-            preview,
+            preview.without_authorization_material(),
             Some(execution.output.without_machine_stdout()),
             results,
             Some(readback),

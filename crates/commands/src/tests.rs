@@ -82,6 +82,7 @@ fn confirmed_install_skill_from_tool_global(
     target_scope: Scope,
     project_path: Option<&Path>,
 ) -> Result<SkillInstallPreviewRecord, CommandError> {
+    initialize_action_preview_secret_for_test([0xA5; 32])?;
     let preview = install_skill_from_tool_global(
         catalog,
         ctx,
@@ -1477,6 +1478,27 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
     assert_eq!(applied.applied_count, 2);
     assert_eq!(applied.updated_records.len(), 2);
     assert!(applied.updated_records.iter().all(|record| !record.enabled));
+    assert!(
+        serde_json::to_value(&applied)
+            .expect("serialize batch apply result")
+            .get("preview_token")
+            .is_none(),
+        "a successful batch response must not return consumed authorization material"
+    );
+    assert!(applied
+        .action
+        .readback
+        .contains(&ActionReadbackDomain::ConfigSnapshots));
+    assert_eq!(
+        applied
+            .readback
+            .observations
+            .iter()
+            .filter(|observation| observation.domain == ActionReadbackDomain::ConfigSnapshots)
+            .count(),
+        2,
+        "each created snapshot must have a semantic read-back observation"
+    );
 
     let settings_path = home.join(".claude/settings.json");
     let content = std::fs::read_to_string(&settings_path).expect("read settings");
@@ -3231,6 +3253,13 @@ fn install_to_opencode_writes_native_user_skill_root() {
         .join("portable-gamma")
         .join("SKILL.md");
     assert!(result.wrote);
+    assert!(
+        serde_json::to_value(&result)
+            .expect("serialize install apply result")
+            .get("preview_token")
+            .is_none(),
+        "a successful install response must not return consumed authorization material"
+    );
     assert_path_text_eq(&result.target_path, &target);
     assert!(target.exists());
     assert!(catalog

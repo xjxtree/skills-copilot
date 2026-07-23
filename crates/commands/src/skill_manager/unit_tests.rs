@@ -22,6 +22,17 @@ fn semantic_test_preview(operation: &str, skills: Vec<&str>) -> SkillManagerComm
     }
 }
 
+#[test]
+fn successful_manager_result_preview_omits_consumed_authorization_material() {
+    let preview =
+        semantic_test_preview("install", vec!["selected"]).without_authorization_material();
+    let serialized = serde_json::to_value(preview).expect("serialize sanitized manager preview");
+    assert!(
+        serialized.get("preview_token").is_none(),
+        "successful manager results may retain display-safe preview details but not the consumed token"
+    );
+}
+
 fn semantic_test_catalog_record(
     id: &str,
     agent: AgentId,
@@ -804,6 +815,8 @@ fn install_preview_uses_symlink_by_default_and_copy_only_when_requested() {
 fn every_manager_spawn_action_binds_and_rejects_a_stale_executable() {
     use std::os::unix::fs::PermissionsExt;
 
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
     let root = std::env::temp_dir().join(format!(
         "manager-executable-binding-{}-{}",
         std::process::id(),
@@ -896,6 +909,13 @@ fn every_manager_spawn_action_binds_and_rejects_a_stale_executable() {
         )
         .expect("action binding")
         .expect("typed manager action");
+        assert!(
+            binding
+                .action
+                .impacts
+                .contains(&ActionImpact::ExternalManager),
+            "{operation} starts the external manager and must declare that impact"
+        );
         assert!(binding.preconditions.iter().any(|precondition| {
             precondition.kind == ActionPreconditionKind::SourceFile
                 && Path::new(&precondition.target_id) == executable

@@ -293,7 +293,6 @@ pub struct BatchTogglePreviewRecord {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BatchToggleApplyRecord {
     pub action: ActionDescriptor,
-    pub preview_token: String,
     pub target_enabled: bool,
     pub requested_count: usize,
     pub writable_count: usize,
@@ -1093,6 +1092,7 @@ pub struct SkillInstallConfirmation {
 pub struct SkillInstallPreviewRecord {
     pub action: ActionDescriptor,
     pub preconditions: Vec<ActionPrecondition>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub preview_token: String,
     pub source_instance_id: String,
     pub source_path: String,
@@ -1427,7 +1427,7 @@ where
     verify_app_data_owner_binding_after_effect(&mutation_lock, "skill.install")?;
     target_capability.finish()?;
 
-    Ok(SkillInstallPreviewRecord {
+    let mut applied = SkillInstallPreviewRecord {
         wrote: true,
         snapshot_id: None,
         readback: Some(readback),
@@ -1436,7 +1436,9 @@ where
             ..preview.confirmation
         },
         ..preview
-    })
+    };
+    applied.preview_token.clear();
+    Ok(applied)
 }
 
 #[cfg(test)]
@@ -2604,8 +2606,9 @@ where
         }
     }
     let apply_result = (|| {
+        let mut created_snapshots = Vec::with_capacity(plans.len());
         for plan in &mut plans {
-            apply_skill_toggle_plan(catalog, ctx, plan, target_enabled)?;
+            created_snapshots.push(apply_skill_toggle_plan(catalog, ctx, plan, target_enabled)?);
         }
         let mut updated_records = Vec::new();
         for plan in &plans {
@@ -2633,6 +2636,19 @@ where
                     "catalog.skill.readback",
                     &[("record", &serialized)],
                 )?,
+            });
+        }
+        for created_snapshot in &created_snapshots {
+            let stored_snapshot = catalog
+                .get_config_snapshot(&created_snapshot.id)?
+                .ok_or(CommandError::VerificationFailed)?;
+            if stored_snapshot != *created_snapshot {
+                return Err(CommandError::VerificationFailed);
+            }
+            observations.push(ActionReadbackObservation {
+                domain: ActionReadbackDomain::ConfigSnapshots,
+                target_id: stored_snapshot.id.clone(),
+                revision: snapshot_binding_revision(&stored_snapshot),
             });
         }
         let readback = ActionReadbackRecord::verified(&preview.action, observations)?;
@@ -2703,7 +2719,6 @@ where
     }
     Ok(BatchToggleApplyRecord {
         action: preview.action,
-        preview_token: preview.preview_token,
         target_enabled: preview.target_enabled,
         requested_count: preview.requested_count,
         writable_count: preview.writable_count,
@@ -2741,22 +2756,32 @@ fn apply_skill_toggle_plan(
     ctx: &AdapterContext,
     plan: &mut BatchToggleConfigPlan<'_>,
     target_enabled: bool,
-) -> Result<(), CommandError> {
+) -> Result<ConfigSnapshotRecord, CommandError> {
     let snapshot_original =
         normalize_initial_config_text(&plan.target, plan.original.content.clone());
     let snapshot_id = generate_snapshot_id();
     let now_ms = current_time_ms();
     let snapshot_content = redact_snapshot_content(&snapshot_original);
     let snapshot_project_root = snapshot_project_root_for_scope(ctx, plan.target.scope)?;
+    let snapshot = ConfigSnapshotRecord {
+        id: snapshot_id.clone(),
+        agent: plan.target.agent.as_str().to_string(),
+        scope: plan.target.scope.as_str().to_string(),
+        project_root: snapshot_project_root,
+        target: plan.target.path.to_string_lossy().to_string(),
+        content: snapshot_content,
+        reason: "pre-batch-toggle".to_string(),
+        created_at: now_ms,
+    };
     catalog.create_config_snapshot(ConfigSnapshotDraft {
-        id: &snapshot_id,
-        agent: plan.target.agent.as_str(),
-        scope: plan.target.scope.as_str(),
-        project_root: snapshot_project_root.as_deref(),
-        target: &plan.target.path.to_string_lossy(),
-        content: &snapshot_content,
-        reason: "pre-batch-toggle",
-        created_at_ms: now_ms,
+        id: &snapshot.id,
+        agent: &snapshot.agent,
+        scope: &snapshot.scope,
+        project_root: snapshot.project_root.as_deref(),
+        target: &snapshot.target,
+        content: &snapshot.content,
+        reason: &snapshot.reason,
+        created_at_ms: snapshot.created_at,
     })?;
     plan.capability.atomic_replace(plan.new_text.as_bytes())?;
     let written = read_external_config_state(&plan.capability)?;
@@ -2788,7 +2813,7 @@ fn apply_skill_toggle_plan(
         })?;
     }
 
-    Ok(())
+    Ok(snapshot)
 }
 
 fn restore_batch_toggle_plans(plans: &mut [BatchToggleConfigPlan<'_>]) -> Result<(), CommandError> {
@@ -2923,6 +2948,7 @@ fn batch_toggle_action_binding(
         canonical_readback_domains([
             ActionReadbackDomain::CatalogSkills,
             ActionReadbackDomain::AgentConfig,
+            ActionReadbackDomain::ConfigSnapshots,
         ]),
         evidence_refs,
     )?;

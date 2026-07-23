@@ -261,12 +261,23 @@ pub fn action_preview_binding(
     action
         .validate()
         .map_err(|error| CommandError::MismatchedActionReference(error.to_string()))?;
-    validate_action_intent(action.kind, action.intent)?;
-    validate_action_method_ownership(
+    validate_action_contract(
         action.kind,
+        action.intent,
         &action.preview_method,
         action.apply_method.as_deref(),
     )?;
+    let expected_action_id = deterministic_action_id(
+        action.kind,
+        action.intent,
+        &action.target,
+        action.project_id.as_deref(),
+    )?;
+    if action.id != expected_action_id {
+        return Err(CommandError::MismatchedActionReference(
+            "action id does not match its kind, intent, target, and project".to_string(),
+        ));
+    }
     preconditions.sort();
     for pair in preconditions.windows(2) {
         if pair[0].kind == pair[1].kind && pair[0].target_id == pair[1].target_id {
@@ -372,8 +383,7 @@ pub fn action_descriptor(
     readback: Vec<ActionReadbackDomain>,
     evidence_refs: Vec<String>,
 ) -> Result<ActionDescriptor, CommandError> {
-    validate_action_intent(kind, intent)?;
-    validate_action_method_ownership(kind, preview_method, apply_method)?;
+    validate_action_contract(kind, intent, preview_method, apply_method)?;
     let id = deterministic_action_id(kind, intent, &target, project_id.as_deref())?;
     let descriptor = ActionDescriptor {
         id,
@@ -689,6 +699,62 @@ pub fn validate_action_method_ownership(
     }
 }
 
+fn validate_action_contract(
+    kind: ActionKind,
+    intent: ActionIntent,
+    preview_method: &str,
+    apply_method: Option<&str>,
+) -> Result<(), CommandError> {
+    validate_action_intent(kind, intent)?;
+    validate_action_method_ownership(kind, preview_method, apply_method)?;
+    let owned_by_intent = match (kind, intent) {
+        (ActionKind::RefreshEvidence, ActionIntent::RefreshEvidence) => {
+            preview_method == "catalog.scanAll" && apply_method == Some("catalog.scanAll")
+        }
+        (ActionKind::RefreshEvidence, ActionIntent::InspectEvidence) => {
+            matches!(
+                (preview_method, apply_method),
+                ("catalog.scanAgent", None)
+                    | ("catalog.getSkill", None)
+                    | ("skillManager.search", Some("skillManager.applySearch"))
+            )
+        }
+        (ActionKind::ProjectContext, ActionIntent::SetProjectContext) => {
+            preview_method == "project.previewSetContext"
+                && apply_method == Some("project.setContext")
+        }
+        (ActionKind::ProjectContext, ActionIntent::ClearProjectContext) => {
+            preview_method == "project.previewClearContext"
+                && apply_method == Some("project.clearContext")
+        }
+        (ActionKind::ProjectContext, ActionIntent::RemoveRecentProjectContext) => {
+            preview_method == "project.previewRemoveRecentContext"
+                && apply_method == Some("project.removeRecentContext")
+        }
+        (ActionKind::ProjectContext, ActionIntent::ClearRecentProjectContexts) => {
+            preview_method == "project.previewClearRecentContexts"
+                && apply_method == Some("project.clearRecentContexts")
+        }
+        (ActionKind::ProviderProfile, ActionIntent::SaveProviderProfile) => {
+            preview_method == "llm.previewSaveProviderProfile"
+                && apply_method == Some("llm.saveProviderProfile")
+        }
+        (ActionKind::ProviderProfile, ActionIntent::DeleteProviderProfile) => {
+            preview_method == "llm.previewDeleteProviderProfile"
+                && apply_method == Some("llm.deleteProviderProfile")
+        }
+        _ => true,
+    };
+    if owned_by_intent {
+        Ok(())
+    } else {
+        Err(CommandError::MismatchedActionReference(format!(
+            "action intent {intent:?} does not own {preview_method} -> {}",
+            apply_method.unwrap_or("<none>")
+        )))
+    }
+}
+
 pub fn validate_action_intent(kind: ActionKind, intent: ActionIntent) -> Result<(), CommandError> {
     let valid = matches!(
         (kind, intent),
@@ -894,6 +960,33 @@ mod tests {
         }
     }
 
+    fn raw_preview_token(
+        action: &ActionDescriptor,
+        mut preconditions: Vec<ActionPrecondition>,
+    ) -> String {
+        preconditions.sort();
+        let mut payload = Sha256::new();
+        hash_field(&mut payload, "domain", ACTION_PREVIEW_TOKEN_DOMAIN);
+        hash_action_descriptor(&mut payload, action);
+        for precondition in preconditions {
+            hash_field(
+                &mut payload,
+                "precondition_kind",
+                precondition_kind_wire_value(precondition.kind),
+            );
+            hash_field(&mut payload, "precondition_target", &precondition.target_id);
+            hash_field(
+                &mut payload,
+                "precondition_revision",
+                &precondition.expected_revision,
+            );
+        }
+        format!(
+            "action-preview:v1:hmac-sha256:{}",
+            action_preview_hmac(payload.finalize().as_slice()).expect("preview HMAC")
+        )
+    }
+
     #[test]
     fn action_confirmation_rejects_unknown_stale_and_mismatched_references() {
         let action = fixture_action("sha256:current", "skill-1");
@@ -960,6 +1053,369 @@ mod tests {
             action_preview_binding(action, vec![config_precondition("sha256:changed")])
                 .expect("changed config");
         assert_ne!(preview.preview_token, changed_config.preview_token);
+    }
+
+    #[test]
+    fn preview_hmac_binds_every_descriptor_and_precondition_field() {
+        let action = fixture_action("sha256:current", "skill-1");
+        let preconditions = vec![config_precondition("sha256:config")];
+        let baseline = raw_preview_token(&action, preconditions.clone());
+
+        macro_rules! assert_descriptor_field_bound {
+            ($mutation:expr, $label:literal) => {{
+                let mut changed = action.clone();
+                $mutation(&mut changed);
+                assert_ne!(
+                    baseline,
+                    raw_preview_token(&changed, preconditions.clone()),
+                    "{} is not bound by the action preview HMAC",
+                    $label
+                );
+            }};
+        }
+
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.id.push_str("-other"),
+            "action id"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.kind = ActionKind::InstallSkill,
+            "kind"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.intent = ActionIntent::EnableSkill,
+            "intent"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.target.kind = ActionTargetKind::Agent,
+            "target kind"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.target.id.push_str("-other"),
+            "target id"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.target.agent = Some(AgentId::ClaudeCode),
+            "target agent"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.target.scope = Some(Scope::AgentProject),
+            "target scope"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.project_id = Some("project:other".to_string()),
+            "project id"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.impacts.push(ActionImpact::AppLocalData),
+            "impacts"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.preview_method.push_str(".other"),
+            "preview method"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| {
+                changed.apply_method = Some("batch.other".to_string())
+            },
+            "apply method"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.source_revision.push_str("-other"),
+            "source revision"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.confirmation_required = false,
+            "confirmation requirement"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| changed.network = ActionNetworkPosture::Required,
+            "network posture"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| {
+                changed
+                    .readback
+                    .push(ActionReadbackDomain::ManagerInventory)
+            },
+            "readback domains"
+        );
+        assert_descriptor_field_bound!(
+            |changed: &mut ActionDescriptor| {
+                changed.evidence_refs.push("skill:other".to_string())
+            },
+            "evidence references"
+        );
+
+        for (changed, label) in [
+            (
+                ActionPrecondition {
+                    kind: ActionPreconditionKind::TargetFile,
+                    ..preconditions[0].clone()
+                },
+                "precondition kind",
+            ),
+            (
+                ActionPrecondition {
+                    target_id: "$HOME/.other".to_string(),
+                    ..preconditions[0].clone()
+                },
+                "precondition target",
+            ),
+            (
+                ActionPrecondition {
+                    expected_revision: "sha256:other".to_string(),
+                    ..preconditions[0].clone()
+                },
+                "precondition revision",
+            ),
+        ] {
+            assert_ne!(
+                baseline,
+                raw_preview_token(&action, vec![changed]),
+                "{label} is not bound by the action preview HMAC"
+            );
+        }
+    }
+
+    #[test]
+    fn action_contract_rejects_intent_method_cross_wiring_and_tampered_ids() {
+        let project_target = ActionTargetRef {
+            kind: ActionTargetKind::Project,
+            id: "project:fixture".to_string(),
+            agent: None,
+            scope: None,
+        };
+        let project_error = action_descriptor(
+            ActionKind::ProjectContext,
+            ActionIntent::SetProjectContext,
+            project_target,
+            Some("project:fixture".to_string()),
+            vec![ActionImpact::AppLocalData],
+            "project.previewClearContext",
+            Some("project.clearContext"),
+            "sha256:project".to_string(),
+            true,
+            ActionNetworkPosture::None,
+            vec![ActionReadbackDomain::ProjectContext],
+            vec!["project:fixture".to_string()],
+        );
+        assert!(matches!(
+            project_error,
+            Err(CommandError::MismatchedActionReference(_))
+        ));
+
+        let provider_error = action_descriptor(
+            ActionKind::ProviderProfile,
+            ActionIntent::SaveProviderProfile,
+            ActionTargetRef {
+                kind: ActionTargetKind::ProviderProfile,
+                id: "provider-1".to_string(),
+                agent: None,
+                scope: None,
+            },
+            None,
+            vec![ActionImpact::AppLocalData],
+            "llm.previewDeleteProviderProfile",
+            Some("llm.deleteProviderProfile"),
+            "sha256:provider".to_string(),
+            true,
+            ActionNetworkPosture::None,
+            vec![ActionReadbackDomain::ProviderProfiles],
+            vec!["provider-profile:provider-1".to_string()],
+        );
+        assert!(matches!(
+            provider_error,
+            Err(CommandError::MismatchedActionReference(_))
+        ));
+
+        let mut tampered = fixture_action("sha256:current", "skill-1");
+        tampered.id = "action:forged".to_string();
+        assert!(matches!(
+            action_preview_binding(tampered, vec![config_precondition("sha256:config")]),
+            Err(CommandError::MismatchedActionReference(_))
+        ));
+    }
+
+    #[test]
+    fn action_contract_accepts_every_supported_kind_intent_method_tuple() {
+        let supported = [
+            (
+                ActionKind::RefreshEvidence,
+                ActionIntent::RefreshEvidence,
+                "catalog.scanAll",
+                Some("catalog.scanAll"),
+            ),
+            (
+                ActionKind::RefreshEvidence,
+                ActionIntent::InspectEvidence,
+                "catalog.scanAgent",
+                None,
+            ),
+            (
+                ActionKind::RefreshEvidence,
+                ActionIntent::InspectEvidence,
+                "catalog.getSkill",
+                None,
+            ),
+            (
+                ActionKind::RefreshEvidence,
+                ActionIntent::InspectEvidence,
+                "skillManager.search",
+                Some("skillManager.applySearch"),
+            ),
+            (
+                ActionKind::ToggleSkill,
+                ActionIntent::EnableSkill,
+                "batch.previewSkillToggles",
+                Some("batch.applySkillToggles"),
+            ),
+            (
+                ActionKind::ToggleSkill,
+                ActionIntent::DisableSkill,
+                "batch.previewSkillToggles",
+                Some("batch.applySkillToggles"),
+            ),
+            (
+                ActionKind::InstallSkill,
+                ActionIntent::InstallSkill,
+                "skill.install",
+                Some("skill.install"),
+            ),
+            (
+                ActionKind::ManagerInstall,
+                ActionIntent::ManagerInstall,
+                "skillManager.previewInstall",
+                Some("skillManager.applyInstall"),
+            ),
+            (
+                ActionKind::ManagerRemove,
+                ActionIntent::ManagerRemove,
+                "skillManager.previewRemove",
+                Some("skillManager.applyRemove"),
+            ),
+            (
+                ActionKind::ManagerUpdate,
+                ActionIntent::ManagerUpdate,
+                "skillManager.previewUpdate",
+                Some("skillManager.applyUpdate"),
+            ),
+            (
+                ActionKind::ManagerLocalCreate,
+                ActionIntent::ManagerLocalCreate,
+                "skillManager.previewLocalCreate",
+                Some("skillManager.applyLocalCreate"),
+            ),
+            (
+                ActionKind::ManagerLocalArchiveImport,
+                ActionIntent::ManagerLocalArchiveImport,
+                "skillManager.previewLocalArchiveImport",
+                Some("skillManager.applyLocalArchiveImport"),
+            ),
+            (
+                ActionKind::ManagerLocalArchiveUpdate,
+                ActionIntent::ManagerLocalArchiveUpdate,
+                "skillManager.previewLocalArchiveUpdate",
+                Some("skillManager.applyLocalArchiveUpdate"),
+            ),
+            (
+                ActionKind::ManagerLocalDelete,
+                ActionIntent::ManagerLocalDelete,
+                "skillManager.deleteLocal",
+                Some("skillManager.deleteLocal"),
+            ),
+            (
+                ActionKind::RollbackConfig,
+                ActionIntent::RollbackConfig,
+                "snapshot.previewRollback",
+                Some("snapshot.rollback"),
+            ),
+            (
+                ActionKind::RollbackConfig,
+                ActionIntent::RollbackConfig,
+                "snapshot.previewRollback",
+                None,
+            ),
+            (
+                ActionKind::SaveConfig,
+                ActionIntent::SaveConfig,
+                "config.previewSaveClaudeSettings",
+                Some("config.saveClaudeSettings"),
+            ),
+            (
+                ActionKind::SaveConfig,
+                ActionIntent::SaveConfig,
+                "config.previewSaveClaudeSettings",
+                None,
+            ),
+            (
+                ActionKind::ResumeSession,
+                ActionIntent::ResumeSession,
+                "session.previewResume",
+                None,
+            ),
+            (
+                ActionKind::ProjectContext,
+                ActionIntent::SetProjectContext,
+                "project.previewSetContext",
+                Some("project.setContext"),
+            ),
+            (
+                ActionKind::ProjectContext,
+                ActionIntent::ClearProjectContext,
+                "project.previewClearContext",
+                Some("project.clearContext"),
+            ),
+            (
+                ActionKind::ProjectContext,
+                ActionIntent::RemoveRecentProjectContext,
+                "project.previewRemoveRecentContext",
+                Some("project.removeRecentContext"),
+            ),
+            (
+                ActionKind::ProjectContext,
+                ActionIntent::ClearRecentProjectContexts,
+                "project.previewClearRecentContexts",
+                Some("project.clearRecentContexts"),
+            ),
+            (
+                ActionKind::ProviderProfile,
+                ActionIntent::SaveProviderProfile,
+                "llm.previewSaveProviderProfile",
+                Some("llm.saveProviderProfile"),
+            ),
+            (
+                ActionKind::ProviderProfile,
+                ActionIntent::DeleteProviderProfile,
+                "llm.previewDeleteProviderProfile",
+                Some("llm.deleteProviderProfile"),
+            ),
+            (
+                ActionKind::ProviderConnectionTest,
+                ActionIntent::TestProviderConnection,
+                "llm.previewProviderConnectionTest",
+                Some("llm.testProviderConnection"),
+            ),
+            (
+                ActionKind::ProviderPrompt,
+                ActionIntent::SendProviderPrompt,
+                "llm.previewPrompt",
+                Some("llm.confirmPromptAndSend"),
+            ),
+            (
+                ActionKind::PrivacyCleanup,
+                ActionIntent::CleanLegacyPrivateContent,
+                "privacy.previewCleanupLegacyContent",
+                Some("privacy.cleanupLegacyContent"),
+            ),
+        ];
+
+        for (kind, intent, preview, apply) in supported {
+            assert!(
+                validate_action_contract(kind, intent, preview, apply).is_ok(),
+                "supported action tuple rejected: {kind:?}/{intent:?}/{preview}/{apply:?}"
+            );
+        }
     }
 
     #[test]
