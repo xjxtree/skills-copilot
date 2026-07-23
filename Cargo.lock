@@ -817,6 +817,7 @@ dependencies = [
  "skills-copilot-core",
  "skills-copilot-scanner",
  "thiserror",
+ "url",
  "zip",
 ]
 

@@ -1,6 +1,9 @@
 use super::*;
 use skills_copilot_core::{ListIncompleteReason, ListSourceCompleteness};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn test_preview(operation: &str) -> SkillManagerCommandPreview {
     SkillManagerCommandPreview {
         action: None,
@@ -347,4 +350,86 @@ fn confirmed_manager_apply_requires_the_exact_preview_token() {
         ),
         "a confirmed manager apply without its preview token must fail closed"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn stale_manager_target_tree_is_rejected_before_the_process_starts() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-stale-target-{}-{unique}",
+        std::process::id()
+    ));
+    let cwd = root.join("project");
+    let app_data = root.join("app-data");
+    let skill_file = cwd.join(".agents/skills/example/SKILL.md");
+    let marker = root.join("process-started");
+    let executable = root.join("fake-manager");
+    fs::create_dir_all(skill_file.parent().expect("skill parent")).expect("create target tree");
+    fs::create_dir_all(&app_data).expect("create app data");
+    fs::write(&skill_file, "before").expect("write initial skill");
+    fs::write(
+        &executable,
+        format!("#!/bin/sh\n/usr/bin/touch '{}'\n", marker.display()),
+    )
+    .expect("write fake manager");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+
+    let expected_revision = manager_target_revision(&cwd).expect("preview target revision");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(cwd.clone()),
+        project_cwd: Some(cwd.clone()),
+        extra_roots: Vec::new(),
+    };
+    let preview = SkillManagerCommandPreview {
+        action: None,
+        preconditions: vec![ActionPrecondition {
+            kind: ActionPreconditionKind::TargetFile,
+            target_id: cwd.to_string_lossy().to_string(),
+            expected_revision,
+        }],
+        tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+        operation: "install".to_string(),
+        command: vec![executable.to_string_lossy().to_string()],
+        cwd: cwd.to_string_lossy().to_string(),
+        env: Vec::new(),
+        requires_confirmation: true,
+        confirmed: true,
+        network_required: false,
+        network_allowed: true,
+        will_run: true,
+        preview_token: "test-token".to_string(),
+        summary: "test".to_string(),
+        risks: Vec::new(),
+        source: None,
+        skills: Vec::new(),
+    };
+
+    let raced_skill_file = skill_file.clone();
+    install_manager_pre_execute_test_hook("install", move || {
+        fs::write(&raced_skill_file, "after confirmation").expect("drift target tree")
+    });
+    let result = with_manager_mutation_lock(&app_data, "install", || {
+        run_previewed_command(&ctx, &preview)
+    });
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "target drift after confirmation must be rejected before process execution"
+    );
+    assert!(
+        !marker.exists(),
+        "a stale manager action must not start the external process"
+    );
+    assert_eq!(
+        fs::read_dir(&app_data).expect("read app data").count(),
+        0,
+        "locking a stale apply must not create a persistent lock artifact"
+    );
+    let _ = fs::remove_dir_all(root);
 }

@@ -1858,6 +1858,32 @@ pub fn install_skill_from_tool_global(
     project_path: Option<&Path>,
     action_confirmation: Option<&ActionConfirmation>,
 ) -> Result<SkillInstallPreviewRecord, CommandError> {
+    install_skill_from_tool_global_with_after_confirmation(
+        catalog,
+        ctx,
+        instance_id,
+        target_agent,
+        target_scope,
+        project_path,
+        action_confirmation,
+        || {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // The final closure is a test-only race injection seam.
+fn install_skill_from_tool_global_with_after_confirmation<F>(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    instance_id: &str,
+    target_agent: AgentId,
+    target_scope: Scope,
+    project_path: Option<&Path>,
+    action_confirmation: Option<&ActionConfirmation>,
+    after_confirmation: F,
+) -> Result<SkillInstallPreviewRecord, CommandError>
+where
+    F: FnOnce(),
+{
     let Some(action_confirmation) = action_confirmation else {
         return preview_skill_install_from_tool_global(
             catalog,
@@ -1880,12 +1906,36 @@ pub fn install_skill_from_tool_global(
     if !action_confirmation.confirmed {
         return Ok(preview);
     }
+    after_confirmation();
 
     let target = PathBuf::from(&preview.target_path);
     let source = PathBuf::from(&preview.source_path);
     validate_skill_install_target(ctx, target_agent, target_scope, &target, project_path, true)?;
     validate_tool_global_source(&source)?;
     let lock_file = lock_install_target(ctx, target_agent, target_scope, &target, project_path)?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let expected_catalog = preview
+        .preconditions
+        .iter()
+        .find(|item| item.kind == ActionPreconditionKind::CatalogRecord)
+        .ok_or_else(|| {
+            CommandError::MismatchedActionReference(
+                "install preview is missing its catalog precondition".to_string(),
+            )
+        })?;
+    let current_meta = catalog
+        .get_skill_instance_meta(instance_id)?
+        .ok_or(CommandError::StaleActionReference)?;
+    let current_source = current_meta
+        .path
+        .canonicalize()
+        .map_err(|_| CommandError::StaleActionReference)?;
+    if current_meta.scope != Scope::ToolGlobal
+        || current_source != source
+        || batch_catalog_record_revision(&current_meta)? != expected_catalog.expected_revision
+    {
+        return Err(CommandError::StaleActionReference);
+    }
     let locked_source = read_skill_file_state(&source, true)?;
     let locked_target = read_skill_file_state(&target, false)?;
     let expected_source = preview
@@ -1913,10 +1963,9 @@ pub fn install_skill_from_tool_global(
         return Err(CommandError::StaleActionReference);
     }
 
+    let original_text = locked_target.content.clone();
+    let new_text = locked_source.content.clone();
     let write_result = (|| {
-        let original_text = locked_target.content.clone();
-        let new_text = locked_source.content.clone();
-
         write_skill_file_atomic(
             ctx,
             target_agent,
@@ -1939,8 +1988,24 @@ pub fn install_skill_from_tool_global(
         }
         Ok(())
     })();
+    if let Err(error) = write_result {
+        drop(transaction);
+        lock_file.unlock()?;
+        return Err(error);
+    }
+    if let Err(error) = transaction.commit() {
+        let _ = write_skill_file_atomic(
+            ctx,
+            target_agent,
+            target_scope,
+            &target,
+            &original_text,
+            project_path,
+        );
+        lock_file.unlock()?;
+        return Err(error.into());
+    }
     lock_file.unlock()?;
-    write_result?;
 
     let scan_ctx = install_scan_context(ctx, target_agent, target_scope, project_path)?;
     scan_agent_id_to_catalog(target_agent, &scan_ctx, catalog)?;
@@ -3417,6 +3482,33 @@ where
         }
         group_locks.push(lock_file);
     }
+    let transaction = catalog.begin_immediate_transaction()?;
+    for item in &preview.affected_items {
+        let current_meta = catalog
+            .get_skill_instance_meta(&item.instance_id)?
+            .ok_or(CommandError::StaleActionReference)?;
+        if batch_catalog_record_revision(&current_meta)? != item.catalog_revision {
+            return Err(CommandError::StaleActionReference);
+        }
+        let current_target = config_target_for_instance(ctx, &current_meta)?;
+        if current_target.agent.as_str() != item.agent
+            || current_meta.scope.as_str() != item.scope
+            || current_target.scope.as_str() != item.config_scope
+            || current_target.path.to_string_lossy() != item.config_target
+        {
+            return Err(CommandError::StaleActionReference);
+        }
+    }
+    for ((_, _, _, expected_revision), metas) in &groups {
+        let Some(first_meta) = metas.first() else {
+            continue;
+        };
+        let config_target = config_target_for_instance(ctx, first_meta)?;
+        let locked_state = read_config_state(&config_target.path)?;
+        if locked_state.revision != *expected_revision {
+            return Err(CommandError::StaleActionReference);
+        }
+    }
     for ((_, _, _, _expected_revision), metas) in &groups {
         let Some(first_meta) = metas.first() else {
             continue;
@@ -3430,6 +3522,7 @@ where
             updated_records.push(record);
         }
     }
+    transaction.commit()?;
     for lock_file in group_locks {
         lock_file.unlock()?;
     }

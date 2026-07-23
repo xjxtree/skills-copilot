@@ -86,6 +86,17 @@ confirmation, and network posture.
   all preconditions before the first write. Unknown, mismatched, forged, or
   stale references have zero write, process, catalog, snapshot, and audit side
   effects.
+- Catalog-sensitive apply paths hold a SQLite immediate transaction while
+  revalidating the accepted catalog record. Batch toggles acquire config locks
+  in stable order before that transaction; `skill.install` acquires its target
+  file lock first. A changed record, reference set, source tree, or target
+  revision returns a stale-action failure before any owned write.
+- Skill Manager install/remove/update/local-create and app-owned local deletion
+  share one cross-sidecar mutation lock. Under that lock, the service rechecks
+  the complete bounded target trees and manager inventory accepted at preview.
+  It holds the lock through process execution, catalog refresh, semantic
+  verification, and read-back. A stale preview runs no manager process and
+  writes neither targets nor app data.
 - The lifecycle currently covers single and batch agent-config toggles through
   `batch.*`, `skill.install`, Skill Manager install/remove/update/local create,
   and physical deletion of an eligible app-owned local source. Direct config
@@ -104,8 +115,24 @@ confirmation, and network posture.
   roots in `AGENTS.md` and `docs/adapters/agent-adapters.md`.
 - Skill Manager writes must use the manager tool when the tool supports the
   operation. The service may run `npx skills` with argv-only commands,
-  telemetry-off env, redacted logs, and read-back catalog refresh; enable/
-  disable uses the guarded batch agent-config lifecycle.
+  a cleared environment, an explicit `HOME`/`PATH`/locale/telemetry-off
+  allowlist, redacted logs, and read-back catalog refresh; enable/disable uses
+  the guarded batch agent-config lifecycle. Previewed environment keys are the
+  exact runtime allowlist. Parent credentials, provider tokens, cloud
+  credentials, and action secrets are never inherited by the manager.
+  Relative local install sources resolve and canonicalize against the displayed
+  manager working directory. Source URLs containing userinfo, query, or
+  fragment data are rejected without echo, and credential-shaped URLs in child
+  output are replaced as a whole before parsing or returning diagnostics.
+  Process exit zero is insufficient: install/remove/update must prove their
+  selected agent/scope postconditions in the refreshed catalog, while local
+  create must prove the exact source, `SKILL.md`, imported file, and catalog
+  identity. Install and update require an explicit non-empty skill selection.
+  Every mutating manager operation must also change at least one preview-bound
+  target tree; an exit-zero no-op, including a preinstalled install, absent
+  remove, unchanged update, or uncreated local template, returns
+  `verification_failed` without verified read-back. Multi-agent success records
+  separate catalog and skill-file evidence for every selected target.
   Large installed-inventory stdout is captured only in a private `0600`
   temporary regular file, size-checked before reading, and removed by scoped
   cleanup on success and failure; it is never cataloged or retained.

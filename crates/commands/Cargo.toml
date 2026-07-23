@@ -18,6 +18,7 @@ skills-copilot-catalog.workspace = true
 skills-copilot-core.workspace = true
 skills-copilot-scanner.workspace = true
 thiserror.workspace = true
+url.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

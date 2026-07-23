@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{params, Connection, OpenFlags, Row};
+use rusqlite::{params, Connection, OpenFlags, Row, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use skills_copilot_core::{
@@ -27,6 +27,16 @@ use mapping::*;
 #[derive(Debug)]
 pub struct Catalog {
     conn: Connection,
+}
+
+/// Holds an immediate SQLite transaction on a catalog connection.
+///
+/// Commands use this guard when a filesystem mutation and its catalog update
+/// must be protected from concurrent catalog writers. Dropping the guard
+/// rolls the transaction back; callers must explicitly commit after their
+/// read-back checks pass.
+pub struct CatalogImmediateTransaction<'catalog> {
+    transaction: Transaction<'catalog>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -286,6 +296,14 @@ impl Catalog {
         schema::init_schema(&self.conn)?;
         self.canonicalize_legacy_paths()?;
         Ok(())
+    }
+
+    pub fn begin_immediate_transaction(
+        &self,
+    ) -> Result<CatalogImmediateTransaction<'_>, CatalogError> {
+        Ok(CatalogImmediateTransaction {
+            transaction: Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?,
+        })
     }
 
     /// Migrate records whose `path` was stored as a display path (pre-refactor)
@@ -814,6 +832,12 @@ impl Catalog {
             ],
         )?;
         Ok(())
+    }
+}
+
+impl CatalogImmediateTransaction<'_> {
+    pub fn commit(self) -> Result<(), CatalogError> {
+        self.transaction.commit().map_err(Into::into)
     }
 }
 

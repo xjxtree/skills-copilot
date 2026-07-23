@@ -72,7 +72,10 @@ that clients may infer for arbitrary mutations.
   revision. Success returns a typed `readback` covering every domain declared
   by the action. Stable failures are `unknown_action_reference`,
   `stale_action_reference`, `action_target_mismatch`,
-  `confirmation_required`, and `action_token_unavailable`.
+  `confirmation_required`, `action_token_unavailable`, and
+  `verification_failed`. The last code means execution completed but the
+  required semantic postcondition could not be proved; it is never reported as
+  a successful apply.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, Skill Manager
   install/remove/update/local-create, and eligible app-owned local deletion.
@@ -185,13 +188,13 @@ conditional on the exact local state that the client reviewed.
 | `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |
 | `skillManager.listInstalled` | External manager state may change when invoked | Always | Never | None |
 | `skillManager.previewInstall` | None | Never | Never | None |
-| `skillManager.applyInstall` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
+| `skillManager.applyInstall` | Agent skill files, App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewRemove` | None | Never | Never | None |
-| `skillManager.applyRemove` | App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.applyRemove` | Agent skill files, App-local data, External manager state may change when invoked | Always | Never | Required |
 | `skillManager.previewUpdate` | None | Never | Never | None |
-| `skillManager.applyUpdate` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
+| `skillManager.applyUpdate` | Agent skill files, App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewLocalCreate` | None | Never | Never | None |
-| `skillManager.applyLocalCreate` | App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.applyLocalCreate` | Agent skill files, App-local data | Always | Never | Required |
 | `skillManager.deleteLocal` | App-local data | Never | Never | Required |
 | `skillManager.previewLocalArchiveImport` | None | Never | Never | None |
 | `skillManager.applyLocalArchiveImport` | App-local data | Never | Never | Required |
@@ -441,6 +444,16 @@ or expose write controls.
 - Search, install, and update may require external network access through the
   manager CLI. The native client allows those scoped operations by default;
   previews still show the destination command before any confirmed write.
+- Every manager child starts from `env_clear()` and receives only the
+  previewed `HOME`, `PATH`, `LANG`, `LC_ALL`, `DISABLE_TELEMETRY`,
+  `DO_NOT_TRACK`, `CI`, and npm audit/fund/update-notifier values. It never
+  inherits app action secrets, provider tokens, Git-host credentials, or cloud
+  credentials.
+- Relative local install sources resolve against the previewed manager `cwd`,
+  then require canonical regular-file or directory metadata. URL sources with
+  userinfo, query, or fragment data are rejected without echo. Credential-shaped
+  URLs in manager output are replaced before parsing, diagnostics, or response
+  serialization.
 - `skillManager.search` returns every row emitted by the invoked manager and
   flattens list metadata into the response. Because the current manager output
   does not advertise an authoritative total or continuation token, search uses
@@ -490,6 +503,27 @@ or expose write controls.
 - The Skill Manager UI does not expose agent-layer enable/disable controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.
+- Mutating manager actions and app-owned local deletion serialize through one
+  cross-sidecar target lock. Install/remove/update previews bind the complete
+  bounded target skill trees and manager inventory, including the applicable
+  manager lock file; local-create binds its exact destination tree. Apply
+  revalidates these facts after taking the lock and before creating a process
+  or writing app data. The lock remains held through catalog scan, semantic
+  verification, and read-back.
+- Install/remove/update success declares and verifies `catalog_skills`,
+  `skill_files`, and `manager_inventory` read-back. Install proves every named
+  skill exists for every selected agent/scope target; remove proves selected
+  target links/records are gone; update proves its named target remains in the
+  refreshed target inventory. Local-create verifies `catalog_skills` and
+  `skill_files`, including the exact app-owned source and imported catalog ID.
+  Install and update previews reject an empty skill selection. Every operation
+  must also change at least one preview-bound target tree, so a preexisting
+  install, absent remove, unchanged update, or uncreated template cannot turn
+  exit code zero into verified read-back; it returns `verification_failed`.
+  Multi-agent results emit separate catalog and skill-file observations for
+  every selected target, including an empty catalog projection after a
+  successful removal; one aggregate observation never stands in for target
+  coverage.
 - Enable/disable is agent config state, not manager package state. The native
   UI routes both single and multi-skill changes through
   `batch.previewSkillToggles` and `batch.applySkillToggles`;

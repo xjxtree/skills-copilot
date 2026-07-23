@@ -1603,6 +1603,9 @@ impl ServiceError {
             Self::Command(skills_copilot_commands::CommandError::ActionTokenUnavailable(_)) => {
                 "action_token_unavailable"
             }
+            Self::Command(skills_copilot_commands::CommandError::VerificationFailed) => {
+                "verification_failed"
+            }
             Self::Command(_) => "command_error",
             Self::Provider(_) => "provider_error",
             Self::Json(_) => "json_error",

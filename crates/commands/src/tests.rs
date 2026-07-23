@@ -1818,6 +1818,71 @@ fn batch_toggle_rejects_config_drift_after_preview_without_writes() {
 }
 
 #[test]
+fn batch_toggle_rechecks_catalog_revisions_inside_the_apply_transaction() {
+    let temp_root = temp_test_dir("batch-toggle-catalog-drift");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "catalog-drift-toggle");
+
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let instance_id = catalog
+        .list_skill_records()
+        .expect("records")
+        .into_iter()
+        .find(|record| record.agent == "claude-code" && record.name == "catalog-drift-toggle")
+        .expect("Claude skill")
+        .id;
+    let selection = vec![instance_id.clone()];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("batch preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+
+    let result = apply_skill_toggles_with_after_confirmation(
+        &catalog,
+        &ctx,
+        &selection,
+        false,
+        &confirmation,
+        || {
+            catalog
+                .set_skill_toggle(&instance_id, false, "disabled")
+                .expect("inject catalog drift");
+        },
+    );
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "catalog drift after confirmation must invalidate the entire batch"
+    );
+    assert!(
+        !home.join(".claude/settings.json").exists(),
+        "a stale catalog row must be rejected before any config write"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("snapshots")
+            .is_empty(),
+        "a stale catalog row must not create a rollback snapshot"
+    );
+    assert!(
+        list_skill_events(&catalog, &instance_id, Some(10))
+            .expect("events")
+            .is_empty(),
+        "a stale catalog row must not create a toggle event"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn batch_toggle_prelocks_all_groups_before_the_first_write() {
     let temp_root = temp_test_dir("batch-toggle-multi-group-drift");
     let home = temp_root.join("home");
@@ -3901,6 +3966,72 @@ fn confirmed_install_rejects_source_drift_after_preview_without_writing_target()
 }
 
 #[test]
+fn confirmed_install_rechecks_the_source_catalog_record_under_lock() {
+    let temp_root = temp_test_dir("install-catalog-drift");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "portable-catalog-drift");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let instance_id = "tool-global-catalog-drift";
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            instance_id,
+            source_path,
+            "portable-catalog-drift",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview install");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+
+    let result = install_skill_from_tool_global_with_after_confirmation(
+        &catalog,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+        || {
+            catalog
+                .set_skill_toggle(instance_id, false, "disabled")
+                .expect("inject source catalog drift");
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
+    assert!(
+        !Path::new(&preview.target_path).exists(),
+        "catalog drift after confirmation must be rejected before target write"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("snapshots")
+            .is_empty(),
+        "rejected install must not create audit snapshots"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn local_delete_rejects_source_drift_after_preview_without_deleting() {
     let temp_root = temp_test_dir("local-delete-source-drift");
     let app_data = temp_root.join("app-data");
@@ -4045,6 +4176,94 @@ fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
             .expect("catalog lookup")
             .is_some(),
         "the catalog row must remain"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn local_delete_rechecks_catalog_references_under_the_shared_lock() {
+    let temp_root = temp_test_dir("local-delete-reference-race");
+    let app_data = temp_root.join("app-data");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join("delete-reference-race")
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        "---\nname: delete-reference-race\ndescription: before\n---\nbefore",
+    )
+    .expect("write source");
+    let catalog_path = app_data.join("catalog.sqlite");
+    let catalog = Catalog::open(&catalog_path).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let racing_catalog = Catalog::open(&catalog_path).expect("racing catalog opens");
+    let mut local_instance = install_tool_global_instance(
+        "tool-global-delete-reference-race",
+        source_path.clone(),
+        "delete-reference-race",
+    );
+    local_instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&local_instance)
+        .expect("upsert tool-global");
+
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: local_instance.id.clone(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    assert!(preview.physical_delete_allowed);
+    let canonical_source = source_path.canonicalize().expect("canonical source");
+    let reference_path = temp_root.join("home/.codex/skills/delete-reference-race/SKILL.md");
+    std::fs::create_dir_all(reference_path.parent().expect("reference parent"))
+        .expect("create reference root");
+    std::fs::write(
+        &reference_path,
+        "---\nname: delete-reference-race\ndescription: linked\n---\nlinked",
+    )
+    .expect("write reference");
+    let mut reference = install_tool_global_instance(
+        "codex-delete-reference-race",
+        reference_path,
+        "delete-reference-race",
+    );
+    reference.agent = AgentId::Codex;
+    reference.scope = Scope::AgentGlobal;
+    skill_manager::install_local_delete_pre_rename_test_hook(canonical_source, move || {
+        racing_catalog
+            .upsert_skill_instance(&reference)
+            .expect("inject supported-agent reference")
+    });
+
+    let result = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: local_instance.id.clone(),
+            confirmed: true,
+            preview_token: preview.preview_token.clone(),
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    );
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "a supported-agent reference added after confirmation must invalidate delete"
+    );
+    assert!(source_path.exists(), "the source directory must remain");
+    assert!(
+        catalog
+            .get_skill_record(&local_instance.id)
+            .expect("catalog lookup")
+            .is_some(),
+        "the app-owned catalog row must remain"
     );
 
     let _ = std::fs::remove_dir_all(&temp_root);

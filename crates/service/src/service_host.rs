@@ -291,8 +291,13 @@ impl ServiceHost {
                     params.action_reference.as_ref(),
                 )?;
                 let catalog = self.open_catalog()?;
-                serde_json::to_value(apply_install_with_manager(&catalog, &adapter_ctx, &params)?)
-                    .map_err(Into::into)
+                serde_json::to_value(apply_install_with_manager(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
             }
             "skillManager.previewRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
@@ -311,8 +316,13 @@ impl ServiceHost {
                     params.action_reference.as_ref(),
                 )?;
                 let catalog = self.open_catalog()?;
-                serde_json::to_value(apply_remove_with_manager(&catalog, &adapter_ctx, &params)?)
-                    .map_err(Into::into)
+                serde_json::to_value(apply_remove_with_manager(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
             }
             "skillManager.previewUpdate" => {
                 let params: SkillManagerUpdateParams = serde_json::from_value(request.params)?;
@@ -331,8 +341,13 @@ impl ServiceHost {
                     params.action_reference.as_ref(),
                 )?;
                 let catalog = self.open_catalog()?;
-                serde_json::to_value(apply_update_with_manager(&catalog, &adapter_ctx, &params)?)
-                    .map_err(Into::into)
+                serde_json::to_value(apply_update_with_manager(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
             }
             "skillManager.previewLocalCreate" => {
                 let params: SkillManagerLocalCreateParams = serde_json::from_value(request.params)?;

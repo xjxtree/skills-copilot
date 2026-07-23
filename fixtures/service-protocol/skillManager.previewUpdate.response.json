@@ -15,7 +15,7 @@
         "source_revision": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
         "confirmation_required": true,
         "network": "required",
-        "readback": ["catalog_skills"],
+        "readback": ["catalog_skills", "skill_files", "manager_inventory"],
         "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
       },
       "preconditions": [{"kind": "target_file", "target_id": "/tmp/skills-copilot-project", "expected_revision": "sha256:3232323232323232323232323232323232323232323232323232323232323232"}],
@@ -33,6 +33,42 @@
         {
           "key": "HOME",
           "value": "/tmp/skills-copilot-home"
+        },
+        {
+          "key": "LANG",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "key": "LC_ALL",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "key": "DISABLE_TELEMETRY",
+          "value": "1"
+        },
+        {
+          "key": "DO_NOT_TRACK",
+          "value": "1"
+        },
+        {
+          "key": "CI",
+          "value": "1"
+        },
+        {
+          "key": "npm_config_audit",
+          "value": "false"
+        },
+        {
+          "key": "npm_config_fund",
+          "value": "false"
+        },
+        {
+          "key": "npm_config_update_notifier",
+          "value": "false"
+        },
+        {
+          "key": "PATH",
+          "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
       ],
       "requires_confirmation": true,

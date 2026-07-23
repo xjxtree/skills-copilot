@@ -19,7 +19,7 @@
         "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "confirmation_required": true,
         "network": "required",
-        "readback": ["catalog_skills"],
+        "readback": ["catalog_skills", "skill_files", "manager_inventory"],
         "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
       },
       "preconditions": [
@@ -58,6 +58,42 @@
         {
           "key": "HOME",
           "value": "/tmp/skills-copilot-home"
+        },
+        {
+          "key": "LANG",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "key": "LC_ALL",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "key": "DISABLE_TELEMETRY",
+          "value": "1"
+        },
+        {
+          "key": "DO_NOT_TRACK",
+          "value": "1"
+        },
+        {
+          "key": "CI",
+          "value": "1"
+        },
+        {
+          "key": "npm_config_audit",
+          "value": "false"
+        },
+        {
+          "key": "npm_config_fund",
+          "value": "false"
+        },
+        {
+          "key": "npm_config_update_notifier",
+          "value": "false"
+        },
+        {
+          "key": "PATH",
+          "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
       ],
       "requires_confirmation": true,
@@ -98,13 +134,23 @@
       "action_id": "action:manager_install:1111111111111111111111111111111111111111111111111111111111111111",
       "source_revision": "sha256:1414141414141414141414141414141414141414141414141414141414141414",
       "project_id": "project-0123456789abcdef",
-      "domains": ["catalog_skills"],
+      "domains": ["catalog_skills", "skill_files", "manager_inventory"],
       "target_ids": ["manager:install-fixture"],
       "observations": [
         {
           "domain": "catalog_skills",
           "target_id": "manager:install-fixture",
           "revision": "sha256:1515151515151515151515151515151515151515151515151515151515151515"
+        },
+        {
+          "domain": "skill_files",
+          "target_id": "manager:install-fixture",
+          "revision": "sha256:1616161616161616161616161616161616161616161616161616161616161616"
+        },
+        {
+          "domain": "manager_inventory",
+          "target_id": "manager:install-fixture",
+          "revision": "sha256:1717171717171717171717171717171717171717171717171717171717171717"
         }
       ],
       "verified": true

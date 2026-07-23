@@ -9,13 +9,13 @@
         "intent": "manager_local_create",
         "target": {"kind": "skill", "id": "manager:local-create-fixture"},
         "project_id": "project-0123456789abcdef",
-        "impacts": ["app_local_data", "external_manager", "skill_files"],
+        "impacts": ["app_local_data", "skill_files"],
         "preview_method": "skillManager.previewLocalCreate",
         "apply_method": "skillManager.applyLocalCreate",
         "source_revision": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
         "confirmation_required": true,
         "network": "none",
-        "readback": ["catalog_skills"],
+        "readback": ["catalog_skills", "skill_files"],
         "evidence_refs": ["coverage:claude-code", "coverage:codex", "coverage:opencode", "coverage:pi", "coverage:hermes", "coverage:openclaw"]
       },
       "preconditions": [{"kind": "target_file", "target_id": "/tmp/skills-copilot-app/local-skill-library/sources", "expected_revision": "sha256:4242424242424242424242424242424242424242424242424242424242424242"}],
@@ -32,6 +32,42 @@
         {
           "key": "HOME",
           "value": "/tmp/skills-copilot-home"
+        },
+        {
+          "key": "LANG",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "key": "LC_ALL",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "key": "DISABLE_TELEMETRY",
+          "value": "1"
+        },
+        {
+          "key": "DO_NOT_TRACK",
+          "value": "1"
+        },
+        {
+          "key": "CI",
+          "value": "1"
+        },
+        {
+          "key": "npm_config_audit",
+          "value": "false"
+        },
+        {
+          "key": "npm_config_fund",
+          "value": "false"
+        },
+        {
+          "key": "npm_config_update_notifier",
+          "value": "false"
+        },
+        {
+          "key": "PATH",
+          "value": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
       ],
       "requires_confirmation": true,
@@ -70,9 +106,12 @@
       "action_id": "action:manager_local_create:4141414141414141414141414141414141414141414141414141414141414141",
       "source_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "project_id": "project-0123456789abcdef",
-      "domains": ["catalog_skills"],
+      "domains": ["catalog_skills", "skill_files"],
       "target_ids": ["manager:local-create-fixture"],
-      "observations": [{"domain": "catalog_skills", "target_id": "manager:local-create-fixture", "revision": "sha256:4545454545454545454545454545454545454545454545454545454545454545"}],
+      "observations": [
+        {"domain": "catalog_skills", "target_id": "manager:local-create-fixture", "revision": "sha256:4545454545454545454545454545454545454545454545454545454545454545"},
+        {"domain": "skill_files", "target_id": "manager:local-create-fixture", "revision": "sha256:4646464646464646464646464646464646464646464646464646464646464646"}
+      ],
       "verified": true
     }
   }
