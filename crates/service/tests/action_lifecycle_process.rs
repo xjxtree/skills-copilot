@@ -631,6 +631,102 @@ fn unsafe_search_inputs_and_failed_external_searches_are_not_retryable() {
 
 #[test]
 #[cfg(unix)]
+fn exit_zero_unrecognized_search_output_is_non_retryable_partial_effect() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("manager-search-unrecognized-output");
+    let fake_npx = fixture.root.join("fake-npx-unrecognized");
+    let marker = fixture.root.join("manager-search-unrecognized-spawn");
+    fs::write(
+        &fake_npx,
+        format!(
+            "#!/bin/sh\nprintf 'spawned\\n' >> '{}'\nprintf '{{\"unexpected\":[]}}\\n'\n",
+            marker.display()
+        ),
+    )
+    .expect("write unrecognized-output manager");
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
+        .expect("make unrecognized-output manager executable");
+    let fake_npx_text = fake_npx.to_string_lossy().to_string();
+    let manager_env = [("SKILLS_COPILOT_NPX_PATH", fake_npx_text.as_str())];
+    let preview = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"unrecognized-search-preview",
+            "method":"skillManager.search",
+            "params":{
+                "query":"fixture",
+                "owner":"fixture-owner",
+                "network_allowed":true
+            }
+        }),
+    );
+    assert_success(&preview);
+    let action = preview
+        .pointer("/result/preview/action")
+        .expect("search action");
+    let preview_token = preview
+        .pointer("/result/preview/preview_token")
+        .and_then(Value::as_str)
+        .expect("search preview token");
+    let request = json!({
+        "id":"unrecognized-search-apply",
+        "method":"skillManager.applySearch",
+        "params":{
+            "query":"fixture",
+            "owner":"fixture-owner",
+            "network_allowed":true,
+            "confirmed":true,
+            "preview_token":preview_token,
+            "action_reference":{
+                "action_id":action["id"],
+                "source_revision":action["source_revision"],
+                "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                "target":action["target"]
+            }
+        }
+    });
+
+    let failed = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        request.clone(),
+    );
+    assert_error_code(&failed, "partial_effect");
+    assert_eq!(
+        failed
+            .pointer("/error/details/state")
+            .and_then(Value::as_str),
+        Some("outcome_unknown")
+    );
+    assert_eq!(
+        failed
+            .pointer("/error/details/retry_allowed")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    let replay = invoke_with_extra_env(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &manager_env,
+        request,
+    );
+    assert_error_code(&replay, "stale_action_reference");
+    assert_eq!(
+        fs::read_to_string(&marker).expect("search spawn marker"),
+        "spawned\n",
+        "unrecognized output must consume the one-time action without respawn"
+    );
+}
+
+#[test]
+#[cfg(unix)]
 fn manager_exit_zero_noop_fails_install_verification_for_a_preexisting_skill() {
     use std::os::unix::fs::PermissionsExt;
 

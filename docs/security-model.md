@@ -225,7 +225,10 @@ confirmation, and network posture.
   returning diagnostics. Its one-time reservation is a bounded private
   app-local record; a stale query, owner, executable, working directory,
   environment, target, or consumed confirmation is rejected before process
-  creation.
+  creation. After process start, an exit-zero response still requires a
+  recognized result collection or explicit empty-result shape; unknown or
+  malformed output is a non-retryable `partial_effect`, never verified empty
+  evidence.
   Process-start failure restores any manager working-directory components
   created for the attempt. After a process starts, an unobserved/nonzero
   result, failed semantic proof, refresh failure, or uncertain commit returns
@@ -240,6 +243,10 @@ confirmation, and network posture.
   reads use the accepted catalog and manager-lock projection. They never start
   the external manager. A malformed or unsafe lock fails closed while the
   native client keeps its last accepted projection.
+- Zero-write RPCs use a current-schema read-only catalog handle. They never
+  migrate an outdated catalog as a side effect; outdated state fails closed
+  until an explicit catalog scan or confirmed writable lifecycle performs the
+  migration.
 - Local ZIP import and updates are the explicitly scoped ZIP exception. Import
   writes only to the app-owned local library. Update may replace either an
   app-owned source or one canonical descendant of the active project/global
@@ -264,6 +271,11 @@ confirmation, and network posture.
 - Catalog discovery never grants package-manager write authority: plugin
   caches, configured read-only roots, and native roots outside the guarded
   selected `.agents/skills` roots are excluded from editable inventory.
+  Manager-lock projection validates each source identity and package path,
+  anchors linkage to one guarded `.agents/skills` display source, and then
+  aggregates only catalog rows with that same physical source. Every lock-proven
+  row remains manager-owned, including local-source lock entries; only
+  unlocked physical descendants of the guarded root are local inventory.
   Installed local sources outside those roots remain visible but are
   unlink-only; they never receive a ZIP replacement action.
 - Hidden apply/write paths, hidden task state, raw prompt/response/trace

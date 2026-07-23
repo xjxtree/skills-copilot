@@ -74,7 +74,7 @@ pub fn apply_search_skills_with_manager(
             }
         };
         let verified = (|| {
-            let results = parse_search_results(&execution.machine_stdout);
+            let results = parse_search_results(&execution.machine_stdout)?;
             let result_json = serde_json::to_string(&results)?;
             let result_revision = action_source_revision(
                 "manager.search.readback",
@@ -155,74 +155,8 @@ pub fn list_installed_skills_from_projection(
     };
     let records = catalog.list_skill_records_for_project_context(ctx.project_root.as_deref())?;
     let (lock, lock_revision) = read_manager_lock_projection(ctx, Some(&normalized_scope))?;
-    let mut installed = Vec::new();
-    if let Some(lock) = lock {
-        for (name, entry) in lock.skills {
-            let mut matching = records
-                .iter()
-                .filter(|record| {
-                    record.state != "missing"
-                        && record.scope == scope.as_str()
-                        && record.name.eq_ignore_ascii_case(&name)
-                        && manager_agent_alias(&record.agent).is_ok()
-                })
-                .collect::<Vec<_>>();
-            matching.sort_by(|left, right| left.id.cmp(&right.id));
-            let mut agents = matching
-                .iter()
-                .filter_map(|record| manager_agent_alias(&record.agent).ok())
-                .collect::<Vec<_>>();
-            agents.sort();
-            agents.dedup();
-            let path = matching.first().map(|record| {
-                let path = if record
-                    .display_path
-                    .file_name()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
-                {
-                    record
-                        .display_path
-                        .parent()
-                        .unwrap_or(&record.display_path)
-                        .to_path_buf()
-                } else {
-                    record.display_path.clone()
-                };
-                redact_command_output(ctx, &path.to_string_lossy())
-            });
-            let source = entry
-                .source
-                .as_deref()
-                .map(|value| redact_command_output(ctx, value))
-                .or_else(|| path.clone());
-            let source_kind = if entry
-                .source_type
-                .as_deref()
-                .is_some_and(|kind| kind.eq_ignore_ascii_case("local"))
-                || entry.source.as_deref().is_some_and(manager_source_is_local)
-            {
-                "local"
-            } else {
-                "manager"
-            };
-            installed.push(SkillManagerInstalledRecord {
-                name,
-                source,
-                source_kind: source_kind.to_string(),
-                agents,
-                scope: Some(normalized_scope.clone()),
-                path,
-                raw: Value::Null,
-            });
-        }
-    }
-    installed.sort_by(|left, right| {
-        left.name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-            .then_with(|| left.source.cmp(&right.source))
-    });
-
+    let installed =
+        installed_projection_rows(ctx, &normalized_scope, scope, &records, lock.as_ref())?;
     let catalog_projection = records
         .iter()
         .filter(|record| record.state != "missing" && record.scope == scope.as_str())
@@ -279,6 +213,225 @@ pub fn list_installed_skills_from_projection(
         installed,
         source_revision,
     ))
+}
+
+fn installed_projection_rows(
+    ctx: &AdapterContext,
+    normalized_scope: &str,
+    scope: Scope,
+    records: &[SkillRecord],
+    lock: Option<&ManagerLockFile>,
+) -> Result<Vec<SkillManagerInstalledRecord>, CommandError> {
+    let guarded_root = if normalized_scope == "global" {
+        ctx.user_home.join(".agents/skills")
+    } else {
+        manager_cwd(ctx, Some(normalized_scope))?.join(".agents/skills")
+    };
+    let manager_cwd = manager_cwd(ctx, Some(normalized_scope))?;
+    let eligible = records
+        .iter()
+        .filter(|record| {
+            record.state != "missing"
+                && record.scope == scope.as_str()
+                && manager_agent_alias(&record.agent).is_ok()
+                && record.read_only_reason.is_none()
+                && !record.source_kind.as_deref().is_some_and(|kind| {
+                    let kind = kind.to_ascii_lowercase();
+                    kind.contains("plugin") || kind.contains("cache") || kind == "codex-runtime"
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut installed = Vec::new();
+    let mut locked_names = BTreeSet::new();
+
+    if let Some(lock) = lock {
+        for (name, entry) in &lock.skills {
+            validate_manager_lock_entry(name, entry, &manager_cwd)?;
+            locked_names.insert(name.to_ascii_lowercase());
+
+            let anchors = eligible
+                .iter()
+                .copied()
+                .filter(|record| {
+                    record.name.eq_ignore_ascii_case(name)
+                        && skill_directory(&record.display_path)
+                            .is_some_and(|path| path.starts_with(&guarded_root))
+                })
+                .collect::<Vec<_>>();
+            let source_roots = anchors
+                .iter()
+                .filter_map(|record| skill_directory(&record.path))
+                .collect::<BTreeSet<_>>();
+            let source_root = if source_roots.len() == 1 {
+                source_roots.iter().next()
+            } else {
+                None
+            };
+            let mut matching = source_root
+                .map(|source_root| {
+                    eligible
+                        .iter()
+                        .copied()
+                        .filter(|record| {
+                            record.name.eq_ignore_ascii_case(name)
+                                && skill_directory(&record.path).as_ref() == Some(source_root)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            matching.sort_by(|left, right| left.id.cmp(&right.id));
+            let mut agents = matching
+                .iter()
+                .filter_map(|record| manager_agent_alias(&record.agent).ok())
+                .collect::<Vec<_>>();
+            agents.sort();
+            agents.dedup();
+            let path = anchors
+                .iter()
+                .filter_map(|record| skill_directory(&record.display_path))
+                .min()
+                .map(|path| redact_command_output(ctx, &path.to_string_lossy()));
+            installed.push(SkillManagerInstalledRecord {
+                name: name.clone(),
+                source: entry
+                    .source
+                    .as_deref()
+                    .map(|value| redact_command_output(ctx, value)),
+                source_kind: "manager".to_string(),
+                agents,
+                scope: Some(normalized_scope.to_string()),
+                path,
+                raw: Value::Null,
+            });
+        }
+    }
+
+    let mut local_sources = BTreeMap::<PathBuf, Vec<&SkillRecord>>::new();
+    for record in eligible {
+        if locked_names.contains(&record.name.to_ascii_lowercase()) {
+            continue;
+        }
+        let Some(source_dir) = skill_directory(&record.path) else {
+            continue;
+        };
+        if !source_dir.starts_with(&guarded_root) {
+            continue;
+        }
+        local_sources.entry(source_dir).or_default().push(record);
+    }
+    for (source_dir, mut matching) in local_sources {
+        matching.sort_by(|left, right| left.id.cmp(&right.id));
+        let Some(representative) = matching.first() else {
+            continue;
+        };
+        let mut agents = matching
+            .iter()
+            .filter_map(|record| manager_agent_alias(&record.agent).ok())
+            .collect::<Vec<_>>();
+        agents.sort();
+        agents.dedup();
+        let path = redact_command_output(ctx, &source_dir.to_string_lossy());
+        installed.push(SkillManagerInstalledRecord {
+            name: representative.name.clone(),
+            source: Some(path.clone()),
+            source_kind: "local".to_string(),
+            agents,
+            scope: Some(normalized_scope.to_string()),
+            path: Some(path),
+            raw: Value::Null,
+        });
+    }
+
+    installed.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.source_kind.cmp(&right.source_kind))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    Ok(installed)
+}
+
+fn skill_directory(path: &Path) -> Option<PathBuf> {
+    if path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+    {
+        path.parent().map(Path::to_path_buf)
+    } else {
+        Some(path.to_path_buf())
+    }
+}
+
+fn validate_manager_lock_entry(
+    name: &str,
+    entry: &ManagerLockEntry,
+    manager_cwd: &Path,
+) -> Result<(), CommandError> {
+    validate_discovery_input(
+        "manager lock skill name",
+        name,
+        MAX_MANAGER_SEARCH_QUERY_BYTES,
+    )?;
+    let source = entry.source.as_deref().ok_or_else(|| {
+        CommandError::InvalidSkillManagerRequest(
+            "manager lock entry is missing its source identity".to_string(),
+        )
+    })?;
+    validate_discovery_input(
+        "manager lock source",
+        source,
+        MAX_MANAGER_SEARCH_QUERY_BYTES,
+    )?;
+    let source_resolution = resolve_manager_source(source, manager_cwd)?;
+    let source_type = entry.source_type.as_deref().ok_or_else(|| {
+        CommandError::InvalidSkillManagerRequest(
+            "manager lock entry is missing its source type".to_string(),
+        )
+    })?;
+    validate_discovery_input(
+        "manager lock source type",
+        source_type,
+        MAX_MANAGER_SEARCH_OWNER_BYTES,
+    )?;
+    let declares_local = source_type.eq_ignore_ascii_case("local");
+    let explicit_local_source = source.starts_with('.')
+        || source.starts_with('/')
+        || source.starts_with('~')
+        || source.starts_with("file://");
+    let mismatched_source_type = if declares_local {
+        !matches!(source_resolution, ManagerSourceResolution::Local(_))
+    } else {
+        explicit_local_source
+    };
+    if mismatched_source_type {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "manager lock source type does not match its source identity".to_string(),
+        ));
+    }
+    if let Some(skill_path) = entry.skill_path.as_deref() {
+        validate_manager_lock_skill_path(skill_path)?;
+    }
+    Ok(())
+}
+
+fn validate_manager_lock_skill_path(skill_path: &str) -> Result<(), CommandError> {
+    validate_discovery_input(
+        "manager lock skill path",
+        skill_path,
+        MAX_MANAGER_SEARCH_QUERY_BYTES,
+    )?;
+    let path = Path::new(skill_path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "manager lock skill path must be a relative normalized package path".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn build_search_preview(
@@ -579,4 +732,164 @@ fn read_manager_lock_projection(
         &[("bytes", &format!("{:x}", Sha256::digest(&bytes)))],
     )?;
     Ok((Some(lock), revision))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(
+        id: &str,
+        agent: &str,
+        name: &str,
+        path: &str,
+        display_path: &str,
+        source_kind: Option<&str>,
+        read_only_reason: Option<&str>,
+    ) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            agent: agent.to_string(),
+            scope: Scope::AgentProject.as_str().to_string(),
+            path: PathBuf::from(path),
+            display_path: PathBuf::from(display_path),
+            definition_id: format!("definition:{id}"),
+            name: name.to_string(),
+            state: "loaded".to_string(),
+            enabled: true,
+            publisher: None,
+            package_name: None,
+            package_version: None,
+            source_kind: source_kind.map(str::to_string),
+            read_only_reason: read_only_reason.map(str::to_string),
+        }
+    }
+
+    fn context() -> AdapterContext {
+        AdapterContext {
+            user_home: PathBuf::from("/tmp/manager-projection-home"),
+            project_root: Some(PathBuf::from("/tmp/manager-projection-project")),
+            project_cwd: Some(PathBuf::from("/tmp/manager-projection-project")),
+            extra_roots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn lock_projection_matches_one_guarded_source_and_excludes_same_name_plugin_rows() {
+        let ctx = context();
+        let records = vec![
+            record(
+                "codex-managed",
+                AgentId::Codex.as_str(),
+                "shared",
+                "/tmp/manager-source/shared/SKILL.md",
+                "/tmp/manager-projection-project/.agents/skills/shared/SKILL.md",
+                None,
+                None,
+            ),
+            record(
+                "claude-managed",
+                AgentId::ClaudeCode.as_str(),
+                "shared",
+                "/tmp/manager-source/shared/SKILL.md",
+                "/tmp/manager-projection-project/.claude/skills/shared/SKILL.md",
+                None,
+                None,
+            ),
+            record(
+                "plugin-collision",
+                AgentId::Codex.as_str(),
+                "shared",
+                "/tmp/manager-projection-home/.codex/plugins/cache/vendor/package/1.0.0/skills/shared/SKILL.md",
+                "$CODEX_HOME/plugins/package@vendor/skills/shared/SKILL.md",
+                Some("chatgpt-plugin-cache"),
+                Some("Installed Codex plugin files are read-only"),
+            ),
+            record(
+                "configured-collision",
+                AgentId::Pi.as_str(),
+                "shared",
+                "/tmp/configured-read-only/shared/SKILL.md",
+                "/tmp/configured-read-only/shared/SKILL.md",
+                None,
+                Some("Configured roots are read-only manager inventory"),
+            ),
+            record(
+                "local-fallback",
+                AgentId::Codex.as_str(),
+                "local-only",
+                "/tmp/manager-projection-project/.agents/skills/local-only/SKILL.md",
+                "/tmp/manager-projection-project/.agents/skills/local-only/SKILL.md",
+                None,
+                None,
+            ),
+        ];
+        let lock = ManagerLockFile {
+            skills: BTreeMap::from([(
+                "shared".to_string(),
+                ManagerLockEntry {
+                    source: Some("owner/repository".to_string()),
+                    source_type: Some("github".to_string()),
+                    skill_path: Some("skills/shared/SKILL.md".to_string()),
+                },
+            )]),
+        };
+
+        let rows =
+            installed_projection_rows(&ctx, "project", Scope::AgentProject, &records, Some(&lock))
+                .expect("projection");
+
+        assert_eq!(rows.len(), 2);
+        let managed = rows
+            .iter()
+            .find(|row| row.name == "shared")
+            .expect("manager row");
+        assert_eq!(managed.source_kind, "manager");
+        assert_eq!(
+            managed.agents,
+            vec![
+                AgentId::ClaudeCode.as_str().to_string(),
+                AgentId::Codex.as_str().to_string()
+            ]
+        );
+        assert_eq!(
+            managed.path.as_deref(),
+            Some("<project-root>/.agents/skills/shared")
+        );
+        let local = rows
+            .iter()
+            .find(|row| row.name == "local-only")
+            .expect("unlocked local fallback");
+        assert_eq!(local.source_kind, "local");
+        assert_eq!(local.agents, vec![AgentId::Codex.as_str().to_string()]);
+    }
+
+    #[test]
+    fn malformed_lock_source_and_package_path_fail_closed() {
+        let ctx = context();
+        for entry in [
+            ManagerLockEntry {
+                source: None,
+                source_type: Some("github".to_string()),
+                skill_path: Some("skills/shared/SKILL.md".to_string()),
+            },
+            ManagerLockEntry {
+                source: Some("owner/repository".to_string()),
+                source_type: Some("github".to_string()),
+                skill_path: Some("../outside/SKILL.md".to_string()),
+            },
+        ] {
+            let lock = ManagerLockFile {
+                skills: BTreeMap::from([("shared".to_string(), entry)]),
+            };
+            assert!(installed_projection_rows(
+                &ctx,
+                "project",
+                Scope::AgentProject,
+                &[],
+                Some(&lock)
+            )
+            .is_err());
+        }
+    }
 }

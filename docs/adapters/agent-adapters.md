@@ -201,7 +201,12 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   not label its count as complete or make a hidden follow-up network request.
   Installed inventory is instead a process-free projection over the accepted
   project-context catalog and the applicable project/global manager lock. A
-  lock-proven package consumes matching catalog instances so the same
+  lock-proven package first validates its source identity and relative package
+  path, anchors to one selected-scope `.agents/skills` display source, and
+  consumes only catalog instances with that same physical source. Same-name
+  plugin caches, configured read-only roots, and unrelated sources cannot
+  contribute linkage. Every lock-proven row remains manager-owned even for a
+  local manager source. This ensures the same
   `.agents/skills` source is never rendered once as manager-owned and again as
   local. Catalog fallback is limited to guarded
   skill sources beneath the selected `.agents/skills` root, including nested

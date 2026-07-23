@@ -1058,7 +1058,7 @@ impl ServiceHost {
     pub(crate) fn open_catalog_for_read(&self) -> Result<Catalog, ServiceError> {
         let path = self.catalog_path();
         if path.exists() {
-            return Catalog::open_read_only_after_migration(&path).map_err(Into::into);
+            return Catalog::open_read_only_current(&path).map_err(Into::into);
         }
         let catalog = Catalog::in_memory()?;
         catalog.init()?;
@@ -1084,9 +1084,7 @@ impl ServiceHost {
         if !catalog_path.exists() {
             return Ok(None);
         }
-        Ok(Some(Catalog::open_read_only_after_migration(
-            &catalog_path,
-        )?))
+        Ok(Some(Catalog::open_read_only_current(&catalog_path)?))
     }
 
     pub(crate) fn catalog_path(&self) -> PathBuf {

@@ -3730,9 +3730,28 @@ fn install_risks(source: &str, network_required: bool) -> Vec<String> {
     risks
 }
 
-fn parse_search_results(stdout: &str) -> Vec<SkillManagerSearchResult> {
+fn parse_search_results(stdout: &str) -> Result<Vec<SkillManagerSearchResult>, CommandError> {
     if let Ok(value) = serde_json::from_str::<Value>(stdout) {
-        return records_from_json_value(&value)
+        let items = value
+            .as_array()
+            .or_else(|| value.get("skills").and_then(Value::as_array))
+            .or_else(|| value.get("installed").and_then(Value::as_array))
+            .or_else(|| value.get("results").and_then(Value::as_array))
+            .ok_or_else(|| {
+                CommandError::SkillManagerCommandFailed(
+                    "search returned an unrecognized JSON result".to_string(),
+                )
+            })?;
+        if items.iter().any(|item| {
+            !item.is_object()
+                || string_field(item, &["name", "skill", "id"])
+                    .is_none_or(|name| name.trim().is_empty())
+        }) {
+            return Err(CommandError::SkillManagerCommandFailed(
+                "search returned an unrecognized JSON result row".to_string(),
+            ));
+        }
+        return Ok(records_from_json_value(&value)
             .into_iter()
             .map(|record| SkillManagerSearchResult {
                 name: record.name,
@@ -3744,11 +3763,19 @@ fn parse_search_results(stdout: &str) -> Vec<SkillManagerSearchResult> {
                     .map(str::to_string),
                 raw: record.raw,
             })
-            .collect();
+            .collect());
     }
     let mut results = Vec::new();
+    let mut explicit_empty = false;
     for line in stdout.lines().map(strip_ansi_codes) {
         let line = line.trim();
+        if line.eq_ignore_ascii_case("No skills found")
+            || line.starts_with("No skills found for ")
+            || line.starts_with("No matching skills found")
+        {
+            explicit_empty = true;
+            continue;
+        }
         if line.is_empty()
             || line.starts_with("Install with")
             || line.starts_with("npx ")
@@ -3783,7 +3810,12 @@ fn parse_search_results(stdout: &str) -> Vec<SkillManagerSearchResult> {
             }),
         });
     }
-    results
+    if results.is_empty() && !explicit_empty {
+        return Err(CommandError::SkillManagerCommandFailed(
+            "search returned no recognizable result collection".to_string(),
+        ));
+    }
+    Ok(results)
 }
 
 fn strip_ansi_codes(value: &str) -> String {
@@ -3881,6 +3913,8 @@ struct ManagerLockEntry {
     source: Option<String>,
     #[serde(default, rename = "sourceType")]
     source_type: Option<String>,
+    #[serde(default, rename = "skillPath")]
+    skill_path: Option<String>,
 }
 
 #[cfg(test)]
@@ -3942,6 +3976,7 @@ fn read_manager_lock(ctx: &AdapterContext, scope: Option<&str>) -> Option<Manage
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+#[cfg(test)]
 fn manager_source_is_local(source: &str) -> bool {
     let source = source.trim();
     source.starts_with('.') || source.starts_with('/') || source.starts_with("file://")

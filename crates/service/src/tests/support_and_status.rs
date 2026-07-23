@@ -156,7 +156,7 @@ fn status_request_returns_supported_methods() {
 }
 
 #[test]
-fn app_state_snapshot_migrates_legacy_catalog_before_reading() {
+fn app_state_snapshot_rejects_legacy_catalog_without_migrating_it() {
     let root = env::temp_dir().join(format!(
         "skills-copilot-state-snapshot-migration-{}-{}",
         std::process::id(),
@@ -187,15 +187,57 @@ fn app_state_snapshot_migrates_legacy_catalog_before_reading() {
         .expect("seed legacy snapshot schema");
     }
 
+    let before = fs::read(host.catalog_path()).expect("read legacy catalog before request");
     let response = host.handle(ServiceRequest {
         id: Some("legacy-state-snapshot".to_string()),
         method: "app.stateSnapshot".to_string(),
         params: json!({}),
     });
+    assert!(!response.ok, "{response:?}");
+    assert_eq!(
+        response.error.expect("outdated catalog error").code,
+        "catalog_error"
+    );
+    assert_eq!(
+        fs::read(host.catalog_path()).expect("read legacy catalog after request"),
+        before,
+        "a zero-write RPC must not migrate or otherwise modify an outdated catalog"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_catalog_scan_migrates_legacy_catalog_before_refreshing() {
+    let root = env::temp_dir().join(format!(
+        "skills-copilot-explicit-scan-migration-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let app_data_dir = root.join("app-data");
+    fs::create_dir_all(&app_data_dir).expect("create legacy app data");
+    let host = test_host(app_data_dir);
+    {
+        let conn = rusqlite::Connection::open(host.catalog_path()).expect("open legacy catalog");
+        conn.execute_batch(
+            "CREATE TABLE config_snapshot (
+                id TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                target TEXT NOT NULL,
+                content TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );",
+        )
+        .expect("seed legacy snapshot schema");
+    }
+
+    let response = host.handle(ServiceRequest {
+        id: Some("legacy-explicit-scan".to_string()),
+        method: "catalog.scanAll".to_string(),
+        params: json!({}),
+    });
     assert!(response.ok, "{response:?}");
-    let result = response.result.expect("state snapshot result");
-    assert_eq!(result["snapshots"][0]["id"], "legacy-snapshot");
-    assert_eq!(result["snapshots"][0]["project_root"], Value::Null);
 
     let conn = rusqlite::Connection::open(host.catalog_path()).expect("reopen migrated catalog");
     let columns = conn

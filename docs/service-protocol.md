@@ -82,6 +82,10 @@ that clients may infer for arbitrary mutations.
   `state` distinguishes `not_started`, `applied_verified`,
   `applied_unverified`, and `outcome_unknown`; clients must not automatically
   retry any such response.
+- Service methods whose effect row declares no local writes open only a
+  current-schema read-only catalog. An outdated catalog fails closed without
+  migration or byte changes; explicit `catalog.scan*` and already-confirmed
+  apply paths retain the writable migration boundary.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, confirmed Skill Manager search
   and install/remove/update/local-create/local-archive-import/
@@ -597,7 +601,10 @@ presence/value or absence verification, not secret exposure.
   rows actually returned and is never presented as the source total. Search
   previews must declare `network_allowed=true` so the confirmation shows the
   actual network posture; `network_allowed=false` is rejected locally and
-  never starts the manager.
+  never starts the manager. Exit-zero output is accepted only when it matches
+  a recognized result collection or the manager's explicit empty-result
+  shape. Unknown, malformed, or structurally changed output after process start
+  is `partial_effect` with `state=outcome_unknown` and automatic retry disabled.
 - `skillManager.listInstalled` is a process-free projection over the accepted
   project-context catalog plus the applicable project/global manager lock. It
   never invokes `npx`, performs network access, or treats a generic plugin or
@@ -605,7 +612,12 @@ presence/value or absence verification, not secret exposure.
   projection; malformed, oversized, symlinked, or non-regular lock state fails
   closed without replacing the last accepted native cache.
   A row is `source_kind=manager` only when the matching scope lock file proves
-  a managed source. Unlocked `.agents/skills` rows are `source_kind=local` and
+  a valid source identity and package path. Lock-proven rows remain manager
+  rows even when the manager source type is local. Their agent linkage comes
+  only from the one physical source anchored by the selected scope's guarded
+  `.agents/skills` display entry; same-name plugin caches, configured read-only
+  roots, and unrelated sources cannot contribute agents or paths. Unlocked
+  physical `.agents/skills` rows are `source_kind=local` and
   retain a redacted local source path. No raw manager payload is stored or
   returned by the local projection. No pagination flags or tokens are invented
   for either command. The native client may reveal an

@@ -30,7 +30,7 @@ fn test_preview(operation: &str) -> SkillManagerCommandPreview {
 fn search_parser_extracts_ansi_find_results() {
     let stdout = "\n\u{1b}[38;5;102mInstall with\u{1b}[0m npx skills add <owner/repo@skill>\n\n\u{1b}[38;5;145mobra/superpowers@brainstorming\u{1b}[0m \u{1b}[36m245.4K installs\u{1b}[0m\n\u{1b}[38;5;102m└ https://skills.sh/obra/superpowers/brainstorming\u{1b}[0m\n\n\u{1b}[38;5;145mobra/superpowers@systematic-debugging\u{1b}[0m \u{1b}[36m161.5K installs\u{1b}[0m\n\u{1b}[38;5;102m└ https://skills.sh/obra/superpowers/systematic-debugging\u{1b}[0m\n";
 
-    let results = parse_search_results(stdout);
+    let results = parse_search_results(stdout).expect("recognized ANSI search results");
 
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].name, "brainstorming");
@@ -47,7 +47,7 @@ fn search_parser_does_not_cap_returned_manager_rows() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let results = parse_search_results(&stdout);
+    let results = parse_search_results(&stdout).expect("recognized search results");
 
     assert_eq!(results.len(), 55);
 }
@@ -69,7 +69,7 @@ fn search_record_preserves_all_returned_rows_without_claiming_source_total() {
     let search = skill_manager_search_record(
         test_preview("search"),
         None,
-        parse_search_results(&stdout),
+        parse_search_results(&stdout).expect("recognized JSON search results"),
         None,
     );
 
@@ -84,6 +84,26 @@ fn search_record_preserves_all_returned_rows_without_claiming_source_total() {
         search.page.incomplete_reason,
         Some(ListIncompleteReason::SourceLimited)
     );
+}
+
+#[test]
+fn search_parser_accepts_only_recognized_empty_results() {
+    assert!(parse_search_results("No skills found").is_ok());
+    for stdout in [
+        "",
+        "manager changed its output",
+        r#"{"unexpected":[]}"#,
+        r#"[{"description":"missing identity"}]"#,
+        r#"["not a result row"]"#,
+    ] {
+        assert!(
+            matches!(
+                parse_search_results(stdout),
+                Err(CommandError::SkillManagerCommandFailed(_))
+            ),
+            "unrecognized output must fail after the external process starts: {stdout:?}"
+        );
+    }
 }
 
 #[test]
