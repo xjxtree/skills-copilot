@@ -84,9 +84,10 @@ that clients may infer for arbitrary mutations.
   retry any such response.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, Skill Manager
-  install/remove/update/local-create, eligible app-owned local deletion,
-  explicit Claude settings saves, config snapshot rollback, provider profile
-  save/delete, provider connection tests, and confirmed LLM prompt sends.
+  install/remove/update/local-create/local-archive-import/local-archive-update,
+  eligible app-owned local deletion, explicit Claude settings saves, config
+  snapshot rollback, provider profile save/delete, provider connection tests,
+  and confirmed LLM prompt sends.
   Other callable mutations retain their documented
   method-specific consistency contracts until they explicitly adopt these
   fields.
@@ -584,16 +585,17 @@ presence/value or absence verification, not secret exposure.
 - The Skill Manager UI does not expose agent-layer enable/disable controls.
   Skill removal is manager-backed unlink/removal from the currently selected
   agent targets, using the same explicit confirmation flow as install/update.
-- Mutating manager actions and app-owned local deletion serialize through one
-  cross-sidecar app-data owner lock that creates no lock artifact. Batch
-  toggles and `skill.install` use the same lock, acquire it before the SQLite
-  immediate transaction, and retain it through writes, semantic read-back,
-  and commit. Install/remove/update previews bind the complete
-  bounded target skill trees and manager inventory, including the applicable
-  manager lock file; local-create binds its exact destination tree. Apply
-  revalidates these facts after taking the lock and before creating a process
-  or writing app data. The lock remains held through catalog scan, semantic
-  verification, and read-back.
+- Mutating manager actions, local archive import/update, and app-owned local
+  deletion serialize through one cross-sidecar app-data owner lock that creates
+  no lock artifact. Batch toggles and `skill.install` use the same lock, acquire
+  it before the SQLite immediate transaction, and retain it through writes,
+  semantic read-back, and commit. Install/remove/update previews bind the
+  complete bounded target skill trees and manager inventory, including the
+  applicable manager lock file; local-create binds its exact destination tree;
+  archive actions bind the archive bytes, complete destination/source tree,
+  and relevant catalog identity/reference set. Apply revalidates these facts
+  after taking the lock and before creating a process or replacing a tree. The
+  lock remains held through catalog scan, semantic verification, and read-back.
 - Install/remove/update success declares and verifies `catalog_skills`,
   `skill_files`, and `manager_inventory` read-back. Install proves every named
   skill exists with the selected source identity and content fingerprint for
@@ -644,13 +646,23 @@ presence/value or absence verification, not secret exposure.
   sources use a replacement ZIP selected after the skill. The
   service requires an absolute regular archive with exactly one matching
   `SKILL.md`, rejects path traversal, symlinks, special files, oversize entries,
-  and files outside the skill root, and binds apply to the archive and current
-  source digest through a preview token. Imported scripts are never executed.
+  and files outside the skill root. Preview returns a signed action reference
+  and token bound to the archive bytes, complete target tree, catalog identity,
+  references, agent, scope, and project. Apply reprojects under the shared owner
+  lock, uses staged replacement and exact-state rollback, and must return
+  verified `catalog_skills` and `skill_files` read-back. Any tree or catalog
+  drift fails stale before mutation; replay cannot reimport a duplicate or
+  replace an already identical complete tree. Imported scripts are never
+  executed.
 - When a removal selects every linked Agent target for an app-owned local
-  source, the native confirmation identifies it as a full uninstall. After the
-  confirmed manager unlink succeeds, the same guarded mutation flow previews
-  and deletes the app-owned source; the manager removes its matching lock
-  entry. Partial target removal keeps the shared source.
+  source, the native confirmation identifies it as a full uninstall. One
+  composite preview/action binds both manager unlink and the eligible local
+  source/catalog/reference cleanup. One confirmed apply performs both under the
+  same owner lock and returns combined manager, catalog, and missing-file
+  read-back; the native client must not send a second local-delete preview or
+  apply. Partial target removal keeps the shared source. If an external effect
+  has crossed its boundary but combined completion cannot be safely proved,
+  the service returns typed `partial_effect` with automatic retry disabled.
 
 ## Session Preview
 

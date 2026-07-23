@@ -295,13 +295,34 @@ impl ServiceHost {
             "skillManager.previewRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                serde_json::to_value(preview_remove_with_manager(&adapter_ctx, &params)?)
+                if params.cleanup_local_instance_id.is_some() {
+                    let catalog = self.open_catalog_for_action_preflight()?;
+                    serde_json::to_value(preview_remove_with_manager_guarded(
+                        &catalog,
+                        &self.app_data_dir,
+                        &adapter_ctx,
+                        &params,
+                    )?)
                     .map_err(Into::into)
+                } else {
+                    serde_json::to_value(preview_remove_with_manager(&adapter_ctx, &params)?)
+                        .map_err(Into::into)
+                }
             }
             "skillManager.applyRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let preflight = preview_remove_with_manager(&adapter_ctx, &params)?;
+                let preflight = if params.cleanup_local_instance_id.is_some() {
+                    let read_catalog = self.open_catalog_for_action_preflight()?;
+                    preview_remove_with_manager_guarded(
+                        &read_catalog,
+                        &self.app_data_dir,
+                        &adapter_ctx,
+                        &params,
+                    )?
+                } else {
+                    preview_remove_with_manager(&adapter_ctx, &params)?
+                };
                 validate_skill_manager_confirmation(
                     &preflight.preview,
                     params.confirmed,
@@ -375,7 +396,7 @@ impl ServiceHost {
             "skillManager.previewLocalArchiveImport" => {
                 let params: SkillManagerLocalArchiveImportParams =
                     serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog_for_read()?;
+                let catalog = self.open_catalog_for_action_preflight()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 serde_json::to_value(preview_local_archive_import(
                     &catalog,
@@ -388,8 +409,16 @@ impl ServiceHost {
             "skillManager.applyLocalArchiveImport" => {
                 let params: SkillManagerLocalArchiveImportParams =
                     serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let read_catalog = self.open_catalog_for_action_preflight()?;
+                validate_local_archive_import_confirmation(
+                    &read_catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?;
+                drop(read_catalog);
+                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_local_archive_import(
                     &catalog,
                     &self.app_data_dir,
@@ -401,7 +430,7 @@ impl ServiceHost {
             "skillManager.previewLocalArchiveUpdate" => {
                 let params: SkillManagerLocalArchiveUpdateParams =
                     serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog_for_read()?;
+                let catalog = self.open_catalog_for_action_preflight()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 serde_json::to_value(preview_local_archive_update(
                     &catalog,
@@ -414,8 +443,16 @@ impl ServiceHost {
             "skillManager.applyLocalArchiveUpdate" => {
                 let params: SkillManagerLocalArchiveUpdateParams =
                     serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
+                let read_catalog = self.open_catalog_for_action_preflight()?;
+                validate_local_archive_update_confirmation(
+                    &read_catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params,
+                )?;
+                drop(read_catalog);
+                let catalog = self.open_catalog()?;
                 serde_json::to_value(apply_local_archive_update(
                     &catalog,
                     &self.app_data_dir,

@@ -30,11 +30,16 @@ use crate::{
 };
 
 mod archive;
+mod composite_remove;
 pub use archive::{
     apply_local_archive_import, apply_local_archive_update, preview_local_archive_import,
-    preview_local_archive_update, SkillManagerLocalArchiveImportParams,
+    preview_local_archive_update, validate_local_archive_import_confirmation,
+    validate_local_archive_update_confirmation, SkillManagerLocalArchiveImportParams,
     SkillManagerLocalArchiveImportRecord, SkillManagerLocalArchiveUpdateParams,
     SkillManagerLocalArchiveUpdateRecord,
+};
+use composite_remove::{
+    apply_composite_local_delete, bind_composite_local_delete, composite_local_delete_plan,
 };
 
 const DEFAULT_MANAGER_TOOL: &str = "npx-skills";
@@ -190,6 +195,8 @@ pub struct SkillManagerRemoveParams {
     #[serde(default)]
     pub scope: Option<String>,
     #[serde(default)]
+    pub cleanup_local_instance_id: Option<String>,
+    #[serde(default)]
     pub confirmed: bool,
     #[serde(default)]
     pub preview_token: Option<String>,
@@ -245,6 +252,8 @@ pub struct SkillManagerMutationRecord {
     pub scanned_count: usize,
     pub updated_skills: Vec<SkillRecord>,
     pub readback: Option<ActionReadbackRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<SkillManagerCleanupFollowUp>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -498,6 +507,7 @@ pub fn preview_install_with_manager(
         scanned_count: 0,
         updated_skills: Vec::new(),
         readback: None,
+        follow_up: None,
     })
 }
 
@@ -530,6 +540,7 @@ pub fn apply_install_with_manager(
                 &preview,
                 &updated_skills,
                 &[],
+                &[],
             )?);
             Ok(SkillManagerMutationRecord {
                 preview: preview.clone(),
@@ -538,6 +549,7 @@ pub fn apply_install_with_manager(
                 scanned_count: scan.scanned_count,
                 updated_skills,
                 readback,
+                follow_up: None,
             })
         })();
         let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
@@ -559,14 +571,47 @@ pub fn preview_remove_with_manager(
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
     let preview = build_remove_preview(ctx, params)?;
-    Ok(SkillManagerMutationRecord {
+    if params.cleanup_local_instance_id.is_some() {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "a full uninstall preview requires the current catalog and app-owned source binding"
+                .to_string(),
+        ));
+    }
+    Ok(skill_manager_mutation_preview_record(preview))
+}
+
+pub fn preview_remove_with_manager_guarded(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    params: &SkillManagerRemoveParams,
+) -> Result<SkillManagerMutationRecord, CommandError> {
+    let mut preview = build_remove_preview(ctx, params)?;
+    if let Some(instance_id) = params.cleanup_local_instance_id.as_deref() {
+        bind_composite_local_delete(
+            catalog,
+            app_data_dir,
+            ctx,
+            params,
+            instance_id,
+            &mut preview,
+        )?;
+    }
+    Ok(skill_manager_mutation_preview_record(preview))
+}
+
+fn skill_manager_mutation_preview_record(
+    preview: SkillManagerCommandPreview,
+) -> SkillManagerMutationRecord {
+    SkillManagerMutationRecord {
         preview,
         output: None,
         applied: false,
         scanned_count: 0,
         updated_skills: Vec::new(),
         readback: None,
-    })
+        follow_up: None,
+    }
 }
 
 pub fn apply_remove_with_manager(
@@ -575,7 +620,26 @@ pub fn apply_remove_with_manager(
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
-    let preview = build_remove_preview(ctx, params)?;
+    let mut preview = build_remove_preview(ctx, params)?;
+    let cleanup_plan = if let Some(instance_id) = params.cleanup_local_instance_id.as_deref() {
+        bind_composite_local_delete(
+            catalog,
+            app_data_dir,
+            ctx,
+            params,
+            instance_id,
+            &mut preview,
+        )?;
+        Some(composite_local_delete_plan(
+            catalog,
+            app_data_dir,
+            ctx,
+            params,
+            instance_id,
+        )?)
+    } else {
+        None
+    };
     ensure_confirmed(
         &preview,
         params.confirmed,
@@ -584,40 +648,129 @@ pub fn apply_remove_with_manager(
     )?;
     let operation = preview.operation.clone();
     with_manager_mutation_lock(app_data_dir, &operation, || {
-        validate_manager_preconditions(ctx, &preview)?;
+        let locked_cleanup_plan =
+            if let Some(instance_id) = params.cleanup_local_instance_id.as_deref() {
+                let plan =
+                    composite_local_delete_plan(catalog, app_data_dir, ctx, params, instance_id)?;
+                if cleanup_plan.as_ref() != Some(&plan) {
+                    return Err(CommandError::StaleActionReference);
+                }
+                Some(plan)
+            } else {
+                None
+            };
+        validate_manager_preconditions_except(
+            ctx,
+            &preview,
+            locked_cleanup_plan
+                .as_ref()
+                .map(|plan| plan.skill_path.as_path()),
+        )?;
         let before = manager_selected_skill_snapshot(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
         let output = run_previewed_command(ctx, &preview)?.output;
         let mutation = (|| {
             let scan = scan_all_catalog_report(ctx, catalog)?;
-            let updated_skills = catalog.list_skill_records()?;
+            let mut updated_skills = catalog.list_skill_records()?;
             let after = manager_selected_skill_snapshot(ctx, &preview)?;
             verify_manager_operation(&preview, &updated_skills, &before, &after)?;
-            let readback = Some(manager_mutation_readback(
+            let mut extra_observations = Vec::new();
+            let mut cleanup = if let Some(plan) = locked_cleanup_plan.as_ref() {
+                let mut cleanup = apply_composite_local_delete(catalog, app_data_dir, plan)?;
+                extra_observations.extend(cleanup.observations.clone());
+                updated_skills = match catalog.list_skill_records() {
+                    Ok(records) => records,
+                    Err(error) => {
+                        cleanup.restore().map_err(|cleanup_error| {
+                            manager_partial_effect(
+                                ctx,
+                                &preview,
+                                "outcome_unknown",
+                                true,
+                                &format!(
+                                    "catalog read after local cleanup failed ({error}); local source restoration failed ({cleanup_error})"
+                                ),
+                            )
+                        })?;
+                        return Err(error.into());
+                    }
+                };
+                Some(cleanup)
+            } else {
+                None
+            };
+            let readback = match manager_mutation_readback(
                 ctx,
                 &preview,
                 &updated_skills,
                 &[],
-            )?);
-            Ok(SkillManagerMutationRecord {
+                &extra_observations,
+            ) {
+                Ok(readback) => Some(readback),
+                Err(error) => {
+                    if let Some(cleanup) = cleanup.as_mut() {
+                        cleanup.restore().map_err(|cleanup_error| {
+                            manager_partial_effect(
+                                ctx,
+                                &preview,
+                                "outcome_unknown",
+                                true,
+                                &format!(
+                                    "combined read-back failed ({error}); local source restoration failed ({cleanup_error})"
+                                ),
+                            )
+                        })?;
+                    }
+                    return Err(error);
+                }
+            };
+            let record = SkillManagerMutationRecord {
                 preview: preview.clone(),
                 output: Some(output),
                 applied: true,
                 scanned_count: scan.scanned_count,
                 updated_skills,
                 readback,
-            })
+                follow_up: None,
+            };
+            Ok((record, cleanup))
         })();
-        let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
-        transaction.commit().map_err(|error| {
-            manager_partial_effect(
+        let (mut record, mut cleanup) =
+            mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
+        if let Err(error) = transaction.commit() {
+            if let Some(cleanup) = cleanup.as_mut() {
+                cleanup.restore().map_err(|cleanup_error| {
+                    manager_partial_effect(
+                        ctx,
+                        &preview,
+                        "outcome_unknown",
+                        true,
+                        &format!(
+                            "catalog commit failed ({error}); local source restoration failed ({cleanup_error})"
+                        ),
+                    )
+                })?;
+            }
+            return Err(manager_partial_effect(
                 ctx,
                 &preview,
                 "applied_unverified",
-                true,
+                cleanup.is_some(),
                 &format!("catalog commit failed after manager execution: {error}"),
-            )
-        })?;
+            ));
+        }
+        if let Some(cleanup) = cleanup.as_mut() {
+            if cleanup.finish().is_err() {
+                record.follow_up = Some(SkillManagerCleanupFollowUp {
+                    kind: "quarantine_cleanup".to_string(),
+                    state: "delete_applied_cleanup_pending".to_string(),
+                    cleanup_required: true,
+                    message:
+                        "The agent links and local source were removed and verified, but private cleanup remains pending."
+                            .to_string(),
+                });
+            }
+        }
         Ok(record)
     })
 }
@@ -634,6 +787,7 @@ pub fn preview_update_with_manager(
         scanned_count: 0,
         updated_skills: Vec::new(),
         readback: None,
+        follow_up: None,
     })
 }
 
@@ -666,6 +820,7 @@ pub fn apply_update_with_manager(
                 &preview,
                 &updated_skills,
                 &[],
+                &[],
             )?);
             Ok(SkillManagerMutationRecord {
                 preview: preview.clone(),
@@ -674,6 +829,7 @@ pub fn apply_update_with_manager(
                 scanned_count: scan.scanned_count,
                 updated_skills,
                 readback,
+                follow_up: None,
             })
         })();
         let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
@@ -748,6 +904,7 @@ pub fn apply_local_create_with_manager(
                 &preview,
                 &records,
                 &[source_path.clone(), imported.imported.path.clone()],
+                &[],
             )?);
             Ok(SkillManagerLocalCreateRecord {
                 preview: preview.clone(),
@@ -2121,6 +2278,7 @@ fn manager_mutation_readback(
     preview: &SkillManagerCommandPreview,
     records: &[SkillRecord],
     extra_skill_paths: &[PathBuf],
+    extra_observations: &[ActionReadbackObservation],
 ) -> Result<ActionReadbackRecord, CommandError> {
     let action = preview.action.as_ref().ok_or_else(|| {
         CommandError::MismatchedActionReference(
@@ -2208,6 +2366,7 @@ fn manager_mutation_readback(
             }
         }
     }
+    observations.extend_from_slice(extra_observations);
     ActionReadbackRecord::verified(action, observations)
 }
 
@@ -2833,6 +2992,14 @@ fn validate_manager_preconditions(
     ctx: &AdapterContext,
     preview: &SkillManagerCommandPreview,
 ) -> Result<(), CommandError> {
+    validate_manager_preconditions_except(ctx, preview, None)
+}
+
+fn validate_manager_preconditions_except(
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    excluded_local_skill_path: Option<&Path>,
+) -> Result<(), CommandError> {
     if preview.preconditions.is_empty() {
         return Ok(());
     }
@@ -2843,6 +3010,20 @@ fn validate_manager_preconditions(
         &preview.operation,
     )?;
     for precondition in &preview.preconditions {
+        if precondition.kind == ActionPreconditionKind::CatalogRecord {
+            if excluded_local_skill_path.is_some() {
+                continue;
+            }
+            return Err(CommandError::MismatchedActionReference(
+                "manager action contains an unexpected catalog precondition".to_string(),
+            ));
+        }
+        if excluded_local_skill_path.is_some_and(|path| {
+            precondition.kind == ActionPreconditionKind::SourceFile
+                && Path::new(&precondition.target_id) == path
+        }) {
+            continue;
+        }
         let actual_revision = match precondition.kind {
             ActionPreconditionKind::ManagerInventory => {
                 if preview

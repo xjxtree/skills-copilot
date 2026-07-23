@@ -2,12 +2,48 @@
   "id": "fixture-skill-manager-apply-local-archive-import",
   "ok": true,
   "result": {
+    "action": {
+      "id": "action:manager_local_archive_import:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "kind": "manager_local_archive_import",
+      "intent": "manager_local_archive_import",
+      "target": {
+        "kind": "skill",
+        "id": "local-archive-import:local-review-helper",
+        "agent": "tool-global",
+        "scope": "tool-global"
+      },
+      "impacts": ["app_local_data", "skill_files"],
+      "preview_method": "skillManager.previewLocalArchiveImport",
+      "apply_method": "skillManager.applyLocalArchiveImport",
+      "source_revision": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["catalog_skills", "skill_files"],
+      "evidence_refs": ["coverage:local-skill-library"]
+    },
+    "preconditions": [
+      {
+        "kind": "archive",
+        "target_id": "/tmp/local-review-helper.zip",
+        "expected_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "kind": "target_file",
+        "target_id": "/tmp/skills-copilot-app/local-skill-library/sources/local-review-helper/SKILL.md",
+        "expected_revision": "sha256:missing"
+      },
+      {
+        "kind": "catalog_record",
+        "target_id": "local-archive-import:local-review-helper",
+        "expected_revision": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      }
+    ],
     "skill_name": "local-review-helper",
     "archive_path": "/tmp/local-review-helper.zip",
     "archive_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "file_count": 3,
     "uncompressed_bytes": 4096,
-    "preview_token": "skill-manager-local-archive-import:fixture-preview",
+    "preview_token": "action-preview:v1:hmac-sha256:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
     "confirmed": true,
     "applied": true,
     "summary": "Imported the validated ZIP into the app-owned local skill library; skill scripts were not executed.",
@@ -22,6 +58,26 @@
       "state": "valid",
       "enabled": true,
       "definition_id": "fixture-local-definition"
-    }
+    },
+    "readback": {
+      "action_id": "action:manager_local_archive_import:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "source_revision": "sha256:b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4",
+      "domains": ["catalog_skills", "skill_files"],
+      "target_ids": ["local-archive-import:local-review-helper"],
+      "observations": [
+        {
+          "domain": "catalog_skills",
+          "target_id": "local-archive-import:local-review-helper",
+          "revision": "sha256:b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5"
+        },
+        {
+          "domain": "skill_files",
+          "target_id": "local-archive-import:local-review-helper",
+          "revision": "sha256:b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6"
+        }
+      ],
+      "verified": true
+    },
+    "follow_up": null
   }
 }

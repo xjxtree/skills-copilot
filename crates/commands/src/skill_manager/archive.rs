@@ -8,16 +8,24 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skills_copilot_catalog::Catalog;
-use skills_copilot_core::{AdapterContext, AgentId, Scope};
+use skills_copilot_core::{
+    ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
+    ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AdapterContext, AgentId, Scope,
+};
 use zip::ZipArchive;
 
 use crate::{
-    import_local_skill_to_tool_global, register_tool_global_staged_skill, scan_all_catalog_report,
-    tool_global_skill_name_from_content, tool_global_staging_skills_root, CommandError,
-    SkillRecord,
+    action_descriptor, action_preview_binding, action_source_revision, canonical_project_id,
+    canonical_readback_domains, ensure_action_confirmed, register_tool_global_staged_skill,
+    scan_all_catalog_report, tool_global_skill_name_from_content, tool_global_staging_skills_root,
+    ActionConfirmation, ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding,
+    ActionReadbackObservation, ActionReadbackRecord, ActionReference, CommandError, SkillRecord,
 };
 
-use super::{redact_command_output, unix_timestamp_millis};
+use super::{
+    local_delete_catalog_revision, local_delete_references, redact_command_output,
+    unix_timestamp_millis,
+};
 
 const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 2_000;
@@ -33,10 +41,14 @@ pub struct SkillManagerLocalArchiveUpdateParams {
     pub confirmed: bool,
     #[serde(default)]
     pub preview_token: Option<String>,
+    #[serde(default)]
+    pub action_reference: Option<ActionReference>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SkillManagerLocalArchiveUpdateRecord {
+    pub action: ActionDescriptor,
+    pub preconditions: Vec<ActionPrecondition>,
     pub instance_id: String,
     pub skill_name: String,
     pub archive_path: String,
@@ -49,6 +61,10 @@ pub struct SkillManagerLocalArchiveUpdateRecord {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_skill: Option<SkillRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<ActionReadbackRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<super::SkillManagerCleanupFollowUp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,10 +74,14 @@ pub struct SkillManagerLocalArchiveImportParams {
     pub confirmed: bool,
     #[serde(default)]
     pub preview_token: Option<String>,
+    #[serde(default)]
+    pub action_reference: Option<ActionReference>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SkillManagerLocalArchiveImportRecord {
+    pub action: ActionDescriptor,
+    pub preconditions: Vec<ActionPrecondition>,
     pub skill_name: String,
     pub archive_path: String,
     pub archive_sha256: String,
@@ -75,6 +95,10 @@ pub struct SkillManagerLocalArchiveImportRecord {
     pub imported_skill: Option<SkillRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<ActionReadbackRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<super::SkillManagerCleanupFollowUp>,
 }
 
 struct ArchiveInspection {
@@ -83,6 +107,7 @@ struct ArchiveInspection {
     skill_root: PathBuf,
     file_count: usize,
     uncompressed_bytes: u64,
+    tree_revision: String,
 }
 
 enum LocalArchiveUpdateTargetKind {
@@ -91,9 +116,13 @@ enum LocalArchiveUpdateTargetKind {
 }
 
 struct LocalArchiveUpdateTarget {
+    instance_id: String,
     skill_name: String,
     skill_path: PathBuf,
     canonical_root: PathBuf,
+    agent: AgentId,
+    scope: Scope,
+    catalog_revision: String,
     kind: LocalArchiveUpdateTargetKind,
 }
 
@@ -103,7 +132,8 @@ pub fn preview_local_archive_import(
     ctx: &AdapterContext,
     params: &SkillManagerLocalArchiveImportParams,
 ) -> Result<SkillManagerLocalArchiveImportRecord, CommandError> {
-    build_local_archive_import_record(catalog, app_data_dir, ctx, params, false)
+    let plan = prepare_local_archive_import(catalog, app_data_dir, ctx, params)?;
+    Ok(local_archive_import_record(plan, false, None, None))
 }
 
 pub fn apply_local_archive_import(
@@ -112,62 +142,151 @@ pub fn apply_local_archive_import(
     ctx: &AdapterContext,
     params: &SkillManagerLocalArchiveImportParams,
 ) -> Result<SkillManagerLocalArchiveImportRecord, CommandError> {
-    if !params.confirmed {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local archive import requires confirmed=true".to_string(),
+    let preview = prepare_local_archive_import(catalog, app_data_dir, ctx, params)?;
+    ensure_archive_confirmation(
+        &preview.action_binding,
+        params.confirmed,
+        params.preview_token.as_deref(),
+        params.action_reference.as_ref(),
+    )?;
+    let _owner = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    let locked = prepare_local_archive_import(catalog, app_data_dir, ctx, params)?;
+    ensure_archive_confirmation(
+        &locked.action_binding,
+        params.confirmed,
+        params.preview_token.as_deref(),
+        params.action_reference.as_ref(),
+    )?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let mut applied = apply_archive_import_guarded(catalog, app_data_dir, ctx, &locked)?;
+    let record = local_archive_import_record(
+        locked,
+        true,
+        Some(applied.imported.clone()),
+        Some(applied.readback.clone()),
+    );
+    if let Err(error) = transaction.commit() {
+        applied.restore().map_err(|cleanup_error| {
+            archive_partial(
+                "skillManager.applyLocalArchiveImport",
+                "outcome_unknown",
+                true,
+                format!(
+                    "catalog commit failed ({error}); imported tree restoration failed ({cleanup_error})"
+                ),
+            )
+        })?;
+        return Err(archive_partial(
+            "skillManager.applyLocalArchiveImport",
+            "applied_unverified",
+            false,
+            format!("catalog commit failed after local archive import: {error}"),
         ));
     }
-    build_local_archive_import_record(catalog, app_data_dir, ctx, params, true)
+    applied.commit();
+    Ok(record)
 }
 
-fn build_local_archive_import_record(
+pub fn validate_local_archive_import_confirmation(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     params: &SkillManagerLocalArchiveImportParams,
-    apply: bool,
-) -> Result<SkillManagerLocalArchiveImportRecord, CommandError> {
+) -> Result<(), CommandError> {
+    let preview = prepare_local_archive_import(catalog, app_data_dir, ctx, params)?;
+    ensure_archive_confirmation(
+        &preview.action_binding,
+        params.confirmed,
+        params.preview_token.as_deref(),
+        params.action_reference.as_ref(),
+    )
+}
+
+struct LocalArchiveImportPlan {
+    archive_path: PathBuf,
+    archive_display_path: String,
+    inspection: ArchiveInspection,
+    destination_directory: PathBuf,
+    action_binding: ActionPreviewBinding,
+}
+
+fn prepare_local_archive_import(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    params: &SkillManagerLocalArchiveImportParams,
+) -> Result<LocalArchiveImportPlan, CommandError> {
     let archive_path = validate_archive_path(Path::new(params.archive_path.trim()))?;
     let inspection = inspect_archive(&archive_path)?;
     ensure_local_import_name_available(catalog, &inspection.skill_name)?;
-    let preview_token =
-        archive_import_preview_token(&inspection.skill_name, &inspection.archive_sha256);
-    if apply && params.preview_token.as_deref() != Some(preview_token.as_str()) {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local archive import requires a fresh preview_token for the same ZIP".to_string(),
-        ));
+    let destination_directory = tool_global_staging_skills_root(app_data_dir)
+        .join(super::safe_skill_name(&inspection.skill_name)?);
+    let destination_skill_path = destination_directory.join("SKILL.md");
+    let target_revision = skill_tree_content_revision(&destination_skill_path)?;
+    if !target_revision.ends_with(":missing") {
+        return Err(CommandError::StaleActionReference);
     }
+    let catalog_revision = local_import_catalog_revision(catalog, &inspection.skill_name)?;
+    let action_binding = local_archive_action_binding(
+        ctx,
+        ActionKind::ManagerLocalArchiveImport,
+        ActionIntent::ManagerLocalArchiveImport,
+        ActionTargetRef {
+            kind: ActionTargetKind::Skill,
+            id: format!(
+                "local-archive-import:{}",
+                super::safe_skill_name(&inspection.skill_name)?
+            ),
+            agent: Some(AgentId::ToolGlobal),
+            scope: Some(Scope::ToolGlobal),
+        },
+        None,
+        "skillManager.previewLocalArchiveImport",
+        "skillManager.applyLocalArchiveImport",
+        &archive_path,
+        &inspection.archive_sha256,
+        &destination_skill_path,
+        &target_revision,
+        &catalog_revision,
+    )?;
+    Ok(LocalArchiveImportPlan {
+        archive_display_path: redact_command_output(ctx, &archive_path.to_string_lossy()),
+        archive_path,
+        inspection,
+        destination_directory,
+        action_binding,
+    })
+}
 
-    let imported = if apply {
-        Some(apply_archive_import(
-            catalog,
-            app_data_dir,
-            ctx,
-            &archive_path,
-            &inspection,
-        )?)
-    } else {
-        None
-    };
-    Ok(SkillManagerLocalArchiveImportRecord {
-        skill_name: inspection.skill_name,
-        archive_path: redact_command_output(ctx, &archive_path.to_string_lossy()),
-        archive_sha256: inspection.archive_sha256,
-        file_count: inspection.file_count,
-        uncompressed_bytes: inspection.uncompressed_bytes,
-        preview_token,
-        confirmed: apply,
-        applied: apply,
-        summary: if apply {
+fn local_archive_import_record(
+    plan: LocalArchiveImportPlan,
+    applied: bool,
+    imported: Option<SkillRecord>,
+    readback: Option<ActionReadbackRecord>,
+) -> SkillManagerLocalArchiveImportRecord {
+    SkillManagerLocalArchiveImportRecord {
+        action: plan.action_binding.action,
+        preconditions: plan.action_binding.preconditions,
+        skill_name: plan.inspection.skill_name,
+        archive_path: plan.archive_display_path,
+        archive_sha256: plan.inspection.archive_sha256,
+        file_count: plan.inspection.file_count,
+        uncompressed_bytes: plan.inspection.uncompressed_bytes,
+        preview_token: plan.action_binding.preview_token,
+        confirmed: applied,
+        applied,
+        summary: if applied {
             "Imported the validated ZIP into the app-owned local skill library; skill scripts were not executed."
                 .to_string()
         } else {
             "The ZIP contains one local skill and can be imported into the app-owned library after confirmation."
                 .to_string()
         },
-        instance_id: imported.as_ref().map(|result| result.instance_id.clone()),
-        imported_skill: imported.map(|result| result.imported),
-    })
+        instance_id: imported.as_ref().map(|record| record.id.clone()),
+        imported_skill: imported,
+        readback,
+        follow_up: None,
+    }
 }
 
 fn ensure_local_import_name_available(
@@ -178,7 +297,8 @@ fn ensure_local_import_name_available(
         record.name.eq_ignore_ascii_case(skill_name)
             && record.state != "missing"
             && (record.agent == AgentId::ToolGlobal.as_str()
-                || is_shared_agents_skill_path(&record.path))
+                || is_shared_agents_skill_path(&record.path)
+                || is_shared_agents_skill_path(&record.display_path))
     });
     if duplicate {
         return Err(CommandError::InvalidSkillManagerRequest(
@@ -197,21 +317,50 @@ fn is_shared_agents_skill_path(path: &Path) -> bool {
             .any(|(parent, child)| parent.as_os_str() == ".agents" && child.as_os_str() == "skills")
 }
 
-fn apply_archive_import(
+struct AppliedArchiveImport {
+    imported: SkillRecord,
+    destination_directory: PathBuf,
+    candidate_revision: String,
+    readback: ActionReadbackRecord,
+    active: bool,
+}
+
+impl AppliedArchiveImport {
+    fn restore(&mut self) -> Result<(), CommandError> {
+        if !self.active {
+            return Ok(());
+        }
+        let skill_path = self.destination_directory.join("SKILL.md");
+        if skill_tree_content_revision(&skill_path)? != self.candidate_revision {
+            return Err(CommandError::StaleActionReference);
+        }
+        fs::remove_dir_all(&self.destination_directory)?;
+        self.active = false;
+        Ok(())
+    }
+
+    fn commit(&mut self) {
+        self.active = false;
+    }
+}
+
+fn apply_archive_import_guarded(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
-    archive_path: &Path,
-    inspection: &ArchiveInspection,
-) -> Result<crate::ToolGlobalImportResult, CommandError> {
-    let import_root = app_data_dir.join("local-archive-imports");
-    fs::create_dir_all(&import_root)?;
-    if fs::symlink_metadata(&import_root)?.file_type().is_symlink() {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local archive import staging root must not be a symlink".to_string(),
-        ));
+    plan: &LocalArchiveImportPlan,
+) -> Result<AppliedArchiveImport, CommandError> {
+    let skills_root = tool_global_staging_skills_root(app_data_dir);
+    create_guarded_directory_chain(&skills_root)?;
+    let canonical_root = skills_root.canonicalize()?;
+    let destination_directory = canonical_root.join(
+        plan.destination_directory
+            .file_name()
+            .ok_or(CommandError::StaleActionReference)?,
+    );
+    if destination_directory.exists() {
+        return Err(CommandError::StaleActionReference);
     }
-    let canonical_root = import_root.canonicalize()?;
     let temp_dir = canonical_root.join(format!(
         ".archive-import-{}-{}",
         unix_timestamp_millis(),
@@ -219,18 +368,115 @@ fn apply_archive_import(
     ));
     ensure_child_path(&canonical_root, &temp_dir)?;
     fs::create_dir(&temp_dir)?;
-    if let Err(error) = extract_skill_root(archive_path, inspection, &temp_dir) {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(error);
+    if let Err(error) = extract_skill_root(&plan.archive_path, &plan.inspection, &temp_dir) {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveImport",
+            &temp_dir,
+            error,
+        ));
     }
-    let imported = import_local_skill_to_tool_global(
-        catalog,
-        ctx,
-        &app_data_dir.join("tool-global"),
-        &temp_dir,
-    );
-    let _ = fs::remove_dir_all(&temp_dir);
-    imported
+    let candidate_skill_path = temp_dir.join("SKILL.md");
+    let candidate_revision = match skill_tree_content_revision(&candidate_skill_path) {
+        Ok(revision) => revision,
+        Err(error) => {
+            return Err(cleanup_staged_archive_after_error(
+                "skillManager.applyLocalArchiveImport",
+                &temp_dir,
+                error,
+            ));
+        }
+    };
+    if candidate_revision != plan.inspection.tree_revision {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveImport",
+            &temp_dir,
+            CommandError::VerificationFailed,
+        ));
+    }
+    if let Err(error) = fs::rename(&temp_dir, &destination_directory) {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveImport",
+            &temp_dir,
+            error.into(),
+        ));
+    }
+    let applied = (|| -> Result<(SkillRecord, ActionReadbackRecord), CommandError> {
+        let destination_skill_path = destination_directory.join("SKILL.md").canonicalize()?;
+        let imported = register_tool_global_staged_skill(
+            catalog,
+            ctx,
+            &plan.archive_path,
+            &destination_skill_path,
+        )?
+        .imported;
+        if imported.path != destination_skill_path
+            || !imported
+                .name
+                .eq_ignore_ascii_case(&plan.inspection.skill_name)
+            || skill_tree_content_revision(&destination_skill_path)? != candidate_revision
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        let readback = ActionReadbackRecord::verified(
+            &plan.action_binding.action,
+            vec![
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::SkillFiles,
+                    target_id: destination_skill_path.to_string_lossy().to_string(),
+                    revision: candidate_revision.clone(),
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::CatalogSkills,
+                    target_id: imported.id.clone(),
+                    revision: archive_catalog_record_revision(catalog, &imported.id)?,
+                },
+            ],
+        )?;
+        Ok((imported, readback))
+    })();
+    match applied {
+        Ok((imported, readback)) => Ok(AppliedArchiveImport {
+            imported,
+            destination_directory,
+            candidate_revision,
+            readback,
+            active: true,
+        }),
+        Err(error) => {
+            let current_revision =
+                skill_tree_content_revision(&destination_directory.join("SKILL.md")).map_err(
+                    |revision_error| {
+                        archive_partial(
+                            "skillManager.applyLocalArchiveImport",
+                            "outcome_unknown",
+                            true,
+                            format!(
+                                "catalog registration failed ({error}); imported target could not be inspected for rollback ({revision_error})"
+                            ),
+                        )
+                    },
+                )?;
+            if current_revision != candidate_revision {
+                return Err(archive_partial(
+                    "skillManager.applyLocalArchiveImport",
+                    "outcome_unknown",
+                    true,
+                    "the imported target changed before rollback".to_string(),
+                ));
+            }
+            fs::remove_dir_all(&destination_directory).map_err(|cleanup_error| {
+                archive_partial(
+                    "skillManager.applyLocalArchiveImport",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog registration failed ({error}); imported target rollback failed ({cleanup_error})"
+                    ),
+                )
+            })?;
+            Err(error)
+        }
+    }
 }
 
 pub fn preview_local_archive_update(
@@ -239,7 +485,8 @@ pub fn preview_local_archive_update(
     ctx: &AdapterContext,
     params: &SkillManagerLocalArchiveUpdateParams,
 ) -> Result<SkillManagerLocalArchiveUpdateRecord, CommandError> {
-    build_local_archive_update_record(catalog, app_data_dir, ctx, params, false)
+    let plan = prepare_local_archive_update(catalog, app_data_dir, ctx, params)?;
+    Ok(local_archive_update_record(plan, false, None, None, None))
 }
 
 pub fn apply_local_archive_update(
@@ -248,21 +495,95 @@ pub fn apply_local_archive_update(
     ctx: &AdapterContext,
     params: &SkillManagerLocalArchiveUpdateParams,
 ) -> Result<SkillManagerLocalArchiveUpdateRecord, CommandError> {
-    if !params.confirmed {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local archive update requires confirmed=true".to_string(),
+    let preview = prepare_local_archive_update(catalog, app_data_dir, ctx, params)?;
+    ensure_archive_confirmation(
+        &preview.action_binding,
+        params.confirmed,
+        params.preview_token.as_deref(),
+        params.action_reference.as_ref(),
+    )?;
+    let _owner = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    let locked = prepare_local_archive_update(catalog, app_data_dir, ctx, params)?;
+    ensure_archive_confirmation(
+        &locked.action_binding,
+        params.confirmed,
+        params.preview_token.as_deref(),
+        params.action_reference.as_ref(),
+    )?;
+    let transaction = catalog.begin_immediate_transaction()?;
+    let mut applied = apply_archive_replacement_guarded(catalog, ctx, &locked)?;
+    let mut follow_up = None;
+    let record = local_archive_update_record(
+        locked,
+        true,
+        Some(applied.updated_skill.clone()),
+        Some(applied.readback.clone()),
+        None,
+    );
+    if let Err(error) = transaction.commit() {
+        applied.restore().map_err(|cleanup_error| {
+            archive_partial(
+                "skillManager.applyLocalArchiveUpdate",
+                "outcome_unknown",
+                true,
+                format!(
+                    "catalog commit failed ({error}); source restoration failed ({cleanup_error})"
+                ),
+            )
+        })?;
+        return Err(archive_partial(
+            "skillManager.applyLocalArchiveUpdate",
+            "applied_unverified",
+            false,
+            format!("catalog commit failed after local archive update: {error}"),
         ));
     }
-    build_local_archive_update_record(catalog, app_data_dir, ctx, params, true)
+    if applied.finish().is_err() {
+        follow_up = Some(super::SkillManagerCleanupFollowUp {
+            kind: "quarantine_cleanup".to_string(),
+            state: "update_applied_cleanup_pending".to_string(),
+            cleanup_required: true,
+            message:
+                "The local skill update was applied and verified, but private backup cleanup remains pending."
+                    .to_string(),
+        });
+    }
+    Ok(SkillManagerLocalArchiveUpdateRecord {
+        follow_up,
+        ..record
+    })
 }
 
-fn build_local_archive_update_record(
+pub fn validate_local_archive_update_confirmation(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     params: &SkillManagerLocalArchiveUpdateParams,
-    apply: bool,
-) -> Result<SkillManagerLocalArchiveUpdateRecord, CommandError> {
+) -> Result<(), CommandError> {
+    let preview = prepare_local_archive_update(catalog, app_data_dir, ctx, params)?;
+    ensure_archive_confirmation(
+        &preview.action_binding,
+        params.confirmed,
+        params.preview_token.as_deref(),
+        params.action_reference.as_ref(),
+    )
+}
+
+struct LocalArchiveUpdatePlan {
+    target: LocalArchiveUpdateTarget,
+    archive_path: PathBuf,
+    archive_display_path: String,
+    inspection: ArchiveInspection,
+    target_tree_revision: String,
+    action_binding: ActionPreviewBinding,
+}
+
+fn prepare_local_archive_update(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    params: &SkillManagerLocalArchiveUpdateParams,
+) -> Result<LocalArchiveUpdatePlan, CommandError> {
     let target = validate_local_update_target(catalog, app_data_dir, ctx, &params.instance_id)?;
     let archive_path = validate_archive_path(Path::new(params.archive_path.trim()))?;
     let inspection = inspect_archive(&archive_path)?;
@@ -274,43 +595,66 @@ fn build_local_archive_update_record(
             "ZIP skill name must match the selected local skill".to_string(),
         ));
     }
-    let target_digest = digest_bounded_file(&target.skill_path, MAX_SKILL_MD_BYTES)?;
-    let preview_token = archive_preview_token(
-        &params.instance_id,
-        &target.skill_name,
-        &inspection.archive_sha256,
-        &target_digest,
-    );
-    if apply && params.preview_token.as_deref() != Some(preview_token.as_str()) {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local archive update requires a fresh preview_token for the same ZIP and source"
-                .to_string(),
+    let target_tree_revision = skill_tree_content_revision(&target.skill_path)?;
+    if target_tree_revision == inspection.tree_revision {
+        return Err(CommandError::NoApplicableAction(
+            "the selected ZIP is identical to the complete current skill tree".to_string(),
         ));
     }
-
-    let updated_skill = if apply {
-        Some(apply_archive_replacement(
-            catalog,
-            ctx,
-            &archive_path,
-            &inspection,
-            &target,
-        )?)
+    let project_id = if target.scope == Scope::AgentProject {
+        canonical_project_id(ctx.project_root.as_deref())
     } else {
         None
     };
+    let action_binding = local_archive_action_binding(
+        ctx,
+        ActionKind::ManagerLocalArchiveUpdate,
+        ActionIntent::ManagerLocalArchiveUpdate,
+        ActionTargetRef {
+            kind: ActionTargetKind::Skill,
+            id: target.instance_id.clone(),
+            agent: Some(target.agent),
+            scope: Some(target.scope),
+        },
+        project_id,
+        "skillManager.previewLocalArchiveUpdate",
+        "skillManager.applyLocalArchiveUpdate",
+        &archive_path,
+        &inspection.archive_sha256,
+        &target.skill_path,
+        &target_tree_revision,
+        &target.catalog_revision,
+    )?;
+    Ok(LocalArchiveUpdatePlan {
+        target,
+        archive_display_path: redact_command_output(ctx, &archive_path.to_string_lossy()),
+        archive_path,
+        inspection,
+        target_tree_revision,
+        action_binding,
+    })
+}
 
-    Ok(SkillManagerLocalArchiveUpdateRecord {
-        instance_id: params.instance_id.clone(),
-        skill_name: target.skill_name,
-        archive_path: redact_command_output(ctx, &archive_path.to_string_lossy()),
-        archive_sha256: inspection.archive_sha256,
-        file_count: inspection.file_count,
-        uncompressed_bytes: inspection.uncompressed_bytes,
-        preview_token,
-        confirmed: apply,
-        applied: apply,
-        summary: if apply {
+fn local_archive_update_record(
+    plan: LocalArchiveUpdatePlan,
+    applied: bool,
+    updated_skill: Option<SkillRecord>,
+    readback: Option<ActionReadbackRecord>,
+    follow_up: Option<super::SkillManagerCleanupFollowUp>,
+) -> SkillManagerLocalArchiveUpdateRecord {
+    SkillManagerLocalArchiveUpdateRecord {
+        action: plan.action_binding.action,
+        preconditions: plan.action_binding.preconditions,
+        instance_id: plan.target.instance_id,
+        skill_name: plan.target.skill_name,
+        archive_path: plan.archive_display_path,
+        archive_sha256: plan.inspection.archive_sha256,
+        file_count: plan.inspection.file_count,
+        uncompressed_bytes: plan.inspection.uncompressed_bytes,
+        preview_token: plan.action_binding.preview_token,
+        confirmed: applied,
+        applied,
+        summary: if applied {
             "Replaced the selected local skill source from the confirmed ZIP; skill scripts were not executed."
                 .to_string()
         } else {
@@ -318,7 +662,9 @@ fn build_local_archive_update_record(
                 .to_string()
         },
         updated_skill,
-    })
+        readback,
+        follow_up,
+    }
 }
 
 fn validate_local_update_target(
@@ -337,6 +683,9 @@ fn validate_local_update_target(
         ));
     }
     let canonical_path = meta.path.canonicalize()?;
+    let records = catalog.list_skill_records()?;
+    let references = local_delete_references(&meta, &records);
+    let catalog_revision = local_delete_catalog_revision(&meta, &canonical_path, &references)?;
     if canonical_path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
         return Err(CommandError::InvalidSkillManagerRequest(
             "ZIP replacement target must be a SKILL.md file".to_string(),
@@ -352,9 +701,13 @@ fn validate_local_update_target(
         })?;
         validate_direct_skill_child(&canonical_root, &canonical_path)?;
         return Ok(LocalArchiveUpdateTarget {
+            instance_id: meta.id,
             skill_name: meta.name,
             skill_path: canonical_path,
             canonical_root,
+            agent: meta.agent,
+            scope: meta.scope,
+            catalog_revision,
             kind: LocalArchiveUpdateTargetKind::AppOwned,
         });
     }
@@ -393,9 +746,13 @@ fn validate_local_update_target(
             )
         })?;
     Ok(LocalArchiveUpdateTarget {
+        instance_id: meta.id.clone(),
         skill_name: meta.name,
         skill_path: canonical_path,
         canonical_root,
+        agent: meta.agent,
+        scope: meta.scope,
+        catalog_revision,
         kind: LocalArchiveUpdateTargetKind::CatalogLocal {
             instance_id: meta.id,
         },
@@ -462,6 +819,7 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
     }
     let mut skill_entries = Vec::new();
     let mut file_paths = Vec::new();
+    let mut file_digests = Vec::new();
     let mut seen_file_paths = BTreeSet::new();
     let mut file_count = 0usize;
     let mut uncompressed_bytes = 0u64;
@@ -484,13 +842,23 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
             .filter(|total| *total <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
             .ok_or_else(|| invalid_archive("ZIP expands beyond 64 MiB"))?;
         file_count += 1;
+        let mut content = Vec::new();
+        entry
+            .by_ref()
+            .take(MAX_ARCHIVE_FILE_BYTES + 1)
+            .read_to_end(&mut content)?;
+        if content.len() as u64 != entry.size() || content.len() as u64 > MAX_ARCHIVE_FILE_BYTES {
+            return Err(invalid_archive(
+                "ZIP entry size changed or exceeded its safe bound while inspecting",
+            ));
+        }
+        let digest = format!("{:x}", Sha256::digest(&content));
+        file_digests.push((path.clone(), content.len() as u64, digest));
         if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
             if entry.size() > MAX_SKILL_MD_BYTES {
                 return Err(invalid_archive("SKILL.md exceeds 2 MiB"));
             }
-            let mut content = String::new();
-            entry
-                .read_to_string(&mut content)
+            let content = String::from_utf8(content)
                 .map_err(|_| invalid_archive("SKILL.md must be valid UTF-8 text"))?;
             let fallback = path
                 .parent()
@@ -514,38 +882,88 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
             "ZIP contains files outside the single skill directory",
         ));
     }
+    let tree_revision = archive_tree_revision(&file_digests, &skill_root)?;
     Ok(ArchiveInspection {
         archive_sha256,
         skill_name,
         skill_root,
         file_count,
         uncompressed_bytes,
+        tree_revision,
     })
 }
 
-fn apply_archive_replacement(
+struct AppliedArchiveUpdate {
+    updated_skill: SkillRecord,
+    target_directory: PathBuf,
+    backup_directory: PathBuf,
+    target_skill_path: PathBuf,
+    original_tree_revision: String,
+    candidate_tree_revision: String,
+    readback: ActionReadbackRecord,
+    active: bool,
+}
+
+impl AppliedArchiveUpdate {
+    fn restore(&mut self) -> Result<(), CommandError> {
+        if !self.active {
+            return Ok(());
+        }
+        if skill_tree_content_revision(&self.target_skill_path)? != self.candidate_tree_revision {
+            return Err(CommandError::StaleActionReference);
+        }
+        fs::remove_dir_all(&self.target_directory)?;
+        fs::rename(&self.backup_directory, &self.target_directory)?;
+        if skill_tree_content_revision(&self.target_skill_path)? != self.original_tree_revision {
+            return Err(CommandError::VerificationFailed);
+        }
+        self.active = false;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), CommandError> {
+        if !self.active {
+            return Ok(());
+        }
+        fs::remove_dir_all(&self.backup_directory)?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+fn apply_archive_replacement_guarded(
     catalog: &Catalog,
     ctx: &AdapterContext,
-    archive_path: &Path,
-    inspection: &ArchiveInspection,
-    target: &LocalArchiveUpdateTarget,
-) -> Result<SkillRecord, CommandError> {
-    let existing_skill_path = &target.skill_path;
-    let canonical_root = &target.canonical_root;
+    plan: &LocalArchiveUpdatePlan,
+) -> Result<AppliedArchiveUpdate, CommandError> {
+    let existing_skill_path = &plan.target.skill_path;
+    let canonical_root = &plan.target.canonical_root;
     let nonce = format!("{}-{}", unix_timestamp_millis(), std::process::id());
     let temp_dir = canonical_root.join(format!(".archive-update-{nonce}"));
     let backup_dir = canonical_root.join(format!(".archive-backup-{nonce}"));
     ensure_child_path(canonical_root, &temp_dir)?;
     ensure_child_path(canonical_root, &backup_dir)?;
     fs::create_dir(&temp_dir)?;
-    let extraction = extract_skill_root(archive_path, inspection, &temp_dir);
+    let extraction = extract_skill_root(&plan.archive_path, &plan.inspection, &temp_dir);
     if let Err(error) = extraction {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(error);
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveUpdate",
+            &temp_dir,
+            error,
+        ));
     }
 
     let replacement_skill_path = temp_dir.join("SKILL.md");
-    let replacement_content = fs::read_to_string(&replacement_skill_path)?;
+    let replacement_content = match fs::read_to_string(&replacement_skill_path) {
+        Ok(content) => content,
+        Err(error) => {
+            return Err(cleanup_staged_archive_after_error(
+                "skillManager.applyLocalArchiveUpdate",
+                &temp_dir,
+                error.into(),
+            ));
+        }
+    };
     let replacement_name = tool_global_skill_name_from_content(
         &replacement_content,
         existing_skill_path
@@ -554,32 +972,101 @@ fn apply_archive_replacement(
             .and_then(|name| name.to_str())
             .unwrap_or("local-skill"),
     );
-    if !replacement_name.eq_ignore_ascii_case(&inspection.skill_name) {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(invalid_archive(
-            "ZIP skill identity changed during extraction",
+    if !replacement_name.eq_ignore_ascii_case(&plan.inspection.skill_name) {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveUpdate",
+            &temp_dir,
+            invalid_archive("ZIP skill identity changed during extraction"),
         ));
     }
 
-    let target_dir = existing_skill_path.parent().ok_or_else(|| {
-        CommandError::InvalidSkillManagerRequest(
-            "local skill source has no parent directory".to_string(),
-        )
-    })?;
-    ensure_child_path(canonical_root, target_dir)?;
-    fs::rename(target_dir, &backup_dir)?;
+    let target_dir = match existing_skill_path.parent() {
+        Some(target_dir) => target_dir,
+        None => {
+            return Err(cleanup_staged_archive_after_error(
+                "skillManager.applyLocalArchiveUpdate",
+                &temp_dir,
+                CommandError::InvalidSkillManagerRequest(
+                    "local skill source has no parent directory".to_string(),
+                ),
+            ));
+        }
+    };
+    if let Err(error) = ensure_child_path(canonical_root, target_dir) {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveUpdate",
+            &temp_dir,
+            error,
+        ));
+    }
+    let candidate_tree_revision = match skill_tree_content_revision(&replacement_skill_path) {
+        Ok(revision) => revision,
+        Err(error) => {
+            return Err(cleanup_staged_archive_after_error(
+                "skillManager.applyLocalArchiveUpdate",
+                &temp_dir,
+                error,
+            ));
+        }
+    };
+    let current_tree_revision = match skill_tree_content_revision(existing_skill_path) {
+        Ok(revision) => revision,
+        Err(error) => {
+            return Err(cleanup_staged_archive_after_error(
+                "skillManager.applyLocalArchiveUpdate",
+                &temp_dir,
+                error,
+            ));
+        }
+    };
+    if candidate_tree_revision != plan.inspection.tree_revision
+        || current_tree_revision != plan.target_tree_revision
+    {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveUpdate",
+            &temp_dir,
+            CommandError::StaleActionReference,
+        ));
+    }
+    if let Err(error) = fs::rename(target_dir, &backup_dir) {
+        return Err(cleanup_staged_archive_after_error(
+            "skillManager.applyLocalArchiveUpdate",
+            &temp_dir,
+            error.into(),
+        ));
+    }
     if let Err(error) = fs::rename(&temp_dir, target_dir) {
-        let _ = fs::rename(&backup_dir, target_dir);
+        let restore_result = fs::rename(&backup_dir, target_dir);
+        let staged_cleanup = fs::remove_dir_all(&temp_dir);
+        let restored_revision = restore_result
+            .as_ref()
+            .ok()
+            .and_then(|_| skill_tree_content_revision(existing_skill_path).ok());
+        if restore_result.is_err()
+            || staged_cleanup
+                .as_ref()
+                .is_err_and(|cleanup| cleanup.kind() != std::io::ErrorKind::NotFound)
+            || restored_revision.as_deref() != Some(plan.target_tree_revision.as_str())
+        {
+            return Err(archive_partial(
+                "skillManager.applyLocalArchiveUpdate",
+                "outcome_unknown",
+                true,
+                format!(
+                    "replacement activation failed ({error}); exact original-tree restoration or private staging cleanup could not be proved"
+                ),
+            ));
+        }
         return Err(error.into());
     }
 
     let registered = (|| {
         let staged_skill_path = target_dir.join("SKILL.md").canonicalize()?;
-        match &target.kind {
+        let updated = match &plan.target.kind {
             LocalArchiveUpdateTargetKind::AppOwned => Ok(register_tool_global_staged_skill(
                 catalog,
                 ctx,
-                archive_path,
+                &plan.archive_path,
                 &staged_skill_path,
             )?
             .imported),
@@ -593,38 +1080,113 @@ fn apply_archive_replacement(
                             .ok()?
                             .into_iter()
                             .find(|record| {
-                                record.name.eq_ignore_ascii_case(&target.skill_name)
+                                record.name.eq_ignore_ascii_case(&plan.target.skill_name)
                                     && record.path == staged_skill_path
                             })
                     })
                     .ok_or_else(|| CommandError::InstanceNotFound(instance_id.clone()))
             }
+        }?;
+        if updated.id != plan.target.instance_id
+            || updated.path != staged_skill_path
+            || !updated.name.eq_ignore_ascii_case(&plan.target.skill_name)
+            || skill_tree_content_revision(&staged_skill_path)? != candidate_tree_revision
+        {
+            return Err(CommandError::VerificationFailed);
         }
+        let readback = ActionReadbackRecord::verified(
+            &plan.action_binding.action,
+            vec![
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::SkillFiles,
+                    target_id: staged_skill_path.to_string_lossy().to_string(),
+                    revision: candidate_tree_revision.clone(),
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::CatalogSkills,
+                    target_id: updated.id.clone(),
+                    revision: archive_catalog_record_revision(catalog, &updated.id)?,
+                },
+            ],
+        )?;
+        Ok((updated, readback))
     })();
     match registered {
-        Ok(updated_skill) => {
-            fs::remove_dir_all(&backup_dir)?;
-            Ok(updated_skill)
-        }
+        Ok((updated_skill, readback)) => Ok(AppliedArchiveUpdate {
+            updated_skill,
+            target_directory: target_dir.to_path_buf(),
+            backup_directory: backup_dir,
+            target_skill_path: target_dir.join("SKILL.md"),
+            original_tree_revision: plan.target_tree_revision.clone(),
+            candidate_tree_revision,
+            readback,
+            active: true,
+        }),
         Err(error) => {
-            let _ = fs::remove_dir_all(target_dir);
-            let restored = fs::rename(&backup_dir, target_dir);
-            if restored.is_ok() {
-                match &target.kind {
-                    LocalArchiveUpdateTargetKind::AppOwned => {
-                        if let Ok(restored_path) = target_dir.join("SKILL.md").canonicalize() {
-                            let _ = register_tool_global_staged_skill(
-                                catalog,
-                                ctx,
-                                target_dir,
-                                &restored_path,
-                            );
-                        }
-                    }
-                    LocalArchiveUpdateTargetKind::CatalogLocal { .. } => {
-                        let _ = scan_all_catalog_report(ctx, catalog);
-                    }
-                }
+            let current_revision =
+                skill_tree_content_revision(&target_dir.join("SKILL.md")).map_err(
+                    |revision_error| {
+                        archive_partial(
+                            "skillManager.applyLocalArchiveUpdate",
+                            "outcome_unknown",
+                            true,
+                            format!(
+                                "catalog projection failed ({error}); replacement tree could not be inspected for rollback ({revision_error})"
+                            ),
+                        )
+                    },
+                )?;
+            if current_revision != candidate_tree_revision {
+                return Err(archive_partial(
+                    "skillManager.applyLocalArchiveUpdate",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog projection failed ({error}) and the replacement tree changed before rollback"
+                    ),
+                ));
+            }
+            fs::remove_dir_all(target_dir).map_err(|cleanup_error| {
+                archive_partial(
+                    "skillManager.applyLocalArchiveUpdate",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog projection failed ({error}); replacement cleanup failed ({cleanup_error})"
+                    ),
+                )
+            })?;
+            fs::rename(&backup_dir, target_dir).map_err(|restore_error| {
+                archive_partial(
+                    "skillManager.applyLocalArchiveUpdate",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog projection failed ({error}); original tree restoration failed ({restore_error})"
+                    ),
+                )
+            })?;
+            let restored_revision = skill_tree_content_revision(existing_skill_path).map_err(
+                |revision_error| {
+                    archive_partial(
+                        "skillManager.applyLocalArchiveUpdate",
+                        "outcome_unknown",
+                        true,
+                        format!(
+                            "catalog projection failed ({error}); restored tree could not be verified ({revision_error})"
+                        ),
+                    )
+                },
+            )?;
+            if restored_revision != plan.target_tree_revision {
+                return Err(archive_partial(
+                    "skillManager.applyLocalArchiveUpdate",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog projection failed ({error}) and the original tree could not be verified after restoration"
+                    ),
+                ));
             }
             Err(error)
         }
@@ -661,7 +1223,6 @@ fn extract_skill_root(
         let target = destination.join(relative);
         ensure_child_path(destination, &target)?;
         if entry.is_dir() {
-            fs::create_dir_all(&target)?;
             continue;
         }
         if let Some(parent) = target.parent() {
@@ -760,27 +1321,325 @@ fn digest_bounded_file(path: &Path, max_bytes: u64) -> Result<String, CommandErr
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn archive_preview_token(
-    instance_id: &str,
-    skill_name: &str,
-    archive_digest: &str,
-    target_digest: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    for value in [instance_id, skill_name, archive_digest, target_digest] {
-        hasher.update(value.len().to_le_bytes());
-        hasher.update(value.as_bytes());
-    }
-    format!("skill-manager-local-archive:{:x}", hasher.finalize())
+#[allow(clippy::too_many_arguments)]
+fn local_archive_action_binding(
+    _ctx: &AdapterContext,
+    kind: ActionKind,
+    intent: ActionIntent,
+    target: ActionTargetRef,
+    project_id: Option<String>,
+    preview_method: &str,
+    apply_method: &str,
+    archive_path: &Path,
+    archive_revision: &str,
+    target_skill_path: &Path,
+    target_tree_revision: &str,
+    catalog_revision: &str,
+) -> Result<ActionPreviewBinding, CommandError> {
+    let evidence_refs = target
+        .agent
+        .map(crate::coverage_projection_evidence_id)
+        .into_iter()
+        .collect();
+    let source_revision = action_source_revision(
+        "manager.local-archive.accepted-snapshot",
+        &[
+            ("archive_revision", archive_revision),
+            ("target_tree_revision", target_tree_revision),
+            ("catalog_revision", catalog_revision),
+        ],
+    )?;
+    let descriptor = action_descriptor(
+        kind,
+        intent,
+        target,
+        project_id,
+        vec![ActionImpact::SkillFiles, ActionImpact::AppLocalData],
+        preview_method,
+        Some(apply_method),
+        source_revision,
+        true,
+        ActionNetworkPosture::None,
+        canonical_readback_domains([
+            ActionReadbackDomain::SkillFiles,
+            ActionReadbackDomain::CatalogSkills,
+        ]),
+        evidence_refs,
+    )?;
+    action_preview_binding(
+        descriptor.clone(),
+        vec![
+            ActionPrecondition {
+                kind: ActionPreconditionKind::Archive,
+                target_id: archive_path.to_string_lossy().to_string(),
+                expected_revision: archive_revision.to_string(),
+            },
+            ActionPrecondition {
+                kind: ActionPreconditionKind::TargetFile,
+                target_id: target_skill_path.to_string_lossy().to_string(),
+                expected_revision: target_tree_revision.to_string(),
+            },
+            ActionPrecondition {
+                kind: ActionPreconditionKind::CatalogRecord,
+                target_id: descriptor.target.id,
+                expected_revision: catalog_revision.to_string(),
+            },
+        ],
+    )
 }
 
-fn archive_import_preview_token(skill_name: &str, archive_digest: &str) -> String {
-    let mut hasher = Sha256::new();
-    for value in [skill_name, archive_digest] {
-        hasher.update(value.len().to_le_bytes());
-        hasher.update(value.as_bytes());
+fn ensure_archive_confirmation(
+    binding: &ActionPreviewBinding,
+    confirmed: bool,
+    preview_token: Option<&str>,
+    action_reference: Option<&ActionReference>,
+) -> Result<(), CommandError> {
+    let token = preview_token.ok_or_else(|| {
+        CommandError::ActionConfirmationRequired(
+            "local archive apply requires the exact preview_token".to_string(),
+        )
+    })?;
+    let reference = action_reference.ok_or_else(|| {
+        CommandError::ActionConfirmationRequired(
+            "local archive apply requires the preview action_reference".to_string(),
+        )
+    })?;
+    ensure_action_confirmed(
+        binding,
+        Some(&ActionConfirmation {
+            reference: reference.clone(),
+            preview_token: token.to_string(),
+            confirmed,
+        }),
+    )
+}
+
+fn local_import_catalog_revision(
+    catalog: &Catalog,
+    skill_name: &str,
+) -> Result<String, CommandError> {
+    let mut records = catalog
+        .list_skill_records()?
+        .into_iter()
+        .filter(|record| {
+            record.name.eq_ignore_ascii_case(skill_name)
+                && record.state != "missing"
+                && (record.agent == AgentId::ToolGlobal.as_str()
+                    || is_shared_agents_skill_path(&record.path))
+        })
+        .map(|record| {
+            (
+                record.id,
+                record.agent,
+                record.scope,
+                record.path.to_string_lossy().to_string(),
+                record.definition_id,
+                record.state,
+                record.enabled,
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort();
+    action_source_revision(
+        "manager.local-archive.import-catalog",
+        &[
+            ("skill_name", skill_name),
+            ("records", &serde_json::to_string(&records)?),
+        ],
+    )
+}
+
+fn archive_catalog_record_revision(
+    catalog: &Catalog,
+    instance_id: &str,
+) -> Result<String, CommandError> {
+    let record = catalog
+        .get_skill_record(instance_id)?
+        .ok_or(CommandError::VerificationFailed)?;
+    let detail = catalog
+        .get_skill_detail(instance_id)?
+        .ok_or(CommandError::VerificationFailed)?;
+    action_source_revision(
+        "manager.local-archive.catalog-readback",
+        &[
+            ("instance_id", &record.id),
+            ("agent", &record.agent),
+            ("scope", &record.scope),
+            ("name", &record.name),
+            ("definition_id", &record.definition_id),
+            ("fingerprint", &detail.fingerprint),
+            ("path", &record.path.to_string_lossy()),
+        ],
+    )
+}
+
+fn archive_tree_revision(
+    files: &[(PathBuf, u64, String)],
+    skill_root: &Path,
+) -> Result<String, CommandError> {
+    let mut rows = BTreeSet::new();
+    for (path, size, digest) in files {
+        let relative = if skill_root.as_os_str().is_empty() {
+            path.as_path()
+        } else {
+            path.strip_prefix(skill_root)
+                .map_err(|_| invalid_archive("ZIP file escaped its skill root"))?
+        };
+        for ancestor in relative.ancestors().skip(1) {
+            if !ancestor.as_os_str().is_empty() {
+                rows.insert(format!("dir:{}", ancestor.to_string_lossy()));
+            }
+        }
+        rows.insert(format!(
+            "file:{}:{size}:{digest}",
+            relative.to_string_lossy()
+        ));
     }
-    format!("skill-manager-local-archive-import:{:x}", hasher.finalize())
+    present_tree_revision(rows.into_iter().collect())
+}
+
+fn skill_tree_content_revision(skill_path: &Path) -> Result<String, CommandError> {
+    let root = skill_path.parent().ok_or_else(|| {
+        CommandError::UnsafeConfigPath("local archive target has no parent".to_string())
+    })?;
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(missing_tree_revision())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(CommandError::UnsafeConfigPath(
+            "local archive target directory must be a regular directory".to_string(),
+        ));
+    }
+    let mut pending = vec![root.to_path_buf()];
+    let mut rows = BTreeSet::new();
+    let mut entry_count = 0usize;
+    let mut total_bytes = 0u64;
+    while let Some(directory) = pending.pop() {
+        let mut children = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            entry_count = entry_count.saturating_add(1);
+            if entry_count > MAX_ARCHIVE_ENTRIES {
+                return Err(CommandError::InvalidSkillManagerRequest(
+                    "local skill tree exceeds the 2000-entry update safety budget".to_string(),
+                ));
+            }
+            let path = child.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| {
+                    CommandError::UnsafeConfigPath(
+                        "local archive target escaped its skill root".to_string(),
+                    )
+                })?
+                .to_string_lossy()
+                .to_string();
+            if metadata.file_type().is_symlink() {
+                return Err(CommandError::UnsafeConfigPath(
+                    "local archive replacement refuses symlinked target content".to_string(),
+                ));
+            }
+            if metadata.is_dir() {
+                rows.insert(format!("dir:{relative}"));
+                pending.push(path);
+            } else if metadata.is_file() {
+                if metadata.len() > MAX_ARCHIVE_FILE_BYTES {
+                    return Err(CommandError::InvalidSkillManagerRequest(
+                        "local skill tree contains a file larger than 8 MiB".to_string(),
+                    ));
+                }
+                total_bytes = total_bytes
+                    .checked_add(metadata.len())
+                    .filter(|total| *total <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+                    .ok_or_else(|| {
+                        CommandError::InvalidSkillManagerRequest(
+                            "local skill tree exceeds the 64 MiB update safety budget".to_string(),
+                        )
+                    })?;
+                rows.insert(format!(
+                    "file:{relative}:{}:{:x}",
+                    metadata.len(),
+                    Sha256::digest(fs::read(&path)?)
+                ));
+            } else {
+                return Err(CommandError::UnsafeConfigPath(
+                    "local archive replacement refuses special target files".to_string(),
+                ));
+            }
+        }
+    }
+    present_tree_revision(rows.into_iter().collect())
+}
+
+fn present_tree_revision(rows: Vec<String>) -> Result<String, CommandError> {
+    Ok(format!(
+        "tree:present:{}",
+        action_source_revision(
+            "manager.local-archive.tree",
+            &[("entries", &serde_json::to_string(&rows)?)],
+        )?
+        .trim_start_matches("sha256:")
+    ))
+}
+
+fn missing_tree_revision() -> String {
+    "tree:missing".to_string()
+}
+
+fn create_guarded_directory_chain(path: &Path) -> Result<(), CommandError> {
+    if path.exists() {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(CommandError::UnsafeConfigPath(
+                "local archive destination root must be a regular directory".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    let parent = path.parent().ok_or_else(|| {
+        CommandError::UnsafeConfigPath("local archive destination has no parent".to_string())
+    })?;
+    create_guarded_directory_chain(parent)?;
+    fs::create_dir(path)?;
+    Ok(())
+}
+
+fn cleanup_staged_archive_after_error(
+    operation: &str,
+    staged_directory: &Path,
+    error: CommandError,
+) -> CommandError {
+    match fs::remove_dir_all(staged_directory) {
+        Ok(()) => error,
+        Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => error,
+        Err(cleanup_error) => archive_partial(
+            operation,
+            "not_started",
+            true,
+            format!(
+                "archive staging failed ({error}); private staging cleanup failed ({cleanup_error})"
+            ),
+        ),
+    }
+}
+
+fn archive_partial(
+    operation: &str,
+    state: &'static str,
+    cleanup_required: bool,
+    detail: String,
+) -> CommandError {
+    CommandError::PartialEffect {
+        operation: operation.to_string(),
+        state,
+        cleanup_required,
+        detail,
+    }
 }
 
 fn invalid_archive(detail: &str) -> CommandError {
@@ -805,6 +1664,8 @@ mod tests {
     }
 
     fn write_archive(label: &str, entries: &[(&str, &str)]) -> PathBuf {
+        crate::initialize_action_preview_secret_for_test([0xA5; 32])
+            .expect("shared action preview secret");
         let path = archive_path(label);
         let file = File::create(&path).expect("archive file");
         let mut writer = ZipWriter::new(file);
@@ -891,6 +1752,7 @@ mod tests {
             extra_roots: Vec::new(),
         };
         fs::create_dir_all(&ctx.user_home).expect("home");
+        fs::create_dir_all(root.join("app-data")).expect("app data");
         let preview = preview_local_archive_import(
             &catalog,
             &root.join("app-data"),
@@ -899,26 +1761,49 @@ mod tests {
                 archive_path: archive.to_string_lossy().to_string(),
                 confirmed: false,
                 preview_token: None,
+                action_reference: None,
             },
         )
         .expect("import preview");
-        let applied = apply_local_archive_import(
-            &catalog,
-            &root.join("app-data"),
-            &ctx,
-            &SkillManagerLocalArchiveImportParams {
-                archive_path: archive.to_string_lossy().to_string(),
-                confirmed: true,
-                preview_token: Some(preview.preview_token),
-            },
-        )
-        .expect("confirmed import");
+        let confirmation = SkillManagerLocalArchiveImportParams {
+            archive_path: archive.to_string_lossy().to_string(),
+            confirmed: true,
+            preview_token: Some(preview.preview_token.clone()),
+            action_reference: Some(ActionReference::from(&preview.action)),
+        };
+        let applied =
+            apply_local_archive_import(&catalog, &root.join("app-data"), &ctx, &confirmation)
+                .expect("confirmed import");
 
         assert!(applied.applied);
+        assert!(applied
+            .readback
+            .as_ref()
+            .is_some_and(|readback| readback.verified));
         let imported = applied.imported_skill.expect("imported skill");
         assert_eq!(imported.agent, AgentId::ToolGlobal.as_str());
         assert_eq!(imported.name, "import-helper");
         assert!(Path::new(&imported.path).is_file());
+        let replay =
+            apply_local_archive_import(&catalog, &root.join("app-data"), &ctx, &confirmation)
+                .expect_err("one confirmation must not import a second package");
+        assert!(matches!(
+            replay,
+            CommandError::InvalidSkillManagerRequest(_) | CommandError::StaleActionReference
+        ));
+        assert_eq!(
+            catalog
+                .list_skill_records()
+                .expect("catalog records")
+                .into_iter()
+                .filter(|record| {
+                    record.agent == AgentId::ToolGlobal.as_str()
+                        && record.name == "import-helper"
+                        && record.state != "missing"
+                })
+                .count(),
+            1
+        );
 
         fs::remove_file(archive).ok();
         fs::remove_dir_all(root).ok();
@@ -966,6 +1851,7 @@ mod tests {
                 archive_path: archive.to_string_lossy().to_string(),
                 confirmed: false,
                 preview_token: None,
+                action_reference: None,
             },
         )
         .expect_err("same-name installed source must block a second import");
@@ -1012,6 +1898,7 @@ mod tests {
             project_cwd: Some(project.clone()),
             extra_roots: Vec::new(),
         };
+        fs::create_dir_all(root.join("app-data")).expect("app data");
         scan_all_catalog_report(&ctx, &catalog).expect("initial project scan");
         let canonical_skill_path = skill_dir
             .join("SKILL.md")
@@ -1036,26 +1923,33 @@ mod tests {
                 archive_path: archive.to_string_lossy().to_string(),
                 confirmed: false,
                 preview_token: None,
+                action_reference: None,
             },
         )
         .expect("project local update preview");
-        let applied = apply_local_archive_update(
-            &catalog,
-            &root.join("app-data"),
-            &ctx,
-            &SkillManagerLocalArchiveUpdateParams {
-                instance_id: instance.id,
-                archive_path: archive.to_string_lossy().to_string(),
-                confirmed: true,
-                preview_token: Some(preview.preview_token),
-            },
-        )
-        .expect("confirmed project local update");
+        let confirmation = SkillManagerLocalArchiveUpdateParams {
+            instance_id: instance.id,
+            archive_path: archive.to_string_lossy().to_string(),
+            confirmed: true,
+            preview_token: Some(preview.preview_token.clone()),
+            action_reference: Some(ActionReference::from(&preview.action)),
+        };
+        let applied =
+            apply_local_archive_update(&catalog, &root.join("app-data"), &ctx, &confirmation)
+                .expect("confirmed project local update");
 
         assert!(applied.applied);
+        assert!(applied
+            .readback
+            .as_ref()
+            .is_some_and(|readback| readback.verified));
         let updated = fs::read_to_string(skill_dir.join("SKILL.md")).expect("updated skill");
         assert!(updated.contains("Updated locally"));
         assert!(!updated.contains("Original local"));
+        let replay =
+            apply_local_archive_update(&catalog, &root.join("app-data"), &ctx, &confirmation)
+                .expect_err("one confirmation must not replace the same tree twice");
+        assert!(matches!(replay, CommandError::NoApplicableAction(_)));
 
         fs::remove_file(archive).ok();
         fs::remove_dir_all(root).ok();
@@ -1116,12 +2010,106 @@ mod tests {
                 archive_path: archive.to_string_lossy().to_string(),
                 confirmed: false,
                 preview_token: None,
+                action_reference: None,
             },
         )
         .expect("nested global update preview");
 
         assert_eq!(preview.skill_name, "nested-helper");
         assert!(!preview.applied);
+
+        fs::remove_file(archive).ok();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn archive_update_rejects_attachment_drift_without_replacing_any_current_file() {
+        let archive = write_archive(
+            "attachment-drift",
+            &[
+                (
+                    "drift-helper/SKILL.md",
+                    "---\nname: drift-helper\ndescription: Candidate\n---\n# Candidate",
+                ),
+                ("drift-helper/references/guide.md", "candidate guide"),
+            ],
+        );
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-archive-drift-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let home = root.join("home");
+        let project = root.join("project");
+        let skill_dir = project.join(".agents/skills/drift-helper");
+        fs::create_dir_all(skill_dir.join("references")).expect("skill tree");
+        fs::create_dir_all(&home).expect("home");
+        fs::create_dir_all(root.join("app-data")).expect("app data");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: drift-helper\ndescription: Original\n---\n# Original",
+        )
+        .expect("original skill");
+        fs::write(skill_dir.join("references/guide.md"), "reviewed guide")
+            .expect("original attachment");
+        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        catalog.init().expect("catalog schema");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: Some(project.clone()),
+            project_cwd: Some(project),
+            extra_roots: Vec::new(),
+        };
+        scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+        let skill_path = skill_dir
+            .join("SKILL.md")
+            .canonicalize()
+            .expect("canonical skill");
+        let instance = catalog
+            .list_skill_records()
+            .expect("records")
+            .into_iter()
+            .find(|record| record.name == "drift-helper" && record.path == skill_path)
+            .expect("skill record");
+        let preview = preview_local_archive_update(
+            &catalog,
+            &root.join("app-data"),
+            &ctx,
+            &SkillManagerLocalArchiveUpdateParams {
+                instance_id: instance.id.clone(),
+                archive_path: archive.to_string_lossy().to_string(),
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect("preview");
+
+        fs::write(skill_dir.join("references/guide.md"), "third state")
+            .expect("external attachment drift");
+        let error = apply_local_archive_update(
+            &catalog,
+            &root.join("app-data"),
+            &ctx,
+            &SkillManagerLocalArchiveUpdateParams {
+                instance_id: instance.id,
+                archive_path: archive.to_string_lossy().to_string(),
+                confirmed: true,
+                preview_token: Some(preview.preview_token.clone()),
+                action_reference: Some(ActionReference::from(&preview.action)),
+            },
+        )
+        .expect_err("attachment drift must stale the complete-tree preview");
+
+        assert!(matches!(error, CommandError::StaleActionReference));
+        assert!(fs::read_to_string(skill_dir.join("SKILL.md"))
+            .expect("preserved skill")
+            .contains("# Original"));
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("references/guide.md"))
+                .expect("preserved third state"),
+            "third state"
+        );
 
         fs::remove_file(archive).ok();
         fs::remove_dir_all(root).ok();

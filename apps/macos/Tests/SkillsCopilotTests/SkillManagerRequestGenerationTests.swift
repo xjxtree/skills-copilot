@@ -32,6 +32,7 @@ struct SkillManagerRequestGenerationTests {
         try await localCreateApplyConvergesAfterCallerCancellation()
         try await localDeleteApplyConvergesAfterCallerCancellation()
         try await applyUsesExactPreviewInputsAndToken()
+        try await fullUninstallUsesOneCompositeApplyWithoutHiddenLocalDelete()
         try await oldCompletionDoesNotClearCurrentLoadingState()
     }
 
@@ -879,6 +880,40 @@ struct SkillManagerRequestGenerationTests {
         try expectEqual(apply.confirmed, true, "Apply should remain explicitly confirmed.")
     }
 
+    private func fullUninstallUsesOneCompositeApplyWithoutHiddenLocalDelete() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+
+        await store.previewSkillManagerRemove(
+            skillName: "owned-local",
+            agents: ["codex"],
+            scope: .global,
+            cleanupLocalInstanceID: "local-owned-instance"
+        )
+        guard let confirmation = store.skillManagerMutationConfirmation else {
+            throw NativeModelTestFailure(description: "Full uninstall preview should create one composite confirmation.")
+        }
+
+        await store.applySkillManagerRemove(confirmation: confirmation)
+
+        let previewCalls = await runner.recordedCalls(method: "skillManager.previewRemove")
+        let applyCalls = await runner.recordedCalls(method: "skillManager.applyRemove")
+        let localDeleteCalls = await runner.recordedCalls(method: "skillManager.deleteLocal")
+        try expectEqual(previewCalls.count, 1, "Full uninstall should use one composite preview.")
+        try expectEqual(applyCalls.count, 1, "Full uninstall should use one composite confirmed apply.")
+        try expectEqual(localDeleteCalls.count, 0, "A confirmed composite remove must not trigger a hidden second local-delete RPC.")
+        try expectEqual(
+            previewCalls.first?.cleanupLocalInstanceID,
+            "local-owned-instance",
+            "Composite preview should bind the selected app-owned local instance."
+        )
+        try expectEqual(
+            applyCalls.first?.cleanupLocalInstanceID,
+            "local-owned-instance",
+            "Composite apply should reuse the exact cleanup target bound by preview."
+        )
+    }
+
     private func oldCompletionDoesNotClearCurrentLoadingState() async throws {
         let runner = SkillManagerGenerationServiceRunner()
         await runner.suspend("search:first")
@@ -993,6 +1028,7 @@ private struct RecordedSkillManagerCall: Sendable, Equatable {
     let previewToken: String?
     let name: String?
     let instanceID: String?
+    let cleanupLocalInstanceID: String?
 }
 
 private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
@@ -1105,7 +1141,8 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             confirmed: params["confirmed"] as? Bool ?? false,
             previewToken: params["preview_token"] as? String,
             name: params["name"] as? String,
-            instanceID: params["instance_id"] as? String
+            instanceID: params["instance_id"] as? String,
+            cleanupLocalInstanceID: params["cleanup_local_instance_id"] as? String
         )
     }
 

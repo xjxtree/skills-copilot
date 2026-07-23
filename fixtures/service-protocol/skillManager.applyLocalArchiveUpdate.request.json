@@ -5,6 +5,16 @@
     "instance_id": "fixture-local-tool-global",
     "archive_path": "/tmp/local-review-helper.zip",
     "confirmed": true,
-    "preview_token": "skill-manager-local-archive:fixture-preview"
+    "preview_token": "action-preview:v1:hmac-sha256:a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+    "action_reference": {
+      "action_id": "action:manager_local_archive_update:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "source_revision": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "target": {
+        "kind": "skill",
+        "id": "fixture-local-tool-global",
+        "agent": "tool-global",
+        "scope": "tool-global"
+      }
+    }
   }
 }

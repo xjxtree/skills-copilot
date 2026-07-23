@@ -84,25 +84,38 @@ extension ServiceClient {
         return result
     }
 
-    func previewSkillManagerRemove(skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
+    func previewSkillManagerRemove(
+        skill: String,
+        agents: [String],
+        scope: SkillManagerScope,
+        cleanupLocalInstanceID: String?
+    ) async throws -> SkillManagerMutationRecord {
         return try await skillManagerRemove(
             method: "skillManager.previewRemove",
             skill: skill,
             agents: agents,
             scope: scope,
+            cleanupLocalInstanceID: cleanupLocalInstanceID,
             confirmed: false,
             previewToken: nil,
             actionReference: nil
         )
     }
 
-    func applySkillManagerRemove(preview: SkillManagerMutationRecord, skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
+    func applySkillManagerRemove(
+        preview: SkillManagerMutationRecord,
+        skill: String,
+        agents: [String],
+        scope: SkillManagerScope,
+        cleanupLocalInstanceID: String?
+    ) async throws -> SkillManagerMutationRecord {
         let actionReference = try requiredActionReference(preview.preview)
         let result = try await skillManagerRemove(
             method: "skillManager.applyRemove",
             skill: skill,
             agents: agents,
             scope: scope,
+            cleanupLocalInstanceID: cleanupLocalInstanceID,
             confirmed: true,
             previewToken: preview.preview.previewToken,
             actionReference: actionReference
@@ -229,7 +242,8 @@ extension ServiceClient {
                 instanceId: instanceID,
                 archivePath: archivePath,
                 confirmed: false,
-                previewToken: nil
+                previewToken: nil,
+                actionReference: nil
             ),
             timeoutMS: 120_000
         )
@@ -243,7 +257,8 @@ extension ServiceClient {
             params: SkillManagerLocalArchiveImportParams(
                 archivePath: archivePath,
                 confirmed: false,
-                previewToken: nil
+                previewToken: nil,
+                actionReference: nil
             ),
             timeoutMS: 120_000
         )
@@ -253,15 +268,22 @@ extension ServiceClient {
         preview: SkillManagerLocalArchiveImportRecord,
         archivePath: String
     ) async throws -> SkillManagerLocalArchiveImportRecord {
-        try await call(
+        let result: SkillManagerLocalArchiveImportRecord = try await call(
             method: "skillManager.applyLocalArchiveImport",
             params: SkillManagerLocalArchiveImportParams(
                 archivePath: archivePath,
                 confirmed: true,
-                previewToken: preview.previewToken
+                previewToken: preview.previewToken,
+                actionReference: preview.action.reference
             ),
             timeoutMS: 120_000
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: preview.action,
+            operation: "Local ZIP import"
+        )
+        return result
     }
 
     func applySkillManagerLocalArchiveUpdate(
@@ -269,16 +291,23 @@ extension ServiceClient {
         instanceID: String,
         archivePath: String
     ) async throws -> SkillManagerLocalArchiveUpdateRecord {
-        try await call(
+        let result: SkillManagerLocalArchiveUpdateRecord = try await call(
             method: "skillManager.applyLocalArchiveUpdate",
             params: SkillManagerLocalArchiveUpdateParams(
                 instanceId: instanceID,
                 archivePath: archivePath,
                 confirmed: true,
-                previewToken: preview.previewToken
+                previewToken: preview.previewToken,
+                actionReference: preview.action.reference
             ),
             timeoutMS: 120_000
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: preview.action,
+            operation: "Local ZIP update"
+        )
+        return result
     }
 
     private func skillManagerInstall(
@@ -315,6 +344,7 @@ extension ServiceClient {
         skill: String,
         agents: [String],
         scope: SkillManagerScope,
+        cleanupLocalInstanceID: String?,
         confirmed: Bool,
         previewToken: String?,
         actionReference: ActionReferenceWire?
@@ -325,6 +355,7 @@ extension ServiceClient {
                 skill: skill,
                 agents: agents,
                 scope: scope.rawValue,
+                cleanupLocalInstanceID: cleanupLocalInstanceID,
                 confirmed: confirmed,
                 previewToken: previewToken,
                 actionReference: actionReference

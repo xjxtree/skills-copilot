@@ -92,21 +92,21 @@ confirmation, and network posture.
   precomputed in stable order and `skill.install` validates a non-creating
   target before locking. A changed record, reference set, source tree, or
   target revision returns a stale-action failure before any owned write.
-- Batch toggles, `skill.install`, Skill Manager
-  install/remove/update/local-create, and app-owned local deletion share one
+- Batch toggles, `skill.install`, Skill Manager install/remove/update/local
+  create, local archive import/update, and app-owned local deletion share one
   cross-sidecar mutation lock on the existing app-data owner directory; the
-  lock creates no persistent filesystem artifact. Under that lock, the service rechecks
-  the complete bounded target trees and manager inventory accepted at preview.
-  It holds the lock through process execution, catalog refresh, semantic
-  verification, and read-back. A stale preview runs no manager process and
-  writes neither targets nor app data.
+  lock creates no persistent filesystem artifact. Under that lock, the service
+  rechecks the complete bounded target trees, archive bytes, relevant catalog
+  identity, and manager inventory accepted at preview. It holds the lock
+  through process execution or staged filesystem replacement, catalog refresh,
+  semantic verification, and read-back. A stale preview runs no manager
+  process and writes neither targets nor app data.
 - The lifecycle currently covers single and batch agent-config toggles through
   `batch.*`, `skill.install`, Skill Manager install/remove/update/local create,
-  physical deletion of an eligible app-owned local source, explicit Claude
-  settings saves, config snapshot rollback, provider profile save/delete,
-  provider connection tests, and confirmed LLM prompt sends. Local archive
-  import/update keeps its method-specific guards and must not be presented as
-  action-reference-backed until its contract is migrated.
+  local archive import/update, physical deletion of an eligible app-owned local
+  source, explicit Claude settings saves, config snapshot rollback, provider
+  profile save/delete, provider connection tests, and confirmed LLM prompt
+  sends.
   `config.toggleSkill` is compatibility-only and cannot mutate.
 
 ### Config Mutation Atomicity
@@ -212,11 +212,23 @@ confirmation, and network posture.
   writes only to the app-owned local library. Update may replace either an
   app-owned source or one canonical descendant of the active project/global
   `.agents/skills` root after the catalog proves the selected instance and
-  scope. Preview
-  validates a regular bounded archive, one matching `SKILL.md`, safe paths,
-  file types, counts, and expanded sizes; apply is bound to both ZIP and current
-  source digests and uses staged replacement with rollback. Imported scripts
-  remain data and are never run.
+  scope. Preview validates a regular bounded archive, one matching `SKILL.md`,
+  safe paths, file types, counts, and expanded sizes. Its signed action binds
+  the archive bytes, the complete destination or selected source tree, and the
+  relevant catalog identity/reference set. Apply reprojects those facts under
+  the shared owner lock and SQLite immediate transaction, uses staged
+  replacement with exact-state rollback, and returns minimal verified
+  `catalog_skills` plus `skill_files` read-back. Tree drift fails stale before
+  replacement, and a repeated confirmation cannot reapply an already imported
+  or identical tree. Imported scripts remain data and are never run.
+- A full uninstall of an app-owned local package is one composite manager
+  action. The preview and single confirmation bind the manager unlink targets,
+  complete local source tree, catalog row, and reference set. Apply performs
+  the manager removal and guarded local quarantine/catalog cleanup under the
+  same owner lock and returns one combined read-back; the client must not issue
+  a hidden second local-delete preview or apply. Any effect that crossed the
+  manager boundary but cannot be proved or safely completed returns typed
+  `partial_effect` with automatic retry disabled.
 - Catalog discovery never grants package-manager write authority: plugin
   caches, configured read-only roots, and native roots outside the guarded
   selected `.agents/skills` roots are excluded from editable inventory.

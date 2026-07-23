@@ -2,15 +2,53 @@
   "id": "fixture-skill-manager-preview-local-archive-update",
   "ok": true,
   "result": {
+    "action": {
+      "id": "action:manager_local_archive_update:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "kind": "manager_local_archive_update",
+      "intent": "manager_local_archive_update",
+      "target": {
+        "kind": "skill",
+        "id": "fixture-local-tool-global",
+        "agent": "tool-global",
+        "scope": "tool-global"
+      },
+      "impacts": ["app_local_data", "skill_files"],
+      "preview_method": "skillManager.previewLocalArchiveUpdate",
+      "apply_method": "skillManager.applyLocalArchiveUpdate",
+      "source_revision": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["catalog_skills", "skill_files"],
+      "evidence_refs": ["coverage:local-skill-library"]
+    },
+    "preconditions": [
+      {
+        "kind": "archive",
+        "target_id": "/tmp/local-review-helper.zip",
+        "expected_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "source_file",
+        "target_id": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+        "expected_revision": "sha256:a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+      },
+      {
+        "kind": "catalog_record",
+        "target_id": "fixture-local-tool-global",
+        "expected_revision": "sha256:a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
+      }
+    ],
     "instance_id": "fixture-local-tool-global",
     "skill_name": "local-review-helper",
     "archive_path": "/tmp/local-review-helper.zip",
     "archive_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "file_count": 3,
     "uncompressed_bytes": 4096,
-    "preview_token": "skill-manager-local-archive:fixture-preview",
+    "preview_token": "action-preview:v1:hmac-sha256:a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
     "confirmed": false,
     "applied": false,
-    "summary": "The ZIP contains one matching local skill and can replace the app-owned source after confirmation."
+    "summary": "The ZIP contains one matching local skill and can replace the selected local source after confirmation.",
+    "readback": null,
+    "follow_up": null
   }
 }

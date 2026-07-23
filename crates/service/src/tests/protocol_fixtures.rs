@@ -86,6 +86,26 @@ pub(super) fn service_protocol_fixtures_decode() {
                     assert!(params.confirmed);
                     assert!(params.action_reference.is_some());
                 }
+                "skillManager.applyLocalArchiveImport" => {
+                    let params = serde_json::from_value::<SkillManagerLocalArchiveImportParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.confirmed);
+                    assert!(params.action_reference.is_some());
+                }
+                "skillManager.applyLocalArchiveUpdate" => {
+                    let params = serde_json::from_value::<SkillManagerLocalArchiveUpdateParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.confirmed);
+                    assert!(params.action_reference.is_some());
+                }
                 "llm.previewSaveProviderProfile" => {
                     let params =
                         serde_json::from_value::<SaveProviderProfileParams>(request.params.clone())
@@ -393,6 +413,8 @@ struct WireSkillManagerMutationRecord {
     scanned_count: usize,
     updated_skills: Vec<WireSkillRecord>,
     readback: Option<WireActionReadbackRecord>,
+    #[serde(default)]
+    follow_up: Option<WireSkillManagerCleanupFollowUp>,
 }
 
 #[allow(dead_code)]
@@ -447,6 +469,8 @@ struct WireSkillManagerCleanupFollowUp {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireSkillManagerLocalArchiveUpdateRecord {
+    action: WireActionDescriptor,
+    preconditions: Vec<WireActionPrecondition>,
     instance_id: String,
     skill_name: String,
     archive_path: String,
@@ -459,12 +483,18 @@ struct WireSkillManagerLocalArchiveUpdateRecord {
     summary: String,
     #[serde(default)]
     updated_skill: Option<WireSkillRecord>,
+    #[serde(default)]
+    readback: Option<WireActionReadbackRecord>,
+    #[serde(default)]
+    follow_up: Option<WireSkillManagerCleanupFollowUp>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireSkillManagerLocalArchiveImportRecord {
+    action: WireActionDescriptor,
+    preconditions: Vec<WireActionPrecondition>,
     skill_name: String,
     archive_path: String,
     archive_sha256: String,
@@ -478,6 +508,10 @@ struct WireSkillManagerLocalArchiveImportRecord {
     imported_skill: Option<WireSkillRecord>,
     #[serde(default)]
     instance_id: Option<String>,
+    #[serde(default)]
+    readback: Option<WireActionReadbackRecord>,
+    #[serde(default)]
+    follow_up: Option<WireSkillManagerCleanupFollowUp>,
 }
 
 #[allow(dead_code)]
@@ -1107,6 +1141,9 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let import: WireSkillManagerLocalArchiveImportRecord =
                 decode_fixture_result(method, result, path);
             assert!(!import.preview_token.is_empty());
+            assert_eq!(import.action.kind, "manager_local_archive_import");
+            assert!(!import.preconditions.is_empty());
+            assert!(import.follow_up.is_none());
             assert_eq!(import.applied, method.contains(".apply"));
             assert_eq!(import.confirmed, import.applied);
             if import.applied {
@@ -1119,14 +1156,35 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                     "tool-global"
                 );
                 assert!(import.instance_id.is_some());
+                let readback = import
+                    .readback
+                    .as_ref()
+                    .expect("local archive import apply must include readback");
+                assert!(readback.verified);
+                assert_eq!(readback.action_id, import.action.id);
+            } else {
+                assert!(import.readback.is_none());
             }
         }
         "skillManager.previewLocalArchiveUpdate" | "skillManager.applyLocalArchiveUpdate" => {
             let update: WireSkillManagerLocalArchiveUpdateRecord =
                 decode_fixture_result(method, result, path);
             assert!(!update.preview_token.is_empty());
+            assert_eq!(update.action.kind, "manager_local_archive_update");
+            assert!(!update.preconditions.is_empty());
+            assert!(update.follow_up.is_none());
             assert_eq!(update.applied, method.contains(".apply"));
             assert_eq!(update.confirmed, update.applied);
+            if update.applied {
+                let readback = update
+                    .readback
+                    .as_ref()
+                    .expect("local archive update apply must include readback");
+                assert!(readback.verified);
+                assert_eq!(readback.action_id, update.action.id);
+            } else {
+                assert!(update.readback.is_none());
+            }
         }
         "project.getContext"
         | "project.setContext"

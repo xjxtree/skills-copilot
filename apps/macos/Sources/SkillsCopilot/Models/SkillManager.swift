@@ -861,6 +861,7 @@ struct SkillManagerRemoveParams: Encodable {
     let skill: String
     let agents: [String]
     let scope: String?
+    let cleanupLocalInstanceID: String?
     let confirmed: Bool
     let previewToken: String?
     let actionReference: ActionReferenceWire?
@@ -869,6 +870,7 @@ struct SkillManagerRemoveParams: Encodable {
         case skill
         case agents
         case scope
+        case cleanupLocalInstanceID = "cleanup_local_instance_id"
         case confirmed
         case previewToken = "preview_token"
         case actionReference = "action_reference"
@@ -928,12 +930,14 @@ struct SkillManagerLocalArchiveUpdateParams: Encodable {
     let archivePath: String
     let confirmed: Bool
     let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case instanceId = "instance_id"
         case archivePath = "archive_path"
         case confirmed
         case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -941,11 +945,13 @@ struct SkillManagerLocalArchiveImportParams: Encodable {
     let archivePath: String
     let confirmed: Bool
     let previewToken: String?
+    let actionReference: ActionReferenceWire?
 
     enum CodingKeys: String, CodingKey {
         case archivePath = "archive_path"
         case confirmed
         case previewToken = "preview_token"
+        case actionReference = "action_reference"
     }
 }
 
@@ -956,6 +962,7 @@ struct SkillManagerMutationRecord: Codable, Hashable {
     let scannedCount: Int
     let updatedSkills: [SkillRecord]
     let readback: ActionReadbackWire?
+    let followUp: SkillManagerCleanupFollowUp?
 
     enum CodingKeys: String, CodingKey {
         case preview
@@ -964,6 +971,7 @@ struct SkillManagerMutationRecord: Codable, Hashable {
         case scannedCount = "scanned_count"
         case updatedSkills = "updated_skills"
         case readback
+        case followUp = "follow_up"
     }
 }
 
@@ -988,6 +996,8 @@ struct SkillManagerLocalCreateRecord: Codable, Hashable {
 }
 
 struct SkillManagerLocalArchiveImportRecord: Codable, Hashable {
+    let action: ActionDescriptorWire
+    let preconditions: [ActionPreconditionWire]
     let skillName: String
     let archivePath: String
     let archiveSha256: String
@@ -999,8 +1009,12 @@ struct SkillManagerLocalArchiveImportRecord: Codable, Hashable {
     let summary: String
     let importedSkill: SkillRecord?
     let instanceID: String?
+    let readback: ActionReadbackWire?
+    let followUp: SkillManagerCleanupFollowUp?
 
     enum CodingKeys: String, CodingKey {
+        case action
+        case preconditions
         case skillName = "skill_name"
         case archivePath = "archive_path"
         case archiveSha256 = "archive_sha256"
@@ -1012,6 +1026,8 @@ struct SkillManagerLocalArchiveImportRecord: Codable, Hashable {
         case summary
         case importedSkill = "imported_skill"
         case instanceID = "instance_id"
+        case readback
+        case followUp = "follow_up"
     }
 }
 
@@ -1080,6 +1096,8 @@ struct SkillManagerCleanupFollowUp: Codable, Hashable {
 }
 
 struct SkillManagerLocalArchiveUpdateRecord: Codable, Hashable {
+    let action: ActionDescriptorWire
+    let preconditions: [ActionPreconditionWire]
     let instanceId: String
     let skillName: String
     let archivePath: String
@@ -1091,8 +1109,12 @@ struct SkillManagerLocalArchiveUpdateRecord: Codable, Hashable {
     let applied: Bool
     let summary: String
     let updatedSkill: SkillRecord?
+    let readback: ActionReadbackWire?
+    let followUp: SkillManagerCleanupFollowUp?
 
     enum CodingKeys: String, CodingKey {
+        case action
+        case preconditions
         case instanceId = "instance_id"
         case skillName = "skill_name"
         case archivePath = "archive_path"
@@ -1104,5 +1126,7 @@ struct SkillManagerLocalArchiveUpdateRecord: Codable, Hashable {
         case applied
         case summary
         case updatedSkill = "updated_skill"
+        case readback
+        case followUp = "follow_up"
     }
 }

@@ -1464,7 +1464,8 @@ final class SkillStore: ObservableObject {
             try await service.previewSkillManagerRemove(
                 skill: inputs.skills.first ?? "",
                 agents: inputs.agents,
-                scope: inputs.scope
+                scope: inputs.scope,
+                cleanupLocalInstanceID: inputs.cleanupLocalInstanceID
             )
         }
     }
@@ -1737,6 +1738,11 @@ final class SkillStore: ObservableObject {
         skillManagerMessage = nil
     }
 
+    func setSkillManagerWarning(_ message: String) {
+        skillManagerErrorMessage = nil
+        skillManagerWarningMessage = UIStrings.localizedServiceMessage(message)
+    }
+
     private func setSkillManagerApplyFailure(_ error: Error) {
         guard case let ServiceClient.ClientError.service(payload) = error,
               let details = payload.details else {
@@ -1753,7 +1759,7 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func skillManagerApplyMustRetirePreview(_ error: Error) -> Bool {
+    func skillManagerApplyMustRetirePreview(_ error: Error) -> Bool {
         guard case let ServiceClient.ClientError.service(payload) = error else { return false }
         return payload.details?.retryAllowed == false
     }
@@ -1818,7 +1824,6 @@ final class SkillStore: ObservableObject {
         await runSkillManagerConfirmedWrite { [self] in
             do {
                 let result: SkillManagerMutationRecord
-                var followUpWarning: String?
                 switch confirmation.inputs.kind {
                 case .install:
                     guard let source = confirmation.inputs.source,
@@ -1842,34 +1847,9 @@ final class SkillStore: ObservableObject {
                         preview: confirmation.result,
                         skill: skill,
                         agents: confirmation.inputs.agents,
-                        scope: confirmation.inputs.scope
+                        scope: confirmation.inputs.scope,
+                        cleanupLocalInstanceID: confirmation.inputs.cleanupLocalInstanceID
                     )
-                    if let instanceID = confirmation.inputs.cleanupLocalInstanceID {
-                        do {
-                            let cleanupPreview = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
-                            if cleanupPreview.physicalDeleteAllowed {
-                                let cleanup = try await service.applySkillManagerLocalDelete(
-                                    preview: cleanupPreview
-                                )
-                                if cleanup.followUp != nil {
-                                    followUpWarning = UIStrings.text(
-                                        "skillManager.localDelete.cleanupPending",
-                                        "Local skill deleted, but private cleanup is still pending."
-                                    )
-                                }
-                            } else {
-                                followUpWarning = UIStrings.text(
-                                    "skillManager.remove.cleanupBlocked",
-                                    "Agent links were removed, but the local source is still referenced and could not be deleted. Refresh and review the remaining references."
-                                )
-                            }
-                        } catch {
-                            followUpWarning = UIStrings.text(
-                                "skillManager.remove.cleanupFailed",
-                                "Agent links were removed, but cleanup of the local source could not be verified."
-                            ) + " \(error.localizedDescription)"
-                        }
-                    }
                 case .update:
                     result = try await service.applySkillManagerUpdate(
                         preview: confirmation.result,
@@ -1880,7 +1860,11 @@ final class SkillStore: ObservableObject {
                 retireSkillManagerMutationConfirmation(confirmation)
                 invalidateDetailCaches(for: result.updatedSkills.map(\.id))
                 skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
-                if let followUpWarning {
+                if result.followUp?.cleanupRequired == true {
+                    let followUpWarning = UIStrings.text(
+                        "skillManager.localDelete.cleanupPending",
+                        "Local skill deleted, but private cleanup is still pending."
+                    )
                     skillManagerMessage = [skillManagerMessage, followUpWarning]
                         .compactMap { $0 }
                         .joined(separator: " ")

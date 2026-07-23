@@ -169,17 +169,17 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Mutating manager previews expose a typed action, accepted target revision,
   and opaque HMAC token. Apply requires the exact action reference and token,
   then returns the declared catalog, skill-file, and manager-inventory
-  read-back. Install/remove/update/local-create and app-owned local deletion
-  share the same artifact-free cross-sidecar app-data owner lock used by batch
-  toggles and direct `skill.install`. Apply rechecks the bounded complete target
-  trees, inventory, and relevant catalog facts after taking the lock; stale
-  state runs no process and writes no target or app data. The lock is held
-  through semantic read-back and catalog commit. Exit zero is accepted only
-  when each selected skill's preview-bound source identity and content
-  fingerprint proves the operation-specific postcondition; an unrelated tree
-  change is insufficient. Install and update
-  require an explicit non-empty skill list. Multi-agent read-back retains one
-  catalog and skill-file observation per selected target.
+  read-back. Install/remove/update/local-create, local archive import/update,
+  and app-owned local deletion share the same artifact-free cross-sidecar
+  app-data owner lock used by batch toggles and direct `skill.install`. Apply
+  rechecks the bounded complete target trees, archive bytes, inventory, and
+  relevant catalog facts after taking the lock; stale state runs no process and
+  writes no target or app data. The lock is held through semantic read-back and
+  catalog commit. Exit zero is accepted only when each selected skill's
+  preview-bound source identity and content fingerprint proves the
+  operation-specific postcondition; an unrelated tree change is insufficient.
+  Install and update require an explicit non-empty skill list. Multi-agent
+  read-back retains one catalog and skill-file observation per selected target.
 - Project manager targets are `.claude/skills` for Claude Code,
   `.agents/skills` for Codex and opencode, `.pi/skills` for Pi,
   `.hermes/skills` for Hermes, and `skills` for OpenClaw. Global targets use
@@ -222,7 +222,11 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Skill removal uses manager-backed agent link removal for the targets selected
   after the skill is selected. Removing every linked target allows the manager
   to remove an unreferenced canonical source; a partial removal removes only
-  those links. The panel does not expose agent-layer enable/disable controls.
+  those links. For an app-owned local source, full uninstall is one composite
+  action and confirmation that binds both manager unlink targets and the
+  complete local tree/catalog/reference cleanup. Apply returns combined
+  read-back and the client must not issue a hidden second local-delete call.
+  The panel does not expose agent-layer enable/disable controls.
 - Manager update operates on the shared package source and does not accept
   per-agent targeting. The confirmation shows all currently linked supported
   agents affected by that source update.
@@ -232,10 +236,18 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   `skillManager.previewLocalArchiveUpdate` / `applyLocalArchiveUpdate`. The
   archive must contain exactly one matching skill root; traversal, symlinks,
   special files, duplicates, files outside the root, and size/count overflow
-  fail closed. Extraction never executes packaged scripts.
+  fail closed. Its signed action binds the exact archive bytes, complete current
+  source tree, and catalog/reference identity. Apply revalidates under the
+  shared owner lock, performs staged replacement with exact-state rollback, and
+  returns verified catalog/skill-file read-back. Drift fails stale and replay
+  cannot replace an already identical tree. Extraction never executes packaged
+  scripts.
 - Local ZIP import rejects a name already present in the app-owned library or
   an installed shared `.agents/skills` source. The existing package must use its
-  update flow instead of creating an ambiguous second package row.
+  update flow instead of creating an ambiguous second package row. Import uses
+  the same signed action lifecycle, binds its missing destination tree and
+  relevant catalog name state, and cannot be replayed after a successful
+  registration.
 - Agent enable/disable stays outside the Skill Manager surface; package manager
   state and agent config state are separate. Native single and multi-skill UI
   changes use `batch.previewSkillToggles` and

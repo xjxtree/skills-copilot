@@ -63,8 +63,14 @@ extension SkillStore {
                     "skillManager.localArchive.imported",
                     "Local ZIP imported. Select the local skill in the inventory to install it for agents."
                 )
+                if let followUp = result.followUp, followUp.cleanupRequired {
+                    setSkillManagerWarning(followUp.message)
+                }
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
             } catch {
+                if skillManagerApplyMustRetirePreview(error) {
+                    retireSkillManagerLocalArchiveImportConfirmation(confirmation)
+                }
                 setSkillManagerError(error.localizedDescription)
             }
         }
@@ -172,9 +178,15 @@ extension SkillStore {
                     "skillManager.localArchive.applied",
                     "Local skill package updated from the ZIP archive."
                 )
+                if let followUp = result.followUp, followUp.cleanupRequired {
+                    setSkillManagerWarning(followUp.message)
+                }
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
                 await loadSelectedDetail()
             } catch {
+                if skillManagerApplyMustRetirePreview(error) {
+                    retireSkillManagerLocalArchiveUpdateConfirmation(confirmation)
+                }
                 setSkillManagerError(error.localizedDescription)
             }
         }

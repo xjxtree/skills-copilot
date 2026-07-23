@@ -4,6 +4,16 @@
   "params": {
     "archive_path": "/tmp/local-review-helper.zip",
     "confirmed": true,
-    "preview_token": "skill-manager-local-archive-import:fixture-preview"
+    "preview_token": "action-preview:v1:hmac-sha256:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+    "action_reference": {
+      "action_id": "action:manager_local_archive_import:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "source_revision": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "target": {
+        "kind": "skill",
+        "id": "local-archive-import:local-review-helper",
+        "agent": "tool-global",
+        "scope": "tool-global"
+      }
+    }
   }
 }

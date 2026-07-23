@@ -239,6 +239,32 @@ struct SkillManagerModelTests {
     private func localArchiveImportPreviewDecodes() throws {
         let payload = """
         {
+          "action": {
+            "id": "action:manager_local_archive_import:fixture",
+            "kind": "manager_local_archive_import",
+            "intent": "manager_local_archive_import",
+            "target": {
+              "kind": "skill",
+              "id": "local-archive-import:local-review",
+              "agent": "tool-global",
+              "scope": "tool-global"
+            },
+            "impacts": ["app_local_data", "skill_files"],
+            "preview_method": "skillManager.previewLocalArchiveImport",
+            "apply_method": "skillManager.applyLocalArchiveImport",
+            "source_revision": "sha256:fixture",
+            "confirmation_required": true,
+            "network": "none",
+            "readback": ["catalog_skills", "skill_files"],
+            "evidence_refs": ["coverage:local-skill-library"]
+          },
+          "preconditions": [
+            {
+              "kind": "archive",
+              "target_id": "<user-home>/Downloads/local-review.zip",
+              "expected_revision": "sha256:fixture"
+            }
+          ],
           "skill_name": "local-review",
           "archive_path": "<user-home>/Downloads/local-review.zip",
           "archive_sha256": "sha256:fixture",
@@ -249,7 +275,9 @@ struct SkillManagerModelTests {
           "applied": false,
           "summary": "Validated local ZIP.",
           "imported_skill": null,
-          "instance_id": null
+          "instance_id": null,
+          "readback": null,
+          "follow_up": null
         }
         """.data(using: .utf8)!
 

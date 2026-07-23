@@ -1106,14 +1106,16 @@ private enum SkillManagerWriteConfirmation {
                 value.result.summary,
                 value.result.skillName,
                 value.result.archivePath,
-                "SHA-256: \(value.result.archiveSha256)"
+                "SHA-256: \(value.result.archiveSha256)",
+                value.result.action.confirmationSummary.disclosureText
             ].joined(separator: "\n\n")
         case .localArchiveUpdate(let value):
             return [
                 value.result.summary,
                 value.result.skillName,
                 value.result.archivePath,
-                "SHA-256: \(value.result.archiveSha256)"
+                "SHA-256: \(value.result.archiveSha256)",
+                value.result.action.confirmationSummary.disclosureText
             ].joined(separator: "\n\n")
         }
     }
