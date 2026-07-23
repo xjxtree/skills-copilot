@@ -322,40 +322,99 @@ pub enum CatalogError {
 impl Catalog {
     pub fn open(path: &Path) -> Result<Self, CatalogError> {
         let path = normalize_sqlite_root_alias(path);
-        let storage = legacy_path_storage(&path)?;
         #[cfg(unix)]
-        let open_safety = anchored_vfs::CatalogOpenSafetyLease::for_path(&path)
-            .map_err(CatalogError::AnchoredVfs)?;
-        Ok(Self {
-            conn: Connection::open_with_flags(
+        {
+            Self::open_path_anchored(
                 &path,
                 OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-            )?,
-            #[cfg(unix)]
-            _anchored_vfs: None,
-            #[cfg(unix)]
-            _open_safety: Some(open_safety),
-            storage,
-            fail_next_commit: Cell::new(false),
-            fail_next_commit_outcome: Cell::new(false),
-            fail_next_rollback: Cell::new(false),
-        })
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let storage = legacy_path_storage(&path)?;
+            Ok(Self {
+                conn: Connection::open_with_flags(
+                    &path,
+                    OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                )?,
+                storage,
+                fail_next_commit: Cell::new(false),
+                fail_next_commit_outcome: Cell::new(false),
+                fail_next_rollback: Cell::new(false),
+            })
+        }
     }
 
     pub fn open_read_only(path: &Path) -> Result<Self, CatalogError> {
         let path = normalize_sqlite_root_alias(path);
-        let storage = legacy_path_storage(&path)?;
         #[cfg(unix)]
-        let open_safety = anchored_vfs::CatalogOpenSafetyLease::for_path(&path)
-            .map_err(CatalogError::AnchoredVfs)?;
-        Ok(Self {
-            conn: Connection::open_with_flags(
+        {
+            Self::open_path_anchored(
                 &path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-            )?,
-            #[cfg(unix)]
-            _anchored_vfs: None,
-            #[cfg(unix)]
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let storage = legacy_path_storage(&path)?;
+            Ok(Self {
+                conn: Connection::open_with_flags(
+                    &path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                )?,
+                storage,
+                fail_next_commit: Cell::new(false),
+                fail_next_commit_outcome: Cell::new(false),
+                fail_next_rollback: Cell::new(false),
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    fn open_path_anchored(path: &Path, flags: OpenFlags) -> Result<Self, CatalogError> {
+        Self::open_path_anchored_with_hook(path, flags, || {})
+    }
+
+    #[cfg(unix)]
+    fn open_path_anchored_with_hook(
+        path: &Path,
+        flags: OpenFlags,
+        after_owner_open: impl FnOnce(),
+    ) -> Result<Self, CatalogError> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let child_name = path
+            .file_name()
+            .filter(|name| !name.as_bytes().is_empty())
+            .ok_or_else(|| {
+                CatalogError::AnchoredVfs("catalog path has no child filename".to_string())
+            })?
+            .to_owned();
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let owner = std::fs::File::open(parent).map_err(|error| {
+            CatalogError::MutationOwner(format!(
+                "opening the legacy path-backed catalog parent failed: {error}"
+            ))
+        })?;
+        let storage = CatalogStorageKind::LegacyPathBacked(unix_owner_identity(&owner)?);
+
+        // Tests use this seam to prove that every later operation remains on
+        // this one descriptor even if the display parent is rebound.
+        after_owner_open();
+
+        let open_safety =
+            anchored_vfs::CatalogOpenSafetyLease::for_path_owner(&owner, child_name.as_bytes())
+                .map_err(CatalogError::AnchoredVfs)?;
+        let lease = anchored_vfs::AnchoredVfsLease::register_path_owner(owner)
+            .map_err(CatalogError::AnchoredVfs)?;
+        let conn =
+            Connection::open_with_flags_and_vfs(Path::new(&child_name), flags, lease.name())?;
+        Ok(Self {
+            conn,
+            _anchored_vfs: Some(lease),
             _open_safety: Some(open_safety),
             storage,
             fail_next_commit: Cell::new(false),
@@ -1177,22 +1236,6 @@ fn unix_owner_identity(owner: &std::fs::File) -> Result<UnixOwnerIdentity, Catal
         device: metadata.dev(),
         inode: metadata.ino(),
     })
-}
-
-#[cfg(unix)]
-fn legacy_path_storage(path: &Path) -> Result<CatalogStorageKind, CatalogError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let owner = std::fs::File::open(parent).map_err(|error| {
-        CatalogError::MutationOwner(format!(
-            "opening the legacy path-backed catalog parent failed: {error}"
-        ))
-    })?;
-    Ok(CatalogStorageKind::LegacyPathBacked(unix_owner_identity(
-        &owner,
-    )?))
 }
 
 #[cfg(not(unix))]
@@ -3190,7 +3233,254 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn path_catalog_preserves_multi_connection_posix_locks() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-path-catalog-locks-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        std::fs::create_dir(&root).expect("create owner");
+        let path = root.join("catalog.sqlite");
+        let first = Catalog::open(&path).expect("open first path catalog");
+        first.init().expect("initialize path catalog");
+        let second = Catalog::open(&path).expect("open second path catalog");
+        let first_transaction = first
+            .begin_immediate_transaction()
+            .expect("first path connection reserves the writer lock");
+
+        let transient =
+            Catalog::open_read_only_current(&path).expect("open transient read-only path catalog");
+        drop(transient);
+        assert!(
+            second.begin_immediate_transaction().is_err(),
+            "closing a path-authority descriptor must not release another writer lock"
+        );
+
+        first_transaction
+            .rollback()
+            .expect("release first path writer lock");
+        second
+            .begin_immediate_transaction()
+            .expect("second path writer acquires released lock")
+            .commit()
+            .expect("commit second path transaction");
+        drop(second);
+        drop(first);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_catalog_preserves_parent_vfs_wal_support() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-path-catalog-wal-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        std::fs::create_dir(&root).expect("create owner");
+        let path = root.join("catalog.sqlite");
+        let first = Catalog::open(&path).expect("open path catalog");
+        first.init().expect("initialize path catalog");
+        let journal_mode = first
+            .conn
+            .query_row("PRAGMA journal_mode = WAL", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("enable WAL through the path compatibility VFS");
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+
+        first
+            .conn
+            .execute_batch(
+                "CREATE TABLE path_wal_probe(value INTEGER NOT NULL);
+                 INSERT INTO path_wal_probe(value) VALUES (42);",
+            )
+            .expect("write through WAL");
+        let second = Catalog::open_read_only(&path).expect("open WAL reader");
+        assert_eq!(
+            second
+                .conn
+                .query_row("SELECT value FROM path_wal_probe", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("read WAL row"),
+            42
+        );
+        drop(second);
+        let journal_mode = first
+            .conn
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("restore rollback journal mode");
+        assert_eq!(journal_mode.to_ascii_lowercase(), "delete");
+        drop(first);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_catalog_open_stays_on_one_parent_descriptor_across_rebind() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-path-catalog-rebind-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let owner_path = root.join("app-data");
+        let accepted_owner = root.join("accepted-owner");
+        let victim = root.join("victim");
+        let catalog_path = owner_path.join("catalog.sqlite");
+        std::fs::create_dir_all(&owner_path).expect("create accepted owner");
+        std::fs::create_dir(&victim).expect("create victim");
+        std::fs::write(victim.join("sentinel"), b"unchanged").expect("seed victim");
+
+        let catalog = Catalog::open_path_anchored_with_hook(
+            &catalog_path,
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            || {
+                std::fs::rename(&owner_path, &accepted_owner).expect("move accepted owner");
+                symlink(&victim, &owner_path).expect("rebind display owner to victim");
+            },
+        )
+        .expect("path-authority catalog stays on accepted owner");
+        catalog.init().expect("initialize accepted catalog");
+
+        let accepted = std::fs::File::open(&accepted_owner).expect("open accepted owner");
+        let rebound = std::fs::File::open(&owner_path).expect("open rebound victim owner");
+        assert!(catalog.ensure_mutation_owner(&accepted).is_ok());
+        assert!(matches!(
+            catalog.ensure_mutation_owner(&rebound),
+            Err(CatalogError::MutationOwner(_))
+        ));
+        assert!(
+            Catalog::open_anchored(
+                std::fs::File::open(&accepted_owner).expect("reopen accepted owner")
+            )
+            .is_err(),
+            "the path-authority lease must remain bound to the accepted owner"
+        );
+        assert!(accepted_owner.join("catalog.sqlite").exists());
+        assert!(!victim.join("catalog.sqlite").exists());
+        assert_eq!(
+            std::fs::read(victim.join("sentinel")).expect("read victim sentinel"),
+            b"unchanged"
+        );
+        drop(catalog);
+
+        let _ = std::fs::remove_file(owner_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_catalog_opens_beneath_a_shared_temp_parent() {
+        let path = PathBuf::from("/tmp").join(format!(
+            "ac-path-catalog-{}-{}.sqlite",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let catalog = Catalog::open(&path).expect("open path catalog under shared temp parent");
+        catalog.init().expect("initialize path catalog");
+        assert!(path.exists());
+        drop(catalog);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn anchored_catalog_rejects_special_main_and_journal_nodes() {
+        use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+
+        let root = PathBuf::from("/tmp").join(format!(
+            "ac-vfs-special-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let main_owner = root.join("main-owner");
+        std::fs::create_dir_all(&main_owner).expect("create main owner");
+        let main_path = main_owner.join("catalog.sqlite");
+        let main_socket = UnixListener::bind(&main_path).expect("bind main socket");
+        assert!(
+            Catalog::open_anchored(
+                std::fs::File::open(&main_owner).expect("open main owner descriptor")
+            )
+            .is_err(),
+            "a socket at the main database name must fail closed"
+        );
+        assert!(std::fs::symlink_metadata(&main_path)
+            .expect("main socket metadata")
+            .file_type()
+            .is_socket());
+        drop(main_socket);
+
+        let journal_owner = root.join("journal-owner");
+        std::fs::create_dir(&journal_owner).expect("create journal owner");
+        let catalog = Catalog::open_anchored(
+            std::fs::File::open(&journal_owner).expect("open journal owner descriptor"),
+        )
+        .expect("open safe main catalog");
+        catalog.init().expect("initialize main catalog");
+        let journal_path = journal_owner.join("catalog.sqlite-journal");
+        let journal_socket = UnixListener::bind(&journal_path).expect("bind journal socket");
+        assert!(
+            catalog.begin_immediate_transaction().is_err(),
+            "a socket at the rollback journal name must fail closed"
+        );
+        assert!(std::fs::symlink_metadata(&journal_path)
+            .expect("journal socket metadata")
+            .file_type()
+            .is_socket());
+        drop(journal_socket);
+        drop(catalog);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn anchored_vfs_unregisters_after_its_catalog_closes() {
+        use std::ffi::CString;
+
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-anchored-vfs-drop-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        std::fs::create_dir(&root).expect("create owner");
+        let catalog =
+            Catalog::open_anchored(std::fs::File::open(&root).expect("open owner descriptor"))
+                .expect("open anchored catalog");
+        let name = catalog
+            ._anchored_vfs
+            .as_ref()
+            .expect("anchored VFS lease")
+            .name()
+            .to_string();
+        let name = CString::new(name).expect("VFS name");
+        assert!(
+            !unsafe { rusqlite::ffi::sqlite3_vfs_find(name.as_ptr()) }.is_null(),
+            "registered VFS must remain visible while the catalog is alive"
+        );
+
+        drop(catalog);
+
+        assert!(
+            unsafe { rusqlite::ffi::sqlite3_vfs_find(name.as_ptr()) }.is_null(),
+            "catalog drop must unregister the now-idle VFS"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn anchored_catalog_handles_rollback_temp_and_read_only_without_path_escape() {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = std::env::temp_dir().join(format!(
             "agent-copilot-anchored-catalog-behavior-{}-{}",
             std::process::id(),
@@ -3203,6 +3493,14 @@ mod tests {
             Catalog::open_anchored(std::fs::File::open(&owner).expect("open owner descriptor"))
                 .expect("open catalog");
         catalog.init().expect("initialize catalog");
+        assert_eq!(
+            std::fs::metadata(owner.join("catalog.sqlite"))
+                .expect("main catalog metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         let relative_escape = catalog
             .conn
@@ -3262,6 +3560,14 @@ mod tests {
             })
             .expect("write rollback row");
         assert!(owner.join("catalog.sqlite-journal").exists());
+        assert_eq!(
+            std::fs::metadata(owner.join("catalog.sqlite-journal"))
+                .expect("journal metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         rollback.rollback().expect("rollback transaction");
         assert!(!owner.join("catalog.sqlite-journal").exists());
         assert!(catalog

@@ -2,11 +2,7 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     ffi::{c_char, c_int, c_void, CStr, CString},
     fs::File,
-    os::{
-        fd::AsRawFd,
-        unix::{ffi::OsStrExt, fs::MetadataExt},
-    },
-    path::Path,
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
     ptr,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -33,9 +29,9 @@ struct FileRegistry {
     // record locks on that inode. Descriptor shims therefore stay open until
     // every wrapped file and every path-open Catalog connection has closed.
     retired: Vec<File>,
-    // Path-open Catalog connections use the parent VFS directly. Retired shim
-    // descriptors cannot close while one of those connections may hold a
-    // process-scoped lock, even when no wrapped file remains.
+    // A path-authority Catalog retains its compatibility lease until the
+    // owning connection has closed. Keep descriptor shims until then as a
+    // conservative guard for process-scoped POSIX locks.
     raw_catalog_opens: usize,
 }
 
@@ -73,19 +69,11 @@ impl CatalogOpenSafetyLease {
         )
     }
 
-    pub(crate) fn for_path(path: &Path) -> Result<Self, String> {
-        let child_name = path
-            .file_name()
-            .map(|name| name.as_bytes())
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "catalog path has no child filename".to_string())?;
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let owner = File::open(parent)
-            .map_err(|error| format!("opening catalog parent directory failed: {error}"))?;
-        Self::reserve(catalog_target(&owner, child_name)?, CatalogOpenStyle::Path)
+    pub(crate) fn for_path_owner(owner: &File, child_name: &[u8]) -> Result<Self, String> {
+        if child_name.is_empty() {
+            return Err("catalog path has no child filename".to_string());
+        }
+        Self::reserve(catalog_target(owner, child_name)?, CatalogOpenStyle::Path)
     }
 
     fn reserve(target: CatalogTarget, style: CatalogOpenStyle) -> Result<Self, String> {
@@ -105,8 +93,18 @@ impl CatalogOpenSafetyLease {
             );
         }
         match style {
-            CatalogOpenStyle::Anchored => target_state.anchored += 1,
-            CatalogOpenStyle::Path => target_state.path += 1,
+            CatalogOpenStyle::Anchored => {
+                target_state.anchored = target_state
+                    .anchored
+                    .checked_add(1)
+                    .ok_or_else(|| "anchored catalog target count overflowed".to_string())?;
+            }
+            CatalogOpenStyle::Path => {
+                target_state.path = target_state
+                    .path
+                    .checked_add(1)
+                    .ok_or_else(|| "path catalog target count overflowed".to_string())?;
+            }
         }
         drop(targets);
 
@@ -209,11 +207,19 @@ impl Drop for OpenFileState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VfsMode {
+    DescriptorAnchored,
+    PathCompatibility,
+}
+
 #[derive(Debug)]
 struct AnchoredVfsState {
     parent: *mut ffi::sqlite3_vfs,
     owner: File,
+    expected_child_uid: Option<u32>,
     namespace: CString,
+    mode: VfsMode,
 }
 
 #[derive(Debug)]
@@ -230,6 +236,23 @@ unsafe impl Send for AnchoredVfsLease {}
 
 impl AnchoredVfsLease {
     pub(crate) fn register(owner: File) -> Result<Self, String> {
+        let expected_child_uid = owner.metadata().map_err(|error| error.to_string())?.uid();
+        Self::register_with_expected_uid(
+            owner,
+            Some(expected_child_uid),
+            VfsMode::DescriptorAnchored,
+        )
+    }
+
+    pub(crate) fn register_path_owner(owner: File) -> Result<Self, String> {
+        Self::register_with_expected_uid(owner, None, VfsMode::PathCompatibility)
+    }
+
+    fn register_with_expected_uid(
+        owner: File,
+        expected_child_uid: Option<u32>,
+        mode: VfsMode,
+    ) -> Result<Self, String> {
         let parent = unsafe { ffi::sqlite3_vfs_find(ptr::null()) };
         if parent.is_null() {
             return Err("SQLite default VFS is unavailable".to_string());
@@ -248,7 +271,9 @@ impl AnchoredVfsLease {
         let mut state = Box::new(AnchoredVfsState {
             parent,
             owner,
+            expected_child_uid,
             namespace,
+            mode,
         });
         let parent_ref = unsafe { &*parent };
         let mut vfs = Box::new(ffi::sqlite3_vfs {
@@ -335,12 +360,22 @@ unsafe extern "C" fn anchored_open(
     // null one. Initialize it before every branch that can fail.
     unsafe {
         (*file).pMethods = ptr::null();
+        if !out_flags.is_null() {
+            *out_flags = 0;
+        }
     }
     let Some((state, callback)) = state(vfs)
         .and_then(|state| unsafe { (*state.parent).xOpen }.map(|callback| (state, callback)))
     else {
         return ffi::SQLITE_CANTOPEN;
     };
+
+    if state.mode == VfsMode::PathCompatibility {
+        // The compatibility VFS changes only pathname resolution. The parent
+        // owns the sqlite3_file and retains its native method table, including
+        // POSIX lock coordination, WAL shared memory, and mmap support.
+        return unsafe { callback(state.parent, name, file, flags, out_flags) };
+    }
 
     // This VFS intentionally supports rollback journals only. SQLite shared
     // memory bypasses xOpen in the parent VFS, so accepting WAL here would
@@ -354,7 +389,7 @@ unsafe extern "C" fn anchored_open(
         Err(code) => return code,
     };
     let (parent_filename, parent_name) =
-        match create_parent_filename(&preopened.file, preopened.effective_flags) {
+        match create_parent_filename(state, &preopened, preopened.effective_flags) {
             Ok(filename) => filename,
             Err(code) => {
                 cleanup_created_child(state, &preopened);
@@ -362,6 +397,9 @@ unsafe extern "C" fn anchored_open(
                 return code;
             }
         };
+    // The parent receives only a kernel-owned descriptor bridge. On Linux the
+    // final component is the already-validated regular child beneath an open
+    // owner dirfd; on fdesc platforms it is the already-open file descriptor.
     let parent_flags = (preopened.effective_flags
         & !(ffi::SQLITE_OPEN_CREATE
             | ffi::SQLITE_OPEN_EXCLUSIVE
@@ -397,6 +435,15 @@ unsafe extern "C" fn anchored_open(
         retire_descriptor(preopened.file);
         return ffi::SQLITE_CANTOPEN;
     }
+    if validate_preopened_link(state, &preopened).is_err() {
+        close_parent_after_failed_open(file);
+        unsafe {
+            ffi::sqlite3_free_filename(parent_filename);
+        }
+        cleanup_created_child(state, &preopened);
+        retire_descriptor(preopened.file);
+        return ffi::SQLITE_CANTOPEN;
+    }
     if preopened.effective_flags & ffi::SQLITE_OPEN_DELETEONCLOSE != 0
         && unlink_opened_child(state, &preopened).is_err()
     {
@@ -420,11 +467,12 @@ unsafe extern "C" fn anchored_open(
         .lock()
     else {
         close_parent_after_failed_open(file);
-        unsafe {
-            ffi::sqlite3_free_filename(parent_filename);
-        }
         cleanup_created_child(state, &preopened);
         std::mem::forget(preopened.file);
+        // `entry` still owns the sqlite3_filename. Drop it only after the
+        // parent's xClose has returned; manually freeing it here would make the
+        // scope-exit Drop a double free on the poisoned-registry path.
+        drop(entry);
         return ffi::SQLITE_CANTOPEN;
     };
     match registry.open.entry(file as usize) {
@@ -462,6 +510,12 @@ unsafe extern "C" fn anchored_delete(
     let Some(state) = state(vfs) else {
         return ffi::SQLITE_IOERR_DELETE;
     };
+    if state.mode == VfsMode::PathCompatibility {
+        let Some(callback) = (unsafe { (*state.parent).xDelete }) else {
+            return ffi::SQLITE_IOERR_DELETE;
+        };
+        return unsafe { callback(state.parent, name, sync_dir) };
+    }
     let Some(name) = resolve_child_name(state, name) else {
         return ffi::SQLITE_IOERR_DELETE;
     };
@@ -497,6 +551,12 @@ unsafe extern "C" fn anchored_access(
     let Some(state) = state(vfs) else {
         return ffi::SQLITE_IOERR_ACCESS;
     };
+    if state.mode == VfsMode::PathCompatibility {
+        let Some(callback) = (unsafe { (*state.parent).xAccess }) else {
+            return ffi::SQLITE_IOERR_ACCESS;
+        };
+        return unsafe { callback(state.parent, name, flags, result) };
+    }
     let Some(name) = resolve_child_name(state, name) else {
         return ffi::SQLITE_IOERR_ACCESS;
     };
@@ -544,12 +604,21 @@ unsafe extern "C" fn anchored_full_pathname(
     let Some(child) = resolve_child_name(state, name) else {
         return ffi::SQLITE_CANTOPEN;
     };
-    let namespace = state.namespace.as_bytes();
-    let child = child.as_bytes();
-    let required = namespace
-        .len()
-        .checked_add(child.len())
-        .and_then(|len| len.checked_add(1));
+    let full_name = if state.mode == VfsMode::PathCompatibility {
+        match path_compatibility_filename(state, child.as_c_str()) {
+            Ok(path) => path,
+            Err(code) => return code,
+        }
+    } else {
+        let mut path = state.namespace.as_bytes().to_vec();
+        path.extend_from_slice(child.as_bytes());
+        match CString::new(path) {
+            Ok(path) => path,
+            Err(_) => return ffi::SQLITE_CANTOPEN,
+        }
+    };
+    let bytes = full_name.as_bytes();
+    let required = bytes.len().checked_add(1);
     let Some(required) = required else {
         return ffi::SQLITE_CANTOPEN;
     };
@@ -557,15 +626,42 @@ unsafe extern "C" fn anchored_full_pathname(
         return ffi::SQLITE_CANTOPEN;
     }
     unsafe {
-        ptr::copy_nonoverlapping(namespace.as_ptr().cast::<c_char>(), output, namespace.len());
-        ptr::copy_nonoverlapping(
-            child.as_ptr().cast::<c_char>(),
-            output.add(namespace.len()),
-            child.len(),
-        );
-        *output.add(namespace.len() + child.len()) = 0;
+        ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), output, bytes.len());
+        *output.add(bytes.len()) = 0;
     }
     ffi::SQLITE_OK
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn path_compatibility_filename(state: &AnchoredVfsState, child: &CStr) -> Result<CString, c_int> {
+    let mut path = format!("/proc/self/fd/{}/", state.owner.as_raw_fd()).into_bytes();
+    path.extend_from_slice(child.to_bytes());
+    CString::new(path).map_err(|_| ffi::SQLITE_CANTOPEN)
+}
+
+#[cfg(target_vendor = "apple")]
+fn path_compatibility_filename(state: &AnchoredVfsState, child: &CStr) -> Result<CString, c_int> {
+    let owner_path = rustix::fs::getpath(&state.owner).map_err(|_| ffi::SQLITE_CANTOPEN)?;
+    let mut path = owner_path.as_bytes().to_vec();
+    if !path.ends_with(b"/") {
+        path.push(b'/');
+    }
+    path.extend_from_slice(child.to_bytes());
+    CString::new(path).map_err(|_| ffi::SQLITE_CANTOPEN)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+fn path_compatibility_filename(state: &AnchoredVfsState, child: &CStr) -> Result<CString, c_int> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let owner_path = std::fs::canonicalize(format!("/dev/fd/{}", state.owner.as_raw_fd()))
+        .map_err(|_| ffi::SQLITE_CANTOPEN)?;
+    let mut path = owner_path.as_os_str().as_bytes().to_vec();
+    if !path.ends_with(b"/") {
+        path.push(b'/');
+    }
+    path.extend_from_slice(child.to_bytes());
+    CString::new(path).map_err(|_| ffi::SQLITE_CANTOPEN)
 }
 
 struct PreopenedChild {
@@ -583,8 +679,12 @@ fn preopen_sqlite_child(
     if flags & ffi::SQLITE_OPEN_MEMORY != 0 {
         return Err(ffi::SQLITE_CANTOPEN);
     }
+    validate_open_flags(flags).map_err(|_| ffi::SQLITE_CANTOPEN)?;
     if name.is_null() {
-        if flags & ffi::SQLITE_OPEN_DELETEONCLOSE == 0 {
+        if flags & ffi::SQLITE_OPEN_DELETEONCLOSE == 0
+            || flags & ffi::SQLITE_OPEN_CREATE == 0
+            || flags & ffi::SQLITE_OPEN_READWRITE == 0
+        {
             return Err(ffi::SQLITE_CANTOPEN);
         }
         for _ in 0..32 {
@@ -613,15 +713,8 @@ fn open_named_child(
     flags: c_int,
 ) -> Result<PreopenedChild, rustix::io::Errno> {
     let wants_read_write = flags & ffi::SQLITE_OPEN_READWRITE != 0;
-    let wants_read_only = flags & ffi::SQLITE_OPEN_READONLY != 0;
     let wants_create = flags & ffi::SQLITE_OPEN_CREATE != 0;
     let wants_exclusive = flags & ffi::SQLITE_OPEN_EXCLUSIVE != 0;
-    if wants_read_write == wants_read_only
-        || (wants_create && !wants_read_write)
-        || (wants_exclusive && !wants_create)
-    {
-        return Err(rustix::io::Errno::INVAL);
-    }
 
     if wants_exclusive {
         return open_child_create_new(state, name.as_c_str(), flags);
@@ -654,6 +747,21 @@ fn open_named_child(
             validated_preopened_child(state, file, name, false, effective_flags)
         }
         Err(error) => Err(error),
+    }
+}
+
+fn validate_open_flags(flags: c_int) -> Result<(), rustix::io::Errno> {
+    let wants_read_write = flags & ffi::SQLITE_OPEN_READWRITE != 0;
+    let wants_read_only = flags & ffi::SQLITE_OPEN_READONLY != 0;
+    let wants_create = flags & ffi::SQLITE_OPEN_CREATE != 0;
+    let wants_exclusive = flags & ffi::SQLITE_OPEN_EXCLUSIVE != 0;
+    if wants_read_write == wants_read_only
+        || (wants_create && !wants_read_write)
+        || (wants_exclusive && !wants_create)
+    {
+        Err(rustix::io::Errno::INVAL)
+    } else {
+        Ok(())
     }
 }
 
@@ -711,16 +819,7 @@ fn validated_preopened_child(
     created: bool,
     effective_flags: c_int,
 ) -> Result<PreopenedChild, rustix::io::Errno> {
-    let validation = (|| {
-        let opened = fstat(&file)?;
-        validate_child_stat(state, &opened)?;
-        let linked = statat(&state.owner, name.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)?;
-        validate_child_stat(state, &linked)?;
-        if opened.st_dev != linked.st_dev || opened.st_ino != linked.st_ino {
-            return Err(rustix::io::Errno::STALE);
-        }
-        Ok(())
-    })();
+    let validation = validate_opened_child_parts(state, &file, name.as_c_str());
     if let Err(error) = validation {
         if created {
             let _ = unlink_opened_child_parts(state, &file, name.as_c_str());
@@ -736,10 +835,32 @@ fn validated_preopened_child(
     })
 }
 
+fn validate_preopened_link(
+    state: &AnchoredVfsState,
+    child: &PreopenedChild,
+) -> Result<(), rustix::io::Errno> {
+    validate_opened_child_parts(state, &child.file, child.name.as_c_str())
+}
+
+fn validate_opened_child_parts(
+    state: &AnchoredVfsState,
+    file: &File,
+    name: &CStr,
+) -> Result<(), rustix::io::Errno> {
+    let opened = fstat(file)?;
+    validate_child_stat(state, &opened)?;
+    let linked = statat(&state.owner, name, AtFlags::SYMLINK_NOFOLLOW)?;
+    validate_child_stat(state, &linked)?;
+    if opened.st_dev != linked.st_dev || opened.st_ino != linked.st_ino {
+        return Err(rustix::io::Errno::STALE);
+    }
+    Ok(())
+}
+
 fn validate_child_stat(state: &AnchoredVfsState, metadata: &Stat) -> Result<(), rustix::io::Errno> {
-    let owner = fstat(&state.owner)?;
+    let expected_child_uid = state.expected_child_uid.ok_or(rustix::io::Errno::PERM)?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_uid != owner.st_uid
+        || metadata.st_uid != expected_child_uid
         || metadata.st_nlink != 1
     {
         return Err(rustix::io::Errno::PERM);
@@ -778,11 +899,11 @@ fn valid_child_name(name: &[u8]) -> bool {
 }
 
 fn create_parent_filename(
-    file: &File,
+    state: &AnchoredVfsState,
+    child: &PreopenedChild,
     flags: c_int,
 ) -> Result<(ffi::sqlite3_filename, ffi::sqlite3_filename), c_int> {
-    let path =
-        CString::new(format!("/dev/fd/{}", file.as_raw_fd())).map_err(|_| ffi::SQLITE_CANTOPEN)?;
+    let path = parent_descriptor_path(state, child)?;
     let filename = unsafe {
         ffi::sqlite3_create_filename(
             path.as_ptr(),
@@ -795,12 +916,13 @@ fn create_parent_filename(
     if filename.is_null() {
         return Err(ffi::SQLITE_NOMEM);
     }
-    let file_type = flags & 0x000f_ff00;
     let selected = unsafe {
-        match file_type {
-            ffi::SQLITE_OPEN_MAIN_JOURNAL => ffi::sqlite3_filename_journal(filename),
-            ffi::SQLITE_OPEN_WAL => ffi::sqlite3_filename_wal(filename),
-            _ => filename,
+        if flags & ffi::SQLITE_OPEN_MAIN_JOURNAL != 0 {
+            ffi::sqlite3_filename_journal(filename)
+        } else if flags & ffi::SQLITE_OPEN_WAL != 0 {
+            ffi::sqlite3_filename_wal(filename)
+        } else {
+            filename
         }
     };
     if selected.is_null() {
@@ -810,6 +932,24 @@ fn create_parent_filename(
         return Err(ffi::SQLITE_CANTOPEN);
     }
     Ok((filename, selected))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn parent_descriptor_path(
+    state: &AnchoredVfsState,
+    child: &PreopenedChild,
+) -> Result<CString, c_int> {
+    let mut path = format!("/proc/self/fd/{}/", state.owner.as_raw_fd()).into_bytes();
+    path.extend_from_slice(child.name.as_bytes());
+    CString::new(path).map_err(|_| ffi::SQLITE_CANTOPEN)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn parent_descriptor_path(
+    _state: &AnchoredVfsState,
+    child: &PreopenedChild,
+) -> Result<CString, c_int> {
+    CString::new(format!("/dev/fd/{}", child.file.as_raw_fd())).map_err(|_| ffi::SQLITE_CANTOPEN)
 }
 
 fn valid_parent_methods(methods: *const ffi::sqlite3_io_methods) -> bool {
@@ -1121,8 +1261,18 @@ unsafe extern "C" fn anchored_io_file_control(
     }
     if matches!(
         op,
-        ffi::SQLITE_FCNTL_GET_LOCKPROXYFILE | ffi::SQLITE_FCNTL_SET_LOCKPROXYFILE
+        ffi::SQLITE_FCNTL_GET_LOCKPROXYFILE
+            | ffi::SQLITE_FCNTL_SET_LOCKPROXYFILE
+            | ffi::SQLITE_FCNTL_TEMPFILENAME
+            | ffi::SQLITE_FCNTL_MMAP_SIZE
+            | ffi::SQLITE_FCNTL_PERSIST_WAL
+            | ffi::SQLITE_FCNTL_WAL_BLOCK
+            | ffi::SQLITE_FCNTL_CKPT_DONE
+            | ffi::SQLITE_FCNTL_CKPT_START
     ) {
+        // Lock proxy files, parent-generated temporary pathnames, mmap, and
+        // WAL controls all bypass this wrapper's rollback-only,
+        // descriptor-relative xOpen/I/O contract.
         return ffi::SQLITE_NOTFOUND;
     }
     with_file_methods(file, ffi::SQLITE_IOERR, |methods| {
@@ -1235,6 +1385,25 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_rejects_parent_path_and_mmap_file_controls() {
+        for operation in [
+            ffi::SQLITE_FCNTL_GET_LOCKPROXYFILE,
+            ffi::SQLITE_FCNTL_SET_LOCKPROXYFILE,
+            ffi::SQLITE_FCNTL_TEMPFILENAME,
+            ffi::SQLITE_FCNTL_MMAP_SIZE,
+            ffi::SQLITE_FCNTL_PERSIST_WAL,
+            ffi::SQLITE_FCNTL_WAL_BLOCK,
+            ffi::SQLITE_FCNTL_CKPT_DONE,
+            ffi::SQLITE_FCNTL_CKPT_START,
+        ] {
+            assert_eq!(
+                unsafe { anchored_io_file_control(ptr::null_mut(), operation, ptr::null_mut()) },
+                ffi::SQLITE_NOTFOUND
+            );
+        }
+    }
+
+    #[test]
     fn failed_open_clears_the_method_table() {
         let mut file = ffi::sqlite3_file {
             pMethods: &ANCHORED_IO_METHODS,
@@ -1258,11 +1427,14 @@ mod tests {
     fn full_path_rejects_parent_and_absolute_names() {
         let owner_path = TestDirectory::create("reject-paths");
         let owner = File::open(&owner_path.0).expect("owner descriptor");
+        let expected_child_uid = owner.metadata().expect("owner metadata").uid();
         let namespace = CString::new("/test-anchor/").expect("namespace");
         let mut state = AnchoredVfsState {
             parent: ptr::null_mut(),
             owner,
+            expected_child_uid: Some(expected_child_uid),
             namespace,
+            mode: VfsMode::DescriptorAnchored,
         };
         let mut vfs: ffi::sqlite3_vfs = unsafe { std::mem::zeroed() };
         vfs.pAppData = (&mut state as *mut AnchoredVfsState).cast::<c_void>();
@@ -1298,11 +1470,14 @@ mod tests {
     fn full_path_returns_stable_synthetic_namespace() {
         let owner_path = TestDirectory::create("full-path");
         let owner = File::open(&owner_path.0).expect("owner descriptor");
+        let expected_child_uid = owner.metadata().expect("owner metadata").uid();
         let namespace = CString::new("/test-anchor/").expect("namespace");
         let mut state = AnchoredVfsState {
             parent: ptr::null_mut(),
             owner,
+            expected_child_uid: Some(expected_child_uid),
             namespace,
+            mode: VfsMode::DescriptorAnchored,
         };
         let mut vfs: ffi::sqlite3_vfs = unsafe { std::mem::zeroed() };
         vfs.pAppData = (&mut state as *mut AnchoredVfsState).cast::<c_void>();
