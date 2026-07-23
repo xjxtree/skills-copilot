@@ -2604,7 +2604,7 @@ struct SkillStoreTests {
         try expectContains(calls, "llm.confirmPromptAndSend", "Task cockpit should send through the confirmation-gated provider path.")
         try expectContains(calls, "\"timeout_ms\":300000", "Task cockpit provider send should use a five minute request timeout.")
         try expectContains(calls, "\"request_kind\":\"task_cockpit\"", "Task cockpit should use the task_cockpit prompt action.")
-        try expectContains(calls, "\"task_text\":\"Prepare local release audit work.\"", "Task cockpit should send task text.")
+        try expectContains(calls, "\"task_text\":\"[REDACTED]\"", "Captured Task Cockpit evidence must redact task text.")
         try expectContains(calls, "\"agents\":[\"claude-code\"]", "Task cockpit should pass the selected agent scope.")
         try expectContains(calls, "\"instance_ids\":[\"alpha\",\"beta\"]", "Task cockpit should include effective skill candidates for selected agents.")
         try expectFalse(calls.contains("config.toggleSkill"), "Task cockpit must not call config write paths.")
