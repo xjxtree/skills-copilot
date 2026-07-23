@@ -20,8 +20,17 @@ use crate::{display_path, unix_timestamp_millis, ServiceError};
 
 #[cfg(test)]
 thread_local! {
+    static PROJECT_CONTEXT_PRE_READBACK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
     static PROJECT_CONTEXT_POST_WRITE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn inject_project_context_pre_readback_hook_for_test(hook: impl FnOnce() + 'static) {
+    PROJECT_CONTEXT_PRE_READBACK_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
 }
 
 #[cfg(test)]
@@ -319,7 +328,25 @@ fn apply_project_context_mutation(
         }
     }
 
-    let readback_state = load_store_snapshot_at(&owner)?.state();
+    #[cfg(test)]
+    PROJECT_CONTEXT_PRE_READBACK_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+    let readback_state = match load_store_snapshot_at(&owner) {
+        Ok(snapshot) => snapshot.state(),
+        Err(_) => {
+            return Err(CommandError::PartialEffect {
+                operation: "project context".to_string(),
+                state: "applied_unverified",
+                cleanup_required: false,
+                detail: "project context bytes were replaced, but semantic read-back failed"
+                    .to_string(),
+            }
+            .into())
+        }
+    };
     if readback_state.revision != candidate_revision {
         return Err(CommandError::PartialEffect {
             operation: "project context".to_string(),
@@ -351,7 +378,13 @@ fn apply_project_context_mutation(
             target_id: PROJECT_CONTEXT_TARGET_ID.to_string(),
             revision: readback_state.revision.clone(),
         }],
-    )?;
+    )
+    .map_err(|_| CommandError::PartialEffect {
+        operation: "project context".to_string(),
+        state: "applied_unverified",
+        cleanup_required: false,
+        detail: "project context bytes were replaced and matched the candidate, but the read-back record could not be constructed".to_string(),
+    })?;
     Ok(ProjectContextApplyResult {
         action: locked.preview.action,
         preview_token: locked.preview.preview_token,

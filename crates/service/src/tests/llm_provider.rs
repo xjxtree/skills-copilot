@@ -3514,6 +3514,39 @@ fn project_context_apply_reports_partial_effect_if_owner_binding_changes_after_w
 }
 
 #[test]
+fn project_context_apply_reports_partial_effect_if_post_write_readback_fails() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-readback-failure-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let project = temp_root.join("project");
+    fs::create_dir_all(&project).expect("create project");
+
+    let corrupted_state = app_data_dir.join("project-context.json");
+    crate::project_context::inject_project_context_pre_readback_hook_for_test(move || {
+        fs::write(&corrupted_state, b"{invalid-after-write").expect("corrupt readback state");
+    });
+    let host = test_host(app_data_dir.clone());
+    let (_, response) =
+        confirmed_project_set_context(&host, json!({ "root_path": project, "name": "Accepted" }));
+
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("applied_unverified")
+    );
+    assert_eq!(
+        fs::read(app_data_dir.join("project-context.json")).expect("corrupt persisted state"),
+        b"{invalid-after-write"
+    );
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
 fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
     let temp_root = env::temp_dir().join(format!(
         "skills-copilot-scan-rollback-{}-{}",
