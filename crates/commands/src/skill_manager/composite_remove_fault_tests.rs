@@ -22,7 +22,7 @@ fn exercise_composite_commit_failure(outcome_unknown: bool) {
     )
     .expect("skill file");
     let canonical_skill = skill_path.canonicalize().expect("canonical skill");
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
     catalog
         .upsert_skill_instance(&tests::test_instance(
@@ -36,9 +36,12 @@ fn exercise_composite_commit_failure(outcome_unknown: bool) {
         .expect("catalog fixture");
     let plan = CompositeLocalDeletePlan {
         instance_id: "tool-composite".to_string(),
-        skill_name,
+        skill_name: skill_name.clone(),
         skill_path: canonical_skill.clone(),
         skill_directory: skill_directory.clone(),
+        skill_directory_relative: PathBuf::from("tool-global")
+            .join("skills")
+            .join(&skill_name),
         catalog_revision: "fixture".to_string(),
         tree_revision: local_delete_tree_revision(&canonical_skill).expect("tree revision"),
     };
@@ -53,23 +56,24 @@ fn exercise_composite_commit_failure(outcome_unknown: bool) {
     catalog
         .delete_skill_instance("tool-composite")
         .expect("transactional catalog delete");
-    let quarantine = plan
-        .skill_directory
-        .with_file_name(format!(".agent-copilot-delete-{label}"));
-    fs::rename(&plan.skill_directory, &quarantine).expect("quarantine local source");
-    let quarantine_tree_revision =
-        local_delete_tree_revision(&quarantine.join("SKILL.md")).expect("quarantine revision");
+    let mutation_lock = crate::mutation_lock::lock_app_mutations(&app_data).expect("owner lock");
+    let owner = mutation_lock.owner_fs();
+    let quarantine_relative = PathBuf::from("tool-global")
+        .join("skills")
+        .join(format!(".agent-copilot-delete-{label}"));
+    owner
+        .rename(&plan.skill_directory_relative, &quarantine_relative)
+        .expect("quarantine local source");
     let mut cleanup = CompositeLocalDeleteMutation {
-        quarantine,
-        quarantine_tree_revision,
-        original_directory: plan.skill_directory.clone(),
+        quarantine_relative,
+        original_directory_relative: plan.skill_directory_relative.clone(),
         original_skill_path: plan.skill_path.clone(),
         original_tree_revision: plan.tree_revision.clone(),
         observations: Vec::new(),
         active: true,
     };
 
-    let disposition = commit_composite_local_delete(transaction, Some(&mut cleanup));
+    let disposition = commit_composite_local_delete(transaction, &owner, Some(&mut cleanup));
 
     if outcome_unknown {
         assert!(matches!(
@@ -136,17 +140,23 @@ fn composite_rollback_failure_retains_private_quarantine() {
     let original_revision =
         local_delete_tree_revision(&canonical_skill).expect("original revision");
     let quarantine = skill_directory.with_file_name(".agent-copilot-delete-rollback-unknown");
-    fs::rename(&skill_directory, &quarantine).expect("quarantine local source");
+    let mutation_lock = crate::mutation_lock::lock_app_mutations(&app_data).expect("owner lock");
+    let owner = mutation_lock.owner_fs();
+    let skill_directory_relative = PathBuf::from("tool-global/skills").join("rollback-unknown");
+    let quarantine_relative =
+        PathBuf::from("tool-global/skills").join(".agent-copilot-delete-rollback-unknown");
+    owner
+        .rename(&skill_directory_relative, &quarantine_relative)
+        .expect("quarantine local source");
     let mut cleanup = CompositeLocalDeleteMutation {
-        quarantine: quarantine.clone(),
-        quarantine_tree_revision: original_revision.clone(),
-        original_directory: skill_directory.clone(),
+        quarantine_relative,
+        original_directory_relative: skill_directory_relative,
         original_skill_path: canonical_skill,
         original_tree_revision: original_revision,
         observations: Vec::new(),
         active: true,
     };
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
     catalog.inject_next_rollback_failure_for_test();
     let transaction = catalog
@@ -155,6 +165,7 @@ fn composite_rollback_failure_retains_private_quarantine() {
 
     let error = rollback_composite_local_delete(
         transaction,
+        &owner,
         Some(&mut cleanup),
         &CommandError::VerificationFailed,
     )

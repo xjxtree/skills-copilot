@@ -77,7 +77,8 @@ pub use config_support::read_agent_config;
 pub use error::*;
 pub use history::*;
 pub(crate) use local_skill_import::{
-    register_tool_global_staged_skill, tool_global_skill_name_from_content,
+    register_tool_global_staged_skill, register_tool_global_staged_skill_content,
+    tool_global_skill_name_from_content,
 };
 pub use product_projection::*;
 pub use script_execution::*;

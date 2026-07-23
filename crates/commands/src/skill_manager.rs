@@ -24,7 +24,7 @@ use skills_copilot_core::{
 use crate::{
     action_descriptor, action_preview_binding, action_source_revision, canonical_project_id,
     canonical_readback_domains, coverage_projection_evidence_id, ensure_action_confirmed,
-    import_local_skill_to_tool_global, scan_all_catalog_report, tool_global_staging_skills_root,
+    scan_all_catalog_report, tool_global_staging_skills_root,
     transaction_lifecycle::rollback_catalog_before_compensation, ActionConfirmation,
     ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation,
     ActionReadbackRecord, ActionReference, CommandError,
@@ -468,7 +468,7 @@ pub fn apply_install_with_manager(
         params.action_reference.as_ref(),
     )?;
     let operation = preview.operation.clone();
-    with_manager_mutation_lock(app_data_dir, &operation, || {
+    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
         validate_manager_preconditions(ctx, &preview)?;
         let before = manager_selected_skill_snapshot(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
@@ -495,6 +495,7 @@ pub fn apply_install_with_manager(
                 &[],
                 &[],
             )?);
+            owner.validate_owner_path_binding()?;
             Ok(SkillManagerMutationRecord {
                 preview: preview.clone(),
                 output: Some(output),
@@ -603,7 +604,7 @@ pub fn apply_remove_with_manager(
         params.action_reference.as_ref(),
     )?;
     let operation = preview.operation.clone();
-    with_manager_mutation_lock(app_data_dir, &operation, || {
+    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
         let locked_cleanup_plan =
             if let Some(instance_id) = params.cleanup_local_instance_id.as_deref() {
                 let plan =
@@ -644,7 +645,7 @@ pub fn apply_remove_with_manager(
             let mut extra_observations = Vec::new();
             if let Some(plan) = locked_cleanup_plan.as_ref() {
                 let applied =
-                    apply_composite_local_delete(catalog, app_data_dir, plan, &mut cleanup)?;
+                    apply_composite_local_delete(catalog, app_data_dir, owner, plan, &mut cleanup)?;
                 extra_observations.extend(applied.observations.clone());
                 cleanup = Some(applied);
                 updated_skills = catalog.list_skill_records()?;
@@ -656,6 +657,7 @@ pub fn apply_remove_with_manager(
                 &[],
                 &extra_observations,
             )?);
+            owner.validate_owner_path_binding()?;
             Ok(SkillManagerMutationRecord {
                 preview: preview.clone(),
                 output: Some(output),
@@ -670,11 +672,11 @@ pub fn apply_remove_with_manager(
             Ok(record) => record,
             Err(error) => {
                 let error = manager_post_process_error(ctx, &preview, error);
-                rollback_composite_local_delete(transaction, cleanup.as_mut(), &error)?;
+                rollback_composite_local_delete(transaction, owner, cleanup.as_mut(), &error)?;
                 return Err(error);
             }
         };
-        match commit_composite_local_delete(transaction, cleanup.as_mut()) {
+        match commit_composite_local_delete(transaction, owner, cleanup.as_mut()) {
             CompositeLocalDeleteCommit::Committed => {}
             CompositeLocalDeleteCommit::NotCommitted(error) => {
                 return Err(manager_partial_effect(
@@ -714,7 +716,7 @@ pub fn apply_remove_with_manager(
             }
         }
         if let Some(cleanup) = cleanup.as_mut() {
-            if cleanup.finish().is_err() {
+            if cleanup.finish(owner).is_err() {
                 record.follow_up = Some(SkillManagerCleanupFollowUp {
                     kind: "quarantine_cleanup".to_string(),
                     state: "delete_applied_cleanup_pending".to_string(),
@@ -724,6 +726,17 @@ pub fn apply_remove_with_manager(
                             .to_string(),
                 });
             }
+        }
+        if let Err(error) = owner.validate_owner_path_binding() {
+            return Err(manager_partial_effect(
+                ctx,
+                &preview,
+                "applied_unverified",
+                true,
+                &format!(
+                    "app-data owner binding changed after commit; local cleanup outcome is uncertain: {error}"
+                ),
+            ));
         }
         Ok(record)
     })
@@ -759,7 +772,7 @@ pub fn apply_update_with_manager(
         params.action_reference.as_ref(),
     )?;
     let operation = preview.operation.clone();
-    with_manager_mutation_lock(app_data_dir, &operation, || {
+    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
         validate_manager_preconditions(ctx, &preview)?;
         let before = manager_selected_skill_snapshot(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
@@ -786,6 +799,7 @@ pub fn apply_update_with_manager(
                 &[],
                 &[],
             )?);
+            owner.validate_owner_path_binding()?;
             Ok(SkillManagerMutationRecord {
                 preview: preview.clone(),
                 output: Some(output),
@@ -845,10 +859,14 @@ pub fn apply_local_create_with_manager(
         params.action_reference.as_ref(),
     )?;
     let operation = preview.operation.clone();
-    with_manager_mutation_lock(app_data_dir, &operation, || {
-        validate_manager_preconditions(ctx, &preview)?;
+    with_manager_mutation_lock(catalog, app_data_dir, &operation, |owner| {
+        validate_local_create_manager_preconditions(owner, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
-        let output = match run_previewed_command(ctx, &preview) {
+        let output = match run_previewed_command_with_owner_cwd(
+            ctx,
+            &preview,
+            Some((owner, Path::new("local-skill-library/sources"))),
+        ) {
             Ok(command) => command.output,
             Err(error) => {
                 return Err(rollback_manager_catalog_transaction(
@@ -860,29 +878,91 @@ pub fn apply_local_create_with_manager(
             }
         };
         let mutation = (|| {
-            verify_manager_target_transition(&preview)?;
+            verify_local_create_target_transition(owner, app_data_dir, &preview)?;
             let source_path = local_create_source_path(app_data_dir, &params.name)?;
-            let imported = import_local_skill_to_tool_global(
+            let source_relative = local_create_source_relative(&params.name)?;
+            let source_skill_relative = source_relative.join("SKILL.md");
+            let source_content = owner.read_regular_file_to_string(
+                &source_skill_relative,
+                MAX_MANAGER_TARGET_BYTES,
+                "local skill source",
+            )?;
+            let parsed_name = crate::tool_global_skill_name_from_content(
+                &source_content,
+                &safe_skill_name(&params.name)?,
+            );
+            let destination_relative = PathBuf::from("tool-global/skills").join(format!(
+                "{}-{}",
+                crate::canonical_skill_name_suggestion(&parsed_name),
+                crate::short_hash(&source_path.to_string_lossy())
+            ));
+            owner.ensure_directory_all(Path::new("tool-global/skills"))?;
+            let temp_relative = PathBuf::from("tool-global/skills").join(format!(
+                ".{}.tmp-{}",
+                destination_relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("import"),
+                unix_timestamp_millis()
+            ));
+            owner.copy_regular_tree(
+                &source_relative,
+                &temp_relative,
+                MAX_MANAGER_TARGET_ENTRIES,
+                MAX_MANAGER_TARGET_BYTES,
+                MAX_MANAGER_TARGET_BYTES,
+                "local skill source",
+            )?;
+            if owner
+                .snapshot_regular_tree(
+                    &destination_relative,
+                    MAX_MANAGER_TARGET_ENTRIES,
+                    MAX_MANAGER_TARGET_BYTES,
+                    MAX_MANAGER_TARGET_BYTES,
+                    "local skill staging destination",
+                )?
+                .present
+            {
+                owner.remove_tree_if_exists(&destination_relative)?;
+            }
+            owner.rename(&temp_relative, &destination_relative)?;
+            let staged_skill_relative = destination_relative.join("SKILL.md");
+            let staged_content = owner.read_regular_file_to_string(
+                &staged_skill_relative,
+                MAX_MANAGER_TARGET_BYTES,
+                "staged local skill",
+            )?;
+            if staged_content != source_content {
+                return Err(CommandError::VerificationFailed);
+            }
+            let staged_skill_path = app_data_dir.join(&staged_skill_relative);
+            let imported = crate::register_tool_global_staged_skill_content(
                 catalog,
                 ctx,
-                &app_data_dir.join("tool-global"),
                 &source_path,
+                &staged_skill_path,
+                &staged_content,
+                unix_timestamp_millis(),
             )?;
             let records = catalog.list_skill_records()?;
-            verify_local_create_operation(
+            verify_local_create_operation_content(
                 catalog,
                 &params.name,
                 &source_path,
+                &source_content,
                 &imported,
+                &staged_content,
                 &records,
             )?;
-            let readback = Some(manager_mutation_readback(
-                ctx,
+            let readback = Some(local_create_mutation_readback(
+                owner,
+                app_data_dir,
                 &preview,
                 &records,
-                &[source_path.clone(), imported.imported.path.clone()],
-                &[],
+                &source_relative,
+                &destination_relative,
             )?);
+            owner.validate_owner_path_binding()?;
             Ok(SkillManagerLocalCreateRecord {
                 preview: preview.clone(),
                 output: Some(output),
@@ -970,20 +1050,23 @@ pub fn delete_local_skill_with_manager(
                 confirmed: true,
             }),
         )?;
-        let _mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+        let mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
         run_local_delete_pre_rename_test_hook(&canonical_path);
+        mutation_lock.validate_owner_path_binding()?;
+        catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
+        let owner = mutation_lock.owner_fs();
         let transaction = catalog.begin_immediate_transaction()?;
         let current_meta = catalog
             .get_skill_instance_meta(&params.instance_id)?
             .ok_or(CommandError::StaleActionReference)?;
         let current_records = catalog.list_skill_records()?;
-        let current_canonical_path = current_meta
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| current_meta.path.clone());
+        if current_meta.path != meta.path {
+            return Err(CommandError::StaleActionReference);
+        }
+        let current_canonical_path = canonical_path.clone();
         let current_references = local_delete_references(&current_meta, &current_records);
-        let current_app_owned = current_meta.agent == AgentId::ToolGlobal
-            && current_canonical_path.starts_with(&canonical_root);
+        let current_app_owned =
+            current_meta.agent == AgentId::ToolGlobal && current_canonical_path == canonical_path;
         if !current_app_owned || !current_references.is_empty() {
             return Err(CommandError::StaleActionReference);
         }
@@ -1021,31 +1104,46 @@ pub fn delete_local_skill_with_manager(
                     "local delete action has no source-tree precondition".to_string(),
                 )
             })?;
-        if current_canonical_path != canonical_path
-            || local_delete_tree_revision(&current_canonical_path)? != expected_tree_revision
-        {
-            return Err(CommandError::StaleActionReference);
-        }
         let skill_dir = current_canonical_path.parent().ok_or_else(|| {
             CommandError::UnsafeConfigPath("local skill path has no parent".to_string())
         })?;
-        let quarantine = skill_dir.with_file_name(format!(
+        let skill_dir_relative =
+            app_owned_directory_relative(&canonical_root, skill_dir, "local skill delete")?;
+        if local_delete_tree_revision_owner(&owner, &skill_dir_relative, &current_canonical_path)?
+            != expected_tree_revision
+        {
+            return Err(CommandError::StaleActionReference);
+        }
+        let quarantine_relative = PathBuf::from("tool-global").join("skills").join(format!(
             ".agent-copilot-delete-{}-{}",
             safe_skill_name(&current_meta.name)?,
             unix_timestamp_millis()
         ));
-        if !skill_dir.starts_with(&canonical_root) || !skill_dir.exists() || quarantine.exists() {
+        if owner
+            .snapshot_regular_tree(
+                &quarantine_relative,
+                MAX_MANAGER_TARGET_ENTRIES,
+                MAX_MANAGER_TARGET_BYTES,
+                MAX_MANAGER_TARGET_BYTES,
+                "local skill delete quarantine",
+            )?
+            .present
+        {
             return Err(CommandError::UnsafeConfigPath(
                 "local skill delete target changed after preview".to_string(),
             ));
         }
-        fs::rename(skill_dir, &quarantine)?;
+        owner.rename(&skill_dir_relative, &quarantine_relative)?;
         run_local_delete_post_rename_test_hook(&current_canonical_path);
         let (missing_tree_revision, observed_tree_revision) =
             match (|| -> Result<_, CommandError> {
                 Ok((
                     local_delete_missing_tree_revision(&current_canonical_path)?,
-                    local_delete_tree_revision(&current_canonical_path)?,
+                    local_delete_tree_revision_owner(
+                        &owner,
+                        &skill_dir_relative,
+                        &current_canonical_path,
+                    )?,
                 ))
             })() {
                 Ok(revisions) => revisions,
@@ -1057,8 +1155,9 @@ pub fn delete_local_skill_with_manager(
                         "the quarantined original was preserved for inspection",
                     )?;
                     restore_local_delete_quarantine(
-                        &quarantine,
-                        skill_dir,
+                        &owner,
+                        &quarantine_relative,
+                        &skill_dir_relative,
                         &current_canonical_path,
                         expected_tree_revision,
                     )
@@ -1114,8 +1213,9 @@ pub fn delete_local_skill_with_manager(
                 "the quarantined original was preserved for inspection",
             )?;
             restore_local_delete_quarantine(
-                &quarantine,
-                skill_dir,
+                &owner,
+                &quarantine_relative,
+                &skill_dir_relative,
                 &current_canonical_path,
                 expected_tree_revision,
             )
@@ -1158,8 +1258,9 @@ pub fn delete_local_skill_with_manager(
                     "the quarantined original was preserved for inspection",
                 )?;
                 restore_local_delete_quarantine(
-                    &quarantine,
-                    skill_dir,
+                    &owner,
+                    &quarantine_relative,
+                    &skill_dir_relative,
                     &current_canonical_path,
                     expected_tree_revision,
                 )
@@ -1174,12 +1275,45 @@ pub fn delete_local_skill_with_manager(
                 return Err(error);
             }
         };
+        if let Err(error) = owner.validate_owner_path_binding() {
+            let drift_error = CommandError::PartialEffect {
+                operation: "skillManager.deleteLocal".to_string(),
+                state: "applied_unverified",
+                cleanup_required: false,
+                detail: format!(
+                    "app-data owner binding changed after filesystem and catalog read-back; the local source was restored: {error}"
+                ),
+            };
+            rollback_catalog_before_compensation(
+                transaction,
+                "skillManager.deleteLocal",
+                &drift_error,
+                "the quarantined original was preserved for inspection",
+            )?;
+            restore_local_delete_quarantine(
+                &owner,
+                &quarantine_relative,
+                &skill_dir_relative,
+                &current_canonical_path,
+                expected_tree_revision,
+            )
+            .map_err(|cleanup_error| CommandError::PartialEffect {
+                operation: "skillManager.deleteLocal".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "owner binding changed before commit ({error}); source restoration failed ({cleanup_error})"
+                ),
+            })?;
+            return Err(drift_error);
+        }
         match transaction.commit_classified() {
             Ok(()) => {}
             Err(CatalogCommitError::NotCommitted(error)) => {
                 restore_local_delete_quarantine(
-                    &quarantine,
-                    skill_dir,
+                    &owner,
+                    &quarantine_relative,
+                    &skill_dir_relative,
                     &current_canonical_path,
                     expected_tree_revision,
                 )
@@ -1205,11 +1339,11 @@ pub fn delete_local_skill_with_manager(
             }
         }
         let cleanup_result = if inject_local_delete_cleanup_failure(&current_canonical_path) {
-            Err(std::io::Error::other(
+            Err(CommandError::Io(std::io::Error::other(
                 "injected local delete quarantine cleanup failure",
-            ))
+            )))
         } else {
-            fs::remove_dir_all(&quarantine)
+            owner.remove_tree_if_exists(&quarantine_relative)
         };
         if cleanup_result.is_err() {
             follow_up = Some(SkillManagerCleanupFollowUp {
@@ -1255,32 +1389,63 @@ pub fn delete_local_skill_with_manager(
 }
 
 fn restore_local_delete_quarantine(
-    quarantine: &Path,
-    original_directory: &Path,
+    owner: &crate::AppDataOwnerFs<'_>,
+    quarantine_relative: &Path,
+    original_directory_relative: &Path,
     original_skill_file: &Path,
     expected_tree_revision: &str,
 ) -> Result<(), CommandError> {
-    if original_directory.exists() {
+    if owner
+        .snapshot_regular_tree(
+            original_directory_relative,
+            MAX_MANAGER_TARGET_ENTRIES,
+            MAX_MANAGER_TARGET_BYTES,
+            MAX_MANAGER_TARGET_BYTES,
+            "local delete target",
+        )?
+        .present
+    {
         return Err(CommandError::InvalidSkillManagerRequest(
             "local delete target changed to an unowned third state during compensation".to_string(),
         ));
     }
-    let quarantined_skill = quarantine.join(
-        original_skill_file
-            .file_name()
-            .ok_or_else(|| CommandError::VerificationFailed)?,
-    );
-    if local_delete_tree_revision(&quarantined_skill)? != expected_tree_revision {
+    if local_delete_tree_revision_owner(owner, quarantine_relative, original_skill_file)?
+        != expected_tree_revision
+    {
         return Err(CommandError::InvalidSkillManagerRequest(
             "local delete quarantine changed to an unowned third state during compensation"
                 .to_string(),
         ));
     }
-    fs::rename(quarantine, original_directory)?;
-    if !original_skill_file.is_file() {
+    owner.rename(quarantine_relative, original_directory_relative)?;
+    if local_delete_tree_revision_owner(owner, original_directory_relative, original_skill_file)?
+        != expected_tree_revision
+    {
         return Err(CommandError::VerificationFailed);
     }
     Ok(())
+}
+
+fn app_owned_directory_relative(
+    canonical_root: &Path,
+    canonical_directory: &Path,
+    label: &str,
+) -> Result<PathBuf, CommandError> {
+    let tail = canonical_directory
+        .strip_prefix(canonical_root)
+        .map_err(|_| {
+            CommandError::UnsafeConfigPath(format!("{label} escaped the app-owned skill root"))
+        })?;
+    if tail.as_os_str().is_empty()
+        || tail
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(CommandError::UnsafeConfigPath(format!(
+            "{label} is not a contained app-owned directory"
+        )));
+    }
+    Ok(PathBuf::from("tool-global").join("skills").join(tail))
 }
 
 pub fn validate_local_delete_confirmation(
@@ -1332,13 +1497,17 @@ pub fn validate_local_delete_confirmation(
 }
 
 fn with_manager_mutation_lock<T>(
+    catalog: &Catalog,
     app_data_dir: &Path,
     operation: &str,
-    action: impl FnOnce() -> Result<T, CommandError>,
+    action: impl FnOnce(&crate::AppDataOwnerFs<'_>) -> Result<T, CommandError>,
 ) -> Result<T, CommandError> {
-    let _mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    let mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
     run_manager_pre_execute_test_hook(operation);
-    action()
+    mutation_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
+    let owner = mutation_lock.owner_fs();
+    action(&owner)
 }
 
 fn with_search_mutation_lock<T>(
@@ -1732,6 +1901,41 @@ fn local_delete_missing_tree_revision(skill_file: &Path) -> Result<String, Comma
     )
 }
 
+fn local_delete_tree_revision_owner(
+    owner: &crate::AppDataOwnerFs<'_>,
+    directory_relative: &Path,
+    logical_skill_file: &Path,
+) -> Result<String, CommandError> {
+    let logical_root = logical_skill_file.parent().ok_or_else(|| {
+        CommandError::UnsafeConfigPath("local skill path has no parent".to_string())
+    })?;
+    let snapshot = owner.snapshot_regular_tree(
+        directory_relative,
+        1_024,
+        16 * 1024 * 1024,
+        16 * 1024 * 1024,
+        "local skill delete tree",
+    )?;
+    if !snapshot.present {
+        return action_source_revision(
+            "manager.local-delete.tree",
+            &[
+                ("root", &logical_root.to_string_lossy()),
+                ("exists", "false"),
+            ],
+        );
+    }
+    let entries_json = serde_json::to_string(&snapshot.rows)?;
+    action_source_revision(
+        "manager.local-delete.tree",
+        &[
+            ("root", &logical_root.to_string_lossy()),
+            ("exists", "true"),
+            ("entries", &entries_json),
+        ],
+    )
+}
+
 fn build_install_preview(
     ctx: &AdapterContext,
     params: &SkillManagerInstallParams,
@@ -2073,6 +2277,14 @@ fn run_previewed_command(
     ctx: &AdapterContext,
     preview: &SkillManagerCommandPreview,
 ) -> Result<SkillManagerCommandExecution, CommandError> {
+    run_previewed_command_with_owner_cwd(ctx, preview, None)
+}
+
+fn run_previewed_command_with_owner_cwd(
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    owner_cwd: Option<(&crate::AppDataOwnerFs<'_>, &Path)>,
+) -> Result<SkillManagerCommandExecution, CommandError> {
     if preview.requires_confirmation && !preview.confirmed {
         return Err(CommandError::InvalidSkillManagerRequest(format!(
             "{} requires confirmed=true",
@@ -2085,39 +2297,78 @@ fn run_previewed_command(
             preview.operation
         )));
     }
-    validate_manager_preconditions(ctx, preview)?;
+    if let Some((owner, _)) = owner_cwd {
+        validate_local_create_manager_preconditions(owner, preview)?;
+    } else {
+        validate_manager_preconditions(ctx, preview)?;
+    }
     let Some((executable, args)) = preview.command.split_first() else {
         return Err(CommandError::InvalidSkillManagerRequest(
             "empty skill manager command".to_string(),
         ));
     };
     let cwd = PathBuf::from(&preview.cwd);
-    let created_cwd_candidates = missing_manager_directories(&cwd)?;
-    if let Err(error) = fs::create_dir_all(&cwd) {
-        return match remove_created_manager_directories(&created_cwd_candidates) {
-            Ok(()) => Err(CommandError::SkillManagerCommandFailed(format!(
-                "{} did not start: {}",
-                preview.operation,
-                redact_command_output(ctx, &error.to_string())
-            ))),
-            Err(cleanup_error) => Err(manager_partial_effect(
-                ctx,
-                preview,
-                "not_started",
-                true,
-                &format!(
-                    "working directory creation failed ({error}); cleanup failed ({cleanup_error})"
-                ),
-            )),
-        };
+    let mut created_cwd_candidates = Vec::new();
+    let mut created_owner_cwd_candidates = Vec::new();
+    let mut owner_cwd_directory = None;
+    if let Some((owner, relative_cwd)) = owner_cwd {
+        created_owner_cwd_candidates = owner.ensure_directory_all(relative_cwd)?;
+        owner_cwd_directory = Some(owner.open_directory_clone(relative_cwd)?);
+    } else {
+        created_cwd_candidates = missing_manager_directories(&cwd)?;
     }
+    if owner_cwd.is_none() {
+        if let Err(error) = fs::create_dir_all(&cwd) {
+            return match remove_created_manager_directories(&created_cwd_candidates) {
+                Ok(()) => Err(CommandError::SkillManagerCommandFailed(format!(
+                    "{} did not start: {}",
+                    preview.operation,
+                    redact_command_output(ctx, &error.to_string())
+                ))),
+                Err(cleanup_error) => Err(manager_partial_effect(
+                    ctx,
+                    preview,
+                    "not_started",
+                    true,
+                    &format!(
+                        "working directory creation failed ({error}); cleanup failed ({cleanup_error})"
+                    ),
+                )),
+            };
+        }
+    }
+    let cleanup_created_cwd = || match owner_cwd {
+        Some((owner, _)) => owner.remove_empty_directories(&created_owner_cwd_candidates),
+        None => remove_created_manager_directories(&created_cwd_candidates),
+    };
     let mut command = Command::new(executable);
     command.env_clear();
     command
         .args(args)
-        .current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(directory) = owner_cwd_directory {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+
+            // `fchdir` is the only child setup step: the directory descriptor
+            // is already validated, no-follow, private, and owned by the
+            // mutation-lock capability.
+            unsafe {
+                command.pre_exec(move || {
+                    rustix::process::fchdir(&directory).map_err(std::io::Error::from)
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = directory;
+            command.current_dir(&cwd);
+        }
+    } else {
+        command.current_dir(&cwd);
+    }
     for env_var in manager_command_env(ctx, executable) {
         command.env(env_var.key, env_var.value);
     }
@@ -2137,7 +2388,7 @@ fn run_previewed_command(
     let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            return match remove_created_manager_directories(&created_cwd_candidates) {
+            return match cleanup_created_cwd() {
                 Ok(()) => Err(CommandError::SkillManagerCommandFailed(format!(
                     "{} did not start: {}",
                     preview.operation,
@@ -2149,8 +2400,8 @@ fn run_previewed_command(
                     "not_started",
                     true,
                     &format!(
-                        "manager process did not start ({error}); working directory cleanup failed ({cleanup_error})"
-                    ),
+                    "working directory creation failed ({error}); cleanup failed ({cleanup_error})"
+                ),
                 )),
             };
         }
@@ -2737,56 +2988,94 @@ fn normalized_manager_source_identity(source: &str, cwd: &Path) -> Result<String
     }
 }
 
-fn verify_manager_target_transition(
+fn local_create_name_from_preview(
     preview: &SkillManagerCommandPreview,
-) -> Result<Vec<PathBuf>, CommandError> {
-    let target_preconditions = preview
-        .preconditions
-        .iter()
-        .filter(|precondition| precondition.kind == ActionPreconditionKind::TargetFile)
-        .collect::<Vec<_>>();
-    if target_preconditions.is_empty() {
-        return Err(CommandError::VerificationFailed);
-    }
-    let changed = target_preconditions
-        .into_iter()
-        .map(|precondition| {
-            let path = PathBuf::from(&precondition.target_id);
-            Ok((manager_target_revision(&path)? != precondition.expected_revision).then_some(path))
+) -> Result<String, CommandError> {
+    preview
+        .command
+        .windows(2)
+        .find(|window| window[0] == "init")
+        .map(|window| safe_skill_name(&window[1]))
+        .transpose()?
+        .ok_or_else(|| {
+            CommandError::MismatchedActionReference(
+                "local create action has no target skill name".to_string(),
+            )
         })
-        .collect::<Result<Vec<_>, CommandError>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    if changed.is_empty() {
-        return Err(CommandError::VerificationFailed);
-    }
-    Ok(changed)
 }
 
-fn verify_local_create_operation(
+fn owner_manager_target_revision(
+    owner: &crate::AppDataOwnerFs<'_>,
+    relative: &Path,
+    logical_path: &Path,
+) -> Result<String, CommandError> {
+    let snapshot = owner.snapshot_regular_tree(
+        relative,
+        MAX_MANAGER_TARGET_ENTRIES,
+        MAX_MANAGER_TARGET_BYTES,
+        MAX_MANAGER_TARGET_BYTES,
+        "manager target tree",
+    )?;
+    let entries = if snapshot.present {
+        let mut entries = Vec::with_capacity(snapshot.rows.len().saturating_add(1));
+        entries.push("directory:<root>".to_string());
+        entries.extend(snapshot.rows.into_iter().map(|row| {
+            row.strip_prefix("dir:")
+                .map_or(row.clone(), |relative| format!("directory:{relative}"))
+        }));
+        entries.sort();
+        entries
+    } else {
+        vec!["missing:<root>".to_string()]
+    };
+    let entries_json = serde_json::to_string(&entries)?;
+    action_source_revision(
+        "manager.target-tree",
+        &[
+            ("path", &logical_path.to_string_lossy()),
+            ("entries", &entries_json),
+        ],
+    )
+}
+
+fn verify_local_create_target_transition(
+    owner: &crate::AppDataOwnerFs<'_>,
+    app_data_dir: &Path,
+    preview: &SkillManagerCommandPreview,
+) -> Result<(), CommandError> {
+    let name = local_create_name_from_preview(preview)?;
+    let relative = local_create_source_relative(&name)?;
+    let expected_target = app_data_dir.join("local-skill-library/sources").join(&name);
+    let precondition = preview
+        .preconditions
+        .iter()
+        .find(|precondition| {
+            precondition.kind == ActionPreconditionKind::TargetFile
+                && Path::new(&precondition.target_id) == expected_target
+        })
+        .ok_or(CommandError::VerificationFailed)?;
+    let actual =
+        owner_manager_target_revision(owner, &relative, Path::new(&precondition.target_id))?;
+    if actual == precondition.expected_revision {
+        return Err(CommandError::VerificationFailed);
+    }
+    Ok(())
+}
+
+fn verify_local_create_operation_content(
     catalog: &Catalog,
     requested_name: &str,
     source_path: &Path,
+    source_content: &str,
     imported: &crate::ToolGlobalImportResult,
+    imported_content: &str,
     records: &[SkillRecord],
 ) -> Result<(), CommandError> {
-    let source_skill = source_path.join("SKILL.md");
-    if !source_path.is_dir() || !source_skill.is_file() || !imported.imported.path.is_file() {
-        return Err(CommandError::VerificationFailed);
-    }
-    let canonical_source = source_path
-        .canonicalize()
-        .map_err(|_| CommandError::VerificationFailed)?;
-    if Path::new(&imported.source_path) != canonical_source
+    if Path::new(&imported.source_path) != source_path
         || imported.instance_id != imported.imported.id
     {
         return Err(CommandError::VerificationFailed);
     }
-    let source_content =
-        fs::read_to_string(&source_skill).map_err(|_| CommandError::VerificationFailed)?;
-    let imported_content = fs::read_to_string(&imported.imported.path)
-        .map_err(|_| CommandError::VerificationFailed)?;
     if source_content != imported_content {
         return Err(CommandError::VerificationFailed);
     }
@@ -2826,6 +3115,47 @@ fn verify_local_create_operation(
         return Err(CommandError::VerificationFailed);
     }
     Ok(())
+}
+
+fn local_create_mutation_readback(
+    owner: &crate::AppDataOwnerFs<'_>,
+    app_data_dir: &Path,
+    preview: &SkillManagerCommandPreview,
+    records: &[SkillRecord],
+    source_relative: &Path,
+    staged_relative: &Path,
+) -> Result<ActionReadbackRecord, CommandError> {
+    let action = preview.action.as_ref().ok_or_else(|| {
+        CommandError::MismatchedActionReference(
+            "local create preview has no typed action".to_string(),
+        )
+    })?;
+    let source_path = app_data_dir.join(source_relative);
+    let staged_path = app_data_dir.join(staged_relative);
+    let inventory = serde_json::to_string(records)?;
+    ActionReadbackRecord::verified(
+        action,
+        vec![
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::SkillFiles,
+                target_id: source_path.to_string_lossy().to_string(),
+                revision: owner_manager_target_revision(owner, source_relative, &source_path)?,
+            },
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::SkillFiles,
+                target_id: staged_path.to_string_lossy().to_string(),
+                revision: owner_manager_target_revision(owner, staged_relative, &staged_path)?,
+            },
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::CatalogSkills,
+                target_id: action.target.id.clone(),
+                revision: action_source_revision(
+                    "manager.catalog.readback",
+                    &[("records", &inventory)],
+                )?,
+            },
+        ],
+    )
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -3046,6 +3376,34 @@ fn validate_manager_preconditions(
     preview: &SkillManagerCommandPreview,
 ) -> Result<(), CommandError> {
     validate_manager_preconditions_except(ctx, preview, None)
+}
+
+fn validate_local_create_manager_preconditions(
+    owner: &crate::AppDataOwnerFs<'_>,
+    preview: &SkillManagerCommandPreview,
+) -> Result<(), CommandError> {
+    let name = local_create_name_from_preview(preview)?;
+    let relative = local_create_source_relative(&name)?;
+    let expected_target = Path::new(&preview.cwd).join(&name);
+    if preview.preconditions.len() != 1 {
+        return Err(CommandError::MismatchedActionReference(
+            "local create action must contain exactly one target precondition".to_string(),
+        ));
+    }
+    let precondition = &preview.preconditions[0];
+    if precondition.kind != ActionPreconditionKind::TargetFile
+        || Path::new(&precondition.target_id) != expected_target
+    {
+        return Err(CommandError::MismatchedActionReference(
+            "local create action targets a different app-owned source".to_string(),
+        ));
+    }
+    let actual =
+        owner_manager_target_revision(owner, &relative, Path::new(&precondition.target_id))?;
+    if actual != precondition.expected_revision {
+        return Err(CommandError::StaleActionReference);
+    }
+    Ok(())
 }
 
 fn validate_manager_preconditions_except(
@@ -4126,6 +4484,12 @@ fn local_create_root(app_data_dir: &Path) -> PathBuf {
 
 fn local_create_source_path(app_data_dir: &Path, name: &str) -> Result<PathBuf, CommandError> {
     Ok(local_create_root(app_data_dir).join(safe_skill_name(name)?))
+}
+
+fn local_create_source_relative(name: &str) -> Result<PathBuf, CommandError> {
+    Ok(PathBuf::from("local-skill-library")
+        .join("sources")
+        .join(safe_skill_name(name)?))
 }
 
 fn preview_token(

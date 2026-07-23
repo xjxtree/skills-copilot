@@ -49,7 +49,7 @@ fn exercise_import_commit_failure(outcome_unknown: bool) {
     fs::create_dir_all(root.join("app-data")).expect("app data");
     fs::create_dir_all(root.join("home")).expect("home");
     write_test_archive(&archive, &skill_name, "Candidate");
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
     let ctx = test_context(&root);
     let preview = preview_local_archive_import(
@@ -128,7 +128,7 @@ fn import_rollback_failure_preserves_the_activated_candidate() {
     fs::create_dir_all(&app_data).expect("app data");
     fs::create_dir_all(root.join("home")).expect("home");
     write_test_archive(&archive, skill_name, "Candidate");
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
     let ctx = test_context(&root);
     let preview = preview_local_archive_import(
@@ -202,7 +202,7 @@ fn exercise_update_commit_failure(outcome_unknown: bool) {
     )
     .expect("original skill");
     write_test_archive(&archive, &skill_name, "Replacement");
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
     let ctx = test_context(&root);
     scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
@@ -305,7 +305,7 @@ fn update_rollback_failure_preserves_replacement_and_backup() {
     )
     .expect("original skill");
     write_test_archive(&archive, skill_name, "Replacement");
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
     let ctx = test_context(&root);
     scan_all_catalog_report(&ctx, &catalog).expect("initial scan");

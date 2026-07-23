@@ -7,6 +7,7 @@ pub(super) struct CompositeLocalDeletePlan {
     skill_name: String,
     pub(super) skill_path: PathBuf,
     skill_directory: PathBuf,
+    skill_directory_relative: PathBuf,
     catalog_revision: String,
     tree_revision: String,
 }
@@ -207,15 +208,19 @@ pub(super) fn composite_local_delete_plan(
         skill_name: meta.name.clone(),
         skill_path: canonical_path.clone(),
         skill_directory: skill_directory.to_path_buf(),
+        skill_directory_relative: PathBuf::from("tool-global").join("skills").join(
+            skill_directory
+                .file_name()
+                .ok_or(CommandError::VerificationFailed)?,
+        ),
         catalog_revision: local_delete_catalog_revision(&meta, &canonical_path, &references)?,
         tree_revision: local_delete_tree_revision(&canonical_path)?,
     })
 }
 
 pub(super) struct CompositeLocalDeleteMutation {
-    quarantine: PathBuf,
-    quarantine_tree_revision: String,
-    original_directory: PathBuf,
+    quarantine_relative: PathBuf,
+    original_directory_relative: PathBuf,
     original_skill_path: PathBuf,
     original_tree_revision: String,
     pub(super) observations: Vec<ActionReadbackObservation>,
@@ -223,40 +228,57 @@ pub(super) struct CompositeLocalDeleteMutation {
 }
 
 impl CompositeLocalDeleteMutation {
-    pub(super) fn restore(&mut self) -> Result<(), CommandError> {
+    pub(super) fn restore(
+        &mut self,
+        owner: &crate::AppDataOwnerFs<'_>,
+    ) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
         }
-        if self.original_directory.exists() {
+        if owner
+            .snapshot_regular_tree(
+                &self.original_directory_relative,
+                MAX_MANAGER_TARGET_ENTRIES,
+                MAX_MANAGER_TARGET_BYTES,
+                MAX_MANAGER_TARGET_BYTES,
+                "local delete target",
+            )?
+            .present
+        {
             return Err(CommandError::InvalidSkillManagerRequest(
                 "local delete target changed to an unowned third state during compensation"
                     .to_string(),
             ));
         }
-        let quarantined_skill = self.quarantine.join(
-            self.original_skill_path
-                .file_name()
-                .ok_or(CommandError::VerificationFailed)?,
-        );
-        if local_delete_tree_revision(&quarantined_skill)? != self.quarantine_tree_revision {
+        if local_delete_tree_revision_owner(
+            owner,
+            &self.quarantine_relative,
+            &self.original_skill_path,
+        )? != self.original_tree_revision
+        {
             return Err(CommandError::InvalidSkillManagerRequest(
                 "local delete quarantine changed to an unowned third state during compensation"
                     .to_string(),
             ));
         }
-        fs::rename(&self.quarantine, &self.original_directory)?;
-        if local_delete_tree_revision(&self.original_skill_path)? != self.original_tree_revision {
+        owner.rename(&self.quarantine_relative, &self.original_directory_relative)?;
+        if local_delete_tree_revision_owner(
+            owner,
+            &self.original_directory_relative,
+            &self.original_skill_path,
+        )? != self.original_tree_revision
+        {
             return Err(CommandError::VerificationFailed);
         }
         self.active = false;
         Ok(())
     }
 
-    pub(super) fn finish(&mut self) -> Result<(), CommandError> {
+    pub(super) fn finish(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
         }
-        fs::remove_dir_all(&self.quarantine)?;
+        owner.remove_tree_if_exists(&self.quarantine_relative)?;
         self.active = false;
         Ok(())
     }
@@ -275,13 +297,14 @@ pub(super) enum CompositeLocalDeleteCommit {
 
 pub(super) fn commit_composite_local_delete(
     transaction: CatalogImmediateTransaction<'_>,
+    owner: &crate::AppDataOwnerFs<'_>,
     cleanup: Option<&mut CompositeLocalDeleteMutation>,
 ) -> CompositeLocalDeleteCommit {
     match transaction.commit_classified() {
         Ok(()) => CompositeLocalDeleteCommit::Committed,
         Err(CatalogCommitError::NotCommitted(error)) => {
             if let Some(cleanup) = cleanup {
-                if let Err(cleanup_error) = cleanup.restore() {
+                if let Err(cleanup_error) = cleanup.restore(owner) {
                     return CompositeLocalDeleteCommit::RestorationFailed {
                         commit_error: error,
                         cleanup_error,
@@ -298,6 +321,7 @@ pub(super) fn commit_composite_local_delete(
 
 pub(super) fn rollback_composite_local_delete(
     transaction: CatalogImmediateTransaction<'_>,
+    owner: &crate::AppDataOwnerFs<'_>,
     cleanup: Option<&mut CompositeLocalDeleteMutation>,
     original_error: &CommandError,
 ) -> Result<(), CommandError> {
@@ -309,7 +333,7 @@ pub(super) fn rollback_composite_local_delete(
     )?;
     if let Some(cleanup) = cleanup {
         cleanup
-            .restore()
+            .restore(owner)
             .map_err(|cleanup_error| CommandError::PartialEffect {
                 operation: "skillManager.applyRemove".to_string(),
                 state: "outcome_unknown",
@@ -324,7 +348,8 @@ pub(super) fn rollback_composite_local_delete(
 
 pub(super) fn apply_composite_local_delete(
     catalog: &Catalog,
-    app_data_dir: &Path,
+    _app_data_dir: &Path,
+    owner: &crate::AppDataOwnerFs<'_>,
     plan: &CompositeLocalDeletePlan,
     recovery: &mut Option<CompositeLocalDeleteMutation>,
 ) -> Result<CompositeLocalDeleteMutation, CommandError> {
@@ -332,55 +357,62 @@ pub(super) fn apply_composite_local_delete(
         .get_skill_instance_meta(&plan.instance_id)?
         .ok_or(CommandError::StaleActionReference)?;
     let records = catalog.list_skill_records()?;
-    let canonical_path = meta
-        .path
-        .canonicalize()
-        .map_err(|_| CommandError::StaleActionReference)?;
     if meta.agent != AgentId::ToolGlobal
         || meta.name != plan.skill_name
-        || canonical_path != plan.skill_path
+        || meta.path != plan.skill_path
         || !local_delete_references(&meta, &records).is_empty()
-        || local_delete_tree_revision(&canonical_path)? != plan.tree_revision
+        || local_delete_tree_revision_owner(
+            owner,
+            &plan.skill_directory_relative,
+            &plan.skill_path,
+        )? != plan.tree_revision
     {
         return Err(CommandError::StaleActionReference);
     }
-    let canonical_root = tool_global_staging_skills_root(app_data_dir).canonicalize()?;
-    if !plan.skill_directory.starts_with(&canonical_root) {
-        return Err(CommandError::StaleActionReference);
-    }
-    let quarantine = plan.skill_directory.with_file_name(format!(
+    let quarantine_relative = PathBuf::from("tool-global").join("skills").join(format!(
         ".agent-copilot-delete-{}-{}",
         safe_skill_name(&meta.name)?,
         unix_timestamp_millis()
     ));
-    if quarantine.exists() {
+    if owner
+        .snapshot_regular_tree(
+            &quarantine_relative,
+            MAX_MANAGER_TARGET_ENTRIES,
+            MAX_MANAGER_TARGET_BYTES,
+            MAX_MANAGER_TARGET_BYTES,
+            "local delete quarantine",
+        )?
+        .present
+    {
         return Err(CommandError::StaleActionReference);
     }
-    fs::rename(&plan.skill_directory, &quarantine)?;
+    owner.rename(&plan.skill_directory_relative, &quarantine_relative)?;
     *recovery = Some(CompositeLocalDeleteMutation {
-        quarantine,
-        quarantine_tree_revision: plan.tree_revision.clone(),
-        original_directory: plan.skill_directory.clone(),
+        quarantine_relative,
+        original_directory_relative: plan.skill_directory_relative.clone(),
         original_skill_path: plan.skill_path.clone(),
         original_tree_revision: plan.tree_revision.clone(),
         observations: Vec::new(),
         active: true,
     });
-    let quarantine = &recovery
+    let quarantine_relative = &recovery
         .as_ref()
         .ok_or(CommandError::VerificationFailed)?
-        .quarantine;
-    let quarantined_skill = quarantine.join(
-        plan.skill_path
-            .file_name()
-            .ok_or(CommandError::VerificationFailed)?,
-    );
-    if local_delete_tree_revision(&quarantined_skill)? != plan.tree_revision {
+        .quarantine_relative;
+    if local_delete_tree_revision_owner(owner, quarantine_relative, &plan.skill_path)?
+        != plan.tree_revision
+    {
         return Err(CommandError::VerificationFailed);
     }
-    let missing_tree_revision = local_delete_missing_tree_revision(&plan.skill_path)?;
+    let missing_tree_revision =
+        local_delete_tree_revision_owner(owner, &plan.skill_directory_relative, &plan.skill_path)?;
     let mutation = (|| -> Result<Vec<ActionReadbackObservation>, CommandError> {
-        if local_delete_tree_revision(&plan.skill_path)? != missing_tree_revision {
+        if local_delete_tree_revision_owner(
+            owner,
+            &plan.skill_directory_relative,
+            &plan.skill_path,
+        )? != missing_tree_revision
+        {
             return Err(CommandError::VerificationFailed);
         }
         let payload = serde_json::json!({
@@ -490,7 +522,7 @@ mod tests {
         symlink(&local_directory, &manager_link).expect("manager link");
 
         let canonical_skill = local_skill.canonicalize().expect("canonical local skill");
-        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        let catalog = Catalog::in_memory().expect("catalog");
         catalog.init().expect("catalog schema");
         catalog
             .upsert_skill_instances(&[

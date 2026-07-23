@@ -8,6 +8,8 @@ use std::{
 
 use crate::{mutation_lock::AppMutationLock, CommandError};
 
+mod tree;
+
 /// Filesystem capability rooted at the already-opened and locked app-data
 /// owner directory.
 ///
@@ -24,6 +26,10 @@ impl<'lock> AppDataOwnerFs<'lock> {
             lock,
             _guard: PhantomData,
         }
+    }
+
+    pub(crate) fn validate_owner_path_binding(&self) -> Result<(), CommandError> {
+        self.lock.validate_owner_path_binding()
     }
 
     pub fn read_bounded_regular_file(

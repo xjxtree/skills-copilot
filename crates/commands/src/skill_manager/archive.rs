@@ -180,7 +180,11 @@ pub fn apply_local_archive_import(
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
-    let _owner = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    let mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    super::run_manager_pre_execute_test_hook("localArchiveImport");
+    mutation_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
+    let owner = mutation_lock.owner_fs();
     let locked = prepare_local_archive_import(catalog, app_data_dir, ctx, params)?;
     ensure_archive_confirmation(
         &locked.action_binding,
@@ -193,6 +197,7 @@ pub fn apply_local_archive_import(
     let mut applied = match apply_archive_import_guarded(
         catalog,
         app_data_dir,
+        &owner,
         ctx,
         &locked,
         &mut recovery,
@@ -207,7 +212,7 @@ pub fn apply_local_archive_import(
             )?;
             if let Some(mut recovery) = recovery {
                 recovery
-                    .restore()
+                    .restore(&owner)
                     .map_err(|cleanup_error| {
                         archive_partial(
                             "skillManager.applyLocalArchiveImport",
@@ -228,10 +233,37 @@ pub fn apply_local_archive_import(
         Some(applied.imported.clone()),
         Some(applied.readback.clone()),
     );
+    if let Err(error) = owner.validate_owner_path_binding() {
+        let drift_error = archive_partial(
+            "skillManager.applyLocalArchiveImport",
+            "applied_unverified",
+            false,
+            format!(
+                "app-data owner binding changed after import read-back; the imported tree was restored: {error}"
+            ),
+        );
+        rollback_catalog_before_compensation(
+            transaction,
+            "skillManager.applyLocalArchiveImport",
+            &drift_error,
+            "the imported candidate was preserved for recovery",
+        )?;
+        applied.restore(&owner).map_err(|cleanup_error| {
+            archive_partial(
+                "skillManager.applyLocalArchiveImport",
+                "outcome_unknown",
+                true,
+                format!(
+                    "owner binding changed before commit ({error}); imported tree restoration failed ({cleanup_error})"
+                ),
+            )
+        })?;
+        return Err(drift_error);
+    }
     match transaction.commit_classified() {
         Ok(()) => {}
         Err(CatalogCommitError::NotCommitted(error)) => {
-            applied.restore().map_err(|cleanup_error| {
+            applied.restore(&owner).map_err(|cleanup_error| {
                 archive_partial(
                     "skillManager.applyLocalArchiveImport",
                     "outcome_unknown",
@@ -290,7 +322,14 @@ fn prepare_local_archive_import(
     let archive_path = validate_archive_path(Path::new(params.archive_path.trim()))?;
     let inspection = inspect_archive(&archive_path)?;
     ensure_local_import_name_available(catalog, &inspection.skill_name)?;
-    let destination_directory = tool_global_staging_skills_root(app_data_dir)
+    let canonical_app_data = app_data_dir.canonicalize().map_err(|_| {
+        CommandError::InvalidSkillManagerRequest(
+            "app-owned local skill root is unavailable".to_string(),
+        )
+    })?;
+    let destination_directory = canonical_app_data
+        .join("tool-global")
+        .join("skills")
         .join(super::safe_skill_name(&inspection.skill_name)?);
     let destination_skill_path = destination_directory.join("SKILL.md");
     let target_revision = skill_tree_content_revision(&destination_skill_path)?;
@@ -390,21 +429,22 @@ fn is_shared_agents_skill_path(path: &Path) -> bool {
 }
 
 struct ArchiveImportRecovery {
-    destination_directory: PathBuf,
+    destination_relative: PathBuf,
     candidate_revision: String,
     active: bool,
 }
 
 impl ArchiveImportRecovery {
-    fn restore(&mut self) -> Result<(), CommandError> {
+    fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
         }
-        let skill_path = self.destination_directory.join("SKILL.md");
-        if skill_tree_content_revision(&skill_path)? != self.candidate_revision {
+        if skill_tree_content_revision_owner(owner, &self.destination_relative)?
+            != self.candidate_revision
+        {
             return Err(CommandError::StaleActionReference);
         }
-        fs::remove_dir_all(&self.destination_directory)?;
+        owner.remove_tree_if_exists(&self.destination_relative)?;
         self.active = false;
         Ok(())
     }
@@ -421,8 +461,8 @@ struct AppliedArchiveImport {
 }
 
 impl AppliedArchiveImport {
-    fn restore(&mut self) -> Result<(), CommandError> {
-        self.recovery.restore()
+    fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        self.recovery.restore(owner)
     }
 
     fn commit(&mut self) {
@@ -432,81 +472,77 @@ impl AppliedArchiveImport {
 
 fn apply_archive_import_guarded(
     catalog: &Catalog,
-    app_data_dir: &Path,
+    _app_data_dir: &Path,
+    owner: &crate::AppDataOwnerFs<'_>,
     ctx: &AdapterContext,
     plan: &LocalArchiveImportPlan,
     recovery: &mut Option<ArchiveImportRecovery>,
 ) -> Result<AppliedArchiveImport, CommandError> {
-    let skills_root = tool_global_staging_skills_root(app_data_dir);
-    create_guarded_directory_chain(&skills_root)?;
-    let canonical_root = skills_root.canonicalize()?;
-    let destination_directory = canonical_root.join(
-        plan.destination_directory
-            .file_name()
-            .ok_or(CommandError::StaleActionReference)?,
-    );
-    if destination_directory.exists() {
+    owner.ensure_directory_all(Path::new("tool-global/skills"))?;
+    let destination_name = plan
+        .destination_directory
+        .file_name()
+        .ok_or(CommandError::StaleActionReference)?;
+    let destination_relative = PathBuf::from("tool-global")
+        .join("skills")
+        .join(destination_name);
+    let destination_directory = plan.destination_directory.clone();
+    if skill_tree_content_revision_owner(owner, &destination_relative)? != missing_tree_revision() {
         return Err(CommandError::StaleActionReference);
     }
-    let temp_dir = canonical_root.join(format!(
+    let temp_relative = PathBuf::from("tool-global").join("skills").join(format!(
         ".archive-import-{}-{}",
         unix_timestamp_millis(),
         std::process::id()
     ));
-    ensure_child_path(&canonical_root, &temp_dir)?;
-    fs::create_dir(&temp_dir)?;
-    if let Err(error) = extract_skill_root(&plan.inspection, &temp_dir) {
-        return Err(cleanup_staged_archive_after_error(
-            "skillManager.applyLocalArchiveImport",
-            &temp_dir,
-            error,
-        ));
+    owner.create_directory(&temp_relative)?;
+    if let Err(error) = extract_skill_root_to_owner(owner, &plan.inspection, &temp_relative) {
+        let _ = owner.remove_tree_if_exists(&temp_relative);
+        return Err(error);
     }
-    let candidate_skill_path = temp_dir.join("SKILL.md");
-    let candidate_revision = match skill_tree_content_revision(&candidate_skill_path) {
+    let candidate_revision = match skill_tree_content_revision_owner(owner, &temp_relative) {
         Ok(revision) => revision,
         Err(error) => {
-            return Err(cleanup_staged_archive_after_error(
-                "skillManager.applyLocalArchiveImport",
-                &temp_dir,
-                error,
-            ));
+            let _ = owner.remove_tree_if_exists(&temp_relative);
+            return Err(error);
         }
     };
     if candidate_revision != plan.inspection.tree_revision {
-        return Err(cleanup_staged_archive_after_error(
-            "skillManager.applyLocalArchiveImport",
-            &temp_dir,
-            CommandError::VerificationFailed,
-        ));
+        let _ = owner.remove_tree_if_exists(&temp_relative);
+        return Err(CommandError::VerificationFailed);
     }
-    if let Err(error) = fs::rename(&temp_dir, &destination_directory) {
-        return Err(cleanup_staged_archive_after_error(
-            "skillManager.applyLocalArchiveImport",
-            &temp_dir,
-            error.into(),
-        ));
+    if let Err(error) = owner.rename(&temp_relative, &destination_relative) {
+        let _ = owner.remove_tree_if_exists(&temp_relative);
+        return Err(error);
     }
     *recovery = Some(ArchiveImportRecovery {
-        destination_directory: destination_directory.clone(),
+        destination_relative: destination_relative.clone(),
         candidate_revision: candidate_revision.clone(),
         active: true,
     });
     run_archive_post_activation_test_hook(&destination_directory.join("SKILL.md"))?;
     let applied = (|| -> Result<(SkillRecord, ActionReadbackRecord), CommandError> {
-        let destination_skill_path = destination_directory.join("SKILL.md").canonicalize()?;
-        let imported = register_tool_global_staged_skill(
+        let destination_skill_path = destination_directory.join("SKILL.md");
+        let destination_content = owner.read_regular_file_to_string(
+            &destination_relative.join("SKILL.md"),
+            MAX_SKILL_MD_BYTES,
+            "imported archive SKILL.md",
+        )?;
+        let imported = crate::register_tool_global_staged_skill_content(
             catalog,
             ctx,
             &plan.archive_path,
             &destination_skill_path,
+            &destination_content,
+            unix_timestamp_millis(),
         )?
         .imported;
         if imported.path != destination_skill_path
             || !imported
                 .name
                 .eq_ignore_ascii_case(&plan.inspection.skill_name)
-            || skill_tree_content_revision(&destination_skill_path)? != candidate_revision
+            || skill_tree_content_revision_owner(owner, &destination_relative)?
+                != candidate_revision
         {
             return Err(CommandError::VerificationFailed);
         }
@@ -560,7 +596,11 @@ pub fn apply_local_archive_update(
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
-    let _owner = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    let mutation_lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+    super::run_manager_pre_execute_test_hook("localArchiveUpdate");
+    mutation_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
+    let owner = mutation_lock.owner_fs();
     let locked = prepare_local_archive_update(catalog, app_data_dir, ctx, params)?;
     ensure_archive_confirmation(
         &locked.action_binding,
@@ -570,8 +610,19 @@ pub fn apply_local_archive_update(
     )?;
     let transaction = catalog.begin_immediate_transaction()?;
     let mut recovery = None;
-    let mut applied = match apply_archive_replacement_guarded(catalog, ctx, &locked, &mut recovery)
-    {
+    let mut applied = match match &locked.target.kind {
+        LocalArchiveUpdateTargetKind::AppOwned => apply_archive_replacement_owner(
+            catalog,
+            app_data_dir,
+            &owner,
+            ctx,
+            &locked,
+            &mut recovery,
+        ),
+        LocalArchiveUpdateTargetKind::CatalogLocal { .. } => {
+            apply_archive_replacement_guarded(catalog, ctx, &locked, &mut recovery)
+        }
+    } {
         Ok(applied) => applied,
         Err(error) => {
             rollback_catalog_before_compensation(
@@ -582,7 +633,7 @@ pub fn apply_local_archive_update(
             )?;
             if let Some(mut recovery) = recovery {
                 recovery
-                    .restore()
+                    .restore(&owner)
                     .map_err(|cleanup_error| {
                         archive_partial(
                             "skillManager.applyLocalArchiveUpdate",
@@ -605,10 +656,37 @@ pub fn apply_local_archive_update(
         Some(applied.readback.clone()),
         None,
     );
+    if let Err(error) = owner.validate_owner_path_binding() {
+        let drift_error = archive_partial(
+            "skillManager.applyLocalArchiveUpdate",
+            "applied_unverified",
+            false,
+            format!(
+                "app-data owner binding changed after update read-back; the original tree was restored: {error}"
+            ),
+        );
+        rollback_catalog_before_compensation(
+            transaction,
+            "skillManager.applyLocalArchiveUpdate",
+            &drift_error,
+            "the replacement and private backup were preserved for recovery",
+        )?;
+        applied.restore(&owner).map_err(|cleanup_error| {
+            archive_partial(
+                "skillManager.applyLocalArchiveUpdate",
+                "outcome_unknown",
+                true,
+                format!(
+                    "owner binding changed before commit ({error}); source restoration failed ({cleanup_error})"
+                ),
+            )
+        })?;
+        return Err(drift_error);
+    }
     match transaction.commit_classified() {
         Ok(()) => {}
         Err(CatalogCommitError::NotCommitted(error)) => {
-            applied.restore().map_err(|cleanup_error| {
+            applied.restore(&owner).map_err(|cleanup_error| {
                 archive_partial(
                     "skillManager.applyLocalArchiveUpdate",
                     "outcome_unknown",
@@ -631,7 +709,7 @@ pub fn apply_local_archive_update(
             ));
         }
     }
-    if applied.finish().is_err() {
+    if applied.finish(&owner).is_err() {
         follow_up = Some(super::SkillManagerCleanupFollowUp {
             kind: "quarantine_cleanup".to_string(),
             state: "update_applied_cleanup_pending".to_string(),
@@ -989,7 +1067,7 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
     })
 }
 
-struct ArchiveUpdateRecovery {
+struct PathArchiveUpdateRecovery {
     target_directory: PathBuf,
     backup_directory: PathBuf,
     staging_directory: PathBuf,
@@ -999,7 +1077,7 @@ struct ArchiveUpdateRecovery {
     active: bool,
 }
 
-impl ArchiveUpdateRecovery {
+impl PathArchiveUpdateRecovery {
     fn restore(&mut self) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
@@ -1049,6 +1127,89 @@ impl ArchiveUpdateRecovery {
     }
 }
 
+struct OwnerArchiveUpdateRecovery {
+    target_relative: PathBuf,
+    backup_relative: PathBuf,
+    staging_relative: PathBuf,
+    original_tree_revision: String,
+    candidate_tree_revision: String,
+    active: bool,
+}
+
+impl OwnerArchiveUpdateRecovery {
+    fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        if !self.active {
+            return Ok(());
+        }
+        let target_present = skill_tree_content_revision_owner(owner, &self.target_relative)?
+            != missing_tree_revision();
+        let staging_present = skill_tree_content_revision_owner(owner, &self.staging_relative)?
+            != missing_tree_revision();
+        match (target_present, staging_present) {
+            (true, false) => {
+                if skill_tree_content_revision_owner(owner, &self.target_relative)?
+                    != self.candidate_tree_revision
+                {
+                    return Err(CommandError::StaleActionReference);
+                }
+                owner.remove_tree_if_exists(&self.target_relative)?;
+            }
+            (false, true) => {
+                if skill_tree_content_revision_owner(owner, &self.staging_relative)?
+                    != self.candidate_tree_revision
+                {
+                    return Err(CommandError::StaleActionReference);
+                }
+                owner.remove_tree_if_exists(&self.staging_relative)?;
+            }
+            _ => return Err(CommandError::StaleActionReference),
+        }
+        if skill_tree_content_revision_owner(owner, &self.backup_relative)?
+            != self.original_tree_revision
+        {
+            return Err(CommandError::StaleActionReference);
+        }
+        owner.rename(&self.backup_relative, &self.target_relative)?;
+        if skill_tree_content_revision_owner(owner, &self.target_relative)?
+            != self.original_tree_revision
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        self.active = false;
+        Ok(())
+    }
+
+    fn finish(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        if !self.active {
+            return Ok(());
+        }
+        owner.remove_tree_if_exists(&self.backup_relative)?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+enum ArchiveUpdateRecovery {
+    Owner(OwnerArchiveUpdateRecovery),
+    Path(PathArchiveUpdateRecovery),
+}
+
+impl ArchiveUpdateRecovery {
+    fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        match self {
+            Self::Owner(recovery) => recovery.restore(owner),
+            Self::Path(recovery) => recovery.restore(),
+        }
+    }
+
+    fn finish(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        match self {
+            Self::Owner(recovery) => recovery.finish(owner),
+            Self::Path(recovery) => recovery.finish(),
+        }
+    }
+}
+
 struct AppliedArchiveUpdate {
     updated_skill: SkillRecord,
     readback: ActionReadbackRecord,
@@ -1056,12 +1217,137 @@ struct AppliedArchiveUpdate {
 }
 
 impl AppliedArchiveUpdate {
-    fn restore(&mut self) -> Result<(), CommandError> {
-        self.recovery.restore()
+    fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        self.recovery.restore(owner)
     }
 
-    fn finish(&mut self) -> Result<(), CommandError> {
-        self.recovery.finish()
+    fn finish(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
+        self.recovery.finish(owner)
+    }
+}
+
+fn apply_archive_replacement_owner(
+    catalog: &Catalog,
+    _app_data_dir: &Path,
+    owner: &crate::AppDataOwnerFs<'_>,
+    ctx: &AdapterContext,
+    plan: &LocalArchiveUpdatePlan,
+    recovery: &mut Option<ArchiveUpdateRecovery>,
+) -> Result<AppliedArchiveUpdate, CommandError> {
+    let existing_skill_path = &plan.target.skill_path;
+    let target_directory = existing_skill_path.parent().ok_or_else(|| {
+        CommandError::InvalidSkillManagerRequest(
+            "local skill source has no parent directory".to_string(),
+        )
+    })?;
+    let target_relative = super::app_owned_directory_relative(
+        &plan.target.canonical_root,
+        target_directory,
+        "local archive update",
+    )?;
+    let nonce = format!("{}-{}", unix_timestamp_millis(), std::process::id());
+    let staging_relative = PathBuf::from("tool-global")
+        .join("skills")
+        .join(format!(".archive-update-{nonce}"));
+    let backup_relative = PathBuf::from("tool-global")
+        .join("skills")
+        .join(format!(".archive-backup-{nonce}"));
+    owner.create_directory(&staging_relative)?;
+    if let Err(error) = extract_skill_root_to_owner(owner, &plan.inspection, &staging_relative) {
+        let _ = owner.remove_tree_if_exists(&staging_relative);
+        return Err(error);
+    }
+    let replacement_content = match owner.read_regular_file_to_string(
+        &staging_relative.join("SKILL.md"),
+        MAX_SKILL_MD_BYTES,
+        "replacement archive SKILL.md",
+    ) {
+        Ok(content) => content,
+        Err(error) => {
+            let _ = owner.remove_tree_if_exists(&staging_relative);
+            return Err(error);
+        }
+    };
+    let replacement_name = tool_global_skill_name_from_content(
+        &replacement_content,
+        target_directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("local-skill"),
+    );
+    if !replacement_name.eq_ignore_ascii_case(&plan.inspection.skill_name) {
+        let _ = owner.remove_tree_if_exists(&staging_relative);
+        return Err(invalid_archive(
+            "ZIP skill identity changed during extraction",
+        ));
+    }
+    let candidate_tree_revision = skill_tree_content_revision_owner(owner, &staging_relative)?;
+    let current_tree_revision = skill_tree_content_revision_owner(owner, &target_relative)?;
+    if candidate_tree_revision != plan.inspection.tree_revision
+        || current_tree_revision != plan.target_tree_revision
+    {
+        let _ = owner.remove_tree_if_exists(&staging_relative);
+        return Err(CommandError::StaleActionReference);
+    }
+    owner.rename(&target_relative, &backup_relative)?;
+    *recovery = Some(ArchiveUpdateRecovery::Owner(OwnerArchiveUpdateRecovery {
+        target_relative: target_relative.clone(),
+        backup_relative: backup_relative.clone(),
+        staging_relative: staging_relative.clone(),
+        original_tree_revision: plan.target_tree_revision.clone(),
+        candidate_tree_revision: candidate_tree_revision.clone(),
+        active: true,
+    }));
+    owner.rename(&staging_relative, &target_relative)?;
+    run_archive_post_activation_test_hook(existing_skill_path)?;
+
+    let registered = (|| {
+        let staged_content = owner.read_regular_file_to_string(
+            &target_relative.join("SKILL.md"),
+            MAX_SKILL_MD_BYTES,
+            "updated archive SKILL.md",
+        )?;
+        let updated = crate::register_tool_global_staged_skill_content(
+            catalog,
+            ctx,
+            &plan.archive_path,
+            existing_skill_path,
+            &staged_content,
+            unix_timestamp_millis(),
+        )?
+        .imported;
+        if updated.id != plan.target.instance_id
+            || updated.path != *existing_skill_path
+            || !updated.name.eq_ignore_ascii_case(&plan.target.skill_name)
+            || skill_tree_content_revision_owner(owner, &target_relative)?
+                != candidate_tree_revision
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        let readback = ActionReadbackRecord::verified(
+            &plan.action_binding.action,
+            vec![
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::SkillFiles,
+                    target_id: existing_skill_path.to_string_lossy().to_string(),
+                    revision: candidate_tree_revision.clone(),
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::CatalogSkills,
+                    target_id: updated.id.clone(),
+                    revision: archive_catalog_record_revision(catalog, &updated.id)?,
+                },
+            ],
+        )?;
+        Ok((updated, readback))
+    })();
+    match registered {
+        Ok((updated_skill, readback)) => Ok(AppliedArchiveUpdate {
+            updated_skill,
+            readback,
+            recovery: recovery.take().ok_or(CommandError::VerificationFailed)?,
+        }),
+        Err(error) => Err(error),
     }
 }
 
@@ -1170,7 +1456,7 @@ fn apply_archive_replacement_guarded(
             error.into(),
         ));
     }
-    *recovery = Some(ArchiveUpdateRecovery {
+    *recovery = Some(ArchiveUpdateRecovery::Path(PathArchiveUpdateRecovery {
         target_directory: target_dir.to_path_buf(),
         backup_directory: backup_dir.clone(),
         staging_directory: temp_dir.clone(),
@@ -1178,7 +1464,7 @@ fn apply_archive_replacement_guarded(
         original_tree_revision: plan.target_tree_revision.clone(),
         candidate_tree_revision: candidate_tree_revision.clone(),
         active: true,
-    });
+    }));
     if let Err(error) = fs::rename(&temp_dir, target_dir) {
         return Err(error.into());
     }
@@ -1293,6 +1579,65 @@ fn extract_skill_root(
         }
     }
     if !destination.join("SKILL.md").is_file() {
+        return Err(invalid_archive("ZIP extraction did not produce SKILL.md"));
+    }
+    Ok(())
+}
+
+fn extract_skill_root_to_owner(
+    owner: &crate::AppDataOwnerFs<'_>,
+    inspection: &ArchiveInspection,
+    destination_relative: &Path,
+) -> Result<(), CommandError> {
+    let mut archive = open_archive_snapshot(&inspection.archive_bytes)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(zip_error)?;
+        let path = safe_entry_path(&entry)?;
+        if should_ignore_entry(&path) {
+            continue;
+        }
+        validate_entry_mode(&entry)?;
+        let relative = if inspection.skill_root.as_os_str().is_empty() {
+            path.as_path()
+        } else if let Ok(relative) = path.strip_prefix(&inspection.skill_root) {
+            relative
+        } else if entry.is_dir() {
+            continue;
+        } else {
+            return Err(invalid_archive(
+                "ZIP contains files outside the single skill directory",
+            ));
+        };
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let target = destination_relative.join(relative);
+        if entry.is_dir() {
+            owner.ensure_directory_all(&target)?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            owner.ensure_directory_all(parent)?;
+        }
+        let mut output = owner.create_private_file(&target)?;
+        let copied = std::io::copy(
+            &mut entry.by_ref().take(MAX_ARCHIVE_FILE_BYTES + 1),
+            &mut output,
+        )?;
+        output.flush()?;
+        output.sync_all()?;
+        if copied > MAX_ARCHIVE_FILE_BYTES {
+            return Err(invalid_archive("ZIP contains a file larger than 8 MiB"));
+        }
+    }
+    if owner
+        .read_bounded_regular_file(
+            &destination_relative.join("SKILL.md"),
+            MAX_SKILL_MD_BYTES,
+            "archive SKILL.md",
+        )?
+        .is_none()
+    {
         return Err(invalid_archive("ZIP extraction did not produce SKILL.md"));
     }
     Ok(())
@@ -1645,6 +1990,24 @@ fn skill_tree_content_revision(skill_path: &Path) -> Result<String, CommandError
     present_tree_revision(rows.into_iter().collect())
 }
 
+fn skill_tree_content_revision_owner(
+    owner: &crate::AppDataOwnerFs<'_>,
+    directory_relative: &Path,
+) -> Result<String, CommandError> {
+    let snapshot = owner.snapshot_regular_tree(
+        directory_relative,
+        MAX_ARCHIVE_ENTRIES,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        MAX_ARCHIVE_FILE_BYTES,
+        "local archive target",
+    )?;
+    if snapshot.present {
+        present_tree_revision(snapshot.rows)
+    } else {
+        Ok(missing_tree_revision())
+    }
+}
+
 fn present_tree_revision(rows: Vec<String>) -> Result<String, CommandError> {
     Ok(format!(
         "tree:present:{}",
@@ -1658,24 +2021,6 @@ fn present_tree_revision(rows: Vec<String>) -> Result<String, CommandError> {
 
 fn missing_tree_revision() -> String {
     "tree:missing".to_string()
-}
-
-fn create_guarded_directory_chain(path: &Path) -> Result<(), CommandError> {
-    if path.exists() {
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(CommandError::UnsafeConfigPath(
-                "local archive destination root must be a regular directory".to_string(),
-            ));
-        }
-        return Ok(());
-    }
-    let parent = path.parent().ok_or_else(|| {
-        CommandError::UnsafeConfigPath("local archive destination has no parent".to_string())
-    })?;
-    create_guarded_directory_chain(parent)?;
-    fs::create_dir(path)?;
-    Ok(())
 }
 
 fn cleanup_staged_archive_after_error(
@@ -1812,7 +2157,7 @@ mod tests {
             unix_timestamp_millis()
         ));
         fs::create_dir_all(&root).expect("test root");
-        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        let catalog = Catalog::in_memory().expect("catalog");
         catalog.init().expect("catalog schema");
         let ctx = AdapterContext {
             user_home: root.join("home"),
@@ -1902,7 +2247,7 @@ mod tests {
             "---\nname: shared-helper\ndescription: Installed\n---\n# Installed",
         )
         .expect("installed skill");
-        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        let catalog = Catalog::in_memory().expect("catalog");
         catalog.init().expect("catalog schema");
         let ctx = AdapterContext {
             user_home: home,
@@ -1959,7 +2304,7 @@ mod tests {
             "---\nname: project-helper\ndescription: Original local\n---\n# Original",
         )
         .expect("original local skill");
-        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        let catalog = Catalog::in_memory().expect("catalog");
         catalog.init().expect("catalog schema");
         let ctx = AdapterContext {
             user_home: home,
@@ -2046,7 +2391,7 @@ mod tests {
             "---\nname: nested-helper\ndescription: Original local\n---\n# Original",
         )
         .expect("original nested skill");
-        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        let catalog = Catalog::in_memory().expect("catalog");
         catalog.init().expect("catalog schema");
         let ctx = AdapterContext {
             user_home: home,
@@ -2121,7 +2466,7 @@ mod tests {
         .expect("original skill");
         fs::write(skill_dir.join("references/guide.md"), "reviewed guide")
             .expect("original attachment");
-        let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+        let catalog = Catalog::in_memory().expect("catalog");
         catalog.init().expect("catalog schema");
         let ctx = AdapterContext {
             user_home: home,

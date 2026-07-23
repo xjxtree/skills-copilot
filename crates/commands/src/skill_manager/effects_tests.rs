@@ -4,6 +4,9 @@ use skills_copilot_core::{ListIncompleteReason, ListSourceCompleteness};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(unix)]
+static MANAGER_PRE_EXECUTE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn test_preview(operation: &str) -> SkillManagerCommandPreview {
     SkillManagerCommandPreview {
         action: None,
@@ -443,6 +446,9 @@ fn confirmed_manager_apply_requires_the_exact_preview_token() {
 #[test]
 #[cfg(unix)]
 fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
+    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
+        .lock()
+        .expect("serialize manager pre-execute hooks");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -491,6 +497,9 @@ fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
 fn search_rejects_an_owner_path_replaced_after_lock_without_touching_the_victim() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
+    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
+        .lock()
+        .expect("serialize manager pre-execute hooks");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -555,7 +564,116 @@ fn search_rejects_an_owner_path_replaced_after_lock_without_touching_the_victim(
 
 #[test]
 #[cfg(unix)]
+fn app_owned_manager_mutations_reject_owner_replacement_before_any_effect() {
+    use std::os::unix::fs::symlink;
+
+    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
+        .lock()
+        .expect("serialize manager pre-execute hooks");
+    for operation in ["localCreate", "remove"] {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-{operation}-owner-replacement-{}-{unique}",
+            std::process::id()
+        ));
+        let app_data = root.join("app-data");
+        let moved_owner = root.join("locked-owner");
+        let victim = root.join("victim");
+        fs::create_dir_all(&app_data).expect("create app data");
+        fs::create_dir_all(&victim).expect("create victim");
+        fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+        let catalog = Catalog::in_memory().expect("catalog");
+
+        let raced_app_data = app_data.clone();
+        let raced_moved_owner = moved_owner.clone();
+        let raced_victim = victim.clone();
+        install_manager_pre_execute_test_hook(operation, move || {
+            fs::rename(&raced_app_data, &raced_moved_owner).expect("move locked owner");
+            symlink(&raced_victim, &raced_app_data).expect("replace owner path");
+        });
+        let result = with_manager_mutation_lock(&catalog, &app_data, operation, |owner| {
+            owner.atomic_replace_private_file(
+                Path::new("should-not-exist"),
+                b"effect",
+                "should-not-exist",
+            )
+        });
+
+        assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
+        assert_eq!(
+            fs::read(victim.join("sentinel")).expect("victim sentinel"),
+            b"unchanged"
+        );
+        assert_eq!(
+            fs::read_dir(&victim).expect("victim entries").count(),
+            1,
+            "the victim must receive no manager-created files"
+        );
+        assert_eq!(
+            fs::read_dir(&moved_owner)
+                .expect("locked owner entries")
+                .count(),
+            0,
+            "binding validation must run before the mutation closure"
+        );
+
+        fs::remove_file(&app_data).expect("remove raced link");
+        fs::remove_dir_all(root).ok();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn manager_rejects_a_lock_on_owner_b_when_catalog_is_anchored_to_owner_a() {
+    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
+        .lock()
+        .expect("serialize manager pre-execute hooks");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-catalog-owner-gap-{}-{unique}",
+        std::process::id()
+    ));
+    let app_data = root.join("app-data");
+    let accepted_owner = root.join("accepted-owner");
+    fs::create_dir_all(&app_data).expect("create owner A");
+    let owner_a = File::open(&app_data).expect("open owner A");
+    let catalog =
+        Catalog::open_anchored(owner_a.try_clone().expect("clone owner A")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    fs::rename(&app_data, &accepted_owner).expect("move owner A");
+    fs::create_dir(&app_data).expect("create owner B");
+    fs::write(app_data.join("sentinel"), b"unchanged").expect("seed owner B");
+
+    let result = with_manager_mutation_lock(&catalog, &app_data, "install", |owner| {
+        owner.atomic_replace_private_file(Path::new("effect"), b"effect", "effect")
+    });
+
+    assert!(matches!(result, Err(CommandError::Catalog(_))));
+    assert_eq!(
+        fs::read(app_data.join("sentinel")).expect("owner B sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::read_dir(&app_data).expect("owner B entries").count(),
+        1,
+        "owner identity mismatch must fail before any file or process effect"
+    );
+    drop(catalog);
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+#[cfg(unix)]
 fn stale_manager_target_tree_is_rejected_before_the_process_starts() {
+    let _serial = MANAGER_PRE_EXECUTE_TEST_SERIAL
+        .lock()
+        .expect("serialize manager pre-execute hooks");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -615,7 +733,8 @@ fn stale_manager_target_tree_is_rejected_before_the_process_starts() {
     install_manager_pre_execute_test_hook("install", move || {
         fs::write(&raced_skill_file, "after confirmation").expect("drift target tree")
     });
-    let result = with_manager_mutation_lock(&app_data, "install", || {
+    let catalog = Catalog::in_memory().expect("in-memory catalog");
+    let result = with_manager_mutation_lock(&catalog, &app_data, "install", |_| {
         run_previewed_command(&ctx, &preview)
     });
 
