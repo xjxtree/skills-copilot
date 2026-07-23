@@ -1185,7 +1185,7 @@ fn config_rollback_failure_is_structured_partial_effect_and_preserves_candidate(
     assert!(matches!(
         result,
         Err(CommandError::PartialEffect {
-            state: "catalog_rollback_unknown",
+            state: "outcome_unknown",
             cleanup_required: true,
             ..
         })
@@ -1232,7 +1232,7 @@ fn config_commit_outcome_unknown_is_structured_partial_effect() {
     assert!(matches!(
         result,
         Err(CommandError::PartialEffect {
-            state: "catalog_commit_unknown",
+            state: "outcome_unknown",
             cleanup_required: true,
             ..
         })

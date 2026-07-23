@@ -490,7 +490,7 @@ fn rollback_config_transaction_without_file<T>(
         Ok(()) => Err(original_error),
         Err(rollback_error) => Err(CommandError::PartialEffect {
             operation: operation.to_string(),
-            state: "catalog_rollback_unknown",
+            state: "outcome_unknown",
             cleanup_required: true,
             detail: format!(
                 "operation failed before the file write ({original_error}); catalog rollback could not be proven ({rollback_error})"
@@ -507,7 +507,7 @@ fn rollback_config_transaction_and_compensate<T>(
     if let Err(rollback_error) = transaction.rollback() {
         return Err(CommandError::PartialEffect {
             operation: compensation.operation.to_string(),
-            state: "catalog_rollback_unknown",
+            state: "outcome_unknown",
             cleanup_required: true,
             detail: format!(
                 "operation failed ({original_error}); catalog rollback could not be proven ({rollback_error}); the exact written candidate was preserved for inspection"
@@ -529,7 +529,7 @@ fn commit_config_transaction<T>(
         }
         Err(CatalogCommitError::OutcomeUnknown(error)) => Err(CommandError::PartialEffect {
             operation: compensation.operation.to_string(),
-            state: "catalog_commit_unknown",
+            state: "outcome_unknown",
             cleanup_required: true,
             detail: format!(
                 "the config candidate was written and verified, but the catalog commit outcome is unknown ({error}); the candidate was preserved for inspection"
@@ -593,7 +593,7 @@ fn compensate_config_failure<T>(
         Ok(()) => Err(original_error),
         Err(compensation_error) => Err(CommandError::PartialEffect {
             operation: (*operation).to_string(),
-            state: "file_mutated_compensation_failed",
+            state: "outcome_unknown",
             cleanup_required: true,
             detail: format!(
                 "original failure: {original_error}; restoring the original config state failed: {compensation_error}"
