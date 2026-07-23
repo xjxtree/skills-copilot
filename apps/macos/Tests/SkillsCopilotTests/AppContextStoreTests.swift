@@ -55,6 +55,10 @@ struct AppContextStoreTests {
             "Prewarm readiness"
         )
         try expectFalse(
+            store.visibleProjectReadinessAcceptedAt == nil,
+            "Accepted readiness should expose its local successful-refresh time."
+        )
+        try expectFalse(
             !store.hasCurrentProjectReadiness,
             "Prewarm readiness should match the accepted context revision."
         )

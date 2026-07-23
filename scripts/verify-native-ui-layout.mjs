@@ -13,6 +13,15 @@ const files = {
   mainWindowCoordinator: await read("apps/macos/Sources/SkillsCopilot/App/MainWindowCoordinator.swift"),
   mainWindowModel: await read("apps/macos/Sources/SkillsCopilot/Models/MainWindowModel.swift"),
   content: await read("apps/macos/Sources/SkillsCopilot/Views/ContentView.swift"),
+  projectOverview: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewView.swift",
+  ),
+  projectOverviewPreview: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewPreviewSheet.swift",
+  ),
+  projectOverviewModel: await read(
+    "apps/macos/Sources/SkillsCopilot/Models/ProjectOverviewPresentation.swift",
+  ),
   detail: await read("apps/macos/Sources/SkillsCopilot/Views/DetailView.swift"),
   agentSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Views/AgentSessionDetailPanel.swift"),
   detailSection: await read("apps/macos/Sources/SkillsCopilot/Models/DetailSection.swift"),
@@ -230,7 +239,7 @@ const checks = [
       && /private final class FirstMouseTitlebarAccessoryContainer:\s*NSView[\s\S]*?intrinsicContentSize[\s\S]*?acceptsFirstMouse/.test(files.content)
       && !/WindowChromeTopGlass|windowChromeTopGlass|PassthroughWindowChromeHostingView|topGlassHeight/.test(files.content)
       && /private enum WindowChromeToolbarMetrics[\s\S]*?controlHeight:\s*CGFloat = 32[\s\S]*?agentWidth:\s*CGFloat = 146[\s\S]*?projectWidth:\s*CGFloat = 210[\s\S]*?titlebarTrailingPadding:\s*CGFloat = 28[\s\S]*?searchWidth = CGFloat\(UIOptimizationPresentation\.unifiedToolbar\.idealGlobalSearchWidth\)[\s\S]*?searchResultsWidth:\s*CGFloat = 460[\s\S]*?searchResultsMinHeight:\s*CGFloat = 180[\s\S]*?static var trailingWidth:[\s\S]*?static var totalWidth:[\s\S]*?static var accessoryWidth:[\s\S]*?static var searchResultsTrailingPadding:/.test(files.content)
-      && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text[\s\S]*?private var controlHeight:\s*CGFloat \{ WindowChromeToolbarMetrics\.controlHeight \}[\s\S]*?private var agentWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.agentWidth \}[\s\S]*?private var projectWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.projectWidth \}/.test(files.content)
+      && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text[\s\S]*?private var controlHeight:\s*CGFloat \{ WindowChromeToolbarMetrics\.controlHeight \}[\s\S]*?private var agentWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.agentWidth \}[\s\S]*?private var projectWidth:\s*CGFloat \{ WindowChromeToolbarMetrics\.projectWidth \}/.test(files.content)
       && !extractStructBody(files.content, "WindowChromeToolbarControls").includes("Divider()")
       && !/private struct WindowChromeToolbarControls:[\s\S]*?columnVisibility|isPrimarySidebarCollapsed/.test(files.content)
       && !/GlassEffectContainer|glassEffect\(/.test(files.content)
@@ -240,7 +249,8 @@ const checks = [
       && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(""\)/.test(files.sidebar)
       && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
       && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
-      && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeHelpButton\(\)[\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
+      && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
+      && !extractStructBody(files.content, "WindowChromeTrailingControls").includes("WindowChromeHelpButton()")
       && /private struct GlobalWindowSearchControl:[\s\S]*?@Binding var isSearchFocused:[\s\S]*?@Binding var showsResults:[\s\S]*?WindowChromeSearchTextField\([\s\S]*?placeholder:\s*UIStrings\.text\("toolbar\.globalSearch"[\s\S]*?\) \{ focused in[\s\S]*?showsResults = !trimmedText\.isEmpty[\s\S]*?onChange\(of:\s*text\)[\s\S]*?showsResults = !trimmedText\.isEmpty[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)[\s\S]*?\.windowChromeGlassCapsule\(\)/.test(files.content)
       && !/private struct GlobalWindowSearchControl:[\s\S]*?\.popover\(isPresented:\s*resultsPopoverBinding/.test(files.content)
       && /private struct WindowChromeSearchTextField:\s*NSViewRepresentable[\s\S]*?FirstMouseNSTextField[\s\S]*?isBordered = false[\s\S]*?drawsBackground = false[\s\S]*?focusRingType = \.none[\s\S]*?controlTextDidChange[\s\S]*?control\([\s\S]*?insertNewline/.test(files.content)
@@ -305,36 +315,25 @@ const checks = [
       && /SidebarView\(\)[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?SecondarySidebarView\(columnVisibility:\s*columnVisibility\)[\s\S]*?UIOptimizationPresentation\.skillList\.minimumSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.idealSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.maximumSecondaryColumnWidth/.test(files.content),
   },
   {
-    label: "selected agent session metrics refresh from the root view uses need-based prewarm",
+    label: "session data is prewarmed at startup without route-triggered root scans",
     text: files.content + "\n" + files.storeSurface,
-    pattern: /(?=[\s\S]*?\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?await store\.refreshSelectedAgentLocalSessionsIfNeeded\(\))(?=[\s\S]*?var selectedAgentLocalSessionRefreshKey:[\s\S]*?agentFilter\.rawValue[\s\S]*?activeProjectContext\?\.rootPath)(?=[\s\S]*?func refreshSelectedAgentLocalSessionsIfNeeded\(\)\s*async[\s\S]*?refreshLocalSessionSnapshot\(reason:\s*\.sourceChanged\))/,
+    passed: /private func scheduleStartupSupplementalLoads\([\s\S]*?loadLocalSessions:\s*true/.test(files.storeSurface)
+      && /func refreshSelectedAgentLocalSessionsIfNeeded\(\)\s*async[\s\S]*?refreshLocalSessionSnapshot\(reason:\s*\.sourceChanged\)/.test(files.storeSurface)
+      && !/\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)/.test(files.content),
   },
   {
-    label: "primary sidebar exposes agent cards plus global skill manager and preflight footer tools",
-    text: files.sidebar + "\n" + files.detail + "\n" + files.app + "\n" + files.mainWindowCoordinator + "\n" + files.workflowSheet,
-    passed: /@State private var isSkillManagerSheetPresented = false/.test(files.sidebar)
-      && /@State private var isPreflightSheetPresented = false/.test(files.sidebar)
-      && /List\s*\{[\s\S]*?Section\(UIStrings\.text\("sidebar\.primaryNavigation"/.test(files.sidebar)
+    label: "primary sidebar exposes exactly the three product workspaces",
+    text: files.sidebar + "\n" + files.content + "\n" + files.app,
+    passed: /List\(selection:\s*routeSelection\)[\s\S]*?Section\(UIStrings\.text\("sidebar\.primaryNavigation"/.test(files.sidebar)
       && !/ProjectContextControls\(\)/.test(files.sidebar)
-      && /SidebarNavigationCardButton\([\s\S]*?title:\s*SidebarContentMode\.sessions\.title[\s\S]*?sessionCardMetrics[\s\S]*?selectSessions\(\)/.test(files.sidebar)
-      && /SidebarNavigationCardButton\([\s\S]*?title:\s*SidebarContentMode\.skills\.title[\s\S]*?skillCardMetrics[\s\S]*?selectSkills\(\)/.test(files.sidebar)
-      && /SidebarNavigationCardButton\([\s\S]*?title:\s*SidebarContentMode\.config\.title[\s\S]*?configCardMetrics[\s\S]*?selectConfig\(\)/.test(files.sidebar)
-      && /SidebarFooterToolRow\([\s\S]*?isSkillManagerPresented:\s*isSkillManagerSheetPresented[\s\S]*?onOpenSkillManager:[\s\S]*?isSkillManagerSheetPresented = true[\s\S]*?onOpenPreflight:[\s\S]*?isPreflightSheetPresented = true[\s\S]*?\)/.test(files.sidebar)
-      && /private struct SidebarFooterToolRow:[\s\S]*?skillManager\.title[\s\S]*?skillManager\.sidebar\.subtitle[\s\S]*?sidebar\.skillManager\.metric\.global[\s\S]*?UIStrings\.taskCockpitTitle[\s\S]*?sidebar\.preflight\.subtitle/.test(files.sidebar)
-      && /\.sheet\(isPresented:\s*\$isSkillManagerSheetPresented\)[\s\S]*?SkillPackageManagerSheet\(\)/.test(files.sidebar + "\n" + files.content)
-      && /struct SkillPackageManagerSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?SkillManagerPanel\(showsHeader:\s*false\)/.test(files.sidebar)
-      && /\.sheet\(isPresented:\s*\$isPreflightSheetPresented\)[\s\S]*?TaskPreflightPreviewSheet\(\)/.test(files.sidebar)
-      && /\.navigationTitle\(""\)/.test(files.detail)
-      && /window\.titleVisibility = \.hidden/.test(files.mainWindowCoordinator)
-      && /window\.titlebarAppearsTransparent = true/.test(files.mainWindowCoordinator)
-      && /window\.styleMask\.insert\(\.fullSizeContentView\)/.test(files.mainWindowCoordinator)
-      && /\.padding\(\.top,\s*8\)[\s\S]*?\.padding\(\.horizontal,\s*28\)[\s\S]*?\.padding\(\.bottom,\s*28\)/.test(files.detail)
-      && !/Section\(UIStrings\.text\("skillManager\.title"[\s\S]*?SidebarSelection\.work\(\.skillManager\)/.test(files.sidebar)
-      && !/selectedSidebarSelection\s*=\s*\.work\(\.skillManager\)/.test(files.sidebar)
-      && !/selectedDetailSection == \.skillManager[\s\S]*?SkillManagerPanel\(\)/.test(files.detail)
-      && !/navigationTitle\(UIStrings\.appWindowTitle\)/.test(files.detail)
-      && !/SidebarNavigationCardButton\([\s\S]*?UIStrings\.taskCockpitTitle[\s\S]*?selectedSidebarSelection = \.preflight/.test(files.sidebar)
-      && !/selectedSidebarSelection\s*=\s*\.preflight/.test(files.sidebar),
+      && /PrimarySidebarRow\([\s\S]*?\.tag\(AppRoute\.overview\)[\s\S]*?PrimarySidebarRow\([\s\S]*?\.tag\(AppRoute\.skills\)[\s\S]*?PrimarySidebarRow\([\s\S]*?\.tag\(AppRoute\.sessions\)/.test(files.sidebar)
+      && /private var routeSelection:\s*Binding<AppRoute\?>[\s\S]*?store\.selectAppRoute\(route\)/.test(files.sidebar)
+      && !extractStructBody(files.sidebar, "SidebarView").includes(".tag(AppRoute.advanced)")
+      && !extractStructBody(files.sidebar, "SidebarView").includes("SidebarFooterToolRow")
+      && !extractStructBody(files.sidebar, "SidebarView").includes("TaskPreflightPreviewSheet")
+      && !extractStructBody(files.sidebar, "SidebarView").includes("SkillPackageManagerSheet")
+      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills, \.sessions, \.advanced:[\s\S]*?HSplitView/.test(files.content)
+      && /CommandMenu\(UIStrings\.text\("menu\.navigate",\s*"Navigate"\)\)[\s\S]*?selectAppRoute\(\.overview\)[\s\S]*?selectAppRoute\(\.skills\)[\s\S]*?selectAppRoute\(\.sessions\)/.test(files.app),
   },
   {
     label: "secondary sidebar omits the agent profile row and switches session, skill, or config lists",
@@ -347,12 +346,11 @@ const checks = [
   {
     label: "sidebar sessions surface exposes refresh, compact rows, and top skill usage",
     text: files.sidebar + "\n" + files.store + "\n" + files.storeLocalSessionDetail,
-    passed: /private struct SessionSidebarPanel:[\s\S]*?let preview = store\.localSessionPreviewResult[\s\S]*?sidebar\.sessions\.list[\s\S]*?SessionSidebarRow\([\s\S]*?showsProjectRoot:\s*store\.localSessionScopeFilter == \.all[\s\S]*?store\.selectedSidebarSelection == \.session\(session\.id\)[\s\S]*?store\.selectLocalSession\(session\)[\s\S]*?preview\.skillUsageRows/.test(files.sidebar)
+    passed: /private struct SessionSidebarPanel:[\s\S]*?let preview = store\.localSessionPreviewResult[\s\S]*?let filteredRows = store\.filteredLocalSessionRows[\s\S]*?sidebar\.sessions\.list[\s\S]*?ForEach\(filteredRows\)[\s\S]*?SessionSidebarRow\([\s\S]*?showsProjectRoot:\s*store\.localSessionScopeFilter == \.all[\s\S]*?store\.selectedSidebarSelection == \.session\(session\.id\)[\s\S]*?store\.selectLocalSession\(session\)[\s\S]*?preview\.skillUsageRows/.test(files.sidebar)
       && /private var sessionRefreshButton:[\s\S]*?await store\.previewLocalSessions\(\)/.test(files.sidebar)
       && /private struct SessionSidebarRow:[\s\S]*?let showsProjectRoot:\s*Bool[\s\S]*?session\.projectRoot[\s\S]*?if let startedAt = session\.startedAt[\s\S]*?sidebar\.sessions\.startShort[\s\S]*?if let endedAt = session\.endedAt[\s\S]*?sidebar\.sessions\.lastShort/.test(files.sidebar)
-      && /private func selectSessions\(\)[\s\S]*?refreshSelectedAgentLocalSessionsIfNeeded\(\)/.test(files.sidebar)
-      && /private func selectSessions\(\)[\s\S]*?store\.filteredLocalSessionRows\.first/.test(files.sidebar)
-      && !/private func selectSessions\(\)[\s\S]*?localSessionPreviewResult\.sessionRows\.first/.test(files.sidebar)
+      && /\.tag\(AppRoute\.sessions\)/.test(files.sidebar)
+      && /store\.selectAppRoute\(route\)/.test(files.sidebar)
       && /private var sessionStatusMessage:[\s\S]*?fallbackReason[\s\S]*?authorizationRequired[\s\S]*?return nil/.test(files.sidebar)
       && !/private var sessionStatusMessage:[\s\S]*?UIStrings\.loading[\s\S]*?return nil/.test(files.sidebar)
       && /@Published var localSessionScopeFilter:[\s\S]*?guard oldValue != localSessionScopeFilter else \{ return \}[\s\S]*?normalizeSelectedLocalSession\(\)/.test(files.store)
@@ -363,7 +361,7 @@ const checks = [
       && /private func localSessionSnapshotKey\(roots:[\s\S]*?LocalSessionSnapshotKey\([\s\S]*?projectRoot:\s*activeProjectContext\?\.rootPath[\s\S]*?authorizedRoots:\s*roots/.test(files.store)
       && !/private func localSessionSnapshotKey\(roots:[\s\S]*?localSessionScopeFilter\.rawValue/.test(files.store)
       && /func refreshSelectedAgentLocalSessionsIfNeeded\(\) async[\s\S]*?refreshLocalSessionSnapshot\(reason:\s*\.sourceChanged\)/.test(files.store)
-      && /\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)[\s\S]*?refreshSelectedAgentLocalSessionsIfNeeded\(\)/.test(files.content)
+      && !/\.task\(id:\s*store\.selectedAgentLocalSessionRefreshKey\)/.test(files.content)
       && /func selectLocalSession\([\s\S]*?_ session:\s*LocalSessionPreviewRow,[\s\S]*?origin:\s*LocalSessionSelectionOrigin = \.user[\s\S]*?setSidebarSelection\(\.session\(session\.id\)\)[\s\S]*?loadLocalSessionDetailIfNeeded\(sessionID:\s*sessionID\)/.test(files.store)
       && /func loadLocalSessionDetailIfNeeded\(sessionID:\s*String\) async[\s\S]*?sessionID:\s*sessionID[\s\S]*?includeContentItems:\s*true[\s\S]*?limit:\s*1[\s\S]*?localSessionCache\.publishDetail/.test(files.storeLocalSessionDetail)
       && !/sessionTimeRangeSummary/.test(files.sidebar),
@@ -555,12 +553,12 @@ const checks = [
     pattern: /static func text\(_ key:\s*String,\s*_ defaultValue:\s*String\) -> String[\s\S]*?if let value = localizedStrings\(\)\[key\][\s\S]*?Bundle\.main\.localizedString\(forKey:\s*key,\s*value:\s*nil,\s*table:\s*nil\)[\s\S]*?nativeValue != key[\s\S]*?return defaultValue/,
   },
   {
-    label: "agent summary metrics are folded into primary sidebar cards",
+    label: "primary sidebar rows stay lightweight and metric-free",
     text: files.sidebar,
-    passed: /private var sessionCardMetrics:[\s\S]*?scopedLocalSessionUserMessageCount[\s\S]*?scopedLocalSessionTotalMessageCount[\s\S]*?scopedLocalSessionToolCallCount[\s\S]*?scopedLocalSessionSkillCallCount[\s\S]*?private var skillCardMetrics:[\s\S]*?agentEnabledCount[\s\S]*?agentCopilot\.metric\.disabled[\s\S]*?agentDisabledCount[\s\S]*?agentFindingCount[\s\S]*?agentConflictCount[\s\S]*?private var configCardMetrics:[\s\S]*?sidebar\.config\.filesShort[\s\S]*?configDocumentCount[\s\S]*?sidebar\.config\.projectShort[\s\S]*?projectConfigDocumentCount[\s\S]*?sidebar\.config\.historyShort[\s\S]*?configHistoryCount[\s\S]*?private struct SidebarNavigationCardButton:[\s\S]*?if !metrics\.isEmpty[\s\S]*?HStack\(spacing:\s*5\)[\s\S]*?private struct SidebarNavigationMetricPill:/.test(files.sidebar)
-      && !/configSupportMetric/.test(files.sidebar)
-      && !/private var configCardMetrics:[\s\S]*?sidebar\.config\.disabledShort/.test(files.sidebar)
-      && !/configCapability\?\.scan|configCapability\?\.configToggle|configCapability\?\.configSnapshot|configCapability\?\.writable/.test(files.sidebar),
+    passed: /private struct PrimarySidebarRow:[\s\S]*?Image\(systemName:\s*systemImage\)[\s\S]*?Text\(title\)[\s\S]*?if let subtitle[\s\S]*?Text\(subtitle\)/.test(files.sidebar)
+      && !/SidebarNavigationMetricPill|sessionCardMetrics|skillCardMetrics|configCardMetrics/.test(
+        extractStructBody(files.sidebar, "SidebarView"),
+      ),
   },
   {
     label: "LLM Markdown output normalizes collapsed provider markdown tables",
@@ -624,7 +622,7 @@ const checks = [
   },
   {
     label: "window titlebar accessory owns agent and project selection",
-    passed: /List\s*\{[\s\S]*?Section\(UIStrings\.text\("sidebar\.primaryNavigation"/.test(files.sidebar)
+    passed: /List\(selection:\s*routeSelection\)[\s\S]*?Section\(UIStrings\.text\("sidebar\.primaryNavigation"/.test(files.sidebar)
       && !/ProjectContextControls\(\)/.test(files.sidebar)
       && !/AgentWorkspaceHeader\(\)/.test(files.sidebar)
       && !/private struct AgentWorkspaceHeader/.test(files.sidebar)
@@ -641,7 +639,7 @@ const checks = [
       && !/private struct WindowChromeTopBarBackdrop/.test(files.content)
       && /private struct WindowChromeTitlebarAccessory<Content:\s*View>:\s*NSViewRepresentable[\s\S]*?accessory\.layoutAttribute = \.right[\s\S]*?FirstMouseTitlebarAccessoryContainer/.test(files.content)
       && !/WindowChromeTopGlass|windowChromeTopGlass|PassthroughWindowChromeHostingView|topGlassHeight/.test(files.content)
-      && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text/.test(files.content)
+      && /private struct WindowChromeToolbarControls:\s*View[\s\S]*?HStack\(spacing:\s*8\)\s*\{\s*TitlebarProjectPickerControl\(isCompact:\s*false\)[\s\S]*?\.frame\(width:\s*projectWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*TitlebarAgentSelectorControl\(\)[\s\S]*?\.frame\(width:\s*agentWidth,\s*height:\s*controlHeight,\s*alignment:\s*\.leading\)\s*WindowChromeTrailingControls\([\s\S]*?text:\s*\$text/.test(files.content)
       && !extractStructBody(files.content, "WindowChromeToolbarControls").includes("Divider()")
       && !/\.toolbar\s*\{[\s\S]*?ToolbarItem\(placement:\s*\.navigation\)[\s\S]*?TitlebarAgentSelectorControl\(\)/.test(files.content)
       && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)/.test(files.sidebar)
@@ -1081,20 +1079,13 @@ const customChecks = [
       && !/struct SkillPackageManagerSheet:[\s\S]*?SuccessBanner\(message:\s*message\)/.test(files.sidebar),
   },
   {
-    label: "task preflight opens from the fixed sidebar footer sheet and keeps selectable history",
-    passed: /TaskPreflightPreviewSheet\(\)/.test(files.sidebar)
-      && /struct TaskPreflightPreviewSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?WorkflowSheetSplitLayout\([\s\S]*?TaskPreflightHistoryPanel/.test(files.taskCockpit)
-      && /TaskPreflightEditorPane:[\s\S]*?TaskCockpitPanel\(/.test(files.taskCockpit)
-      && /providerGateMessage/.test(files.taskCockpit)
-      && /WorkflowSheetInlineBanner\(message:\s*providerGateMessage,\s*style:\s*\.warning\)/.test(files.taskCockpit)
-      && /\.disabled\([\s\S]*?providerGateMessage != nil[\s\S]*?\)/.test(files.taskCockpit)
-      && /\.help\(providerGateMessage \?\? UIStrings\.taskCockpitBoundary\)/.test(files.taskCockpit)
-      && /private struct TaskCockpitAgentChip:[\s\S]*?\.frame\(minHeight:\s*44,\s*alignment:\s*\.leading\)[\s\S]*?\.frame\(maxWidth:\s*\.infinity,\s*alignment:\s*\.leading\)/.test(files.taskCockpit)
-      && !/private struct TaskCockpitAgentChip:[\s\S]*?fixedAgentChipWidth/.test(files.taskCockpit)
-      && /taskCockpit\.history\.summary/.test(files.taskCockpit + "\n" + files.localizable)
+    label: "task preflight is inline in Project Overview and preserves task_cockpit compatibility",
+    passed: /private var overviewSections:[\s\S]*?ProjectStatusSection\([\s\S]*?taskReadinessSection[\s\S]*?ProjectAttentionSection\([\s\S]*?ProjectContinueWorkSection\(/.test(files.projectOverview)
+      && /private var taskReadinessSection:[\s\S]*?TaskCockpitPanel\([\s\S]*?providerGateMessage:\s*taskProviderGateMessage/.test(files.projectOverview)
+      && /private var taskProviderGateMessage:[\s\S]*?status\.serviceAvailable[\s\S]*?status\.enabled/.test(files.projectOverview)
       && /taskCockpitHistory/.test(files.taskCockpit + "\n" + files.store)
-      && /selectTaskCockpitHistoryRecord/.test(files.taskCockpit + "\n" + files.store)
       && /recordTaskCockpitHistory/.test(files.store)
+      && !extractStructBody(files.sidebar, "SidebarView").includes("TaskPreflightPreviewSheet")
       && !/case preflight/.test(files.sidebarSelection)
       && !/selectedSidebarSelection\s*=\s*\.preflight/.test(files.sidebar + "\n" + files.storeSurface),
   },

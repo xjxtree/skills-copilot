@@ -7,6 +7,7 @@ struct ProjectOverviewPresentationTests {
         try projectsAcceptedAndStaleSnapshots()
         try exposesPartialBlockingWithoutHealthyPresentation()
         try resolvesAttentionAndAgentFilteredSessions()
+        try rendersOnlyServerOwnedCopyOnlyResumeCommands()
     }
 
     private static func distinguishesEmptyLoadingAndErrorStates() throws {
@@ -164,6 +165,44 @@ struct ProjectOverviewPresentationTests {
         try expectEqual(claude.recentSessions.count, 0, "Agent-filtered recent sessions")
     }
 
+    private static func rendersOnlyServerOwnedCopyOnlyResumeCommands() throws {
+        let record = try mutatedReadinessFixture { result in
+            var sessions = result["recent_sessions"] as? [[String: Any]] ?? []
+            guard !sessions.isEmpty else { return }
+            sessions[0]["resume"] = [
+                "state": "supported",
+                "argv": ["codex", "resume", "thread id", "it's"],
+                "copy_only": true,
+            ]
+            result["recent_sessions"] = sessions
+        }
+        guard let session = record.recentSessions.first else {
+            throw NativeModelTestFailure(description: "Missing continuation fixture.")
+        }
+        try expectEqual(
+            SessionResumeCommandPresentation(session: session)?.command,
+            "codex resume 'thread id' 'it'\"'\"'s'",
+            "Continuation preview quotes only the service-owned argv."
+        )
+
+        let unsupported = try mutatedReadinessFixture { result in
+            var sessions = result["recent_sessions"] as? [[String: Any]] ?? []
+            guard !sessions.isEmpty else { return }
+            sessions[0]["resume"] = [
+                "state": "unsupported",
+                "argv": [],
+                "copy_only": true,
+                "unsupported_reason": "agent_unsupported",
+            ]
+            result["recent_sessions"] = sessions
+        }
+        try expectEqual(
+            unsupported.recentSessions.first.flatMap(SessionResumeCommandPresentation.init),
+            nil,
+            "Unsupported continuation must not manufacture a fallback command."
+        )
+    }
+
     private static func presentation(
         project: ProjectContext?,
         readinessState: ProjectReadinessCacheState,
@@ -189,7 +228,8 @@ struct ProjectOverviewPresentationTests {
                 projectID: record.projectID,
                 projectContextRevision: "sha256:project-context-1"
             ),
-            record: record
+            record: record,
+            acceptedAt: Date(timeIntervalSince1970: 1_784_800_300)
         )
     }
 

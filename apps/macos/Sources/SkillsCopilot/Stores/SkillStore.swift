@@ -547,6 +547,45 @@ final class SkillStore: ObservableObject {
         appContextStore.selectRoute(route)
     }
 
+    func openProjectAttentionTarget(_ item: AttentionItem) {
+        if let agent = item.agent,
+           let filter = agentFilter(for: agent.rawValue) {
+            agentFilter = filter
+        }
+        switch item.target.kind {
+        case "skill":
+            selectAppRoute(.skills)
+            guard let skill = skills.first(where: {
+                $0.id == item.target.id || $0.definitionId == item.target.id
+            }) else {
+                return
+            }
+            setSelectedSkillID(skill.id, syncSidebar: false)
+            setSidebarSelection(.skill(skill.id))
+            skillListScrollRequest = SkillListScrollRequest(skillID: skill.id)
+        case "session":
+            selectAppRoute(.sessions)
+        case "config", "package", "provider_profile", "app_data":
+            selectAppRoute(.advanced)
+        default:
+            selectAppRoute(.overview)
+        }
+    }
+
+    func openProjectSession(_ record: SessionContinuationRecord) {
+        if let filter = agentFilter(for: record.agent.rawValue) {
+            agentFilter = filter
+        }
+        selectAppRoute(.sessions)
+        sessionWorkspaceStore.selectSession(record.id)
+        guard let session = localSessionPreviewResult.sessionRows.first(where: {
+            $0.id == record.id
+        }) else {
+            return
+        }
+        selectLocalSession(session, origin: .navigation)
+    }
+
     /// Explicitly refreshes only the new product read domains. The legacy
     /// catalog/config/session caches remain independently owned during
     /// migration.
@@ -1063,6 +1102,7 @@ final class SkillStore: ObservableObject {
             try validateProjectContextApply(result, preview: preview)
             clearProjectScopedPresentationState()
             projectContextState = result.state
+            selectAppRoute(.overview)
             lastMutationMessage = UIStrings.projectSelected(activeProjectContext?.name ?? resolvedName)
 
             if let validationMessage = projectValidationMessage {
@@ -1078,6 +1118,7 @@ final class SkillStore: ObservableObject {
                 preserveMutationMessage: true
             )
             if scanned, errorMessage == nil {
+                selectAppRoute(.overview)
                 lastMutationMessage = UIStrings.projectSelectedAndScanned(activeProjectContext?.name ?? resolvedName)
             }
         } catch {

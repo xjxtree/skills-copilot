@@ -31,6 +31,7 @@ struct ProjectOverviewPresentation: Equatable {
     let isStale: Bool
     let isPartial: Bool
     let isBlocked: Bool
+    let acceptedAt: Date?
 
     init(
         project: ProjectContext?,
@@ -38,7 +39,8 @@ struct ProjectOverviewPresentation: Equatable {
         readinessState: ProjectReadinessCacheState,
         isLoadingProjectContext: Bool,
         projectContextErrorMessage: String?,
-        agentFilter: ProductAgentID?
+        agentFilter: ProductAgentID?,
+        acceptedAt: Date? = nil
     ) {
         let visibleEntry = readinessState.visibleEntry
         let visibleRecord = visibleEntry?.record
@@ -64,6 +66,7 @@ struct ProjectOverviewPresentation: Equatable {
         isStale = stale
         isPartial = partial
         isBlocked = blocked
+        self.acceptedAt = acceptedAt
 
         if project == nil {
             if isLoadingProjectContext {
@@ -123,31 +126,72 @@ struct ProjectOverviewPresentation: Equatable {
         return revision.count > prefix.count ? "\(prefix)…" : String(prefix)
     }
 
+    var acceptedAtLabel: String? {
+        acceptedAt?.formatted(date: .abbreviated, time: .shortened)
+    }
+
     static func coverageText(_ coverage: SourceCoverage) -> String {
         if let expected = coverage.expectedSources {
-            return "\(coverage.inspectedSources) of \(expected) sources inspected"
+            return String(
+                format: UIStrings.text(
+                    "overview.coverage.known",
+                    "%d of %d sources inspected"
+                ),
+                coverage.inspectedSources,
+                expected
+            )
         }
-        return "\(coverage.inspectedSources) sources inspected; expected total unavailable"
+        return String(
+            format: UIStrings.text(
+                "overview.coverage.unknown",
+                "%d sources inspected; expected total unavailable"
+            ),
+            coverage.inspectedSources
+        )
     }
 
     static func incompleteReasonText(_ reason: ListIncompleteReason?) -> String? {
         switch reason {
         case .safetyBudget:
-            "Inspection stopped at a safety limit."
+            UIStrings.text(
+                "overview.incomplete.safetyBudget",
+                "Inspection stopped at a safety limit."
+            )
         case .sourceChanged:
-            "A source changed during inspection."
+            UIStrings.text(
+                "overview.incomplete.sourceChanged",
+                "A source changed during inspection."
+            )
         case .sourceLimited:
-            "One or more sources expose only limited evidence."
+            UIStrings.text(
+                "overview.incomplete.sourceLimited",
+                "One or more sources expose only limited evidence."
+            )
         case .unreadableSource:
-            "One or more required sources could not be read."
+            UIStrings.text(
+                "overview.incomplete.unreadableSource",
+                "One or more required sources could not be read."
+            )
         case .pageFailed:
-            "A required evidence page could not be loaded."
+            UIStrings.text(
+                "overview.incomplete.pageFailed",
+                "A required evidence page could not be loaded."
+            )
         case .unsupportedProtocol:
-            "This service cannot enumerate a required source."
+            UIStrings.text(
+                "overview.incomplete.unsupportedProtocol",
+                "This service cannot enumerate a required source."
+            )
         case .staleSource:
-            "The available source evidence is stale."
+            UIStrings.text(
+                "overview.incomplete.staleSource",
+                "The available source evidence is stale."
+            )
         case .notInspected:
-            "A required source has not been inspected."
+            UIStrings.text(
+                "overview.incomplete.notInspected",
+                "A required source has not been inspected."
+            )
         case nil:
             nil
         }
@@ -156,19 +200,40 @@ struct ProjectOverviewPresentation: Equatable {
     static func unsupportedResumeText(_ reason: ResumeUnsupportedReason?) -> String {
         switch reason {
         case .agentUnsupported:
-            "This agent does not expose a verified native continuation command."
+            UIStrings.text(
+                "overview.resume.agentUnsupported",
+                "This agent does not expose a verified native continuation command."
+            )
         case .sessionUnsupported:
-            "This session cannot be continued through a verified native command."
+            UIStrings.text(
+                "overview.resume.sessionUnsupported",
+                "This session cannot be continued through a verified native command."
+            )
         case .sourceIncomplete:
-            "Continuation is unavailable because session evidence is incomplete."
+            UIStrings.text(
+                "overview.resume.sourceIncomplete",
+                "Continuation is unavailable because session evidence is incomplete."
+            )
         case .sourceChanged:
-            "The session source changed after this snapshot."
+            UIStrings.text(
+                "overview.resume.sourceChanged",
+                "The session source changed after this snapshot."
+            )
         case .missingNativeID:
-            "The session has no verified native continuation identifier."
+            UIStrings.text(
+                "overview.resume.missingNativeID",
+                "The session has no verified native continuation identifier."
+            )
         case .invalidProjectContext:
-            "The session does not match the current project context."
+            UIStrings.text(
+                "overview.resume.invalidProjectContext",
+                "The session does not match the current project context."
+            )
         case nil:
-            "No verified native continuation command is available."
+            UIStrings.text(
+                "overview.resume.unavailable",
+                "No verified native continuation command is available."
+            )
         }
     }
 

@@ -17,8 +17,18 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   `Clear` action in its header. Clearing history does not implicitly clear the
   active project.
 - Primary navigation contains exactly Project Overview, Skills, and Sessions.
-- Project Overview renders project/agent environment health, inline task
-  readiness, a needs-attention action queue, and continue-work sessions.
+- Project Overview renders, in order, project/agent environment health, inline
+  task readiness, a needs-attention action queue, and continue-work sessions.
+  It covers empty-project, empty-snapshot, loading, ready, stale, partial,
+  blocked, provider-disabled, and error presentation without replacing a last
+  accepted snapshot with an ambiguous loading screen.
+- `Last successful refresh` is the local time at which the visible typed
+  readiness record was accepted. The source revision is displayed separately
+  as snapshot identity.
+- Overview evidence opens as read-only evidence. Attention actions open a
+  typed capability preview and route to the owning workspace; the preview
+  never applies an action. Session continuation is copy-only, never launches a
+  terminal, and appears only when the service provides supported ordered argv.
 - Skill Package Manager actions are integrated into Skills. Task Preflight is
   presented as inline task readiness rather than a separate destination.
 - Config, raw metadata, diagnostics, provider profiles, and Agent Copilot

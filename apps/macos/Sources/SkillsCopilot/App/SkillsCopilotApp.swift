@@ -66,34 +66,21 @@ struct SkillsCopilotApp: App {
                 .disabled(store.isRefreshBusy)
             }
 
-            CommandMenu(UIStrings.menuSkills) {
-                Button(UIStrings.text("menu.showSessions", "Show Sessions")) {
-                    store.sidebarContentMode = .sessions
-                    if let session = store.selectedLocalSession ?? store.localSessionPreviewResult.sessionRows.first {
-                        store.selectLocalSession(session)
-                    } else {
-                        store.selectedSidebarSelection = nil
-                    }
+            CommandMenu(UIStrings.text("menu.navigate", "Navigate")) {
+                Button(UIStrings.text("navigation.projectOverview", "Project Overview")) {
+                    store.selectAppRoute(.overview)
                 }
                 .keyboardShortcut("1", modifiers: [.command])
 
-                Button(UIStrings.menuShowOverview) {
-                    store.selectedSidebarSelection = store.selectedSkillID.map(SidebarSelection.skill)
-                    store.selectedDetailSection = .overview
+                Button(UIStrings.skills) {
+                    store.selectAppRoute(.skills)
                 }
                 .keyboardShortcut("2", modifiers: [.command])
 
-                Button(UIStrings.menuShowFindings) {
-                    store.selectedSidebarSelection = store.selectedSkillID.map(SidebarSelection.skill)
-                    store.selectedDetailSection = .findings
+                Button(UIStrings.text("sidebar.mode.sessions", "Sessions")) {
+                    store.selectAppRoute(.sessions)
                 }
                 .keyboardShortcut("3", modifiers: [.command])
-
-                Button(UIStrings.menuShowConflicts) {
-                    store.selectedSidebarSelection = store.selectedSkillID.map(SidebarSelection.skill)
-                    store.selectedDetailSection = .conflicts
-                }
-                .keyboardShortcut("4", modifiers: [.command])
 
                 Divider()
 

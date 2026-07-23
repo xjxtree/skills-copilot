@@ -90,6 +90,51 @@
       "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
     },
     {
+      "id": "project-overview.agents",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewView.swift",
+      "owner": "ProjectStatusSection",
+      "source": "presentation.agents",
+      "policy": "complete",
+      "total_count_source": "accepted project-readiness agent record count after the active agent filter",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "project-overview.attention",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewView.swift",
+      "owner": "ProjectAttentionSection",
+      "source": "rows",
+      "policy": "complete",
+      "total_count_source": "accepted project-readiness attention record count",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "project-overview.attention-actions",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewView.swift",
+      "owner": "ProjectAttentionRow",
+      "source": "row.actions",
+      "policy": "complete",
+      "total_count_source": "typed action descriptor count for the attention record",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "project-overview.recent-sessions",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewView.swift",
+      "owner": "ProjectContinueWorkSection",
+      "source": "sessions",
+      "policy": "complete",
+      "total_count_source": "accepted project-readiness recent-session count after the active agent filter",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "project-overview.evidence-preview",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewPreviewSheet.swift",
+      "owner": "ProjectOverviewEvidenceSheet",
+      "source": "selection.evidence",
+      "policy": "complete",
+      "total_count_source": "evidence reference count for the selected attention record",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
       "id": "skill-manager.search",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift",
       "owner": "SkillManagerPanel",

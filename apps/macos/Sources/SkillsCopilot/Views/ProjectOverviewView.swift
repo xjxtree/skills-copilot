@@ -32,7 +32,8 @@ struct ProjectOverviewView: View {
             readinessState: appContextStore.readinessState,
             isLoadingProjectContext: appContextStore.isLoadingProjectContext,
             projectContextErrorMessage: appContextStore.projectContextErrorMessage,
-            agentFilter: appContextStore.agentFilter
+            agentFilter: appContextStore.agentFilter,
+            acceptedAt: appContextStore.visibleProjectReadinessAcceptedAt
         )
     }
 
@@ -244,21 +245,28 @@ private struct ProjectStatusSection: View {
                     )
                     ProjectOverviewFact(
                         title: UIStrings.text(
-                            "overview.status.snapshot",
-                            "Accepted snapshot"
+                            "overview.status.lastRefresh",
+                            "Last successful refresh"
                         ),
-                        value: presentation.acceptedSnapshotLabel
-                            ?? UIStrings.text("overview.status.snapshot.none", "Unavailable"),
-                        systemImage: "number",
+                        value: presentation.acceptedAtLabel
+                            ?? UIStrings.text("overview.status.lastRefresh.none", "Unavailable"),
+                        systemImage: "clock",
                         tint: .secondary
                     )
                 }
 
                 HStack {
                     Text(
-                        UIStrings.text(
-                            "overview.status.snapshot.note",
-                            "The projection exposes a revision, not a refresh timestamp."
+                        String(
+                            format: UIStrings.text(
+                                "overview.status.snapshot.note",
+                                "Accepted snapshot: %@"
+                            ),
+                            presentation.acceptedSnapshotLabel
+                                ?? UIStrings.text(
+                                    "overview.status.snapshot.none",
+                                    "Unavailable"
+                                )
                         )
                     )
                     .font(.caption)
@@ -367,8 +375,15 @@ private struct ProjectAgentReadinessRow: View {
                     .foregroundStyle(.secondary)
 
                 Text(
-                    "\(agent.effectiveSkillCount) effective skills · "
-                        + "\(agent.issueCount) issues · \(agent.conflictCount) conflicts"
+                    String(
+                        format: UIStrings.text(
+                            "overview.status.agentMetrics",
+                            "%d effective skills · %d issues · %d conflicts"
+                        ),
+                        agent.effectiveSkillCount,
+                        agent.issueCount,
+                        agent.conflictCount
+                    )
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

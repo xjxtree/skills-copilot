@@ -9,6 +9,7 @@ struct ProjectReadinessCacheKey: Hashable {
 struct ProjectReadinessCacheEntry: Hashable {
     let key: ProjectReadinessCacheKey
     let record: ProjectReadinessRecord
+    let acceptedAt: Date
 
     var sourceRevision: String { record.sourceRevision }
 }
@@ -72,6 +73,9 @@ final class AppContextStore: ObservableObject {
     var recentProjects: [ProjectContext] { projectContextState?.recent ?? [] }
     var visibleProjectReadiness: ProjectReadinessRecord? {
         readinessState.visibleEntry?.record
+    }
+    var visibleProjectReadinessAcceptedAt: Date? {
+        readinessState.visibleEntry?.acceptedAt
     }
 
     var hasCurrentProjectReadiness: Bool {
@@ -253,7 +257,11 @@ final class AppContextStore: ObservableObject {
                 )
                 return
             }
-            let entry = ProjectReadinessCacheEntry(key: key, record: record)
+            let entry = ProjectReadinessCacheEntry(
+                key: key,
+                record: record,
+                acceptedAt: Date()
+            )
             cacheReadinessEntry(entry)
             readinessState = .accepted(entry)
         case .failure(let error):

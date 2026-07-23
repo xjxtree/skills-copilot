@@ -2403,6 +2403,8 @@ struct SkillStoreTests {
         try expectFalse(store.isProjectUpdating, "Project set should reset updating state.")
         try expectNil(store.errorMessage, "Project set should not set an error on success.")
         try expectEqual(store.activeProjectContext?.name, "Fixture Project", "Project set should store returned active context.")
+        try expectEqual(store.appRoute, .overview, "Selecting a project should make Project Overview the coherent entry point.")
+        try expectNil(store.selectedSidebarSelection, "Selecting a project should not manufacture a skill or session detail.")
         try expectEqual(store.skills.count, 3, "Project set should scan and refresh catalog collections.")
         try expectContains(fake.calls(), "project.setContext", "Project set should call the service project method.")
         try expectContains(fake.calls(), "catalog.scanAll", "Project set should scan after a valid context is selected.")

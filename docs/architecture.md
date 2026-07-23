@@ -175,6 +175,16 @@ owned by three domain stores:
 identifiers remain inside their owning workspace, so restoring a route cannot
 manufacture a selected skill or session.
 
+The native shell exposes only Overview, Skills, and Sessions as primary
+navigation. Overview consumes the accepted project-readiness projection in
+this order: project status, inline task readiness, needs attention, and
+continue work. Its last-successful-refresh value is the local acceptance time
+of the visible readiness record; the service-owned source revision remains a
+separate snapshot identifier. Agent filters project accepted rows locally.
+Evidence sheets, typed action-capability previews, and continuation previews
+are read-only. Continuation text is rendered only from a supported,
+service-owned, copy-only argv and never from a Swift fallback command.
+
 Startup and manual refresh prewarm the typed project and aggregate reads when
 the service advertises them. Route, filter, search, sort, scope, and selection
 changes project accepted cache state locally and do not scan or issue unrelated

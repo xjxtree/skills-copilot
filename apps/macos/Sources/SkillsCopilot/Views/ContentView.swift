@@ -8,6 +8,9 @@ struct ContentView: View {
     @State private var isGlobalSearchFocused = false
     @State private var showsGlobalSearchResults = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var overviewEvidenceSelection: ProjectOverviewEvidenceSelection?
+    @State private var overviewActionSelection: ProjectOverviewActionSelection?
+    @State private var overviewResumeSelection: ProjectOverviewResumeSelection?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -56,6 +59,20 @@ struct ContentView: View {
                 transaction.animation = nil
             }
         }
+        .sheet(item: $overviewEvidenceSelection) { selection in
+            ProjectOverviewEvidenceSheet(selection: selection)
+        }
+        .sheet(item: $overviewActionSelection) { selection in
+            ProjectOverviewActionPreviewSheet(
+                selection: selection,
+                onOpenTarget: {
+                    store.openProjectAttentionTarget(selection.item)
+                }
+            )
+        }
+        .sheet(item: $overviewResumeSelection) { selection in
+            ProjectOverviewResumePreviewSheet(selection: selection)
+        }
         .accessibilityIdentifier(AppAccessibilityID.mainContent)
         .accessibilityLabel(UIStrings.appWindowTitle)
     }
@@ -91,23 +108,60 @@ struct ContentView: View {
                     ideal: CGFloat(UIOptimizationPresentation.sidebarShell.width),
                     max: CGFloat(UIOptimizationPresentation.sidebarShell.width)
                 )
-        } content: {
-            SecondarySidebarView(columnVisibility: columnVisibility)
-                .navigationSplitViewColumnWidth(
-                    min: CGFloat(UIOptimizationPresentation.skillList.minimumSecondaryColumnWidth),
-                    ideal: CGFloat(UIOptimizationPresentation.skillList.idealSecondaryColumnWidth),
-                    max: CGFloat(UIOptimizationPresentation.skillList.maximumSecondaryColumnWidth)
-                )
         } detail: {
-            DetailView(skill: store.selectedSkill)
-        }
-        .task(id: store.selectedAgentLocalSessionRefreshKey) {
-            guard store.hasCompletedStartupLoad else { return }
-            await store.refreshSelectedAgentLocalSessionsIfNeeded()
+            routeContent
         }
         .onChange(of: store.selectedSkillID) { _ in
-            guard store.hasCompletedStartupLoad else { return }
+            guard store.hasCompletedStartupLoad, store.appRoute == .skills else { return }
             Task { await store.loadSelectedDetail() }
+        }
+    }
+
+    @ViewBuilder
+    private var routeContent: some View {
+        switch store.appRoute {
+        case .overview:
+            ProjectOverviewView(
+                appContextStore: store.appContextStore,
+                skillStore: store,
+                onOpenAttentionEvidence: { item, evidence in
+                    overviewEvidenceSelection = ProjectOverviewEvidenceSelection(
+                        item: item,
+                        evidence: evidence
+                    )
+                },
+                onPreviewAttentionAction: { item, action in
+                    overviewActionSelection = ProjectOverviewActionSelection(
+                        item: item,
+                        action: action
+                    )
+                },
+                onOpenSession: { session in
+                    store.openProjectSession(session)
+                },
+                onPreviewSessionResume: { session in
+                    overviewResumeSelection = ProjectOverviewResumeSelection(session: session)
+                }
+            )
+        case .skills, .sessions, .advanced:
+            HSplitView {
+                SecondarySidebarView(columnVisibility: columnVisibility)
+                    .frame(
+                        minWidth: CGFloat(
+                            UIOptimizationPresentation.skillList.minimumSecondaryColumnWidth
+                        ),
+                        idealWidth: CGFloat(
+                            UIOptimizationPresentation.skillList.idealSecondaryColumnWidth
+                        ),
+                        maxWidth: CGFloat(
+                            UIOptimizationPresentation.skillList.maximumSecondaryColumnWidth
+                        ),
+                        maxHeight: .infinity
+                    )
+
+                DetailView(skill: store.selectedSkill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
