@@ -825,6 +825,7 @@ name = "skills-copilot-commands"
 version = "0.1.5"
 dependencies = [
  "fs4",
+ "getrandom",
  "json5",
  "rusqlite",
  "rustix 1.1.4",

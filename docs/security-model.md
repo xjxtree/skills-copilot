@@ -133,6 +133,19 @@ confirmation, and network posture.
   covers project context, provider replay/profile/activity state, prompt-run
   metadata, and migration staging. Unsafe parent links are rejected without
   changing the linked directory's mode, contents, or children.
+- External config and direct skill-file mutations hold a capability borrowed
+  from the app-data mutation lock. It binds the allowed root, every parent
+  directory, and the target entry by descriptor identity and requires each to
+  be owned by the current effective user; later reads, replacement, read-back,
+  and compensation stay relative to those descriptors. Regular-file proof
+  includes owner, device, inode, mode, link count, length, mtime, and ctime
+  around each bounded read. New files and directories are ownership-verified
+  before chmod, sync, or activation. Temporary, backup, and quarantine names
+  use cryptographic randomness. Existing targets retain their exact displaced
+  inode until catalog commit; missing targets and newly created private parents
+  are removed only through identity-bound atomic quarantine. Errors after a
+  namespace effect are typed `partial_effect`; cleanup uncertainty preserves
+  recovery material instead of following a changed display path.
 - The one-time legacy bundle app-data migration locks the already-opened common
   parent directory across processes and keeps the legacy source, private
   staging tree, and final target descriptor-relative. It accepts only
@@ -339,6 +352,15 @@ confirmation, and network posture.
   state; an uncertain commit retains the imported tree or private backup and
   returns non-retryable `outcome_unknown` with cleanup required. Imported
   scripts remain data and are never run.
+- Archive replacement treats the complete directory as one capability rather
+  than trusted path strings. Staging, activation, rollback, and cleanup use
+  no-follow directory descriptors plus a bounded manifest of every directory
+  and regular-file identity and full file stamp. Symlink, special-file,
+  hardlink, same-length mutation, parent replacement, and extra-entry races
+  fail closed. Cleanup first atomically moves the verified tree to a
+  cryptographically random private quarantine and removes only entries that
+  still match the manifest; uncertainty leaves that quarantine available for
+  explicit recovery.
 - A full uninstall of an app-owned local package is one composite manager
   action. The preview and single confirmation bind the manager unlink targets,
   complete local source tree, catalog row, and reference set. Apply performs

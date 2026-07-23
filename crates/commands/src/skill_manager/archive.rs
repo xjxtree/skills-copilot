@@ -1,7 +1,9 @@
+#[cfg(any(test, not(unix)))]
+use std::fs::OpenOptions;
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
-    io::{Cursor, Read, Write},
+    fs::{self, File},
+    io::{self, Cursor, Read, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -14,10 +16,14 @@ use skills_copilot_core::{
 };
 use zip::ZipArchive;
 
+#[cfg(unix)]
+use crate::external_target::ExternalTreeCapability;
+#[cfg(not(unix))]
+use crate::register_tool_global_staged_skill;
 use crate::{
     action_descriptor, action_preview_binding, action_source_revision, canonical_project_id,
-    canonical_readback_domains, ensure_action_confirmed, register_tool_global_staged_skill,
-    scan_all_catalog_report, tool_global_skill_name_from_content, tool_global_staging_skills_root,
+    canonical_readback_domains, ensure_action_confirmed, scan_all_catalog_report,
+    tool_global_skill_name_from_content, tool_global_staging_skills_root,
     transaction_lifecycle::rollback_catalog_before_compensation, ActionConfirmation,
     ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation,
     ActionReadbackRecord, ActionReference, CommandError, SkillRecord,
@@ -35,8 +41,10 @@ const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SKILL_MD_BYTES: u64 = 2 * 1024 * 1024;
 
 #[cfg(test)]
-static ARCHIVE_POST_ACTIVATION_FAILURES: std::sync::Mutex<Vec<PathBuf>> =
-    std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static ARCHIVE_POST_ACTIVATION_FAILURES: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 struct ArchivePostActivationTestHook {
@@ -45,15 +53,15 @@ struct ArchivePostActivationTestHook {
 }
 
 #[cfg(test)]
-static ARCHIVE_POST_ACTIVATION_TEST_HOOKS: std::sync::Mutex<Vec<ArchivePostActivationTestHook>> =
-    std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static ARCHIVE_POST_ACTIVATION_TEST_HOOKS:
+        std::cell::RefCell<Vec<ArchivePostActivationTestHook>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 fn install_archive_post_activation_failure(path: PathBuf) {
-    ARCHIVE_POST_ACTIVATION_FAILURES
-        .lock()
-        .expect("lock archive activation failures")
-        .push(path);
+    ARCHIVE_POST_ACTIVATION_FAILURES.with(|failures| failures.borrow_mut().push(path));
 }
 
 #[cfg(test)]
@@ -61,37 +69,34 @@ fn install_archive_post_activation_test_hook(
     path: PathBuf,
     action: impl FnOnce() + Send + 'static,
 ) {
-    ARCHIVE_POST_ACTIVATION_TEST_HOOKS
-        .lock()
-        .expect("lock archive activation hooks")
-        .push(ArchivePostActivationTestHook {
+    ARCHIVE_POST_ACTIVATION_TEST_HOOKS.with(|hooks| {
+        hooks.borrow_mut().push(ArchivePostActivationTestHook {
             path,
             action: Box::new(action),
-        });
+        })
+    });
 }
 
 #[cfg(test)]
 fn run_archive_post_activation_test_hook(path: &Path) -> Result<(), CommandError> {
-    let action = {
-        let mut hooks = ARCHIVE_POST_ACTIVATION_TEST_HOOKS
-            .lock()
-            .expect("lock archive activation hooks");
+    let action = ARCHIVE_POST_ACTIVATION_TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
         hooks
             .iter()
             .position(|candidate| candidate.path == path)
             .map(|position| hooks.remove(position).action)
-    };
+    });
     if let Some(action) = action {
         action();
     }
-    let mut failures = ARCHIVE_POST_ACTIVATION_FAILURES
-        .lock()
-        .expect("lock archive activation failures");
-    if let Some(position) = failures.iter().position(|candidate| candidate == path) {
-        failures.remove(position);
-        return Err(CommandError::VerificationFailed);
-    }
-    Ok(())
+    ARCHIVE_POST_ACTIVATION_FAILURES.with(|failures| {
+        let mut failures = failures.borrow_mut();
+        if let Some(position) = failures.iter().position(|candidate| candidate == path) {
+            failures.remove(position);
+            return Err(CommandError::VerificationFailed);
+        }
+        Ok(())
+    })
 }
 
 #[cfg(not(test))]
@@ -475,6 +480,37 @@ fn is_shared_agents_skill_path(path: &Path) -> bool {
             .any(|(parent, child)| parent.as_os_str() == ".agents" && child.as_os_str() == "skills")
 }
 
+fn secure_archive_name(stem: &str) -> Result<String, CommandError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|error| {
+        io::Error::other(format!("secure random name generation failed: {error}"))
+    })?;
+    let encoded = nonce
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(".{stem}-{encoded}"))
+}
+
+fn cleanup_owner_staging_after_error(
+    operation: &str,
+    owner: &crate::AppDataOwnerFs<'_>,
+    staging: &Path,
+    original: CommandError,
+) -> CommandError {
+    match owner.remove_tree_if_exists(staging) {
+        Ok(()) => original,
+        Err(cleanup) => archive_partial(
+            operation,
+            "outcome_unknown",
+            true,
+            format!(
+                "app-owned archive staging failed ({original}); identity-bound staging cleanup failed ({cleanup})"
+            ),
+        ),
+    }
+}
+
 struct ArchiveImportRecovery {
     destination_relative: PathBuf,
     candidate_revision: String,
@@ -537,30 +573,47 @@ fn apply_archive_import_guarded(
     if skill_tree_content_revision_owner(owner, &destination_relative)? != missing_tree_revision() {
         return Err(CommandError::StaleActionReference);
     }
-    let temp_relative = PathBuf::from("tool-global").join("skills").join(format!(
-        ".archive-import-{}-{}",
-        unix_timestamp_millis(),
-        std::process::id()
-    ));
+    let temp_relative = PathBuf::from("tool-global")
+        .join("skills")
+        .join(secure_archive_name("archive-import")?);
     owner.create_directory(&temp_relative)?;
     if let Err(error) = extract_skill_root_to_owner(owner, &plan.inspection, &temp_relative) {
-        let _ = owner.remove_tree_if_exists(&temp_relative);
-        return Err(error);
+        return Err(cleanup_owner_staging_after_error(
+            "skillManager.applyLocalArchiveImport",
+            owner,
+            &temp_relative,
+            error,
+        ));
     }
     let candidate_revision = match skill_tree_content_revision_owner(owner, &temp_relative) {
         Ok(revision) => revision,
         Err(error) => {
-            let _ = owner.remove_tree_if_exists(&temp_relative);
-            return Err(error);
+            return Err(cleanup_owner_staging_after_error(
+                "skillManager.applyLocalArchiveImport",
+                owner,
+                &temp_relative,
+                error,
+            ));
         }
     };
     if candidate_revision != plan.inspection.tree_revision {
-        let _ = owner.remove_tree_if_exists(&temp_relative);
-        return Err(CommandError::VerificationFailed);
+        return Err(cleanup_owner_staging_after_error(
+            "skillManager.applyLocalArchiveImport",
+            owner,
+            &temp_relative,
+            CommandError::VerificationFailed,
+        ));
     }
     if let Err(error) = owner.rename(&temp_relative, &destination_relative) {
-        let _ = owner.remove_tree_if_exists(&temp_relative);
-        return Err(error);
+        if matches!(error, CommandError::PartialEffect { .. }) {
+            return Err(error);
+        }
+        return Err(cleanup_owner_staging_after_error(
+            "skillManager.applyLocalArchiveImport",
+            owner,
+            &temp_relative,
+            error,
+        ));
     }
     *recovery = Some(ArchiveImportRecovery {
         destination_relative: destination_relative.clone(),
@@ -655,6 +708,27 @@ pub fn apply_local_archive_update(
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
+    #[cfg(unix)]
+    let mut external_tree = match &locked.target.kind {
+        LocalArchiveUpdateTargetKind::CatalogLocal { .. } => {
+            let mut capability = ExternalTreeCapability::prepare(
+                &mutation_lock,
+                &locked.target.canonical_root,
+                &locked.target.skill_path,
+            )
+            .map_err(|_| CommandError::StaleActionReference)?;
+            let target_rows = capability.snapshot_target(
+                MAX_ARCHIVE_ENTRIES,
+                MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+                MAX_ARCHIVE_FILE_BYTES,
+            )?;
+            if present_tree_revision(target_rows)? != locked.target_tree_revision {
+                return Err(CommandError::StaleActionReference);
+            }
+            Some(capability)
+        }
+        LocalArchiveUpdateTargetKind::AppOwned => None,
+    };
     let transaction = catalog.begin_immediate_transaction()?;
     let mut recovery = None;
     let mut applied = match match &locked.target.kind {
@@ -667,7 +741,22 @@ pub fn apply_local_archive_update(
             &mut recovery,
         ),
         LocalArchiveUpdateTargetKind::CatalogLocal { .. } => {
-            apply_archive_replacement_guarded(catalog, ctx, &locked, &mut recovery)
+            #[cfg(unix)]
+            {
+                apply_archive_replacement_guarded(
+                    catalog,
+                    ctx,
+                    &locked,
+                    external_tree
+                        .take()
+                        .ok_or(CommandError::StaleActionReference)?,
+                    &mut recovery,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                apply_archive_replacement_guarded(catalog, ctx, &locked, &mut recovery)
+            }
         }
     } {
         Ok(applied) => applied,
@@ -1125,6 +1214,7 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
     })
 }
 
+#[cfg(not(unix))]
 struct PathArchiveUpdateRecovery {
     target_directory: PathBuf,
     backup_directory: PathBuf,
@@ -1135,6 +1225,7 @@ struct PathArchiveUpdateRecovery {
     active: bool,
 }
 
+#[cfg(not(unix))]
 impl PathArchiveUpdateRecovery {
     fn restore(&mut self) -> Result<(), CommandError> {
         if !self.active {
@@ -1247,15 +1338,21 @@ impl OwnerArchiveUpdateRecovery {
     }
 }
 
-enum ArchiveUpdateRecovery {
+enum ArchiveUpdateRecovery<'lock> {
     Owner(OwnerArchiveUpdateRecovery),
+    #[cfg(unix)]
+    Path(Box<ExternalTreeCapability<'lock>>),
+    #[cfg(not(unix))]
     Path(PathArchiveUpdateRecovery),
 }
 
-impl ArchiveUpdateRecovery {
+impl ArchiveUpdateRecovery<'_> {
     fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
         match self {
             Self::Owner(recovery) => recovery.restore(owner),
+            #[cfg(unix)]
+            Self::Path(recovery) => recovery.restore(),
+            #[cfg(not(unix))]
             Self::Path(recovery) => recovery.restore(),
         }
     }
@@ -1263,18 +1360,21 @@ impl ArchiveUpdateRecovery {
     fn finish(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
         match self {
             Self::Owner(recovery) => recovery.finish(owner),
+            #[cfg(unix)]
+            Self::Path(recovery) => recovery.finish(),
+            #[cfg(not(unix))]
             Self::Path(recovery) => recovery.finish(),
         }
     }
 }
 
-struct AppliedArchiveUpdate {
+struct AppliedArchiveUpdate<'lock> {
     updated_skill: SkillRecord,
     readback: ActionReadbackRecord,
-    recovery: ArchiveUpdateRecovery,
+    recovery: ArchiveUpdateRecovery<'lock>,
 }
 
-impl AppliedArchiveUpdate {
+impl AppliedArchiveUpdate<'_> {
     fn restore(&mut self, owner: &crate::AppDataOwnerFs<'_>) -> Result<(), CommandError> {
         self.recovery.restore(owner)
     }
@@ -1284,14 +1384,14 @@ impl AppliedArchiveUpdate {
     }
 }
 
-fn apply_archive_replacement_owner(
+fn apply_archive_replacement_owner<'lock>(
     catalog: &Catalog,
     _app_data_dir: &Path,
     owner: &crate::AppDataOwnerFs<'_>,
     ctx: &AdapterContext,
     plan: &LocalArchiveUpdatePlan,
-    recovery: &mut Option<ArchiveUpdateRecovery>,
-) -> Result<AppliedArchiveUpdate, CommandError> {
+    recovery: &mut Option<ArchiveUpdateRecovery<'lock>>,
+) -> Result<AppliedArchiveUpdate<'lock>, CommandError> {
     let existing_skill_path = &plan.target.skill_path;
     let target_directory = existing_skill_path.parent().ok_or_else(|| {
         CommandError::InvalidSkillManagerRequest(
@@ -1303,51 +1403,63 @@ fn apply_archive_replacement_owner(
         target_directory,
         "local archive update",
     )?;
-    let nonce = format!("{}-{}", unix_timestamp_millis(), std::process::id());
     let staging_relative = PathBuf::from("tool-global")
         .join("skills")
-        .join(format!(".archive-update-{nonce}"));
+        .join(secure_archive_name("archive-update")?);
     let backup_relative = PathBuf::from("tool-global")
         .join("skills")
-        .join(format!(".archive-backup-{nonce}"));
+        .join(secure_archive_name("archive-backup")?);
     owner.create_directory(&staging_relative)?;
-    if let Err(error) = extract_skill_root_to_owner(owner, &plan.inspection, &staging_relative) {
-        let _ = owner.remove_tree_if_exists(&staging_relative);
-        return Err(error);
-    }
-    let replacement_content = match owner.read_regular_file_to_string(
-        &staging_relative.join("SKILL.md"),
-        MAX_SKILL_MD_BYTES,
-        "replacement archive SKILL.md",
-    ) {
-        Ok(content) => content,
+    let prepared = (|| {
+        extract_skill_root_to_owner(owner, &plan.inspection, &staging_relative)?;
+        let replacement_content = owner.read_regular_file_to_string(
+            &staging_relative.join("SKILL.md"),
+            MAX_SKILL_MD_BYTES,
+            "replacement archive SKILL.md",
+        )?;
+        let replacement_name = tool_global_skill_name_from_content(
+            &replacement_content,
+            target_directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("local-skill"),
+        );
+        if !replacement_name.eq_ignore_ascii_case(&plan.inspection.skill_name) {
+            return Err(invalid_archive(
+                "ZIP skill identity changed during extraction",
+            ));
+        }
+        let candidate_tree_revision = skill_tree_content_revision_owner(owner, &staging_relative)?;
+        let current_tree_revision = skill_tree_content_revision_owner(owner, &target_relative)?;
+        if candidate_tree_revision != plan.inspection.tree_revision
+            || current_tree_revision != plan.target_tree_revision
+        {
+            return Err(CommandError::StaleActionReference);
+        }
+        Ok(candidate_tree_revision)
+    })();
+    let candidate_tree_revision = match prepared {
+        Ok(revision) => revision,
         Err(error) => {
-            let _ = owner.remove_tree_if_exists(&staging_relative);
-            return Err(error);
+            return Err(cleanup_owner_staging_after_error(
+                "skillManager.applyLocalArchiveUpdate",
+                owner,
+                &staging_relative,
+                error,
+            ))
         }
     };
-    let replacement_name = tool_global_skill_name_from_content(
-        &replacement_content,
-        target_directory
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("local-skill"),
-    );
-    if !replacement_name.eq_ignore_ascii_case(&plan.inspection.skill_name) {
-        let _ = owner.remove_tree_if_exists(&staging_relative);
-        return Err(invalid_archive(
-            "ZIP skill identity changed during extraction",
+    if let Err(error) = owner.rename(&target_relative, &backup_relative) {
+        if matches!(error, CommandError::PartialEffect { .. }) {
+            return Err(error);
+        }
+        return Err(cleanup_owner_staging_after_error(
+            "skillManager.applyLocalArchiveUpdate",
+            owner,
+            &staging_relative,
+            error,
         ));
     }
-    let candidate_tree_revision = skill_tree_content_revision_owner(owner, &staging_relative)?;
-    let current_tree_revision = skill_tree_content_revision_owner(owner, &target_relative)?;
-    if candidate_tree_revision != plan.inspection.tree_revision
-        || current_tree_revision != plan.target_tree_revision
-    {
-        let _ = owner.remove_tree_if_exists(&staging_relative);
-        return Err(CommandError::StaleActionReference);
-    }
-    owner.rename(&target_relative, &backup_relative)?;
     *recovery = Some(ArchiveUpdateRecovery::Owner(OwnerArchiveUpdateRecovery {
         target_relative: target_relative.clone(),
         backup_relative: backup_relative.clone(),
@@ -1409,6 +1521,237 @@ fn apply_archive_replacement_owner(
     }
 }
 
+#[cfg(unix)]
+fn apply_archive_replacement_guarded<'lock>(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    plan: &LocalArchiveUpdatePlan,
+    mut capability: ExternalTreeCapability<'lock>,
+    recovery: &mut Option<ArchiveUpdateRecovery<'lock>>,
+) -> Result<AppliedArchiveUpdate<'lock>, CommandError> {
+    let existing_skill_path = &plan.target.skill_path;
+    let staging_name =
+        crate::external_target::random_external_entry_name("archive-update-staging")?;
+    let backup_name = crate::external_target::random_external_entry_name("archive-update-backup")?;
+    if let Err(error) = capability.create_staging(&staging_name) {
+        let cleanup = capability.discard_staging();
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(archive_partial(
+                "skillManager.applyLocalArchiveUpdate",
+                "outcome_unknown",
+                true,
+                format!(
+                    "archive staging creation failed ({error}); descriptor-relative staging recovery requires attention ({cleanup_error})"
+                ),
+            )),
+        };
+    }
+    if let Err(error) = extract_skill_root_to_external(&mut capability, &plan.inspection) {
+        let cleanup = capability.discard_staging();
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(archive_partial(
+                "skillManager.applyLocalArchiveUpdate",
+                "outcome_unknown",
+                true,
+                format!(
+                    "archive extraction failed ({error}); descriptor-relative staging cleanup failed ({cleanup_error})"
+                ),
+            )),
+        };
+    }
+    let prepared = (|| {
+        capability.sync_staging()?;
+        let replacement_content =
+            capability.read_staging_regular_file(Path::new("SKILL.md"), MAX_SKILL_MD_BYTES)?;
+        let replacement_name = tool_global_skill_name_from_content(
+            &replacement_content,
+            existing_skill_path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("local-skill"),
+        );
+        if !replacement_name.eq_ignore_ascii_case(&plan.inspection.skill_name) {
+            return Err(invalid_archive(
+                "ZIP skill identity changed during extraction",
+            ));
+        }
+        let candidate_tree_revision = present_tree_revision(capability.snapshot_staging(
+            MAX_ARCHIVE_ENTRIES,
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+            MAX_ARCHIVE_FILE_BYTES,
+        )?)?;
+        let current_tree_revision = present_tree_revision(capability.snapshot_target(
+            MAX_ARCHIVE_ENTRIES,
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+            MAX_ARCHIVE_FILE_BYTES,
+        )?)?;
+        if candidate_tree_revision != plan.inspection.tree_revision
+            || current_tree_revision != plan.target_tree_revision
+        {
+            return Err(CommandError::StaleActionReference);
+        }
+        Ok((candidate_tree_revision, current_tree_revision))
+    })();
+    let (candidate_tree_revision, _current_tree_revision) = match prepared {
+        Ok(revisions) => revisions,
+        Err(error) => {
+            let cleanup = capability.discard_staging();
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(archive_partial(
+                    "skillManager.applyLocalArchiveUpdate",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "archive staging validation failed ({error}); descriptor-relative staging cleanup failed ({cleanup_error})"
+                    ),
+                )),
+            };
+        }
+    };
+    *recovery = Some(ArchiveUpdateRecovery::Path(Box::new(capability)));
+    let capability = match recovery.as_mut() {
+        Some(ArchiveUpdateRecovery::Path(capability)) => capability,
+        _ => return Err(CommandError::VerificationFailed),
+    };
+    capability.activate(&backup_name)?;
+    run_archive_post_activation_test_hook(existing_skill_path)?;
+    capability.validate_binding().map_err(|error| {
+        archive_partial(
+            "skillManager.applyLocalArchiveUpdate",
+            "applied_unverified",
+            true,
+            format!(
+                "external archive target binding changed after activation; the accepted target capability remains available for exact restoration: {error}"
+            ),
+        )
+    })?;
+
+    let staged_skill_path = capability.anchored_skill_path().to_path_buf();
+    let staged_content =
+        capability.read_target_regular_file(Path::new("SKILL.md"), MAX_SKILL_MD_BYTES)?;
+    let updated = match &plan.target.kind {
+        LocalArchiveUpdateTargetKind::CatalogLocal { instance_id } => {
+            scan_all_catalog_report(ctx, catalog)?;
+            catalog
+                .get_skill_record(instance_id)?
+                .or_else(|| {
+                    catalog
+                        .list_skill_records()
+                        .ok()?
+                        .into_iter()
+                        .find(|record| {
+                            record.name.eq_ignore_ascii_case(&plan.target.skill_name)
+                                && crate::normalize_path_lexically(&record.path)
+                                    == crate::normalize_path_lexically(&staged_skill_path)
+                        })
+                })
+                .ok_or_else(|| CommandError::InstanceNotFound(instance_id.clone()))?
+        }
+        LocalArchiveUpdateTargetKind::AppOwned => return Err(CommandError::VerificationFailed),
+    };
+    let readback_tree_revision = present_tree_revision(capability.snapshot_target(
+        MAX_ARCHIVE_ENTRIES,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        MAX_ARCHIVE_FILE_BYTES,
+    )?)?;
+    if updated.id != plan.target.instance_id
+        || crate::normalize_path_lexically(&updated.path)
+            != crate::normalize_path_lexically(&staged_skill_path)
+        || !updated.name.eq_ignore_ascii_case(&plan.target.skill_name)
+        || readback_tree_revision != candidate_tree_revision
+        || tool_global_skill_name_from_content(
+            &staged_content,
+            staged_skill_path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("local-skill"),
+        )
+        .ne(&plan.inspection.skill_name)
+    {
+        return Err(CommandError::VerificationFailed);
+    }
+    capability.validate_binding().map_err(|error| {
+        archive_partial(
+            "skillManager.applyLocalArchiveUpdate",
+            "applied_unverified",
+            true,
+            format!("external archive target detached during semantic read-back: {error}"),
+        )
+    })?;
+    let readback = ActionReadbackRecord::verified(
+        &plan.action_binding.action,
+        vec![
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::SkillFiles,
+                target_id: staged_skill_path.to_string_lossy().to_string(),
+                revision: candidate_tree_revision,
+            },
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::CatalogSkills,
+                target_id: updated.id.clone(),
+                revision: archive_catalog_record_revision(catalog, &updated.id)?,
+            },
+        ],
+    )?;
+    Ok(AppliedArchiveUpdate {
+        updated_skill: updated,
+        readback,
+        recovery: recovery.take().ok_or(CommandError::VerificationFailed)?,
+    })
+}
+
+#[cfg(unix)]
+fn extract_skill_root_to_external(
+    capability: &mut ExternalTreeCapability<'_>,
+    inspection: &ArchiveInspection,
+) -> Result<(), CommandError> {
+    let mut archive = open_archive_snapshot(&inspection.archive_bytes)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(zip_error)?;
+        let path = safe_entry_path(&entry)?;
+        if should_ignore_entry(&path) {
+            continue;
+        }
+        validate_entry_mode(&entry)?;
+        let relative = if inspection.skill_root.as_os_str().is_empty() {
+            path.as_path()
+        } else if let Ok(relative) = path.strip_prefix(&inspection.skill_root) {
+            relative
+        } else if entry.is_dir() {
+            continue;
+        } else {
+            return Err(invalid_archive(
+                "ZIP contains files outside the single skill directory",
+            ));
+        };
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if entry.is_dir() {
+            capability.ensure_staging_directory(relative)?;
+            continue;
+        }
+        let mut output = capability.create_staging_file(relative)?;
+        let copied = std::io::copy(
+            &mut entry.by_ref().take(MAX_ARCHIVE_FILE_BYTES + 1),
+            &mut output,
+        )?;
+        output.flush()?;
+        output.sync_all()?;
+        if copied > MAX_ARCHIVE_FILE_BYTES {
+            return Err(invalid_archive("ZIP contains a file larger than 8 MiB"));
+        }
+    }
+    capability.read_staging_regular_file(Path::new("SKILL.md"), MAX_SKILL_MD_BYTES)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
 fn apply_archive_replacement_guarded(
     catalog: &Catalog,
     ctx: &AdapterContext,
@@ -1417,9 +1760,8 @@ fn apply_archive_replacement_guarded(
 ) -> Result<AppliedArchiveUpdate, CommandError> {
     let existing_skill_path = &plan.target.skill_path;
     let canonical_root = &plan.target.canonical_root;
-    let nonce = format!("{}-{}", unix_timestamp_millis(), std::process::id());
-    let temp_dir = canonical_root.join(format!(".archive-update-{nonce}"));
-    let backup_dir = canonical_root.join(format!(".archive-backup-{nonce}"));
+    let temp_dir = canonical_root.join(secure_archive_name("archive-update")?);
+    let backup_dir = canonical_root.join(secure_archive_name("archive-backup")?);
     ensure_child_path(canonical_root, &temp_dir)?;
     ensure_child_path(canonical_root, &backup_dir)?;
     fs::create_dir(&temp_dir)?;
@@ -1589,6 +1931,7 @@ fn apply_archive_replacement_guarded(
     }
 }
 
+#[cfg(any(test, not(unix)))]
 fn extract_skill_root(
     inspection: &ArchiveInspection,
     destination: &Path,
@@ -1739,6 +2082,7 @@ fn should_ignore_entry(path: &Path) -> bool {
         || path.file_name().is_some_and(|name| name == ".DS_Store")
 }
 
+#[cfg(any(test, not(unix)))]
 fn ensure_child_path(root: &Path, path: &Path) -> Result<(), CommandError> {
     if path == root || !path.starts_with(root) {
         return Err(CommandError::InvalidSkillManagerRequest(
@@ -2081,6 +2425,7 @@ fn missing_tree_revision() -> String {
     "tree:missing".to_string()
 }
 
+#[cfg(not(unix))]
 fn cleanup_staged_archive_after_error(
     operation: &str,
     staged_directory: &Path,
@@ -2660,14 +3005,17 @@ mod tests {
         )
         .expect_err("post-activation owner drift");
 
-        assert!(matches!(
-            error,
-            CommandError::PartialEffect {
-                state: "applied_unverified",
-                cleanup_required: false,
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                error,
+                CommandError::PartialEffect {
+                    state: "applied_unverified",
+                    cleanup_required: false,
+                    ..
+                }
+            ),
+            "unexpected import drift error: {error:?}"
+        );
         assert_eq!(
             fs::read(victim.join("sentinel")).expect("victim sentinel"),
             b"unchanged"
@@ -2793,14 +3141,17 @@ mod tests {
         )
         .expect_err("post-activation owner drift");
 
-        assert!(matches!(
-            error,
-            CommandError::PartialEffect {
-                state: "applied_unverified",
-                cleanup_required: false,
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                error,
+                CommandError::PartialEffect {
+                    state: "applied_unverified",
+                    cleanup_required: false,
+                    ..
+                }
+            ),
+            "unexpected update drift error: {error:?}"
+        );
         assert_eq!(
             fs::read(victim.join("sentinel")).expect("victim sentinel"),
             b"unchanged"

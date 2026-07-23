@@ -9,6 +9,7 @@ repository.workspace = true
 fs4.workspace = true
 json5.workspace = true
 rustix.workspace = true
+getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true

@@ -22,36 +22,68 @@ struct OwnerRenameTestHook {
 }
 
 #[cfg(test)]
-static OWNER_RENAME_TEST_HOOK: std::sync::Mutex<Option<OwnerRenameTestHook>> =
-    std::sync::Mutex::new(None);
+thread_local! {
+    static OWNER_RENAME_TEST_HOOK: std::cell::RefCell<Option<OwnerRenameTestHook>> =
+        const { std::cell::RefCell::new(None) };
+    static OWNER_REMOVE_TEST_HOOK: std::cell::RefCell<Option<OwnerRenameTestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub(super) fn install_owner_rename_test_hook(
     target: PathBuf,
     action: impl FnOnce() + Send + 'static,
 ) {
-    let mut hook = OWNER_RENAME_TEST_HOOK
-        .lock()
-        .expect("lock owner rename hook");
-    assert!(hook.is_none(), "owner rename hook already set");
-    *hook = Some(OwnerRenameTestHook {
-        target,
-        action: Box::new(action),
+    OWNER_RENAME_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        assert!(hook.is_none(), "owner rename hook already set");
+        *hook = Some(OwnerRenameTestHook {
+            target,
+            action: Box::new(action),
+        });
     });
 }
 
 #[cfg(test)]
 fn run_owner_rename_test_hook(target: &Path) {
-    let action = {
-        let mut hook = OWNER_RENAME_TEST_HOOK
-            .lock()
-            .expect("lock owner rename hook");
+    let action = OWNER_RENAME_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
         if hook.as_ref().is_some_and(|hook| hook.target == target) {
             hook.take().map(|hook| hook.action)
         } else {
             None
         }
-    };
+    });
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_owner_remove_test_hook(
+    target: PathBuf,
+    action: impl FnOnce() + Send + 'static,
+) {
+    OWNER_REMOVE_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        assert!(hook.is_none(), "owner remove hook already set");
+        *hook = Some(OwnerRenameTestHook {
+            target,
+            action: Box::new(action),
+        });
+    });
+}
+
+#[cfg(test)]
+fn run_owner_remove_test_hook(target: &Path) {
+    let action = OWNER_REMOVE_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        if hook.as_ref().is_some_and(|hook| hook.target == target) {
+            hook.take().map(|hook| hook.action)
+        } else {
+            None
+        }
+    });
     if let Some(action) = action {
         action();
     }
@@ -59,6 +91,9 @@ fn run_owner_rename_test_hook(target: &Path) {
 
 #[cfg(not(test))]
 fn run_owner_rename_test_hook(_target: &Path) {}
+
+#[cfg(not(test))]
+fn run_owner_remove_test_hook(_target: &Path) {}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct AppDataTreeSnapshot {
@@ -88,15 +123,57 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
-            use rustix::fs::{fchmod, fsync, mkdirat, openat, Mode};
+            use std::os::unix::fs::MetadataExt;
 
+            use rustix::fs::{fchmod, fsync, mkdirat, openat, statat, AtFlags, FileType, Mode};
             let (parent, name) = self.open_parent(relative, false)?;
             let mode = Mode::from_bits_truncate(0o700);
             mkdirat(&parent, name, mode).map_err(io::Error::from)?;
-            fsync(&parent).map_err(io::Error::from)?;
+            let created = statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "an app-owned directory was created, but its identity could not be read: {}",
+                    io::Error::from(error)
+                ))
+            })?;
+            if FileType::from_raw_mode(created.st_mode) != FileType::Directory {
+                return Err(owner_tree_effect_unknown(
+                    "an app-owned directory was created, but its entry type changed".to_string(),
+                ));
+            }
             let directory = openat(&parent, name, directory_flags(), Mode::empty())
-                .map_err(map_unsafe_relative_errno)?;
-            fchmod(&directory, mode).map_err(io::Error::from)?;
+                .map_err(|error| {
+                    owner_tree_effect_unknown(format!(
+                        "an app-owned directory was created, but its descriptor could not be opened: {}",
+                        io::Error::from(error)
+                    ))
+                })?;
+            let directory = File::from(directory);
+            let descriptor_metadata = directory.metadata().map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "an app-owned directory was created, but descriptor identity could not be read: {error}"
+                ))
+            })?;
+            if descriptor_metadata.dev() != created.st_dev as u64
+                || descriptor_metadata.ino() != created.st_ino
+            {
+                return Err(owner_tree_effect_unknown(
+                    "an app-owned directory changed before descriptor binding".to_string(),
+                ));
+            }
+            fchmod(&directory, mode).map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "an app-owned directory was created, but private permissions could not be applied: {}",
+                    io::Error::from(error)
+                ))
+            })?;
+            fsync(&directory)
+                .and_then(|()| fsync(&parent))
+                .map_err(|error| {
+                    owner_tree_effect_unknown(format!(
+                        "app-owned directory durability could not be verified: {}",
+                        io::Error::from(error)
+                    ))
+                })?;
             Ok(())
         }
         #[cfg(not(unix))]
@@ -111,6 +188,8 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt;
+
             use rustix::fs::{fchmod, openat, Mode, OFlags};
 
             let (parent, name) = self.open_parent(relative, true)?;
@@ -123,7 +202,23 @@ impl<'lock> AppDataOwnerFs<'lock> {
             )
             .map_err(io::Error::from)?;
             let file = File::from(descriptor);
-            fchmod(&file, mode).map_err(io::Error::from)?;
+            let metadata = file.metadata().map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "an app-owned file was created, but its identity could not be read: {error}"
+                ))
+            })?;
+            if !metadata.is_file() || metadata.nlink() != 1 {
+                return Err(owner_tree_effect_unknown(
+                    "an app-owned file was created, but it is not a private regular file"
+                        .to_string(),
+                ));
+            }
+            fchmod(&file, mode).map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "an app-owned file was created, but private permissions could not be applied: {}",
+                    io::Error::from(error)
+                ))
+            })?;
             Ok(file)
         }
         #[cfg(not(unix))]
@@ -198,8 +293,14 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 }
                 renameat(&from_parent, from_name, &to_parent, to_name).map_err(io::Error::from)?;
             }
-            fsync(&from_parent).map_err(io::Error::from)?;
-            fsync(&to_parent).map_err(io::Error::from)?;
+            fsync(&from_parent)
+                .and_then(|()| fsync(&to_parent))
+                .map_err(|error| {
+                    owner_tree_effect_unknown(format!(
+                        "an app-owned tree was renamed, but directory durability could not be verified: {}",
+                        io::Error::from(error)
+                    ))
+                })?;
             Ok(())
         }
         #[cfg(not(unix))]
@@ -218,31 +319,56 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
-            use rustix::fs::{fsync, openat, statat, unlinkat, AtFlags, FileType, Mode};
+            use rustix::fs::{fsync, renameat_with, statat, AtFlags, RenameFlags};
 
             let (parent, name) = self.open_parent(relative, false)?;
-            let metadata = match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(metadata) => metadata,
+            let expected = match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(metadata) => removal_binding_from_stat(&metadata)?,
                 Err(rustix::io::Errno::NOENT) => return Ok(()),
                 Err(error) => return Err(io::Error::from(error).into()),
             };
-            match FileType::from_raw_mode(metadata.st_mode) {
-                FileType::Directory => {
-                    let directory = openat(&parent, name, directory_flags(), Mode::empty())
-                        .map_err(map_unsafe_relative_errno)?;
-                    remove_directory_contents(&File::from(directory))?;
-                    unlinkat(&parent, name, AtFlags::REMOVEDIR).map_err(io::Error::from)?;
-                }
-                FileType::RegularFile | FileType::Symlink => {
-                    unlinkat(&parent, name, AtFlags::empty()).map_err(io::Error::from)?;
-                }
-                _ => {
-                    return Err(CommandError::UnsafeConfigPath(
-                        "app-data removal refuses a special file".to_string(),
+            run_owner_remove_test_hook(relative);
+            let quarantine = random_owner_quarantine_name("tree")?;
+            renameat_with(&parent, name, &parent, &quarantine, RenameFlags::NOREPLACE).map_err(
+                |error| match error {
+                    rustix::io::Errno::NOENT | rustix::io::Errno::EXIST => {
+                        CommandError::StaleActionReference
+                    }
+                    other => io::Error::from(other).into(),
+                },
+            )?;
+            let moved =
+                statat(&parent, &quarantine, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+                    owner_tree_effect_unknown(format!(
+                        "an app-owned tree was quarantined, but its identity could not be read: {}",
+                        io::Error::from(error)
                     ))
-                }
+                })?;
+            let observed = removal_binding_from_stat(&moved).map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "an app-owned tree was quarantined, but its entry type is unsafe: {error}"
+                ))
+            })?;
+            if !removal_binding_matches_after_rename(expected, observed) {
+                return Err(owner_tree_effect_unknown(
+                    "a raced app-owned tree replacement was retained in private quarantine"
+                        .to_string(),
+                ));
             }
-            fsync(&parent).map_err(io::Error::from)?;
+            remove_quarantined_entry(&parent, &quarantine, observed).map_err(
+                |error| match error {
+                    partial @ CommandError::PartialEffect { .. } => partial,
+                    other => owner_tree_effect_unknown(format!(
+                        "the identity-bound app-owned tree quarantine could not be removed: {other}"
+                    )),
+                },
+            )?;
+            fsync(&parent).map_err(|error| {
+                owner_tree_effect_unknown(format!(
+                    "app-owned tree cleanup durability could not be verified: {}",
+                    io::Error::from(error)
+                ))
+            })?;
             Ok(())
         }
         #[cfg(not(unix))]
@@ -388,31 +514,38 @@ impl<'lock> AppDataOwnerFs<'lock> {
             let directory_mode = Mode::from_bits_truncate(0o700);
             mkdirat(&destination_parent, destination_name, directory_mode)
                 .map_err(io::Error::from)?;
-            fsync(&destination_parent).map_err(io::Error::from)?;
-            let destination = openat(
-                &destination_parent,
-                destination_name,
-                directory_flags(),
-                Mode::empty(),
-            )
-            .map_err(map_unsafe_relative_errno)?;
-            fchmod(&destination, directory_mode).map_err(io::Error::from)?;
-            let mut entry_count = 0usize;
-            let mut total_bytes = 0u64;
-            let owner_uid = self.lock.owner_directory().metadata()?.uid();
-            if let Err(error) = copy_directory_contents(
-                &source,
-                &File::from(destination),
-                &mut entry_count,
-                &mut total_bytes,
-                max_entries,
-                max_total_bytes,
-                max_file_bytes,
-                owner_uid,
-                label,
-            ) {
-                let _ = self.remove_tree_if_exists(to);
-                return Err(error);
+            let copy_result = (|| {
+                fsync(&destination_parent).map_err(io::Error::from)?;
+                let destination = openat(
+                    &destination_parent,
+                    destination_name,
+                    directory_flags(),
+                    Mode::empty(),
+                )
+                .map_err(map_unsafe_relative_errno)?;
+                fchmod(&destination, directory_mode).map_err(io::Error::from)?;
+                let mut entry_count = 0usize;
+                let mut total_bytes = 0u64;
+                let owner_uid = self.lock.owner_directory().metadata()?.uid();
+                copy_directory_contents(
+                    &source,
+                    &File::from(destination),
+                    &mut entry_count,
+                    &mut total_bytes,
+                    max_entries,
+                    max_total_bytes,
+                    max_file_bytes,
+                    owner_uid,
+                    label,
+                )
+            })();
+            if let Err(error) = copy_result {
+                return match self.remove_tree_if_exists(to) {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(owner_tree_effect_unknown(format!(
+                        "app-owned tree copy failed ({error}); identity-bound destination cleanup failed ({cleanup})"
+                    ))),
+                };
             }
             Ok(())
         }
@@ -429,10 +562,16 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 max_file_bytes,
                 label,
             );
-            if result.is_err() {
-                let _ = std::fs::remove_dir_all(destination);
+            match result {
+                Ok(()) => Ok(()),
+                Err(error) => match std::fs::remove_dir_all(destination) {
+                    Ok(()) => Err(error),
+                    Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => Err(error),
+                    Err(cleanup) => Err(owner_tree_effect_unknown(format!(
+                        "app-owned tree copy failed ({error}); destination cleanup failed ({cleanup})"
+                    ))),
+                },
             }
-            result
         }
     }
 }
@@ -481,10 +620,16 @@ fn snapshot_child(
         FileType::Directory => {
             let child = openat(directory, name, directory_flags(), Mode::empty())
                 .map_err(map_unsafe_relative_errno)?;
+            let child = File::from(child);
+            let opened = child.metadata()?;
+            if opened.dev() != metadata.st_dev as u64 || opened.ino() != metadata.st_ino {
+                return Err(CommandError::StaleActionReference);
+            }
             rows.push(format!("dir:{relative_text}"));
-            pending.push((child_relative, File::from(child)));
+            pending.push((child_relative, child));
         }
         FileType::RegularFile => {
+            let path_binding = removal_binding_from_stat(&metadata)?;
             let descriptor = openat(
                 directory,
                 name,
@@ -498,9 +643,11 @@ fn snapshot_child(
             .map_err(io::Error::from)?;
             let mut file = File::from(descriptor);
             let file_metadata = file.metadata()?;
+            let opened_binding = removal_binding_from_metadata(&file_metadata)?;
             if !file_metadata.is_file()
                 || file_metadata.uid() != owner_uid
                 || file_metadata.nlink() != 1
+                || opened_binding != path_binding
             {
                 return Err(unsafe_relative_file(label));
             }
@@ -521,7 +668,15 @@ fn snapshot_child(
             Read::by_ref(&mut file)
                 .take(max_file_bytes.saturating_add(1))
                 .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 != file_metadata.len() || bytes.len() as u64 > max_file_bytes {
+            let after_binding = removal_binding_from_metadata(&file.metadata()?)?;
+            let rebound =
+                statat(directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)?;
+            let rebound_binding = removal_binding_from_stat(&rebound)?;
+            if bytes.len() as u64 != file_metadata.len()
+                || bytes.len() as u64 > max_file_bytes
+                || after_binding != opened_binding
+                || rebound_binding != opened_binding
+            {
                 return Err(CommandError::StaleActionReference);
             }
             rows.push(format!(
@@ -545,31 +700,193 @@ fn snapshot_child(
 }
 
 #[cfg(unix)]
-fn remove_directory_contents(directory: &File) -> Result<(), CommandError> {
-    use rustix::fs::{openat, statat, unlinkat, AtFlags, FileType, Mode};
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RemovalEntryKind {
+    Directory,
+    RegularFile,
+}
 
-    for name in directory_entry_names(directory)? {
-        let metadata =
-            statat(directory, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)?;
-        match FileType::from_raw_mode(metadata.st_mode) {
-            FileType::Directory => {
-                let child = openat(directory, &name, directory_flags(), Mode::empty())
-                    .map_err(map_unsafe_relative_errno)?;
-                remove_directory_contents(&File::from(child))?;
-                unlinkat(directory, &name, AtFlags::REMOVEDIR).map_err(io::Error::from)?;
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct RemovalBinding {
+    kind: RemovalEntryKind,
+    device: u64,
+    inode: u64,
+    mode: u32,
+    links: u64,
+    length: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+fn removal_binding_from_stat(stat: &rustix::fs::Stat) -> Result<RemovalBinding, CommandError> {
+    use rustix::fs::FileType;
+
+    let kind = match FileType::from_raw_mode(stat.st_mode) {
+        FileType::Directory => RemovalEntryKind::Directory,
+        FileType::RegularFile if stat.st_nlink == 1 => RemovalEntryKind::RegularFile,
+        FileType::RegularFile => {
+            return Err(CommandError::UnsafeConfigPath(
+                "app-data removal refuses a hard-linked file".to_string(),
+            ))
+        }
+        FileType::Symlink => {
+            return Err(CommandError::UnsafeConfigPath(
+                "app-data removal refuses a symlink".to_string(),
+            ))
+        }
+        _ => {
+            return Err(CommandError::UnsafeConfigPath(
+                "app-data removal refuses a special file".to_string(),
+            ))
+        }
+    };
+    Ok(RemovalBinding {
+        kind,
+        device: stat.st_dev as u64,
+        inode: stat.st_ino,
+        mode: stat.st_mode as u32,
+        links: stat.st_nlink as u64,
+        length: u64::try_from(stat.st_size)
+            .map_err(|_| unsafe_relative_file("app-data removal"))?,
+        modified_seconds: stat.st_mtime,
+        modified_nanoseconds: stat.st_mtime_nsec,
+        changed_seconds: stat.st_ctime,
+        changed_nanoseconds: stat.st_ctime_nsec,
+    })
+}
+
+#[cfg(unix)]
+fn removal_binding_from_metadata(
+    metadata: &std::fs::Metadata,
+) -> Result<RemovalBinding, CommandError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let kind = if metadata.is_dir() {
+        RemovalEntryKind::Directory
+    } else if metadata.is_file() && metadata.nlink() == 1 {
+        RemovalEntryKind::RegularFile
+    } else if metadata.is_file() {
+        return Err(CommandError::UnsafeConfigPath(
+            "app-data tree rejects a hard-linked file".to_string(),
+        ));
+    } else {
+        return Err(CommandError::UnsafeConfigPath(
+            "app-data tree rejects a symlink or special file".to_string(),
+        ));
+    };
+    Ok(RemovalBinding {
+        kind,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        mode: metadata.mode(),
+        links: metadata.nlink(),
+        length: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(unix)]
+fn removal_binding_matches_after_rename(
+    expected: RemovalBinding,
+    observed: RemovalBinding,
+) -> bool {
+    expected.kind == observed.kind
+        && expected.device == observed.device
+        && expected.inode == observed.inode
+        && expected.mode == observed.mode
+        && expected.links == observed.links
+        && expected.length == observed.length
+        && expected.modified_seconds == observed.modified_seconds
+        && expected.modified_nanoseconds == observed.modified_nanoseconds
+}
+
+#[cfg(unix)]
+fn random_owner_quarantine_name(stem: &str) -> Result<OsString, CommandError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|error| {
+        io::Error::other(format!("secure random name generation failed: {error}"))
+    })?;
+    let encoded = nonce
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(OsString::from(format!(
+        ".agent-copilot-{stem}-quarantine.{encoded}"
+    )))
+}
+
+#[cfg(unix)]
+fn remove_quarantined_entry(
+    parent: &File,
+    name: &OsStr,
+    expected: RemovalBinding,
+) -> Result<(), CommandError> {
+    use std::os::unix::fs::MetadataExt;
+
+    use rustix::fs::{fsync, openat, renameat_with, statat, unlinkat, AtFlags, Mode, RenameFlags};
+
+    match expected.kind {
+        RemovalEntryKind::RegularFile => {
+            unlinkat(parent, name, AtFlags::empty()).map_err(io::Error::from)?;
+        }
+        RemovalEntryKind::Directory => {
+            let directory = openat(parent, name, directory_flags(), Mode::empty())
+                .map_err(map_unsafe_relative_errno)?;
+            let directory = File::from(directory);
+            let metadata = directory.metadata()?;
+            if metadata.dev() != expected.device || metadata.ino() != expected.inode {
+                return Err(CommandError::StaleActionReference);
             }
-            FileType::RegularFile | FileType::Symlink => {
-                unlinkat(directory, &name, AtFlags::empty()).map_err(io::Error::from)?;
+            for child_name in directory_entry_names(&directory)? {
+                let before = statat(&directory, &child_name, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(io::Error::from)?;
+                let before = removal_binding_from_stat(&before)?;
+                let quarantine = random_owner_quarantine_name("entry")?;
+                renameat_with(
+                    &directory,
+                    &child_name,
+                    &directory,
+                    &quarantine,
+                    RenameFlags::NOREPLACE,
+                )
+                .map_err(|error| match error {
+                    rustix::io::Errno::NOENT | rustix::io::Errno::EXIST => {
+                        CommandError::StaleActionReference
+                    }
+                    other => io::Error::from(other).into(),
+                })?;
+                let moved = statat(&directory, &quarantine, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(io::Error::from)?;
+                let moved = removal_binding_from_stat(&moved)?;
+                if !removal_binding_matches_after_rename(before, moved) {
+                    return Err(CommandError::StaleActionReference);
+                }
+                remove_quarantined_entry(&directory, &quarantine, moved)?;
+                fsync(&directory).map_err(io::Error::from)?;
             }
-            _ => {
-                return Err(CommandError::UnsafeConfigPath(
-                    "app-data removal refuses a special file".to_string(),
-                ))
+            if !directory_entry_names(&directory)?.is_empty() {
+                return Err(CommandError::StaleActionReference);
             }
+            unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(io::Error::from)?;
         }
     }
-    rustix::fs::fsync(directory).map_err(io::Error::from)?;
     Ok(())
+}
+
+fn owner_tree_effect_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-data tree cleanup".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: true,
+        detail,
+    }
 }
 
 #[cfg(unix)]
@@ -605,12 +922,19 @@ fn copy_directory_contents(
                 fsync(destination).map_err(io::Error::from)?;
                 let source_child = openat(source, &name, directory_flags(), Mode::empty())
                     .map_err(map_unsafe_relative_errno)?;
+                let source_child = File::from(source_child);
+                let source_child_metadata = source_child.metadata()?;
+                if source_child_metadata.dev() != metadata.st_dev as u64
+                    || source_child_metadata.ino() != metadata.st_ino
+                {
+                    return Err(CommandError::StaleActionReference);
+                }
                 let destination_child =
                     openat(destination, &name, directory_flags(), Mode::empty())
                         .map_err(map_unsafe_relative_errno)?;
                 fchmod(&destination_child, directory_mode).map_err(io::Error::from)?;
                 copy_directory_contents(
-                    &File::from(source_child),
+                    &source_child,
                     &File::from(destination_child),
                     entry_count,
                     total_bytes,
@@ -622,6 +946,7 @@ fn copy_directory_contents(
                 )?;
             }
             FileType::RegularFile => {
+                let path_binding = removal_binding_from_stat(&metadata)?;
                 let source_descriptor = openat(
                     source,
                     &name,
@@ -635,9 +960,11 @@ fn copy_directory_contents(
                 .map_err(io::Error::from)?;
                 let mut source_file = File::from(source_descriptor);
                 let source_metadata = source_file.metadata()?;
+                let opened_binding = removal_binding_from_metadata(&source_metadata)?;
                 if !source_metadata.is_file()
                     || source_metadata.uid() != owner_uid
                     || source_metadata.nlink() != 1
+                    || opened_binding != path_binding
                 {
                     return Err(unsafe_relative_file(label));
                 }
@@ -672,6 +999,14 @@ fn copy_directory_contents(
                     &mut destination_file,
                 )?;
                 if copied != source_metadata.len() || copied > max_file_bytes {
+                    return Err(CommandError::StaleActionReference);
+                }
+                let after_binding = removal_binding_from_metadata(&source_file.metadata()?)?;
+                let rebound =
+                    statat(source, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)?;
+                if after_binding != opened_binding
+                    || removal_binding_from_stat(&rebound)? != opened_binding
+                {
                     return Err(CommandError::StaleActionReference);
                 }
                 destination_file.flush()?;

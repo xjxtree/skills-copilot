@@ -688,6 +688,24 @@ presence/value or absence verification, not secret exposure.
   identity/reference set. Apply revalidates these facts after taking the lock
   and before creating a process or replacing a tree. The lock remains held
   through catalog scan, semantic verification, and read-back.
+- `skill.install` accepts source bytes only from the locked app-data owner's
+  direct `tool-global/skills/<skill>/SKILL.md` namespace. Apply reopens that
+  owner-relative source with no-follow semantics, requires a single-link
+  bounded regular file, compares its complete device/inode/mode/link/length/
+  mtime/ctime stamp with the preview, and installs those descriptor-read bytes.
+  After the target scan it compares catalog list and detail semantics (agent,
+  scope, path, definition, name, description, frontmatter, body, fingerprint,
+  state, and project binding), then performs a final capability-relative
+  target read. A same-path catalog row alone never proves success.
+- Config, direct skill-file, and external archive-tree writes retain
+  descriptor-bound recovery state under the mutation lock. The allowed root,
+  parent chain, target, every archive-tree entry, and each newly created entry
+  must be owned by the current effective user. Private temporary, backup,
+  recovery, and quarantine entries use cryptographically random names.
+  Complete-tree archive recovery validates a bounded owner/device/inode
+  identity manifest and atomically quarantines before recursive removal.
+  Post-namespace failures return `partial_effect`; uncertain cleanup preserves
+  private recovery material and never follows a replacement display path.
 - Catalog commit results after any config, skill-file, quarantine, archive, or
   manager effect are classified. A proven non-commit permits exact
   compensation only for wholly app-owned reversible state. An uncertain commit

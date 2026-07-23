@@ -457,7 +457,17 @@ fn rollback_readback_failure_restores_multilevel_missing_target_tree() {
         || Err(CommandError::VerificationFailed),
     );
 
-    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert!(
+        matches!(
+            result,
+            Err(CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: false,
+                ..
+            })
+        ),
+        "unexpected rollback read-back failure: {result:?}"
+    );
     assert!(
         !settings_path.exists(),
         "rollback compensation must restore a missing target to missing"
@@ -955,12 +965,15 @@ fn save_rejects_catalog_bound_to_a_different_mutation_owner_before_effects() {
 
     let result = commit_prepared_claude_settings_save(&catalog, &app_data_dir, prepared);
 
-    assert!(matches!(
-        result,
-        Err(CommandError::Catalog(
-            skills_copilot_catalog::CatalogError::MutationOwner(_)
-        ))
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(CommandError::Catalog(
+                skills_copilot_catalog::CatalogError::MutationOwner(_)
+            ))
+        ),
+        "unexpected owner mismatch result: {result:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read unchanged settings"),
         "{}\n"
@@ -1035,14 +1048,17 @@ fn save_reports_partial_effect_if_owner_path_changes_after_file_write() {
         },
     );
 
-    assert!(matches!(
-        result,
-        Err(CommandError::PartialEffect {
-            state: "outcome_unknown",
-            cleanup_required: false,
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: false,
+                ..
+            })
+        ),
+        "unexpected save read-back failure: {result:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read applied settings"),
         candidate
@@ -1093,7 +1109,14 @@ fn save_readback_failure_rolls_back_snapshot_and_restores_missing_target() {
         || Err(CommandError::VerificationFailed),
     );
 
-    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: false,
+            ..
+        })
+    ));
     assert!(
         !settings_path.exists(),
         "compensation must restore an originally missing config target to missing"
@@ -1221,7 +1244,14 @@ fn save_post_rename_error_is_never_reclassified_as_success() {
 
     let result = commit_prepared_claude_settings_save(&catalog, &app_data_dir, prepared);
 
-    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: false,
+            ..
+        })
+    ));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read restored settings"),
         original
@@ -1277,7 +1307,14 @@ fn rollback_post_rename_error_is_never_reclassified_as_success() {
         &confirmed_action(&preview.action, &preview.preview_token),
     );
 
-    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: false,
+            ..
+        })
+    ));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read restored settings"),
         original
@@ -1424,9 +1461,11 @@ fn config_precommit_failure_rolls_back_and_restores_original() {
 
     assert!(matches!(
         result,
-        Err(CommandError::Catalog(
-            skills_copilot_catalog::CatalogError::InjectedCommitFailure
-        ))
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: false,
+            ..
+        })
     ));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read restored original"),
@@ -1541,7 +1580,7 @@ fn install_preview_from_tool_global_does_not_write_disk() {
     ));
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-alpha");
+    let source_path = write_tool_global_skill(&home, "portable-alpha");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -1601,7 +1640,7 @@ fn confirmed_install_rejects_source_drift_after_preview_without_writing_target()
     let temp_root = temp_test_dir("install-source-drift");
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-drift");
+    let source_path = write_tool_global_skill(&home, "portable-drift");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -1659,11 +1698,163 @@ fn confirmed_install_rejects_source_drift_after_preview_without_writing_target()
 }
 
 #[test]
+#[cfg(unix)]
+fn confirmed_install_rejects_same_length_source_mutation_during_locked_read() {
+    let temp_root = temp_test_dir("install-source-read-race");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&home, "portable-read-race");
+    let original = std::fs::read(&source_path).expect("source bytes");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let instance_id = "tool-global-read-race";
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            instance_id,
+            source_path.clone(),
+            "portable-read-race",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview install");
+    let source_relative = PathBuf::from("tool-global")
+        .join("skills")
+        .join("portable-read-race")
+        .join("SKILL.md");
+    let raced_source = source_path.clone();
+    let mut attacker = original.clone();
+    *attacker.last_mut().expect("non-empty source") ^= 1;
+    crate::app_data_owner_fs::install_owner_read_test_hook(source_relative, move || {
+        std::fs::write(&raced_source, &attacker).expect("same-length source mutation");
+    });
+
+    let result = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmed_action(&preview.action, &preview.preview_token)),
+    );
+
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
+    assert!(
+        !Path::new(&preview.target_path).exists(),
+        "a raced source read must remain zero-write at the target"
+    );
+    assert_eq!(
+        std::fs::metadata(&source_path)
+            .expect("source metadata")
+            .len(),
+        original.len() as u64
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn confirmed_install_rejects_scan_window_target_replacement() {
+    let temp_root = temp_test_dir("install-scan-window-race");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&home, "portable-scan-race");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let instance_id = "tool-global-scan-race";
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            instance_id,
+            source_path,
+            "portable-scan-race",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview install");
+    let target = PathBuf::from(&preview.target_path);
+    let raced_target = target.clone();
+    crate::skill_install_guard::install_catalog_scan_test_hook(target.clone(), move || {
+        let replacement = raced_target.with_extension("attacker");
+        std::fs::write(
+            &replacement,
+            "---\nname: portable-scan-race\ndescription: attacker\n---\nattacker",
+        )
+        .expect("attacker replacement");
+        std::fs::rename(&replacement, &raced_target).expect("replace scanned target");
+    });
+
+    let error = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmed_action(&preview.action, &preview.preview_token)),
+    )
+    .expect_err("path-only scan match must not prove the install");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert!(
+        std::fs::read_to_string(&target)
+            .expect("third-party target remains")
+            .contains("attacker"),
+        "compensation must not overwrite the unowned third state"
+    );
+    assert!(
+        catalog
+            .list_skill_records()
+            .expect("catalog rows")
+            .iter()
+            .all(|record| {
+                normalize_path_lexically(&record.path) != normalize_path_lexically(&target)
+            }),
+        "the scan transaction must not retain a path-only acceptance row"
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn confirmed_install_rechecks_the_source_catalog_record_under_lock() {
     let temp_root = temp_test_dir("install-catalog-drift");
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-catalog-drift");
+    let source_path = write_tool_global_skill(&home, "portable-catalog-drift");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     let instance_id = "tool-global-catalog-drift";
@@ -1734,7 +1925,7 @@ fn confirmed_install_rejects_a_catalog_bound_to_another_app_data_owner() {
     let replacement_owner = temp_root.join("replacement-owner");
     std::fs::create_dir_all(&home).expect("create home");
     std::fs::create_dir_all(&app_data).expect("create app data");
-    let source_path = write_tool_global_skill(&temp_root, "portable-owner-mismatch");
+    let source_path = write_tool_global_skill(&app_data, "portable-owner-mismatch");
     let catalog = Catalog::open_anchored(
         std::fs::File::open(&app_data).expect("open accepted catalog owner"),
     )
@@ -1789,12 +1980,15 @@ fn confirmed_install_rejects_a_catalog_bound_to_another_app_data_owner() {
         || {},
     );
 
-    assert!(matches!(
-        result,
-        Err(CommandError::Catalog(
-            skills_copilot_catalog::CatalogError::MutationOwner(_)
-        ))
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(CommandError::Catalog(
+                skills_copilot_catalog::CatalogError::MutationOwner(_)
+            ))
+        ),
+        "unexpected install owner mismatch result: {result:?}"
+    );
     assert!(
         !Path::new(&preview.target_path).exists(),
         "owner mismatch must be rejected before writing the agent skill"
@@ -1822,7 +2016,7 @@ fn confirmed_install_reports_partial_effect_if_owner_rebinds_after_commit() {
     std::fs::create_dir_all(&app_data).expect("create app data");
     std::fs::create_dir_all(&victim).expect("create victim");
     std::fs::write(victim.join("sentinel"), b"unchanged").expect("seed victim");
-    let source_path = write_tool_global_skill(&temp_root, "portable-owner-rebind");
+    let source_path = write_tool_global_skill(&app_data, "portable-owner-rebind");
     let catalog = Catalog::open_anchored(
         std::fs::File::open(&app_data).expect("open accepted catalog owner"),
     )
@@ -2579,7 +2773,7 @@ fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
     ));
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-beta");
+    let source_path = write_tool_global_skill(&home, "portable-beta");
     let source_content = std::fs::read_to_string(&source_path).expect("source content");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
@@ -2649,7 +2843,7 @@ fn exercise_install_post_rename_failure(rollback_failure: bool) {
     let temp_root = temp_test_dir(label);
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, skill_name);
+    let source_path = write_tool_global_skill(&home, skill_name);
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -2708,7 +2902,14 @@ fn exercise_install_post_rename_failure(rollback_failure: bool) {
             "unknown rollback must preserve the written skill candidate"
         );
     } else {
-        assert!(matches!(error, CommandError::VerificationFailed));
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
         assert!(!target.exists(), "candidate target must be removed");
         assert!(
             !home.join(".claude/skills").join(skill_name).exists(),
@@ -2743,7 +2944,7 @@ fn confirmed_install_removes_temp_and_owned_parents_when_write_fails_before_rena
     let temp_root = temp_test_dir("install-pre-rename-failure");
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "pre-rename-install");
+    let source_path = write_tool_global_skill(&home, "pre-rename-install");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -2809,7 +3010,7 @@ fn confirmed_install_preserves_a_concurrent_third_state_and_reports_partial_effe
     let temp_root = temp_test_dir("install-third-state");
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "third-state-install");
+    let source_path = write_tool_global_skill(&home, "third-state-install");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -2876,7 +3077,7 @@ fn confirmed_install_restores_files_and_catalog_when_commit_fails() {
     let temp_root = temp_test_dir("install-commit-failure");
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "commit-fail-install");
+    let source_path = write_tool_global_skill(&home, "commit-fail-install");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -2950,7 +3151,7 @@ fn confirmed_install_preserves_candidate_when_commit_outcome_is_unknown() {
     let temp_root = temp_test_dir("install-commit-outcome-unknown");
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "commit-unknown-install");
+    let source_path = write_tool_global_skill(&home, "commit-unknown-install");
     let expected_content = std::fs::read_to_string(&source_path).expect("source content");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
@@ -3008,4 +3209,292 @@ fn confirmed_install_preserves_candidate_when_commit_outcome_is_unknown() {
     );
 
     let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+fn exercise_config_parent_swap(point: crate::external_target::ExternalTargetHookPoint) {
+    use std::os::unix::fs::symlink;
+
+    let temp_root = temp_test_dir("external-config-parent-swap");
+    let home = temp_root.join("home");
+    let app_data = temp_root.join("app-data");
+    let config_parent = home.join(".claude");
+    let accepted_parent = temp_root.join("accepted-config-parent");
+    let victim = temp_root.join("victim");
+    let settings_path = config_parent.join("settings.json");
+    std::fs::create_dir_all(&config_parent).expect("config parent");
+    std::fs::create_dir_all(&app_data).expect("app data");
+    std::fs::create_dir_all(&victim).expect("victim");
+    std::fs::write(&settings_path, "{}\n").expect("original config");
+    std::fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    let catalog = Catalog::open(&app_data.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("current config");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("save preview");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepared save");
+    let raced_parent = config_parent.clone();
+    let raced_accepted = accepted_parent.clone();
+    let raced_victim = victim.clone();
+    crate::external_target::install_external_target_test_hook(
+        settings_path.clone(),
+        point,
+        move || {
+            std::fs::rename(&raced_parent, &raced_accepted).expect("move accepted config parent");
+            symlink(&raced_victim, &raced_parent).expect("replace config parent with victim link");
+        },
+    );
+
+    let error = commit_prepared_claude_settings_save(&catalog, &app_data, prepared)
+        .expect_err("detached config parent must fail");
+
+    assert!(
+        matches!(
+            error,
+            CommandError::StaleActionReference | CommandError::PartialEffect { .. }
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(accepted_parent.join("settings.json"))
+            .expect("accepted config restored"),
+        "{}\n"
+    );
+    assert_eq!(
+        std::fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        std::fs::read_dir(&victim).expect("victim entries").count(),
+        1
+    );
+    assert!(
+        std::fs::read_dir(&accepted_parent)
+            .expect("accepted entries")
+            .all(|entry| {
+                !entry
+                    .expect("accepted entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("agent-copilot-write")
+            }),
+        "candidate and retained-original temp entries must be gone"
+    );
+
+    std::fs::remove_file(&config_parent).expect("remove raced parent link");
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn config_save_rejects_parent_swap_before_temp_without_touching_victim() {
+    exercise_config_parent_swap(crate::external_target::ExternalTargetHookPoint::BeforeTempCreate);
+}
+
+#[test]
+#[cfg(unix)]
+fn config_save_cleans_candidate_when_parent_swaps_before_rename() {
+    exercise_config_parent_swap(crate::external_target::ExternalTargetHookPoint::BeforeRename);
+}
+
+#[test]
+#[cfg(unix)]
+fn config_save_restores_exact_original_when_parent_swaps_after_rename() {
+    exercise_config_parent_swap(crate::external_target::ExternalTargetHookPoint::AfterRename);
+}
+
+#[test]
+#[cfg(unix)]
+fn config_save_compensation_stays_anchored_when_parent_swaps_before_restore() {
+    use std::os::unix::fs::symlink;
+
+    let temp_root = temp_test_dir("external-config-compensation-swap");
+    let home = temp_root.join("home");
+    let app_data = temp_root.join("app-data");
+    let config_parent = home.join(".claude");
+    let accepted_parent = temp_root.join("accepted-config-parent");
+    let victim = temp_root.join("victim");
+    let settings_path = config_parent.join("settings.json");
+    std::fs::create_dir_all(&config_parent).expect("config parent");
+    std::fs::create_dir_all(&app_data).expect("app data");
+    std::fs::create_dir_all(&victim).expect("victim");
+    std::fs::write(&settings_path, "{}\n").expect("original config");
+    std::fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    let catalog = Catalog::open(&app_data.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("current config");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("save preview");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepared save");
+    install_atomic_post_rename_test_hook(settings_path.clone(), |_| {});
+    let raced_parent = config_parent.clone();
+    let raced_accepted = accepted_parent.clone();
+    let raced_victim = victim.clone();
+    crate::external_target::install_external_target_test_hook(
+        settings_path,
+        crate::external_target::ExternalTargetHookPoint::BeforeCompensation,
+        move || {
+            std::fs::rename(&raced_parent, &raced_accepted).expect("move accepted config parent");
+            symlink(&raced_victim, &raced_parent).expect("replace config parent with victim link");
+        },
+    );
+
+    let error = commit_prepared_claude_settings_save(&catalog, &app_data, prepared)
+        .expect_err("compensation binding drift must be partial");
+
+    assert!(matches!(error, CommandError::PartialEffect { .. }));
+    assert_eq!(
+        std::fs::read_to_string(accepted_parent.join("settings.json"))
+            .expect("accepted config restored"),
+        "{}\n"
+    );
+    assert_eq!(
+        std::fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        std::fs::read_dir(&victim).expect("victim entries").count(),
+        1
+    );
+
+    std::fs::remove_file(&config_parent).expect("remove raced parent link");
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn config_read_rejects_same_length_in_place_mutation() {
+    let temp_root = temp_test_dir("external-config-same-length-write");
+    let home = temp_root.join("home");
+    let app_data = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("config parent")).expect("config parent");
+    std::fs::create_dir_all(&app_data).expect("app data");
+    std::fs::write(&settings_path, "{\"a\":1}\n").expect("original config");
+    let catalog = Catalog::open(&app_data.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("current config");
+    let preview =
+        preview_claude_settings_save(&ctx, "{\"c\":1}\n", &current.revision).expect("preview");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        "{\"c\":1}\n",
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepared");
+    let raced_target = settings_path.clone();
+    crate::external_target::install_external_target_test_hook(
+        settings_path.clone(),
+        crate::external_target::ExternalTargetHookPoint::DuringRead,
+        move || std::fs::write(raced_target, "{\"b\":1}\n").expect("same-length mutation"),
+    );
+
+    let error = commit_prepared_claude_settings_save(&catalog, &app_data, prepared)
+        .expect_err("same-length in-place mutation must stale the read");
+
+    assert!(matches!(error, CommandError::StaleActionReference));
+    assert_eq!(
+        std::fs::read_to_string(settings_path).expect("third state"),
+        "{\"b\":1}\n"
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+fn exercise_config_parent_sync_failure(original: Option<&str>) {
+    let temp_root = temp_test_dir("external-config-sync-failure");
+    let home = temp_root.join("home");
+    let app_data = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("config parent")).expect("config parent");
+    std::fs::create_dir_all(&app_data).expect("app data");
+    if let Some(original) = original {
+        std::fs::write(&settings_path, original).expect("original config");
+    }
+    let catalog = Catalog::open(&app_data.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("current config");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("save preview");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepared");
+    crate::external_target::install_external_parent_sync_failure(settings_path.clone());
+
+    let error = commit_prepared_claude_settings_save(&catalog, &app_data, prepared)
+        .expect_err("injected parent sync failure");
+
+    assert!(matches!(error, CommandError::PartialEffect { .. }));
+    match original {
+        Some(original) => assert_eq!(
+            std::fs::read_to_string(&settings_path).expect("restored original"),
+            original
+        ),
+        None => assert!(!settings_path.exists(), "missing target must be restored"),
+    }
+    assert!(
+        std::fs::read_dir(settings_path.parent().expect("config parent"))
+            .expect("config entries")
+            .all(|entry| {
+                !entry
+                    .expect("config entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("agent-copilot-write")
+            }),
+        "sync-failure compensation must remove candidate and retained backup"
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn config_save_present_target_recovers_from_post_rename_parent_sync_failure() {
+    exercise_config_parent_sync_failure(Some("{}\n"));
+}
+
+#[test]
+#[cfg(unix)]
+fn config_save_missing_target_recovers_from_post_rename_parent_sync_failure() {
+    exercise_config_parent_sync_failure(None);
 }

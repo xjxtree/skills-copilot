@@ -2090,7 +2090,17 @@ fn exercise_batch_toggle_post_rename_failure(rollback_failure: bool) {
             "unknown rollback must preserve every written config candidate"
         );
     } else {
-        assert!(matches!(error, CommandError::VerificationFailed));
+        assert!(
+            matches!(
+                error,
+                CommandError::PartialEffect {
+                    state: "outcome_unknown",
+                    cleanup_required: false,
+                    ..
+                }
+            ),
+            "unexpected batch compensation error: {error:?}"
+        );
         assert!(
             !home.join(".claude/settings.json").exists(),
             "the earlier group must be restored to missing"
@@ -3357,7 +3367,7 @@ fn install_to_opencode_writes_native_user_skill_root() {
     ));
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-gamma");
+    let source_path = write_tool_global_skill(&home, "portable-gamma");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3408,7 +3418,7 @@ fn install_to_pi_writes_native_user_skill_root() {
         std::env::temp_dir().join(format!("skills-copilot-install-pi-{}", std::process::id()));
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-pi");
+    let source_path = write_tool_global_skill(&home, "portable-pi");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3461,7 +3471,7 @@ fn install_to_hermes_writes_native_user_skill_root() {
     ));
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-hermes");
+    let source_path = write_tool_global_skill(&home, "portable-hermes");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3519,7 +3529,7 @@ fn install_to_hermes_project_scope_remains_blocked() {
     let project = temp_root.join("project");
     std::fs::create_dir_all(&home).expect("create home");
     std::fs::create_dir_all(&project).expect("create project");
-    let source_path = write_tool_global_skill(&temp_root, "project-hermes");
+    let source_path = write_tool_global_skill(&home, "project-hermes");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3563,7 +3573,7 @@ fn install_to_openclaw_writes_native_user_skill_root() {
     ));
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "portable-openclaw");
+    let source_path = write_tool_global_skill(&home, "portable-openclaw");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3622,7 +3632,7 @@ fn install_to_openclaw_writes_confirmed_workspace_skill_root() {
     let repo = workspace.join("repo");
     let nested = repo.join("nested");
     std::fs::create_dir_all(&nested).expect("create workspace repo");
-    let source_path = write_tool_global_skill(&temp_root, "workspace-openclaw");
+    let source_path = write_tool_global_skill(&home, "workspace-openclaw");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3681,7 +3691,7 @@ fn install_to_openclaw_project_scope_outside_workspace_is_rejected() {
     let project = temp_root.join("project");
     std::fs::create_dir_all(&home).expect("create home");
     std::fs::create_dir_all(&project).expect("create project");
-    let source_path = write_tool_global_skill(&temp_root, "outside-openclaw");
+    let source_path = write_tool_global_skill(&home, "outside-openclaw");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -3833,7 +3843,7 @@ fn install_project_target_outside_current_root_is_rejected() {
     std::fs::create_dir_all(&home).expect("create home");
     std::fs::create_dir_all(&project_a).expect("create project a");
     std::fs::create_dir_all(&project_b).expect("create project b");
-    let source_path = write_tool_global_skill(&temp_root, "portable-delta");
+    let source_path = write_tool_global_skill(&home, "portable-delta");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
@@ -4431,7 +4441,7 @@ fn write_openclaw_global_skill_with_metadata(
 }
 
 fn write_tool_global_skill(root: &Path, name: &str) -> PathBuf {
-    let skill_dir = root.join("tool-global").join(name);
+    let skill_dir = root.join("tool-global").join("skills").join(name);
     std::fs::create_dir_all(&skill_dir).expect("create tool-global skill dir");
     let skill_path = skill_dir.join("SKILL.md");
     std::fs::write(

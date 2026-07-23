@@ -14,6 +14,44 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum OwnerCreationFaultPoint {
+    Stat,
+    Open,
+    Chmod,
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static OWNER_CREATION_FAULTS: std::cell::RefCell<Vec<OwnerCreationFaultPoint>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn install_owner_creation_fault(point: OwnerCreationFaultPoint) {
+    OWNER_CREATION_FAULTS.with(|faults| faults.borrow_mut().push(point));
+}
+
+#[cfg(all(test, unix))]
+fn run_owner_creation_fault(point: OwnerCreationFaultPoint) -> Result<(), io::Error> {
+    OWNER_CREATION_FAULTS.with(|faults| {
+        let mut faults = faults.borrow_mut();
+        if let Some(index) = faults.iter().position(|candidate| *candidate == point) {
+            faults.remove(index);
+            return Err(io::Error::other(format!(
+                "injected owner creation fault at {point:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(all(not(test), unix))]
+fn run_owner_creation_fault(_point: OwnerCreationFaultPoint) -> Result<(), io::Error> {
+    Ok(())
+}
+
 /// Cross-sidecar owner lock for every app-coordinated mutation.
 ///
 /// The owner directory must already exist. Acquiring this lock never creates a
@@ -169,6 +207,17 @@ fn open_existing_app_mutation_owner(path: &Path) -> Result<File, CommandError> {
     open_app_mutation_directory_tree(path, false)
 }
 
+/// Open an existing trusted directory with the same component-wise no-follow
+/// walk used for the app-data mutation owner.
+///
+/// External agent config and skill mutations use this only after their typed
+/// target has been revalidated while the app-data mutation lock is held. The
+/// returned descriptor is the root capability for all later target-relative
+/// I/O; callers never reopen the external target by pathname on Unix.
+pub(crate) fn open_existing_directory_nofollow(path: &Path) -> Result<File, CommandError> {
+    open_app_mutation_directory_tree(path, false)
+}
+
 #[cfg(not(unix))]
 fn open_existing_app_mutation_owner(path: &Path) -> Result<File, CommandError> {
     validate_existing_owner(path)?;
@@ -192,7 +241,7 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
     path: &Path,
     before_parent_open: impl FnOnce(&Path),
 ) -> Result<File, CommandError> {
-    use rustix::fs::{fchmod, mkdirat, Mode};
+    use rustix::fs::{fchmod, mkdirat, statat, AtFlags, FileType, Mode};
 
     if !app_mutation_owner_is_missing(path)? {
         return open_existing_app_mutation_owner(path);
@@ -223,15 +272,60 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
         Err(error) => return Err(error.into()),
     };
+    let created_identity = if created {
+        run_owner_creation_fault(OwnerCreationFaultPoint::Stat)
+            .map_err(|error| created_owner_effect_unknown(error.to_string()))?;
+        let stat = statat(&parent_file, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+            created_owner_effect_unknown(format!(
+                "the created app-data owner identity could not be read: {}",
+                io::Error::from(error)
+            ))
+        })?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+            return Err(created_owner_effect_unknown(
+                "the created app-data owner is no longer a directory".to_string(),
+            ));
+        }
+        Some((stat.st_dev as u64, stat.st_ino))
+    } else {
+        None
+    };
+    if created {
+        run_owner_creation_fault(OwnerCreationFaultPoint::Open)
+            .map_err(|error| created_owner_effect_unknown(error.to_string()))?;
+    }
     let owner = open_app_mutation_child(&parent_file, name).map_err(|error| {
-        if is_unsafe_directory_error(&error) {
+        if created {
+            created_owner_effect_unknown(format!(
+                "the created app-data owner descriptor could not be opened: {error}"
+            ))
+        } else if is_unsafe_directory_error(&error) {
             unsafe_owner()
         } else {
             error.into()
         }
     })?;
     if created {
-        fchmod(&owner, private_mode).map_err(io::Error::from)?;
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = owner.metadata().map_err(|error| {
+            created_owner_effect_unknown(format!(
+                "the created app-data owner descriptor identity could not be read: {error}"
+            ))
+        })?;
+        if created_identity != Some((metadata.dev(), metadata.ino())) {
+            return Err(created_owner_effect_unknown(
+                "the created app-data owner changed before descriptor binding".to_string(),
+            ));
+        }
+        run_owner_creation_fault(OwnerCreationFaultPoint::Chmod)
+            .map_err(|error| created_owner_effect_unknown(error.to_string()))?;
+        fchmod(&owner, private_mode).map_err(|error| {
+            created_owner_effect_unknown(format!(
+                "private app-data owner permissions could not be applied: {}",
+                io::Error::from(error)
+            ))
+        })?;
         sync_created_app_mutation_directory(&parent_file, &owner)?;
     }
     let file = owner;
@@ -248,8 +342,9 @@ fn open_app_mutation_directory_tree(
     path: &Path,
     create_missing: bool,
 ) -> Result<File, CommandError> {
-    use rustix::fs::{fchmod, mkdirat, open, openat, Mode, OFlags};
+    use rustix::fs::{fchmod, mkdirat, open, openat, statat, AtFlags, FileType, Mode, OFlags};
     use rustix::io::Errno;
+    use std::os::unix::fs::MetadataExt;
 
     let path = normalize_trusted_root_alias(path)?;
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
@@ -259,6 +354,7 @@ fn open_app_mutation_directory_tree(
         open(".", flags, Mode::empty()).map_err(io::Error::from)?
     };
     let mut saw_name = false;
+    let mut created_any = false;
     for component in path.components() {
         let name = match component {
             Component::RootDir | Component::CurDir => continue,
@@ -275,32 +371,118 @@ fn open_app_mutation_directory_tree(
                     Err(Errno::EXIST) => false,
                     Err(error) => return Err(io::Error::from(error).into()),
                 };
+                created_any |= created;
+                let created_identity = if created {
+                    run_owner_creation_fault(OwnerCreationFaultPoint::Stat)
+                        .map_err(|error| created_owner_effect_unknown(error.to_string()))?;
+                    let stat =
+                        statat(&current, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+                            created_owner_effect_unknown(format!(
+                                "a created app-data ancestor identity could not be read: {}",
+                                io::Error::from(error)
+                            ))
+                        })?;
+                    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+                        return Err(created_owner_effect_unknown(
+                            "a created app-data ancestor is no longer a directory".to_string(),
+                        ));
+                    }
+                    Some((stat.st_dev as u64, stat.st_ino))
+                } else {
+                    None
+                };
+                if created {
+                    run_owner_creation_fault(OwnerCreationFaultPoint::Open)
+                        .map_err(|error| created_owner_effect_unknown(error.to_string()))?;
+                }
                 let next = openat(&current, name, flags, Mode::empty()).map_err(|error| {
                     let error = io::Error::from(error);
-                    if is_unsafe_directory_error(&error) {
+                    if created_any {
+                        created_owner_effect_unknown(format!(
+                            "a created app-data directory chain could not be opened: {error}"
+                        ))
+                    } else if is_unsafe_directory_error(&error) {
                         unsafe_owner()
                     } else {
                         error.into()
                     }
                 })?;
                 if created {
-                    fchmod(&next, mode).map_err(io::Error::from)?;
+                    let metadata = File::from(
+                        rustix::fs::openat(&next, ".", flags, Mode::empty())
+                            .map_err(|error| {
+                                created_owner_effect_unknown(format!(
+                                    "a created app-data ancestor descriptor could not be cloned: {}",
+                                    io::Error::from(error)
+                                ))
+                            })?,
+                    )
+                    .metadata()
+                    .map_err(|error| {
+                        created_owner_effect_unknown(format!(
+                            "a created app-data ancestor descriptor identity could not be read: {error}"
+                        ))
+                    })?;
+                    if created_identity != Some((metadata.dev(), metadata.ino())) {
+                        return Err(created_owner_effect_unknown(
+                            "a created app-data ancestor changed before descriptor binding"
+                                .to_string(),
+                        ));
+                    }
+                    run_owner_creation_fault(OwnerCreationFaultPoint::Chmod)
+                        .map_err(|error| created_owner_effect_unknown(error.to_string()))?;
+                    fchmod(&next, mode).map_err(|error| {
+                        created_owner_effect_unknown(format!(
+                            "private app-data ancestor permissions could not be applied: {}",
+                            io::Error::from(error)
+                        ))
+                    })?;
                     sync_created_app_mutation_directory(&current, &next)?;
                 }
                 current = next;
             }
             Err(error) if error == Errno::LOOP || error == Errno::NOTDIR => {
-                return Err(unsafe_owner())
+                return Err(if created_any {
+                    created_owner_effect_unknown(
+                        "a later app-data ancestor became a symlink or non-directory".to_string(),
+                    )
+                } else {
+                    unsafe_owner()
+                })
             }
-            Err(error) => return Err(io::Error::from(error).into()),
+            Err(error) => {
+                return Err(if created_any {
+                    created_owner_effect_unknown(format!(
+                        "a later app-data ancestor could not be opened: {}",
+                        io::Error::from(error)
+                    ))
+                } else {
+                    io::Error::from(error).into()
+                })
+            }
         }
     }
     if !saw_name {
         return Err(unsafe_owner());
     }
     let file = File::from(current);
-    if !file.metadata()?.is_dir() {
-        return Err(unsafe_owner());
+    let metadata = file.metadata().map_err(|error| {
+        if created_any {
+            created_owner_effect_unknown(format!(
+                "the created app-data owner descriptor could not be inspected: {error}"
+            ))
+        } else {
+            error.into()
+        }
+    })?;
+    if !metadata.is_dir() {
+        return Err(if created_any {
+            created_owner_effect_unknown(
+                "the created app-data owner is no longer a directory".to_string(),
+            )
+        } else {
+            unsafe_owner()
+        });
     }
     Ok(file)
 }
@@ -331,6 +513,17 @@ fn created_owner_durability_unknown(error: io::Error) -> CommandError {
         cleanup_required: false,
         detail: format!(
             "a private app-data directory was created, but its durability could not be verified: {error}"
+        ),
+    }
+}
+
+fn created_owner_effect_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-data owner initialization".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: false,
+        detail: format!(
+            "a private app-data directory was created, but initialization could not be verified: {detail}"
         ),
     }
 }
@@ -399,7 +592,7 @@ fn open_app_mutation_child(parent: &File, name: &std::ffi::OsStr) -> Result<File
 }
 
 #[cfg(unix)]
-fn normalize_trusted_root_alias(path: &Path) -> Result<PathBuf, CommandError> {
+pub(crate) fn normalize_trusted_root_alias(path: &Path) -> Result<PathBuf, CommandError> {
     use std::os::unix::fs::MetadataExt;
 
     if !path.is_absolute() {
@@ -672,6 +865,50 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn confirmed_owner_creation_faults_after_mkdir_are_typed_partial_effects() {
+        for point in [
+            OwnerCreationFaultPoint::Stat,
+            OwnerCreationFaultPoint::Open,
+            OwnerCreationFaultPoint::Chmod,
+        ] {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "skills-copilot-owner-creation-fault-{point:?}-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).expect("create parent");
+            let owner = root.join("app-data");
+            install_owner_creation_fault(point);
+
+            let error = match lock_or_create_app_mutations(&owner) {
+                Ok(_) => panic!("post-mkdir fault must not report success"),
+                Err(error) => error,
+            };
+
+            assert!(matches!(
+                error,
+                CommandError::PartialEffect {
+                    operation,
+                    state: "outcome_unknown",
+                    cleanup_required: false,
+                    ..
+                } if operation == "app-data owner initialization"
+            ));
+            assert!(
+                std::fs::symlink_metadata(&owner)
+                    .expect("created owner remains")
+                    .is_dir(),
+                "the namespace effect must be retained and reported"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]

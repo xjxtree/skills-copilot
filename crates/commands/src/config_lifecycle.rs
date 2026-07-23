@@ -246,10 +246,17 @@ pub(crate) fn commit_prepared_claude_settings_save_with_hooks(
     after_lock();
     owner_lock.validate_owner_path_binding()?;
     catalog.ensure_mutation_owner(owner_lock.owner_directory())?;
+    let mut target_capability = prepare_config_target_capability(
+        &owner_lock,
+        &ctx,
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        &target,
+    )?;
     let transaction = catalog.begin_immediate_transaction()?;
     let locked_state = (|| {
         validate_config_read_target(&ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
-        let current = read_config_state(&target)?;
+        let current = read_external_config_state(&target_capability)?;
         let preview = build_claude_settings_save_preview(&ctx, &target, &content, current.clone())?;
         ensure_action_confirmed(
             &ActionPreviewBinding {
@@ -272,15 +279,9 @@ pub(crate) fn commit_prepared_claude_settings_save_with_hooks(
             return rollback_config_transaction_without_file(transaction, "config save", error);
         }
     };
-    let missing_parents = missing_parent_chain(&target);
     let compensation = ConfigCompensation {
-        ctx: &ctx,
-        agent: AgentId::ClaudeCode,
-        scope: Scope::AgentGlobal,
-        target: &target,
         candidate_content: &content,
         original: &current,
-        missing_parents: &missing_parents,
         operation: "config save",
     };
     let target_text = target.to_string_lossy().into_owned();
@@ -308,25 +309,34 @@ pub(crate) fn commit_prepared_claude_settings_save_with_hooks(
             reason: &snapshot.reason,
             created_at_ms: snapshot.created_at,
         })?;
-        write_config_atomic(
-            &ctx,
-            AgentId::ClaudeCode,
-            Scope::AgentGlobal,
-            &target,
-            &content,
-        )?;
+        target_capability.atomic_replace(content.as_bytes())?;
         after_write()?;
         scan_agent_id_to_catalog(AgentId::ClaudeCode, &ctx, catalog)?;
-        finish_claude_settings_save(catalog, &ctx, &target, &content, preview, snapshot)
+        finish_claude_settings_save(
+            catalog,
+            &ctx,
+            &target,
+            &target_capability,
+            &content,
+            preview,
+            snapshot,
+        )
     })();
     let record = match apply_result {
         Ok(record) => record,
         Err(error) => {
-            return rollback_config_transaction_and_compensate(transaction, &compensation, error);
+            return rollback_config_transaction_and_compensate(
+                transaction,
+                &mut target_capability,
+                &compensation,
+                error,
+            );
         }
     };
-    let record = commit_config_transaction(transaction, &compensation, record)?;
+    let record =
+        commit_config_transaction(transaction, &mut target_capability, &compensation, record)?;
     verify_owner_binding_after_effect(&owner_lock, "config save")?;
+    target_capability.finish()?;
     Ok(record)
 }
 
@@ -334,11 +344,12 @@ fn finish_claude_settings_save(
     catalog: &Catalog,
     ctx: &AdapterContext,
     target: &Path,
+    target_capability: &ExternalTargetCapability<'_>,
     content: &str,
     preview: ConfigSavePreviewRecord,
     snapshot: ConfigSnapshotRecord,
 ) -> Result<ConfigSaveApplyRecord, CommandError> {
-    let written = read_config_state(target)?;
+    let written = read_external_config_state(target_capability)?;
     if !written.exists
         || written.content != content
         || written.revision != config_consistency::config_revision(true, content)
@@ -475,13 +486,8 @@ fn config_catalog_projection_observations(
 }
 
 struct ConfigCompensation<'a> {
-    ctx: &'a AdapterContext,
-    agent: AgentId,
-    scope: Scope,
-    target: &'a Path,
     candidate_content: &'a str,
     original: &'a config_consistency::ConfigState,
-    missing_parents: &'a [PathBuf],
     operation: &'static str,
 }
 
@@ -505,6 +511,7 @@ fn rollback_config_transaction_without_file<T>(
 
 fn rollback_config_transaction_and_compensate<T>(
     transaction: CatalogImmediateTransaction<'_>,
+    target: &mut ExternalTargetCapability<'_>,
     compensation: &ConfigCompensation<'_>,
     original_error: CommandError,
 ) -> Result<T, CommandError> {
@@ -518,18 +525,19 @@ fn rollback_config_transaction_and_compensate<T>(
             ),
         });
     }
-    compensate_config_failure(compensation, original_error)
+    compensate_config_failure(target, compensation, original_error)
 }
 
 fn commit_config_transaction<T>(
     transaction: CatalogImmediateTransaction<'_>,
+    target: &mut ExternalTargetCapability<'_>,
     compensation: &ConfigCompensation<'_>,
     record: T,
 ) -> Result<T, CommandError> {
     match transaction.commit_classified() {
         Ok(()) => Ok(record),
         Err(CatalogCommitError::NotCommitted(error)) => {
-            compensate_config_failure(compensation, error.into())
+            compensate_config_failure(target, compensation, error.into())
         }
         Err(CatalogCommitError::OutcomeUnknown(error)) => Err(CommandError::PartialEffect {
             operation: compensation.operation.to_string(),
@@ -559,17 +567,13 @@ fn verify_owner_binding_after_effect(
 }
 
 fn compensate_config_failure<T>(
+    target: &mut ExternalTargetCapability<'_>,
     compensation: &ConfigCompensation<'_>,
     original_error: CommandError,
 ) -> Result<T, CommandError> {
     let ConfigCompensation {
-        ctx,
-        agent,
-        scope,
-        target,
         candidate_content,
         original,
-        missing_parents,
         operation,
     } = compensation;
     let candidate = config_consistency::ConfigState {
@@ -577,9 +581,16 @@ fn compensate_config_failure<T>(
         content: (*candidate_content).to_string(),
         revision: config_consistency::config_revision(true, candidate_content),
     };
-    match read_config_state(target) {
+    target.run_before_compensation_hook();
+    match read_external_config_state_anchored(target) {
         Ok(observed) if observed == candidate => {}
-        Ok(observed) if &observed == *original => return Err(original_error),
+        Ok(observed) if &observed == *original => {
+            return Err(compensated_config_error(
+                operation,
+                original_error,
+                "the target already matched the exact original state",
+            ))
+        }
         Ok(observed) => {
             return Err(CommandError::PartialEffect {
                 operation: (*operation).to_string(),
@@ -602,15 +613,12 @@ fn compensate_config_failure<T>(
             });
         }
     }
-    match restore_config_state(
-        ctx,
-        *agent,
-        *scope,
-        target,
-        original,
-        missing_parents,
-    ) {
-        Ok(()) => Err(original_error),
+    match restore_config_state(target, original) {
+        Ok(()) => Err(compensated_config_error(
+            operation,
+            original_error,
+            "the exact original target state was restored and verified",
+        )),
         Err(compensation_error) => Err(CommandError::PartialEffect {
             operation: (*operation).to_string(),
             state: "outcome_unknown",
@@ -622,57 +630,35 @@ fn compensate_config_failure<T>(
     }
 }
 
+fn compensated_config_error(
+    operation: &str,
+    original_error: CommandError,
+    restoration: &str,
+) -> CommandError {
+    CommandError::PartialEffect {
+        operation: operation.to_string(),
+        state: "outcome_unknown",
+        cleanup_required: false,
+        detail: format!(
+            "the confirmed config write did not complete ({original_error}); {restoration}"
+        ),
+    }
+}
+
 fn restore_config_state(
-    ctx: &AdapterContext,
-    agent: AgentId,
-    scope: Scope,
-    target: &Path,
+    target: &mut ExternalTargetCapability<'_>,
     original: &config_consistency::ConfigState,
-    missing_parents: &[PathBuf],
 ) -> Result<(), CommandError> {
     if original.exists {
-        write_config_atomic(ctx, agent, scope, target, &original.content)?;
+        target.restore_present_anchored(original.content.as_bytes())?;
     } else {
-        validate_config_read_target(ctx, agent, scope, target)?;
-        match fs::symlink_metadata(target) {
-            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {
-                return Err(CommandError::UnsafeConfigPath(
-                    "compensation target changed into a non-file".to_string(),
-                ));
-            }
-            Ok(_) => fs::remove_file(target)?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        for parent in missing_parents {
-            match fs::remove_dir(parent) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        target.restore_missing_anchored()?;
     }
-    let restored = read_config_state(target)?;
+    let restored = read_external_config_state_anchored(target)?;
     if &restored != original {
         return Err(CommandError::VerificationFailed);
     }
-    if missing_parents.iter().any(|parent| parent.exists()) {
-        return Err(CommandError::VerificationFailed);
-    }
     Ok(())
-}
-
-fn missing_parent_chain(target: &Path) -> Vec<PathBuf> {
-    let mut missing = Vec::new();
-    let mut cursor = target.parent();
-    while let Some(parent) = cursor {
-        if parent.exists() {
-            break;
-        }
-        missing.push(parent.to_path_buf());
-        cursor = parent.parent();
-    }
-    missing
 }
 
 fn validate_claude_settings_content(content: &str) -> Result<(), CommandError> {
@@ -932,6 +918,14 @@ pub(crate) fn rollback_snapshot_with_hooks(
     after_lock();
     owner_lock.validate_owner_path_binding()?;
     catalog.ensure_mutation_owner(owner_lock.owner_directory())?;
+    validate_config_read_target(ctx, agent, scope, &target).map_err(|error| {
+        CommandError::MismatchedActionReference(format!(
+            "config target changed after the rollback preview: {error}"
+        ))
+    })?;
+    let mut target_capability =
+        prepare_config_target_capability(&owner_lock, ctx, agent, scope, &target)
+            .map_err(|_| CommandError::StaleActionReference)?;
     let transaction = catalog.begin_immediate_transaction()?;
     let locked_state = (|| {
         let locked_snapshot = catalog
@@ -951,7 +945,8 @@ pub(crate) fn rollback_snapshot_with_hooks(
                 "config target changed after the rollback preview: {error}"
             ))
         })?;
-        let current = read_config_state(&target).map_err(|_| CommandError::StaleActionReference)?;
+        let current = read_external_config_state(&target_capability)
+            .map_err(|_| CommandError::StaleActionReference)?;
         let locked_preview = preview_snapshot_rollback_for_record(ctx, locked_snapshot.clone())?;
         ensure_action_confirmed(
             &ActionPreviewBinding {
@@ -990,26 +985,20 @@ pub(crate) fn rollback_snapshot_with_hooks(
             );
         }
     };
-    let missing_parents = missing_parent_chain(&target);
     let candidate_content = locked_snapshot.content.clone();
     let compensation = ConfigCompensation {
-        ctx,
-        agent: locked_agent,
-        scope: locked_scope,
-        target: &target,
         candidate_content: &candidate_content,
         original: &current,
-        missing_parents: &missing_parents,
         operation: "snapshot rollback",
     };
     let apply_result = (|| {
-        write_config_atomic(ctx, locked_agent, locked_scope, &target, &candidate_content)?;
+        target_capability.atomic_replace(candidate_content.as_bytes())?;
         after_write()?;
         scan_agent_id_to_catalog(locked_agent, ctx, catalog)?;
         finish_snapshot_rollback(
             catalog,
             ctx,
-            &target,
+            &target_capability,
             locked_agent,
             locked_scope,
             locked_snapshot,
@@ -1019,11 +1008,18 @@ pub(crate) fn rollback_snapshot_with_hooks(
     let record = match apply_result {
         Ok(record) => record,
         Err(error) => {
-            return rollback_config_transaction_and_compensate(transaction, &compensation, error);
+            return rollback_config_transaction_and_compensate(
+                transaction,
+                &mut target_capability,
+                &compensation,
+                error,
+            );
         }
     };
-    let record = commit_config_transaction(transaction, &compensation, record)?;
+    let record =
+        commit_config_transaction(transaction, &mut target_capability, &compensation, record)?;
     verify_owner_binding_after_effect(&owner_lock, "snapshot rollback")?;
+    target_capability.finish()?;
     Ok(record)
 }
 
@@ -1060,13 +1056,14 @@ fn validate_rollback_reference_identity(
 fn finish_snapshot_rollback(
     catalog: &Catalog,
     ctx: &AdapterContext,
-    target: &Path,
+    target_capability: &ExternalTargetCapability<'_>,
     agent: AgentId,
     scope: Scope,
     snapshot: ConfigSnapshotRecord,
     preview: SnapshotRollbackPreviewRecord,
 ) -> Result<SnapshotRollbackApplyRecord, CommandError> {
-    let written = read_config_state(target)?;
+    let target = Path::new(&snapshot.target);
+    let written = read_external_config_state(target_capability)?;
     if !written.exists
         || written.content != snapshot.content
         || written.revision != config_consistency::config_revision(true, &snapshot.content)

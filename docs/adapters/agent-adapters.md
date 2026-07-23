@@ -188,6 +188,13 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   operation-specific postcondition; an unrelated tree change is insufficient.
   Install and update require an explicit non-empty skill list. Multi-agent
   read-back retains one catalog and skill-file observation per selected target.
+- Direct `skill.install` distributes only from the app-owned local library. Its
+  source must be the locked owner-relative
+  `tool-global/skills/<skill>/SKILL.md` entry; a catalog row pointing to an
+  arbitrary home, project, compatibility, plugin, cache, or configured root
+  does not grant source authority. Target writes remain within the adapter
+  matrix's guarded native install root and use descriptor-bound semantic
+  read-back.
 - Project manager targets are `.claude/skills` for Claude Code,
   `.agents/skills` for Codex and opencode, `.pi/skills` for Pi,
   `.hermes/skills` for Hermes, and `skills` for OpenClaw. Global targets use
@@ -250,6 +257,13 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   returns verified catalog/skill-file read-back. Drift fails stale and replay
   cannot replace an already identical tree. Extraction never executes packaged
   scripts.
+- ZIP replacement of an external guarded source binds the complete target,
+  staging, backup, and cleanup tree by no-follow descriptors and a bounded
+  owner/device/inode identity manifest. The source root, parent chain, target,
+  every existing tree entry, and every newly created staging entry must be
+  owned by the current effective user. Cryptographically random private
+  quarantine is retained on cleanup uncertainty; source-root or parent
+  replacement never redirects restoration or deletion.
 - Local ZIP import rejects a name already present in the app-owned library or
   an installed shared `.agents/skills` source. The existing package must use its
   update flow instead of creating an ambiguous second package row. Import uses

@@ -40,12 +40,14 @@ mod config_consistency;
 mod config_lifecycle;
 mod config_support;
 mod error;
+mod external_target;
 mod history;
 mod local_skill_import;
 mod mutation_lock;
 mod product_projection;
 mod script_execution;
 mod skill_bundle;
+mod skill_install_guard;
 mod skill_manager;
 mod transaction_lifecycle;
 
@@ -65,11 +67,16 @@ use config_support::{
     batch_snapshot_rollback_notes, minimal_skill_instance, normalize_initial_config_text,
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
+use external_target::{ExternalFileState, ExternalTargetCapability};
 pub use mutation_lock::{
     lock_app_mutations, lock_or_create_app_mutations, lock_or_create_app_mutations_with_parents,
     AppMutationLock,
 };
+use skill_install_guard::*;
 use transaction_lifecycle::rollback_catalog_before_compensation;
+
+const MAX_EXTERNAL_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_DIRECT_SKILL_BYTES: u64 = 2 * 1024 * 1024;
 
 pub use action_lifecycle::*;
 pub use analysis::*;
@@ -1242,18 +1249,17 @@ where
 
     let target = PathBuf::from(&preview.target_path);
     let source = PathBuf::from(&preview.source_path);
-    validate_skill_install_target(
+    let mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
+    mutation_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
+    let mut target_capability = prepare_skill_target_capability(
+        &mutation_lock,
         ctx,
         target_agent,
         target_scope,
         &target,
         project_path,
-        false,
     )?;
-    validate_tool_global_source(&source)?;
-    let mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
-    mutation_lock.validate_owner_path_binding()?;
-    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
     let expected_catalog = preview
         .preconditions
         .iter()
@@ -1266,18 +1272,27 @@ where
     let current_meta = catalog
         .get_skill_instance_meta(instance_id)?
         .ok_or(CommandError::StaleActionReference)?;
-    let current_source = current_meta
-        .path
-        .canonicalize()
-        .map_err(|_| CommandError::StaleActionReference)?;
+    let current_source = normalize_path_lexically(&current_meta.path);
+    let source_relative = tool_global_source_relative(app_data_dir, &current_source)?;
     if current_meta.scope != Scope::ToolGlobal
-        || current_source != source
+        || current_source != normalize_path_lexically(&source)
         || batch_catalog_record_revision(&current_meta)? != expected_catalog.expected_revision
     {
         return Err(CommandError::StaleActionReference);
     }
-    let locked_source = read_skill_file_state(&source, true)?;
-    let locked_target = read_skill_file_state(&target, false)?;
+    let owner = mutation_lock.owner_fs();
+    let (source_bytes, source_stamp) = owner
+        .read_bounded_regular_file_with_stamp(
+            &source_relative,
+            MAX_DIRECT_SKILL_BYTES,
+            "tool-global install source",
+        )?
+        .ok_or(CommandError::StaleActionReference)?;
+    let source_content = String::from_utf8(source_bytes).map_err(|_| {
+        CommandError::UnsafeConfigPath("tool-global install source is not valid UTF-8".to_string())
+    })?;
+    let locked_source = owner_locked_skill_file_state(&source, source_content, &source_stamp)?;
+    let locked_target = read_external_skill_state(&target_capability, &target)?;
     let expected_source = preview
         .preconditions
         .iter()
@@ -1296,33 +1311,28 @@ where
                 "install preview is missing its target precondition".to_string(),
             )
         })?;
-    if locked_source.revision != expected_source.expected_revision
+    if locked_source.binding_revision != expected_source.expected_revision
         || locked_target.revision != expected_target.expected_revision
     {
         return Err(CommandError::StaleActionReference);
     }
 
     let new_text = locked_source.content.clone();
+    let candidate = parse_tool_global_skill(&new_text, &current_meta.name);
+    let candidate_definition_id = canonical_definition_id(&candidate.name);
+    let candidate_fingerprint = content_fingerprint(&candidate.frontmatter_raw, &candidate.body);
     let applied_target_revision = skill_file_revision(&target, true, &new_text)?;
-    let created_parent_candidates = missing_parent_directories(&target)?;
     let transaction = catalog.begin_immediate_transaction()?;
     let apply_result = (|| {
-        write_skill_file_atomic(
-            ctx,
-            target_agent,
-            target_scope,
-            &target,
-            &new_text,
-            project_path,
-        )?;
-        let written = fs::read_to_string(&target)?;
-        if written != new_text {
+        target_capability.atomic_replace(new_text.as_bytes())?;
+        let written = read_external_skill_state(&target_capability, &target)?;
+        if !written.exists || written.content != new_text {
             return Err(CommandError::VerificationFailed);
         }
         let scan_ctx = install_scan_context(ctx, target_agent, target_scope, project_path)?;
         scan_agent_id_to_catalog(target_agent, &scan_ctx, catalog)?;
-        let target_state = read_skill_file_state(&target, true)?;
-        let canonical_target = target.canonicalize()?;
+        run_install_catalog_scan_test_hook(&target);
+        let anchored_target = target_capability.anchored_path().to_path_buf();
         let expected_project_root = if target_scope == Scope::AgentProject {
             Some(
                 scan_ctx
@@ -1340,10 +1350,8 @@ where
             .find(|record| {
                 record.agent == target_agent.as_str()
                     && record.scope == target_scope.as_str()
-                    && record
-                        .path
-                        .canonicalize()
-                        .is_ok_and(|path| path == canonical_target)
+                    && normalize_path_lexically(&record.path)
+                        == normalize_path_lexically(&anchored_target)
             })
             .ok_or(CommandError::VerificationFailed)?;
         let target_meta = catalog
@@ -1360,6 +1368,34 @@ where
             _ => false,
         };
         if !project_matches {
+            return Err(CommandError::VerificationFailed);
+        }
+        let target_detail = catalog
+            .get_skill_detail(&target_record.id)?
+            .ok_or(CommandError::VerificationFailed)?;
+        if target_record.state == "missing"
+            || target_record.definition_id != candidate_definition_id
+            || target_record.name != candidate.name
+            || target_detail.id != target_record.id
+            || target_detail.agent != target_agent.as_str()
+            || target_detail.scope != target_scope.as_str()
+            || normalize_path_lexically(&target_detail.path)
+                != normalize_path_lexically(&anchored_target)
+            || target_detail.definition_id != candidate_definition_id
+            || target_detail.name != candidate.name
+            || target_detail.description != candidate.description
+            || target_detail.frontmatter_raw != candidate.frontmatter_raw
+            || target_detail.body != candidate.body
+            || target_detail.fingerprint != candidate_fingerprint
+            || target_detail.state == "missing"
+        {
+            return Err(CommandError::VerificationFailed);
+        }
+        let target_state = read_external_skill_state(&target_capability, &target)?;
+        if !target_state.exists
+            || target_state.content != new_text
+            || target_state.revision != applied_target_revision
+        {
             return Err(CommandError::VerificationFailed);
         }
         let target_record_json = serde_json::to_string(&target_record)?;
@@ -1393,14 +1429,10 @@ where
                 "the written skill candidate was preserved for inspection",
             )?;
             restore_skill_install_target(
-                ctx,
-                target_agent,
-                target_scope,
+                &mut target_capability,
                 &target,
-                project_path,
                 &locked_target,
                 &applied_target_revision,
-                &created_parent_candidates,
             )
             .map_err(|cleanup_error| CommandError::PartialEffect {
                 operation: "skill.install".to_string(),
@@ -1417,14 +1449,10 @@ where
         Ok(()) => {}
         Err(CatalogCommitError::NotCommitted(commit_error)) => {
             restore_skill_install_target(
-                ctx,
-                target_agent,
-                target_scope,
+                &mut target_capability,
                 &target,
-                project_path,
                 &locked_target,
                 &applied_target_revision,
-                &created_parent_candidates,
             )
             .map_err(|cleanup_error| CommandError::PartialEffect {
                 operation: "skill.install".to_string(),
@@ -1449,6 +1477,7 @@ where
     }
     after_commit();
     verify_app_data_owner_binding_after_effect(&mutation_lock, "skill.install")?;
+    target_capability.finish()?;
 
     Ok(SkillInstallPreviewRecord {
         wrote: true,
@@ -1619,7 +1648,7 @@ fn preview_skill_install_from_tool_global(
             ActionPrecondition {
                 kind: ActionPreconditionKind::SourceFile,
                 target_id: source.to_string_lossy().to_string(),
-                expected_revision: source_state.revision,
+                expected_revision: source_state.binding_revision,
             },
             ActionPrecondition {
                 kind: ActionPreconditionKind::TargetFile,
@@ -1664,40 +1693,6 @@ fn preview_skill_install_from_tool_global(
         snapshot_id: None,
         readback: None,
     })
-}
-
-struct SkillFileState {
-    revision: String,
-    content: String,
-    exists: bool,
-}
-
-fn read_skill_file_state(path: &Path, required: bool) -> Result<SkillFileState, CommandError> {
-    let (exists, content) = match fs::read_to_string(path) {
-        Ok(content) => (true, content),
-        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => {
-            (false, String::new())
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let revision = skill_file_revision(path, exists, &content)?;
-    Ok(SkillFileState {
-        revision,
-        content,
-        exists,
-    })
-}
-
-fn skill_file_revision(path: &Path, exists: bool, content: &str) -> Result<String, CommandError> {
-    let path_text = path.to_string_lossy();
-    action_source_revision(
-        "skill.file",
-        &[
-            ("path", &path_text),
-            ("exists", if exists { "true" } else { "false" }),
-            ("content", content),
-        ],
-    )
 }
 
 fn refresh_catalog_rule_outputs(
@@ -2475,12 +2470,12 @@ pub fn preview_skill_toggles(
     })
 }
 
-struct BatchToggleConfigPlan {
+struct BatchToggleConfigPlan<'lock> {
     target: ConfigTarget,
+    capability: ExternalTargetCapability<'lock>,
     metas: Vec<SkillInstanceMeta>,
     original: ConfigState,
     new_text: String,
-    created_parent_candidates: Vec<PathBuf>,
 }
 
 pub fn apply_skill_toggles(
@@ -2606,7 +2601,14 @@ where
             config_target.scope,
             &config_target.path,
         )?;
-        let locked_state = read_config_state(&config_target.path)?;
+        let capability = prepare_config_target_capability(
+            &mutation_lock,
+            ctx,
+            config_target.agent,
+            config_target.scope,
+            &config_target.path,
+        )?;
+        let locked_state = read_external_config_state(&capability)?;
         if locked_state.revision != *expected_revision {
             return Err(CommandError::StaleActionReference);
         }
@@ -2622,8 +2624,8 @@ where
             patch_enabled_for_agent(meta.agent, &mut doc, &instance_for_patch, target_enabled)?;
         }
         plans.push(BatchToggleConfigPlan {
-            created_parent_candidates: missing_parent_directories(&config_target.path)?,
             target: config_target,
+            capability,
             metas: metas.clone(),
             original: locked_state,
             new_text: doc.text,
@@ -2647,7 +2649,7 @@ where
         }
     }
     for plan in &plans {
-        if read_config_state(&plan.target.path)?.revision != plan.original.revision {
+        if read_external_config_state(&plan.capability)?.revision != plan.original.revision {
             return Err(CommandError::StaleActionReference);
         }
     }
@@ -2669,7 +2671,7 @@ where
             observations.push(ActionReadbackObservation {
                 domain: ActionReadbackDomain::AgentConfig,
                 target_id: plan.target.path.to_string_lossy().to_string(),
-                revision: read_config_state(&plan.target.path)?.revision,
+                revision: read_external_config_state(&plan.capability)?.revision,
             });
         }
         for record in &updated_records {
@@ -2695,7 +2697,7 @@ where
                 &error,
                 "the written agent config candidates were preserved for inspection",
             )?;
-            restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
+            restore_batch_toggle_plans(&mut plans).map_err(|cleanup_error| {
                 CommandError::PartialEffect {
                     operation: "batch.applySkillToggles".to_string(),
                     state: "outcome_unknown",
@@ -2705,13 +2707,23 @@ where
                     ),
                 }
             })?;
+            if matches!(error, CommandError::PartialEffect { .. }) {
+                return Err(CommandError::PartialEffect {
+                    operation: "batch.applySkillToggles".to_string(),
+                    state: "outcome_unknown",
+                    cleanup_required: false,
+                    detail: format!(
+                        "batch apply failed after a config namespace effect ({error}); every accepted config target was restored and verified"
+                    ),
+                });
+            }
             return Err(error);
         }
     };
     match transaction.commit_classified() {
         Ok(()) => {}
         Err(CatalogCommitError::NotCommitted(commit_error)) => {
-            restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
+            restore_batch_toggle_plans(&mut plans).map_err(|cleanup_error| {
                 CommandError::PartialEffect {
                     operation: "batch.applySkillToggles".to_string(),
                     state: "outcome_unknown",
@@ -2736,6 +2748,9 @@ where
     }
     after_commit();
     verify_app_data_owner_binding_after_effect(&mutation_lock, "batch.applySkillToggles")?;
+    for plan in &mut plans {
+        plan.capability.finish()?;
+    }
     Ok(BatchToggleApplyRecord {
         action: preview.action,
         preview_token: preview.preview_token,
@@ -2774,10 +2789,9 @@ pub fn validate_skill_toggle_confirmation(
 fn apply_skill_toggle_plan(
     catalog: &Catalog,
     ctx: &AdapterContext,
-    plan: &mut BatchToggleConfigPlan,
+    plan: &mut BatchToggleConfigPlan<'_>,
     target_enabled: bool,
 ) -> Result<(), CommandError> {
-    validate_config_write_target(ctx, plan.target.agent, plan.target.scope, &plan.target.path)?;
     let snapshot_original =
         normalize_initial_config_text(&plan.target, plan.original.content.clone());
     let snapshot_id = generate_snapshot_id();
@@ -2794,15 +2808,9 @@ fn apply_skill_toggle_plan(
         reason: "pre-batch-toggle",
         created_at_ms: now_ms,
     })?;
-    write_config_atomic(
-        ctx,
-        plan.target.agent,
-        plan.target.scope,
-        &plan.target.path,
-        &plan.new_text,
-    )?;
-    let written = fs::read_to_string(&plan.target.path)?;
-    if written != plan.new_text {
+    plan.capability.atomic_replace(plan.new_text.as_bytes())?;
+    let written = read_external_config_state(&plan.capability)?;
+    if !written.exists || written.content != plan.new_text {
         return Err(CommandError::VerificationFailed);
     }
 
@@ -2833,18 +2841,13 @@ fn apply_skill_toggle_plan(
     Ok(())
 }
 
-fn restore_batch_toggle_plans(
-    ctx: &AdapterContext,
-    plans: &[BatchToggleConfigPlan],
-) -> Result<(), CommandError> {
+fn restore_batch_toggle_plans(plans: &mut [BatchToggleConfigPlan<'_>]) -> Result<(), CommandError> {
     let mut first_error = None;
-    for plan in plans.iter().rev() {
+    for plan in plans.iter_mut().rev() {
         if let Err(error) = restore_batch_config_state(
-            ctx,
-            &plan.target,
+            &mut plan.capability,
             &plan.original,
             &config_revision(true, &plan.new_text),
-            &plan.created_parent_candidates,
         ) {
             first_error.get_or_insert(error);
         }
@@ -2856,16 +2859,15 @@ fn restore_batch_toggle_plans(
 }
 
 fn restore_batch_config_state(
-    ctx: &AdapterContext,
-    target: &ConfigTarget,
+    capability: &mut ExternalTargetCapability<'_>,
     original: &ConfigState,
     expected_applied_revision: &str,
-    created_parent_candidates: &[PathBuf],
 ) -> Result<(), CommandError> {
-    let current = read_config_state(&target.path)?;
+    capability.run_before_compensation_hook();
+    let current = read_external_config_state_anchored(capability)?;
     if current.revision == original.revision {
         if !original.exists {
-            remove_owned_empty_directories(created_parent_candidates)?;
+            capability.restore_missing_anchored()?;
         }
         return Ok(());
     }
@@ -2875,22 +2877,11 @@ fn restore_batch_config_state(
         ));
     }
     if original.exists {
-        write_config_atomic(
-            ctx,
-            target.agent,
-            target.scope,
-            &target.path,
-            &original.content,
-        )?;
+        capability.restore_present_anchored(original.content.as_bytes())?;
     } else {
-        match fs::remove_file(&target.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        remove_owned_empty_directories(created_parent_candidates)?;
+        capability.restore_missing_anchored()?;
     }
-    if read_config_state(&target.path)?.revision != original.revision {
+    if read_external_config_state_anchored(capability)?.revision != original.revision {
         return Err(CommandError::VerificationFailed);
     }
     Ok(())
@@ -4231,6 +4222,36 @@ fn validate_config_write_target_noncreating(
     Ok(())
 }
 
+fn config_target_allowed_root(
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+) -> Result<PathBuf, CommandError> {
+    match scope {
+        Scope::AgentGlobal => Ok(ctx.user_home.clone()),
+        Scope::AgentProject
+            if matches!(agent, AgentId::ClaudeCode | AgentId::Opencode | AgentId::Pi) =>
+        {
+            ctx.project_root
+                .clone()
+                .ok_or(CommandError::UnsupportedScope(scope))
+        }
+        _ => Err(CommandError::UnsupportedScope(scope)),
+    }
+}
+
+fn prepare_config_target_capability<'lock>(
+    lock: &'lock AppMutationLock,
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    path: &Path,
+) -> Result<ExternalTargetCapability<'lock>, CommandError> {
+    validate_config_write_target_noncreating(ctx, agent, scope, path)?;
+    let root = config_target_allowed_root(ctx, agent, scope)?;
+    ExternalTargetCapability::prepare(lock, &root, path)
+}
+
 fn validate_tool_global_source(path: &Path) -> Result<(), CommandError> {
     if path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
         return Err(CommandError::UnsafeConfigPath(format!(
@@ -4343,6 +4364,60 @@ fn validate_skill_install_target(
     Ok(())
 }
 
+fn skill_target_allowed_root(
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    project_path: Option<&Path>,
+) -> Result<PathBuf, CommandError> {
+    match (agent, scope) {
+        (AgentId::Openclaw, Scope::AgentProject) => {
+            openclaw_install_workspace_root(ctx, project_path)
+        }
+        (_, Scope::AgentGlobal) => Ok(ctx.user_home.clone()),
+        (_, Scope::AgentProject) => target_project_root(ctx, project_path),
+        (_, Scope::ToolGlobal) => Err(CommandError::UnsupportedScope(scope)),
+        _ => Err(CommandError::UnsupportedScope(scope)),
+    }
+}
+
+fn prepare_skill_target_capability<'lock>(
+    lock: &'lock AppMutationLock,
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    path: &Path,
+    project_path: Option<&Path>,
+) -> Result<ExternalTargetCapability<'lock>, CommandError> {
+    validate_skill_install_target(ctx, agent, scope, path, project_path, false)?;
+    let root = skill_target_allowed_root(ctx, agent, scope, project_path)?;
+    ExternalTargetCapability::prepare(lock, &root, path)
+}
+
+fn config_state_from_external(state: ExternalFileState) -> config_consistency::ConfigState {
+    config_consistency::ConfigState {
+        exists: state.exists,
+        revision: config_revision(state.exists, &state.content),
+        content: state.content,
+    }
+}
+
+fn read_external_config_state(
+    target: &ExternalTargetCapability<'_>,
+) -> Result<config_consistency::ConfigState, CommandError> {
+    Ok(config_state_from_external(
+        target.read_text_state(MAX_EXTERNAL_CONFIG_BYTES)?,
+    ))
+}
+
+fn read_external_config_state_anchored(
+    target: &ExternalTargetCapability<'_>,
+) -> Result<config_consistency::ConfigState, CommandError> {
+    Ok(config_state_from_external(
+        target.read_text_state_anchored(MAX_EXTERNAL_CONFIG_BYTES)?,
+    ))
+}
+
 pub(crate) fn reject_symlink(path: &Path, label: &str) -> Result<(), CommandError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(CommandError::UnsafeConfigPath(
@@ -4403,50 +4478,6 @@ fn write_config_atomic(
     finish_atomic_write_with_temp_cleanup("config.write", write_result, &tmp)
 }
 
-fn write_skill_file_atomic(
-    ctx: &AdapterContext,
-    agent: AgentId,
-    scope: Scope,
-    path: &Path,
-    content: &str,
-    project_path: Option<&Path>,
-) -> Result<(), CommandError> {
-    validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-    let parent = path.parent().ok_or_else(|| {
-        CommandError::UnsafeConfigPath("install target has no parent".to_string())
-    })?;
-    let tmp = parent.join(format!(
-        ".SKILL.md.{}.{}.tmp",
-        std::process::id(),
-        current_time_ms()
-    ));
-
-    let write_result = (|| {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut tmp_file = options.open(&tmp)?;
-        set_private_file_permissions(&tmp_file)?;
-        tmp_file.write_all(content.as_bytes())?;
-        tmp_file.sync_all()?;
-        drop(tmp_file);
-
-        run_atomic_pre_rename_failure_test_hook(path)?;
-        validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-        fs::rename(&tmp, path)?;
-        run_atomic_post_rename_test_hook(path)?;
-        set_private_path_permissions(path)?;
-        validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-        fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    finish_atomic_write_with_temp_cleanup("skill.install", write_result, &tmp)
-}
-
 fn finish_atomic_write_with_temp_cleanup(
     operation: &str,
     result: Result<(), CommandError>,
@@ -4470,27 +4501,26 @@ fn finish_atomic_write_with_temp_cleanup(
 }
 
 #[cfg(test)]
-static ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS: std::sync::Mutex<Vec<PathBuf>> =
-    std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 fn install_atomic_pre_rename_failure_test_hook(path: PathBuf) {
-    ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS
-        .lock()
-        .expect("lock atomic pre-rename failure test hooks")
-        .push(path);
+    ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS.with(|hooks| hooks.borrow_mut().push(path));
 }
 
 #[cfg(test)]
 fn run_atomic_pre_rename_failure_test_hook(path: &Path) -> Result<(), CommandError> {
-    let mut hooks = ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS
-        .lock()
-        .expect("lock atomic pre-rename failure test hooks");
-    let Some(index) = hooks.iter().position(|candidate| candidate == path) else {
-        return Ok(());
-    };
-    hooks.remove(index);
-    Err(CommandError::VerificationFailed)
+    ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        let Some(index) = hooks.iter().position(|candidate| candidate == path) else {
+            return Ok(());
+        };
+        hooks.remove(index);
+        Err(CommandError::VerificationFailed)
+    })
 }
 
 #[cfg(not(test))]
@@ -4505,34 +4535,33 @@ struct AtomicPostRenameTestHook {
 }
 
 #[cfg(test)]
-static ATOMIC_POST_RENAME_TEST_HOOKS: std::sync::Mutex<Vec<AtomicPostRenameTestHook>> =
-    std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static ATOMIC_POST_RENAME_TEST_HOOKS: std::cell::RefCell<Vec<AtomicPostRenameTestHook>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 fn install_atomic_post_rename_test_hook(
     path: PathBuf,
     action: impl FnOnce(&Path) + Send + 'static,
 ) {
-    let mut hooks = ATOMIC_POST_RENAME_TEST_HOOKS
-        .lock()
-        .expect("lock atomic post-rename test hook");
-    hooks.push(AtomicPostRenameTestHook {
-        path,
-        action: Box::new(action),
+    ATOMIC_POST_RENAME_TEST_HOOKS.with(|hooks| {
+        hooks.borrow_mut().push(AtomicPostRenameTestHook {
+            path,
+            action: Box::new(action),
+        })
     });
 }
 
 #[cfg(test)]
 fn run_atomic_post_rename_test_hook(path: &Path) -> Result<(), CommandError> {
-    let action = {
-        let mut hooks = ATOMIC_POST_RENAME_TEST_HOOKS
-            .lock()
-            .expect("lock atomic post-rename test hook");
+    let action = ATOMIC_POST_RENAME_TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
         hooks
             .iter()
             .position(|hook| hook.path == path)
             .map(|position| hooks.remove(position).action)
-    };
+    });
     if let Some(action) = action {
         action(path);
         return Err(CommandError::VerificationFailed);
@@ -4545,37 +4574,17 @@ fn run_atomic_post_rename_test_hook(_path: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
-fn missing_parent_directories(path: &Path) -> Result<Vec<PathBuf>, CommandError> {
-    let mut missing = Vec::new();
-    let mut current = path.parent().ok_or_else(|| {
-        CommandError::UnsafeConfigPath("mutation target has no parent".to_string())
-    })?;
-    while !current.exists() {
-        missing.push(current.to_path_buf());
-        current = current.parent().ok_or_else(|| {
-            CommandError::UnsafeConfigPath(
-                "mutation target has no existing owner ancestor".to_string(),
-            )
-        })?;
-    }
-    Ok(missing)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn restore_skill_install_target(
-    ctx: &AdapterContext,
-    agent: AgentId,
-    scope: Scope,
+    capability: &mut ExternalTargetCapability<'_>,
     target: &Path,
-    project_path: Option<&Path>,
     original: &SkillFileState,
     expected_applied_revision: &str,
-    created_parent_candidates: &[PathBuf],
 ) -> Result<(), CommandError> {
-    let current = read_skill_file_state(target, false)?;
+    capability.run_before_compensation_hook();
+    let current = read_external_skill_state_anchored(capability, target)?;
     if current.revision == original.revision {
         if !original.exists {
-            remove_owned_empty_directories(created_parent_candidates)?;
+            capability.restore_missing_anchored()?;
         }
         return Ok(());
     }
@@ -4585,33 +4594,13 @@ fn restore_skill_install_target(
         ));
     }
     if original.exists {
-        write_skill_file_atomic(ctx, agent, scope, target, &original.content, project_path)?;
+        capability.restore_present_anchored(original.content.as_bytes())?;
     } else {
-        match fs::remove_file(target) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        remove_owned_empty_directories(created_parent_candidates)?;
+        capability.restore_missing_anchored()?;
     }
-    let restored = read_skill_file_state(target, false)?;
+    let restored = read_external_skill_state_anchored(capability, target)?;
     if restored.revision != original.revision {
         return Err(CommandError::VerificationFailed);
-    }
-    Ok(())
-}
-
-fn remove_owned_empty_directories(directories: &[PathBuf]) -> Result<(), CommandError> {
-    for directory in directories {
-        match fs::remove_dir(directory) {
-            Ok(()) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-                ) => {}
-            Err(error) => return Err(error.into()),
-        }
     }
     Ok(())
 }

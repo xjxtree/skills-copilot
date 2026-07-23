@@ -10,6 +10,54 @@ use crate::{mutation_lock::AppMutationLock, CommandError};
 
 mod tree;
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct OwnerRegularFileStamp {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    links: u64,
+    length: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+impl OwnerRegularFileStamp {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            links: metadata.nlink(),
+            length: metadata.len(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+        }
+    }
+
+    fn revision(self) -> String {
+        format!(
+            "{}:{}:{:o}:{}:{}:{}:{}:{}:{}",
+            self.device,
+            self.inode,
+            self.mode,
+            self.links,
+            self.length,
+            self.modified_seconds,
+            self.modified_nanoseconds,
+            self.changed_seconds,
+            self.changed_nanoseconds
+        )
+    }
+}
+
 /// Filesystem capability rooted at the already-opened and locked app-data
 /// owner directory.
 ///
@@ -38,6 +86,17 @@ impl<'lock> AppDataOwnerFs<'lock> {
         max_bytes: u64,
         label: &str,
     ) -> Result<Option<Vec<u8>>, CommandError> {
+        Ok(self
+            .read_bounded_regular_file_with_stamp(relative, max_bytes, label)?
+            .map(|(bytes, _)| bytes))
+    }
+
+    pub(crate) fn read_bounded_regular_file_with_stamp(
+        &self,
+        relative: &Path,
+        max_bytes: u64,
+        label: &str,
+    ) -> Result<Option<(Vec<u8>, String)>, CommandError> {
         validate_relative_path(relative)?;
         let mut file = match self.open_regular_file(relative, false) {
             Ok(file) => file,
@@ -49,22 +108,47 @@ impl<'lock> AppDataOwnerFs<'lock> {
             return Err(unsafe_relative_file(label));
         }
         #[cfg(unix)]
+        let before = OwnerRegularFileStamp::from_metadata(&metadata);
+        #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
 
             let owner_metadata = self.lock.owner_directory().metadata()?;
-            if metadata.uid() != owner_metadata.uid() || metadata.nlink() != 1 {
+            if metadata.uid() != owner_metadata.uid() || before.links != 1 {
                 return Err(unsafe_relative_file(label));
             }
         }
+        run_owner_read_test_hook(relative);
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         Read::by_ref(&mut file)
             .take(max_bytes.saturating_add(1))
             .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > max_bytes {
+        if bytes.len() as u64 > max_bytes || bytes.len() as u64 != metadata.len() {
             return Err(unsafe_relative_file(label));
         }
-        Ok(Some(bytes))
+        #[cfg(unix)]
+        {
+            let after = OwnerRegularFileStamp::from_metadata(&file.metadata()?);
+            if after != before {
+                return Err(CommandError::StaleActionReference);
+            }
+            let rebound = self
+                .open_regular_file(relative, false)
+                .map_err(|_| CommandError::StaleActionReference)?;
+            let rebound_metadata = rebound
+                .metadata()
+                .map_err(|_| CommandError::StaleActionReference)?;
+            if !rebound_metadata.is_file()
+                || OwnerRegularFileStamp::from_metadata(&rebound_metadata) != before
+            {
+                return Err(CommandError::StaleActionReference);
+            }
+            Ok(Some((bytes, before.revision())))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Some((bytes, format!("length:{}", metadata.len()))))
+        }
     }
 
     pub fn atomic_replace_private_file(
@@ -82,12 +166,8 @@ impl<'lock> AppDataOwnerFs<'lock> {
             let (parent, name) = self.open_parent(relative, false)?;
             let mode = Mode::from_bits_truncate(0o600);
             let mut last_collision = false;
-            for attempt in 0..32_u32 {
-                let temp_name = OsString::from(format!(
-                    ".{temp_stem}.{}.{}.{attempt}.tmp",
-                    std::process::id(),
-                    owner_fs_timestamp_millis()
-                ));
+            for _ in 0..32_u32 {
+                let temp_name = secure_owner_temp_name(temp_stem)?;
                 let descriptor = match openat(
                     &parent,
                     &temp_name,
@@ -106,19 +186,45 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     Err(error) => return Err(io::Error::from(error).into()),
                 };
                 let mut file = File::from(descriptor);
+                let mut installed = false;
                 let result = (|| {
                     fchmod(&file, mode).map_err(io::Error::from)?;
                     file.write_all(bytes)?;
                     file.sync_all()?;
                     renameat(&parent, &temp_name, &parent, name).map_err(io::Error::from)?;
-                    fsync(&parent).map_err(io::Error::from)?;
+                    installed = true;
+                    fsync(&parent).map_err(|error| {
+                        owner_file_effect_unverified(format!(
+                            "the app-owned file was replaced, but parent-directory durability could not be verified: {}",
+                            io::Error::from(error)
+                        ))
+                    })?;
                     Ok::<(), CommandError>(())
                 })();
-                if result.is_err() {
-                    let _ = unlinkat(&parent, &temp_name, AtFlags::empty());
-                    let _ = fsync(&parent);
+                if let Err(error) = result {
+                    if installed {
+                        return Err(error);
+                    }
+                    match unlinkat(&parent, &temp_name, AtFlags::empty()) {
+                        Ok(()) => {
+                            fsync(&parent).map_err(|cleanup| {
+                                owner_file_effect_unknown(format!(
+                                    "app-owned file preparation failed ({error}); temporary cleanup durability could not be verified: {}",
+                                    io::Error::from(cleanup)
+                                ))
+                            })?;
+                        }
+                        Err(rustix::io::Errno::NOENT) => {}
+                        Err(cleanup) => {
+                            return Err(owner_file_effect_unknown(format!(
+                                "app-owned file preparation failed ({error}); private temporary cleanup failed: {}",
+                                io::Error::from(cleanup)
+                            )))
+                        }
+                    }
+                    return Err(error);
                 }
-                return result;
+                return Ok(());
             }
             if last_collision {
                 return Err(CommandError::UnsafeConfigPath(
@@ -132,11 +238,8 @@ impl<'lock> AppDataOwnerFs<'lock> {
             let root = self.lock.owner_path();
             let target = guarded_fallback_path(root, relative)?;
             let parent = target.parent().ok_or_else(unsafe_relative_path)?;
-            let temp = parent.join(format!(
-                ".{temp_stem}.{}.{}.tmp",
-                std::process::id(),
-                owner_fs_timestamp_millis()
-            ));
+            let temp = parent.join(secure_owner_temp_name(temp_stem)?);
+            let mut installed = false;
             let result = (|| {
                 let mut file = std::fs::OpenOptions::new()
                     .create_new(true)
@@ -145,13 +248,40 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 file.write_all(bytes)?;
                 file.sync_all()?;
                 std::fs::rename(&temp, &target)?;
-                File::open(parent)?.sync_all()?;
+                installed = true;
+                File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| {
+                        owner_file_effect_unverified(format!(
+                            "the app-owned file was replaced, but parent-directory durability could not be verified: {error}"
+                        ))
+                    })?;
                 Ok::<(), CommandError>(())
             })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(temp);
+            if let Err(error) = result {
+                if installed {
+                    return Err(error);
+                }
+                match std::fs::remove_file(&temp) {
+                    Ok(()) => {
+                        File::open(parent)
+                            .and_then(|directory| directory.sync_all())
+                            .map_err(|cleanup| {
+                                owner_file_effect_unknown(format!(
+                                    "app-owned file preparation failed ({error}); temporary cleanup durability could not be verified: {cleanup}"
+                                ))
+                            })?;
+                    }
+                    Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => {}
+                    Err(cleanup) => {
+                        return Err(owner_file_effect_unknown(format!(
+                            "app-owned file preparation failed ({error}); private temporary cleanup failed: {cleanup}"
+                        )))
+                    }
+                }
+                return Err(error);
             }
-            result
+            Ok(())
         }
     }
 
@@ -635,12 +765,77 @@ fn command_error_to_io(error: CommandError) -> io::Error {
     }
 }
 
-fn owner_fs_timestamp_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+fn secure_owner_temp_name(stem: &str) -> Result<OsString, CommandError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|error| {
+        io::Error::other(format!("secure random name generation failed: {error}"))
+    })?;
+    let encoded = nonce
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(OsString::from(format!(".{stem}.{encoded}.tmp")))
 }
+
+fn owner_file_effect_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-owned file replace".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: true,
+        detail,
+    }
+}
+
+fn owner_file_effect_unverified(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-owned file replace".to_string(),
+        state: "applied_unverified",
+        cleanup_required: false,
+        detail,
+    }
+}
+
+#[cfg(test)]
+struct OwnerReadTestHook {
+    relative: PathBuf,
+    action: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static OWNER_READ_TEST_HOOKS: std::cell::RefCell<Vec<OwnerReadTestHook>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn install_owner_read_test_hook(
+    relative: PathBuf,
+    action: impl FnOnce() + Send + 'static,
+) {
+    OWNER_READ_TEST_HOOKS.with(|hooks| {
+        hooks.borrow_mut().push(OwnerReadTestHook {
+            relative,
+            action: Box::new(action),
+        })
+    });
+}
+
+#[cfg(test)]
+fn run_owner_read_test_hook(relative: &Path) {
+    let action = OWNER_READ_TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        hooks
+            .iter()
+            .position(|hook| hook.relative == relative)
+            .map(|index| hooks.remove(index).action)
+    });
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(not(test))]
+fn run_owner_read_test_hook(_relative: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -950,6 +1145,71 @@ mod tests {
         assert_eq!(
             std::fs::read(destination.join("sentinel")).expect("destination preserved"),
             b"unchanged"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tree_cleanup_quarantines_a_raced_replacement_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-tree-cleanup-race-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let target = owner_path.join("target");
+        let accepted = owner_path.join("accepted-target");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&target).expect("target");
+        std::fs::create_dir_all(&victim).expect("victim");
+        std::fs::write(target.join("SKILL.md"), b"accepted").expect("accepted file");
+        std::fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+        let raced_target = target.clone();
+        let raced_accepted = accepted.clone();
+        let raced_victim = victim.clone();
+        tree::install_owner_remove_test_hook(PathBuf::from("target"), move || {
+            std::fs::rename(&raced_target, &raced_accepted).expect("move accepted target");
+            symlink(&raced_victim, &raced_target).expect("install raced replacement");
+        });
+
+        let error = owner
+            .remove_tree_if_exists(Path::new("target"))
+            .expect_err("raced replacement must be retained");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read(accepted.join("SKILL.md")).expect("accepted target preserved"),
+            b"accepted"
+        );
+        assert_eq!(
+            std::fs::read(victim.join("sentinel")).expect("victim preserved"),
+            b"unchanged"
+        );
+        assert_eq!(
+            std::fs::read_dir(&victim).expect("victim entries").count(),
+            1
+        );
+        assert!(
+            std::fs::read_dir(&owner_path)
+                .expect("owner entries")
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains("quarantine")),
+            "the raced replacement must remain in private quarantine"
         );
         std::fs::remove_dir_all(root).ok();
     }

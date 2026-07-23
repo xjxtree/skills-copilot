@@ -1544,30 +1544,30 @@ struct ManagerPreExecuteTestHook {
 }
 
 #[cfg(test)]
-static MANAGER_PRE_EXECUTE_TEST_HOOK: std::sync::Mutex<Option<ManagerPreExecuteTestHook>> =
-    std::sync::Mutex::new(None);
+thread_local! {
+    static MANAGER_PRE_EXECUTE_TEST_HOOK: std::cell::RefCell<Option<ManagerPreExecuteTestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub(crate) fn install_manager_pre_execute_test_hook(
     operation: impl Into<String>,
     action: impl FnOnce() + Send + 'static,
 ) {
-    let mut hook = MANAGER_PRE_EXECUTE_TEST_HOOK
-        .lock()
-        .expect("lock manager pre-execute test hook");
-    assert!(hook.is_none(), "manager pre-execute test hook already set");
-    *hook = Some(ManagerPreExecuteTestHook {
-        operation: operation.into(),
-        action: Box::new(action),
+    MANAGER_PRE_EXECUTE_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        assert!(hook.is_none(), "manager pre-execute test hook already set");
+        *hook = Some(ManagerPreExecuteTestHook {
+            operation: operation.into(),
+            action: Box::new(action),
+        });
     });
 }
 
 #[cfg(test)]
 fn run_manager_pre_execute_test_hook(operation: &str) {
-    let action = {
-        let mut hook = MANAGER_PRE_EXECUTE_TEST_HOOK
-            .lock()
-            .expect("lock manager pre-execute test hook");
+    let action = MANAGER_PRE_EXECUTE_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
         if hook
             .as_ref()
             .is_some_and(|scheduled| scheduled.operation == operation)
@@ -1576,7 +1576,7 @@ fn run_manager_pre_execute_test_hook(operation: &str) {
         } else {
             None
         }
-    };
+    });
     if let Some(action) = action {
         action();
     }
@@ -1611,8 +1611,11 @@ struct ManagerPostCommitTestHook {
 }
 
 #[cfg(test)]
-static MANAGER_POST_COMMIT_TEST_HOOKS: std::sync::Mutex<Vec<ManagerPostCommitTestHook>> =
-    std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static MANAGER_POST_COMMIT_TEST_HOOKS:
+        std::cell::RefCell<Vec<ManagerPostCommitTestHook>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 pub(crate) fn install_manager_post_commit_test_hook(
@@ -1620,30 +1623,28 @@ pub(crate) fn install_manager_post_commit_test_hook(
     action: impl FnOnce() + Send + 'static,
 ) {
     let operation = operation.into();
-    let mut hooks = MANAGER_POST_COMMIT_TEST_HOOKS
-        .lock()
-        .expect("lock manager post-commit hooks");
-    assert!(
-        !hooks.iter().any(|hook| hook.operation == operation),
-        "manager post-commit hook already set for {operation}"
-    );
-    hooks.push(ManagerPostCommitTestHook {
-        operation,
-        action: Box::new(action),
+    MANAGER_POST_COMMIT_TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        assert!(
+            !hooks.iter().any(|hook| hook.operation == operation),
+            "manager post-commit hook already set for {operation}"
+        );
+        hooks.push(ManagerPostCommitTestHook {
+            operation,
+            action: Box::new(action),
+        });
     });
 }
 
 #[cfg(test)]
 fn run_manager_post_commit_test_hook(operation: &str) {
-    let action = {
-        let mut hooks = MANAGER_POST_COMMIT_TEST_HOOKS
-            .lock()
-            .expect("lock manager post-commit hooks");
+    let action = MANAGER_POST_COMMIT_TEST_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
         hooks
             .iter()
             .position(|scheduled| scheduled.operation == operation)
             .map(|position| hooks.remove(position).action)
-    };
+    });
     if let Some(action) = action {
         action();
     }
@@ -1659,33 +1660,34 @@ struct LocalDeletePreRenameTestHook {
 }
 
 #[cfg(test)]
-static LOCAL_DELETE_PRE_RENAME_TEST_HOOK: std::sync::Mutex<Option<LocalDeletePreRenameTestHook>> =
-    std::sync::Mutex::new(None);
+thread_local! {
+    static LOCAL_DELETE_PRE_RENAME_TEST_HOOK:
+        std::cell::RefCell<Option<LocalDeletePreRenameTestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub(crate) fn install_local_delete_pre_rename_test_hook(
     canonical_path: PathBuf,
     action: impl FnOnce() + Send + 'static,
 ) {
-    let mut hook = LOCAL_DELETE_PRE_RENAME_TEST_HOOK
-        .lock()
-        .expect("lock local-delete pre-rename test hook");
-    assert!(
-        hook.is_none(),
-        "local-delete pre-rename test hook already set"
-    );
-    *hook = Some(LocalDeletePreRenameTestHook {
-        canonical_path,
-        action: Box::new(action),
+    LOCAL_DELETE_PRE_RENAME_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        assert!(
+            hook.is_none(),
+            "local-delete pre-rename test hook already set"
+        );
+        *hook = Some(LocalDeletePreRenameTestHook {
+            canonical_path,
+            action: Box::new(action),
+        });
     });
 }
 
 #[cfg(test)]
 fn run_local_delete_pre_rename_test_hook(canonical_path: &Path) {
-    let action = {
-        let mut hook = LOCAL_DELETE_PRE_RENAME_TEST_HOOK
-            .lock()
-            .expect("lock local-delete pre-rename test hook");
+    let action = LOCAL_DELETE_PRE_RENAME_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
         if hook
             .as_ref()
             .is_some_and(|scheduled| scheduled.canonical_path == canonical_path)
@@ -1694,7 +1696,7 @@ fn run_local_delete_pre_rename_test_hook(canonical_path: &Path) {
         } else {
             None
         }
-    };
+    });
     if let Some(action) = action {
         action();
     }
@@ -1710,33 +1712,34 @@ struct LocalDeletePostRenameTestHook {
 }
 
 #[cfg(test)]
-static LOCAL_DELETE_POST_RENAME_TEST_HOOK: std::sync::Mutex<Option<LocalDeletePostRenameTestHook>> =
-    std::sync::Mutex::new(None);
+thread_local! {
+    static LOCAL_DELETE_POST_RENAME_TEST_HOOK:
+        std::cell::RefCell<Option<LocalDeletePostRenameTestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub(crate) fn install_local_delete_post_rename_test_hook(
     canonical_path: PathBuf,
     action: impl FnOnce() + Send + 'static,
 ) {
-    let mut hook = LOCAL_DELETE_POST_RENAME_TEST_HOOK
-        .lock()
-        .expect("lock local-delete post-rename test hook");
-    assert!(
-        hook.is_none(),
-        "local-delete post-rename test hook already set"
-    );
-    *hook = Some(LocalDeletePostRenameTestHook {
-        canonical_path,
-        action: Box::new(action),
+    LOCAL_DELETE_POST_RENAME_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        assert!(
+            hook.is_none(),
+            "local-delete post-rename test hook already set"
+        );
+        *hook = Some(LocalDeletePostRenameTestHook {
+            canonical_path,
+            action: Box::new(action),
+        });
     });
 }
 
 #[cfg(test)]
 fn run_local_delete_post_rename_test_hook(canonical_path: &Path) {
-    let action = {
-        let mut hook = LOCAL_DELETE_POST_RENAME_TEST_HOOK
-            .lock()
-            .expect("lock local-delete post-rename test hook");
+    let action = LOCAL_DELETE_POST_RENAME_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
         if hook
             .as_ref()
             .is_some_and(|scheduled| scheduled.canonical_path == canonical_path)
@@ -1745,7 +1748,7 @@ fn run_local_delete_post_rename_test_hook(canonical_path: &Path) {
         } else {
             None
         }
-    };
+    });
     if let Some(action) = action {
         action();
     }
@@ -1755,32 +1758,34 @@ fn run_local_delete_post_rename_test_hook(canonical_path: &Path) {
 fn run_local_delete_post_rename_test_hook(_canonical_path: &Path) {}
 
 #[cfg(test)]
-static LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK: std::sync::Mutex<Option<PathBuf>> =
-    std::sync::Mutex::new(None);
+thread_local! {
+    static LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub(crate) fn install_local_delete_cleanup_failure_test_hook(canonical_path: PathBuf) {
-    let mut hook = LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK
-        .lock()
-        .expect("lock local-delete cleanup failure test hook");
-    assert!(hook.is_none(), "local-delete cleanup test hook already set");
-    *hook = Some(canonical_path);
+    LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        assert!(hook.is_none(), "local-delete cleanup test hook already set");
+        *hook = Some(canonical_path);
+    });
 }
 
 #[cfg(test)]
 fn inject_local_delete_cleanup_failure(canonical_path: &Path) -> bool {
-    let mut hook = LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK
-        .lock()
-        .expect("lock local-delete cleanup failure test hook");
-    if hook
-        .as_ref()
-        .is_some_and(|scheduled| scheduled == canonical_path)
-    {
-        hook.take();
-        true
-    } else {
-        false
-    }
+    LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        if hook
+            .as_ref()
+            .is_some_and(|scheduled| scheduled == canonical_path)
+        {
+            hook.take();
+            true
+        } else {
+            false
+        }
+    })
 }
 
 #[cfg(not(test))]
