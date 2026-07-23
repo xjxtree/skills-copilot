@@ -48,6 +48,15 @@ impl<'lock> AppDataOwnerFs<'lock> {
         if !metadata.is_file() || metadata.len() > max_bytes {
             return Err(unsafe_relative_file(label));
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let owner_metadata = self.lock.owner_directory().metadata()?;
+            if metadata.uid() != owner_metadata.uid() || metadata.nlink() != 1 {
+                return Err(unsafe_relative_file(label));
+            }
+        }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         Read::by_ref(&mut file)
             .take(max_bytes.saturating_add(1))
@@ -269,6 +278,32 @@ impl<'lock> AppDataOwnerFs<'lock> {
         suffix: &str,
         max_matches: usize,
     ) -> Result<(), CommandError> {
+        self.remove_regular_files_matching_in_directory(None, prefix, suffix, max_matches)
+    }
+
+    pub fn remove_regular_files_matching(
+        &self,
+        relative_directory: &Path,
+        prefix: &str,
+        suffix: &str,
+        max_matches: usize,
+    ) -> Result<(), CommandError> {
+        validate_relative_path(relative_directory)?;
+        self.remove_regular_files_matching_in_directory(
+            Some(relative_directory),
+            prefix,
+            suffix,
+            max_matches,
+        )
+    }
+
+    fn remove_regular_files_matching_in_directory(
+        &self,
+        relative_directory: Option<&Path>,
+        prefix: &str,
+        suffix: &str,
+        max_matches: usize,
+    ) -> Result<(), CommandError> {
         validate_filename_fragment(prefix)?;
         validate_filename_fragment(suffix)?;
         #[cfg(unix)]
@@ -277,7 +312,10 @@ impl<'lock> AppDataOwnerFs<'lock> {
 
             use rustix::fs::{fsync, statat, unlinkat, AtFlags, Dir, FileType};
 
-            let directory = self.lock.open_owner_directory()?;
+            let directory = match relative_directory {
+                Some(relative) => self.open_directory(relative)?,
+                None => self.lock.open_owner_directory()?,
+            };
             let mut entries = Dir::read_from(&directory).map_err(io::Error::from)?;
             let mut matches = Vec::new();
             for entry in &mut entries {
@@ -313,13 +351,16 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
         #[cfg(not(unix))]
         {
-            let root = self.lock.owner_path();
-            let metadata = std::fs::symlink_metadata(root)?;
+            let root = match relative_directory {
+                Some(relative) => guarded_fallback_path(self.lock.owner_path(), relative)?,
+                None => self.lock.owner_path().to_path_buf(),
+            };
+            let metadata = std::fs::symlink_metadata(&root)?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(unsafe_relative_path());
             }
             let mut matches = Vec::new();
-            for entry in std::fs::read_dir(root)? {
+            for entry in std::fs::read_dir(&root)? {
                 let entry = entry?;
                 let text = entry.file_name().to_string_lossy().to_string();
                 if text.starts_with(prefix) && text.ends_with(suffix) {
@@ -702,6 +743,73 @@ mod tests {
 
         assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
         assert_eq!(std::fs::read(&victim).expect("victim"), b"unchanged");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bounded_read_rejects_hard_links() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-fs-read-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&owner_path).expect("owner");
+        std::fs::write(&victim, b"private").expect("victim");
+        std::fs::hard_link(&victim, owner_path.join("state.json")).expect("hard link");
+
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let result =
+            lock.owner_fs()
+                .read_bounded_regular_file(Path::new("state.json"), 1024, "state");
+
+        assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
+        assert_eq!(std::fs::read(&victim).expect("victim"), b"private");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn nested_cleanup_stays_on_the_locked_inode_after_path_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-fs-cleanup-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let moved_owner = root.join("locked-owner");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(owner_path.join("llm")).expect("owner");
+        std::fs::create_dir_all(victim.join("llm")).expect("victim");
+        std::fs::write(owner_path.join("llm/.state.1.tmp"), b"owner").expect("owner residue");
+        std::fs::write(victim.join("llm/.state.1.tmp"), b"victim").expect("victim residue");
+
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+        std::fs::rename(&owner_path, &moved_owner).expect("move locked owner");
+        symlink(&victim, &owner_path).expect("replace owner path");
+
+        owner
+            .remove_regular_files_matching(Path::new("llm"), ".state.", ".tmp", 8)
+            .expect("descriptor-relative cleanup");
+
+        assert!(!moved_owner.join("llm/.state.1.tmp").exists());
+        assert_eq!(
+            std::fs::read(victim.join("llm/.state.1.tmp")).expect("victim residue"),
+            b"victim"
+        );
+
+        std::fs::remove_file(&owner_path).expect("remove link");
         std::fs::remove_dir_all(root).ok();
     }
 
