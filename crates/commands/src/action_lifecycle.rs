@@ -636,23 +636,7 @@ pub fn validate_action_method_ownership(
         ActionKind::ResumeSession => {
             preview_method == "session.previewResume" && apply_method.is_none()
         }
-        ActionKind::TriageFinding => {
-            preview_method == "catalog.listFindingTriage"
-                && matches!(
-                    apply_method,
-                    Some("catalog.setFindingTriage") | Some("catalog.clearFindingTriage")
-                )
-        }
-        ActionKind::TuneRule => {
-            preview_method == "rules.listTuning"
-                && matches!(
-                    apply_method,
-                    Some("rules.setSeverityOverride")
-                        | Some("rules.clearSeverityOverride")
-                        | Some("rules.setSuppression")
-                        | Some("rules.clearSuppression")
-                )
-        }
+        ActionKind::TriageFinding | ActionKind::TuneRule => false,
         ActionKind::ProjectContext => {
             matches!(
                 (preview_method, apply_method),
@@ -732,8 +716,6 @@ pub fn validate_action_intent(kind: ActionKind, intent: ActionIntent) -> Result<
             | (ActionKind::RollbackConfig, ActionIntent::RollbackConfig)
             | (ActionKind::SaveConfig, ActionIntent::SaveConfig)
             | (ActionKind::ResumeSession, ActionIntent::ResumeSession)
-            | (ActionKind::TriageFinding, ActionIntent::TriageFinding)
-            | (ActionKind::TuneRule, ActionIntent::TuneRule)
             | (
                 ActionKind::ProjectContext,
                 ActionIntent::SetProjectContext
@@ -1049,5 +1031,32 @@ mod tests {
             result,
             Err(CommandError::MismatchedActionReference(_))
         ));
+    }
+
+    #[test]
+    fn disabled_compatibility_mutations_cannot_own_product_actions() {
+        for (kind, intent, preview, apply) in [
+            (
+                ActionKind::TriageFinding,
+                ActionIntent::TriageFinding,
+                "catalog.listFindingTriage",
+                "catalog.setFindingTriage",
+            ),
+            (
+                ActionKind::TuneRule,
+                ActionIntent::TuneRule,
+                "rules.listTuning",
+                "rules.setSeverityOverride",
+            ),
+        ] {
+            assert!(matches!(
+                validate_action_method_ownership(kind, preview, Some(apply)),
+                Err(CommandError::MismatchedActionReference(_))
+            ));
+            assert!(matches!(
+                validate_action_intent(kind, intent),
+                Err(CommandError::MismatchedActionReference(_))
+            ));
+        }
     }
 }
