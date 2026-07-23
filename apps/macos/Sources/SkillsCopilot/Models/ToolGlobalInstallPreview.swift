@@ -30,6 +30,7 @@ enum ToolInstallTarget: String, Codable, CaseIterable, Identifiable, Hashable {
 struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     let skillID: String
     let action: ActionDescriptorWire?
+    let preconditions: [ActionPreconditionWire]
     let previewToken: String?
     let skillName: String
     let sourcePath: String
@@ -49,6 +50,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case skillID = "skill_id"
         case action
+        case preconditions
         case previewToken = "preview_token"
         case sourceInstanceID = "source_instance_id"
         case skillName = "skill_name"
@@ -76,6 +78,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     init(
         skillID: String,
         action: ActionDescriptorWire? = nil,
+        preconditions: [ActionPreconditionWire] = [],
         previewToken: String? = nil,
         skillName: String,
         sourcePath: String,
@@ -92,6 +95,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     ) {
         self.skillID = skillID
         self.action = action
+        self.preconditions = preconditions
         self.previewToken = previewToken
         self.skillName = skillName
         self.sourcePath = sourcePath
@@ -112,6 +116,10 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         let skillID = try container.decodeIfPresent(String.self, forKey: .skillID)
             ?? container.decode(String.self, forKey: .sourceInstanceID)
         let action = try container.decodeIfPresent(ActionDescriptorWire.self, forKey: .action)
+        let preconditions = try container.decodeIfPresent(
+            [ActionPreconditionWire].self,
+            forKey: .preconditions
+        ) ?? []
         let previewToken = try container.decodeIfPresent(String.self, forKey: .previewToken)
         let target = try container.decodeIfPresent(ToolInstallTarget.self, forKey: .target)
             ?? container.decode(ToolInstallTarget.self, forKey: .targetAgent)
@@ -149,6 +157,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         self.init(
             skillID: skillID,
             action: action,
+            preconditions: preconditions,
             previewToken: previewToken,
             skillName: skillName,
             sourcePath: sourcePath,
@@ -169,6 +178,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(skillID, forKey: .skillID)
         try container.encodeIfPresent(action, forKey: .action)
+        try container.encode(preconditions, forKey: .preconditions)
         try container.encodeIfPresent(previewToken, forKey: .previewToken)
         try container.encode(skillName, forKey: .skillName)
         try container.encode(sourcePath, forKey: .sourcePath)

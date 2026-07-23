@@ -653,11 +653,7 @@ final class ServiceClient {
             projectRoot: project?.rootPath,
             currentCWD: project?.currentCWD
         )
-        do {
-            return try await call(method: "app.search", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(query: normalizedQuery, reason: UIStrings.text("globalSearch.unavailable", "Global search is unavailable in this service build."))
-        }
+        return try await call(method: "app.search", params: params)
     }
 
     func listSkills() async throws -> [SkillRecord] {

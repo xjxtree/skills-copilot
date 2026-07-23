@@ -837,7 +837,7 @@
 "settings.aiProvider.optional.placeholder" = "可选";
 "settings.aiProvider.apiKey" = "API key";
 "settings.aiProvider.apiKey.placeholder" = "留空以保留现有 Keychain 项";
-"settings.aiProvider.keychainFirst" = "API key 只会在 profile 自动保存或确认测试连接时发送给本地服务。服务应优先使用 Keychain 保存密钥；原生 UI 会在每次操作后清空此字段，并且不会显示已保存的 key。";
+"settings.aiProvider.keychainFirst" = "API key 只会在你明确确认“保存提供商”或“测试连接”后发送给本地服务。服务优先使用 Keychain 保存密钥；原生 UI 会在每次操作后清空此字段，并且不会显示已保存的 key。";
 "settings.aiProvider.connection" = "连接";
 "settings.aiProvider.limits" = "限额";
 "settings.aiProvider.credentialSafety" = "凭据安全";
@@ -860,7 +860,6 @@
 "settings.aiProvider.testConfirmation.message" = "这会对已配置 endpoint 执行一次手动连接测试。请求结束后界面会清空 API key 草稿。";
 "settings.aiProvider.saving" = "正在保存提供方...";
 "settings.aiProvider.testing" = "正在测试连接...";
-"settings.aiProvider.autosavePending" = "有效改动将自动保存。";
 "settings.aiProvider.saved" = "提供方设置已保存。API key 草稿已清空。";
 "settings.aiProvider.testResult" = "测试结果";
 "settings.aiProvider.testSucceeded" = "提供方连接测试成功。";
@@ -924,7 +923,7 @@
 "settings.existingFile" = "现有文件";
 "settings.willCreateFile" = "将创建文件";
 "settings.invalidUtf8" = "设置内容不是有效 UTF-8。";
-"settings.jsonValid" = "JSON 有效。改动将通过快照、原子写入、校验和重新扫描自动保存。";
+"settings.jsonValid" = "JSON 有效。请先预览改动，再明确确认保存。";
 "value.supported" = "支持";
 "value.notSupported" = "未支持";
 "value.short.supported" = "支持";

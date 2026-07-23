@@ -1,0 +1,19 @@
+{
+  "id": "fixture-skill-manager-delete-local-apply",
+  "method": "skillManager.deleteLocal",
+  "params": {
+    "instance_id": "fixture-local-tool-global-deletable",
+    "confirmed": true,
+    "preview_token": "action-preview:v1:hmac-sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "action_reference": {
+      "action_id": "action:manager_local_delete:5151515151515151515151515151515151515151515151515151515151515151",
+      "source_revision": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+      "target": {
+        "kind": "skill",
+        "id": "fixture-local-tool-global-deletable",
+        "agent": "tool-global",
+        "scope": "tool-global"
+      }
+    }
+  }
+}

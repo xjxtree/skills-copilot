@@ -156,8 +156,6 @@ final class ProviderActivityController {
         switch serviceError.code {
         case "source_changed":
             return .sourceChanged
-        case "unknown_method":
-            return .unsupportedProtocol
         default:
             return .pageFailed
         }

@@ -1,0 +1,16 @@
+{
+  "id": "fixture-skill-manager-preview-install-single-agent",
+  "method": "skillManager.previewInstall",
+  "params": {
+    "source": "vercel-labs/agent-skills",
+    "skills": [
+      "frontend-design"
+    ],
+    "agents": [
+      "codex"
+    ],
+    "scope": "project",
+    "network_allowed": true,
+    "confirmed": false
+  }
+}

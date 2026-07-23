@@ -1,0 +1,55 @@
+{
+  "id": "fixture-skill-manager-delete-local-eligible",
+  "ok": true,
+  "result": {
+    "action": {
+      "id": "action:manager_local_delete:5151515151515151515151515151515151515151515151515151515151515151",
+      "kind": "manager_local_delete",
+      "intent": "manager_local_delete",
+      "target": {
+        "kind": "skill",
+        "id": "fixture-local-tool-global-deletable",
+        "agent": "tool-global",
+        "scope": "tool-global"
+      },
+      "impacts": [
+        "skill_files",
+        "app_local_data"
+      ],
+      "preview_method": "skillManager.deleteLocal",
+      "apply_method": "skillManager.deleteLocal",
+      "source_revision": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": [
+        "skill_files",
+        "catalog_skills"
+      ],
+      "evidence_refs": [
+        "skill:fixture-local-tool-global-deletable"
+      ]
+    },
+    "preconditions": [
+      {
+        "kind": "catalog_record",
+        "target_id": "fixture-local-tool-global-deletable",
+        "expected_revision": "sha256:5353535353535353535353535353535353535353535353535353535353535353"
+      },
+      {
+        "kind": "source_file",
+        "target_id": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+        "expected_revision": "sha256:5454545454545454545454545454545454545454545454545454545454545454"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "instance_id": "fixture-local-tool-global-deletable",
+    "skill_name": "local-review-helper",
+    "path": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+    "app_owned": true,
+    "physical_delete_allowed": true,
+    "blocked_by_references": [],
+    "confirmed": false,
+    "deleted": false,
+    "summary": "Local skill is eligible for physical deletion."
+  }
+}

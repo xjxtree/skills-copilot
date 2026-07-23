@@ -62,7 +62,7 @@ struct SkillManagerMutationConfirmation: Hashable {
     let inputs: SkillManagerMutationInputs
     let result: SkillManagerMutationRecord
 
-    var previewToken: String { result.preview.previewToken }
+    var previewToken: String { result.preview.previewToken ?? "" }
 }
 
 struct SkillManagerSearchConfirmation: Hashable {
@@ -77,7 +77,7 @@ struct SkillManagerLocalCreateConfirmation: Hashable {
     let name: String
     let result: SkillManagerLocalCreateRecord
 
-    var previewToken: String { result.preview.previewToken }
+    var previewToken: String { result.preview.previewToken ?? "" }
 }
 
 struct SkillManagerLocalDeleteConfirmation: Hashable {

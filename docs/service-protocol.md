@@ -111,6 +111,21 @@ that clients may infer for arbitrary mutations.
   Other callable mutations retain their documented
   method-specific consistency contracts until they explicitly adopt these
   fields.
+- `fixtures/service-protocol/method-effects.json` schema version 2 is the
+  machine-readable inventory for every supported method's effects, blocked
+  compatibility methods, production Swift RPC bindings, and every effectful
+  action lifecycle. Each lifecycle declares its preview method, allowed
+  kind/intent/target kind, accepted precondition kinds, agent/scope/project
+  binding rule, network posture, impacts, and read-back domains. Protocol drift
+  verification rejects undeclared mutations, dynamic Swift dispatch,
+  `unknown_method` fallback branches, or a fixture that does not bind these
+  fields exactly.
+- Confirmation material is request-only authority. A successful apply response
+  may return the original action descriptor for correlation and must return its
+  verified action-bound read-back, but must not echo `preview_token`,
+  `action_confirmation`, or `confirmation` anywhere in the result. Native
+  clients compare any returned action with the reviewed preview and validate
+  the response using that original preview before publishing success.
 
 `script.execute`, `catalog.importSkill`, and `skill.exportBundle` are
 compatibility-only blocked methods. Each returns `mutation_disabled` before

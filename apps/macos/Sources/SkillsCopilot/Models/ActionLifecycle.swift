@@ -59,6 +59,100 @@ struct ActionDescriptorWire: Codable, Hashable {
             evidenceRefs: evidenceRefs
         )
     }
+
+    @discardableResult
+    func validated(
+        previewMethod expectedPreviewMethod: String,
+        applyMethod expectedApplyMethod: String,
+        network expectedNetwork: String,
+        expectation: ActionDescriptorExpectation
+    ) throws -> ActionDescriptorWire {
+        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !target.kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !target.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !sourceRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              confirmationRequired,
+              previewMethod == expectedPreviewMethod,
+              applyMethod == expectedApplyMethod,
+              network == expectedNetwork,
+              kind == expectation.kind,
+              intent == expectation.intent,
+              target.kind == expectation.targetKind,
+              expectation.targetID.matches(target.id),
+              expectation.targetAgent.matches(target.agent),
+              expectation.targetScope.matches(target.scope),
+              expectation.projectID.matches(projectID),
+              impacts == expectation.impacts,
+              Set(impacts).count == impacts.count,
+              readback == expectation.readback,
+              Set(readback).count == readback.count,
+              !evidenceRefs.isEmpty,
+              Set(evidenceRefs).count == evidenceRefs.count,
+              evidenceRefs.allSatisfy({
+                  !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              }) else {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        return self
+    }
+
+    @discardableResult
+    func validatedOptionalProjectContextScope() throws -> ActionDescriptorWire {
+        let hasProject = projectID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let hasProjectScope = target.scope == "agent-project"
+        guard hasProject == hasProjectScope,
+              target.scope == nil || hasProjectScope else {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        return self
+    }
+}
+
+enum ActionStringExpectation: Hashable {
+    case absent
+    case optional
+    case present
+    case exact(String)
+    case oneOf(Set<String>)
+
+    func matches(_ value: String?) -> Bool {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch self {
+        case .absent:
+            return normalized == nil
+        case .optional:
+            return normalized?.isEmpty != true
+        case .present:
+            return normalized?.isEmpty == false
+        case .exact(let expected):
+            return normalized == expected
+        case .oneOf(let expected):
+            guard let normalized, !normalized.isEmpty else { return false }
+            return expected.contains(normalized)
+        }
+    }
+}
+
+struct ActionDescriptorExpectation: Hashable {
+    let kind: String
+    let intent: String
+    let targetKind: String
+    let targetID: ActionStringExpectation
+    let targetAgent: ActionStringExpectation
+    let targetScope: ActionStringExpectation
+    let projectID: ActionStringExpectation
+    let impacts: [String]
+    let readback: [String]
+}
+
+enum ActionDescriptorValidationError: LocalizedError, Equatable {
+    case invalidLifecycle
+
+    var errorDescription: String? {
+        "The action preview does not match the required service-owned lifecycle."
+    }
 }
 
 struct ActionReferenceWire: Codable, Hashable {
@@ -149,6 +243,22 @@ struct ActionPreconditionWire: Codable, Hashable {
         case kind
         case targetID = "target_id"
         case expectedRevision = "expected_revision"
+    }
+}
+
+extension Array where Element == ActionPreconditionWire {
+    @discardableResult
+    func validated(kinds expectedKinds: Set<String>) throws -> [ActionPreconditionWire] {
+        guard !isEmpty,
+              Set(map(\.kind)) == expectedKinds,
+              allSatisfy({
+                  !$0.kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && !$0.targetID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && !$0.expectedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              }) else {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        return self
     }
 }
 

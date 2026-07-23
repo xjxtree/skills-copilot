@@ -2,18 +2,14 @@ import Foundation
 
 extension ServiceClient {
     func previewScriptExecution(skill: SkillRecord) async throws -> ScriptExecutionPreview {
-        do {
-            return try await call(
-                method: "script.previewExecution",
-                params: ScriptExecutionParams(
-                    instanceId: skill.id,
-                    definitionId: skill.definitionId,
-                    agent: skill.agent
-                )
+        try await call(
+            method: "script.previewExecution",
+            params: ScriptExecutionParams(
+                instanceId: skill.id,
+                definitionId: skill.definitionId,
+                agent: skill.agent
             )
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(skill: skill)
-        }
+        )
     }
 
     func scanAll(expectedContextRevision: String? = nil) async throws -> ScanResult {
@@ -37,11 +33,7 @@ extension ServiceClient {
     }
 
     func getProjectContext() async throws -> ProjectContextState {
-        do {
-            return try await call(method: "project.getContext", params: EmptyParams())
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return ProjectContextState(revision: "", active: nil, recent: [])
-        }
+        try await call(method: "project.getContext", params: EmptyParams())
     }
 
     func previewSetProjectContext(
@@ -50,7 +42,7 @@ extension ServiceClient {
         name: String?,
         expectedRevision: String
     ) async throws -> ProjectContextActionPreview {
-        try await call(
+        let preview: ProjectContextActionPreview = try await call(
             method: "project.previewSetContext",
             params: ProjectContextSetPreviewParams(
                 rootPath: rootPath,
@@ -59,6 +51,19 @@ extension ServiceClient {
                 expectedRevision: expectedRevision
             )
         )
+        guard let projectID = preview.candidate.active?.id else {
+            throw ClientError.invalidOutput("Project context preview omitted its candidate.")
+        }
+        try validateProjectAction(
+            preview,
+            previewMethod: "project.previewSetContext",
+            applyMethod: "project.setContext",
+            intent: "set_project_context",
+            targetKind: "project",
+            targetID: projectID,
+            projectID: .exact(projectID)
+        )
+        return preview
     }
 
     func setProjectContext(
@@ -70,7 +75,7 @@ extension ServiceClient {
         guard let candidateLastUsedAt = preview.candidate.active?.lastUsedAt.flatMap(Int64.init) else {
             throw ClientError.invalidOutput("Project context preview omitted its candidate timestamp.")
         }
-        return try await call(
+        let result: ProjectContextApplyResult = try await call(
             method: "project.setContext",
             params: ProjectContextSetApplyParams(
                 rootPath: rootPath,
@@ -80,58 +85,96 @@ extension ServiceClient {
                 confirmation: preview.confirmation
             )
         )
+        try validateProjectApply(result, preview: preview)
+        return result
     }
 
     func previewClearProjectContext(expectedRevision: String) async throws -> ProjectContextActionPreview {
-        try await call(
+        let preview: ProjectContextActionPreview = try await call(
             method: "project.previewClearContext",
             params: ProjectContextRevisionParams(expectedRevision: expectedRevision)
         )
+        try validateProjectAction(
+            preview,
+            previewMethod: "project.previewClearContext",
+            applyMethod: "project.clearContext",
+            intent: "clear_project_context",
+            targetKind: "config",
+            targetID: "project-context",
+            projectID: .absent
+        )
+        return preview
     }
 
     func clearProjectContext(preview: ProjectContextActionPreview) async throws -> ProjectContextApplyResult {
-        try await call(
+        let result: ProjectContextApplyResult = try await call(
             method: "project.clearContext",
             params: ProjectContextConfirmationParams(confirmation: preview.confirmation)
         )
+        try validateProjectApply(result, preview: preview)
+        return result
     }
 
     func previewRemoveRecentProjectContext(
         id: String,
         expectedRevision: String
     ) async throws -> ProjectContextActionPreview {
-        try await call(
+        let preview: ProjectContextActionPreview = try await call(
             method: "project.previewRemoveRecentContext",
             params: ProjectContextIDPreviewParams(id: id, expectedRevision: expectedRevision)
         )
+        try validateProjectAction(
+            preview,
+            previewMethod: "project.previewRemoveRecentContext",
+            applyMethod: "project.removeRecentContext",
+            intent: "remove_recent_project_context",
+            targetKind: "project",
+            targetID: id,
+            projectID: .exact(id)
+        )
+        return preview
     }
 
     func removeRecentProjectContext(
         id: String,
         preview: ProjectContextActionPreview
     ) async throws -> ProjectContextApplyResult {
-        try await call(
+        let result: ProjectContextApplyResult = try await call(
             method: "project.removeRecentContext",
             params: ProjectContextIDApplyParams(id: id, confirmation: preview.confirmation)
         )
+        try validateProjectApply(result, preview: preview)
+        return result
     }
 
     func previewClearRecentProjectContexts(
         expectedRevision: String
     ) async throws -> ProjectContextActionPreview {
-        try await call(
+        let preview: ProjectContextActionPreview = try await call(
             method: "project.previewClearRecentContexts",
             params: ProjectContextRevisionParams(expectedRevision: expectedRevision)
         )
+        try validateProjectAction(
+            preview,
+            previewMethod: "project.previewClearRecentContexts",
+            applyMethod: "project.clearRecentContexts",
+            intent: "clear_recent_project_contexts",
+            targetKind: "config",
+            targetID: "project-context-recents",
+            projectID: .optional
+        )
+        return preview
     }
 
     func clearRecentProjectContexts(
         preview: ProjectContextActionPreview
     ) async throws -> ProjectContextApplyResult {
-        try await call(
+        let result: ProjectContextApplyResult = try await call(
             method: "project.clearRecentContexts",
             params: ProjectContextConfirmationParams(confirmation: preview.confirmation)
         )
+        try validateProjectApply(result, preview: preview)
+        return result
     }
 
     func validateProjectContext(rootPath: String, currentCWD: String?, name: String?) async throws -> ProjectContext {
@@ -152,17 +195,9 @@ extension ServiceClient {
         try await call(method: "catalog.listFindings", params: EmptyParams())
     }
 
-    func listFindingTriage() async throws -> [FindingTriageRecord] {
-        try await call(method: "catalog.listFindingTriage", params: EmptyParams())
-    }
-
     func listRuleTuning() async throws -> [RuleTuningRecord] {
-        do {
-            let list: RuleTuningList = try await call(method: "rules.listTuning", params: EmptyParams())
-            return list.records
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return []
-        }
+        let list: RuleTuningList = try await call(method: "rules.listTuning", params: EmptyParams())
+        return list.records
     }
 
     func listConflicts() async throws -> [ConflictGroupRecord] {
@@ -171,13 +206,6 @@ extension ServiceClient {
 
     func listSnapshots() async throws -> [ConfigSnapshotRecord] {
         try await call(method: "snapshot.list", params: EmptyParams())
-    }
-
-    func listAgentConfigSnapshots(agent: String, scope: String? = nil) async throws -> [ConfigSnapshotRecord] {
-        try await call(
-            method: "snapshot.listAgentConfig",
-            params: ListAgentConfigSnapshotsParams(agent: agent, scope: scope)
-        )
     }
 
     func listAgentConfigSnapshotPage(
@@ -196,13 +224,6 @@ extension ServiceClient {
                 cursor: cursor,
                 sourceRevision: sourceRevision
             )
-        )
-    }
-
-    func listSkillEvents(instanceID: String, limit: Int? = nil) async throws -> [SkillEventRecord] {
-        try await call(
-            method: "skill.listEvents",
-            params: ListSkillEventsParams(instanceId: instanceID, limit: limit)
         )
     }
 
@@ -229,7 +250,39 @@ extension ServiceClient {
             targetEnabled: on,
             confirmation: nil
         )
-        return try await call(method: "batch.previewSkillToggles", params: params)
+        let preview: BatchTogglePreview = try await call(
+            method: "batch.previewSkillToggles",
+            params: params
+        )
+        if preview.applySupported {
+            guard let action = preview.actionDescriptor else {
+                throw ClientError.invalidOutput("Batch preview omitted its typed action.")
+            }
+            do {
+                try action.validated(
+                    previewMethod: "batch.previewSkillToggles",
+                    applyMethod: "batch.applySkillToggles",
+                    network: "none",
+                    expectation: ActionDescriptorExpectation(
+                        kind: "toggle_skill",
+                        intent: on ? "enable_skill" : "disable_skill",
+                        targetKind: "skill",
+                        targetID: .present,
+                        targetAgent: .absent,
+                        targetScope: .absent,
+                        projectID: .absent,
+                        impacts: ["app_local_data", "agent_config"],
+                        readback: ["agent_config", "skill_aggregates", "config_snapshots"]
+                    )
+                )
+                try preview.preconditions.validated(
+                    kinds: ["agent_config", "catalog_record"]
+                )
+            } catch {
+                throw ClientError.invalidOutput(error.localizedDescription)
+            }
+        }
+        return preview
     }
 
     func applyBatchSkillToggles(preview: BatchTogglePreview) async throws -> BatchToggleApplyResult {
@@ -271,7 +324,7 @@ extension ServiceClient {
     }
 
     func previewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
-        try await call(
+        let preview: ToolGlobalInstallPreview = try await call(
             method: "skill.install",
             params: ToolInstallPreviewParams(
                 instanceId: skill.id,
@@ -281,6 +334,10 @@ extension ServiceClient {
                 actionConfirmation: nil
             )
         )
+        if preview.writeBackEnabled {
+            try validateToolInstallAction(preview, skillID: skill.id, target: target)
+        }
+        return preview
     }
 
     func confirmToolInstall(
@@ -294,6 +351,7 @@ extension ServiceClient {
                 "The install preview is missing its typed action confirmation."
             )
         }
+        try validateToolInstallAction(preview, skillID: skill.id, target: preview.target)
         let result: ToolGlobalInstallPreview = try await call(
             method: "skill.install",
             params: ToolInstallPreviewParams(
@@ -336,42 +394,194 @@ extension ServiceClient {
         content: String,
         expectedRevision: String
     ) async throws -> ConfigSavePreviewRecord {
-        try await call(
+        let preview: ConfigSavePreviewRecord = try await call(
             method: "config.previewSaveClaudeSettings",
             params: PreviewSaveClaudeSettingsParams(
                 content: content,
                 expectedRevision: expectedRevision
             )
         )
+        try validateConfigAction(
+            preview.action,
+            preconditions: preview.preconditions,
+            previewMethod: "config.previewSaveClaudeSettings",
+            applyMethod: "config.saveClaudeSettings",
+            kind: "save_config",
+            intent: "save_config",
+            impacts: ["agent_config", "app_local_data"],
+            readback: ["catalog_skills", "skill_aggregates", "agent_config", "config_snapshots"],
+            preconditionKinds: ["agent_config"]
+        )
+        return preview
     }
 
     func saveClaudeSettings(
         content: String,
         confirmation: ActionConfirmationWire
     ) async throws -> ConfigSaveApplyRecord {
-        try await call(
+        let result: ConfigSaveApplyRecord = try await call(
             method: "config.saveClaudeSettings",
             params: SaveClaudeSettingsParams(content: content, confirmation: confirmation)
         )
+        guard result.action.reference == confirmation.reference else {
+            throw ClientError.invalidOutput("Config save response belongs to another action.")
+        }
+        _ = try result.readback.validated(for: result.action)
+        return result
     }
 
     func previewSnapshotRollback(snapshotID: String) async throws -> SnapshotRollbackPreviewRecord {
-        try await call(
+        let preview: SnapshotRollbackPreviewRecord = try await call(
             method: "snapshot.previewRollback",
             params: SnapshotParams(snapshotId: snapshotID)
         )
+        try validateConfigAction(
+            preview.action,
+            preconditions: preview.preconditions,
+            previewMethod: "snapshot.previewRollback",
+            applyMethod: "snapshot.rollback",
+            kind: "rollback_config",
+            intent: "rollback_config",
+            impacts: ["agent_config", "app_local_data"],
+            readback: ["catalog_skills", "skill_aggregates", "agent_config"],
+            preconditionKinds: ["catalog_record", "agent_config"]
+        )
+        return preview
     }
 
     func rollbackSnapshot(
         snapshotID: String,
         confirmation: ActionConfirmationWire
     ) async throws -> SnapshotRollbackApplyRecord {
-        try await call(
+        let result: SnapshotRollbackApplyRecord = try await call(
             method: "snapshot.rollback",
             params: RollbackSnapshotParams(
                 snapshotId: snapshotID,
                 confirmation: confirmation
             )
         )
+        guard result.action.reference == confirmation.reference else {
+            throw ClientError.invalidOutput("Snapshot rollback response belongs to another action.")
+        }
+        _ = try result.readback.validated(for: result.action)
+        return result
+    }
+
+    private func validateProjectAction(
+        _ preview: ProjectContextActionPreview,
+        previewMethod: String,
+        applyMethod: String,
+        intent: String,
+        targetKind: String,
+        targetID: String,
+        projectID: ActionStringExpectation
+    ) throws {
+        do {
+            try preview.action.validated(
+                previewMethod: previewMethod,
+                applyMethod: applyMethod,
+                network: "none",
+                expectation: ActionDescriptorExpectation(
+                    kind: "project_context",
+                    intent: intent,
+                    targetKind: targetKind,
+                    targetID: .exact(targetID),
+                    targetAgent: .absent,
+                    targetScope: .absent,
+                    projectID: projectID,
+                    impacts: ["app_local_data"],
+                    readback: ["project_context"]
+                )
+            )
+            try preview.preconditions.validated(kinds: ["project_context"])
+            guard !preview.previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ActionDescriptorValidationError.invalidLifecycle
+            }
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
+    }
+
+    private func validateProjectApply(
+        _ result: ProjectContextApplyResult,
+        preview: ProjectContextActionPreview
+    ) throws {
+        guard result.action == preview.action,
+              result.previewToken == preview.previewToken else {
+            throw ClientError.invalidOutput("Project context response belongs to another preview.")
+        }
+        _ = try result.readback.validated(for: preview.action)
+    }
+
+    private func validateToolInstallAction(
+        _ preview: ToolGlobalInstallPreview,
+        skillID: String,
+        target: ToolInstallTarget
+    ) throws {
+        guard let action = preview.action,
+              preview.skillID == skillID,
+              preview.target == target,
+              preview.confirmationRequired,
+              let previewToken = preview.previewToken,
+              !previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ClientError.invalidOutput("Tool install preview is incomplete.")
+        }
+        do {
+            try action.validated(
+                previewMethod: "skill.install",
+                applyMethod: "skill.install",
+                network: "none",
+                expectation: ActionDescriptorExpectation(
+                    kind: "install_skill",
+                    intent: "install_skill",
+                    targetKind: "skill",
+                    targetID: .present,
+                    targetAgent: .exact(target.rawValue),
+                    targetScope: .exact("agent-global"),
+                    projectID: .absent,
+                    impacts: ["app_local_data", "skill_files"],
+                    readback: ["catalog_skills", "skill_files"]
+                )
+            )
+            try preview.preconditions.validated(
+                kinds: ["catalog_record", "source_file", "target_file"]
+            )
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
+    }
+
+    private func validateConfigAction(
+        _ action: ActionDescriptorWire,
+        preconditions: [ActionPreconditionWire],
+        previewMethod: String,
+        applyMethod: String,
+        kind: String,
+        intent: String,
+        impacts: [String],
+        readback: [String],
+        preconditionKinds: Set<String>
+    ) throws {
+        do {
+            try action.validated(
+                previewMethod: previewMethod,
+                applyMethod: applyMethod,
+                network: "none",
+                expectation: ActionDescriptorExpectation(
+                    kind: kind,
+                    intent: intent,
+                    targetKind: "config",
+                    targetID: .present,
+                    targetAgent: .exact("claude-code"),
+                    targetScope: .exact("agent-global"),
+                    projectID: .absent,
+                    impacts: impacts,
+                    readback: readback
+                )
+            )
+            try preconditions.validated(kinds: preconditionKinds)
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
     }
 }

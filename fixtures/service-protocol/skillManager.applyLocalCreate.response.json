@@ -13,8 +13,9 @@
         },
         "project_id": "project-0123456789abcdef",
         "impacts": [
-          "app_local_data",
-          "skill_files"
+          "external_manager",
+          "skill_files",
+          "app_local_data"
         ],
         "preview_method": "skillManager.previewLocalCreate",
         "apply_method": "skillManager.applyLocalCreate",

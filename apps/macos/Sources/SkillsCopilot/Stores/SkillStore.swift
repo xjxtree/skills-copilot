@@ -475,17 +475,14 @@ final class SkillStore: ObservableObject {
     var activeLocalSessionSnapshotKey: LocalSessionSnapshotKey?
     private var activeLocalSessionRefreshGeneration: UInt64?
     private let taskCockpitTimeoutSeconds: TimeInterval
-    private let autosaveDelayNanoseconds: UInt64
-    private let autosaveMutationLane = AutosaveMutationLane()
+    private let confirmedMutationLane = ConfirmedMutationLane()
     init(
         service: ServiceClient,
-        taskCockpitTimeoutSeconds: TimeInterval = 300,
-        autosaveDelayNanoseconds: UInt64 = 900_000_000
+        taskCockpitTimeoutSeconds: TimeInterval = 300
     ) {
         self.service = service
         providerActivityController = ProviderActivityController(service: service)
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
-        self.autosaveDelayNanoseconds = autosaveDelayNanoseconds
         taskCockpitHistory = []
         providerActivityController.setChangeHandler { [weak self] in
             self?.objectWillChange.send()
@@ -503,7 +500,7 @@ final class SkillStore: ObservableObject {
         localSessionDetailTask?.cancel()
         localSessionLoadAllTask?.cancel()
         let activityController = providerActivityController
-        let lane = autosaveMutationLane
+        let lane = confirmedMutationLane
         Task { @MainActor in
             activityController.cancelActiveRequest()
             lane.shutdown()
@@ -1131,8 +1128,6 @@ final class SkillStore: ObservableObject {
                 instanceIDs: selectedSkills.map(\.id),
                 on: batchToggleAction.targetEnabled
             )
-        } catch ServiceClient.ClientError.service(let error) where error.code == "unknown_method" {
-            batchTogglePreview = localBatchTogglePreview(selectedSkills: selectedSkills, reason: UIStrings.batchToggleServicePreviewUnavailable)
         } catch {
             errorMessage = error.localizedDescription
             batchTogglePreview = nil
@@ -3558,7 +3553,7 @@ final class SkillStore: ObservableObject {
         configSavePreviewGeneration &+= 1
         activeConfigSaveConfirmation = nil
 
-        return await autosaveMutationLane.perform { [self] in
+        return await confirmedMutationLane.perform { [self] in
             isSavingSettings = true
             publishConfigSaveFeedback(message: nil, error: nil, mutationState: .saving)
             defer { isSavingSettings = false }
@@ -3619,7 +3614,7 @@ final class SkillStore: ObservableObject {
                 )
                 return false
             }
-        }
+        } ?? false
     }
 
     private func publishConfigSaveFeedback(
@@ -3741,28 +3736,6 @@ final class SkillStore: ObservableObject {
                       normalizedConfigAgent(nil) == agent else { return }
                 try agentConfigSnapshotAccumulator.append(result.page)
                 publishAgentConfigSnapshotPaging()
-            } catch ServiceClient.ClientError.service(let error)
-                where error.code == "unknown_method" && agentConfigSnapshotAccumulator.items.isEmpty {
-                do {
-                    let records = try await service.listAgentConfigSnapshots(agent: agent, scope: nil)
-                    guard generation == agentConfigSnapshotLoadGeneration,
-                          !Task.isCancelled,
-                          normalizedConfigAgent(nil) == agent else { return }
-                    try agentConfigSnapshotAccumulator.append(ListPage(
-                        items: records,
-                        returnedCount: records.count,
-                        totalCount: records.count,
-                        hasMore: false,
-                        nextCursor: nil,
-                        sourceRevision: nil,
-                        sourceCompleteness: .enumerable,
-                        incompleteReason: nil
-                    ))
-                    publishAgentConfigSnapshotPaging()
-                } catch {
-                    failAgentConfigSnapshotPaging(error, generation: generation, agent: agent)
-                }
-                return
             } catch {
                 failAgentConfigSnapshotPaging(error, generation: generation, agent: agent)
                 return
@@ -3927,30 +3900,19 @@ final class SkillStore: ObservableObject {
             return []
         }
         var accumulator = ListPageAccumulator<ConfigSnapshotRecord>()
-        do {
-            while true {
-                let result = try await service.listAgentConfigSnapshotPage(
-                    agent: agent,
-                    scope: nil,
-                    limit: 100,
-                    cursor: accumulator.nextCursor,
-                    sourceRevision: accumulator.sourceRevision
-                )
-                try accumulator.append(result.page)
-                guard accumulator.state.hasMore, accumulator.nextCursor != nil else {
-                    return accumulator.items
-                }
-                accumulator.begin(.all)
+        while true {
+            let result = try await service.listAgentConfigSnapshotPage(
+                agent: agent,
+                scope: nil,
+                limit: 100,
+                cursor: accumulator.nextCursor,
+                sourceRevision: accumulator.sourceRevision
+            )
+            try accumulator.append(result.page)
+            guard accumulator.state.hasMore, accumulator.nextCursor != nil else {
+                return accumulator.items
             }
-        } catch ServiceClient.ClientError.service(let error) where error.code == "unknown_method" {
-            return try await service.listAgentConfigSnapshots(agent: agent, scope: nil)
-                .filter { $0.agent == agent }
-                .sorted { lhs, rhs in
-                    if lhs.createdAt != rhs.createdAt {
-                        return lhs.createdAt > rhs.createdAt
-                    }
-                    return lhs.id > rhs.id
-                }
+            accumulator.begin(.all)
         }
     }
 
@@ -4003,29 +3965,6 @@ final class SkillStore: ObservableObject {
                 try accepted.append(result.page)
                 skillEventAccumulatorsByID[instanceID] = accepted
                 publishSkillEventPaging(instanceID: instanceID)
-            } catch ServiceClient.ClientError.service(let error)
-                where error.code == "unknown_method" && current.items.isEmpty {
-                do {
-                    let records = try await service.listSkillEvents(instanceID: instanceID)
-                    guard skillEventLoadGenerations[instanceID] == generation,
-                          !Task.isCancelled else { return }
-                    var accepted = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
-                    try accepted.append(ListPage(
-                        items: records,
-                        returnedCount: records.count,
-                        totalCount: records.count,
-                        hasMore: false,
-                        nextCursor: nil,
-                        sourceRevision: nil,
-                        sourceCompleteness: .enumerable,
-                        incompleteReason: nil
-                    ))
-                    skillEventAccumulatorsByID[instanceID] = accepted
-                    publishSkillEventPaging(instanceID: instanceID)
-                } catch {
-                    failSkillEventPaging(error, instanceID: instanceID, generation: generation)
-                }
-                return
             } catch {
                 failSkillEventPaging(error, instanceID: instanceID, generation: generation)
                 return

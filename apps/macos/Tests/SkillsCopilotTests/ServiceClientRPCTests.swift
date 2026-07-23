@@ -12,17 +12,27 @@ struct ServiceClientRPCTests {
         let findings = try await client.listFindings()
         try expectEqual(findings.count, 0, "Catalog/config RPC wrapper should decode listFindings.")
 
-        let sessions = try await client.previewLocalSessions(
-            authorizedRoots: [],
-            agent: "codex",
-            scope: .all,
-            search: "release",
-            project: nil,
-            sessionID: nil,
-            includeContentItems: false,
-            limit: 3
-        )
-        try expectEqual(sessions.isUnavailable, true, "Session RPC wrapper should map unknown methods to unavailable.")
+        do {
+            _ = try await client.previewLocalSessions(
+                authorizedRoots: [],
+                agent: "codex",
+                scope: .all,
+                search: "release",
+                project: nil,
+                sessionID: nil,
+                includeContentItems: false,
+                limit: 3
+            )
+            throw NativeModelTestFailure(
+                description: "A missing canonical session method must fail closed."
+            )
+        } catch ServiceClient.ClientError.service(let error) {
+            try expectEqual(
+                error.code,
+                "unknown_method",
+                "A sidecar protocol mismatch must remain visible."
+            )
+        }
 
         _ = try await client.previewLocalSessions(
             authorizedRoots: [],

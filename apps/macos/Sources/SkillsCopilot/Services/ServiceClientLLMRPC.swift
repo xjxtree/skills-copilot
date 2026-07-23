@@ -7,28 +7,29 @@ private enum LLMPromptRequestTimeouts {
 
 extension ServiceClient {
     func llmStatus() async throws -> LLMStatus {
-        do {
-            return try await call(method: "llm.status", params: EmptyParams())
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .disabledFallback()
-        }
+        try await call(method: "llm.status", params: EmptyParams())
     }
 
     func aiProviderStatus() async throws -> AIProviderStatus {
-        do {
-            return try await call(method: "llm.listProviderProfiles", params: EmptyParams())
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable()
-        }
+        try await call(method: "llm.listProviderProfiles", params: EmptyParams())
     }
 
     func previewSaveAIProviderSettings(
         draft: AIProviderSettingsDraft
     ) async throws -> AIProviderActionPreview {
-        try await call(
+        let preview: AIProviderActionPreview = try await call(
             method: "llm.previewSaveProviderProfile",
             params: makeSaveAIProviderProfileParams(draft: draft, confirmation: nil)
         )
+        try validateProviderActionPreview(
+            preview,
+            previewMethod: "llm.previewSaveProviderProfile",
+            applyMethod: "llm.saveProviderProfile",
+            network: "none",
+            operation: "save",
+            profileID: draft.kind.rawValue
+        )
+        return preview
     }
 
     func saveAIProviderSettings(
@@ -46,9 +47,11 @@ extension ServiceClient {
         if let outcome = result.outcome, !outcome.isVerified {
             throw ClientError.actionOutcome(outcome.userFacingFailure)
         }
-        guard result.readback?.verified == true else {
-            throw ClientError.invalidOutput("Provider save did not return verified typed read-back.")
-        }
+        try requireProviderReadback(
+            result.readback,
+            action: preview.action,
+            operation: "Provider save"
+        )
         return try await aiProviderStatus()
     }
 
@@ -56,7 +59,7 @@ extension ServiceClient {
         profileID: String,
         deleteCredential: Bool
     ) async throws -> AIProviderActionPreview {
-        try await call(
+        let preview: AIProviderActionPreview = try await call(
             method: "llm.previewDeleteProviderProfile",
             params: DeleteAIProviderProfileParams(
                 profileID: profileID,
@@ -64,6 +67,15 @@ extension ServiceClient {
                 actionConfirmation: nil
             )
         )
+        try validateProviderActionPreview(
+            preview,
+            previewMethod: "llm.previewDeleteProviderProfile",
+            applyMethod: "llm.deleteProviderProfile",
+            network: "none",
+            operation: "delete",
+            profileID: profileID
+        )
+        return preview
     }
 
     func deleteAIProviderSettings(
@@ -81,16 +93,18 @@ extension ServiceClient {
         if let outcome = result.outcome, !outcome.isVerified {
             throw ClientError.actionOutcome(outcome.userFacingFailure)
         }
-        guard result.readback?.verified == true else {
-            throw ClientError.invalidOutput("Provider delete did not return verified typed read-back.")
-        }
+        try requireProviderReadback(
+            result.readback,
+            action: preview.action,
+            operation: "Provider delete"
+        )
         return try await aiProviderStatus()
     }
 
     func previewAIProviderConnectionTest(
         profileID: String
     ) async throws -> AIProviderActionPreview {
-        try await call(
+        let preview: AIProviderActionPreview = try await call(
             method: "llm.previewProviderConnectionTest",
             params: TestAIProviderConnectionParams(
                 profileID: profileID,
@@ -98,6 +112,15 @@ extension ServiceClient {
                 actionConfirmation: nil
             )
         )
+        try validateProviderActionPreview(
+            preview,
+            previewMethod: "llm.previewProviderConnectionTest",
+            applyMethod: "llm.testProviderConnection",
+            network: "required",
+            operation: "test",
+            profileID: profileID
+        )
+        return preview
     }
 
     func testAIProviderConnection(
@@ -111,15 +134,14 @@ extension ServiceClient {
                 actionConfirmation: preview.confirmation
             )
         )
-        if let outcome = result.outcome, outcome.isPartial {
-            return result
-        }
         if let outcome = result.outcome, !outcome.isVerified {
             throw ClientError.actionOutcome(outcome.userFacingFailure)
         }
-        guard result.readback?.verified == true else {
-            throw ClientError.invalidOutput("Provider test did not return verified typed read-back.")
-        }
+        try requireProviderReadback(
+            result.readback,
+            action: preview.action,
+            operation: "Provider test"
+        )
         return result
     }
 
@@ -142,20 +164,80 @@ extension ServiceClient {
         )
     }
 
-    func prepareLLMAction(action: LLMAction, skill: SkillRecord) async throws -> LLMPrepareResult {
+    private func validateProviderActionPreview(
+        _ preview: AIProviderActionPreview,
+        previewMethod: String,
+        applyMethod: String,
+        network: String,
+        operation: String,
+        profileID: String
+    ) throws {
         do {
-            return try await call(
-                method: "llm.prepareAction",
-                params: PrepareLLMActionParams(
-                    action: action,
-                    instanceId: skill.id,
-                    definitionId: skill.definitionId,
-                    agent: skill.agent
+            let isConnectionTest = operation == "test"
+            try preview.action.validated(
+                previewMethod: previewMethod,
+                applyMethod: applyMethod,
+                network: network,
+                expectation: ActionDescriptorExpectation(
+                    kind: isConnectionTest ? "provider_connection_test" : "provider_profile",
+                    intent: "\(operation)_provider_\(isConnectionTest ? "connection" : "profile")",
+                    targetKind: "provider_profile",
+                    targetID: .exact(profileID),
+                    targetAgent: .absent,
+                    targetScope: .absent,
+                    projectID: .absent,
+                    impacts: isConnectionTest
+                        ? ["app_local_data"]
+                        : ["app_local_data", "credential_store"],
+                    readback: isConnectionTest
+                        ? ["provider_profiles", "provider_activity"]
+                        : ["provider_profiles", "provider_credentials"]
                 )
             )
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .disabledFallback(action: action)
+            try preview.preconditions.validated(
+                kinds: ["provider_profile", "prompt_context"]
+            )
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
         }
+        guard !preview.previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              preview.operation == operation,
+              preview.profileID == profileID,
+              preview.action.target.kind == "provider_profile",
+              preview.action.target.id == profileID,
+              !preview.expectedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !preview.rawSecretReturned else {
+            throw ClientError.invalidOutput(
+                "Provider preview does not match the requested service-owned action."
+            )
+        }
+    }
+
+    private func requireProviderReadback(
+        _ readback: ActionReadbackRecordWire?,
+        action: ActionDescriptorWire,
+        operation: String
+    ) throws {
+        guard let readback else {
+            throw ClientError.invalidOutput("\(operation) did not return typed read-back.")
+        }
+        do {
+            try readback.validated(for: action)
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
+    }
+
+    func prepareLLMAction(action: LLMAction, skill: SkillRecord) async throws -> LLMPrepareResult {
+        try await call(
+            method: "llm.prepareAction",
+            params: PrepareLLMActionParams(
+                action: action,
+                instanceId: skill.id,
+                definitionId: skill.definitionId,
+                agent: skill.agent
+            )
+        )
     }
 
     func previewPromptForLLMAction(action: LLMAction, skill: SkillRecord) async throws -> LLMPromptPreview {
@@ -172,11 +254,9 @@ extension ServiceClient {
             userIntent: nil,
             candidateInstanceIDs: nil
         )
-        do {
-            return try await call(method: "llm.previewPrompt", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(reason: UIStrings.llmPromptUnavailable)
-        }
+        let preview: LLMPromptPreview = try await call(method: "llm.previewPrompt", params: params)
+        try validatePromptPreview(preview, request: params)
+        return preview
     }
 
     func confirmPromptAndSendForLLMAction(
@@ -218,15 +298,13 @@ extension ServiceClient {
             userIntent: taskText,
             candidateInstanceIDs: instanceIDs
         )
-        do {
-            return try await call(
-                method: "llm.previewPrompt",
-                params: params,
-                timeoutMS: LLMPromptRequestTimeouts.taskCockpitSendMS
-            )
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(reason: UIStrings.taskCockpitUnavailable)
-        }
+        let preview: LLMPromptPreview = try await call(
+            method: "llm.previewPrompt",
+            params: params,
+            timeoutMS: LLMPromptRequestTimeouts.taskCockpitSendMS
+        )
+        try validatePromptPreview(preview, request: params)
+        return preview
     }
 
     func confirmPromptAndSendForTaskCockpit(
@@ -262,11 +340,7 @@ extension ServiceClient {
             requestKind: nil,
             limit: limit
         )
-        do {
-            return try await call(method: "llm.listPromptRuns", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable()
-        }
+        return try await call(method: "llm.listPromptRuns", params: params)
     }
 
     func providerObservability(
@@ -289,11 +363,7 @@ extension ServiceClient {
             includeRetentionRecommendations: includeRetentionRecommendations,
             includeEvidence: includeEvidence
         )
-        do {
-            return try await call(method: "llm.providerObservability", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable()
-        }
+        return try await call(method: "llm.providerObservability", params: params)
     }
 
     func listProviderActivity(
@@ -328,7 +398,8 @@ extension ServiceClient {
         request: PreviewLLMPromptParams,
         timeoutMS: Int = LLMPromptRequestTimeouts.standardSendMS
     ) async throws -> LLMPromptSendResult {
-        guard let actionConfirmation = preview.actionConfirmation else {
+        guard let action = preview.actionDescriptor,
+              let actionConfirmation = preview.actionConfirmation else {
             throw ClientError.invalidOutput(
                 "The provider prompt preview is missing its typed action confirmation."
             )
@@ -338,25 +409,78 @@ extension ServiceClient {
             request: request,
             timeoutMS: timeoutMS
         )
-        do {
-            let result: LLMPromptSendResult = try await call(
-                method: "llm.confirmPromptAndSend",
-                params: params,
-                timeoutMS: timeoutMS
-            )
-            if result.partialOutcome == nil, result.readback?.verified != true {
+        let result: LLMPromptSendResult = try await call(
+            method: "llm.confirmPromptAndSend",
+            params: params,
+            timeoutMS: timeoutMS
+        )
+        if result.partialOutcome == nil {
+            guard let readback = result.readback else {
                 throw ClientError.invalidOutput(
                     "Provider prompt send did not return verified typed read-back."
                 )
             }
-            if result.partialOutcome != nil, result.status.lowercased() != "partial" {
-                throw ClientError.invalidOutput(
-                    "Provider prompt partial outcome must use the explicit partial status."
-                )
+            do {
+                try readback.validated(for: action)
+            } catch {
+                throw ClientError.invalidOutput(error.localizedDescription)
             }
-            return result
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable(previewID: preview.previewID, reason: UIStrings.llmPromptUnavailable)
+        }
+        if result.partialOutcome != nil, result.status.lowercased() != "partial" {
+            throw ClientError.invalidOutput(
+                "Provider prompt partial outcome must use the explicit partial status."
+            )
+        }
+        return result
+    }
+
+    private func validatePromptPreview(
+        _ preview: LLMPromptPreview,
+        request: PreviewLLMPromptParams
+    ) throws {
+        guard preview.enabled else { return }
+        guard let action = preview.actionDescriptor,
+              let previewToken = preview.previewToken,
+              !previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ClientError.invalidOutput(
+                "Enabled provider prompt preview omitted its service-owned action."
+            )
+        }
+        do {
+            try action.validated(
+                previewMethod: "llm.previewPrompt",
+                applyMethod: "llm.confirmPromptAndSend",
+                network: "required",
+                expectation: ActionDescriptorExpectation(
+                    kind: "provider_prompt",
+                    intent: "send_provider_prompt",
+                    targetKind: "provider_profile",
+                    targetID: .present,
+                    targetAgent: .absent,
+                    targetScope: .absent,
+                    projectID: .absent,
+                    impacts: ["app_local_data"],
+                    readback: ["provider_activity", "prompt_runs"]
+                )
+            )
+            try preview.preconditions.validated(
+                kinds: ["provider_profile", "prompt_context"]
+            )
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
+        guard action.kind == "provider_prompt",
+              action.intent == "send_provider_prompt",
+              action.target.kind == "provider_profile",
+              preview.confirmationRequired,
+              preview.requestKind == request.requestKind,
+              preview.scope == request.scope,
+              preview.rawPromptPersisted == false,
+              preview.rawResponsePersisted == false,
+              preview.draftCopyOnly else {
+            throw ClientError.invalidOutput(
+                "Provider prompt preview violated its confirmed copy-only lifecycle."
+            )
         }
     }
 }

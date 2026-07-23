@@ -295,7 +295,7 @@ final class FakeServiceScript: ServiceProcessRunning {
             fi
             ;;
           *\\"llm.listProviderProfiles\\"*)
-            if [ "$scenario" = "autosave-delayed-provider" ] || [ "$scenario" = "autosave-delayed-provider-failure" ]; then
+            if [ "$scenario" = "confirmed-delayed-provider" ] || [ "$scenario" = "confirmed-delayed-provider-failure" ]; then
               provider_save_count=$(grep -c '"method":"llm.saveProviderProfile"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
               if [ "$provider_save_count" -gt 1 ] && [ -f "$SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE" ]; then
                 respond '{"id":"test","ok":true,"result":{"service_available":true,"enabled":true,"configured":true,"active_profile_id":"openai-compatible","credential_storage":"keychain","credential_persistence_allowed":true,"profiles":[{"id":"openai-compatible","kind":"openai-compatible","endpoint":"https://provider-b.example.com/v1","model":"model-b","enabled":true,"configured":true,"has_api_key":true}]}}'
@@ -323,13 +323,13 @@ final class FakeServiceScript: ServiceProcessRunning {
             if [ "$scenario" = "provider-action-ready" ]; then
               respond '{"id":"test","ok":true,"result":{"profile":{"id":"openai-compatible","display_name":"OpenAI Compatible","provider_type":"openai-compatible","base_url":"https://provider-action.example.com/v1","model":"model-action","enabled":true,"api_version":null,"organization":null,"single_request_token_limit":4096,"monthly_budget_usd":3.5,"credential_reference":{"storage":"keychain","service":"dev.skills-copilot.native.llm","account":"provider:openai-compatible","secret_persisted":true},"credential_status":{"state":"available","reason":"API key is available from the OS credential store.","secret_available":true,"fallback_available":false},"created_at":1,"updated_at":1},"credential_status":{"state":"available","reason":"API key is available from the OS credential store.","secret_available":true,"fallback_available":false},"profile_persisted":true,"credential_effect":"stored_and_verified","error_code":null,"error_message":null,"raw_secret_returned":false,"outcome":{"state":"verified","effect":"verified","remote_effect":"not_applicable","local_effect":"provider_profile_verified","credential_effect":"stored_and_verified","recovery":null},"readback":{"action_id":"provider-save-action","source_revision":"sha256:provider-save-after","project_id":null,"domains":["provider_profiles","provider_credentials"],"target_ids":["openai-compatible"],"observations":[{"domain":"provider_profiles","target_id":"openai-compatible","revision":"sha256:profile-after"},{"domain":"provider_credentials","target_id":"openai-compatible","revision":"sha256:credential-after"}],"verified":true}}}'
             fi
-            if [ "$scenario" = "autosave-delayed-provider" ] || [ "$scenario" = "autosave-delayed-provider-failure" ]; then
+            if [ "$scenario" = "confirmed-delayed-provider" ] || [ "$scenario" = "confirmed-delayed-provider-failure" ]; then
               if printf '%s' "$input" | grep -q '\\"api_key\\":\\"A\\"'; then
                 wait_for_release "$SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE" || service_error
               elif printf '%s' "$input" | grep -q '\\"api_key\\":\\"B\\"'; then
                 wait_for_release "$SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE" || service_error
               fi
-              if [ "$scenario" = "autosave-delayed-provider-failure" ]; then
+              if [ "$scenario" = "confirmed-delayed-provider-failure" ]; then
                 respond '{"id":"test","ok":false,"result":null,"error":{"code":"provider_save_failed","message":"provider A failed"}}'
               fi
               respond '{"id":"test","ok":true,"result":{"profile":null}}'

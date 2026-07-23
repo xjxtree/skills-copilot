@@ -1,0 +1,64 @@
+{
+  "id": "fixture-skill-install-apply",
+  "ok": true,
+  "result": {
+    "source_instance_id": "tool-global-fixture",
+    "source_path": "/tmp/skills-copilot-app/tool-global/imported-review/SKILL.md",
+    "target_agent": "codex",
+    "target_scope": "agent-global",
+    "target_path": "/tmp/skills-copilot-home/.agents/skills/imported-review/SKILL.md",
+    "files": [
+      {
+        "source": "/tmp/skills-copilot-app/tool-global/imported-review/SKILL.md",
+        "target": "/tmp/skills-copilot-home/.agents/skills/imported-review/SKILL.md",
+        "kind": "skill",
+        "will_write": true,
+        "target_exists": false
+      }
+    ],
+    "risks": [
+      "Will write into the confirmed codex agent-global skill root."
+    ],
+    "confirmation": {
+      "required": true,
+      "confirmed": true,
+      "fields": [
+        "source_instance_id",
+        "source_path",
+        "target_agent",
+        "target_scope",
+        "target_path",
+        "files",
+        "risks"
+      ],
+      "message": "Confirmed install."
+    },
+    "wrote": true,
+    "snapshot_id": "snapshot-install-fixture",
+    "readback": {
+      "action_id": "action:install_skill:6666666666666666666666666666666666666666666666666666666666666666",
+      "source_revision": "sha256:abababababababababababababababababababababababababababababababab",
+      "domains": [
+        "catalog_skills",
+        "skill_files"
+      ],
+      "target_ids": [
+        "tool-global-fixture",
+        "/tmp/skills-copilot-home/.agents/skills/imported-review/SKILL.md"
+      ],
+      "observations": [
+        {
+          "domain": "catalog_skills",
+          "target_id": "tool-global-fixture",
+          "revision": "sha256:acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+        },
+        {
+          "domain": "skill_files",
+          "target_id": "/tmp/skills-copilot-home/.agents/skills/imported-review/SKILL.md",
+          "revision": "sha256:adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad"
+        }
+      ],
+      "verified": true
+    }
+  }
+}

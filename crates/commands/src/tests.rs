@@ -1452,6 +1452,7 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
     assert_eq!(preview.writable_count, 2);
     assert_eq!(preview.skipped_count, 1);
     assert!(preview.writes_allowed);
+    assert_eq!(preview.action.intent, ActionIntent::DisableSkill);
     assert_eq!(preview.affected_items[0].instance_id, claude_id);
     assert!(preview
         .affected_items
@@ -1499,6 +1500,12 @@ fn batch_toggle_preview_filters_read_only_and_apply_uses_snapshot_path() {
         2,
         "each created snapshot must have a semantic read-back observation"
     );
+
+    let enable_selection = vec![claude_id.clone(), pi_id.clone()];
+    let enable_preview =
+        preview_skill_toggles(&catalog, &ctx, &enable_selection, true).expect("enable preview");
+    assert_eq!(enable_preview.action.intent, ActionIntent::EnableSkill);
+    assert_eq!(enable_preview.writable_count, 2);
 
     let settings_path = home.join(".claude/settings.json");
     let content = std::fs::read_to_string(&settings_path).expect("read settings");

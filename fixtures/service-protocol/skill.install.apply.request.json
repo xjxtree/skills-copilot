@@ -1,0 +1,24 @@
+{
+  "id": "fixture-skill-install-apply",
+  "method": "skill.install",
+  "params": {
+    "instance_id": "tool-global-fixture",
+    "target_agent": "codex",
+    "target_scope": "agent-global",
+    "confirmed": true,
+    "action_confirmation": {
+      "reference": {
+        "action_id": "action:install_skill:6666666666666666666666666666666666666666666666666666666666666666",
+        "source_revision": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "target": {
+          "kind": "skill",
+          "id": "install-target:imported-review",
+          "agent": "codex",
+          "scope": "agent-global"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "confirmed": true
+    }
+  }
+}

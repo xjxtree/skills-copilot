@@ -121,6 +121,7 @@ struct SkillManagerEnvPreview: Codable, Hashable {
 
 struct SkillManagerCommandPreview: Codable, Hashable {
     let action: ActionDescriptorWire?
+    let preconditions: [ActionPreconditionWire]
     let toolId: String
     let operation: String
     let command: [String]
@@ -131,7 +132,7 @@ struct SkillManagerCommandPreview: Codable, Hashable {
     let networkRequired: Bool
     let networkAllowed: Bool
     let willRun: Bool
-    let previewToken: String
+    let previewToken: String?
     let summary: String
     let risks: [String]
     let source: String?
@@ -139,6 +140,7 @@ struct SkillManagerCommandPreview: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case action
+        case preconditions
         case toolId = "tool_id"
         case operation
         case command
@@ -167,14 +169,16 @@ struct SkillManagerCommandPreview: Codable, Hashable {
         networkRequired: Bool,
         networkAllowed: Bool,
         willRun: Bool,
-        previewToken: String,
+        previewToken: String?,
         summary: String,
         risks: [String],
         source: String?,
         skills: [String]?,
-        action: ActionDescriptorWire? = nil
+        action: ActionDescriptorWire? = nil,
+        preconditions: [ActionPreconditionWire] = []
     ) {
         self.action = action
+        self.preconditions = preconditions
         self.toolId = toolId
         self.operation = operation
         self.command = command
@@ -196,11 +200,22 @@ struct SkillManagerCommandPreview: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let action = try container.decodeIfPresent(ActionDescriptorWire.self, forKey: .action)
         let requiresConfirmation = try container.decode(Bool.self, forKey: .requiresConfirmation)
+        let confirmed = try container.decode(Bool.self, forKey: .confirmed)
+        let previewToken = try container.decodeIfPresent(String.self, forKey: .previewToken)
         if requiresConfirmation, action == nil {
             throw DecodingError.dataCorruptedError(
                 forKey: .action,
                 in: container,
                 debugDescription: "A mutating Skill Manager preview requires a typed action."
+            )
+        }
+        if requiresConfirmation,
+           !confirmed,
+           previewToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            throw DecodingError.dataCorruptedError(
+                forKey: .previewToken,
+                in: container,
+                debugDescription: "A mutating Skill Manager preview requires an opaque preview token."
             )
         }
         self.init(
@@ -210,22 +225,24 @@ struct SkillManagerCommandPreview: Codable, Hashable {
             cwd: try container.decode(String.self, forKey: .cwd),
             env: try container.decode([SkillManagerEnvPreview].self, forKey: .env),
             requiresConfirmation: requiresConfirmation,
-            confirmed: try container.decode(Bool.self, forKey: .confirmed),
+            confirmed: confirmed,
             networkRequired: try container.decode(Bool.self, forKey: .networkRequired),
             networkAllowed: try container.decode(Bool.self, forKey: .networkAllowed),
             willRun: try container.decode(Bool.self, forKey: .willRun),
-            previewToken: try container.decode(String.self, forKey: .previewToken),
+            previewToken: previewToken,
             summary: try container.decode(String.self, forKey: .summary),
             risks: try container.decode([String].self, forKey: .risks),
             source: try container.decodeIfPresent(String.self, forKey: .source),
             skills: try container.decodeIfPresent([String].self, forKey: .skills),
-            action: action
+            action: action,
+            preconditions: try container.decode([ActionPreconditionWire].self, forKey: .preconditions)
         )
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(action, forKey: .action)
+        try container.encode(preconditions, forKey: .preconditions)
         try container.encode(toolId, forKey: .toolId)
         try container.encode(operation, forKey: .operation)
         try container.encode(command, forKey: .command)
@@ -236,7 +253,7 @@ struct SkillManagerCommandPreview: Codable, Hashable {
         try container.encode(networkRequired, forKey: .networkRequired)
         try container.encode(networkAllowed, forKey: .networkAllowed)
         try container.encode(willRun, forKey: .willRun)
-        try container.encode(previewToken, forKey: .previewToken)
+        try container.encodeIfPresent(previewToken, forKey: .previewToken)
         try container.encode(summary, forKey: .summary)
         try container.encode(risks, forKey: .risks)
         try container.encodeIfPresent(source, forKey: .source)
@@ -1025,7 +1042,7 @@ struct SkillManagerLocalArchiveImportRecord: Codable, Hashable {
     let archiveSha256: String
     let fileCount: Int
     let uncompressedBytes: UInt64
-    let previewToken: String
+    let previewToken: String?
     let confirmed: Bool
     let applied: Bool
     let summary: String
@@ -1073,6 +1090,7 @@ struct SkillManagerReferenceRecord: Codable, Identifiable, Hashable {
 
 struct SkillManagerLocalDeleteRecord: Codable, Hashable {
     let action: ActionDescriptorWire?
+    let preconditions: [ActionPreconditionWire]
     let previewToken: String?
     let instanceId: String
     let skillName: String
@@ -1088,6 +1106,7 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case action
+        case preconditions
         case previewToken = "preview_token"
         case instanceId = "instance_id"
         case skillName = "skill_name"
@@ -1126,7 +1145,7 @@ struct SkillManagerLocalArchiveUpdateRecord: Codable, Hashable {
     let archiveSha256: String
     let fileCount: Int
     let uncompressedBytes: UInt64
-    let previewToken: String
+    let previewToken: String?
     let confirmed: Bool
     let applied: Bool
     let summary: String

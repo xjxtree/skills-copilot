@@ -155,8 +155,8 @@ export function parseDocumentedMethodEffects(markdown) {
 
 export function parseMethodEffects(raw) {
   const parsed = JSON.parse(raw);
-  if (!isPlainObject(parsed) || parsed.schema_version !== 1) {
-    throw new Error("method effects manifest must use schema_version 1 and an object-valued methods field");
+  if (!isPlainObject(parsed) || parsed.schema_version !== 2) {
+    throw new Error("method effects manifest must use schema_version 2 and an object-valued methods field");
   }
   if (!isPlainObject(parsed.methods)) {
     throw new Error("method effects manifest methods field must be a plain object");
@@ -263,21 +263,702 @@ function union(...sets) {
   return uniqueSorted(sets.flatMap((set) => [...set]));
 }
 
+function readFilesRecursively(root, suffix) {
+  const files = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...readFilesRecursively(path, suffix));
+    } else if (entry.isFile() && path.endsWith(suffix)) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
 function collectMethodLiterals(text) {
   return uniqueSorted([...text.matchAll(methodLiteralPattern)].map((match) => match[1]));
 }
 
-function assertNoDuplicates(values, label) {
+export function parseActionInventory(raw) {
+  const parsed = JSON.parse(raw);
+  if (!isPlainObject(parsed)) {
+    throw new Error("method effects manifest must be a plain object");
+  }
+  const topLevelFields = [
+    "schema_version",
+    "swift_client_methods",
+    "blocked_compatibility_methods",
+    "action_lifecycle",
+    "methods",
+  ];
+  if (
+    parsed.schema_version !== 2
+    || Object.keys(parsed).length !== topLevelFields.length
+    || topLevelFields.some((field) => !Object.hasOwn(parsed, field))
+  ) {
+    throw new Error(
+      `method effects manifest schema_version 2 must have exactly ${topLevelFields.join(", ")}`,
+    );
+  }
+  const swiftClientMethods = parsed.swift_client_methods;
+  const blockedCompatibilityMethods = parsed.blocked_compatibility_methods;
+  const actionLifecycle = parsed.action_lifecycle;
+  for (const [field, value] of [
+    ["swift_client_methods", swiftClientMethods],
+    ["blocked_compatibility_methods", blockedCompatibilityMethods],
+  ]) {
+    if (!Array.isArray(value) || value.some((method) => typeof method !== "string" || !methodPattern.test(method))) {
+      throw new Error(`${field} must be an array of service method names`);
+    }
+    const duplicates = duplicateValues(value);
+    if (duplicates.length > 0) {
+      throw new Error(`${field} contains duplicate methods: ${duplicates.join(", ")}`);
+    }
+  }
+  if (!isPlainObject(actionLifecycle)) {
+    throw new Error("action_lifecycle must be a plain object");
+  }
+  const lifecycleFieldNames = [
+    "type",
+    "preview_method",
+    "kinds",
+    "intents",
+    "target_kinds",
+    "precondition_kinds",
+    "target_agent_binding",
+    "target_scope_binding",
+    "project_binding",
+    "network",
+    "impacts",
+    "readback",
+  ];
+  const lifecycle = new Map();
+  for (const [method, record] of Object.entries(actionLifecycle)) {
+    if (!methodPattern.test(method) || !isPlainObject(record)) {
+      throw new Error(`invalid action_lifecycle record for ${method}`);
+    }
+    if (
+      Object.keys(record).length !== lifecycleFieldNames.length
+      || lifecycleFieldNames.some((field) => !Object.hasOwn(record, field))
+    ) {
+      throw new Error(`action_lifecycle record for ${method} must have exactly ${lifecycleFieldNames.join(", ")}`);
+    }
+    if (!["signed_preview", "explicit_refresh"].includes(record.type)) {
+      throw new Error(`invalid lifecycle type for ${method}`);
+    }
+    if (
+      record.preview_method !== null
+      && (typeof record.preview_method !== "string" || !methodPattern.test(record.preview_method))
+    ) {
+      throw new Error(`invalid preview_method for ${method}`);
+    }
+    for (const field of [
+      "kinds",
+      "intents",
+      "target_kinds",
+      "precondition_kinds",
+      "impacts",
+      "readback",
+    ]) {
+      if (
+        !Array.isArray(record[field])
+        || record[field].some((value) => typeof value !== "string" || value.length === 0)
+        || new Set(record[field]).size !== record[field].length
+      ) {
+        throw new Error(`invalid ${field} for ${method}`);
+      }
+    }
+    if (!["none", "required"].includes(record.network)) {
+      throw new Error(`invalid action network posture for ${method}`);
+    }
+    if (
+      ![
+        "absent",
+        "required",
+        "request_target_agent",
+        "request_single_agent_or_absent",
+        "tool_global",
+        "claude_code",
+      ]
+        .includes(record.target_agent_binding)
+    ) {
+      throw new Error(`invalid target_agent_binding for ${method}`);
+    }
+    if (
+      ![
+        "absent",
+        "required",
+        "request_target_scope",
+        "request_scope",
+        "project_context_optional",
+        "tool_global",
+        "agent_global",
+      ].includes(record.target_scope_binding)
+    ) {
+      throw new Error(`invalid target_scope_binding for ${method}`);
+    }
+    if (
+      ![
+        "absent",
+        "optional",
+        "required",
+        "matches_target",
+        "scope_dependent",
+        "project_context_optional",
+      ]
+        .includes(record.project_binding)
+    ) {
+      throw new Error(`invalid project_binding for ${method}`);
+    }
+    lifecycle.set(method, record);
+  }
+  return {
+    swiftClientMethods: [...swiftClientMethods].sort(),
+    blockedCompatibilityMethods: [...blockedCompatibilityMethods].sort(),
+    lifecycle,
+  };
+}
+
+export function collectSwiftRPCMethods(swiftRoot) {
+  const methods = [];
+  const dynamicCalls = [];
+  const fallbackFiles = [];
+  for (const path of readFilesRecursively(swiftRoot, ".swift")) {
+    const source = readRequired(path);
+    for (const match of source.matchAll(/\bmethod\s*:\s*"([A-Za-z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*)"/g)) {
+      methods.push(match[1]);
+    }
+    if (
+      !path.endsWith("ServiceClientTransport.swift")
+      && /\bcall\s*\(\s*method\s*:\s*(?!")[A-Za-z_]/s.test(source)
+    ) {
+      dynamicCalls.push(path);
+    }
+    if (source.includes("unknown_method")) {
+      fallbackFiles.push(path);
+    }
+  }
+  return {
+    methods: uniqueSorted(methods),
+    dynamicCalls: uniqueSorted(dynamicCalls),
+    fallbackFiles: uniqueSorted(fallbackFiles),
+  };
+}
+
+export function validateActionInventory({
+  effects,
+  inventory,
+  supportedMethods,
+  swiftRPC,
+}) {
+  const errors = [];
+  const supported = new Set(supportedMethods);
+  const consequential = [...effects]
+    .filter(([, effect]) => effect.writes.length > 0 || effect.process !== "never" || effect.network !== "never")
+    .map(([method]) => method)
+    .sort();
+  const lifecycleMethods = [...inventory.lifecycle.keys()].sort();
+  const missingLifecycle = difference(consequential, lifecycleMethods);
+  const extraLifecycle = difference(lifecycleMethods, consequential);
+  if (missingLifecycle.length) {
+    errors.push(`effectful methods missing action lifecycle declarations: ${missingLifecycle.join(", ")}`);
+  }
+  if (extraLifecycle.length) {
+    errors.push(`action lifecycle declarations without declared effects: ${extraLifecycle.join(", ")}`);
+  }
+
+  const blocked = new Set(inventory.blockedCompatibilityMethods);
+  for (const method of inventory.blockedCompatibilityMethods) {
+    const effect = effects.get(method);
+    if (!supported.has(method)) {
+      errors.push(`blocked compatibility method is unsupported: ${method}`);
+    } else if (
+      !effect
+      || effect.writes.length > 0
+      || effect.process !== "never"
+      || effect.network !== "never"
+      || effect.confirmation !== "none"
+    ) {
+      errors.push(`blocked compatibility method is not zero-effect: ${method}`);
+    }
+  }
+
+  for (const [method, lifecycle] of inventory.lifecycle) {
+    const effect = effects.get(method);
+    if (!effect || !supported.has(method)) continue;
+    if (lifecycle.type === "explicit_refresh") {
+      if (
+        !["catalog.scanAll", "catalog.scanClaude"].includes(method)
+        || lifecycle.preview_method !== null
+        || lifecycle.kinds.length > 0
+        || lifecycle.intents.length > 0
+        || lifecycle.target_kinds.length > 0
+        || lifecycle.precondition_kinds.length > 0
+        || lifecycle.target_agent_binding !== "absent"
+        || lifecycle.target_scope_binding !== "absent"
+        || lifecycle.project_binding !== "absent"
+        || effect.confirmation !== "none"
+      ) {
+        errors.push(`${method} has an invalid explicit-refresh lifecycle`);
+      }
+    } else {
+      if (
+        !lifecycle.preview_method
+        || !supported.has(lifecycle.preview_method)
+        || effect.confirmation !== "required"
+        || lifecycle.kinds.length === 0
+        || lifecycle.intents.length === 0
+        || lifecycle.target_kinds.length === 0
+        || lifecycle.precondition_kinds.length === 0
+        || lifecycle.impacts.length === 0
+        || lifecycle.readback.length === 0
+      ) {
+        errors.push(`${method} has an incomplete signed-preview lifecycle`);
+      } else {
+        const previewEffect = effects.get(lifecycle.preview_method);
+        if (
+          !previewEffect
+          || (
+            lifecycle.preview_method !== method
+            && (
+              previewEffect.writes.length > 0
+              || previewEffect.process !== "never"
+              || previewEffect.network !== "never"
+              || previewEffect.confirmation !== "none"
+            )
+          )
+        ) {
+          errors.push(`${method} preview method is not locally read-only: ${lifecycle.preview_method}`);
+        }
+      }
+    }
+    const expectedNetwork = effect.network === "never" ? "none" : "required";
+    if (lifecycle.network !== expectedNetwork) {
+      errors.push(`${method} lifecycle network posture does not match method effects`);
+    }
+  }
+
+  const declaredSwift = inventory.swiftClientMethods;
+  const missingSwift = difference(declaredSwift, swiftRPC.methods);
+  const undeclaredSwift = difference(swiftRPC.methods, declaredSwift);
+  const unsupportedSwift = difference(swiftRPC.methods, supportedMethods);
+  if (missingSwift.length) {
+    errors.push(`declared Swift client methods missing from production sources: ${missingSwift.join(", ")}`);
+  }
+  if (undeclaredSwift.length) {
+    errors.push(`production Swift RPC methods missing from inventory: ${undeclaredSwift.join(", ")}`);
+  }
+  if (unsupportedSwift.length) {
+    errors.push(`production Swift RPC methods missing from SUPPORTED_METHODS: ${unsupportedSwift.join(", ")}`);
+  }
+  const blockedSwift = swiftRPC.methods.filter((method) => blocked.has(method));
+  if (blockedSwift.length) {
+    errors.push(`blocked compatibility methods called by production Swift: ${blockedSwift.join(", ")}`);
+  }
+  for (const [method, lifecycle] of inventory.lifecycle) {
+    if (!declaredSwift.includes(method)) {
+      errors.push(`effectful lifecycle method is not bound by the Swift client inventory: ${method}`);
+    }
+    if (lifecycle.preview_method && !declaredSwift.includes(lifecycle.preview_method)) {
+      errors.push(`lifecycle preview method is not bound by the Swift client inventory: ${lifecycle.preview_method}`);
+    }
+  }
+  if (swiftRPC.dynamicCalls.length) {
+    errors.push(`production Swift contains dynamic RPC method dispatch: ${swiftRPC.dynamicCalls.join(", ")}`);
+  }
+  if (swiftRPC.fallbackFiles.length) {
+    errors.push(`production Swift contains unknown_method fallbacks: ${swiftRPC.fallbackFiles.join(", ")}`);
+  }
+  return errors;
+}
+
+function normalizeScopeBinding(scope) {
+  if (scope === "project") return "agent-project";
+  if (scope === "global") return "agent-global";
+  return scope;
+}
+
+function validateFixtureBinding(action, requestParams, lifecycle, method) {
+  const errors = [];
+  const agent = action?.target?.agent ?? null;
+  const scope = action?.target?.scope ?? null;
+  const projectID = action?.project_id ?? null;
+  const requireEqual = (actual, expected, label) => {
+    if (actual !== expected) {
+      errors.push(`${method} preview fixture ${label} binding differs from its request`);
+    }
+  };
+
+  switch (lifecycle.target_agent_binding) {
+  case "absent":
+    requireEqual(agent, null, "target agent");
+    break;
+  case "required":
+    if (typeof agent !== "string" || agent.length === 0) {
+      errors.push(`${method} preview fixture requires a target agent`);
+    }
+    break;
+  case "optional":
+    if (projectID !== null && (typeof projectID !== "string" || projectID.length === 0)) {
+      errors.push(`${method} preview fixture has an invalid optional project binding`);
+    }
+    break;
+  case "request_target_agent":
+    requireEqual(agent, requestParams?.target_agent ?? null, "target agent");
+    break;
+  case "request_single_agent_or_absent": {
+    const agents = Array.isArray(requestParams?.agents) ? requestParams.agents : [];
+    requireEqual(agent, agents.length === 1 ? agents[0] : null, "target agent");
+    break;
+  }
+  case "tool_global":
+    requireEqual(agent, "tool-global", "target agent");
+    break;
+  case "claude_code":
+    requireEqual(agent, "claude-code", "target agent");
+    break;
+  default:
+    errors.push(`${method} has an unsupported target agent binding`);
+  }
+
+  switch (lifecycle.target_scope_binding) {
+  case "absent":
+    requireEqual(scope, null, "target scope");
+    break;
+  case "required":
+    if (typeof scope !== "string" || scope.length === 0) {
+      errors.push(`${method} preview fixture requires a target scope`);
+    }
+    break;
+  case "request_target_scope":
+    requireEqual(scope, normalizeScopeBinding(requestParams?.target_scope ?? null), "target scope");
+    break;
+  case "request_scope":
+    requireEqual(scope, normalizeScopeBinding(requestParams?.scope ?? null), "target scope");
+    break;
+  case "project_context_optional":
+    if (
+      !(
+        (scope === null && projectID === null)
+        || (scope === "agent-project" && typeof projectID === "string" && projectID.length > 0)
+      )
+    ) {
+      errors.push(`${method} preview fixture has an invalid optional project-context scope`);
+    }
+    break;
+  case "tool_global":
+    requireEqual(scope, "tool-global", "target scope");
+    break;
+  case "agent_global":
+    requireEqual(scope, "agent-global", "target scope");
+    break;
+  default:
+    errors.push(`${method} has an unsupported target scope binding`);
+  }
+
+  switch (lifecycle.project_binding) {
+  case "absent":
+    requireEqual(projectID, null, "project");
+    break;
+  case "required":
+    if (typeof projectID !== "string" || projectID.length === 0) {
+      errors.push(`${method} preview fixture requires a project binding`);
+    }
+    break;
+  case "matches_target":
+    requireEqual(projectID, action?.target?.id ?? null, "project");
+    break;
+  case "scope_dependent":
+    if (scope === "agent-project") {
+      if (typeof projectID !== "string" || projectID.length === 0) {
+        errors.push(`${method} project-scoped preview fixture requires a project binding`);
+      }
+    } else {
+      requireEqual(projectID, null, "project");
+    }
+    break;
+  case "project_context_optional":
+    if (
+      !(
+        (projectID === null && scope === null)
+        || (typeof projectID === "string" && projectID.length > 0 && scope === "agent-project")
+      )
+    ) {
+      errors.push(`${method} preview fixture has an invalid optional project-context binding`);
+    }
+    break;
+  default:
+    errors.push(`${method} has an unsupported project binding`);
+  }
+  return errors;
+}
+
+function fixturePath(fixturesDir, caseName, suffix) {
+  return join(fixturesDir, `${caseName}.${suffix}.json`);
+}
+
+function actionFromResponse(response) {
+  return response?.result?.action ?? response?.result?.preview?.action;
+}
+
+function preconditionsFromResponse(response) {
+  return response?.result?.preconditions ?? response?.result?.preview?.preconditions;
+}
+
+function confirmationFromParams(params) {
+  const wrapped = params?.action_confirmation ?? params?.confirmation;
+  if (isPlainObject(wrapped)) {
+    return {
+      confirmed: wrapped.confirmed,
+      previewToken: wrapped.preview_token,
+      reference: wrapped.reference,
+    };
+  }
+  return {
+    confirmed: params?.confirmed,
+    previewToken: params?.preview_token,
+    reference: params?.action_reference,
+  };
+}
+
+function sameActionReference(reference, action) {
+  return isPlainObject(reference)
+    && reference.action_id === action.id
+    && reference.source_revision === action.source_revision
+    && (reference.project_id ?? null) === (action.project_id ?? null)
+    && JSON.stringify(reference.target) === JSON.stringify(action.target);
+}
+
+function objectContainsForbiddenKeys(value, forbiddenKeys) {
+  const found = [];
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (Array.isArray(current)) {
+      pending.push(...current);
+    } else if (isPlainObject(current)) {
+      for (const [key, child] of Object.entries(current)) {
+        if (forbiddenKeys.has(key)) found.push(key);
+        pending.push(child);
+      }
+    }
+  }
+  return uniqueSorted(found);
+}
+
+function validateLifecycleFixtures(fixturesDir, inventory, swiftRoot) {
+  const errors = [];
+  for (const [applyMethod, lifecycle] of inventory.lifecycle) {
+    if (lifecycle.type === "explicit_refresh") {
+      const request = JSON.parse(readRequired(join(fixturesDir, `${applyMethod}.request.json`)));
+      if (request?.params?.explicit_refresh !== true) {
+        errors.push(`${applyMethod} fixture must carry explicit_refresh=true`);
+      }
+      continue;
+    }
+    const previewCase = applyMethod === "skillManager.deleteLocal"
+      ? "skillManager.deleteLocal.eligible"
+      : lifecycle.preview_method;
+    const previewRequest = JSON.parse(
+      readRequired(fixturePath(fixturesDir, previewCase, "request")),
+    );
+    const response = JSON.parse(
+      readRequired(fixturePath(fixturesDir, previewCase, "response")),
+    );
+    const action = actionFromResponse(response);
+    if (!isPlainObject(action)) {
+      errors.push(`${applyMethod} preview fixture is missing an action descriptor`);
+      continue;
+    }
+    const preconditions = preconditionsFromResponse(response);
+    const actualPreconditionKinds = uniqueSorted(
+      Array.isArray(preconditions) ? preconditions.map((value) => value?.kind) : [],
+    );
+    if (
+      action.preview_method !== lifecycle.preview_method
+      || action.apply_method !== applyMethod
+      || !lifecycle.kinds.includes(action.kind)
+      || !lifecycle.intents.includes(action.intent)
+      || !lifecycle.target_kinds.includes(action?.target?.kind)
+      || action.network !== lifecycle.network
+      || action.confirmation_required !== true
+      || JSON.stringify(actualPreconditionKinds) !== JSON.stringify(
+        uniqueSorted(lifecycle.precondition_kinds),
+      )
+      || !Array.isArray(preconditions)
+      || preconditions.some((precondition) => (
+        !isPlainObject(precondition)
+        || typeof precondition.target_id !== "string"
+        || precondition.target_id.length === 0
+        || typeof precondition.expected_revision !== "string"
+        || precondition.expected_revision.length === 0
+      ))
+      || JSON.stringify(action.impacts) !== JSON.stringify(lifecycle.impacts)
+      || JSON.stringify(action.readback) !== JSON.stringify(lifecycle.readback)
+      || !Array.isArray(action.evidence_refs)
+      || action.evidence_refs.length === 0
+      || typeof action.source_revision !== "string"
+      || action.source_revision.length === 0
+    ) {
+      errors.push(`${applyMethod} preview fixture differs from its action lifecycle declaration`);
+    }
+    errors.push(...validateFixtureBinding(
+      action,
+      previewRequest?.params,
+      lifecycle,
+      applyMethod,
+    ));
+    if (
+      lifecycle.target_agent_binding === "request_single_agent_or_absent"
+      && applyMethod === "skillManager.applyInstall"
+    ) {
+      const singleCase = "skillManager.previewInstall.singleAgent";
+      const singleRequest = JSON.parse(
+        readRequired(fixturePath(fixturesDir, singleCase, "request")),
+      );
+      const singleResponse = JSON.parse(
+        readRequired(fixturePath(fixturesDir, singleCase, "response")),
+      );
+      const singleAction = actionFromResponse(singleResponse);
+      if (!isPlainObject(singleAction)) {
+        errors.push(`${applyMethod} single-agent preview fixture is missing an action descriptor`);
+      } else {
+        errors.push(...validateFixtureBinding(
+          singleAction,
+          singleRequest?.params,
+          lifecycle,
+          `${applyMethod} single-agent`,
+        ));
+      }
+    }
+
+    const applyCase = applyMethod === lifecycle.preview_method
+      ? `${applyMethod}.apply`
+      : applyMethod;
+    const applyRequest = JSON.parse(
+      readRequired(fixturePath(fixturesDir, applyCase, "request")),
+    );
+    const applyResponse = JSON.parse(
+      readRequired(fixturePath(fixturesDir, applyCase, "response")),
+    );
+    const confirmation = confirmationFromParams(applyRequest?.params);
+    if (
+      confirmation.confirmed !== true
+      || typeof confirmation.previewToken !== "string"
+      || confirmation.previewToken.length === 0
+      || !sameActionReference(confirmation.reference, action)
+    ) {
+      errors.push(`${applyMethod} apply fixture lacks its exact confirmed preview token and action reference`);
+    }
+    const leakedAuthorizationKeys = objectContainsForbiddenKeys(
+      applyResponse?.result,
+      new Set(["preview_token", "action_confirmation", "confirmation"]),
+    );
+    if (leakedAuthorizationKeys.length > 0) {
+      errors.push(
+        `${applyMethod} apply response fixture leaks consumed authorization fields: ${leakedAuthorizationKeys.join(", ")}`,
+      );
+    }
+    const returnedAction = actionFromResponse(applyResponse);
+    if (
+      returnedAction != null
+      && JSON.stringify(returnedAction) !== JSON.stringify(action)
+    ) {
+      errors.push(`${applyMethod} apply response fixture returns a different action descriptor`);
+    }
+    const readback = applyResponse?.result?.readback;
+    const observationDomains = uniqueSorted(
+      Array.isArray(readback?.observations)
+        ? readback.observations.map((observation) => observation?.domain)
+        : [],
+    );
+    if (
+      !isPlainObject(readback)
+      || readback.action_id !== action.id
+      || (readback.project_id ?? null) !== (action.project_id ?? null)
+      || JSON.stringify(readback.domains) !== JSON.stringify(lifecycle.readback)
+      || readback.verified !== true
+      || !Array.isArray(readback.target_ids)
+      || readback.target_ids.length === 0
+      || difference(lifecycle.readback, observationDomains).length > 0
+    ) {
+      errors.push(`${applyMethod} apply response fixture lacks its exact verified read-back`);
+    }
+  }
+
+  const forbiddenAIKeys = new Set([
+    "action_confirmation",
+    "action_reference",
+    "preview_token",
+  ]);
+  for (const entry of readdirSync(fixturesDir, { withFileTypes: true })) {
+    if (
+      entry.isFile()
+      && entry.name.startsWith("llm.prepareAction.")
+      && entry.name.endsWith(".response.json")
+    ) {
+      const response = JSON.parse(readRequired(join(fixturesDir, entry.name)));
+      for (const key of objectContainsForbiddenKeys(response?.result, forbiddenAIKeys)) {
+        errors.push(`llm.prepareAction fixture exposes forbidden authorization field: ${key}`);
+      }
+    }
+  }
+  const swiftPrepareModel = readRequired(
+    join(swiftRoot, "Models", "SkillRecord.swift"),
+  );
+  const prepareStruct = swiftPrepareModel.match(
+    /struct\s+LLMPrepareResult\b([\s\S]*?)(?=\n(?:struct|enum|final class|class|actor)\s)/,
+  )?.[1] ?? "";
+  for (const token of ["actionConfirmation", "action_reference", "previewToken"]) {
+    if (prepareStruct.includes(token)) {
+      errors.push(`Swift LLMPrepareResult exposes forbidden authorization field: ${token}`);
+    }
+  }
+
+  const blockedLocalDeleteRequest = JSON.parse(
+    readRequired(fixturePath(fixturesDir, "skillManager.deleteLocal", "request")),
+  );
+  const blockedLocalDeleteResponse = JSON.parse(
+    readRequired(fixturePath(fixturesDir, "skillManager.deleteLocal", "response")),
+  );
+  if (
+    blockedLocalDeleteRequest?.params?.confirmed !== false
+    || blockedLocalDeleteRequest?.params?.preview_token != null
+    || blockedLocalDeleteRequest?.params?.action_reference != null
+    || blockedLocalDeleteResponse?.result?.physical_delete_allowed !== false
+    || blockedLocalDeleteResponse?.result?.action != null
+    || blockedLocalDeleteResponse?.result?.preview_token != null
+  ) {
+    errors.push("skillManager.deleteLocal blocked fixture must remain a zero-authorization preview");
+  }
+  const eligibleLocalDeleteResponse = JSON.parse(
+    readRequired(fixturePath(fixturesDir, "skillManager.deleteLocal.eligible", "response")),
+  );
+  if (
+    eligibleLocalDeleteResponse?.result?.physical_delete_allowed !== true
+    || !isPlainObject(eligibleLocalDeleteResponse?.result?.action)
+    || typeof eligibleLocalDeleteResponse?.result?.preview_token !== "string"
+  ) {
+    errors.push("skillManager.deleteLocal eligible fixture must expose a signed action preview");
+  }
+  return uniqueSorted(errors);
+}
+
+function duplicateValues(values) {
   const seen = new Set();
   const duplicates = [];
   for (const value of values) {
-    if (seen.has(value)) {
-      duplicates.push(value);
-    }
+    if (seen.has(value)) duplicates.push(value);
     seen.add(value);
   }
+  return uniqueSorted(duplicates);
+}
+
+function assertNoDuplicates(values, label) {
+  const duplicates = duplicateValues(values);
   if (duplicates.length > 0) {
-    fail(`${label} contains duplicate methods: ${uniqueSorted(duplicates).join(", ")}`);
+    fail(`${label} contains duplicate methods: ${duplicates.join(", ")}`);
   }
 }
 
@@ -436,7 +1117,9 @@ function main() {
     protocolSource,
     "crates/service/src/protocol.rs",
   );
-  const effects = parseMethodEffects(readRequired(effectsPath));
+  const effectsRaw = readRequired(effectsPath);
+  const effects = parseMethodEffects(effectsRaw);
+  const actionInventory = parseActionInventory(effectsRaw);
   const expectedTable = renderMethodEffectsTable(effects);
   let docsSource = readRequired(docsPath);
   if (writeDocTable) {
@@ -463,6 +1146,9 @@ function main() {
   const dispatchMethods = parseDispatchMethods(rustSource);
   const fixtureMethods = parseFixtureMethods(fixturesDir);
   const statusFixtureMethods = parseStatusFixtureMethods(statusFixturePath);
+  const swiftRPC = collectSwiftRPCMethods(
+    join(repoRoot, "apps", "macos", "Sources", "SkillsCopilot"),
+  );
 
   const protocolMethods = union(
     supportedMethods,
@@ -476,6 +1162,21 @@ function main() {
     errors.push(["docs/service-protocol.md Methods table differs from method-effects.json", []]);
   }
   for (const error of validateMethodEffects({ documentedRows, effects, supportedMethods })) {
+    errors.push([error, []]);
+  }
+  for (const error of validateActionInventory({
+    effects,
+    inventory: actionInventory,
+    supportedMethods,
+    swiftRPC,
+  })) {
+    errors.push([error, []]);
+  }
+  for (const error of validateLifecycleFixtures(
+    fixturesDir,
+    actionInventory,
+    join(repoRoot, "apps", "macos", "Sources", "SkillsCopilot"),
+  )) {
     errors.push([error, []]);
   }
 
@@ -547,6 +1248,8 @@ function main() {
       `${dispatchMethods.length} dispatch arms,`,
       `${statusFixtureMethods.length} status fixture methods,`,
       `${effects.size} effect-manifest methods,`,
+      `${actionInventory.lifecycle.size} effectful lifecycle declarations,`,
+      `${swiftRPC.methods.length} production Swift RPC methods,`,
       `${fixtureMethods.requestCases.length} request fixture cases,`,
       `${fixtureMethods.responseCases.length} response fixture cases`,
     ].join(" "),

@@ -1,0 +1,40 @@
+{
+  "id": "fixture-skill-manager-delete-local-apply",
+  "ok": true,
+  "result": {
+    "instance_id": "fixture-local-tool-global-deletable",
+    "skill_name": "local-review-helper",
+    "path": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+    "app_owned": true,
+    "physical_delete_allowed": true,
+    "blocked_by_references": [],
+    "confirmed": true,
+    "deleted": true,
+    "summary": "Deleted the confirmed app-owned local skill.",
+    "readback": {
+      "action_id": "action:manager_local_delete:5151515151515151515151515151515151515151515151515151515151515151",
+      "source_revision": "sha256:5656565656565656565656565656565656565656565656565656565656565656",
+      "domains": [
+        "skill_files",
+        "catalog_skills"
+      ],
+      "target_ids": [
+        "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+        "fixture-local-tool-global-deletable"
+      ],
+      "observations": [
+        {
+          "domain": "skill_files",
+          "target_id": "/tmp/skills-copilot-app/tool-global/skills/local-review-helper/SKILL.md",
+          "revision": "missing"
+        },
+        {
+          "domain": "catalog_skills",
+          "target_id": "fixture-local-tool-global-deletable",
+          "revision": "missing"
+        }
+      ],
+      "verified": true
+    }
+  }
+}

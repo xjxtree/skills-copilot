@@ -837,7 +837,7 @@
 "settings.aiProvider.optional.placeholder" = "optional";
 "settings.aiProvider.apiKey" = "API key";
 "settings.aiProvider.apiKey.placeholder" = "Leave blank to keep existing Keychain item";
-"settings.aiProvider.keychainFirst" = "API keys are sent only to the local service when the profile auto-saves or when Test Connection is confirmed. The service should store secrets in Keychain first; the native UI clears this field after each action and never displays saved keys.";
+"settings.aiProvider.keychainFirst" = "API keys are sent only to the local service after you explicitly confirm Save Provider or Test Connection. The service stores secrets in Keychain first; the native UI clears this field after each action and never displays saved keys.";
 "settings.aiProvider.connection" = "Connection";
 "settings.aiProvider.limits" = "Limits";
 "settings.aiProvider.credentialSafety" = "Credential Safety";
@@ -860,7 +860,6 @@
 "settings.aiProvider.testConfirmation.message" = "This performs one manual provider connection test against the configured endpoint. The UI clears any API key draft after the request.";
 "settings.aiProvider.saving" = "Saving provider...";
 "settings.aiProvider.testing" = "Testing connection...";
-"settings.aiProvider.autosavePending" = "Valid changes will be saved automatically.";
 "settings.aiProvider.saved" = "Provider settings saved. API key draft cleared.";
 "settings.aiProvider.testResult" = "Test result";
 "settings.aiProvider.testSucceeded" = "Provider connection test succeeded.";
@@ -924,7 +923,7 @@
 "settings.existingFile" = "Existing file";
 "settings.willCreateFile" = "Will create file";
 "settings.invalidUtf8" = "Settings content is not valid UTF-8.";
-"settings.jsonValid" = "JSON is valid. Changes will auto-save through snapshot, atomic write, verification, and rescan.";
+"settings.jsonValid" = "JSON is valid. Preview the change, then explicitly confirm Save.";
 "value.supported" = "Supported";
 "value.notSupported" = "Not supported";
 "value.short.supported" = "OK";

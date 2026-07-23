@@ -3053,14 +3053,14 @@ private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {
     }
 }
 
-private final class ProviderAutosaveControlServiceRunner: ServiceProcessRunning {
-    private let state: ProviderAutosaveControlServiceState
+private final class ExplicitProviderMutationControlServiceRunner: ServiceProcessRunning {
+    private let state: ExplicitProviderMutationControlServiceState
 
     init(
         suspendMutations: Bool = true,
         providerMutationUnavailable: Bool = false
     ) {
-        state = ProviderAutosaveControlServiceState(
+        state = ExplicitProviderMutationControlServiceState(
             suspendMutations: suspendMutations,
             providerMutationUnavailable: providerMutationUnavailable
         )
@@ -3069,7 +3069,7 @@ private final class ProviderAutosaveControlServiceRunner: ServiceProcessRunning 
     func serviceClient() -> ServiceClient {
         ServiceClient(
             processRunner: self,
-            serviceURL: URL(fileURLWithPath: "/tmp/autosave-control-service")
+            serviceURL: URL(fileURLWithPath: "/tmp/explicit-provider-mutation-control-service")
         )
     }
 
@@ -3096,7 +3096,7 @@ private final class ProviderAutosaveControlServiceRunner: ServiceProcessRunning 
     }
 }
 
-private actor ProviderAutosaveControlServiceState {
+private actor ExplicitProviderMutationControlServiceState {
     private let suspendMutations: Bool
     private let providerMutationUnavailable: Bool
     private var providerEndpoint = "https://provider-x.example.com/v1"

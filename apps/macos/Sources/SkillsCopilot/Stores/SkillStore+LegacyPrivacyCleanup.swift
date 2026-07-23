@@ -21,11 +21,6 @@ extension SkillStore {
             if legacyPrivateContentCleanupPreview?.inspection != inspection {
                 legacyPrivateContentCleanupPreview = nil
             }
-        } catch ServiceClient.ClientError.service(let error)
-            where error.code == "unknown_method" {
-            legacyPrivateContentInspection = nil
-            legacyPrivateContentCleanupPreview = nil
-            legacyPrivateContentCleanupError = UIStrings.legacyPrivateContentUnavailable
         } catch {
             legacyPrivateContentCleanupError = UIStrings.legacyPrivateContentInspectionFailed
         }

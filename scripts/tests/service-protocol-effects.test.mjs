@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
+  collectSwiftRPCMethods,
+  parseActionInventory,
   parseDocumentedMethodEffects,
   parseMethodEffects,
   replaceMethodEffectsTable,
   renderMethodEffectsTable,
+  validateActionInventory,
   validateMethodEffects,
   writeMethodEffectsDocTable,
 } from "../verify-service-protocol-drift.mjs";
@@ -17,7 +23,35 @@ const readOnly = {
 };
 
 function manifestRaw(methods) {
-  return JSON.stringify({ schema_version: 1, methods });
+  return JSON.stringify({ schema_version: 2, methods });
+}
+
+const signedLifecycle = {
+  type: "signed_preview",
+  preview_method: "demo.previewWrite",
+  kinds: ["save_config"],
+  intents: ["save_config"],
+  target_kinds: ["config"],
+  precondition_kinds: ["agent_config"],
+  target_agent_binding: "claude_code",
+  target_scope_binding: "agent_global",
+  project_binding: "absent",
+  network: "none",
+  impacts: ["agent_config"],
+  readback: ["agent_config"],
+};
+
+function actionInventoryRaw(overrides = {}) {
+  return JSON.stringify({
+    schema_version: 2,
+    swift_client_methods: ["demo.previewWrite", "demo.write"],
+    blocked_compatibility_methods: [],
+    action_lifecycle: {
+      "demo.write": signedLifecycle,
+    },
+    methods: {},
+    ...overrides,
+  });
 }
 
 test("rejects a supported method missing from the effects manifest", () => {
@@ -126,6 +160,94 @@ test("rejects invalid process, network, and confirmation enums", () => {
       })),
       new RegExp(`invalid ${field} value for app\\.version`),
     );
+  }
+});
+
+test("requires the strict schema-version-2 action inventory shape", () => {
+  assert.throws(
+    () => parseActionInventory(actionInventoryRaw({ schema_version: 1 })),
+    /schema_version 2/,
+  );
+  assert.throws(
+    () => parseActionInventory(actionInventoryRaw({ unexpected: true })),
+    /must have exactly/,
+  );
+  const missingPreconditions = { ...signedLifecycle };
+  delete missingPreconditions.precondition_kinds;
+  assert.throws(
+    () => parseActionInventory(actionInventoryRaw({
+      action_lifecycle: { "demo.write": missingPreconditions },
+    })),
+    /must have exactly/,
+  );
+});
+
+test("requires every effectful method to have a complete lifecycle", () => {
+  const inventory = parseActionInventory(actionInventoryRaw({
+    swift_client_methods: [],
+    action_lifecycle: {},
+  }));
+  const errors = validateActionInventory({
+    effects: new Map([
+      ["demo.write", {
+        writes: ["app_data"],
+        process: "never",
+        network: "never",
+        confirmation: "required",
+      }],
+    ]),
+    inventory,
+    supportedMethods: ["demo.write"],
+    swiftRPC: { methods: [], dynamicCalls: [], fallbackFiles: [] },
+  });
+  assert.match(errors.join("\n"), /effectful methods missing action lifecycle/);
+});
+
+test("rejects blocked compatibility methods with effects or Swift calls", () => {
+  const inventory = parseActionInventory(actionInventoryRaw({
+    swift_client_methods: ["demo.blocked"],
+    blocked_compatibility_methods: ["demo.blocked"],
+    action_lifecycle: {},
+  }));
+  const errors = validateActionInventory({
+    effects: new Map([[
+      "demo.blocked",
+      {
+        writes: ["audit"],
+        process: "never",
+        network: "never",
+        confirmation: "none",
+      },
+    ]]),
+    inventory,
+    supportedMethods: ["demo.blocked"],
+    swiftRPC: {
+      methods: ["demo.blocked"],
+      dynamicCalls: [],
+      fallbackFiles: [],
+    },
+  });
+  assert.match(errors.join("\n"), /not zero-effect/);
+  assert.match(errors.join("\n"), /called by production Swift/);
+});
+
+test("detects dynamic Swift RPC dispatch and unknown-method fallback branches", () => {
+  const directory = mkdtempSync(join(tmpdir(), "service-inventory-"));
+  try {
+    writeFileSync(
+      join(directory, "Client.swift"),
+      [
+        "func run(method: String) async throws {",
+        "  _ = try await call(method: method, params: Empty())",
+        "  if error.code == \"unknown_method\" {}",
+        "}",
+      ].join("\n"),
+    );
+    const collected = collectSwiftRPCMethods(directory);
+    assert.equal(collected.dynamicCalls.length, 1);
+    assert.equal(collected.fallbackFiles.length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

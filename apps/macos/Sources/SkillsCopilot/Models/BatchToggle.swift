@@ -126,6 +126,7 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
     let id: String
     let action: BatchToggleAction
     let actionDescriptor: ActionDescriptorWire?
+    let preconditions: [ActionPreconditionWire]
     let previewToken: String?
     let targetEnabled: Bool
     let selectedCount: Int
@@ -149,11 +150,13 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
         snapshotPlan: BatchToggleSnapshotPlan,
         applySupported: Bool,
         actionDescriptor: ActionDescriptorWire? = nil,
+        preconditions: [ActionPreconditionWire] = [],
         previewToken: String? = nil
     ) {
         self.id = id
         self.action = action
         self.actionDescriptor = actionDescriptor
+        self.preconditions = preconditions
         self.previewToken = previewToken
         self.targetEnabled = action.targetEnabled
         self.selectedCount = selectedCount
@@ -172,6 +175,12 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
             ActionDescriptorWire.self,
             forKey: actionKey
         )
+        preconditions = (
+            try? container.decodeIfPresent(
+                [ActionPreconditionWire].self,
+                forKey: FlexibleCodingKey(stringValue: "preconditions")!
+            )
+        ) ?? []
         let decodedTarget = container.decodeBool(for: ["target_enabled", "targetEnabled", "on", "enabled"])
         let decodedAction = container.decodeString(for: ["action", "target", "operation"])
             .flatMap { BatchToggleAction(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
@@ -211,23 +220,6 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
         }
     }
 
-    static func local(
-        action: BatchToggleAction,
-        selectedSkills: [SkillRecord],
-        affectedSkills: [BatchToggleSkillItem],
-        skippedItems: [BatchToggleSkillItem],
-        reason: String
-    ) -> BatchTogglePreview {
-        BatchTogglePreview(
-            id: "local-\(action.rawValue)-preview",
-            action: action,
-            selectedCount: selectedSkills.count,
-            affectedSkills: affectedSkills,
-            skippedItems: skippedItems,
-            snapshotPlan: BatchToggleSnapshotPlan(summary: reason, rollbackSupported: false, targets: []),
-            applySupported: false
-        )
-    }
 }
 
 struct BatchToggleApplyResult: Decodable, Hashable {

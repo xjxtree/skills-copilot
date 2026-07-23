@@ -477,7 +477,7 @@ enum UIStrings {
     static var aiProviderOptionalPlaceholder: String { text("settings.aiProvider.optional.placeholder", "optional") }
     static var aiProviderAPIKey: String { text("settings.aiProvider.apiKey", "API key") }
     static var aiProviderAPIKeyPlaceholder: String { text("settings.aiProvider.apiKey.placeholder", "Leave blank to keep existing Keychain item") }
-    static var aiProviderKeychainFirst: String { text("settings.aiProvider.keychainFirst", "API keys are sent only to the local service when the profile auto-saves or when Test Connection is confirmed. The service should store secrets in Keychain first; the native UI clears this field after each action and never displays saved keys.") }
+    static var aiProviderKeychainFirst: String { text("settings.aiProvider.keychainFirst", "API keys are sent only to the local service after you explicitly confirm Save Provider or Test Connection. The service stores secrets in Keychain first; the native UI clears this field after each action and never displays saved keys.") }
     static var aiProviderBudget: String { text("settings.aiProvider.budget", "Budget") }
     static var aiProviderMonthlyBudget: String { text("settings.aiProvider.monthlyBudget", "Monthly budget") }
     static var aiProviderMonthlyBudgetPlaceholder: String { text("settings.aiProvider.monthlyBudget.placeholder", "5") }
@@ -497,7 +497,6 @@ enum UIStrings {
     static var aiProviderTestConfirmationMessage: String { text("settings.aiProvider.testConfirmation.message", "This performs one manual provider connection test against the configured endpoint. The UI clears any API key draft after the request.") }
     static var aiProviderSaving: String { text("settings.aiProvider.saving", "Saving provider...") }
     static var aiProviderTesting: String { text("settings.aiProvider.testing", "Testing connection...") }
-    static var aiProviderAutosavePending: String { text("settings.aiProvider.autosavePending", "Valid changes will be saved automatically.") }
     static var aiProviderSaved: String { text("settings.aiProvider.saved", "Provider settings saved. API key draft cleared.") }
     static var aiProviderTestResult: String { text("settings.aiProvider.testResult", "Test result") }
     static var aiProviderTestSucceeded: String { text("settings.aiProvider.testSucceeded", "Provider connection test succeeded.") }
@@ -567,7 +566,7 @@ enum UIStrings {
     static var willCreateFile: String { text("settings.willCreateFile", "Will create file") }
     static var settingsInvalidUTF8: String { text("settings.invalidUtf8", "Settings content is not valid UTF-8.") }
     static var formatJSON: String { text("action.formatJSON", "Format JSON") }
-    static var jsonValidSettingsWrite: String { text("settings.jsonValid", "JSON is valid. Changes will auto-save through snapshot, atomic write, verification, and rescan.") }
+    static var jsonValidSettingsWrite: String { text("settings.jsonValid", "JSON is valid. Preview the change, then explicitly confirm Save.") }
     static var connectedProtocolNote: String { text("detail.protocolNote", "This native macOS shell is connected through the Rust service protocol. Scan, toggle, and agent config rollback actions use verified write paths with snapshots.") }
     static var loadingSkillDetail: String { text("detail.loading", "Loading skill detail...") }
     static var readOnlyPreview: String { text("detail.readOnlyPreview", "Read-only preview") }

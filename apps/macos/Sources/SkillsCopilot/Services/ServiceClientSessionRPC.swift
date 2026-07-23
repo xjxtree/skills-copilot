@@ -64,11 +64,7 @@ extension ServiceClient {
             maxFiles: usesKeysetPaging ? nil : maxFiles,
             maxExcerptChars: 1000
         )
-        do {
-            return try await call(method: "session.previewLocalSessions", params: params)
-        } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return .unavailable()
-        }
+        return try await call(method: "session.previewLocalSessions", params: params)
     }
 
 }

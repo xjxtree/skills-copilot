@@ -16,7 +16,7 @@
       "source_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "confirmation_required": true,
       "network": "none",
-      "readback": ["agent_config", "skill_aggregates"],
+      "readback": ["agent_config", "skill_aggregates", "config_snapshots"],
       "evidence_refs": ["skill:claude-global-fixture", "skill:pi-global-fixture"]
     },
     "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
