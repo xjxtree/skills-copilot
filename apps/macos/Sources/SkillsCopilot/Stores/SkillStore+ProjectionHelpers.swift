@@ -106,7 +106,8 @@ extension SkillStore {
                     search: normalizedLocalSessionSearchText,
                     sort: localSessionSortOrder,
                     direction: localSessionSortDirection,
-                    projectRoot: activeProjectContext?.rootPath
+                    projectRoot: activeProjectContext?.rootPath,
+                    currentCWD: activeProjectContext?.currentCWD
                 )
             )
         } else {

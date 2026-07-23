@@ -168,6 +168,36 @@ struct LocalSessionMessagePageResult: Decodable, Equatable {
         case snapshotBytes = "snapshot_bytes"
     }
 
+    init(
+        generatedBy: String,
+        sessionID: String,
+        contentItems: [LocalSessionContentItem],
+        returnedCount: Int,
+        totalCount: Int?,
+        hasMore: Bool,
+        nextCursor: String?,
+        sourceRevision: String,
+        sourceCompleteness: ListSourceCompleteness,
+        incompleteReason: ListIncompleteReason?,
+        scannedBytes: Int64,
+        scannedThroughBytes: Int64,
+        snapshotBytes: Int64
+    ) {
+        self.generatedBy = generatedBy
+        self.sessionID = sessionID
+        self.contentItems = contentItems
+        self.returnedCount = returnedCount
+        self.totalCount = totalCount
+        self.hasMore = hasMore
+        self.nextCursor = nextCursor
+        self.sourceRevision = sourceRevision
+        self.sourceCompleteness = sourceCompleteness
+        self.incompleteReason = incompleteReason
+        self.scannedBytes = scannedBytes
+        self.scannedThroughBytes = scannedThroughBytes
+        self.snapshotBytes = snapshotBytes
+    }
+
     var listPage: ListPage<LocalSessionContentItem> {
         ListPage(
             items: contentItems,

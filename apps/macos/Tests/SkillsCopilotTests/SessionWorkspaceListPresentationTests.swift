@@ -6,6 +6,7 @@ struct SessionWorkspaceListPresentationTests {
         try projectScopeIsTheDefault()
         try rowsExposeCompactSafeContext()
         try allScopeGroupsTheSelectedProjectFirst()
+        try selectedProjectMatchingIsExact()
         try loadingEmptyFailureAndStaleStatesRemainDistinct()
         try completenessCountsRemainSourceBound()
     }
@@ -116,6 +117,60 @@ struct SessionWorkspaceListPresentationTests {
             unmatched.projectGroups.first?.kind,
             .unmatched,
             "A missing project identity must use the typed unmatched group."
+        )
+    }
+
+    private static func selectedProjectMatchingIsExact() throws {
+        let project = ProjectContext(
+            id: "project-exact",
+            name: "Exact project",
+            rootPath: "/work/exact",
+            currentCWD: "/work/exact/subdir",
+            lastUsedAt: nil,
+            isActive: true,
+            validationError: nil
+        )
+        let presentation = makePresentation(
+            sessions: [
+                makeSession(
+                    id: "root",
+                    title: "Root",
+                    agent: ProductAgentID.codex.rawValue,
+                    projectRoot: project.rootPath,
+                    endedAt: 300,
+                    excerpt: "Root"
+                ),
+                makeSession(
+                    id: "cwd",
+                    title: "CWD",
+                    agent: ProductAgentID.codex.rawValue,
+                    projectRoot: project.currentCWD,
+                    endedAt: 200,
+                    excerpt: "CWD"
+                ),
+                makeSession(
+                    id: "descendant",
+                    title: "Descendant",
+                    agent: ProductAgentID.codex.rawValue,
+                    projectRoot: "/work/exact/subdir/nested",
+                    endedAt: 100,
+                    excerpt: "Descendant"
+                ),
+            ],
+            loadedSessionCount: 3,
+            project: project,
+            scope: .all
+        )
+
+        try expectEqual(
+            presentation.projectGroups.first?.rows.map(\.id),
+            ["root", "cwd"],
+            "Only exact normalized project-root/current-cwd identities belong to the selected project group."
+        )
+        try expectEqual(
+            presentation.projectGroups.last?.kind,
+            .otherProject,
+            "A descendant path must remain a distinct project identity."
         )
     }
 

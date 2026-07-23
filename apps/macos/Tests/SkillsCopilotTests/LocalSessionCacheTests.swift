@@ -111,6 +111,20 @@ struct LocalSessionCacheTests {
         publish([
             row(id: "bravo", title: "Bravo", scope: "project", endedAt: 30),
             row(id: "alpha", title: "Alpha", scope: "project", endedAt: 20),
+            row(
+                id: "cwd",
+                title: "Alpha cwd",
+                scope: "project",
+                projectRoot: "/project/subdir",
+                endedAt: 25
+            ),
+            row(
+                id: "descendant",
+                title: "Alpha descendant",
+                scope: "project",
+                projectRoot: "/project/subdir/nested",
+                endedAt: 35
+            ),
             row(id: "outside", title: "Alpha outside", scope: "project", projectRoot: "/other", endedAt: 40),
         ], to: cache)
         let rows = cache.projectedRows(for: source, criteria: LocalSessionProjectionCriteria(
@@ -118,9 +132,14 @@ struct LocalSessionCacheTests {
             search: "a",
             sort: .title,
             direction: .ascending,
-            projectRoot: "/project"
+            projectRoot: "/project",
+            currentCWD: "/project/subdir"
         ))
-        try expectEqual(rows.map(\.id), ["alpha", "bravo"], "Projection should filter and sort the summary snapshot without replacing its source.")
+        try expectEqual(
+            rows.map(\.id),
+            ["alpha", "cwd", "bravo"],
+            "Projection should accept only exact project-root/current-cwd identities and sort without replacing its source."
+        )
     }
 
     private func refreshingKeepsPreviousSummariesVisible() throws {

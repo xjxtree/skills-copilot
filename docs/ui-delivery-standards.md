@@ -47,6 +47,21 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   inventory row, but it is not authorization and never bypasses the existing
   preview, confirmation, apply, and read-back lifecycle. Ambiguous same-name
   inventory matches remain unselected.
+- Sessions groups accepted rows by project and retains Agent, activity time,
+  native source revision, and inventory completeness. Project/all scope,
+  Agent, lexical search, and sort changes project accepted rows locally and
+  never manufacture a selected session.
+- Session detail is ordered Summary, Timeline, and Evidence. Timeline pages
+  contain only bounded user messages and final Agent replies from one fixed
+  native source revision; Load More, Load All, cancellation, and page failure
+  preserve already accepted messages. Evidence uses logical source identity,
+  typed coverage, revisions, and evidence references without revealing a
+  physical transcript path.
+- Continue first requests `session.previewResume` for the exact selected
+  session, native source revision, and accepted product snapshot revision.
+  Supported ordered argv is copy-only. Unsupported capability renders its
+  typed reason; the app never synthesizes argv, launches a terminal, resumes
+  automatically, or translates a conversation between Agents.
 - Package Add/Update/Remove/import/local-create and agent config
   enable/disable are separate action groups. Skill Manager never presents
   config enablement as package state.

@@ -105,6 +105,16 @@ they resolve to absolute local paths; network configuration is never fetched.
 | Hermes | `HERMES_HOME` (default `~/.hermes`) native skills/config plus explicit local `skills.external_dirs` | `<HERMES_HOME>/state.db` | Hubs, taps, URLs, legacy JSON stores when the canonical DB exists, caches, and inferred project roots |
 | OpenClaw | `OPENCLAW_STATE_DIR`/profile state, `OPENCLAW_CONFIG_PATH`, workspace/personal shared roots, managed skills, runtime-bundled roots, effectively enabled plugin manifest roots, configured extra dirs, agent/bundled allowlists, and eligibility metadata | `<state>/agents/<id>/agent/openclaw-agent.sqlite`; legacy JSON/JSONL is ignored | Arbitrary selected repositories, disabled plugins, ClawHub/Git/network sources, broad extension/cache walks, temporary workspaces, and guessed installation paths |
 
+Native continuation uses one service-owned allowlist and never derives a
+command in Swift. After exact project match, complete native coverage, stable
+session identity, and revision revalidation, the copy-only argv forms are
+`claude --resume <id>`, `codex resume <id>`,
+`opencode --session <id>`, `pi --session <id>`,
+`hermes --resume <id>`, and
+`openclaw tui --session <session-key>`. Missing, conflicting, unsafe, or
+undocumented native identity returns a typed unsupported reason and no argv.
+The app copies a supported command only; it does not spawn the runtime.
+
 All filesystem walkers prune VCS, cache, temporary, build, distribution,
 coverage, quarantine, archive, and language-cache directories before inspecting
 skill files. A configured root that is itself a skill file is accepted only by

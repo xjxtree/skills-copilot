@@ -69,10 +69,9 @@ struct SessionWorkspaceRowPresentation: Identifiable, Equatable {
             )
         }
         if projectRoot == "<project-root>"
-            || projectRoot.hasPrefix("<project-root>/")
-            || normalizedPath(projectRoot) == selectedProject.map({
-                normalizedPath($0.rootPath)
-            }) {
+            || selectedProject.map({
+                selectedProjectPaths($0).contains(normalizedPath(projectRoot))
+            }) == true {
             return selectedProject.map {
                 nonEmpty(
                     $0.name,
@@ -133,9 +132,26 @@ struct SessionWorkspaceRowPresentation: Identifiable, Equatable {
         return String(compact.prefix(maximumLength - 1)) + "…"
     }
 
-    private static func normalizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    fileprivate static func normalizedPath(_ path: String) -> String {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return standardized == "/"
+            ? standardized
+            : standardized.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    fileprivate static func selectedProjectPaths(
+        _ project: ProjectContext
+    ) -> Set<String> {
+        Set(
+            [project.rootPath, project.currentCWD]
+                .compactMap { value in
+                    guard let value,
+                          !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        return nil
+                    }
+                    return normalizedPath(value)
+                }
+        )
     }
 
     private static func nonEmpty(_ value: String, fallback: String) -> String {
@@ -330,10 +346,11 @@ struct SessionWorkspaceListPresentation: Equatable {
         let root = session.projectRoot?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if root == "<project-root>"
-            || root.hasPrefix("<project-root>/")
             || selectedProject.map({
-                URL(fileURLWithPath: root).standardizedFileURL.path
-                    == URL(fileURLWithPath: $0.rootPath).standardizedFileURL.path
+                SessionWorkspaceRowPresentation.selectedProjectPaths($0)
+                    .contains(
+                        SessionWorkspaceRowPresentation.normalizedPath(root)
+                    )
             }) == true {
             return (
                 id: selectedProject.map { "selected:\($0.id)" } ?? "selected",

@@ -199,6 +199,15 @@ revision. Resume preview additionally requires the current product snapshot
 revision. Swift never derives a resume command; it exposes only the ordered
 argv returned by the typed service record.
 
+The Sessions workspace owns explicit session selection and transient message
+pages. Project/all scope, Agent filtering, lexical search, and sorting project
+accepted summary rows locally. Selecting a session does not read every
+transcript: Summary uses the accepted row, Timeline progressively requests
+bounded user/final-reply pages from one fixed native revision, and Evidence
+uses logical source, coverage, revisions, and evidence references. Accepted
+timeline pages are memory-only and survive cancellation or a later page
+failure; an inventory source-revision change invalidates them before reuse.
+
 ### Scanner Bounds And Catalog Completeness
 
 - A scan follows only explicit canonical adapter roots and explicitly declared

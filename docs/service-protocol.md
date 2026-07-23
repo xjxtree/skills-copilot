@@ -1085,13 +1085,15 @@ requires another inspection and preview.
   `source_changed`. `total_count` is `null` until EOF and exact on the terminal
   page. Responses also report `scanned_bytes`, `scanned_through_bytes`, and
   `snapshot_bytes` for local progress without exposing a raw path.
-- The native detail loader first obtains the bounded process sample, then
-  automatically consumes message pages to EOF and publishes every accepted
-  page. Cancellation and page failure retain already accepted messages and
-  expose retry. The detail view uses lazy rows and defaults its selected
-  filters to User and Agent Reply; Thinking, Tool, and Skill remain available
-  but unselected. Exact final-message counts replace the bounded preview counts
-  as pages arrive. Neither pages nor merged detail are persisted.
+- The Sessions workspace reads message pages progressively and publishes every
+  accepted page. Explicit Load More or Load All continues with the accepted
+  cursor and source revision. Cancellation and page failure retain already
+  accepted messages and expose retry. The product Timeline contains only User
+  and final Agent Reply rows; the legacy bounded process sample remains
+  available to lower-level diagnostics during migration but is not mixed into
+  the primary continuity timeline. Exact final-message counts replace bounded
+  summary counts as pages arrive. Neither pages nor merged detail are
+  persisted.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
   ascending.
@@ -1146,10 +1148,12 @@ requires another inspection and preview.
   raw session content.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
-- The callable inventory does not yet expose a resume-command preview. Clients
-  must not infer a command from session metadata. `session.previewResume`
-  becomes supported only when it is added to the Methods table and fixtures
-  under the product implementation sequence.
+- Clients must not infer a command from session metadata.
+  `session.previewResume` revalidates the exact session against the accepted
+  native inventory revision and product snapshot revision. Supported responses
+  contain ordered, adapter-native `resume.argv` with `copy_only=true`;
+  unsupported responses contain no argv and one typed reason. The method is
+  read-only, process-free, network-free, and never launches a terminal.
 
 ## App Search
 

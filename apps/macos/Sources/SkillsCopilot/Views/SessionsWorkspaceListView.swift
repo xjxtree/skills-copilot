@@ -428,8 +428,8 @@ struct SessionsWorkspaceListView: View {
     }
 
     private func cancelLoading() {
-        guard loadAllTask != nil else { return }
         loadAllTask?.cancel()
+        loadAllTask = nil
         onCancelLoading()
     }
 

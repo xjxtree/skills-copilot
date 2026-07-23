@@ -365,7 +365,7 @@ const checks = [
       && !extractStructBody(files.sidebar, "SidebarView").includes("SidebarFooterToolRow")
       && !extractStructBody(files.sidebar, "SidebarView").includes("TaskPreflightPreviewSheet")
       && !extractStructBody(files.sidebar, "SidebarView").includes("SkillPackageManagerSheet")
-      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills:[\s\S]*?SkillsWorkspaceView\(\)[\s\S]*?case \.sessions, \.advanced:[\s\S]*?HSplitView/.test(files.content)
+      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills:[\s\S]*?SkillsWorkspaceView\(\)[\s\S]*?case \.sessions:[\s\S]*?SessionsWorkspaceView\(\)[\s\S]*?case \.advanced:[\s\S]*?HSplitView/.test(files.content)
       && /CommandMenu\(UIStrings\.text\("menu\.navigate",\s*"Navigate"\)\)[\s\S]*?selectAppRoute\(\.overview\)[\s\S]*?selectAppRoute\(\.skills\)[\s\S]*?selectAppRoute\(\.sessions\)/.test(files.app),
   },
   {

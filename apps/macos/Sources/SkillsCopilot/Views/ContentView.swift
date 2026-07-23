@@ -145,7 +145,9 @@ struct ContentView: View {
             )
         case .skills:
             SkillsWorkspaceView()
-        case .sessions, .advanced:
+        case .sessions:
+            SessionsWorkspaceView()
+        case .advanced:
             HSplitView {
                 SecondarySidebarView(columnVisibility: columnVisibility)
                     .frame(

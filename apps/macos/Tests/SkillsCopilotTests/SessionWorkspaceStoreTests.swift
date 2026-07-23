@@ -9,7 +9,9 @@ struct SessionWorkspaceStoreTests {
 
     func run() async throws {
         try await inventoryPagingOwnsCanonicalSourceAndFiltersLocally()
+        try await pendingSelectionLoadsUntilTheExactSessionIsAvailable()
         try await failureCancellationAndSourceSwitchPreserveAcceptedInventory()
+        try await timelinePagingBindsRevisionAndPreservesAcceptedMessages()
         try await resumePreviewUsesOnlyServerRecordAndRejectsStalePublication()
     }
 
@@ -41,7 +43,11 @@ struct SessionWorkspaceStoreTests {
         try expectEqual(store.rows.map(\.id), ["one"], "First page should publish immediately.")
         try expectEqual(store.sourceRevision, "sha256:native-1", "Native source revision")
         try expectEqual(store.snapshotRevision, "sha256:product-1", "Product snapshot revision")
-        try expectEqual(store.selectedSessionID, "one", "First accepted row should become selected.")
+        try expectNil(
+            store.selectedSessionID,
+            "Loading a workspace must not manufacture an implicit selection."
+        )
+        store.selectSession("one")
         try expectEqual(
             store.inventoryCompleteness.loadingPhase,
             .idle,
@@ -60,7 +66,9 @@ struct SessionWorkspaceStoreTests {
             direction: .ascending
         ))
         try expectEqual(store.rows.map(\.id), ["two"], "Criteria should project accepted rows locally.")
-        try expectEqual(store.selectedSessionID, "two", "Hidden selection should normalize locally.")
+        try expectNil(store.selectedSessionID, "A hidden selection should clear locally.")
+        store.selectSession("two")
+        try expectEqual(store.selectedSessionID, "two", "Selection should remain explicit.")
         try expectEqual(fake.inventoryRequests.count, 2, "Criteria changes must not issue a read.")
 
         let first = try required(fake.inventoryRequests.first, "Missing first inventory request.")
@@ -154,6 +162,134 @@ struct SessionWorkspaceStoreTests {
         )
         try expectEqual(store.rows.map(\.id), ["accepted"], "Switching back restores source cache.")
         try expectEqual(store.selectedSessionID, "accepted", "Switching back restores selection.")
+    }
+
+    private func pendingSelectionLoadsUntilTheExactSessionIsAvailable() async throws {
+        let fake = FakeSessionWorkspaceService()
+        fake.enqueueInventory(.success(inventoryPage(
+            rows: [row(id: "first")],
+            total: 2,
+            hasMore: true,
+            nextCursor: "cursor-1",
+            sourceRevision: "sha256:native-1"
+        )))
+        fake.enqueueInventory(.success(inventoryPage(
+            rows: [row(id: "requested")],
+            total: 2,
+            hasMore: false,
+            sourceRevision: "sha256:native-1"
+        )))
+        let store = SessionWorkspaceStore(service: fake)
+        store.configure(
+            project: project(),
+            snapshotRevision: "sha256:product-1",
+            authorizedRoots: [],
+            agentFilter: .codex
+        )
+        store.requestSessionSelection("requested")
+
+        await store.loadInventoryIfNeeded()
+        try expectNil(
+            store.selectedSessionID,
+            "A not-yet-loaded route target must remain pending without selecting another row."
+        )
+        await store.loadPendingSelectionIfNeeded()
+
+        try expectEqual(
+            store.selectedSessionID,
+            "requested",
+            "Exact navigation should continue bounded inventory pages until its row is accepted."
+        )
+        try expectEqual(
+            fake.inventoryRequests.map(\.cursor),
+            [nil, "cursor-1"],
+            "Pending navigation must preserve the accepted keyset cursor."
+        )
+    }
+
+    private func timelinePagingBindsRevisionAndPreservesAcceptedMessages() async throws {
+        let fake = FakeSessionWorkspaceService()
+        fake.enqueueInventory(.success(inventoryPage(
+            rows: [row(id: "timeline", title: "Timeline")],
+            total: 1,
+            hasMore: false,
+            sourceRevision: "sha256:native-1"
+        )))
+        let store = SessionWorkspaceStore(service: fake)
+        store.configure(
+            project: project(),
+            snapshotRevision: "sha256:product-1",
+            authorizedRoots: [],
+            agentFilter: .codex
+        )
+        await store.refreshInventory()
+        store.selectSession("timeline")
+
+        fake.enqueueMessages(.success(messagePage(
+            sessionID: "timeline",
+            items: [message(id: "message-1", text: "First")],
+            total: 2,
+            hasMore: true,
+            nextCursor: "cursor-1",
+            sourceRevision: "sha256:messages-1"
+        )))
+        await store.loadSelectedSessionTimelineIfNeeded()
+        try expectEqual(store.selectedTimelineItems.map(\.id), ["message-1"], "First timeline page")
+        try expectEqual(store.selectedMessageCompleteness.canLoadMore, true, "Timeline can continue")
+
+        fake.enqueueMessages(.success(messagePage(
+            sessionID: "timeline",
+            items: [message(id: "message-2", text: "Second")],
+            total: 2,
+            hasMore: false,
+            sourceRevision: "sha256:messages-1"
+        )))
+        await store.loadNextSelectedSessionTimelinePage()
+        try expectEqual(
+            store.selectedTimelineItems.map(\.id),
+            ["message-1", "message-2"],
+            "Fixed-revision timeline pages should accumulate exactly once."
+        )
+        try expectEqual(store.selectedMessageCompleteness.isComplete, true, "Terminal exact timeline")
+        let requests = fake.messageRequests
+        try expectEqual(requests.count, 2, "Two message pages")
+        try expectNil(requests[0].cursor, "First message cursor")
+        try expectNil(requests[0].sourceRevision, "First message revision is discovered by service.")
+        try expectEqual(requests[1].cursor, "cursor-1", "Second message cursor")
+        try expectEqual(
+            requests[1].sourceRevision,
+            "sha256:messages-1",
+            "Continuation page is bound to the first accepted message revision."
+        )
+
+        store.selectSession(nil)
+        store.selectSession("timeline")
+        await store.loadSelectedSessionTimelineIfNeeded()
+        try expectEqual(fake.messageRequests.count, 2, "Complete cached timeline should not reread.")
+        try expectEqual(
+            store.selectedTimelineItems.map(\.id),
+            ["message-1", "message-2"],
+            "Explicit reselection should restore accepted timeline evidence."
+        )
+
+        fake.enqueueInventory(.success(inventoryPage(
+            rows: [row(id: "timeline", title: "Timeline")],
+            total: 1,
+            hasMore: false,
+            sourceRevision: "sha256:native-2"
+        )))
+        await store.refreshInventory()
+        try expectEqual(store.selectedSessionID, "timeline", "Stable session selection survives refresh.")
+        try expectEqual(
+            store.selectedTimelineItems,
+            [],
+            "A changed native inventory revision invalidates cached message evidence."
+        )
+        try expectEqual(
+            store.selectedMessageCompleteness.incompleteReason,
+            .notInspected,
+            "Changed source requires a fresh bounded timeline read."
+        )
     }
 
     private func resumePreviewUsesOnlyServerRecordAndRejectsStalePublication() async throws {
@@ -389,6 +525,44 @@ struct SessionWorkspaceStoreTests {
         )
     }
 
+    private func message(
+        id: String,
+        text: String
+    ) -> LocalSessionContentItem {
+        LocalSessionContentItem(
+            id: id,
+            kind: .userMessage,
+            title: "User",
+            text: text,
+            timestamp: 10
+        )
+    }
+
+    private func messagePage(
+        sessionID: String,
+        items: [LocalSessionContentItem],
+        total: Int,
+        hasMore: Bool,
+        nextCursor: String? = nil,
+        sourceRevision: String
+    ) -> LocalSessionMessagePageResult {
+        LocalSessionMessagePageResult(
+            generatedBy: "test",
+            sessionID: sessionID,
+            contentItems: items,
+            returnedCount: items.count,
+            totalCount: total,
+            hasMore: hasMore,
+            nextCursor: nextCursor,
+            sourceRevision: sourceRevision,
+            sourceCompleteness: .enumerable,
+            incompleteReason: nil,
+            scannedBytes: 0,
+            scannedThroughBytes: 0,
+            snapshotBytes: 0
+        )
+    }
+
     private func waitUntil(
         _ predicate: @MainActor () -> Bool
     ) async throws {
@@ -418,8 +592,10 @@ private enum FakeSessionWorkspaceError: LocalizedError {
 @MainActor
 private final class FakeSessionWorkspaceService: SessionWorkspaceServicing {
     private(set) var inventoryRequests: [SessionWorkspaceInventoryRequest] = []
+    private(set) var messageRequests: [SessionWorkspaceMessageRequest] = []
     private(set) var resumeRequests: [SessionWorkspaceResumeRequest] = []
     private var inventoryResults: [Result<LocalSessionPreviewResult, Error>] = []
+    private var messageResults: [Result<LocalSessionMessagePageResult, Error>] = []
     private var resumeResults: [Result<SessionContinuationRecord, Error>] = []
     private var shouldSuspendInventory = false
     private var shouldSuspendResume = false
@@ -432,6 +608,10 @@ private final class FakeSessionWorkspaceService: SessionWorkspaceServicing {
 
     func enqueueResume(_ result: Result<SessionContinuationRecord, Error>) {
         resumeResults.append(result)
+    }
+
+    func enqueueMessages(_ result: Result<LocalSessionMessagePageResult, Error>) {
+        messageResults.append(result)
     }
 
     func suspendNextInventory() {
@@ -484,5 +664,15 @@ private final class FakeSessionWorkspaceService: SessionWorkspaceServicing {
             throw NativeModelTestFailure(description: "Missing fake resume result.")
         }
         return try resumeResults.removeFirst().get()
+    }
+
+    func readSessionMessages(
+        _ request: SessionWorkspaceMessageRequest
+    ) async throws -> LocalSessionMessagePageResult {
+        messageRequests.append(request)
+        guard !messageResults.isEmpty else {
+            throw NativeModelTestFailure(description: "Missing fake message result.")
+        }
+        return try messageResults.removeFirst().get()
     }
 }

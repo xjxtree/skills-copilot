@@ -19,6 +19,16 @@ struct SessionWorkspaceResumeRequest: Equatable {
     let snapshotRevision: String
 }
 
+struct SessionWorkspaceMessageRequest: Equatable {
+    let authorizedRoots: [String]
+    let agent: ProductAgentID?
+    let project: ProjectContext
+    let sessionID: String
+    let limit: Int
+    let cursor: String?
+    let sourceRevision: String?
+}
+
 @MainActor
 protocol SessionWorkspaceServicing: AnyObject {
     func readSessionInventory(
@@ -28,6 +38,10 @@ protocol SessionWorkspaceServicing: AnyObject {
     func readSessionResume(
         _ request: SessionWorkspaceResumeRequest
     ) async throws -> SessionContinuationRecord
+
+    func readSessionMessages(
+        _ request: SessionWorkspaceMessageRequest
+    ) async throws -> LocalSessionMessagePageResult
 }
 
 @MainActor
@@ -72,6 +86,20 @@ final class ServiceClientSessionWorkspaceService: SessionWorkspaceServicing {
             expectedSnapshotRevision: request.snapshotRevision
         )
     }
+
+    func readSessionMessages(
+        _ request: SessionWorkspaceMessageRequest
+    ) async throws -> LocalSessionMessagePageResult {
+        try await client.listLocalSessionMessages(
+            authorizedRoots: request.authorizedRoots,
+            agent: request.agent?.rawValue,
+            project: request.project,
+            sessionID: request.sessionID,
+            limit: request.limit,
+            cursor: request.cursor,
+            sourceRevision: request.sourceRevision
+        )
+    }
 }
 
 struct SessionWorkspaceCriteria: Equatable {
@@ -81,9 +109,20 @@ struct SessionWorkspaceCriteria: Equatable {
     var direction: SkillSortDirection = .descending
 }
 
+private struct SessionWorkspaceMessageSnapshot {
+    var accumulator: ListPageAccumulator<LocalSessionContentItem>
+    var displayError: String?
+
+    init() {
+        accumulator = ListPageAccumulator()
+        displayError = nil
+    }
+}
+
 @MainActor
 final class SessionWorkspaceStore: ObservableObject {
     private static let inventoryPageLimit = 100
+    private static let messagePageLimit = 40
 
     @Published private(set) var project: ProjectContext?
     @Published private(set) var agentFilter: ProductAgentID?
@@ -93,6 +132,8 @@ final class SessionWorkspaceStore: ObservableObject {
     @Published private(set) var inventoryState: LocalSessionLoadState = .empty
     @Published private(set) var inventoryCompleteness = SessionWorkspaceStore.emptyCompleteness
     @Published private(set) var selectedSessionID: String?
+    @Published private(set) var selectedSessionDetailState: LocalSessionDetailState?
+    @Published private(set) var selectedMessageCompleteness = SessionWorkspaceStore.emptyMessageCompleteness
     @Published private(set) var resumePreview: SessionContinuationRecord?
     @Published private(set) var isPreviewingResume = false
     @Published private(set) var resumeError: String?
@@ -100,9 +141,15 @@ final class SessionWorkspaceStore: ObservableObject {
     private let service: SessionWorkspaceServicing
     private let cache = LocalSessionCache()
     private var selectionsBySource: [LocalSessionSnapshotKey: String] = [:]
+    private var pendingSelectionBySource: [LocalSessionSnapshotKey: String] = [:]
+    private var messageSnapshots: [LocalSessionDetailKey: SessionWorkspaceMessageSnapshot] = [:]
     private var inventoryTask: Task<Void, Never>?
+    private var messageTask: Task<Void, Never>?
+    private var activeMessageKey: LocalSessionDetailKey?
     private var resumeTask: Task<Void, Never>?
     private var inventoryOperation: UInt64 = 0
+    private var messageOperation: UInt64 = 0
+    private var messageLoadAllOperation: UInt64 = 0
     private var resumeOperation: UInt64 = 0
     private var activeInventoryGeneration: (
         key: LocalSessionSnapshotKey,
@@ -126,7 +173,8 @@ final class SessionWorkspaceStore: ObservableObject {
                 search: criteria.search,
                 sort: criteria.sort,
                 direction: criteria.direction,
-                projectRoot: project?.rootPath
+                projectRoot: project?.rootPath,
+                currentCWD: project?.currentCWD
             )
         )
     }
@@ -143,6 +191,41 @@ final class SessionWorkspaceStore: ObservableObject {
     var acceptedSnapshot: LocalSessionSnapshot? {
         guard let sourceKey else { return nil }
         return cache.successfulSnapshot(for: sourceKey)
+    }
+
+    var inventoryBindingID: String {
+        guard let sourceKey else { return "unconfigured" }
+        return [
+            sourceKey.agent,
+            sourceKey.projectRoot,
+            sourceKey.currentCWD,
+            sourceKey.authorizedRoots.joined(separator: "\u{1f}"),
+        ].joined(separator: "\u{1e}")
+    }
+
+    var selectedSessionDetail: LocalSessionPreviewRow? {
+        if case .loaded(let row) = selectedSessionDetailState {
+            return row
+        }
+        return selectedSession
+    }
+
+    var selectedTimelineItems: [LocalSessionContentItem] {
+        selectedSessionDetail?.contentItems ?? []
+    }
+
+    var selectedMessageError: String? {
+        guard let selectedDetailKey else { return nil }
+        return messageSnapshots[selectedDetailKey]?.displayError
+    }
+
+    var inventoryDisplayError: String? {
+        switch inventoryState {
+        case .stale(_, let displayError), .failed(_, let displayError):
+            return displayError
+        case .empty, .loading, .fresh, .refreshing:
+            return nil
+        }
     }
 
     /// Arguments are exposed exactly as decoded from the server-owned
@@ -176,12 +259,17 @@ final class SessionWorkspaceStore: ObservableObject {
         let nextKey = sourceKey
         if previousKey != nextKey {
             cancelInventoryRequest()
+            cancelMessageRequest()
             cancelResumeRequest(clearAccepted: true)
             if let nextKey {
                 cache.activateSource(nextKey)
+                messageSnapshots = messageSnapshots.filter { $0.key.source == nextKey }
+            } else {
+                messageSnapshots.removeAll()
             }
             synchronizeInventoryState()
             restoreSelectionForCurrentSource()
+            synchronizeSelectedMessageState()
         } else {
             invalidateResumePreviewIfNeeded()
         }
@@ -201,6 +289,7 @@ final class SessionWorkspaceStore: ObservableObject {
         self.criteria = criteria
         cancelResumeRequest(clearAccepted: false)
         normalizeSelection(preserveMissingWhilePaging: false)
+        synchronizeSelectedMessageState()
         invalidateResumePreviewIfNeeded()
     }
 
@@ -210,10 +299,48 @@ final class SessionWorkspaceStore: ObservableObject {
         }
         guard selectedSessionID != normalized else { return }
         selectedSessionID = normalized
-        if let sourceKey, let normalized {
-            selectionsBySource[sourceKey] = normalized
+        if let sourceKey {
+            if let normalized {
+                selectionsBySource[sourceKey] = normalized
+                pendingSelectionBySource.removeValue(forKey: sourceKey)
+            } else {
+                selectionsBySource.removeValue(forKey: sourceKey)
+            }
         }
+        cancelMessageRequest()
         cancelResumeRequest(clearAccepted: true)
+        synchronizeSelectedMessageState()
+    }
+
+    func requestSessionSelection(_ id: String) {
+        guard let sourceKey else { return }
+        if rows.contains(where: { $0.id == id }) {
+            selectSession(id)
+        } else {
+            pendingSelectionBySource[sourceKey] = id
+        }
+    }
+
+    func loadInventoryIfNeeded() async {
+        guard acceptedSnapshot == nil else { return }
+        await refreshInventory()
+    }
+
+    func loadPendingSelectionIfNeeded() async {
+        guard let sourceKey,
+              pendingSelectionBySource[sourceKey] != nil else { return }
+        if acceptedSnapshot == nil {
+            await refreshInventory()
+        }
+        while !Task.isCancelled,
+              self.sourceKey == sourceKey,
+              pendingSelectionBySource[sourceKey] != nil,
+              let cursor = acceptedSnapshot?.nextCursor {
+            await loadNextInventoryPage()
+            guard !Task.isCancelled,
+                  acceptedSnapshot?.nextCursor != cursor else { return }
+            await Task.yield()
+        }
     }
 
     func refreshInventory() async {
@@ -229,6 +356,18 @@ final class SessionWorkspaceStore: ObservableObject {
         await task?.value
     }
 
+    func loadAllInventoryPages() async {
+        if acceptedSnapshot == nil {
+            await refreshInventory()
+        }
+        while let cursor = acceptedSnapshot?.nextCursor {
+            await loadNextInventoryPage()
+            guard !Task.isCancelled,
+                  acceptedSnapshot?.nextCursor != cursor else { return }
+            await Task.yield()
+        }
+    }
+
     func cancelInventoryRequest() {
         inventoryOperation &+= 1
         inventoryTask?.cancel()
@@ -241,6 +380,50 @@ final class SessionWorkspaceStore: ObservableObject {
         }
         activeInventoryGeneration = nil
         synchronizeInventoryState(cancelledWithoutSnapshot: true)
+    }
+
+    func loadSelectedSessionTimelineIfNeeded() async {
+        guard let key = selectedDetailKey else { return }
+        if let snapshot = messageSnapshots[key],
+           snapshot.accumulator.state.isComplete {
+            synchronizeSelectedMessageState()
+            return
+        }
+        await loadSelectedSessionTimelinePage(reset: messageSnapshots[key] == nil)
+    }
+
+    func loadNextSelectedSessionTimelinePage() async {
+        await loadSelectedSessionTimelinePage(reset: false)
+    }
+
+    func loadAllSelectedSessionTimeline() async {
+        guard messageTask == nil else { return }
+        messageLoadAllOperation &+= 1
+        let loadAllOperation = messageLoadAllOperation
+        repeat {
+            await loadSelectedSessionTimelinePage(reset: false)
+            guard messageLoadAllOperation == loadAllOperation,
+                  !Task.isCancelled,
+                  selectedMessageCompleteness.canLoadMore else { return }
+            await Task.yield()
+        } while true
+    }
+
+    func cancelMessageRequest() {
+        messageLoadAllOperation &+= 1
+        messageOperation &+= 1
+        messageTask?.cancel()
+        messageTask = nil
+        let cancelledKey = activeMessageKey ?? selectedDetailKey
+        activeMessageKey = nil
+        guard let key = cancelledKey,
+              var snapshot = messageSnapshots[key] else {
+            synchronizeSelectedMessageState()
+            return
+        }
+        snapshot.accumulator.cancel()
+        messageSnapshots[key] = snapshot
+        synchronizeSelectedMessageState()
     }
 
     func previewSelectedSessionResume() async {
@@ -274,6 +457,130 @@ final class SessionWorkspaceStore: ObservableObject {
             currentCWD: project.currentCWD ?? project.rootPath,
             authorizedRoots: authorizedRoots
         )
+    }
+
+    private var selectedDetailKey: LocalSessionDetailKey? {
+        guard let sourceKey, let selectedSessionID else { return nil }
+        return LocalSessionDetailKey(source: sourceKey, sessionID: selectedSessionID)
+    }
+
+    private func loadSelectedSessionTimelinePage(reset: Bool) async {
+        guard messageTask == nil,
+              let project,
+              let selectedSession,
+              let key = selectedDetailKey else { return }
+
+        var snapshot = reset ? SessionWorkspaceMessageSnapshot()
+            : messageSnapshots[key] ?? SessionWorkspaceMessageSnapshot()
+        if !reset,
+           !snapshot.accumulator.items.isEmpty,
+           !snapshot.accumulator.state.canLoadMore {
+            synchronizeSelectedMessageState()
+            return
+        }
+        snapshot.accumulator.begin(snapshot.accumulator.items.isEmpty ? .initial : .more)
+        snapshot.displayError = nil
+        messageSnapshots[key] = snapshot
+        synchronizeSelectedMessageState()
+
+        messageOperation &+= 1
+        let operation = messageOperation
+        let request = SessionWorkspaceMessageRequest(
+            authorizedRoots: authorizedRoots,
+            agent: selectedSession.agent.flatMap(ProductAgentID.init(rawValue:)),
+            project: project,
+            sessionID: selectedSession.id,
+            limit: Self.messagePageLimit,
+            cursor: snapshot.accumulator.nextCursor,
+            sourceRevision: snapshot.accumulator.sourceRevision
+        )
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performMessageRequest(
+                request,
+                key: key,
+                operation: operation
+            )
+        }
+        activeMessageKey = key
+        messageTask = task
+        await task.value
+    }
+
+    private func performMessageRequest(
+        _ request: SessionWorkspaceMessageRequest,
+        key: LocalSessionDetailKey,
+        operation: UInt64
+    ) async {
+        do {
+            let page = try await service.readSessionMessages(request)
+            try Task.checkCancellation()
+            guard messageOperation == operation,
+                  selectedDetailKey == key,
+                  page.sessionID == request.sessionID else { return }
+            guard var snapshot = messageSnapshots[key] else { return }
+            try snapshot.accumulator.append(page.listPage)
+            snapshot.displayError = nil
+            messageSnapshots[key] = snapshot
+        } catch {
+            guard messageOperation == operation,
+                  selectedDetailKey == key,
+                  var snapshot = messageSnapshots[key] else { return }
+            if Task.isCancelled {
+                snapshot.accumulator.cancel()
+            } else {
+                snapshot.accumulator.fail(reason: messageFailureReason(for: error))
+                snapshot.displayError = error.localizedDescription
+            }
+            messageSnapshots[key] = snapshot
+        }
+        if messageOperation == operation {
+            messageTask = nil
+            activeMessageKey = nil
+            synchronizeSelectedMessageState()
+        }
+    }
+
+    private func synchronizeSelectedMessageState() {
+        guard let selectedSession,
+              let key = selectedDetailKey else {
+            selectedSessionDetailState = nil
+            selectedMessageCompleteness = Self.emptyMessageCompleteness
+            return
+        }
+        guard let snapshot = messageSnapshots[key] else {
+            selectedSessionDetailState = nil
+            selectedMessageCompleteness = Self.emptyMessageCompleteness
+            return
+        }
+        let items = snapshot.accumulator.items
+        selectedMessageCompleteness = snapshot.accumulator.state
+        if !items.isEmpty || snapshot.accumulator.state.isComplete {
+            selectedSessionDetailState = .loaded(
+                selectedSession.replacingContentItems(
+                    items,
+                    exactFinalMessages: items
+                )
+            )
+        } else if let displayError = snapshot.displayError {
+            selectedSessionDetailState = .failed(displayError: displayError)
+        } else if snapshot.accumulator.state.loadingPhase != .idle {
+            selectedSessionDetailState = .loading(generation: messageOperation)
+        } else {
+            selectedSessionDetailState = nil
+        }
+    }
+
+    private func messageFailureReason(for error: Error) -> ListIncompleteReason {
+        guard let accumulatorError = error as? ListPageAccumulatorError else {
+            return .pageFailed
+        }
+        switch accumulatorError {
+        case .sourceChanged:
+            return .sourceChanged
+        case .invalidPage:
+            return .pageFailed
+        }
     }
 
     private func startInventoryRequest(reset: Bool) {
@@ -323,6 +630,13 @@ final class SessionWorkspaceStore: ObservableObject {
             guard inventoryOperation == operation, self.sourceKey == sourceKey else { return }
             try validateInventoryPage(page, request: request, base: base)
 
+            let previousSourceRevision = cache.successfulSnapshot(for: sourceKey)?.sourceRevision
+            if let previousSourceRevision,
+               page.sourceRevision != previousSourceRevision {
+                cancelMessageRequest()
+                cancelResumeRequest(clearAccepted: true)
+                messageSnapshots = messageSnapshots.filter { $0.key.source != sourceKey }
+            }
             let result = base?.result.mergingPage(page) ?? page
             let snapshot = LocalSessionSnapshot(
                 key: sourceKey,
@@ -337,7 +651,9 @@ final class SessionWorkspaceStore: ObservableObject {
             )
             cache.publishSummary(snapshot)
             synchronizeInventoryState()
+            resolvePendingSelectionIfPossible()
             normalizeSelection(preserveMissingWhilePaging: page.hasMore)
+            synchronizeSelectedMessageState()
             invalidateResumePreviewIfNeeded()
         } catch {
             guard inventoryOperation == operation, self.sourceKey == sourceKey else { return }
@@ -462,12 +778,27 @@ final class SessionWorkspaceStore: ObservableObject {
             return
         }
         let previous = selectedSessionID
-        selectedSessionID = visibleRows.first?.id
-        if let sourceKey, let selectedSessionID {
-            selectionsBySource[sourceKey] = selectedSessionID
+        selectedSessionID = nil
+        if let sourceKey {
+            selectionsBySource.removeValue(forKey: sourceKey)
         }
         if previous != selectedSessionID {
+            cancelMessageRequest()
             cancelResumeRequest(clearAccepted: true)
+        }
+    }
+
+    private func resolvePendingSelectionIfPossible() {
+        guard let sourceKey,
+              let requested = pendingSelectionBySource[sourceKey] else { return }
+        if rows.contains(where: { $0.id == requested }) {
+            pendingSelectionBySource.removeValue(forKey: sourceKey)
+            selectedSessionID = requested
+            selectionsBySource[sourceKey] = requested
+            cancelMessageRequest()
+            cancelResumeRequest(clearAccepted: true)
+        } else if acceptedSnapshot?.nextCursor == nil {
+            pendingSelectionBySource.removeValue(forKey: sourceKey)
         }
     }
 
@@ -571,6 +902,18 @@ final class SessionWorkspaceStore: ObservableObject {
         loadingPhase: .idle,
         canLoadMore: false,
         canLoadAll: false
+    )
+
+    private static let emptyMessageCompleteness = ListCompletenessState(
+        loadedCount: 0,
+        totalCount: nil,
+        hasMore: false,
+        isComplete: false,
+        completeness: .unknown,
+        incompleteReason: .notInspected,
+        loadingPhase: .idle,
+        canLoadMore: false,
+        canLoadAll: true
     )
 }
 

@@ -74,6 +74,23 @@ struct LocalSessionProjectionCriteria: Equatable {
     let sort: LocalSessionSortOrder
     let direction: SkillSortDirection
     let projectRoot: String?
+    let currentCWD: String?
+
+    init(
+        scope: LocalSessionScopeFilter,
+        search: String,
+        sort: LocalSessionSortOrder,
+        direction: SkillSortDirection,
+        projectRoot: String?,
+        currentCWD: String? = nil
+    ) {
+        self.scope = scope
+        self.search = search
+        self.sort = sort
+        self.direction = direction
+        self.projectRoot = projectRoot
+        self.currentCWD = currentCWD
+    }
 }
 
 enum LocalSessionRefreshReason: Equatable {
@@ -293,21 +310,30 @@ final class LocalSessionCache {
     ) -> [LocalSessionPreviewRow] {
         guard let snapshot = successfulSnapshot(for: key) else { return [] }
         let query = criteria.search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let requestedProject = normalizedProjectPath(criteria.projectRoot)
+        let requestedProjects = Set(
+            [criteria.projectRoot, criteria.currentCWD]
+                .compactMap(normalizedProjectPath)
+        )
         let rows = snapshot.result.sessionRows.filter { row in
             let rowProject = normalizedProjectPath(row.projectRoot)
             let scopeMatches = criteria.scope == .all || {
-                if row.projectRoot == "<project-root>" || row.projectRoot?.hasPrefix("<project-root>/") == true {
+                if row.projectRoot == "<project-root>" {
                     return true
                 }
-                if let requestedProject {
-                    return rowProject == requestedProject || rowProject?.hasPrefix(requestedProject + "/") == true
+                if let rowProject, !requestedProjects.isEmpty {
+                    return requestedProjects.contains(rowProject)
                 }
                 return row.scope.lowercased().contains("project")
             }()
             guard scopeMatches else { return false }
             guard !query.isEmpty else { return true }
-            return [row.title, row.excerpt, row.agent ?? ""]
+            return [
+                row.title,
+                row.excerpt,
+                row.agent ?? "",
+                row.projectRoot ?? "",
+                row.sourceKind,
+            ]
                 .contains { $0.lowercased().contains(query) }
         }
         return rows.enumerated().sorted { leftPair, rightPair in
@@ -366,7 +392,10 @@ final class LocalSessionCache {
         guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
             return nil
         }
-        return (path as NSString).standardizingPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let standardized = (path as NSString).standardizingPath
+        return standardized == "/"
+            ? standardized
+            : standardized.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     private func summaryResult(

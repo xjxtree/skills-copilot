@@ -575,7 +575,8 @@ final class SkillStore: ObservableObject {
             agentFilter = filter
         }
         selectAppRoute(.sessions)
-        sessionWorkspaceStore.selectSession(record.id)
+        sessionWorkspaceStore.setCriteria(SessionWorkspaceCriteria())
+        sessionWorkspaceStore.requestSessionSelection(record.id)
         guard let session = localSessionPreviewResult.sessionRows.first(where: {
             $0.id == record.id
         }) else {
@@ -2969,8 +2970,15 @@ final class SkillStore: ObservableObject {
             }
             localSessionScopeFilter = .all
             localSessionSearchText = ""
-            sidebarContentMode = .sessions
+            selectAppRoute(.sessions)
             localSessionPreviewResult = localSessionPreviewResult.ensuringSession(session)
+            sessionWorkspaceStore.setCriteria(SessionWorkspaceCriteria(
+                scope: .all,
+                search: "",
+                sort: .recent,
+                direction: .descending
+            ))
+            sessionWorkspaceStore.requestSessionSelection(session.id)
             selectLocalSession(session, origin: .navigation)
 
         case .configHistory:
@@ -3003,8 +3011,14 @@ final class SkillStore: ObservableObject {
 
         case .session:
             localSessionScopeFilter = .all
-            sidebarContentMode = .sessions
+            selectAppRoute(.sessions)
             localSessionSearchText = query
+            sessionWorkspaceStore.setCriteria(SessionWorkspaceCriteria(
+                scope: .all,
+                search: query,
+                sort: .recent,
+                direction: .descending
+            ))
             normalizeSelectedLocalSession()
 
         case .configHistory:
