@@ -17,6 +17,9 @@ struct SkillStoreTests {
         try runCase("defaultNavigationStartsAtSessionsWithoutAgentProfile") {
             try defaultNavigationStartsAtSessionsWithoutAgentProfile()
         }
+        try runCase("workspaceRoutesDoNotManufactureSkillSelection") {
+            try workspaceRoutesDoNotManufactureSkillSelection()
+        }
         try runCase("selectedAgentSessionRefreshKeyFollowsAgentOutsideSessionMode") {
             try selectedAgentSessionRefreshKeyFollowsAgentOutsideSessionMode()
         }
@@ -360,8 +363,25 @@ struct SkillStoreTests {
     private func defaultNavigationStartsAtSessionsWithoutAgentProfile() throws {
         let store = SkillStore(service: ServiceClient())
         try expectNil(store.selectedSidebarSelection, "Agent Copilot should not expose a default detail selection.")
+        try expectEqual(store.appRoute, .overview, "The project-first route should start at Overview.")
         try expectEqual(store.sidebarContentMode, .skills, "Agent Copilot should start from the Skills primary navigation.")
         try expectEqual(store.selectedDetailSection, .overview, "Default detail section should stay neutral until a session, skill, report, or Preflight is selected.")
+    }
+
+    private func workspaceRoutesDoNotManufactureSkillSelection() throws {
+        let store = SkillStore(service: ServiceClient())
+        for route in AppRoute.allCases {
+            store.selectAppRoute(route)
+            try expectEqual(store.appRoute, route, "Composition-root route selection")
+            try expectNil(
+                store.selectedSkillID,
+                "Selecting \(route.rawValue) must not manufacture a selected skill."
+            )
+            try expectFalse(
+                store.selectedSidebarSelection?.isSkill == true,
+                "Selecting \(route.rawValue) must not manufacture a skill detail."
+            )
+        }
     }
 
     private func selectedAgentSessionRefreshKeyFollowsAgentOutsideSessionMode() throws {

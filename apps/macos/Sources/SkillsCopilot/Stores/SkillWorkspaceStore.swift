@@ -230,6 +230,15 @@ final class SkillWorkspaceStore: ObservableObject {
         isLoading = false
     }
 
+    /// Removes project-bound aggregate state when there is no active project.
+    /// This is a local cache transition and never invokes the service.
+    func clearProject() {
+        cancelLoading()
+        sourceBinding = nil
+        clearAcceptedSnapshot()
+        errorMessage = nil
+    }
+
     /// Applies routine view criteria against the accepted snapshot. This never
     /// invokes the service or changes the accepted source revision.
     func configure(

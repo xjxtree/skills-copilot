@@ -160,6 +160,35 @@ Startup and reload do not invoke external manager inventory/search, perform
 manager network activity, or write agent config. Manager inventory remains an
 explicit surface-local load.
 
+### Native Workspace State And Cache Ownership
+
+`SkillStore` is the single native composition root while product state is
+owned by three domain stores:
+
+| Store | Owned state | Accepted binding |
+| --- | --- | --- |
+| `AppContextStore` | Project context, project-first route, agent filter, project readiness | Project id plus project-context revision |
+| `SkillWorkspaceStore` | Complete skill-aggregate snapshot, local criteria, and aggregate selection | Project id, project-context revision, and aggregate source revision |
+| `SessionWorkspaceStore` | Native session inventory pages, local criteria, selection, and resume preview | Project/agent/root source key, native session-source revision, and separate product snapshot revision |
+
+`AppRoute` represents only Overview, Skills, Sessions, or Advanced. Detail
+identifiers remain inside their owning workspace, so restoring a route cannot
+manufacture a selected skill or session.
+
+Startup and manual refresh prewarm the typed project and aggregate reads when
+the service advertises them. Route, filter, search, sort, scope, and selection
+changes project accepted cache state locally and do not scan or issue unrelated
+reads. A request publishes only when its generation, project/context binding,
+and fixed source revision still match. Cancellation, read failure, or a late
+response preserves the last accepted snapshot and selection, marking it stale
+when appropriate. A project change clears or rebinds project-owned data before
+new rows can publish.
+
+Session inventory is read in bounded keyset pages from one native source
+revision. Resume preview additionally requires the current product snapshot
+revision. Swift never derives a resume command; it exposes only the ordered
+argv returned by the typed service record.
+
 ### Scanner Bounds And Catalog Completeness
 
 - A scan follows only explicit canonical adapter roots and explicitly declared

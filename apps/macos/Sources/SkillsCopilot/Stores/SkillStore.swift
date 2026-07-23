@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 @MainActor
@@ -208,6 +209,10 @@ final class SkillStore: ObservableObject {
     }
     @Published private(set) var projectContextState: ProjectContextState? {
         didSet {
+            if let projectContextState {
+                appContextStore.acceptProjectContextState(projectContextState)
+            }
+            synchronizeSessionWorkspaceBinding()
             guard oldValue?.active?.rootPath != projectContextState?.active?.rootPath else { return }
             invalidateScopedLocalSessionSummaryCache()
             activateLocalSessionSourceCache()
@@ -308,6 +313,7 @@ final class SkillStore: ObservableObject {
     @Published var agentFilter: SkillAgentFilter = .claudeCode {
         didSet {
             guard oldValue != agentFilter else { return }
+            synchronizeWorkspaceAgentFilter()
             handleListCriteriaChanged()
             clearTaskCockpitTransientState()
             resetTaskCockpitAgentSelectionToSidebarDefault(clearResult: false)
@@ -363,6 +369,7 @@ final class SkillStore: ObservableObject {
     @Published var localSessionPreviewRoots = "" {
         didSet {
             guard oldValue != localSessionPreviewRoots else { return }
+            synchronizeSessionWorkspaceBinding()
             activateLocalSessionSourceCache()
             guard hasCompletedStartupLoad else { return }
             Task { @MainActor [weak self] in
@@ -405,7 +412,11 @@ final class SkillStore: ObservableObject {
     }
 
     let service: ServiceClient
+    let appContextStore: AppContextStore
+    let skillWorkspaceStore: SkillWorkspaceStore
+    let sessionWorkspaceStore: SessionWorkspaceStore
     let providerActivityController: ProviderActivityController
+    private var workspaceStoreCancellables = Set<AnyCancellable>()
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
@@ -481,12 +492,139 @@ final class SkillStore: ObservableObject {
         taskCockpitTimeoutSeconds: TimeInterval = 300
     ) {
         self.service = service
+        appContextStore = AppContextStore(
+            service: service,
+            initialAgentFilter: .claudeCode
+        )
+        skillWorkspaceStore = SkillWorkspaceStore(service: service)
+        sessionWorkspaceStore = SessionWorkspaceStore(serviceClient: service)
         providerActivityController = ProviderActivityController(service: service)
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
         taskCockpitHistory = []
+        bindWorkspaceStores()
+        synchronizeWorkspaceAgentFilter()
+        synchronizeSessionWorkspaceBinding()
         providerActivityController.setChangeHandler { [weak self] in
             self?.objectWillChange.send()
         }
+    }
+
+    var appRoute: AppRoute {
+        appContextStore.route
+    }
+
+    /// Transitional route entry point while the legacy skill/session/config
+    /// panes migrate behind the product workspaces. Selecting a workspace does
+    /// not imply selecting any skill detail.
+    func selectAppRoute(_ route: AppRoute) {
+        appContextStore.selectRoute(route)
+        switch route {
+        case .overview:
+            setSelectedSkillID(nil, syncSidebar: false)
+            setSidebarSelection(nil)
+            selectedDetailSection = .overview
+        case .skills:
+            if sidebarContentMode != .skills {
+                sidebarContentMode = .skills
+            }
+            setSelectedSkillID(nil, syncSidebar: false)
+            setSidebarSelection(nil)
+            selectedDetailSection = .overview
+        case .sessions:
+            if sidebarContentMode != .sessions {
+                sidebarContentMode = .sessions
+            }
+            setSelectedSkillID(nil, syncSidebar: false)
+            setSidebarSelection(nil)
+            selectedDetailSection = .overview
+        case .advanced:
+            if sidebarContentMode != .config {
+                sidebarContentMode = .config
+            }
+            setSelectedSkillID(nil, syncSidebar: false)
+            selectedDetailSection = .overview
+        }
+        appContextStore.selectRoute(route)
+    }
+
+    /// Explicitly refreshes only the new product read domains. The legacy
+    /// catalog/config/session caches remain independently owned during
+    /// migration.
+    func refreshProductWorkspaces() async {
+        await loadProductWorkspaceProjections(force: true)
+    }
+
+    private func bindWorkspaceStores() {
+        appContextStore.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &workspaceStoreCancellables)
+        skillWorkspaceStore.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &workspaceStoreCancellables)
+        sessionWorkspaceStore.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &workspaceStoreCancellables)
+    }
+
+    private var selectedProductAgent: ProductAgentID? {
+        guard agentFilter != .all else { return nil }
+        return ProductAgentID(rawValue: agentFilter.rawValue)
+    }
+
+    private func synchronizeWorkspaceAgentFilter() {
+        _ = appContextStore.selectAgent(selectedProductAgent)
+        skillWorkspaceStore.configure(
+            view: skillWorkspaceStore.view,
+            agentFilter: agentFilter,
+            searchText: skillWorkspaceStore.searchText,
+            sortOrder: skillWorkspaceStore.sortOrder,
+            sortDirection: skillWorkspaceStore.sortDirection
+        )
+        sessionWorkspaceStore.setAgentFilter(selectedProductAgent)
+    }
+
+    private func synchronizeSessionWorkspaceBinding() {
+        let snapshotRevision = appContextStore.hasCurrentProjectReadiness
+            ? appContextStore.visibleProjectReadiness?.sourceRevision
+            : nil
+        sessionWorkspaceStore.configure(
+            project: projectContextState?.active,
+            snapshotRevision: snapshotRevision,
+            authorizedRoots: normalizedLocalSessionPreviewRoots,
+            agentFilter: selectedProductAgent
+        )
+    }
+
+    private func loadProductWorkspaceProjections(force: Bool) async {
+        guard let state = projectContextState,
+              let project = state.active else {
+            skillWorkspaceStore.clearProject()
+            synchronizeSessionWorkspaceBinding()
+            return
+        }
+
+        if status?.supportedMethods.contains("project.getReadiness") == true {
+            if force {
+                await appContextStore.refreshProjectReadiness()
+            } else {
+                await appContextStore.loadProjectReadinessIfNeeded()
+            }
+        }
+
+        if status?.supportedMethods.contains("catalog.listSkillAggregates") == true {
+            if force {
+                await skillWorkspaceStore.refresh(
+                    projectID: project.id,
+                    expectedProjectContextRevision: state.revision
+                )
+            } else {
+                await skillWorkspaceStore.load(
+                    projectID: project.id,
+                    expectedProjectContextRevision: state.revision
+                )
+            }
+        }
+        synchronizeSessionWorkspaceBinding()
     }
 
     deinit {
@@ -887,6 +1025,7 @@ final class SkillStore: ObservableObject {
             applyRefreshActivity(result.activity)
             catalogListCompleteness = catalogCompleteness(after: result)
             catalogListCompletenessByAgent = catalogCompletenessByAgent(after: result)
+            await loadProductWorkspaceProjections(force: true)
             await loadSelectedDetail()
             return true
         } catch {
@@ -1083,6 +1222,13 @@ final class SkillStore: ObservableObject {
     }
 
     private func clearProjectScopedPresentationState() {
+        skillWorkspaceStore.clearProject()
+        sessionWorkspaceStore.configure(
+            project: nil,
+            snapshotRevision: nil,
+            authorizedRoots: normalizedLocalSessionPreviewRoots,
+            agentFilter: selectedProductAgent
+        )
         skills = []
         findings = []
         conflicts = []
@@ -3826,11 +3972,13 @@ final class SkillStore: ObservableObject {
                 loadedAgentConfigSnapshotRequestKey = nil
             }
         }
+        await loadProductWorkspaceProjections(force: false)
     }
 
     private func refreshCatalogProjectionAfterWrite() async throws {
         let snapshot = try await service.appStateSnapshot()
         publishCatalogProjection(snapshot)
+        await loadProductWorkspaceProjections(force: true)
     }
 
     private func publishCatalogProjection(_ snapshot: AppStateSnapshot) {
@@ -4246,6 +4394,10 @@ final class SkillStore: ObservableObject {
             selectedDetailSection = .overview
             return
         }
+        appContextStore.adoptSidebarSelection(
+            selectedSidebarSelection,
+            fallback: appContextStore.route
+        )
 
         switch selectedSidebarSelection {
         case .session(let id):
@@ -4301,8 +4453,10 @@ final class SkillStore: ObservableObject {
 
         switch sidebarContentMode {
         case .sessions:
+            appContextStore.selectRoute(.sessions)
             normalizeSelectedLocalSession()
         case .skills:
+            appContextStore.selectRoute(.skills)
             if selectedSidebarSelection?.isSession == true {
                 if let skill = selectedSkill {
                     setSidebarSelection(.skill(skill.id))
@@ -4319,6 +4473,7 @@ final class SkillStore: ObservableObject {
                 }
             }
         case .config:
+            appContextStore.selectRoute(.advanced)
             selectDefaultConfigDocumentOrOverview()
         }
     }
