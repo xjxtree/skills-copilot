@@ -536,6 +536,20 @@ struct SkillManagerInventoryItem: Identifiable, Hashable {
     var isInstalled: Bool { !agents.isEmpty }
 }
 
+enum SkillManagerInventoryActionPolicy {
+    static func availableActions(
+        for item: SkillManagerInventoryItem
+    ) -> [SkillManagerEntryAction] {
+        if item.agents.isEmpty {
+            return item.origin == .local ? [.install, .deleteSource] : [.install]
+        }
+        if item.origin == .local, item.localInstanceID == nil {
+            return [.remove]
+        }
+        return [.update, .remove]
+    }
+}
+
 enum SkillManagerInventoryBuilder {
     private struct CatalogSource {
         let path: String

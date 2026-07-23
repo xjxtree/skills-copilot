@@ -22,6 +22,24 @@ const files = {
   projectOverviewModel: await read(
     "apps/macos/Sources/SkillsCopilot/Models/ProjectOverviewPresentation.swift",
   ),
+  skillsWorkspace: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/SkillsWorkspaceView.swift",
+  ),
+  skillsWorkspaceList: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/SkillsWorkspaceListView.swift",
+  ),
+  skillAggregateDetail: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/SkillAggregateDetailView.swift",
+  ),
+  skillsWorkspaceModel: await read(
+    "apps/macos/Sources/SkillsCopilot/Models/SkillsWorkspaceListPresentation.swift",
+  ),
+  skillManagerEntryContext: await read(
+    "apps/macos/Sources/SkillsCopilot/Models/SkillManagerEntryContext.swift",
+  ),
+  skillWorkspaceStore: await read(
+    "apps/macos/Sources/SkillsCopilot/Stores/SkillWorkspaceStore.swift",
+  ),
   detail: await read("apps/macos/Sources/SkillsCopilot/Views/DetailView.swift"),
   agentSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Views/AgentSessionDetailPanel.swift"),
   detailSection: await read("apps/macos/Sources/SkillsCopilot/Models/DetailSection.swift"),
@@ -332,8 +350,32 @@ const checks = [
       && !extractStructBody(files.sidebar, "SidebarView").includes("SidebarFooterToolRow")
       && !extractStructBody(files.sidebar, "SidebarView").includes("TaskPreflightPreviewSheet")
       && !extractStructBody(files.sidebar, "SidebarView").includes("SkillPackageManagerSheet")
-      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills, \.sessions, \.advanced:[\s\S]*?HSplitView/.test(files.content)
+      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills:[\s\S]*?SkillsWorkspaceView\(\)[\s\S]*?case \.sessions, \.advanced:[\s\S]*?HSplitView/.test(files.content)
       && /CommandMenu\(UIStrings\.text\("menu\.navigate",\s*"Navigate"\)\)[\s\S]*?selectAppRoute\(\.overview\)[\s\S]*?selectAppRoute\(\.skills\)[\s\S]*?selectAppRoute\(\.sessions\)/.test(files.app),
+  },
+  {
+    label: "Skills workspace is aggregate-first, explicit-selection, and capability-gated",
+    text: [
+      files.content,
+      files.skillsWorkspace,
+      files.skillsWorkspaceList,
+      files.skillAggregateDetail,
+      files.skillsWorkspaceModel,
+      files.skillManagerEntryContext,
+      files.skillWorkspaceStore,
+      files.skillManagerModel,
+    ].join("\n"),
+    passed: /case \.skills:[\s\S]*?SkillsWorkspaceView\(\)/.test(files.content)
+      && /struct SkillsWorkspaceView:[\s\S]*?HSplitView[\s\S]*?SkillsWorkspaceListView\([\s\S]*?workspace:\s*store\.skillWorkspaceStore[\s\S]*?SkillAggregateDetailView\(/.test(files.skillsWorkspace)
+      && /availableConfigActions:\s*\[\][\s\S]*?onConfigAction:\s*nil/.test(files.skillsWorkspace)
+      && /SkillManagerPackageTarget\([\s\S]*?\.uniqueBestMatch\(in:\s*cachedInventoryItems\)/.test(files.skillsWorkspace)
+      && /SkillManagerInventoryActionPolicy\.availableActions\(for:\s*item\)/.test(files.skillsWorkspace)
+      && /No model request has been made\./.test(files.skillsWorkspace)
+      && /static let orderedViews:[\s\S]*?\.needsAttention,[\s\S]*?\.project,[\s\S]*?\.global,[\s\S]*?\.all/.test(files.skillsWorkspaceModel)
+      && /List\(selection:\s*selectionBinding\)[\s\S]*?ForEach\(presentation\.rows\)/.test(files.skillsWorkspaceList)
+      && /case \.answer:[\s\S]*?answerLayer[\s\S]*?case \.evidence:[\s\S]*?evidenceLayer[\s\S]*?case \.advanced:[\s\S]*?advancedLayer/.test(files.skillAggregateDetail)
+      && /private func normalizeSelection[\s\S]*?selectedAggregateID = nil/.test(files.skillWorkspaceStore)
+      && /static func add\([\s\S]*?static func packageDetail\([\s\S]*?static func update\([\s\S]*?static func remove\(/.test(files.skillManagerEntryContext),
   },
   {
     label: "secondary sidebar omits the agent profile row and switches session, skill, or config lists",
@@ -1073,7 +1115,7 @@ const customChecks = [
       && /struct WorkflowSheetSplitLayout<Primary: View,\s*Secondary: View>:[\s\S]*?primary\(\)[\s\S]*?Divider\(\)[\s\S]*?secondary\(\)/.test(files.workflowSheet)
       && /struct WorkflowSheetInlineBanner:[\s\S]*?Label\(message,\s*systemImage:\s*style\.systemImage\)[\s\S]*?\.background\(style\.color\.opacity\(0\.08\)[\s\S]*?Rectangle\(\)[\s\S]*?\.fill\(style\.color\)/.test(files.workflowSheet)
       && /struct TaskPreflightPreviewSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?WorkflowSheetSplitLayout\([\s\S]*?TaskPreflightEditorPane[\s\S]*?TaskPreflightHistoryPanel/.test(files.taskCockpit)
-      && /struct SkillPackageManagerSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?SkillManagerPanel\(showsHeader:\s*false\)/.test(files.sidebar)
+      && /struct SkillPackageManagerSheet:[\s\S]*?WorkflowSheetShell\([\s\S]*?SkillManagerPanel\([\s\S]*?showsHeader:\s*false,[\s\S]*?entryContext:\s*entryContext/.test(files.sidebar)
       && /struct SkillManagerPanel:[\s\S]*?WorkflowSheetSplitLayout\(primaryMinWidth:\s*430,\s*secondaryWidth:\s*380\)[\s\S]*?workflowPicker[\s\S]*?searchSection[\s\S]*?inventorySection[\s\S]*?actionSection[\s\S]*?previewSection/.test(files.skillManager)
       && !/struct SkillPackageManagerSheet:[\s\S]*?ErrorBanner\(message:\s*error\)/.test(files.sidebar)
       && !/struct SkillPackageManagerSheet:[\s\S]*?SuccessBanner\(message:\s*message\)/.test(files.sidebar),
@@ -1238,7 +1280,7 @@ const customChecks = [
       && /private func inventorySourceBadge[\s\S]*?source\.manager[\s\S]*?source\.localProject[\s\S]*?source\.localGlobal[\s\S]*?source\.localLibrary[\s\S]*?source\.localExternal/.test(files.skillManager)
       && /if item\.origin == \.local[\s\S]*?skillManager\.localUpdate\.help/.test(files.skillManager)
       && /if selection\.isLocal[\s\S]*?isChoosingArchive = true[\s\S]*?previewSkillManagerUpdate/.test(files.skillManager)
-      && /if item\.origin == \.local, item\.localInstanceID == nil\s*\{\s*return \[\.remove\]/.test(files.skillManager)
+      && /enum SkillManagerInventoryActionPolicy[\s\S]*?if item\.origin == \.local, item\.localInstanceID == nil\s*\{\s*return \[\.remove\]/.test(files.skillManagerModel)
       && /skillManagerLocalArchiveImportConfirmation[\s\S]*?localArchiveImport\(confirmation\)/.test(files.skillManager)
       && /sourceKind:\s*String\?/.test(files.skillManagerModel)
       && /let path:\s*String\?/.test(files.skillManagerModel)

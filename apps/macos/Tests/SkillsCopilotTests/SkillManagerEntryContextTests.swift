@@ -8,6 +8,7 @@ struct SkillManagerEntryContextTests {
         try packageEntriesResolveWorkflowActionAndScope()
         try utilityEntriesRemainPreviewOnly()
         try targetResolutionRequiresUniqueBestCandidate()
+        try inventoryActionPolicyPreservesOwnershipBoundaries()
     }
 
     private func defaultEntryPreservesLegacyState() throws {
@@ -165,6 +166,51 @@ struct SkillManagerEntryContextTests {
         )
     }
 
+    private func inventoryActionPolicyPreservesOwnershipBoundaries() throws {
+        let installedManager = inventoryItem(
+            name: "Managed",
+            source: "manager-source",
+            instanceID: nil
+        )
+        try expectEqual(
+            SkillManagerInventoryActionPolicy.availableActions(for: installedManager),
+            [.update, .remove],
+            "Installed manager package actions"
+        )
+
+        let unlinkedManager = SkillManagerInventoryItem(
+            name: "Available",
+            source: "manager-source",
+            scope: .project,
+            agents: [],
+            origin: .manager,
+            localOwnership: nil,
+            localInstanceID: nil,
+            localPath: nil
+        )
+        try expectEqual(
+            SkillManagerInventoryActionPolicy.availableActions(for: unlinkedManager),
+            [.install],
+            "Unlinked manager package cannot update or remove"
+        )
+
+        let appOwnedLocal = SkillManagerInventoryItem(
+            name: "Local",
+            source: "/redacted/local",
+            scope: .project,
+            agents: [],
+            origin: .local,
+            localOwnership: .appOwned,
+            localInstanceID: "local-instance",
+            localPath: "/redacted/local"
+        )
+        try expectEqual(
+            SkillManagerInventoryActionPolicy.availableActions(for: appOwnedLocal),
+            [.install, .deleteSource],
+            "Unlinked app-owned local source separates install and deletion"
+        )
+    }
+
     private func inventoryItem(
         name: String,
         source: String,
@@ -187,7 +233,7 @@ struct SkillManagerEntryContextTests {
 #if canImport(XCTest)
 import XCTest
 
-final class SkillManagerEntryContextXCTests: XCTestCase {
+final class SkillManagerEntryContextXCTest: XCTestCase {
     func testEntryContextContract() throws {
         try SkillManagerEntryContextTests().run()
     }

@@ -563,6 +563,11 @@ private struct SecondarySidebarProjectPickerLabel: View {
 
 struct SkillPackageManagerSheet: View {
     @EnvironmentObject private var store: SkillStore
+    let entryContext: SkillManagerEntryContext
+
+    init(entryContext: SkillManagerEntryContext = .default) {
+        self.entryContext = entryContext
+    }
 
     var body: some View {
         WorkflowSheetShell(
@@ -570,7 +575,10 @@ struct SkillPackageManagerSheet: View {
             systemImage: "shippingbox.and.arrow.backward",
             subtitle: UIStrings.text("skillManager.workflow.label", "Workflow"),
             content: {
-                SkillManagerPanel(showsHeader: false)
+                SkillManagerPanel(
+                    showsHeader: false,
+                    entryContext: entryContext
+                )
             }
         )
         .frame(

@@ -941,13 +941,7 @@ struct SkillManagerPanel: View {
         case .search:
             return [.install]
         case .inventory(let item):
-            if item.agents.isEmpty {
-                return item.origin == .local ? [.install, .deleteSource] : [.install]
-            }
-            if item.origin == .local, item.localInstanceID == nil {
-                return [.remove]
-            }
-            return [.update, .remove]
+            return SkillManagerInventoryActionPolicy.availableActions(for: item)
         }
     }
 
@@ -989,6 +983,8 @@ struct SkillManagerPanel: View {
         }
         if let searchQuery = presentation.searchQuery {
             store.skillManagerSearchQuery = searchQuery
+        } else if entryContext.intent == .add {
+            store.skillManagerSearchQuery = ""
         }
         if let suggestedName = presentation.suggestedLocalSkillName {
             store.skillManagerLocalSkillName = suggestedName

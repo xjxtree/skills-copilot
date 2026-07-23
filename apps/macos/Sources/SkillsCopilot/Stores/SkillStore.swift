@@ -555,14 +555,12 @@ final class SkillStore: ObservableObject {
         switch item.target.kind {
         case "skill":
             selectAppRoute(.skills)
-            guard let skill = skills.first(where: {
-                $0.id == item.target.id || $0.definitionId == item.target.id
-            }) else {
-                return
+            let aggregate = skillWorkspaceStore.aggregates.first {
+                $0.id == item.target.id
+                    || $0.definitionID == item.target.id
+                    || $0.instanceIDs.contains(item.target.id)
             }
-            setSelectedSkillID(skill.id, syncSidebar: false)
-            setSidebarSelection(.skill(skill.id))
-            skillListScrollRequest = SkillListScrollRequest(skillID: skill.id)
+            skillWorkspaceStore.selectAggregate(id: aggregate?.id)
         case "session":
             selectAppRoute(.sessions)
         case "config", "package", "provider_profile", "app_data":

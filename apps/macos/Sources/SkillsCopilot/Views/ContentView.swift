@@ -112,7 +112,7 @@ struct ContentView: View {
             routeContent
         }
         .onChange(of: store.selectedSkillID) { _ in
-            guard store.hasCompletedStartupLoad, store.appRoute == .skills else { return }
+            guard store.hasCompletedStartupLoad, store.appRoute == .advanced else { return }
             Task { await store.loadSelectedDetail() }
         }
     }
@@ -143,7 +143,9 @@ struct ContentView: View {
                     overviewResumeSelection = ProjectOverviewResumeSelection(session: session)
                 }
             )
-        case .skills, .sessions, .advanced:
+        case .skills:
+            SkillsWorkspaceView()
+        case .sessions, .advanced:
             HSplitView {
                 SecondarySidebarView(columnVisibility: columnVisibility)
                     .frame(

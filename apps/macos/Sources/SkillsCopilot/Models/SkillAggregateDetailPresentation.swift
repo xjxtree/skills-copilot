@@ -1,5 +1,21 @@
 import Foundation
 
+enum SkillAggregatePackageAction: String, CaseIterable, Identifiable {
+    case add
+    case detail
+    case update
+    case remove
+
+    var id: String { rawValue }
+}
+
+enum SkillAggregateConfigAction: String, CaseIterable, Identifiable {
+    case enable
+    case disable
+
+    var id: String { rawValue }
+}
+
 enum SkillAggregateDetailLayer: String, CaseIterable, Identifiable {
     case answer
     case evidence

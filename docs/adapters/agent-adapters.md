@@ -260,6 +260,10 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Manager update operates on the shared package source and does not accept
   per-agent targeting. The confirmation shows all currently linked supported
   agents affected by that source update.
+- A Skills-workspace entry context is presentation-only. It may filter the
+  already accepted manager inventory by logical skill/package facts and may
+  preselect exactly one proven inventory row. Multiple same-name matches stay
+  unselected, and no entry context can authorize a manager or config write.
 - The app prewarms project/global catalog/lock projections at startup. Startup,
   reload, project switching, catalog refresh, opening Skill Manager, and its
   Load Data action do not invoke the external manager.

@@ -36,7 +36,7 @@ test("reports duplicate registrations", () => {
 
 test("requires the exact full-suite completion sentinel once", () => {
   const sentinel =
-    "SkillsCopilotTests: full-suite-complete service=2 main=29 skill-store-groups=64 named=95";
+    "SkillsCopilotTests: full-suite-complete service=2 main=32 skill-store-groups=64 named=98";
   assert.deepEqual(validateCompletionLog(`${sentinel}\n`), []);
   assert.deepEqual(validateCompletionLog("partial output\n"), [
     "full-suite completion line must appear exactly once; found 0",

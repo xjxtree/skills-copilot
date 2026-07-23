@@ -471,7 +471,7 @@ impl ServiceHost {
                             })
                             .unwrap_or(coverage),
                         evidence_summary: format!(
-                            "{} {} skill evidence was accepted from the local catalog cache",
+                            "{} {} skill evidence was accepted from the project catalog snapshot",
                             product_agent_label(instance.agent),
                             instance.scope.as_str()
                         ),
@@ -549,7 +549,7 @@ fn product_agent_sources(
                     coverage
                 },
                 evidence_summary: format!(
-                    "{} adapter scan coverage was accepted from the local catalog cache",
+                    "{} adapter scan coverage was accepted from the project catalog snapshot",
                     product_agent_label(agent)
                 ),
                 action_ids: Vec::new(),

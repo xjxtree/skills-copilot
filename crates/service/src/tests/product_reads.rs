@@ -207,6 +207,18 @@ fn scan_backed_aggregates_keep_plugin_and_compatibility_sources_distinct() {
         assert!(!identity.contains('/'));
         assert!(!identity.contains("cache"));
         assert!(!identity.contains(&home.to_string_lossy().to_string()));
+        for evidence in aggregate["evidence"]
+            .as_array()
+            .expect("aggregate evidence")
+        {
+            let summary = evidence["summary"]
+                .as_str()
+                .expect("aggregate evidence summary");
+            assert!(
+                !summary.to_ascii_lowercase().contains("cache"),
+                "product evidence must describe the accepted snapshot, not cache infrastructure"
+            );
+        }
     }
 
     let opencode = host.handle(ServiceRequest {

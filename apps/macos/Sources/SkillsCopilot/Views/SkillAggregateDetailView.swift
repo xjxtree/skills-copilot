@@ -1,21 +1,5 @@
 import SwiftUI
 
-enum SkillAggregatePackageAction: String, CaseIterable, Identifiable {
-    case add
-    case detail
-    case update
-    case remove
-
-    var id: String { rawValue }
-}
-
-enum SkillAggregateConfigAction: String, CaseIterable, Identifiable {
-    case enable
-    case disable
-
-    var id: String { rawValue }
-}
-
 struct SkillAggregateDetailView: View {
     let presentation: SkillAggregateDetailPresentation
     let availablePackageActions: Set<SkillAggregatePackageAction>

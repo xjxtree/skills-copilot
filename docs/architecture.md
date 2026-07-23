@@ -292,6 +292,13 @@ layouts. Plugin caches and other read-only discovery roots remain outside
 package operations. Skill Manager loading, search, inventory, and preview use
 surface-local busy state and do not block unrelated app actions; only a
 confirmed Skill Manager write participates in the app-wide mutation gate.
+The Skills workspace renders the accepted aggregate projection rather than the
+legacy instance catalog. Its local view/search/sort criteria never rescan, and
+its selection remains explicit. A UI-only Skill Manager entry context may
+filter cached inventory and preselect an action only when one package target is
+proved; it never creates an action token or grants write authority. Package
+actions remain in `skillManager.*`, while config enablement remains in the
+independent batch-toggle lifecycle.
 
 ## Extension Points
 

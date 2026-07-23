@@ -75,9 +75,12 @@ struct SkillAggregateRowPresentation: Identifiable, Equatable {
 
     var attentionLabel: String {
         if attentionCount > 0 {
-            return UIStrings.text(
-                "skills.workspace.row.attentionWithIssues",
-                "\(attentionCount) issues"
+            return String(
+                format: UIStrings.text(
+                    "skills.workspace.row.attentionWithIssues",
+                    "%d issues"
+                ),
+                attentionCount
             )
         }
         return UIStrings.text(
@@ -87,23 +90,35 @@ struct SkillAggregateRowPresentation: Identifiable, Equatable {
     }
 
     var installedLabel: String {
-        UIStrings.text(
-            "skills.workspace.row.installedCount",
-            "Installed \(installedCount)/\(instanceCount)"
+        String(
+            format: UIStrings.text(
+                "skills.workspace.row.installedCount",
+                "Installed %d/%d"
+            ),
+            installedCount,
+            instanceCount
         )
     }
 
     var enabledLabel: String {
-        UIStrings.text(
-            "skills.workspace.row.enabledCount",
-            "Enabled \(enabledCount)/\(instanceCount)"
+        String(
+            format: UIStrings.text(
+                "skills.workspace.row.enabledCount",
+                "Enabled %d/%d"
+            ),
+            enabledCount,
+            instanceCount
         )
     }
 
     var effectiveLabel: String {
-        UIStrings.text(
-            "skills.workspace.row.effectiveCount",
-            "Verified Effective \(effectiveCount)/\(instanceCount)"
+        String(
+            format: UIStrings.text(
+                "skills.workspace.row.effectiveCount",
+                "Verified Effective %d/%d"
+            ),
+            effectiveCount,
+            instanceCount
         )
     }
 
@@ -288,22 +303,32 @@ struct SkillsWorkspaceListPresentation: Equatable {
     }
 
     var visibleCountSummary: String {
-        UIStrings.text(
-            "skills.workspace.counts.visible",
-            "\(visibleAggregateCount) aggregates · \(visibleInstanceCount) instances"
+        String(
+            format: UIStrings.text(
+                "skills.workspace.counts.visible",
+                "%d aggregates · %d instances"
+            ),
+            visibleAggregateCount,
+            visibleInstanceCount
         )
     }
 
     var sourceCountSummary: String {
         if let sourceAggregateTotal {
-            return UIStrings.text(
-                "skills.workspace.counts.sourceTotal",
-                "Source total \(sourceAggregateTotal) aggregates"
+            return String(
+                format: UIStrings.text(
+                    "skills.workspace.counts.sourceTotal",
+                    "Source total %d aggregates"
+                ),
+                sourceAggregateTotal
             )
         }
-        return UIStrings.text(
-            "skills.workspace.counts.sourceLoaded",
-            "Loaded \(loadedAggregateCount) aggregates · source total unknown"
+        return String(
+            format: UIStrings.text(
+                "skills.workspace.counts.sourceLoaded",
+                "Loaded %d aggregates · source total unknown"
+            ),
+            loadedAggregateCount
         )
     }
 }

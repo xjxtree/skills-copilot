@@ -31,6 +31,25 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   terminal, and appears only when the service provides supported ordered argv.
 - Skill Package Manager actions are integrated into Skills. Task Preflight is
   presented as inline task readiness rather than a separate destination.
+- Skills presents Needs Attention, Project, Global, and All in that order.
+  The list reads `SkillAggregateRecord` rows, labels aggregate and instance
+  counts separately, and keeps same-name definitions separate when their
+  definition, logical source, package, scope, or runtime identity differs.
+  Search, filters, sorting, and selection use the accepted aggregate cache;
+  loading the route or invalidating a filter must not select the first skill.
+- Skill detail is ordered Answer, Evidence, and Advanced. Answer explains
+  purpose, verified effective locations, and attention state. Evidence retains
+  every instance, effectiveness state, finding/conflict total, coverage,
+  evidence reference, and service-owned action. Advanced shows safe logical
+  metadata rather than a physical cache path.
+- Package ownership actions open one contextual Skill Manager presentation.
+  The entry context may choose a cached workflow, scope, or uniquely matched
+  inventory row, but it is not authorization and never bypasses the existing
+  preview, confirmation, apply, and read-back lifecycle. Ambiguous same-name
+  inventory matches remain unselected.
+- Package Add/Update/Remove/import/local-create and agent config
+  enable/disable are separate action groups. Skill Manager never presents
+  config enablement as package state.
 - Config, raw metadata, diagnostics, provider profiles, and Agent Copilot
   provider activity are Advanced or Settings surfaces.
 - `ContentView` routes to a workspace and must not assume every selection is a
@@ -42,6 +61,9 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   may report verified environment state but not universal agent readiness.
 - Installed, enabled, and verified effective are distinct labels. Partial,
   stale, unavailable, and source-limited evidence never renders as healthy.
+- Disabled, shadowed, broken, unavailable, and installed-but-unlinked are
+  distinct skill effectiveness states and are never collapsed into a generic
+  disabled or missing label.
 - Aggregate counts display completeness or a typed limitation.
 - Skill detail and session detail lead with Answer/Summary, then Evidence, then
   Advanced detail. Raw paths and metadata are never the default explanation.
