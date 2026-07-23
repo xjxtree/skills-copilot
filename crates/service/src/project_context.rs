@@ -24,6 +24,8 @@ thread_local! {
         std::cell::RefCell::new(None);
     static PROJECT_CONTEXT_POST_WRITE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+    static PROJECT_CONTEXT_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -38,6 +40,16 @@ pub(crate) fn inject_project_context_post_write_hook_for_test(hook: impl FnOnce(
     PROJECT_CONTEXT_POST_WRITE_HOOK.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(hook));
     });
+}
+
+#[cfg(test)]
+pub(crate) fn inject_project_context_post_rename_sync_failure_for_test() {
+    PROJECT_CONTEXT_POST_RENAME_SYNC_FAILURE.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+fn take_project_context_post_rename_sync_failure_for_test() -> bool {
+    PROJECT_CONTEXT_POST_RENAME_SYNC_FAILURE.with(std::cell::Cell::take)
 }
 
 const PROJECT_CONTEXT_SCHEMA_VERSION: u32 = 1;
@@ -304,18 +316,34 @@ fn apply_project_context_mutation(
     let original_revision = locked.preview.current.revision.clone();
     let candidate_revision = locked.preview.candidate.revision.clone();
     owner.validate_owner_path_binding()?;
-    if let Err(write_error) = owner.owner_fs().atomic_replace_private_file(
+    let write_result = owner.owner_fs().atomic_replace_private_file(
         Path::new(PROJECT_CONTEXT_FILE),
         &locked.candidate_bytes,
         "project-context",
-    ) {
-        match load_store_snapshot_at(&owner) {
-            Ok(current) if current.revision == candidate_revision => {}
-            Ok(current) if current.revision == original_revision => {
-                return Err(ServiceError::Command(write_error));
+    );
+    #[cfg(test)]
+    let write_result = if take_project_context_post_rename_sync_failure_for_test() {
+        Err(CommandError::Io(io::Error::other(
+            "injected project context post-rename directory sync failure",
+        )))
+    } else {
+        write_result
+    };
+    if let Err(write_error) = write_result {
+        return match load_store_snapshot_at(&owner) {
+            Ok(current) if current.revision == candidate_revision => {
+                Err(CommandError::PartialEffect {
+                    operation: "project context".to_string(),
+                    state: "applied_unverified",
+                    cleanup_required: false,
+                    detail: "project context bytes match the confirmed candidate, but replacement durability could not be verified".to_string(),
+                }
+                .into())
             }
-            _ => {
-                return Err(CommandError::PartialEffect {
+            Ok(current) if current.revision == original_revision => {
+                Err(ServiceError::Command(write_error))
+            }
+            _ => Err(CommandError::PartialEffect {
                     operation: "project context".to_string(),
                     state: "outcome_unknown",
                     cleanup_required: false,
@@ -323,9 +351,8 @@ fn apply_project_context_mutation(
                         "project context persistence failed after the outcome became unverifiable"
                             .to_string(),
                 }
-                .into());
-            }
-        }
+                .into()),
+        };
     }
 
     #[cfg(test)]

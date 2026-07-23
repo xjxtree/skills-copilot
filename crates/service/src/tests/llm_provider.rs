@@ -3548,6 +3548,36 @@ fn project_context_apply_reports_partial_effect_if_post_write_readback_fails() {
 }
 
 #[test]
+fn project_context_post_rename_sync_failure_is_not_reported_as_verified() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-sync-failure-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let project = temp_root.join("project");
+    fs::create_dir_all(&project).expect("create project");
+
+    crate::project_context::inject_project_context_post_rename_sync_failure_for_test();
+    let host = test_host(app_data_dir.clone());
+    let (_, response) =
+        confirmed_project_set_context(&host, json!({ "root_path": project, "name": "Accepted" }));
+
+    assert!(!response.ok);
+    let error = response.error.expect("partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("applied_unverified")
+    );
+    assert!(
+        app_data_dir.join("project-context.json").is_file(),
+        "the candidate may exist even though its directory sync failed"
+    );
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
 fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
     let temp_root = env::temp_dir().join(format!(
         "skills-copilot-scan-rollback-{}-{}",

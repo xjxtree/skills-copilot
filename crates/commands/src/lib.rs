@@ -4398,9 +4398,7 @@ fn write_config_atomic(
         run_atomic_post_rename_test_hook(path)?;
         set_private_path_permissions(path)?;
         validate_config_write_target(ctx, agent, scope, path)?;
-        if let Ok(parent_dir) = fs::File::open(parent) {
-            let _ = parent_dir.sync_all();
-        }
+        fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
     finish_atomic_write_with_temp_cleanup("config.write", write_result, &tmp)
@@ -4444,9 +4442,7 @@ fn write_skill_file_atomic(
         run_atomic_post_rename_test_hook(path)?;
         set_private_path_permissions(path)?;
         validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-        if let Ok(parent_dir) = fs::File::open(parent) {
-            let _ = parent_dir.sync_all();
-        }
+        fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
     finish_atomic_write_with_temp_cleanup("skill.install", write_result, &tmp)

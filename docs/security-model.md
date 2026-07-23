@@ -186,7 +186,8 @@ confirmation, and network posture.
   apply creates and locks any authorized missing owner chain through the same
   component-wise no-follow descriptor walk, then revalidates under the shared
   cross-process owner lock before atomic private-file replacement and semantic
-  read-back.
+  read-back. Candidate bytes observed after a replacement or parent-directory
+  sync error are `applied_unverified`, never a verified success.
 - A stale project preview or stale explicit scan context is rejected by a
   non-creating preflight. It must not create the app-data directory, catalog,
   target file, lock artifact, snapshot, or audit record.
@@ -291,7 +292,9 @@ confirmation, and network posture.
   returning diagnostics. Its one-time reservation is a bounded private
   app-local record; a stale query, owner, executable, working directory,
   environment, target, or consumed confirmation is rejected before process
-  creation. After process start, an exit-zero response still requires a
+  creation. A reservation whose replacement durability cannot be proved is a
+  non-retryable `partial_effect`, and no manager process starts. After process
+  start, an exit-zero response still requires a
   recognized result collection or explicit empty-result shape; unknown or
   malformed output is a non-retryable `partial_effect`, never verified empty
   evidence.

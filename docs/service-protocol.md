@@ -480,6 +480,8 @@ presence/value or absence verification, not secret exposure.
   component-wise no-follow directory descriptors when necessary, reprojects
   and revalidates the confirmation under the lock, atomically replaces the
   private state file, and returns a minimal verified project-context read-back.
+  Candidate bytes observed after a replacement or parent-directory sync error
+  are returned as non-retryable `applied_unverified`, not verified success.
   A stale or mismatched action does not create app data or write state; an
   unsafe owner link does not chmod or populate its target.
 - Clearing the active project preserves Recent Projects. Removing a recent row
@@ -631,6 +633,8 @@ presence/value or absence verification, not secret exposure.
   a recognized result collection or the manager's explicit empty-result
   shape. Unknown, malformed, or structurally changed output after process start
   is `partial_effect` with `state=outcome_unknown` and automatic retry disabled.
+  If the one-time reservation replacement itself cannot be proved durable, the
+  apply returns non-retryable `partial_effect` before starting the manager.
 - `skillManager.listInstalled` is a process-free projection over the accepted
   project-context catalog plus the applicable project/global manager lock. It
   never invokes `npx`, performs network access, or treats a generic plugin or

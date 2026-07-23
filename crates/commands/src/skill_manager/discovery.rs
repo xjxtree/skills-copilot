@@ -4,6 +4,22 @@ use std::io::Read;
 const DISCOVERY_STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_DISCOVERY_STATE_BYTES: u64 = 16 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static DISCOVERY_STATE_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn inject_discovery_state_post_rename_sync_failure_for_test() {
+    DISCOVERY_STATE_POST_RENAME_SYNC_FAILURE.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+fn take_discovery_state_post_rename_sync_failure_for_test() -> bool {
+    DISCOVERY_STATE_POST_RENAME_SYNC_FAILURE.with(std::cell::Cell::take)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DiscoveryActionState {
@@ -691,12 +707,42 @@ fn write_discovery_state(
             "skill manager discovery replay state exceeded its safety limit".to_string(),
         ));
     }
+    let original = read_discovery_state_bytes(owner)?;
     owner.remove_root_regular_files_matching(".skill-manager-discovery-state.", ".tmp", 64)?;
-    owner.atomic_replace_private_file(
+    let write_result = owner.atomic_replace_private_file(
         discovery_state_relative_path(),
         &bytes,
         "skill-manager-discovery-state",
-    )
+    );
+    #[cfg(test)]
+    let write_result = if take_discovery_state_post_rename_sync_failure_for_test() {
+        Err(CommandError::Io(std::io::Error::other(
+            "injected discovery-state post-rename directory sync failure",
+        )))
+    } else {
+        write_result
+    };
+    let readback = read_discovery_state_bytes(owner);
+    match (write_result, readback) {
+        (Ok(()), Ok(Some(persisted))) if persisted == bytes => Ok(()),
+        (Err(_), Ok(Some(persisted))) if persisted == bytes => {
+            Err(CommandError::PartialEffect {
+                operation: "skillManager.applySearch".to_string(),
+                state: "applied_unverified",
+                cleanup_required: false,
+                detail: "the one-time search state matches the candidate, but replacement durability could not be verified; the manager process did not start"
+                    .to_string(),
+            })
+        }
+        (Err(write_error), Ok(persisted)) if persisted == original => Err(write_error),
+        _ => Err(CommandError::PartialEffect {
+            operation: "skillManager.applySearch".to_string(),
+            state: "outcome_unknown",
+            cleanup_required: false,
+            detail: "the one-time search state replacement outcome could not be verified; do not retry"
+                .to_string(),
+        }),
+    }
 }
 
 fn read_manager_lock_projection(
@@ -987,6 +1033,67 @@ mod tests {
             outside.exists(),
             "rejected links must not touch their target"
         );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn discovery_reservation_post_rename_sync_failure_is_non_retryable_partial() {
+        crate::initialize_action_preview_secret_for_test([0xA5; 32])
+            .expect("initialize action preview test secret");
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-discovery-sync-failure-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        fs::create_dir_all(&root).expect("create app data");
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock app data");
+        let owner = lock.owner_fs();
+        let source_revision =
+            action_source_revision("test.discovery", &[("state", "missing")]).unwrap();
+        let action = action_descriptor(
+            ActionKind::RefreshEvidence,
+            ActionIntent::InspectEvidence,
+            ActionTargetRef {
+                kind: ActionTargetKind::Skill,
+                id: "manager:test-discovery".to_string(),
+                agent: None,
+                scope: None,
+            },
+            None,
+            vec![
+                ActionImpact::ReadOnly,
+                ActionImpact::ExternalManager,
+                ActionImpact::AppLocalData,
+            ],
+            "skillManager.search",
+            Some("skillManager.applySearch"),
+            source_revision,
+            true,
+            ActionNetworkPosture::Required,
+            vec![ActionReadbackDomain::ManagerInventory],
+            vec!["coverage:all".to_string()],
+        )
+        .expect("discovery action");
+
+        inject_discovery_state_post_rename_sync_failure_for_test();
+        let error = reserve_discovery_action(&owner, "opaque-preview-token", &action)
+            .expect_err("uncertain reservation durability must not be accepted");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "applied_unverified",
+                cleanup_required: false,
+                ..
+            }
+        ));
+        let persisted = read_discovery_state_bytes(&owner)
+            .expect("read persisted state")
+            .expect("reservation bytes");
+        let persisted: DiscoveryActionState =
+            serde_json::from_slice(&persisted).expect("decode reservation");
+        assert_eq!(persisted.phase, "reservation");
+        assert_eq!(persisted.state, "not_started");
         fs::remove_dir_all(root).ok();
     }
 }
