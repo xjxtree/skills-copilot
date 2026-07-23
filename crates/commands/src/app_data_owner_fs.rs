@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
     path::{Component, Path, PathBuf},
 };
@@ -35,6 +35,19 @@ pub struct AppDataPrivateLeafSnapshot {
     revision: String,
     bytes: Option<Vec<u8>>,
     identity: AppDataPrivateLeafIdentity,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AppDataCreatedDirectory {
+    relative: PathBuf,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    uid: u32,
+    #[cfg(unix)]
+    mode: u32,
 }
 
 impl AppDataPrivateLeafSnapshot {
@@ -113,6 +126,21 @@ impl PrivateRegularFileStamp {
     }
 }
 
+#[cfg(unix)]
+fn private_stamp_matches_after_rename(
+    before: PrivateRegularFileStamp,
+    moved: PrivateRegularFileStamp,
+) -> bool {
+    before.device == moved.device
+        && before.inode == moved.inode
+        && before.uid == moved.uid
+        && before.link_count == moved.link_count
+        && before.mode == moved.mode
+        && before.size == moved.size
+        && before.modified_seconds == moved.modified_seconds
+        && before.modified_nanoseconds == moved.modified_nanoseconds
+}
+
 #[derive(Debug)]
 struct BoundedRegularFileRead {
     bytes: Vec<u8>,
@@ -138,6 +166,11 @@ thread_local! {
     static PRIVATE_APPEND_POST_WRITE_HOOK:
         std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
             const { std::cell::RefCell::new(None) };
+    static PRIVATE_WRITE_POST_ACTIVATION_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    static PRIVATE_CLEANUP_DIRECTORY_SYNC_FAULT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -265,6 +298,30 @@ fn run_private_append_post_write_hook() {
 
 #[cfg(not(test))]
 fn run_private_append_post_write_hook() {}
+
+#[cfg(test)]
+fn install_private_write_post_activation_hook(action: impl FnOnce() + 'static) {
+    PRIVATE_WRITE_POST_ACTIVATION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn run_private_write_post_activation_hook() {
+    PRIVATE_WRITE_POST_ACTIVATION_HOOK.with(|slot| {
+        if let Some(action) = slot.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_private_write_post_activation_hook() {}
+
+#[cfg(test)]
+fn install_private_cleanup_directory_sync_fault() {
+    PRIVATE_CLEANUP_DIRECTORY_SYNC_FAULT.with(|fault| fault.set(true));
+}
 /// Filesystem capability rooted at the already-opened and locked app-data
 /// owner directory.
 ///
@@ -357,8 +414,8 @@ impl<'lock> AppDataOwnerFs<'lock> {
         #[cfg(unix)]
         let before = {
             let before = private_regular_file_stamp_from_metadata(&metadata, label)?;
-            let owner_metadata = self.lock.owner_directory().metadata()?;
-            if before.uid != std::os::unix::fs::MetadataExt::uid(&owner_metadata)
+            let owner_uid = private_owner_uid(self.lock)?;
+            if before.uid != owner_uid
                 || before.link_count != 1
                 || (require_private_mode && before.mode & 0o077 != 0)
             {
@@ -423,140 +480,6 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
     }
 
-    pub fn atomic_replace_private_file(
-        &self,
-        relative: &Path,
-        bytes: &[u8],
-        temp_stem: &str,
-    ) -> Result<(), CommandError> {
-        validate_relative_path(relative)?;
-        validate_single_component(OsStr::new(temp_stem))?;
-        #[cfg(unix)]
-        {
-            use rustix::fs::{fchmod, fsync, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
-
-            let (parent, name) = self.open_private_parent(relative)?;
-            let mode = Mode::from_bits_truncate(0o600);
-            let mut last_collision = false;
-            for _ in 0..32_u32 {
-                let temp_name = secure_owner_temp_name(temp_stem)?;
-                let descriptor = match openat(
-                    &parent,
-                    &temp_name,
-                    OFlags::WRONLY
-                        | OFlags::CREATE
-                        | OFlags::EXCL
-                        | OFlags::NOFOLLOW
-                        | OFlags::CLOEXEC,
-                    mode,
-                ) {
-                    Ok(descriptor) => descriptor,
-                    Err(rustix::io::Errno::EXIST) => {
-                        last_collision = true;
-                        continue;
-                    }
-                    Err(error) => return Err(io::Error::from(error).into()),
-                };
-                let mut file = File::from(descriptor);
-                let mut installed = false;
-                let result = (|| {
-                    fchmod(&file, mode).map_err(io::Error::from)?;
-                    file.write_all(bytes)?;
-                    file.sync_all()?;
-                    renameat(&parent, &temp_name, &parent, name).map_err(io::Error::from)?;
-                    installed = true;
-                    fsync(&parent).map_err(|error| {
-                        owner_file_effect_unverified(format!(
-                            "the app-owned file was replaced, but parent-directory durability could not be verified: {}",
-                            io::Error::from(error)
-                        ))
-                    })?;
-                    Ok::<(), CommandError>(())
-                })();
-                if let Err(error) = result {
-                    if installed {
-                        return Err(error);
-                    }
-                    match unlinkat(&parent, &temp_name, AtFlags::empty()) {
-                        Ok(()) => {
-                            fsync(&parent).map_err(|cleanup| {
-                                owner_file_effect_unknown(format!(
-                                    "app-owned file preparation failed ({error}); temporary cleanup durability could not be verified: {}",
-                                    io::Error::from(cleanup)
-                                ))
-                            })?;
-                        }
-                        Err(rustix::io::Errno::NOENT) => {}
-                        Err(cleanup) => {
-                            return Err(owner_file_effect_unknown(format!(
-                                "app-owned file preparation failed ({error}); private temporary cleanup failed: {}",
-                                io::Error::from(cleanup)
-                            )))
-                        }
-                    }
-                    return Err(error);
-                }
-                return Ok(());
-            }
-            if last_collision {
-                return Err(CommandError::UnsafeConfigPath(
-                    "app-data private temporary file allocation was exhausted".to_string(),
-                ));
-            }
-            unreachable!();
-        }
-        #[cfg(not(unix))]
-        {
-            let root = self.lock.owner_path();
-            let target = guarded_fallback_path(root, relative)?;
-            let parent = target.parent().ok_or_else(unsafe_relative_path)?;
-            let temp = parent.join(secure_owner_temp_name(temp_stem)?);
-            let mut installed = false;
-            let result = (|| {
-                let mut file = std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&temp)?;
-                file.write_all(bytes)?;
-                file.sync_all()?;
-                std::fs::rename(&temp, &target)?;
-                installed = true;
-                File::open(parent)
-                    .and_then(|directory| directory.sync_all())
-                    .map_err(|error| {
-                        owner_file_effect_unverified(format!(
-                            "the app-owned file was replaced, but parent-directory durability could not be verified: {error}"
-                        ))
-                    })?;
-                Ok::<(), CommandError>(())
-            })();
-            if let Err(error) = result {
-                if installed {
-                    return Err(error);
-                }
-                match std::fs::remove_file(&temp) {
-                    Ok(()) => {
-                        File::open(parent)
-                            .and_then(|directory| directory.sync_all())
-                            .map_err(|cleanup| {
-                                owner_file_effect_unknown(format!(
-                                    "app-owned file preparation failed ({error}); temporary cleanup durability could not be verified: {cleanup}"
-                                ))
-                            })?;
-                    }
-                    Err(cleanup) if cleanup.kind() == io::ErrorKind::NotFound => {}
-                    Err(cleanup) => {
-                        return Err(owner_file_effect_unknown(format!(
-                            "app-owned file preparation failed ({error}); private temporary cleanup failed: {cleanup}"
-                        )))
-                    }
-                }
-                return Err(error);
-            }
-            Ok(())
-        }
-    }
-
     pub fn append_private_file(
         &self,
         relative: &Path,
@@ -577,14 +500,14 @@ impl<'lock> AppDataOwnerFs<'lock> {
         {
             use std::os::unix::fs::MetadataExt;
 
-            use rustix::fs::{fchmod, fsync, openat, Mode, OFlags};
+            use rustix::fs::{fchmod, fsync, openat, statat, AtFlags, Mode, OFlags};
 
             let (parent, name) = self.open_private_parent(relative)?;
             let mode = Mode::from_bits_truncate(0o600);
             let (descriptor, created) = match openat(
                 &parent,
                 name,
-                OFlags::WRONLY | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDWR | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::empty(),
             ) {
                 Ok(descriptor) => (descriptor, false),
@@ -592,7 +515,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     openat(
                         &parent,
                         name,
-                        OFlags::WRONLY
+                        OFlags::RDWR
                             | OFlags::APPEND
                             | OFlags::CREATE
                             | OFlags::EXCL
@@ -606,6 +529,39 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 Err(error) => return Err(io::Error::from(error).into()),
             };
             let mut file = File::from(descriptor);
+            let mut metadata = match file.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if created => {
+                    cleanup_created_private_append_file(
+                        &parent,
+                        name,
+                        &file,
+                        CommandError::from(error),
+                    )?;
+                    unreachable!("created append cleanup returns the original error")
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let owner_uid = match private_owner_uid(self.lock) {
+                Ok(uid) => uid,
+                Err(error) if created => {
+                    cleanup_created_private_append_file(&parent, name, &file, error)?;
+                    unreachable!("created append cleanup returns the original error")
+                }
+                Err(error) => return Err(error),
+            };
+            if !metadata.is_file()
+                || metadata.uid() != owner_uid
+                || metadata.nlink() != 1
+                || metadata.mode() & 0o077 != 0
+            {
+                let error = unsafe_relative_file(label);
+                if created {
+                    cleanup_created_private_append_file(&parent, name, &file, error)?;
+                    unreachable!("created append cleanup returns the original error")
+                }
+                return Err(error);
+            }
             if created {
                 if let Err(error) = fchmod(&file, mode).map_err(io::Error::from) {
                     cleanup_created_private_append_file(
@@ -616,44 +572,18 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     )?;
                     unreachable!("created append cleanup returns the original error")
                 }
-            }
-            let metadata = match file.metadata() {
-                Ok(metadata) => metadata,
-                Err(error) if created => {
-                    cleanup_created_private_append_file(
-                        &parent,
-                        name,
-                        &file,
-                        CommandError::from(error),
-                    )?;
-                    unreachable!("created append cleanup returns the original error")
-                }
-                Err(error) => return Err(error.into()),
-            };
-            let owner_metadata = match self.lock.owner_directory().metadata() {
-                Ok(metadata) => metadata,
-                Err(error) if created => {
-                    cleanup_created_private_append_file(
-                        &parent,
-                        name,
-                        &file,
-                        CommandError::from(error),
-                    )?;
-                    unreachable!("created append cleanup returns the original error")
-                }
-                Err(error) => return Err(error.into()),
-            };
-            if !metadata.is_file()
-                || metadata.uid() != owner_metadata.uid()
-                || metadata.nlink() != 1
-                || metadata.mode() & 0o077 != 0
-            {
-                let error = unsafe_relative_file(label);
-                if created {
-                    cleanup_created_private_append_file(&parent, name, &file, error)?;
-                    unreachable!("created append cleanup returns the original error")
-                }
-                return Err(error);
+                metadata = match file.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        cleanup_created_private_append_file(
+                            &parent,
+                            name,
+                            &file,
+                            CommandError::from(error),
+                        )?;
+                        unreachable!("created append cleanup returns the original error")
+                    }
+                };
             }
             let expected_len_result = metadata
                 .len()
@@ -672,6 +602,30 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 }
                 Err(error) => return Err(error),
             };
+            let before = private_regular_file_stamp_from_metadata(&metadata, label)?;
+            let mut original = Vec::with_capacity(metadata.len() as usize);
+            let original_read = (|| {
+                file.seek(SeekFrom::Start(0))?;
+                Read::by_ref(&mut file)
+                    .take(max_result_bytes.saturating_add(1))
+                    .read_to_end(&mut original)?;
+                if original.len() as u64 != metadata.len()
+                    || original.len() as u64 > max_result_bytes
+                    || private_regular_file_stamp_from_metadata(&file.metadata()?, label)? != before
+                {
+                    return Err(CommandError::StaleActionReference);
+                }
+                Ok::<(), CommandError>(())
+            })();
+            if let Err(error) = original_read {
+                if created {
+                    cleanup_created_private_append_file(&parent, name, &file, error)?;
+                    unreachable!("created append cleanup returns the original error")
+                }
+                return Err(error);
+            }
+            let mut expected_bytes = original;
+            expected_bytes.extend_from_slice(bytes);
             if let Err(error) = file.write_all(bytes) {
                 return Err(app_data_private_append_partial_error(format!(
                     "{label} append started but its bytes could not be completed: {error}"
@@ -683,14 +637,101 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     "{label} append completed in memory but file durability could not be verified: {error}"
                 )));
             }
-            let observed_len = file.metadata().map_err(|error| {
+            let observed_metadata = file.metadata().map_err(|error| {
                 app_data_private_append_partial_error(format!(
-                    "{label} append completed but result length could not be read: {error}"
+                    "{label} append completed but its descriptor stamp could not be read: {error}"
                 ))
             })?;
-            if observed_len.len() != expected_len {
-                return Err(app_data_private_append_partial_error(format!(
-                    "{label} append result length changed concurrently"
+            let observed = private_regular_file_stamp_from_metadata(&observed_metadata, label)
+                .map_err(|error| {
+                    app_data_private_append_outcome_unknown(format!(
+                        "{label} append completed but its descriptor stamp is unsafe: {error}"
+                    ))
+                })?;
+            if observed.size != expected_len
+                || observed.uid != owner_uid
+                || observed.link_count != 1
+                || observed.mode & 0o077 != 0
+            {
+                return Err(app_data_private_append_outcome_unknown(format!(
+                    "{label} append result stamp changed concurrently"
+                )));
+            }
+            let rebound = openat(
+                &parent,
+                name,
+                OFlags::RDONLY
+                    | OFlags::NOFOLLOW
+                    | OFlags::NONBLOCK
+                    | OFlags::NOCTTY
+                    | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(|error| {
+                app_data_private_append_outcome_unknown(format!(
+                    "{label} append completed but its path entry could not be rebound: {}",
+                    io::Error::from(error)
+                ))
+            })?;
+            let rebound_metadata = rebound.metadata().map_err(|error| {
+                app_data_private_append_outcome_unknown(format!(
+                    "{label} append path-entry metadata could not be read: {error}"
+                ))
+            })?;
+            let rebound_stamp = private_regular_file_stamp_from_metadata(&rebound_metadata, label)
+                .map_err(|error| {
+                    app_data_private_append_outcome_unknown(format!(
+                        "{label} append path entry is unsafe after write: {error}"
+                    ))
+                })?;
+            if rebound_stamp != observed {
+                return Err(app_data_private_append_outcome_unknown(format!(
+                    "{label} append path entry changed after write"
+                )));
+            }
+            let mut rebound = rebound;
+            let mut readback = Vec::with_capacity(expected_bytes.len());
+            Read::by_ref(&mut rebound)
+                .take(max_result_bytes.saturating_add(1))
+                .read_to_end(&mut readback)
+                .map_err(|error| {
+                    app_data_private_append_partial_error(format!(
+                        "{label} append result could not be read back: {error}"
+                    ))
+                })?;
+            let final_descriptor_metadata = rebound.metadata().map_err(|error| {
+                app_data_private_append_partial_error(format!(
+                    "{label} append read-back metadata could not be read: {error}"
+                ))
+            })?;
+            let final_descriptor_stamp =
+                private_regular_file_stamp_from_metadata(&final_descriptor_metadata, label)
+                    .map_err(|error| {
+                        app_data_private_append_outcome_unknown(format!(
+                            "{label} append read-back stamp is unsafe: {error}"
+                        ))
+                    })?;
+            let final_path = statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+                app_data_private_append_outcome_unknown(format!(
+                    "{label} append final path entry could not be inspected: {}",
+                    io::Error::from(error)
+                ))
+            })?;
+            let final_path_stamp = private_regular_file_stamp_from_stat(&final_path, label)
+                .map_err(|error| {
+                    app_data_private_append_outcome_unknown(format!(
+                        "{label} append final path entry is unsafe: {error}"
+                    ))
+                })?;
+            if readback != expected_bytes || final_descriptor_stamp != observed {
+                return Err(app_data_private_append_outcome_unknown(format!(
+                    "{label} append semantic read-back or accepted descriptor stamp changed"
+                )));
+            }
+            if final_path_stamp != observed {
+                return Err(app_data_private_append_outcome_unknown(format!(
+                    "{label} append final path binding changed"
                 )));
             }
             fsync(&parent).map_err(|error| {
@@ -699,6 +740,23 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     io::Error::from(error)
                 ))
             })?;
+            let durable_path =
+                statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+                    app_data_private_append_outcome_unknown(format!(
+                        "{label} append was synced but its durable path binding could not be read: {}",
+                        io::Error::from(error)
+                    ))
+                })?;
+            if private_regular_file_stamp_from_stat(&durable_path, label).map_err(|error| {
+                app_data_private_append_outcome_unknown(format!(
+                    "{label} append durable path entry is unsafe: {error}"
+                ))
+            })? != observed
+            {
+                return Err(app_data_private_append_outcome_unknown(format!(
+                    "{label} append path binding changed after directory sync"
+                )));
+            }
             Ok(())
         }
         #[cfg(not(unix))]
@@ -772,14 +830,17 @@ impl<'lock> AppDataOwnerFs<'lock> {
         relative: &Path,
         bytes: &[u8],
         temp_stem: &str,
-    ) -> Result<(), CommandError> {
+    ) -> Result<AppDataPrivateLeafSnapshot, CommandError> {
         validate_relative_path(relative)?;
         validate_single_component(OsStr::new(temp_stem))?;
         #[cfg(unix)]
         {
-            use rustix::fs::{fchmod, fsync, openat, Mode, OFlags};
+            use std::os::unix::fs::MetadataExt;
+
+            use rustix::fs::{fchmod, fsync, openat, statat, AtFlags, FileType, Mode, OFlags};
 
             let (parent, name) = self.open_private_parent(relative)?;
+            let owner_uid = private_owner_uid(self.lock)?;
             let mode = Mode::from_bits_truncate(0o600);
             for attempt in 0..32_u32 {
                 let token = random_cleanup_token()?;
@@ -800,19 +861,51 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 };
                 let mut file = File::from(descriptor);
                 let before_activation = (|| {
+                    let metadata = file.metadata()?;
+                    let path_metadata = statat(&parent, &temp_name, AtFlags::SYMLINK_NOFOLLOW)
+                        .map_err(io::Error::from)?;
+                    if !metadata.is_file()
+                        || metadata.uid() != owner_uid
+                        || metadata.nlink() != 1
+                        || FileType::from_raw_mode(path_metadata.st_mode) != FileType::RegularFile
+                        || path_metadata.st_dev as u64 != metadata.dev()
+                        || path_metadata.st_ino != metadata.ino()
+                        || path_metadata.st_uid != owner_uid
+                        || path_metadata.st_nlink != 1
+                    {
+                        return Err(unsafe_relative_file("app-data private candidate"));
+                    }
                     fchmod(&file, mode).map_err(io::Error::from)?;
                     file.write_all(bytes)?;
                     file.sync_all()?;
+                    let descriptor_stamp = private_regular_file_stamp_from_metadata(
+                        &file.metadata()?,
+                        "app-data private candidate",
+                    )?;
+                    let path_stamp = private_regular_file_stamp_from_stat(
+                        &statat(&parent, &temp_name, AtFlags::SYMLINK_NOFOLLOW)
+                            .map_err(io::Error::from)?,
+                        "app-data private candidate",
+                    )?;
+                    if descriptor_stamp != path_stamp
+                        || descriptor_stamp.uid != owner_uid
+                        || descriptor_stamp.link_count != 1
+                        || descriptor_stamp.mode & 0o077 != 0
+                        || descriptor_stamp.size != bytes.len() as u64
+                    {
+                        return Err(CommandError::StaleActionReference);
+                    }
                     Ok::<(), CommandError>(())
                 })();
                 if let Err(error) = before_activation {
-                    cleanup_unactivated_private_candidate(&parent, &temp_name, error)?;
+                    cleanup_unactivated_private_candidate(&parent, &temp_name, &file, error)?;
                     unreachable!("candidate cleanup returns the original error")
                 }
                 if let Err(error) = rename_noreplace(&parent, &temp_name, name) {
                     cleanup_unactivated_private_candidate(
                         &parent,
                         &temp_name,
+                        &file,
                         CommandError::from(error),
                     )?;
                     unreachable!("candidate cleanup returns the original error")
@@ -822,7 +915,41 @@ impl<'lock> AppDataOwnerFs<'lock> {
                         "private candidate was activated but directory durability could not be verified: {error}"
                     )));
                 }
-                return Ok(());
+                run_private_write_post_activation_hook();
+                let installed_descriptor =
+                    private_regular_file_stamp_from_metadata(
+                        &file.metadata().map_err(|error| {
+                            app_data_private_write_partial_error(format!(
+                                "private candidate was activated, but its descriptor could not be inspected: {error}"
+                            ))
+                        })?,
+                        "activated app-data private candidate",
+                    )
+                    .map_err(|error| {
+                        app_data_private_write_outcome_unknown(format!(
+                            "private candidate was activated, but its descriptor is unsafe: {error}"
+                        ))
+                    })?;
+                let snapshot = self
+                    .read_bounded_regular_file_snapshot(
+                        relative,
+                        bytes.len() as u64,
+                        "activated app-data private candidate",
+                    )
+                    .map_err(classify_app_data_private_write_readback_error)?
+                    .ok_or_else(|| {
+                        app_data_private_write_outcome_unknown(
+                            "private candidate disappeared after activation".to_string(),
+                        )
+                    })?;
+                if snapshot.identity != installed_descriptor.private_identity()
+                    || snapshot.regular_file_bytes() != Some(bytes)
+                {
+                    return Err(app_data_private_write_outcome_unknown(
+                        "private candidate identity or bytes changed after activation".to_string(),
+                    ));
+                }
+                return Ok(snapshot);
             }
             Err(CommandError::UnsafeConfigPath(
                 "legacy private-content candidate allocation was exhausted".to_string(),
@@ -858,7 +985,19 @@ impl<'lock> AppDataOwnerFs<'lock> {
             if result.is_err() {
                 let _ = std::fs::remove_file(temp);
             }
-            result
+            result?;
+            let snapshot = inspect_private_cleanup_leaf_fallback(
+                &target,
+                bytes.len() as u64,
+                "activated app-data private candidate",
+            )?
+            .ok_or(CommandError::StaleActionReference)?;
+            if snapshot.regular_file_bytes() != Some(bytes) {
+                return Err(app_data_private_write_outcome_unknown(
+                    "private candidate bytes changed after activation".to_string(),
+                ));
+            }
+            Ok(snapshot)
         }
     }
 
@@ -877,8 +1016,26 @@ impl<'lock> AppDataOwnerFs<'lock> {
         temp_stem: &str,
         quarantine_prefix: &str,
     ) -> Result<(), CommandError> {
+        self.replace_private_file_if_current_with_snapshot(
+            relative,
+            expected,
+            bytes,
+            temp_stem,
+            quarantine_prefix,
+        )
+        .map(|_| ())
+    }
+
+    pub fn replace_private_file_if_current_with_snapshot(
+        &self,
+        relative: &Path,
+        expected: Option<&AppDataPrivateLeafSnapshot>,
+        bytes: &[u8],
+        temp_stem: &str,
+        quarantine_prefix: &str,
+    ) -> Result<AppDataPrivateLeafSnapshot, CommandError> {
         match expected {
-            Some(expected) => self.replace_private_cleanup_regular_leaf(
+            Some(expected) => self.replace_private_cleanup_regular_leaf_bound(
                 relative,
                 expected,
                 bytes,
@@ -979,7 +1136,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             use rustix::fs::{fsync, statat, unlinkat, AtFlags};
 
             let (parent, name) = self.open_private_parent(relative)?;
-            let quarantine = quarantine_bound_private_leaf(
+            let (quarantine, quarantined_snapshot) = quarantine_bound_private_leaf(
                 self.lock,
                 &parent,
                 name,
@@ -990,18 +1147,25 @@ impl<'lock> AppDataOwnerFs<'lock> {
             match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
                 Err(rustix::io::Errno::NOENT) => {}
                 Ok(_) => {
-                    return Err(private_cleanup_partial_error(
+                    return Err(private_cleanup_outcome_unknown(
                         "legacy private content was quarantined, but a third-party replacement now occupies its original name"
                             .to_string(),
                     ))
                 }
                 Err(error) => {
-                    return Err(private_cleanup_partial_error(format!(
+                    return Err(private_cleanup_outcome_unknown(format!(
                         "legacy private content was quarantined, but absence of its original name could not be verified: {}",
                         io::Error::from(error)
                     )))
                 }
             }
+            require_bound_private_leaf_at(
+                self.lock,
+                &parent,
+                &quarantine,
+                &quarantined_snapshot,
+                "quarantined legacy private content before removal",
+            )?;
             unlinkat(&parent, &quarantine, AtFlags::empty()).map_err(|error| {
                 private_cleanup_partial_error(format!(
                     "cannot remove quarantined legacy private content: {}",
@@ -1017,13 +1181,13 @@ impl<'lock> AppDataOwnerFs<'lock> {
             match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
                 Err(rustix::io::Errno::NOENT) => {}
                 Ok(_) => {
-                    return Err(private_cleanup_partial_error(
+                    return Err(private_cleanup_outcome_unknown(
                         "legacy private content was removed, but a third-party replacement appeared at its original name"
                             .to_string(),
                     ))
                 }
                 Err(error) => {
-                    return Err(private_cleanup_partial_error(format!(
+                    return Err(private_cleanup_outcome_unknown(format!(
                         "legacy private-content removal completed, but final target absence could not be verified: {}",
                         io::Error::from(error)
                     )))
@@ -1062,6 +1226,24 @@ impl<'lock> AppDataOwnerFs<'lock> {
         temp_stem: &str,
         quarantine_prefix: &str,
     ) -> Result<(), CommandError> {
+        self.replace_private_cleanup_regular_leaf_bound(
+            relative,
+            expected,
+            candidate,
+            temp_stem,
+            quarantine_prefix,
+        )
+        .map(|_| ())
+    }
+
+    fn replace_private_cleanup_regular_leaf_bound(
+        &self,
+        relative: &Path,
+        expected: &AppDataPrivateLeafSnapshot,
+        candidate: &[u8],
+        temp_stem: &str,
+        quarantine_prefix: &str,
+    ) -> Result<AppDataPrivateLeafSnapshot, CommandError> {
         validate_relative_path(relative)?;
         validate_single_component(OsStr::new(temp_stem))?;
         validate_filename_fragment(quarantine_prefix)?;
@@ -1073,7 +1255,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             use rustix::fs::{fsync, statat, unlinkat, AtFlags};
 
             let (parent, name) = self.open_private_parent(relative)?;
-            let quarantine = quarantine_bound_private_leaf(
+            let (quarantine, quarantined_snapshot) = quarantine_bound_private_leaf(
                 self.lock,
                 &parent,
                 name,
@@ -1081,21 +1263,35 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 quarantine_prefix,
             )?;
             run_private_cleanup_post_quarantine_hook(name);
-            if let Err(error) =
-                self.create_private_cleanup_file_noreplace(relative, candidate, temp_stem)
+            let candidate_snapshot = match self
+                .create_private_cleanup_file_noreplace(relative, candidate, temp_stem)
             {
-                match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(snapshot) => snapshot,
+                Err(error) => match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
                     Err(rustix::io::Errno::NOENT) => {
-                        restore_quarantined_private_leaf(&parent, &quarantine, name)?;
+                        restore_quarantined_private_leaf_bound(
+                            self.lock,
+                            &parent,
+                            &quarantine,
+                            name,
+                            &quarantined_snapshot,
+                        )?;
                         return Err(error);
                     }
                     _ => {
-                        return Err(private_cleanup_partial_error(format!(
+                        return Err(private_cleanup_outcome_unknown(format!(
                             "legacy private content was quarantined but its canonical replacement could not be durably verified: {error}"
                         )));
                     }
-                }
-            }
+                },
+            };
+            require_bound_private_leaf_at(
+                self.lock,
+                &parent,
+                &quarantine,
+                &quarantined_snapshot,
+                "bound private-file original before cleanup",
+            )?;
             unlinkat(&parent, &quarantine, AtFlags::empty()).map_err(|error| {
                 private_cleanup_partial_error(format!(
                     "canonical legacy cleanup succeeded but its sensitive quarantine could not be removed: {}",
@@ -1108,7 +1304,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     io::Error::from(error)
                 ))
             })?;
-            Ok(())
+            Ok(candidate_snapshot)
         }
         #[cfg(not(unix))]
         {
@@ -1122,17 +1318,52 @@ impl<'lock> AppDataOwnerFs<'lock> {
             if &current != expected {
                 return Err(CommandError::StaleActionReference);
             }
-            self.atomic_replace_private_file(relative, candidate, temp_stem)
+            let parent = target.parent().ok_or_else(unsafe_relative_path)?;
+            let temp = parent.join(secure_owner_temp_name(temp_stem)?);
+            let quarantine = parent.join(format!(
+                "{quarantine_prefix}{}.quarantine",
+                owner_fs_timestamp_millis()
+            ));
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)?;
+            file.write_all(candidate)?;
+            file.sync_all()?;
+            std::fs::rename(&target, &quarantine)?;
+            if target.exists() {
+                return Err(app_data_private_write_outcome_unknown(
+                    "the accepted private file was quarantined, but a third state appeared at its original name"
+                        .to_string(),
+                ));
+            }
+            std::fs::rename(&temp, &target).map_err(|error| {
+                app_data_private_write_partial_error(format!(
+                    "the accepted private file was quarantined, but candidate activation failed: {error}"
+                ))
+            })?;
+            File::open(parent)?.sync_all().map_err(|error| {
+                app_data_private_write_partial_error(format!(
+                    "private replacement directory durability failed: {error}"
+                ))
+            })?;
+            std::fs::remove_file(&quarantine).map_err(|error| {
+                app_data_private_write_partial_error(format!(
+                    "private replacement succeeded, but its original quarantine could not be removed: {error}"
+                ))
+            })?;
+            File::open(parent)?.sync_all().map_err(|error| {
+                app_data_private_write_partial_error(format!(
+                    "private original cleanup durability failed: {error}"
+                ))
+            })?;
+            inspect_private_cleanup_leaf_fallback(
+                &target,
+                candidate.len() as u64,
+                "activated app-data private candidate",
+            )?
+            .ok_or(CommandError::StaleActionReference)
         }
-    }
-
-    pub(crate) fn remove_root_regular_files_matching(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        max_matches: usize,
-    ) -> Result<(), CommandError> {
-        self.remove_regular_files_matching_in_directory(None, prefix, suffix, max_matches)
     }
 
     pub fn remove_regular_files_matching(
@@ -1162,7 +1393,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_filename_fragment(suffix)?;
         #[cfg(unix)]
         {
-            use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+            use std::os::unix::ffi::OsStrExt;
 
             use rustix::fs::{statat, unlinkat, AtFlags, Dir, FileType};
 
@@ -1170,7 +1401,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 Some(relative) => self.open_private_directory(relative)?,
                 None => self.lock.open_owner_directory()?,
             };
-            let owner_uid = self.lock.owner_directory().metadata()?.uid();
+            let owner_uid = private_owner_uid(self.lock)?;
             let mut entries = Dir::read_from(&directory).map_err(io::Error::from)?;
             let mut matches = Vec::new();
             for entry in &mut entries {
@@ -1200,21 +1431,21 @@ impl<'lock> AppDataOwnerFs<'lock> {
                         "app-data private residue is not an owner-only regular file".to_string(),
                     ));
                 }
-                matches.push((name.to_owned(), metadata.st_dev, metadata.st_ino));
+                matches.push((
+                    name.to_owned(),
+                    private_regular_file_stamp_from_stat(&metadata, "app-data private residue")?,
+                ));
             }
             matches.sort_by(|left, right| left.0.cmp(&right.0));
             let mut removed_any = false;
-            for (name, expected_dev, expected_ino) in matches {
+            for (name, expected) in matches {
                 let current =
                     statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
                         cleanup_identity_error(removed_any, io::Error::from(error).to_string())
                     })?;
-                if FileType::from_raw_mode(current.st_mode) != FileType::RegularFile
-                    || current.st_uid != owner_uid
-                    || current.st_nlink != 1
-                    || current.st_mode & 0o077 != 0
-                    || current.st_dev != expected_dev
-                    || current.st_ino != expected_ino
+                if private_regular_file_stamp_from_stat(&current, "app-data private residue")
+                    .map_err(|error| cleanup_identity_error(removed_any, error.to_string()))?
+                    != expected
                 {
                     return Err(cleanup_identity_error(
                         removed_any,
@@ -1222,40 +1453,65 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     ));
                 }
                 run_remove_matching_before_quarantine_hook(&name);
+                let before_quarantine = statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|error| {
+                        cleanup_identity_error(removed_any, io::Error::from(error).to_string())
+                    })?;
+                if private_regular_file_stamp_from_stat(
+                    &before_quarantine,
+                    "app-data private residue",
+                )
+                .map_err(|error| cleanup_identity_error(removed_any, error.to_string()))?
+                    != expected
+                {
+                    return Err(cleanup_identity_error(
+                        removed_any,
+                        "app-data private residue changed at the quarantine boundary".to_string(),
+                    ));
+                }
                 let quarantine =
                     quarantine_residue(&directory, &name, prefix, suffix, removed_any)?;
                 let quarantined = statat(&directory, &quarantine, AtFlags::SYMLINK_NOFOLLOW)
                     .map_err(|error| {
-                        cleanup_partial_error(format!(
+                        cleanup_outcome_unknown(format!(
                             "cannot verify quarantined app-data private residue: {}",
                             io::Error::from(error)
                         ))
                     })?;
-                if FileType::from_raw_mode(quarantined.st_mode) != FileType::RegularFile
-                    || quarantined.st_uid != owner_uid
-                    || quarantined.st_nlink != 1
-                    || quarantined.st_mode & 0o077 != 0
-                    || quarantined.st_dev != expected_dev
-                    || quarantined.st_ino != expected_ino
+                let quarantined_stamp = private_regular_file_stamp_from_stat(
+                    &quarantined,
+                    "quarantined app-data private residue",
+                )
+                .map_err(|error| cleanup_outcome_unknown(error.to_string()))?;
+                if !private_stamp_matches_after_rename(expected, quarantined_stamp) {
+                    return Err(cleanup_outcome_unknown(
+                        "app-data private residue changed before its identity-bound quarantine; the third state was retained"
+                            .to_string(),
+                    ));
+                }
+                sync_cleanup_directory(&directory).map_err(|error| {
+                    cleanup_partial_error(format!(
+                        "app-data private residue quarantine durability could not be verified: {error}"
+                    ))
+                })?;
+                let before_unlink = statat(&directory, &quarantine, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|error| {
+                        cleanup_outcome_unknown(format!(
+                            "cannot revalidate quarantined app-data private residue: {}",
+                            io::Error::from(error)
+                        ))
+                    })?;
+                if private_regular_file_stamp_from_stat(
+                    &before_unlink,
+                    "quarantined app-data private residue",
+                )
+                .map_err(|error| cleanup_outcome_unknown(error.to_string()))?
+                    != quarantined_stamp
                 {
-                    let detail =
-                        "app-data private residue changed before its identity-bound quarantine"
-                            .to_string();
-                    match rename_noreplace(&directory, &quarantine, &name) {
-                        Ok(()) => {
-                            sync_cleanup_directory(&directory).map_err(|error| {
-                                cleanup_partial_error(format!(
-                                    "{detail}; restoring the raced entry could not be durably verified: {error}"
-                                ))
-                            })?;
-                            return Err(cleanup_identity_error(removed_any, detail));
-                        }
-                        Err(error) => {
-                            return Err(cleanup_partial_error(format!(
-                                "{detail}; the raced entry remains quarantined because it could not be safely restored: {error}"
-                            )));
-                        }
-                    }
+                    return Err(cleanup_outcome_unknown(
+                        "quarantined app-data private residue changed before unlink; the replacement was retained"
+                            .to_string(),
+                    ));
                 }
                 unlinkat(&directory, &quarantine, AtFlags::empty()).map_err(|error| {
                     cleanup_partial_error(format!(
@@ -1264,8 +1520,6 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     ))
                 })?;
                 removed_any = true;
-            }
-            if removed_any {
                 sync_cleanup_directory(&directory).map_err(|error| {
                     cleanup_partial_error(format!(
                         "app-data private residue removal could not be durably verified: {error}"
@@ -1311,19 +1565,20 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
     }
 
-    pub fn ensure_directory_all(&self, relative: &Path) -> Result<Vec<PathBuf>, CommandError> {
+    pub fn ensure_directory_all(
+        &self,
+        relative: &Path,
+    ) -> Result<Vec<AppDataCreatedDirectory>, CommandError> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-
-            use rustix::fs::{fchmod, mkdirat, openat, Mode};
+            use rustix::fs::{fchmod, fsync, mkdirat, openat, statat, AtFlags, FileType, Mode};
 
             let flags = directory_flags();
             let mode = Mode::from_bits_truncate(0o700);
             let mut current = openat(self.lock.owner_directory(), ".", flags, Mode::empty())
                 .map_err(io::Error::from)?;
-            let owner_uid = self.lock.owner_directory().metadata()?.uid();
+            let owner_uid = private_owner_uid(self.lock)?;
             let mut created = Vec::new();
             let mut accumulated = PathBuf::new();
             for component in relative.components() {
@@ -1342,23 +1597,40 @@ impl<'lock> AppDataOwnerFs<'lock> {
                         current = next;
                     }
                     Err(rustix::io::Errno::NOENT) => {
-                        match mkdirat(&current, name, mode) {
-                            Ok(()) => {
-                                created.push(accumulated.clone());
-                                sync_created_private_directory_parent(&current)
-                                    .map_err(CommandError::from)
-                                    .map_err(|error| {
-                                        classify_private_directory_creation_error(true, error)
-                                    })?;
-                            }
-                            Err(rustix::io::Errno::EXIST) => {}
+                        let created_now = match mkdirat(&current, name, mode) {
+                            Ok(()) => true,
+                            Err(rustix::io::Errno::EXIST) => false,
                             Err(error) => {
                                 return Err(classify_private_directory_creation_error(
                                     !created.is_empty(),
                                     io::Error::from(error).into(),
                                 ))
                             }
-                        }
+                        };
+                        let created_stat = if created_now {
+                            let stat = statat(&current, name, AtFlags::SYMLINK_NOFOLLOW).map_err(
+                                |error| {
+                                    classify_private_directory_creation_error(
+                                        true,
+                                        io::Error::from(error).into(),
+                                    )
+                                },
+                            )?;
+                            if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+                                || stat.st_uid != owner_uid
+                            {
+                                return Err(classify_private_directory_creation_error(
+                                    true,
+                                    CommandError::UnsafeConfigPath(
+                                        "new app-data directory is not owned by the current effective user"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                            Some(stat)
+                        } else {
+                            None
+                        };
                         let next = openat(&current, name, flags, Mode::empty())
                             .map_err(map_unsafe_relative_errno)
                             .map_err(|error| {
@@ -1367,17 +1639,71 @@ impl<'lock> AppDataOwnerFs<'lock> {
                                     error,
                                 )
                             })?;
-                        if created.last() == Some(&accumulated) {
+                        if let Some(created_stat) = created_stat {
+                            let opened = rustix::fs::fstat(&next).map_err(|error| {
+                                classify_private_directory_creation_error(
+                                    true,
+                                    io::Error::from(error).into(),
+                                )
+                            })?;
+                            if opened.st_dev != created_stat.st_dev
+                                || opened.st_ino != created_stat.st_ino
+                                || opened.st_uid != owner_uid
+                            {
+                                return Err(classify_private_directory_creation_error(
+                                    true,
+                                    CommandError::StaleActionReference,
+                                ));
+                            }
                             fchmod(&next, mode)
                                 .map_err(io::Error::from)
                                 .map_err(CommandError::from)
                                 .map_err(|error| {
                                     classify_private_directory_creation_error(true, error)
                                 })?;
+                            validate_private_directory(&next, owner_uid).map_err(|error| {
+                                classify_private_directory_creation_error(true, error)
+                            })?;
+                            fsync(&next)
+                                .map_err(io::Error::from)
+                                .and_then(|()| sync_created_private_directory_parent(&current))
+                                .map_err(CommandError::from)
+                                .map_err(|error| {
+                                    classify_private_directory_creation_error(true, error)
+                                })?;
+                            let rebound = statat(&current, name, AtFlags::SYMLINK_NOFOLLOW)
+                                .map_err(|error| {
+                                    classify_private_directory_creation_error(
+                                        true,
+                                        io::Error::from(error).into(),
+                                    )
+                                })?;
+                            if rebound.st_dev != created_stat.st_dev
+                                || rebound.st_ino != created_stat.st_ino
+                                || rebound.st_uid != owner_uid
+                                || FileType::from_raw_mode(rebound.st_mode) != FileType::Directory
+                                || rebound.st_mode & 0o077 != 0
+                            {
+                                return Err(classify_private_directory_creation_error(
+                                    true,
+                                    CommandError::StaleActionReference,
+                                ));
+                            }
+                            created.push(AppDataCreatedDirectory {
+                                relative: accumulated.clone(),
+                                device: rebound.st_dev as u64,
+                                inode: rebound.st_ino,
+                                uid: rebound.st_uid,
+                                mode: rebound.st_mode as u32,
+                            });
+                        } else {
+                            validate_private_directory(&next, owner_uid).map_err(|error| {
+                                classify_private_directory_creation_error(
+                                    !created.is_empty(),
+                                    error,
+                                )
+                            })?;
                         }
-                        validate_private_directory(&next, owner_uid).map_err(|error| {
-                            classify_private_directory_creation_error(!created.is_empty(), error)
-                        })?;
                         current = next;
                     }
                     Err(error) => {
@@ -1407,7 +1733,9 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         std::fs::create_dir(&path)?;
-                        created.push(accumulated.clone());
+                        created.push(AppDataCreatedDirectory {
+                            relative: accumulated.clone(),
+                        });
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -1484,8 +1812,6 @@ impl<'lock> AppDataOwnerFs<'lock> {
 
     #[cfg(unix)]
     fn open_private_directory(&self, relative: &Path) -> Result<File, CommandError> {
-        use std::os::unix::fs::MetadataExt;
-
         use rustix::fs::{openat, Mode};
 
         let mut current = openat(
@@ -1495,7 +1821,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             Mode::empty(),
         )
         .map_err(io::Error::from)?;
-        let owner_uid = self.lock.owner_directory().metadata()?.uid();
+        let owner_uid = private_owner_uid(self.lock)?;
         for component in relative.components() {
             let Component::Normal(name) = component else {
                 return Err(unsafe_relative_path());
@@ -1590,8 +1916,6 @@ fn inspect_private_cleanup_leaf_at(
     max_bytes: u64,
     label: &str,
 ) -> Result<Option<AppDataPrivateLeafSnapshot>, CommandError> {
-    use std::os::unix::fs::MetadataExt;
-
     use rustix::fs::{fstat, openat, statat, AtFlags, FileType, Mode, OFlags};
 
     let metadata = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
@@ -1599,7 +1923,7 @@ fn inspect_private_cleanup_leaf_at(
         Err(rustix::io::Errno::NOENT) => return Ok(None),
         Err(error) => return Err(io::Error::from(error).into()),
     };
-    let owner_uid = lock.owner_directory().metadata()?.uid();
+    let owner_uid = private_owner_uid(lock)?;
     let kind = match FileType::from_raw_mode(metadata.st_mode) {
         FileType::RegularFile => AppDataPrivateLeafKind::RegularFile,
         FileType::Symlink => AppDataPrivateLeafKind::SymbolicLink,
@@ -1750,7 +2074,7 @@ fn quarantine_bound_private_leaf(
     source: &OsStr,
     expected: &AppDataPrivateLeafSnapshot,
     quarantine_prefix: &str,
-) -> Result<OsString, CommandError> {
+) -> Result<(OsString, AppDataPrivateLeafSnapshot), CommandError> {
     let max_bytes = expected
         .regular_file_bytes()
         .map(|bytes| bytes.len() as u64)
@@ -1784,20 +2108,18 @@ fn quarantine_bound_private_leaf(
                 );
                 match moved {
                     Ok(Some(moved)) if private_leaf_matches_after_rename(&before, &moved) => {
-                        return Ok(quarantine)
+                        sync_private_cleanup_directory(directory).map_err(|error| {
+                            private_cleanup_partial_error(format!(
+                                "the private leaf was quarantined, but directory durability could not be verified: {error}"
+                            ))
+                        })?;
+                        return Ok((quarantine, moved));
                     }
                     Ok(_) | Err(_) => {
-                        return match restore_quarantined_private_leaf(
-                            directory,
-                            &quarantine,
-                            source,
-                        ) {
-                            Ok(()) => Err(CommandError::StaleActionReference),
-                            Err(error @ CommandError::PartialEffect { .. }) => Err(error),
-                            Err(error) => Err(private_cleanup_partial_error(format!(
-                                "a raced legacy private-content leaf remains quarantined because it could not be safely restored: {error}"
-                            ))),
-                        };
+                        return Err(private_cleanup_outcome_unknown(
+                            "a raced legacy private-content leaf no longer matches the accepted identity after quarantine; the third state was retained"
+                                .to_string(),
+                        ));
                     }
                 }
             }
@@ -1811,6 +2133,35 @@ fn quarantine_bound_private_leaf(
     Err(CommandError::UnsafeConfigPath(
         "legacy private-content quarantine allocation was exhausted".to_string(),
     ))
+}
+
+#[cfg(unix)]
+fn require_bound_private_leaf_at(
+    lock: &AppMutationLock,
+    directory: &File,
+    name: &OsStr,
+    expected: &AppDataPrivateLeafSnapshot,
+    label: &str,
+) -> Result<(), CommandError> {
+    let max_bytes = expected
+        .regular_file_bytes()
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or_default();
+    let current = inspect_private_cleanup_leaf_at(lock, directory, name, max_bytes, label)
+        .map_err(|error| {
+            private_cleanup_outcome_unknown(format!(
+                "{label} could not be identity-checked: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            private_cleanup_outcome_unknown(format!("{label} disappeared before removal"))
+        })?;
+    if &current != expected {
+        return Err(private_cleanup_outcome_unknown(format!(
+            "{label} changed; the replacement was retained"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1837,17 +2188,34 @@ fn restore_quarantined_private_leaf(
     original: &OsStr,
 ) -> Result<(), CommandError> {
     rename_noreplace(directory, quarantine, original).map_err(|error| {
-        private_cleanup_partial_error(format!(
+        private_cleanup_outcome_unknown(format!(
             "legacy private content remains quarantined because its original name could not be safely restored: {error}"
         ))
     })?;
-    rustix::fs::fsync(directory).map_err(|error| {
+    sync_private_cleanup_directory(directory).map_err(|error| {
         private_cleanup_partial_error(format!(
-            "restored legacy private content could not be durably verified: {}",
-            io::Error::from(error)
+            "restored legacy private content could not be durably verified: {error}"
         ))
     })?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn restore_quarantined_private_leaf_bound(
+    lock: &AppMutationLock,
+    directory: &File,
+    quarantine: &OsStr,
+    original: &OsStr,
+    expected: &AppDataPrivateLeafSnapshot,
+) -> Result<(), CommandError> {
+    require_bound_private_leaf_at(
+        lock,
+        directory,
+        quarantine,
+        expected,
+        "private-file quarantine before restoration",
+    )?;
+    restore_quarantined_private_leaf(directory, quarantine, original)
 }
 
 fn private_cleanup_partial_error(detail: String) -> CommandError {
@@ -1859,14 +2227,58 @@ fn private_cleanup_partial_error(detail: String) -> CommandError {
     }
 }
 
+fn private_cleanup_outcome_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "legacy AI/private-content cleanup".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: true,
+        detail,
+    }
+}
+
+#[cfg(unix)]
+fn sync_private_cleanup_directory(directory: &File) -> Result<(), io::Error> {
+    #[cfg(test)]
+    if PRIVATE_CLEANUP_DIRECTORY_SYNC_FAULT.with(|fault| fault.replace(false)) {
+        return Err(io::Error::other(
+            "injected private-cleanup directory sync failure",
+        ));
+    }
+    rustix::fs::fsync(directory).map_err(io::Error::from)
+}
+
 #[cfg(unix)]
 fn cleanup_unactivated_private_candidate(
     directory: &File,
     temp_name: &OsStr,
+    opened: &File,
     original_error: CommandError,
 ) -> Result<(), CommandError> {
-    use rustix::fs::{fsync, unlinkat, AtFlags};
+    use rustix::fs::{fstat, fsync, statat, unlinkat, AtFlags};
 
+    let opened = fstat(opened).map_err(|error| {
+        app_data_private_write_partial_error(format!(
+            "private candidate activation failed and its descriptor identity could not be read: {}; original failure: {original_error}",
+            io::Error::from(error)
+        ))
+    })?;
+    let current =
+        statat(directory, temp_name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+            app_data_private_write_outcome_unknown(format!(
+                "private candidate activation failed and its path identity could not be read: {}; original failure: {original_error}",
+                io::Error::from(error)
+            ))
+        })?;
+    if opened.st_dev != current.st_dev
+        || opened.st_ino != current.st_ino
+        || opened.st_uid != current.st_uid
+        || opened.st_nlink != current.st_nlink
+        || opened.st_mode != current.st_mode
+    {
+        return Err(app_data_private_write_outcome_unknown(format!(
+            "private candidate activation failed and its temporary path changed; the replacement was retained; original failure: {original_error}"
+        )));
+    }
     if let Err(error) = unlinkat(directory, temp_name, AtFlags::empty()) {
         return Err(app_data_private_write_partial_error(format!(
             "private candidate activation failed and its temporary file could not be removed: {}; original failure: {original_error}",
@@ -1890,6 +2302,30 @@ fn app_data_private_write_partial_error(detail: String) -> CommandError {
     }
 }
 
+fn app_data_private_write_outcome_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-data private file write".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: true,
+        detail,
+    }
+}
+
+fn classify_app_data_private_write_readback_error(error: CommandError) -> CommandError {
+    let detail =
+        format!("private candidate was activated, but its bound read-back failed: {error}");
+    match error {
+        CommandError::StaleActionReference | CommandError::UnsafeConfigPath(_) => {
+            app_data_private_write_outcome_unknown(detail)
+        }
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            ..
+        } => error,
+        _ => app_data_private_write_partial_error(detail),
+    }
+}
+
 #[cfg(unix)]
 fn cleanup_created_private_append_file(
     directory: &File,
@@ -1906,7 +2342,7 @@ fn cleanup_created_private_append_file(
         ))
     })?;
     let current = statat(directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
-        app_data_private_append_partial_error(format!(
+        app_data_private_append_outcome_unknown(format!(
             "a newly created append target could not be rebound for cleanup: {}; original failure: {original_error}",
             io::Error::from(error)
         ))
@@ -1917,7 +2353,7 @@ fn cleanup_created_private_append_file(
         || opened.st_nlink != current.st_nlink
         || opened.st_mode != current.st_mode
     {
-        return Err(app_data_private_append_partial_error(format!(
+        return Err(app_data_private_append_outcome_unknown(format!(
             "a newly created append target changed identity before cleanup; original failure: {original_error}"
         )));
     }
@@ -1940,6 +2376,15 @@ fn app_data_private_append_partial_error(detail: String) -> CommandError {
     CommandError::PartialEffect {
         operation: "app-data private append".to_string(),
         state: "applied_unverified",
+        cleanup_required: true,
+        detail,
+    }
+}
+
+fn app_data_private_append_outcome_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-data private append".to_string(),
+        state: "outcome_unknown",
         cleanup_required: true,
         detail,
     }
@@ -2026,6 +2471,15 @@ fn cleanup_partial_error(detail: String) -> CommandError {
     CommandError::PartialEffect {
         operation: "app-data private residue cleanup".to_string(),
         state: "applied_unverified",
+        cleanup_required: true,
+        detail,
+    }
+}
+
+fn cleanup_outcome_unknown(detail: String) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-data private residue cleanup".to_string(),
+        state: "outcome_unknown",
         cleanup_required: true,
         detail,
     }
@@ -2148,6 +2602,20 @@ fn validate_private_directory(
     Ok(())
 }
 
+#[cfg(unix)]
+fn private_owner_uid(lock: &AppMutationLock) -> Result<u32, CommandError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = lock.owner_directory().metadata()?;
+    let effective_uid = rustix::process::geteuid().as_raw();
+    if !metadata.is_dir() || metadata.uid() != effective_uid {
+        return Err(CommandError::UnsafeConfigPath(
+            "app-data owner must be a directory owned by the current effective user".to_string(),
+        ));
+    }
+    Ok(effective_uid)
+}
+
 fn map_relative_io(error: io::Error, label: &str) -> CommandError {
     if error.kind() == io::ErrorKind::PermissionDenied {
         return unsafe_relative_file(label);
@@ -2210,6 +2678,7 @@ fn command_error_to_io(error: CommandError) -> io::Error {
     }
 }
 
+#[cfg(not(unix))]
 fn secure_owner_temp_name(stem: &str) -> Result<OsString, CommandError> {
     let mut nonce = [0_u8; 16];
     getrandom::getrandom(&mut nonce).map_err(|error| {
@@ -2220,24 +2689,6 @@ fn secure_owner_temp_name(stem: &str) -> Result<OsString, CommandError> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok(OsString::from(format!(".{stem}.{encoded}.tmp")))
-}
-
-fn owner_file_effect_unknown(detail: String) -> CommandError {
-    CommandError::PartialEffect {
-        operation: "app-owned file replace".to_string(),
-        state: "outcome_unknown",
-        cleanup_required: true,
-        detail,
-    }
-}
-
-fn owner_file_effect_unverified(detail: String) -> CommandError {
-    CommandError::PartialEffect {
-        operation: "app-owned file replace".to_string(),
-        state: "applied_unverified",
-        cleanup_required: false,
-        detail,
-    }
 }
 
 #[cfg(test)]
@@ -2318,7 +2769,13 @@ mod tests {
         symlink(&victim, &owner_path).expect("replace owner path");
 
         owner
-            .atomic_replace_private_file(Path::new("state.json"), br#"{"ok":true}"#, "state")
+            .replace_private_file_if_current(
+                Path::new("state.json"),
+                None,
+                br#"{"ok":true}"#,
+                "state",
+                ".state.bound.",
+            )
             .expect("descriptor-relative replace");
 
         assert_eq!(
@@ -2829,7 +3286,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(CommandError::PartialEffect {
-                state: "applied_unverified",
+                state: "outcome_unknown",
                 cleanup_required: true,
                 ..
             })
@@ -2904,7 +3361,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(CommandError::PartialEffect {
-                state: "applied_unverified",
+                state: "outcome_unknown",
                 cleanup_required: true,
                 ..
             })
@@ -2925,6 +3382,115 @@ mod tests {
                 .count(),
             1
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_cleanup_quarantine_sync_failure_is_applied_unverified() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-private-cleanup-sync-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let target = owner_path.join("model-task-matches.json");
+        std::fs::create_dir_all(&owner_path).expect("owner");
+        std::fs::write(&target, b"legacy-sensitive").expect("legacy target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("private legacy target");
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+        let snapshot = owner
+            .inspect_private_cleanup_leaf(
+                Path::new("model-task-matches.json"),
+                1024,
+                "legacy model-task history",
+            )
+            .expect("inspect")
+            .expect("snapshot");
+        install_private_cleanup_directory_sync_fault();
+
+        let result = owner.remove_private_cleanup_leaf(
+            Path::new("model-task-matches.json"),
+            &snapshot,
+            ".model-task-matches.json.legacy-private-cleanup-",
+        );
+
+        assert!(matches!(
+            result,
+            Err(CommandError::PartialEffect {
+                state: "applied_unverified",
+                cleanup_required: true,
+                ..
+            })
+        ));
+        assert!(!target.exists(), "the accepted leaf was quarantined");
+        assert_eq!(
+            std::fs::read_dir(&owner_path)
+                .expect("owner entries")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    name.starts_with(".model-task-matches.json.legacy-private-cleanup-")
+                        && name.ends_with(".quarantine")
+                })
+                .count(),
+            1,
+            "the identity-matching quarantine is retained"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_write_path_rebind_after_activation_is_outcome_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-private-write-rebind-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("owner");
+        let target = root.join("state.json");
+        let accepted = root.join("accepted-state.json");
+        let raced_target = target.clone();
+        let raced_accepted = accepted.clone();
+        install_private_write_post_activation_hook(move || {
+            std::fs::rename(&raced_target, &raced_accepted).expect("preserve accepted candidate");
+            std::fs::write(&raced_target, b"replacement").expect("install replacement");
+            std::fs::set_permissions(&raced_target, std::fs::Permissions::from_mode(0o600))
+                .expect("private replacement");
+        });
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock owner");
+
+        let result = lock.owner_fs().replace_private_file_if_current(
+            Path::new("state.json"),
+            None,
+            b"candidate",
+            "state",
+            ".state-cleanup-",
+        );
+
+        assert!(matches!(
+            result,
+            Err(CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            })
+        ));
+        assert_eq!(std::fs::read(&accepted).expect("candidate"), b"candidate");
+        assert_eq!(std::fs::read(&target).expect("replacement"), b"replacement");
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -3006,12 +3572,67 @@ mod tests {
         assert!(matches!(
             result,
             Err(CommandError::PartialEffect {
-                state: "applied_unverified",
+                state: "outcome_unknown",
                 cleanup_required: true,
                 ..
             })
         ));
         assert_eq!(std::fs::read(&path).expect("activity"), b"one\ntwo\nrace\n");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bounded_append_path_rebind_after_write_preserves_the_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-fs-append-rebind-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("owner");
+        let path = root.join("activity.jsonl");
+        let accepted = root.join("accepted-activity.jsonl");
+        std::fs::write(&path, b"one\n").expect("activity");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("private activity");
+        let raced_path = path.clone();
+        let accepted_path = accepted.clone();
+        install_private_append_post_write_hook(move || {
+            std::fs::rename(&raced_path, &accepted_path).expect("preserve accepted activity");
+            std::fs::write(&raced_path, b"replacement\n").expect("install replacement");
+            std::fs::set_permissions(&raced_path, std::fs::Permissions::from_mode(0o600))
+                .expect("private replacement");
+        });
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock owner");
+
+        let result = lock.owner_fs().append_private_file(
+            Path::new("activity.jsonl"),
+            b"two\n",
+            64,
+            "activity",
+        );
+
+        assert!(matches!(
+            result,
+            Err(CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            std::fs::read(&accepted).expect("accepted activity"),
+            b"one\ntwo\n"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("replacement activity"),
+            b"replacement\n"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -3056,6 +3677,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn owner_rename_atomically_refuses_a_target_created_at_the_last_boundary() {
+        use std::os::unix::fs::PermissionsExt;
+
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
@@ -3068,6 +3691,8 @@ mod tests {
         let source = owner_path.join("source");
         let destination = owner_path.join("destination");
         std::fs::create_dir_all(&source).expect("source");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700))
+            .expect("private source");
         std::fs::write(source.join("SKILL.md"), b"source").expect("source file");
         let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
         let owner = lock.owner_fs();
@@ -3095,7 +3720,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn tree_cleanup_quarantines_a_raced_replacement_without_following_it() {
-        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::{symlink, PermissionsExt};
 
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3111,7 +3736,14 @@ mod tests {
         let victim = root.join("victim");
         std::fs::create_dir_all(&target).expect("target");
         std::fs::create_dir_all(&victim).expect("victim");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
+            .expect("private target");
         std::fs::write(target.join("SKILL.md"), b"accepted").expect("accepted file");
+        std::fs::set_permissions(
+            target.join("SKILL.md"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private accepted file");
         std::fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
         let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
         let owner = lock.owner_fs();
@@ -3153,6 +3785,187 @@ mod tests {
                 .filter_map(Result::ok)
                 .any(|entry| entry.file_name().to_string_lossy().contains("quarantine")),
             "the raced replacement must remain in private quarantine"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tree_cleanup_final_unlink_recheck_preserves_a_quarantine_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-tree-quarantine-race-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let target = owner_path.join("target");
+        let accepted = owner_path.join("accepted-target");
+        std::fs::create_dir_all(&owner_path).expect("owner");
+        std::fs::write(&target, b"accepted").expect("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("private target");
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let raced_owner = owner_path.clone();
+        let accepted_path = accepted.clone();
+        tree::install_owner_quarantine_unlink_test_hook(move || {
+            let quarantine = std::fs::read_dir(&raced_owner)
+                .expect("owner entries")
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".agent-copilot-tree-quarantine.")
+                })
+                .expect("tree quarantine")
+                .path();
+            std::fs::rename(&quarantine, &accepted_path).expect("preserve accepted quarantine");
+            std::fs::write(&quarantine, b"replacement").expect("install quarantine replacement");
+            std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o600))
+                .expect("private replacement");
+        });
+
+        let error = lock
+            .owner_fs()
+            .remove_tree_if_exists(Path::new("target"))
+            .expect_err("a quarantine replacement must not be unlinked");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read(&accepted).expect("accepted target"),
+            b"accepted"
+        );
+        let replacement = std::fs::read_dir(&owner_path)
+            .expect("owner entries")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".agent-copilot-tree-quarantine.")
+            })
+            .expect("quarantine replacement");
+        assert_eq!(
+            std::fs::read(replacement.path()).expect("replacement"),
+            b"replacement"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn created_directory_cleanup_preserves_a_same_mode_new_inode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-created-directory-race-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("owner");
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock owner");
+        let owner = lock.owner_fs();
+        let created = owner
+            .ensure_directory_all(Path::new("llm/nested"))
+            .expect("create private chain");
+        let nested = root.join("llm/nested");
+        let accepted = root.join("llm/accepted-nested");
+        std::fs::rename(&nested, &accepted).expect("preserve accepted directory");
+        std::fs::create_dir(&nested).expect("install replacement directory");
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o700))
+            .expect("private replacement");
+
+        let error = owner
+            .remove_empty_directories(&created)
+            .expect_err("new inode must not satisfy the cleanup capability");
+
+        assert!(matches!(error, CommandError::StaleActionReference));
+        assert!(accepted.is_dir(), "accepted directory is preserved");
+        assert!(nested.is_dir(), "replacement directory is preserved");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn created_directory_cleanup_never_restores_a_replaced_quarantine() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-created-directory-quarantine-race-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("owner");
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock owner");
+        let owner = lock.owner_fs();
+        let created = owner
+            .ensure_directory_all(Path::new("nested"))
+            .expect("create private directory");
+        let accepted = root.join("accepted-nested");
+        let raced_root = root.clone();
+        let raced_accepted = accepted.clone();
+        tree::install_owner_quarantine_unlink_test_hook(move || {
+            let quarantine = std::fs::read_dir(&raced_root)
+                .expect("owner entries")
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".agent-copilot-empty-directory-quarantine.")
+                })
+                .expect("empty-directory quarantine")
+                .path();
+            std::fs::rename(&quarantine, &raced_accepted).expect("preserve accepted directory");
+            std::fs::create_dir(&quarantine).expect("install quarantine replacement");
+            std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700))
+                .expect("private replacement");
+        });
+
+        let error = owner
+            .remove_empty_directories(&created)
+            .expect_err("a replaced quarantine must not be restored");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
+        assert!(
+            !root.join("nested").exists(),
+            "the third state must not be moved to the original name"
+        );
+        assert!(accepted.is_dir(), "the accepted directory is preserved");
+        assert!(
+            std::fs::read_dir(&root)
+                .expect("owner entries")
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".agent-copilot-empty-directory-quarantine.")),
+            "the third-state quarantine is retained"
         );
         std::fs::remove_dir_all(root).ok();
     }

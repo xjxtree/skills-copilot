@@ -20,7 +20,6 @@
       "readback": ["project_context"],
       "evidence_refs": ["project-context-state:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
     },
-    "preview_token": "action-preview:v1:hmac-sha256:4444444444444444444444444444444444444444444444444444444444444444",
     "state": {
       "revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "active": {

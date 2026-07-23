@@ -2207,7 +2207,13 @@ fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
         .join("added-after-confirmation.txt");
     let hook_asset = raced_asset.clone();
     skill_manager::install_local_delete_pre_rename_test_hook(canonical_source, move || {
-        std::fs::write(&hook_asset, "not previewed").expect("inject raced asset")
+        std::fs::write(&hook_asset, "not previewed").expect("inject raced asset");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook_asset, std::fs::Permissions::from_mode(0o600))
+                .expect("private raced asset");
+        }
     });
 
     let result = delete_local_skill_with_manager(
@@ -2443,6 +2449,17 @@ fn exercise_local_delete_recreation(rollback_failure: bool) {
             format!("---\nname: {skill_name}\ndescription: third state\n---\nthird state"),
         )
         .expect("write unowned third state");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                recreated_path.parent().expect("recreated parent"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .expect("private recreated directory");
+            std::fs::set_permissions(&recreated_path, std::fs::Permissions::from_mode(0o600))
+                .expect("private recreated skill");
+        }
     });
     if rollback_failure {
         catalog.inject_next_rollback_failure_for_test();

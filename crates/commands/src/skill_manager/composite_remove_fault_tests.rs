@@ -1,5 +1,25 @@
 use super::*;
 
+#[cfg(unix)]
+fn make_app_owned_fixture_private(app_data: &Path, skill_directory: &Path, skill_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(skill_path, fs::Permissions::from_mode(0o600))
+        .expect("private skill fixture");
+    let mut directory = Some(skill_directory);
+    while let Some(current) = directory {
+        fs::set_permissions(current, fs::Permissions::from_mode(0o700))
+            .expect("private app-owned fixture directory");
+        if current == app_data {
+            break;
+        }
+        directory = current.parent();
+    }
+}
+
+#[cfg(not(unix))]
+fn make_app_owned_fixture_private(_app_data: &Path, _skill_directory: &Path, _skill_path: &Path) {}
+
 fn exercise_composite_commit_failure(outcome_unknown: bool) {
     let label = if outcome_unknown {
         "unknown"
@@ -21,6 +41,7 @@ fn exercise_composite_commit_failure(outcome_unknown: bool) {
         format!("---\nname: {skill_name}\ndescription: Fixture\n---\n# Fixture\n"),
     )
     .expect("skill file");
+    make_app_owned_fixture_private(&app_data, &skill_directory, &skill_path);
     let canonical_skill = skill_path.canonicalize().expect("canonical skill");
     let catalog = Catalog::in_memory().expect("catalog");
     catalog.init().expect("catalog schema");
@@ -136,6 +157,7 @@ fn composite_rollback_failure_retains_private_quarantine() {
         "---\nname: rollback-unknown\ndescription: Fixture\n---\n# Fixture\n",
     )
     .expect("skill file");
+    make_app_owned_fixture_private(&app_data, &skill_directory, &skill_path);
     let canonical_skill = skill_path.canonicalize().expect("canonical skill");
     let original_revision =
         local_delete_tree_revision(&canonical_skill).expect("original revision");

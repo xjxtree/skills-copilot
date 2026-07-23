@@ -3648,6 +3648,88 @@ fn project_context_post_rename_sync_failure_is_not_reported_as_verified() {
 }
 
 #[test]
+fn project_context_pre_write_failure_preserves_the_stable_original_error() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-pre-write-failure-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let project = temp_root.join("project");
+    fs::create_dir_all(&project).expect("create project");
+
+    crate::project_context::inject_project_context_pre_write_failure_for_test();
+    let host = test_host(app_data_dir.clone());
+    let (_, response) =
+        confirmed_project_set_context(&host, json!({ "root_path": project, "name": "Accepted" }));
+
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("stable write error").code,
+        "command_error"
+    );
+    assert!(
+        !app_data_dir.join("project-context.json").exists(),
+        "a pre-write failure must preserve the accepted missing state"
+    );
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn project_context_same_bytes_new_inode_is_not_misclassified_as_the_original() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-same-bytes-third-state-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let first_project = temp_root.join("first-project");
+    let second_project = temp_root.join("second-project");
+    fs::create_dir_all(&first_project).expect("create first project");
+    fs::create_dir_all(&second_project).expect("create second project");
+    let host = test_host(app_data_dir.clone());
+    let (_, first) = confirmed_project_set_context(
+        &host,
+        json!({ "root_path": first_project, "name": "First" }),
+    );
+    assert!(first.ok, "{:?}", first.error);
+
+    let target = app_data_dir.join("project-context.json");
+    let displaced = app_data_dir.join("project-context.accepted");
+    let hook_target = target.clone();
+    crate::project_context::inject_project_context_pre_replace_hook_for_test(move || {
+        let bytes = fs::read(&hook_target).expect("read accepted bytes");
+        fs::rename(&hook_target, &displaced).expect("displace accepted inode");
+        fs::write(&hook_target, bytes).expect("write same-byte third state");
+        fs::set_permissions(&hook_target, fs::Permissions::from_mode(0o600))
+            .expect("make third state private");
+    });
+    let (_, response) = confirmed_project_set_context(
+        &host,
+        json!({ "root_path": second_project, "name": "Second" }),
+    );
+
+    assert!(!response.ok);
+    let error = response.error.expect("third-state partial");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("outcome_unknown")
+    );
+    assert_eq!(
+        project_context_state(&host)
+            .pointer("/active/name")
+            .and_then(Value::as_str),
+        Some("First"),
+        "same-byte replacement remains visible but is not mistaken for the accepted inode"
+    );
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
 fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
     let temp_root = env::temp_dir().join(format!(
         "skills-copilot-scan-rollback-{}-{}",

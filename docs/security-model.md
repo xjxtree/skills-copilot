@@ -85,7 +85,7 @@ confirmation, and network posture.
 - The authorization token may cross only the typed app-to-sidecar preview and
   confirmation payloads. It is never rendered, copied, persisted, logged,
   included in accessibility metadata, or inherited by an external manager
-  child process.
+  child process. Apply responses never echo the consumed token.
 - Apply requires the exact confirmed action reference and token. The service
   reprojects the action, acquires every required target lock, and revalidates
   all preconditions before the first write. Unknown, mismatched, forged, or
@@ -111,7 +111,10 @@ confirmation, and network posture.
   migrate an outdated catalog.
 - Skill Manager lock projections and one-time discovery replay state are read
   once from a bounded, no-follow regular-file descriptor. Symlinks,
-  non-regular files, oversized inputs, and replacement races fail closed.
+  non-regular files, oversized inputs, and replacement races fail closed. The
+  discovery replay revision and replacement classification use the complete
+  storage snapshot, so equal bytes written to a new inode are not treated as
+  the unchanged accepted state.
 - Batch toggles, project-context applies, catalog scans, `skill.install`,
   confirmed Skill Manager search, remote-repository-install/remove/update/
   local-create, local
@@ -142,8 +145,28 @@ confirmation, and network posture.
 - App-owned private-file helpers apply the same component-wise no-follow rule
   before creating a parent directory or opening a write destination. This
   covers project context, provider replay/profile/activity state, prompt-run
-  metadata, and migration staging. Unsafe parent links are rejected without
-  changing the linked directory's mode, contents, or children.
+  metadata, discovery replay state, and migration staging. Every accepted
+  regular leaf and installed candidate is bound by complete content plus
+  owner, device, inode, mode, link count, length, mtime, and ctime. Candidate
+  activation and semantic read-back must resolve to the exact descriptor-backed
+  inode; equal bytes at a different inode are a third state. Unsafe parent
+  links are rejected without changing the linked directory's mode, contents,
+  or children.
+- App-owned tree creation, copy, rename, cleanup, and recursive removal stay
+  descriptor-relative beneath the locked owner. New entries are verified as
+  current-user-owned before permission changes, files are `0600`, directories
+  are `0700`, and every namespace transition is parent-directory synced.
+  Recursive cleanup accepts only private, single-link regular files and private
+  directories. It moves entries to random no-replace quarantine names and
+  rechecks the full accepted identity immediately before unlink. A changed
+  quarantine detected by those checks is retained and reported as
+  non-retryable `outcome_unknown`; it is not restored to the original name or
+  intentionally deleted as though it were the accepted entry. macOS exposes no
+  descriptor-based unlink equivalent for this path, so an actively adversarial
+  same-UID process can still replace the unpredictable quarantine in the final
+  identity-check-to-`unlinkat` interval. Random no-replace names and full
+  rechecks narrow this platform boundary but do not provide an atomic
+  identity-conditioned delete.
 - External config and direct skill-file mutations hold a capability borrowed
   from the app-data mutation lock. It binds the allowed root, every parent
   directory, and the target entry by descriptor identity and requires each to
@@ -264,8 +287,10 @@ confirmation, and network posture.
   action is never automatically retried; recovery starts from a fresh preview.
   A replacement error with candidate read-back is still
   `applied_unverified`, because read-back does not prove parent-directory
-  durability. An unchanged reservation is `not_started`; an unchanged
-  terminal record after an external or credential effect is partial.
+  durability. Candidate and original classifications require their exact
+  storage snapshots; equal bytes on another inode are `outcome_unknown`. An
+  unchanged reservation is `not_started`; an unchanged terminal record after
+  an external or credential effect is partial.
   Malformed, oversized, symlinked, non-regular, broadly permissioned, or
   unbounded replay storage fails closed.
 - Provider mutations use an existing canonical parent-directory lock, so a
@@ -297,8 +322,10 @@ confirmation, and network posture.
   before verifying its device/inode identity and unlinking it. A raced
   replacement is restored only by an atomic no-replace rename while its
   original name remains absent; otherwise both entries are retained and the
-  result is typed partial. Any error after an earlier removal, including parent
-  directory sync failure, is `applied_unverified` with cleanup required.
+  result is `outcome_unknown`. A known accepted inode whose write, read-back,
+  unlink, or parent-directory durability cannot be proved is
+  `applied_unverified`; a changed, missing, unsafe, or rebound path/identity is
+  `outcome_unknown`. Both states require cleanup and disable automatic retry.
 - Prompt-run history is metadata-only. User intent, task text, rendered
   prompts, provider output, and response bodies are transient and are never
   written to `prompt-runs.json`. Compatibility `task` and `draft_output`
@@ -314,8 +341,10 @@ confirmation, and network posture.
   hard links, and foreign ownership. Symlink cleanup removes only the bound
   link. Apply runs under one app-data owner lock and uses unpredictable
   same-directory no-replace quarantine plus no-replace candidate activation.
-  A raced third state is never overwritten or removed; uncertain activation,
-  deletion, or directory durability returns non-retryable `partial_effect`
+  A raced third state is never overwritten or removed. Exact-object I/O or
+  directory durability uncertainty returns `applied_unverified`; an observed
+  semantic mismatch, disappearance, replacement, or identity/path drift
+  returns `outcome_unknown`. Both are non-retryable `partial_effect` results
   with cleanup required.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not

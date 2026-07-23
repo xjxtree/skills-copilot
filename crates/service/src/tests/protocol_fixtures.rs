@@ -611,7 +611,8 @@ struct WireSkillManagerLocalArchiveUpdateRecord {
     archive_sha256: String,
     file_count: usize,
     uncompressed_bytes: u64,
-    preview_token: String,
+    #[serde(default)]
+    preview_token: Option<String>,
     confirmed: bool,
     applied: bool,
     summary: String,
@@ -634,7 +635,8 @@ struct WireSkillManagerLocalArchiveImportRecord {
     archive_sha256: String,
     file_count: usize,
     uncompressed_bytes: u64,
-    preview_token: String,
+    #[serde(default)]
+    preview_token: Option<String>,
     confirmed: bool,
     applied: bool,
     summary: String,
@@ -1291,7 +1293,11 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         "skillManager.previewLocalArchiveImport" | "skillManager.applyLocalArchiveImport" => {
             let import: WireSkillManagerLocalArchiveImportRecord =
                 decode_fixture_result(method, result, path);
-            assert!(!import.preview_token.is_empty());
+            assert_eq!(
+                import.preview_token.is_some(),
+                !method.contains(".apply"),
+                "only archive import previews expose an authorization token"
+            );
             assert_eq!(import.action.kind, "manager_local_archive_import");
             assert!(!import.preconditions.is_empty());
             assert!(import.follow_up.is_none());
@@ -1320,7 +1326,11 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         "skillManager.previewLocalArchiveUpdate" | "skillManager.applyLocalArchiveUpdate" => {
             let update: WireSkillManagerLocalArchiveUpdateRecord =
                 decode_fixture_result(method, result, path);
-            assert!(!update.preview_token.is_empty());
+            assert_eq!(
+                update.preview_token.is_some(),
+                !method.contains(".apply"),
+                "only archive update previews expose an authorization token"
+            );
             assert_eq!(update.action.kind, "manager_local_archive_update");
             assert!(!update.preconditions.is_empty());
             assert!(update.follow_up.is_none());
@@ -1357,6 +1367,10 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
         | "project.clearContext"
         | "project.removeRecentContext"
         | "project.clearRecentContexts" => {
+            assert!(
+                result.get("preview_token").is_none(),
+                "{method} apply response must not serialize a consumed authorization token"
+            );
             let apply: ProjectContextApplyResult = decode_fixture_result(method, result, path);
             assert!(apply.readback.verified);
             assert_eq!(

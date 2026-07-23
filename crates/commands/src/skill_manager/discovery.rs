@@ -8,6 +8,9 @@ const MAX_DISCOVERY_STATE_BYTES: u64 = 16 * 1024;
 thread_local! {
     static DISCOVERY_STATE_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+    static DISCOVERY_STATE_PRE_REPLACE_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -18,6 +21,22 @@ fn inject_discovery_state_post_rename_sync_failure_for_test() {
 #[cfg(test)]
 fn take_discovery_state_post_rename_sync_failure_for_test() -> bool {
     DISCOVERY_STATE_POST_RENAME_SYNC_FAILURE.with(std::cell::Cell::take)
+}
+
+#[cfg(test)]
+fn install_discovery_state_pre_replace_hook_for_test(hook: impl FnOnce() + 'static) {
+    DISCOVERY_STATE_PRE_REPLACE_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+fn run_discovery_state_pre_replace_hook_for_test() {
+    DISCOVERY_STATE_PRE_REPLACE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -573,40 +592,52 @@ fn discovery_state_relative_path() -> &'static Path {
 }
 
 fn discovery_state_revision(app_data_dir: &Path) -> Result<String, CommandError> {
-    let bytes = if crate::mutation_lock::app_mutation_owner_is_missing(app_data_dir)? {
+    let snapshot = if crate::mutation_lock::app_mutation_owner_is_missing(app_data_dir)? {
         None
     } else {
         let lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
         lock.validate_owner_path_binding()?;
         let owner = lock.owner_fs();
-        read_discovery_state_bytes(&owner)?
+        read_discovery_state_snapshot(&owner)?.map(|(snapshot, _)| snapshot)
     };
-    discovery_state_revision_from_bytes(bytes.as_deref())
+    discovery_state_revision_from_snapshot(snapshot.as_ref())
 }
 
 fn discovery_state_revision_for_owner(
     owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
 ) -> Result<String, CommandError> {
-    let bytes = read_discovery_state_bytes(owner)?;
-    discovery_state_revision_from_bytes(bytes.as_deref())
+    let snapshot = read_discovery_state_snapshot(owner)?.map(|(snapshot, _)| snapshot);
+    discovery_state_revision_from_snapshot(snapshot.as_ref())
 }
 
-fn discovery_state_revision_from_bytes(bytes: Option<&[u8]>) -> Result<String, CommandError> {
+fn discovery_state_revision_from_snapshot(
+    snapshot: Option<&crate::AppDataPrivateLeafSnapshot>,
+) -> Result<String, CommandError> {
     action_source_revision(
         "manager.discovery.replay-state",
         &[(
             "state",
-            &bytes
-                .map(|value| format!("{:x}", Sha256::digest(value)))
-                .unwrap_or_else(|| "missing".to_string()),
+            snapshot.map_or("missing", crate::AppDataPrivateLeafSnapshot::revision),
         )],
     )
 }
 
+#[cfg(test)]
 fn read_discovery_state_bytes(
     owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
 ) -> Result<Option<Vec<u8>>, CommandError> {
-    let Some(bytes) = owner.read_bounded_regular_file(
+    Ok(read_discovery_state_snapshot(owner)?.map(|(snapshot, _)| {
+        snapshot
+            .regular_file_bytes()
+            .expect("discovery replay snapshot is regular")
+            .to_vec()
+    }))
+}
+
+fn read_discovery_state_snapshot(
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
+) -> Result<Option<(crate::AppDataPrivateLeafSnapshot, DiscoveryActionState)>, CommandError> {
+    let Some(snapshot) = owner.read_bounded_regular_file_snapshot(
         discovery_state_relative_path(),
         MAX_DISCOVERY_STATE_BYTES,
         "skill manager discovery replay state",
@@ -614,7 +645,10 @@ fn read_discovery_state_bytes(
     else {
         return Ok(None);
     };
-    let state: DiscoveryActionState = serde_json::from_slice(&bytes).map_err(|_| {
+    let bytes = snapshot
+        .regular_file_bytes()
+        .expect("discovery replay snapshot is regular");
+    let state: DiscoveryActionState = serde_json::from_slice(bytes).map_err(|_| {
         CommandError::InvalidSkillManagerRequest(
             "skill manager discovery replay state is invalid".to_string(),
         )
@@ -628,7 +662,7 @@ fn read_discovery_state_bytes(
             "skill manager discovery replay state is invalid".to_string(),
         ));
     }
-    Ok(Some(bytes))
+    Ok(Some((snapshot, state)))
 }
 
 fn reserve_discovery_action(
@@ -636,18 +670,11 @@ fn reserve_discovery_action(
     preview_token: &str,
     action: &ActionDescriptor,
 ) -> Result<DiscoveryActionState, CommandError> {
-    let current = read_discovery_state_bytes(owner)?
-        .map(|bytes| serde_json::from_slice::<DiscoveryActionState>(&bytes))
-        .transpose()
-        .map_err(|_| {
-            CommandError::InvalidSkillManagerRequest(
-                "skill manager discovery replay state is invalid".to_string(),
-            )
-        })?;
+    let current = read_discovery_state_snapshot(owner)?;
     let token_digest = format!("{:x}", Sha256::digest(preview_token.as_bytes()));
     if current
         .as_ref()
-        .is_some_and(|state| state.token_digest == token_digest)
+        .is_some_and(|(_, state)| state.token_digest == token_digest)
     {
         return Err(CommandError::StaleActionReference);
     }
@@ -655,14 +682,18 @@ fn reserve_discovery_action(
         schema_version: DISCOVERY_STATE_SCHEMA_VERSION,
         generation: current
             .as_ref()
-            .map_or(1, |state| state.generation.saturating_add(1)),
+            .map_or(1, |(_, state)| state.generation.saturating_add(1)),
         token_digest,
         action_id: action.id.clone(),
         source_revision: action.source_revision.clone(),
         phase: "reservation".to_string(),
         state: "not_started".to_string(),
     };
-    write_discovery_state(owner, &state)?;
+    write_discovery_state(
+        owner,
+        current.as_ref().map(|(snapshot, _)| snapshot),
+        &state,
+    )?;
     Ok(state)
 }
 
@@ -672,15 +703,8 @@ fn finish_discovery_action(
     phase: &str,
     state: &str,
 ) -> Result<(), CommandError> {
-    let current = read_discovery_state_bytes(owner)?
-        .map(|bytes| serde_json::from_slice::<DiscoveryActionState>(&bytes))
-        .transpose()
-        .map_err(|_| {
-            CommandError::InvalidSkillManagerRequest(
-                "skill manager discovery replay state is invalid".to_string(),
-            )
-        })?
-        .ok_or(CommandError::StaleActionReference)?;
+    let (snapshot, current) =
+        read_discovery_state_snapshot(owner)?.ok_or(CommandError::StaleActionReference)?;
     if current.generation != reserved.generation
         || current.token_digest != reserved.token_digest
         || current.action_id != reserved.action_id
@@ -689,6 +713,7 @@ fn finish_discovery_action(
     }
     write_discovery_state(
         owner,
+        Some(&snapshot),
         &DiscoveryActionState {
             phase: phase.to_string(),
             state: state.to_string(),
@@ -699,6 +724,7 @@ fn finish_discovery_action(
 
 fn write_discovery_state(
     owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
+    expected: Option<&crate::AppDataPrivateLeafSnapshot>,
     state: &DiscoveryActionState,
 ) -> Result<(), CommandError> {
     let bytes = serde_json::to_vec(state)?;
@@ -707,25 +733,39 @@ fn write_discovery_state(
             "skill manager discovery replay state exceeded its safety limit".to_string(),
         ));
     }
-    let original = read_discovery_state_bytes(owner)?;
-    owner.remove_root_regular_files_matching(".skill-manager-discovery-state.", ".tmp", 64)?;
-    let write_result = owner.atomic_replace_private_file(
+    #[cfg(test)]
+    run_discovery_state_pre_replace_hook_for_test();
+    let replacement_result = owner.replace_private_file_if_current_with_snapshot(
         discovery_state_relative_path(),
+        expected,
         &bytes,
         "skill-manager-discovery-state",
+        ".skill-manager-discovery-state.bound.",
     );
+    let installed_snapshot = replacement_result.as_ref().ok().cloned();
     #[cfg(test)]
-    let write_result = if take_discovery_state_post_rename_sync_failure_for_test() {
-        Err(CommandError::Io(std::io::Error::other(
-            "injected discovery-state post-rename directory sync failure",
-        )))
-    } else {
-        write_result
+    let write_result = match replacement_result {
+        Ok(_) if take_discovery_state_post_rename_sync_failure_for_test() => Err(CommandError::Io(
+            std::io::Error::other("injected discovery-state post-rename directory sync failure"),
+        )),
+        result => result,
     };
-    let readback = read_discovery_state_bytes(owner);
+    #[cfg(not(test))]
+    let write_result = replacement_result;
+    if matches!(&write_result, Err(CommandError::PartialEffect { .. })) {
+        return write_result.map(|_| ());
+    }
+    let readback = read_discovery_state_snapshot(owner);
     match (write_result, readback) {
-        (Ok(()), Ok(Some(persisted))) if persisted == bytes => Ok(()),
-        (Err(_), Ok(Some(persisted))) if persisted == bytes => {
+        (Ok(installed), Ok(Some((persisted, _))))
+            if persisted == installed && persisted.regular_file_bytes() == Some(bytes.as_slice()) =>
+        {
+            Ok(())
+        }
+        (Err(_), Ok(Some((persisted, _))))
+            if installed_snapshot.as_ref() == Some(&persisted)
+                && persisted.regular_file_bytes() == Some(bytes.as_slice()) =>
+        {
             Err(CommandError::PartialEffect {
                 operation: "skillManager.applySearch".to_string(),
                 state: "applied_unverified",
@@ -734,7 +774,14 @@ fn write_discovery_state(
                     .to_string(),
             })
         }
-        (Err(write_error), Ok(persisted)) if persisted == original => Err(write_error),
+        (Err(write_error), Ok(persisted))
+            if private_snapshot_option_matches(
+                persisted.as_ref().map(|(snapshot, _)| snapshot),
+                expected,
+            ) =>
+        {
+            Err(write_error)
+        }
         _ => Err(CommandError::PartialEffect {
             operation: "skillManager.applySearch".to_string(),
             state: "outcome_unknown",
@@ -743,6 +790,13 @@ fn write_discovery_state(
                 .to_string(),
         }),
     }
+}
+
+fn private_snapshot_option_matches(
+    current: Option<&crate::AppDataPrivateLeafSnapshot>,
+    expected: Option<&crate::AppDataPrivateLeafSnapshot>,
+) -> bool {
+    current == expected
 }
 
 fn read_manager_lock_projection(
@@ -1094,6 +1148,71 @@ mod tests {
             serde_json::from_slice(&persisted).expect("decode reservation");
         assert_eq!(persisted.phase, "reservation");
         assert_eq!(persisted.state, "not_started");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discovery_state_same_bytes_new_inode_is_not_the_stable_original() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-discovery-same-bytes-new-inode-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        fs::create_dir_all(&root).expect("create app data");
+        let lock = crate::mutation_lock::lock_app_mutations(&root).expect("lock app data");
+        let owner = lock.owner_fs();
+        let original = DiscoveryActionState {
+            schema_version: DISCOVERY_STATE_SCHEMA_VERSION,
+            generation: 1,
+            token_digest: "token-one".to_string(),
+            action_id: "action-one".to_string(),
+            source_revision: "revision-one".to_string(),
+            phase: "reservation".to_string(),
+            state: "not_started".to_string(),
+        };
+        write_discovery_state(&owner, None, &original).expect("seed discovery state");
+        let (accepted, _) = read_discovery_state_snapshot(&owner)
+            .expect("read accepted state")
+            .expect("accepted state");
+        let original_bytes = accepted
+            .regular_file_bytes()
+            .expect("regular discovery state")
+            .to_vec();
+        let path = root.join(discovery_state_relative_path());
+        let displaced = root.join("displaced-discovery-state.json");
+        install_discovery_state_pre_replace_hook_for_test(move || {
+            fs::rename(&path, &displaced).expect("displace accepted state");
+            fs::write(&path, &original_bytes).expect("install same-byte replacement");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("secure same-byte replacement");
+        });
+
+        let candidate = DiscoveryActionState {
+            generation: 2,
+            token_digest: "token-two".to_string(),
+            action_id: "action-two".to_string(),
+            source_revision: "revision-two".to_string(),
+            ..original
+        };
+        let error = write_discovery_state(&owner, Some(&accepted), &candidate)
+            .expect_err("a same-byte replacement is a third state");
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: false,
+                ..
+            }
+        ));
+        let (persisted, persisted_state) = read_discovery_state_snapshot(&owner)
+            .expect("read replacement state")
+            .expect("replacement state");
+        assert_ne!(persisted, accepted);
+        assert_eq!(persisted_state.generation, 1);
+        assert_eq!(persisted_state.token_digest, "token-one");
         fs::remove_dir_all(root).ok();
     }
 }

@@ -1060,7 +1060,13 @@ fn manager_catalog_initializes_under_the_existing_locked_owner() {
     let _ = catalog.list_skill_records().expect("catalog schema");
     mutation_lock
         .owner_fs()
-        .atomic_replace_private_file(Path::new("effect"), b"effect", "effect")
+        .replace_private_file_if_current(
+            Path::new("effect"),
+            None,
+            b"effect",
+            "effect",
+            ".effect.bound.",
+        )
         .expect("owner-relative effect");
     assert_eq!(
         fs::read(app_data.join("sentinel")).expect("existing owner sentinel"),

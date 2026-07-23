@@ -58,7 +58,8 @@ that clients may infer for arbitrary mutations.
 - The token is an HMAC over the complete descriptor and sorted preconditions.
   It additionally binds impacts, network posture, read-back domains, and
   evidence references. It is opaque client state and must not be displayed,
-  copied, logged, persisted, or placed in accessibility metadata.
+  copied, logged, persisted, placed in accessibility metadata, or returned by
+  an apply response after consumption.
 - The macOS app generates one 32-byte random secret for its lifetime and passes
   it only in each sidecar child's environment. The sidecar consumes and removes
   it before reading stdin and explicitly removes it from external manager child
@@ -394,10 +395,12 @@ parent-directory sync after rename. A symlinked owner or intermediate component
 is rejected before any provider effect and cannot chmod or populate its target.
 A failed post-rename durability check is `applied_unverified`; an atomic-write
 error followed by candidate read-back remains `applied_unverified` because
-read-back cannot prove directory durability. An unchanged reservation is
-`action_not_started`, while an unchanged terminal record after a provider
-effect is partial. Malformed, oversized, symlinked, non-regular, broadly
-permissioned, or unbounded state storage fails closed.
+read-back cannot prove directory durability. Candidate, accepted-original, and
+successful read-back classifications require the exact content-and-storage
+snapshot; equal bytes on a different inode are `outcome_unknown`. An unchanged
+reservation is `action_not_started`, while an unchanged terminal record after
+a provider effect is partial. Malformed, oversized, symlinked, non-regular,
+broadly permissioned, or unbounded state storage fails closed.
 Every consumed token is rejected on replay. The native client clears the
 pending token after every confirmed attempt and requires a new preview for
 recovery. Stale or mismatched confirmations are rejected before the lock or
@@ -435,6 +438,12 @@ moved, it is restored only by an atomic no-replace rename while the original
 name remains absent; otherwise both names are retained. Any failure after a
 removal or uncertain move, including directory sync failure, is
 `partial_effect` with `state=applied_unverified` and `cleanup_required=true`.
+On macOS the final quarantine identity recheck and path-based `unlinkat` cannot
+be combined into one identity-conditioned syscall. Random no-replace quarantine
+names and complete metadata rechecks substantially narrow that interval, and
+detected drift is retained as a partial outcome, but the contract does not
+claim atomic protection from an actively adversarial same-UID replacement in
+the final check-to-unlink gap.
 
 ## Full-Access Local Lists
 
@@ -549,8 +558,13 @@ requires another inspection and preview.
   component-wise no-follow directory descriptors when necessary, reprojects
   and revalidates the confirmation under the lock, atomically replaces the
   private state file, and returns a minimal verified project-context read-back.
-  Candidate bytes observed after a replacement or parent-directory sync error
-  are returned as non-retryable `applied_unverified`, not verified success.
+  The action source revision and target-file precondition bind both logical
+  project content and the complete private-file storage snapshot. Successful
+  read-back requires the exact installed candidate inode; the original is
+  considered stable only when its complete snapshot is unchanged. Candidate
+  bytes observed after a replacement or parent-directory sync error are
+  returned as non-retryable `applied_unverified`, while equal bytes on another
+  inode are `outcome_unknown`, never verified success.
   A stale or mismatched action does not create app data or write state; an
   unsafe owner link does not chmod or populate its target.
 - Clearing the active project preserves Recent Projects. Removing a recent row
@@ -768,6 +782,9 @@ requires another inspection and preview.
   is `partial_effect` with `state=outcome_unknown` and automatic retry disabled.
   If the one-time reservation replacement itself cannot be proved durable, the
   apply returns non-retryable `partial_effect` before starting the manager.
+  Its replay revision and write classification bind the complete private-file
+  snapshot; equal JSON bytes at a new inode are an unowned third state, not an
+  unchanged reservation.
 - `skillManager.listInstalled` is a process-free projection over the accepted
   project-context catalog plus the applicable project/global manager lock. It
   never invokes `npx`, performs network access, or treats a generic plugin or

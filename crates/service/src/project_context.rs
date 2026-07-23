@@ -9,7 +9,7 @@ use skills_copilot_commands::{
     action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,
     lock_app_mutations, lock_or_create_app_mutations_with_parents, ActionConfirmation,
     ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation,
-    ActionReadbackRecord, AppMutationLock, CommandError,
+    ActionReadbackRecord, AppDataPrivateLeafSnapshot, AppMutationLock, CommandError,
 };
 use skills_copilot_core::{
     canonical_project_id, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
@@ -25,6 +25,10 @@ thread_local! {
     static PROJECT_CONTEXT_POST_WRITE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
     static PROJECT_CONTEXT_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    static PROJECT_CONTEXT_PRE_REPLACE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static PROJECT_CONTEXT_PRE_WRITE_FAILURE: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 
@@ -45,6 +49,18 @@ pub(crate) fn inject_project_context_post_write_hook_for_test(hook: impl FnOnce(
 #[cfg(test)]
 pub(crate) fn inject_project_context_post_rename_sync_failure_for_test() {
     PROJECT_CONTEXT_POST_RENAME_SYNC_FAILURE.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn inject_project_context_pre_replace_hook_for_test(hook: impl FnOnce() + 'static) {
+    PROJECT_CONTEXT_PRE_REPLACE_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn inject_project_context_pre_write_failure_for_test() {
+    PROJECT_CONTEXT_PRE_WRITE_FAILURE.with(|flag| flag.set(true));
 }
 
 #[cfg(test)]
@@ -99,7 +115,6 @@ pub struct ProjectContextActionPreview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectContextApplyResult {
     pub action: skills_copilot_core::ActionDescriptor,
-    pub preview_token: String,
     pub state: ProjectContextState,
     pub affected_count: usize,
     pub readback: ActionReadbackRecord,
@@ -172,6 +187,7 @@ impl Default for ProjectContextStore {
 struct ProjectContextStoreSnapshot {
     store: ProjectContextStore,
     revision: String,
+    storage_snapshot: Option<AppDataPrivateLeafSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +206,7 @@ enum ProjectContextMutation {
 struct PreparedProjectContextMutation {
     preview: ProjectContextActionPreview,
     candidate_bytes: Vec<u8>,
+    storage_snapshot: Option<AppDataPrivateLeafSnapshot>,
 }
 
 pub fn load_project_context_state(
@@ -313,25 +330,58 @@ fn apply_project_context_mutation(
     let locked = prepare_project_context_mutation(app_data_dir, mutation, None, Some(&owner))?;
     ensure_action_confirmed(&preview_binding(&locked.preview), Some(confirmation))?;
 
-    let original_revision = locked.preview.current.revision.clone();
     let candidate_revision = locked.preview.candidate.revision.clone();
+    let original_storage_snapshot = locked.storage_snapshot.clone();
     owner.validate_owner_path_binding()?;
-    let write_result = owner.owner_fs().atomic_replace_private_file(
-        Path::new(PROJECT_CONTEXT_FILE),
-        &locked.candidate_bytes,
-        "project-context",
-    );
     #[cfg(test)]
-    let write_result = if take_project_context_post_rename_sync_failure_for_test() {
+    PROJECT_CONTEXT_PRE_REPLACE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+    #[cfg(test)]
+    let inject_pre_write_failure = PROJECT_CONTEXT_PRE_WRITE_FAILURE.with(std::cell::Cell::take);
+    #[cfg(not(test))]
+    let inject_pre_write_failure = false;
+    let replacement_result = if inject_pre_write_failure {
         Err(CommandError::Io(io::Error::other(
-            "injected project context post-rename directory sync failure",
+            "injected project context pre-write failure",
         )))
     } else {
-        write_result
+        owner
+            .owner_fs()
+            .replace_private_file_if_current_with_snapshot(
+                Path::new(PROJECT_CONTEXT_FILE),
+                locked.storage_snapshot.as_ref(),
+                &locked.candidate_bytes,
+                "project-context",
+                ".project-context.bound.",
+            )
     };
-    if let Err(write_error) = write_result {
+    let installed_storage_snapshot = replacement_result.as_ref().ok().cloned();
+    #[cfg(test)]
+    let write_result = match replacement_result {
+        Ok(_) if take_project_context_post_rename_sync_failure_for_test() => Err(CommandError::Io(
+            io::Error::other("injected project context post-rename directory sync failure"),
+        )),
+        result => result,
+    };
+    #[cfg(not(test))]
+    let write_result = replacement_result;
+    let write_error = match write_result {
+        Ok(_) => None,
+        Err(error @ CommandError::PartialEffect { .. }) => {
+            return Err(ServiceError::from(error));
+        }
+        Err(error) => Some(error),
+    };
+    if let Some(write_error) = write_error {
         return match load_store_snapshot_at(&owner) {
-            Ok(current) if current.revision == candidate_revision => {
+            Ok(current)
+                if current.revision == candidate_revision
+                    && current.storage_snapshot.as_ref()
+                        == installed_storage_snapshot.as_ref() =>
+            {
                 Err(CommandError::PartialEffect {
                     operation: "project context".to_string(),
                     state: "applied_unverified",
@@ -340,7 +390,7 @@ fn apply_project_context_mutation(
                 }
                 .into())
             }
-            Ok(current) if current.revision == original_revision => {
+            Ok(current) if current.storage_snapshot == original_storage_snapshot => {
                 Err(ServiceError::Command(write_error))
             }
             _ => Err(CommandError::PartialEffect {
@@ -362,7 +412,22 @@ fn apply_project_context_mutation(
         }
     });
     let readback_state = match load_store_snapshot_at(&owner) {
-        Ok(snapshot) => snapshot.state(),
+        Ok(snapshot)
+            if snapshot.storage_snapshot.as_ref() == installed_storage_snapshot.as_ref() =>
+        {
+            snapshot.state()
+        }
+        Ok(_) => {
+            return Err(CommandError::PartialEffect {
+                operation: "project context".to_string(),
+                state: "applied_unverified",
+                cleanup_required: false,
+                detail:
+                    "project context bytes were replaced, but the target identity changed before semantic read-back"
+                        .to_string(),
+            }
+            .into())
+        }
         Err(_) => {
             return Err(CommandError::PartialEffect {
                 operation: "project context".to_string(),
@@ -414,7 +479,6 @@ fn apply_project_context_mutation(
     })?;
     Ok(ProjectContextApplyResult {
         action: locked.preview.action,
-        preview_token: locked.preview.preview_token,
         state: readback_state,
         affected_count: locked.preview.affected_count,
         readback,
@@ -456,6 +520,13 @@ fn prepare_project_context_mutation(
         operation,
         &[
             ("project_context_revision", &current.revision),
+            (
+                "project_context_storage_revision",
+                current
+                    .storage_snapshot
+                    .as_ref()
+                    .map_or("missing", AppDataPrivateLeafSnapshot::revision),
+            ),
             ("candidate_revision", &candidate_revision),
             ("affected_count", &affected_count.to_string()),
         ],
@@ -476,11 +547,21 @@ fn prepare_project_context_mutation(
     )?;
     let binding = action_preview_binding(
         action,
-        vec![ActionPrecondition {
-            kind: ActionPreconditionKind::ProjectContext,
-            target_id: PROJECT_CONTEXT_TARGET_ID.to_string(),
-            expected_revision: current.revision.clone(),
-        }],
+        vec![
+            ActionPrecondition {
+                kind: ActionPreconditionKind::ProjectContext,
+                target_id: PROJECT_CONTEXT_TARGET_ID.to_string(),
+                expected_revision: current.revision.clone(),
+            },
+            ActionPrecondition {
+                kind: ActionPreconditionKind::TargetFile,
+                target_id: PROJECT_CONTEXT_TARGET_ID.to_string(),
+                expected_revision: current.storage_snapshot.as_ref().map_or_else(
+                    || "missing".to_string(),
+                    |snapshot| snapshot.revision().to_string(),
+                ),
+            },
+        ],
     )?;
     Ok(PreparedProjectContextMutation {
         preview: ProjectContextActionPreview {
@@ -492,6 +573,7 @@ fn prepare_project_context_mutation(
             affected_count,
         },
         candidate_bytes,
+        storage_snapshot: current.storage_snapshot,
     })
 }
 
@@ -875,19 +957,22 @@ fn load_store_snapshot(app_data_dir: &Path) -> Result<ProjectContextStoreSnapsho
 fn load_store_snapshot_at(
     owner: &AppMutationLock,
 ) -> Result<ProjectContextStoreSnapshot, ServiceError> {
-    let content = owner
+    let snapshot = owner
         .owner_fs()
-        .read_bounded_regular_file(
+        .read_bounded_regular_file_snapshot(
             Path::new(PROJECT_CONTEXT_FILE),
             PROJECT_CONTEXT_MAX_BYTES as u64,
             "project context state",
         )
         .map_err(|_| invalid_project_context_state())?;
-    let content = match content {
-        Some(content) => content,
+    let snapshot = match snapshot {
+        Some(snapshot) => snapshot,
         None => return Ok(missing_store_snapshot()),
     };
-    let mut store: ProjectContextStore = serde_json::from_slice(&content)?;
+    let content = snapshot
+        .regular_file_bytes()
+        .expect("project-context private snapshot is regular");
+    let mut store: ProjectContextStore = serde_json::from_slice(content)?;
     if store.schema_version != PROJECT_CONTEXT_SCHEMA_VERSION {
         return Err(ServiceError::InvalidRequest(format!(
             "unsupported project context schema version: {}",
@@ -897,7 +982,8 @@ fn load_store_snapshot_at(
     normalize_store(&mut store);
     Ok(ProjectContextStoreSnapshot {
         store,
-        revision: project_context_revision(true, &content),
+        revision: project_context_revision(true, content),
+        storage_snapshot: Some(snapshot),
     })
 }
 
@@ -905,6 +991,7 @@ fn missing_store_snapshot() -> ProjectContextStoreSnapshot {
     ProjectContextStoreSnapshot {
         store: ProjectContextStore::default(),
         revision: project_context_revision(false, &[]),
+        storage_snapshot: None,
     }
 }
 

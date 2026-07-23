@@ -43,7 +43,6 @@
     "archive_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "file_count": 3,
     "uncompressed_bytes": 4096,
-    "preview_token": "action-preview:v1:hmac-sha256:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
     "confirmed": true,
     "applied": true,
     "summary": "Imported the validated ZIP into the app-owned local skill library; skill scripts were not executed.",

@@ -1333,10 +1333,17 @@ impl ServiceHost {
         let mut sorted = records.to_vec();
         sorted.sort_by(model_task_match_record_sort);
         let content = serde_json::to_vec_pretty(&sorted)?;
-        owner.owner_fs().atomic_replace_private_file(
+        let expected = owner.owner_fs().read_bounded_regular_file_snapshot(
             Path::new(MODEL_TASK_MATCHES_RELATIVE_PATH),
+            MODEL_TASK_MATCHES_MAX_BYTES,
+            "model task match history",
+        )?;
+        owner.owner_fs().replace_private_file_if_current(
+            Path::new(MODEL_TASK_MATCHES_RELATIVE_PATH),
+            expected.as_ref(),
             &content,
             "model-task-matches",
+            ".model-task-matches.bound.",
         )?;
         Ok(())
     }

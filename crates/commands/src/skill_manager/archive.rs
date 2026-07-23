@@ -126,6 +126,7 @@ pub struct SkillManagerLocalArchiveUpdateRecord {
     pub archive_sha256: String,
     pub file_count: usize,
     pub uncompressed_bytes: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub preview_token: String,
     pub confirmed: bool,
     pub applied: bool,
@@ -158,6 +159,7 @@ pub struct SkillManagerLocalArchiveImportRecord {
     pub archive_sha256: String,
     pub file_count: usize,
     pub uncompressed_bytes: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub preview_token: String,
     pub confirmed: bool,
     pub applied: bool,
@@ -435,7 +437,11 @@ fn local_archive_import_record(
         archive_sha256: plan.inspection.archive_sha256,
         file_count: plan.inspection.file_count,
         uncompressed_bytes: plan.inspection.uncompressed_bytes,
-        preview_token: plan.action_binding.preview_token,
+        preview_token: if applied {
+            String::new()
+        } else {
+            plan.action_binding.preview_token
+        },
         confirmed: applied,
         applied,
         summary: if applied {
@@ -970,7 +976,11 @@ fn local_archive_update_record(
         archive_sha256: plan.inspection.archive_sha256,
         file_count: plan.inspection.file_count,
         uncompressed_bytes: plan.inspection.uncompressed_bytes,
-        preview_token: plan.action_binding.preview_token,
+        preview_token: if applied {
+            String::new()
+        } else {
+            plan.action_binding.preview_token
+        },
         confirmed: applied,
         applied,
         summary: if applied {
@@ -2020,16 +2030,15 @@ fn extract_skill_root_to_owner(
         if let Some(parent) = target.parent() {
             owner.ensure_directory_all(parent)?;
         }
-        let mut output = owner.create_private_file(&target)?;
-        let copied = std::io::copy(
-            &mut entry.by_ref().take(MAX_ARCHIVE_FILE_BYTES + 1),
-            &mut output,
-        )?;
-        output.flush()?;
-        output.sync_all()?;
-        if copied > MAX_ARCHIVE_FILE_BYTES {
+        let mut bytes = Vec::new();
+        entry
+            .by_ref()
+            .take(MAX_ARCHIVE_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_ARCHIVE_FILE_BYTES {
             return Err(invalid_archive("ZIP contains a file larger than 8 MiB"));
         }
+        owner.write_private_file_noreplace(&target, &bytes, "archive extracted file")?;
     }
     if owner
         .read_bounded_regular_file(
@@ -2593,6 +2602,20 @@ mod tests {
                 .expect("confirmed import");
 
         assert!(applied.applied);
+        assert!(
+            serde_json::to_value(&preview)
+                .expect("serialize import preview")
+                .get("preview_token")
+                .is_some(),
+            "preview responses retain their authorization token"
+        );
+        assert!(
+            serde_json::to_value(&applied)
+                .expect("serialize import apply")
+                .get("preview_token")
+                .is_none(),
+            "apply responses must not serialize a consumed authorization token"
+        );
         assert!(applied
             .readback
             .as_ref()
@@ -2756,6 +2779,20 @@ mod tests {
                 .expect("confirmed project local update");
 
         assert!(applied.applied);
+        assert!(
+            serde_json::to_value(&preview)
+                .expect("serialize update preview")
+                .get("preview_token")
+                .is_some(),
+            "preview responses retain their authorization token"
+        );
+        assert!(
+            serde_json::to_value(&applied)
+                .expect("serialize update apply")
+                .get("preview_token")
+                .is_none(),
+            "apply responses must not serialize a consumed authorization token"
+        );
         assert!(applied
             .readback
             .as_ref()

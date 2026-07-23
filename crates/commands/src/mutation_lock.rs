@@ -281,7 +281,9 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
                 io::Error::from(error)
             ))
         })?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+        if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+            || stat.st_uid != rustix::process::geteuid().as_raw()
+        {
             return Err(created_owner_effect_unknown(
                 "the created app-data owner is no longer a directory".to_string(),
             ));
@@ -316,6 +318,11 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
         if created_identity != Some((metadata.dev(), metadata.ino())) {
             return Err(created_owner_effect_unknown(
                 "the created app-data owner changed before descriptor binding".to_string(),
+            ));
+        }
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(created_owner_effect_unknown(
+                "the created app-data owner is not owned by the current effective user".to_string(),
             ));
         }
         run_owner_creation_fault(OwnerCreationFaultPoint::Chmod)
@@ -382,7 +389,9 @@ fn open_app_mutation_directory_tree(
                                 io::Error::from(error)
                             ))
                         })?;
-                    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+                    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+                        || stat.st_uid != rustix::process::geteuid().as_raw()
+                    {
                         return Err(created_owner_effect_unknown(
                             "a created app-data ancestor is no longer a directory".to_string(),
                         ));
@@ -426,6 +435,12 @@ fn open_app_mutation_directory_tree(
                     if created_identity != Some((metadata.dev(), metadata.ino())) {
                         return Err(created_owner_effect_unknown(
                             "a created app-data ancestor changed before descriptor binding"
+                                .to_string(),
+                        ));
+                    }
+                    if metadata.uid() != rustix::process::geteuid().as_raw() {
+                        return Err(created_owner_effect_unknown(
+                            "a created app-data ancestor is not owned by the current effective user"
                                 .to_string(),
                         ));
                     }
@@ -475,7 +490,7 @@ fn open_app_mutation_directory_tree(
             error.into()
         }
     })?;
-    if !metadata.is_dir() {
+    if !metadata.is_dir() || metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(if created_any {
             created_owner_effect_unknown(
                 "the created app-data owner is no longer a directory".to_string(),

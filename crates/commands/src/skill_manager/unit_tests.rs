@@ -146,6 +146,9 @@ fn semantic_test_state(
 
 #[test]
 fn local_create_preview_refuses_an_existing_staging_destination_without_modifying_it() {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     let temp_root = std::env::temp_dir().join(format!(
         "skill-manager-local-create-existing-destination-{}-{}",
         std::process::id(),
@@ -156,6 +159,23 @@ fn local_create_preview_refuses_an_existing_staging_destination_without_modifyin
         local_create_staging_destination_path(&app_data, "existing").expect("destination");
     fs::create_dir_all(&destination).expect("create existing destination");
     fs::write(destination.join("sentinel"), b"unchanged").expect("destination sentinel");
+    #[cfg(unix)]
+    {
+        fs::set_permissions(
+            destination.join("sentinel"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("private sentinel");
+        let mut directory = Some(destination.as_path());
+        while let Some(current) = directory {
+            fs::set_permissions(current, fs::Permissions::from_mode(0o700))
+                .expect("private staging fixture");
+            if current == app_data {
+                break;
+            }
+            directory = current.parent();
+        }
+    }
     let ctx = AdapterContext {
         user_home: temp_root.join("home"),
         project_root: None,

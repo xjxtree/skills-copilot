@@ -4280,6 +4280,22 @@ fn write_tool_global_skill(root: &Path, name: &str) -> PathBuf {
 }
 
 fn install_tool_global_instance(id: &str, path: PathBuf, name: &str) -> SkillInstance {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("private tool-global skill file");
+        let mut directory = path.parent();
+        for _ in 0..4 {
+            let Some(current) = directory else {
+                break;
+            };
+            std::fs::set_permissions(current, std::fs::Permissions::from_mode(0o700))
+                .expect("private tool-global directory");
+            directory = current.parent();
+        }
+    }
     SkillInstance {
         id: id.to_string(),
         agent: AgentId::ClaudeCode,

@@ -1425,47 +1425,35 @@ fn write_provider_action_state_atomic(
     cleanup_provider_action_state_replacements(owner)?;
     let original = read_provider_action_state_while_locked(owner)?.map(|(snapshot, _)| snapshot);
 
-    if let Err(write_error) = owner_fs.replace_private_file_if_current(
+    let replacement = owner_fs.replace_private_file_if_current_with_snapshot(
         Path::new(PROVIDER_ACTION_STATE_RELATIVE_PATH),
         original.as_ref(),
         bytes,
         "provider-action-state",
         PROVIDER_ACTION_STATE_BOUND_QUARANTINE_PREFIX,
-    ) {
-        let readback = read_provider_action_state_while_locked(owner).map(|state| {
-            state.map(|(snapshot, _)| {
-                snapshot
-                    .regular_file_bytes()
-                    .expect("provider action state snapshot is regular")
-                    .to_vec()
-            })
-        });
-        let original_bytes = original.as_ref().map(|snapshot| {
-            snapshot
-                .regular_file_bytes()
-                .expect("provider action state snapshot is regular")
-                .to_vec()
-        });
-        return match readback {
-            Ok(Some(persisted)) if persisted == bytes => {
-                Err(provider_replay_state_applied_unverified(
-                    "provider replay-state bytes match the candidate, but replacement durability could not be verified",
-                ))
-            }
-            Ok(persisted) if persisted == original_bytes => {
-                if record.phase == ProviderActionStatePhase::Reservation {
-                    Err(ServiceError::ActionNotStarted(format!(
-                        "provider replay state could not be replaced before the action started: {write_error}"
-                    )))
-                } else {
-                    Err(provider_replay_state_applied_unverified(
-                        "the provider effect completed, but its terminal replay outcome was not durably recorded",
-                    ))
+    );
+    let installed = match replacement {
+        Ok(installed) => installed,
+        Err(error @ CommandError::PartialEffect { .. }) => return Err(error.into()),
+        Err(write_error) => {
+            let readback = read_provider_action_state_while_locked(owner)
+                .map(|state| state.map(|item| item.0));
+            return match readback {
+                Ok(persisted) if persisted.as_ref() == original.as_ref() => {
+                    if record.phase == ProviderActionStatePhase::Reservation {
+                        Err(ServiceError::ActionNotStarted(format!(
+                            "provider replay state could not be replaced before the action started: {write_error}"
+                        )))
+                    } else {
+                        Err(provider_replay_state_applied_unverified(
+                            "the provider effect completed, but its terminal replay outcome was not durably recorded",
+                        ))
+                    }
                 }
-            }
-            _ => Err(provider_replay_state_outcome_unknown()),
-        };
-    }
+                _ => Err(provider_replay_state_outcome_unknown()),
+            };
+        }
+    };
     if should_fail_provider_action_state_directory_sync(app_data_dir, record.phase) {
         return Err(provider_replay_state_applied_unverified(
             "provider replay state was replaced, but its durable update could not be verified",
@@ -1473,9 +1461,7 @@ fn write_provider_action_state_atomic(
     }
     match read_provider_action_state_while_locked(owner) {
         Ok(Some((persisted, _)))
-            if persisted
-                .regular_file_bytes()
-                .is_some_and(|persisted| persisted == bytes) =>
+            if persisted == installed && persisted.regular_file_bytes() == Some(bytes) =>
         {
             Ok(())
         }
