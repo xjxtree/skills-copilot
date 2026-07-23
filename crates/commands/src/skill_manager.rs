@@ -903,6 +903,18 @@ pub fn delete_local_skill_with_manager(
             ));
         }
         fs::rename(skill_dir, &quarantine)?;
+        run_local_delete_post_rename_test_hook(&current_canonical_path);
+        let missing_tree_revision = local_delete_missing_tree_revision(&current_canonical_path)?;
+        let observed_tree_revision = local_delete_tree_revision(&current_canonical_path)?;
+        if observed_tree_revision != missing_tree_revision {
+            drop(transaction);
+            return Err(CommandError::PartialEffect {
+                operation: "skillManager.deleteLocal".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: "the original local skill path was recreated after quarantine; the unowned path and quarantined original were preserved for review".to_string(),
+            });
+        }
         let payload = serde_json::json!({
             "deleted": true,
             "path": current_canonical_path.to_string_lossy(),
@@ -946,7 +958,7 @@ pub fn delete_local_skill_with_manager(
                     ActionReadbackObservation {
                         domain: ActionReadbackDomain::SkillFiles,
                         target_id: current_canonical_path.to_string_lossy().to_string(),
-                        revision: local_delete_tree_revision(&current_canonical_path)?,
+                        revision: missing_tree_revision.clone(),
                     },
                     ActionReadbackObservation {
                         domain: ActionReadbackDomain::CatalogSkills,
@@ -1233,6 +1245,57 @@ fn run_local_delete_pre_rename_test_hook(canonical_path: &Path) {
 fn run_local_delete_pre_rename_test_hook(_canonical_path: &Path) {}
 
 #[cfg(test)]
+struct LocalDeletePostRenameTestHook {
+    canonical_path: PathBuf,
+    action: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+static LOCAL_DELETE_POST_RENAME_TEST_HOOK: std::sync::Mutex<Option<LocalDeletePostRenameTestHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn install_local_delete_post_rename_test_hook(
+    canonical_path: PathBuf,
+    action: impl FnOnce() + Send + 'static,
+) {
+    let mut hook = LOCAL_DELETE_POST_RENAME_TEST_HOOK
+        .lock()
+        .expect("lock local-delete post-rename test hook");
+    assert!(
+        hook.is_none(),
+        "local-delete post-rename test hook already set"
+    );
+    *hook = Some(LocalDeletePostRenameTestHook {
+        canonical_path,
+        action: Box::new(action),
+    });
+}
+
+#[cfg(test)]
+fn run_local_delete_post_rename_test_hook(canonical_path: &Path) {
+    let action = {
+        let mut hook = LOCAL_DELETE_POST_RENAME_TEST_HOOK
+            .lock()
+            .expect("lock local-delete post-rename test hook");
+        if hook
+            .as_ref()
+            .is_some_and(|scheduled| scheduled.canonical_path == canonical_path)
+        {
+            hook.take().map(|scheduled| scheduled.action)
+        } else {
+            None
+        }
+    };
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(not(test))]
+fn run_local_delete_post_rename_test_hook(_canonical_path: &Path) {}
+
+#[cfg(test)]
 static LOCAL_DELETE_CLEANUP_FAILURE_TEST_HOOK: std::sync::Mutex<Option<PathBuf>> =
     std::sync::Mutex::new(None);
 
@@ -1383,10 +1446,7 @@ fn local_delete_tree_revision(skill_file: &Path) -> Result<String, CommandError>
         CommandError::UnsafeConfigPath("local skill path has no parent".to_string())
     })?;
     if !root.exists() {
-        return action_source_revision(
-            "manager.local-delete.tree",
-            &[("root", &root.to_string_lossy()), ("exists", "false")],
-        );
+        return local_delete_missing_tree_revision(skill_file);
     }
     let mut pending = vec![root.to_path_buf()];
     let mut entries = Vec::new();
@@ -1446,6 +1506,16 @@ fn local_delete_tree_revision(skill_file: &Path) -> Result<String, CommandError>
             ("exists", "true"),
             ("entries", &entries_json),
         ],
+    )
+}
+
+fn local_delete_missing_tree_revision(skill_file: &Path) -> Result<String, CommandError> {
+    let root = skill_file.parent().ok_or_else(|| {
+        CommandError::UnsafeConfigPath("local skill path has no parent".to_string())
+    })?;
+    action_source_revision(
+        "manager.local-delete.tree",
+        &[("root", &root.to_string_lossy()), ("exists", "false")],
     )
 }
 
@@ -2329,15 +2399,12 @@ fn verify_manager_operation(
             if preview.skills.is_empty() || before.is_empty() {
                 return Err(CommandError::VerificationFailed);
             }
+            verify_manager_install_lock_source(preview)?;
             for prior in before {
                 let current = after_for(prior).ok_or(CommandError::VerificationFailed)?;
-                let selected_changed = !prior.exists
-                    || prior.source_identity != current.source_identity
-                    || prior.content_fingerprint != current.content_fingerprint;
                 if !current.exists
                     || current.source_identity.is_none()
                     || current.content_fingerprint.is_none()
-                    || !selected_changed
                     || !catalog_proves(current, true)
                 {
                     return Err(CommandError::VerificationFailed);
@@ -2368,6 +2435,7 @@ fn verify_manager_operation(
                 if !current.exists
                     || current.source_identity.is_none()
                     || current.content_fingerprint.is_none()
+                    || prior.source_identity != current.source_identity
                     || prior.content_fingerprint == current.content_fingerprint
                     || !catalog_proves(current, true)
                 {
@@ -2378,6 +2446,89 @@ fn verify_manager_operation(
         _ => return Err(CommandError::VerificationFailed),
     }
     Ok(())
+}
+
+fn verify_manager_install_lock_source(
+    preview: &SkillManagerCommandPreview,
+) -> Result<(), CommandError> {
+    let requested_source = preview
+        .source
+        .as_deref()
+        .ok_or(CommandError::VerificationFailed)?;
+    let cwd = Path::new(&preview.cwd);
+    let expected_identity = normalized_manager_source_identity(requested_source, cwd)?;
+    let global = preview
+        .command
+        .iter()
+        .any(|argument| argument == "--global");
+    let lock_path = if global {
+        cwd.join(".agents/.skill-lock.json")
+    } else {
+        cwd.join("skills-lock.json")
+    };
+    let metadata =
+        fs::symlink_metadata(&lock_path).map_err(|_| CommandError::VerificationFailed)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_MANAGER_LOCK_BYTES
+    {
+        return Err(CommandError::VerificationFailed);
+    }
+    let lock: ManagerLockFile = serde_json::from_slice(&fs::read(&lock_path)?)
+        .map_err(|_| CommandError::VerificationFailed)?;
+    for skill in &preview.skills {
+        let entry = lock
+            .skills
+            .get(skill)
+            .or_else(|| {
+                lock.skills
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(skill))
+                    .map(|(_, entry)| entry)
+            })
+            .ok_or(CommandError::VerificationFailed)?;
+        let installed_source = entry
+            .source
+            .as_deref()
+            .ok_or(CommandError::VerificationFailed)?;
+        if normalized_manager_source_identity(installed_source, cwd)? != expected_identity {
+            return Err(CommandError::VerificationFailed);
+        }
+    }
+    Ok(())
+}
+
+fn normalized_manager_source_identity(source: &str, cwd: &Path) -> Result<String, CommandError> {
+    match resolve_manager_source(source, cwd)? {
+        ManagerSourceResolution::Local(path) => Ok(format!("local:{}", path.to_string_lossy())),
+        ManagerSourceResolution::Network => {
+            let source = source.trim().trim_end_matches('/');
+            if let Ok(url) = url::Url::parse(source) {
+                let host = url
+                    .host_str()
+                    .ok_or(CommandError::VerificationFailed)?
+                    .to_ascii_lowercase();
+                let path = url.path().trim_matches('/').trim_end_matches(".git");
+                return Ok(format!("network:{host}/{path}"));
+            }
+            if looks_like_scp_git_source(source) {
+                let colon = source.find(':').ok_or(CommandError::VerificationFailed)?;
+                let authority = &source[..colon];
+                let host = authority
+                    .rsplit_once('@')
+                    .map_or(authority, |(_, host)| host)
+                    .to_ascii_lowercase();
+                let path = source[colon + 1..]
+                    .trim_matches('/')
+                    .trim_end_matches(".git");
+                return Ok(format!("network:{host}/{path}"));
+            }
+            Ok(format!(
+                "network:github.com/{}",
+                source.trim_matches('/').trim_end_matches(".git")
+            ))
+        }
+    }
 }
 
 fn verify_manager_target_transition(
@@ -2600,9 +2751,10 @@ fn manager_inventory_revision(paths: &[PathBuf]) -> Result<String, CommandError>
             continue;
         };
         if metadata.file_type().is_symlink() {
+            let target_revision = manager_target_revision(path)?;
             rows.push(format!(
-                "symlink:{path_text}:{}",
-                fs::read_link(path)?.to_string_lossy()
+                "symlink:{path_text}:{}:{target_revision}",
+                fs::read_link(path)?.to_string_lossy(),
             ));
         } else if metadata.is_file() {
             if metadata.len() > MAX_MANAGER_LOCK_BYTES {
@@ -2625,9 +2777,10 @@ fn manager_inventory_revision(paths: &[PathBuf]) -> Result<String, CommandError>
                 let child_metadata = fs::symlink_metadata(&child_path)?;
                 let name = child.file_name().to_string_lossy().to_string();
                 if child_metadata.file_type().is_symlink() {
+                    let target_revision = manager_target_revision(&child_path)?;
                     rows.push(format!(
-                        "entry:{path_text}:{name}:symlink:{}",
-                        fs::read_link(&child_path)?.to_string_lossy()
+                        "entry:{path_text}:{name}:symlink:{}:{target_revision}",
+                        fs::read_link(&child_path)?.to_string_lossy(),
                     ));
                 } else if child_metadata.is_dir() {
                     rows.push(format!("entry:{path_text}:{name}:directory"));
@@ -3365,17 +3518,28 @@ fn resolve_manager_source(
 }
 
 fn looks_like_scp_git_source(source: &str) -> bool {
-    let Some(at) = source.find('@') else {
+    if source.contains("://") {
+        return false;
+    }
+    let Some(colon) = source.find(':') else {
         return false;
     };
-    let Some(colon) = source[at + 1..].find(':').map(|offset| at + 1 + offset) else {
+    if colon == 0 || colon + 1 >= source.len() {
         return false;
-    };
-    at > 0
-        && colon > at + 1
+    }
+    let authority = &source[..colon];
+    let path = &source[colon + 1..];
+    let valid_authority = authority
+        .split_once('@')
+        .map_or(!authority.is_empty(), |(user, host)| {
+            !user.is_empty() && !host.is_empty() && !host.contains('@')
+        });
+    valid_authority
+        && !authority.contains('/')
+        && !authority.contains('\\')
+        && !authority.chars().any(char::is_whitespace)
+        && !path.chars().any(char::is_whitespace)
         && colon + 1 < source.len()
-        && !source[..at].contains('/')
-        && !source[at + 1..colon].contains('/')
 }
 
 fn resolve_local_manager_source(path: PathBuf) -> Result<ManagerSourceResolution, CommandError> {
@@ -3745,7 +3909,12 @@ fn redact_sensitive_url_tokens(output: &str) -> String {
         }
         if token_start < token_end {
             let candidate = &output[token_start..token_end];
-            if looks_like_scp_git_source(candidate) && !candidate.starts_with("git@") {
+            if looks_like_scp_git_source(candidate)
+                && (!candidate.starts_with("git@")
+                    || candidate.contains('?')
+                    || candidate.contains('#')
+                    || candidate.contains('%'))
+            {
                 ranges.push((token_start, token_end));
             }
         }
@@ -3809,6 +3978,52 @@ mod effects_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn semantic_test_preview(operation: &str, skills: Vec<&str>) -> SkillManagerCommandPreview {
+        SkillManagerCommandPreview {
+            action: None,
+            preconditions: Vec::new(),
+            tool_id: DEFAULT_MANAGER_TOOL.to_string(),
+            operation: operation.to_string(),
+            command: vec!["/usr/bin/true".to_string(), "--global".to_string()],
+            cwd: "/tmp".to_string(),
+            env: Vec::new(),
+            requires_confirmation: true,
+            confirmed: true,
+            network_required: false,
+            network_allowed: true,
+            will_run: true,
+            preview_token: "test".to_string(),
+            summary: "test".to_string(),
+            risks: Vec::new(),
+            source: None,
+            skills: skills.into_iter().map(str::to_string).collect(),
+        }
+    }
+
+    fn semantic_test_catalog_record(
+        id: &str,
+        agent: AgentId,
+        name: &str,
+        path: PathBuf,
+    ) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            agent: agent.as_str().to_string(),
+            scope: Scope::AgentGlobal.as_str().to_string(),
+            path: path.clone(),
+            display_path: path,
+            definition_id: id.to_string(),
+            name: name.to_string(),
+            state: "loaded".to_string(),
+            enabled: true,
+            publisher: None,
+            package_name: None,
+            package_version: None,
+            source_kind: None,
+            read_only_reason: None,
+        }
+    }
 
     #[test]
     fn machine_stdout_capture_is_private_and_removed_on_drop() {
@@ -4111,6 +4326,15 @@ mod tests {
             scp_redacted, "failed <redacted-source-url>",
             "credential-shaped SCP output must be removed as one token"
         );
+        for output in [
+            "failed host:owner/repo.git?token=secret",
+            "failed host:owner/repo.git#secret",
+            "failed git@example.com:owner/repo.git?token=secret",
+        ] {
+            let redacted = redact_command_output(&ctx, output);
+            assert_eq!(redacted, "failed <redacted-source-url>");
+            assert!(!redacted.contains("secret"));
+        }
     }
 
     #[test]
@@ -4160,11 +4384,39 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn manager_inventory_revision_tracks_symlinked_lock_target_content() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "agent-copilot-manager-lock-symlink-revision-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).expect("create fixture root");
+        let lock_target = temp_root.join("real-skill-lock.json");
+        let lock_link = temp_root.join(".skill-lock.json");
+        fs::write(&lock_target, "{\"source\":\"before\"}").expect("write lock target");
+        symlink(&lock_target, &lock_link).expect("link manager lock");
+
+        let before =
+            manager_inventory_revision(std::slice::from_ref(&lock_link)).expect("revision before");
+        fs::write(&lock_target, "{\"source\":\"after!\"}").expect("change lock target");
+        let after =
+            manager_inventory_revision(std::slice::from_ref(&lock_link)).expect("revision after");
+
+        assert_ne!(before, after);
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
     #[test]
     fn manager_source_rejects_credential_shaped_scp_and_encoded_urls() {
         let cwd = Path::new("/tmp");
         for source in [
             "user:secret@example.com:owner/repo.git",
+            "host:owner/repo.git?token=secret",
+            "host:owner/repo.git#token",
+            "git@example.com:owner/repo.git?token=secret",
             "https://example.com/%40token/repo.git",
             "https://example.com/owner/repo.git?token=secret",
             "https://example.com/owner/repo.git#token",
@@ -4180,6 +4432,177 @@ mod tests {
                 .expect("standard scp git source"),
             ManagerSourceResolution::Network
         );
+    }
+
+    #[test]
+    fn multi_agent_install_allows_an_unchanged_valid_target_when_another_target_is_added() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "agent-copilot-manager-mixed-install-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let existing_file = temp_root.join("claude/shared/SKILL.md");
+        let added_file = temp_root.join("codex/shared/SKILL.md");
+        fs::create_dir_all(existing_file.parent().expect("existing parent"))
+            .expect("create existing target");
+        fs::create_dir_all(added_file.parent().expect("added parent"))
+            .expect("create added target");
+        fs::write(&existing_file, "existing").expect("write existing target");
+        fs::write(&added_file, "added").expect("write added target");
+        let existing_file = existing_file.canonicalize().expect("canonical existing");
+        let added_file = added_file.canonicalize().expect("canonical added");
+        let before = vec![
+            ManagerSelectedSkillState {
+                agent: AgentId::ClaudeCode,
+                root: temp_root.join("claude"),
+                skill: "shared".to_string(),
+                exists: true,
+                canonical_skill_file: Some(existing_file.clone()),
+                source_identity: Some("claude-source".to_string()),
+                content_fingerprint: Some("same-content".to_string()),
+            },
+            ManagerSelectedSkillState {
+                agent: AgentId::Codex,
+                root: temp_root.join("codex"),
+                skill: "shared".to_string(),
+                exists: false,
+                canonical_skill_file: None,
+                source_identity: None,
+                content_fingerprint: None,
+            },
+        ];
+        let after = vec![
+            before[0].clone(),
+            ManagerSelectedSkillState {
+                agent: AgentId::Codex,
+                root: temp_root.join("codex"),
+                skill: "shared".to_string(),
+                exists: true,
+                canonical_skill_file: Some(added_file.clone()),
+                source_identity: Some("codex-source".to_string()),
+                content_fingerprint: Some("same-content".to_string()),
+            },
+        ];
+        let records = vec![
+            semantic_test_catalog_record(
+                "claude-shared",
+                AgentId::ClaudeCode,
+                "shared",
+                existing_file,
+            ),
+            semantic_test_catalog_record("codex-shared", AgentId::Codex, "shared", added_file),
+        ];
+        fs::create_dir_all(temp_root.join(".agents")).expect("create manager state root");
+        fs::write(
+            temp_root.join(".agents/.skill-lock.json"),
+            r#"{"version":3,"skills":{"shared":{"source":"owner/repository","sourceType":"github"}}}"#,
+        )
+        .expect("write manager lock");
+        let mut preview = semantic_test_preview("install", vec!["shared"]);
+        preview.cwd = temp_root.to_string_lossy().to_string();
+        preview.source = Some("https://github.com/owner/repository.git".to_string());
+
+        verify_manager_operation(&preview, &records, &before, &after)
+            .expect("all selected postconditions are valid and another target changed");
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn install_rejects_postconditions_owned_by_a_different_manager_source() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "agent-copilot-manager-wrong-install-source-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let skill_file = temp_root.join("codex/shared/SKILL.md");
+        fs::create_dir_all(skill_file.parent().expect("skill parent"))
+            .expect("create selected target");
+        fs::write(&skill_file, "installed").expect("write selected target");
+        let skill_file = skill_file.canonicalize().expect("canonical skill");
+        fs::create_dir_all(temp_root.join(".agents")).expect("create manager state root");
+        fs::write(
+            temp_root.join(".agents/.skill-lock.json"),
+            r#"{"version":3,"skills":{"shared":{"source":"other/repository","sourceType":"github"}}}"#,
+        )
+        .expect("write mismatched manager lock");
+        let before = vec![ManagerSelectedSkillState {
+            agent: AgentId::Codex,
+            root: temp_root.join("codex"),
+            skill: "shared".to_string(),
+            exists: false,
+            canonical_skill_file: None,
+            source_identity: None,
+            content_fingerprint: None,
+        }];
+        let after = vec![ManagerSelectedSkillState {
+            agent: AgentId::Codex,
+            root: temp_root.join("codex"),
+            skill: "shared".to_string(),
+            exists: true,
+            canonical_skill_file: Some(skill_file.clone()),
+            source_identity: Some("different-source".to_string()),
+            content_fingerprint: Some("installed".to_string()),
+        }];
+        let records = vec![semantic_test_catalog_record(
+            "codex-shared",
+            AgentId::Codex,
+            "shared",
+            skill_file,
+        )];
+        let mut preview = semantic_test_preview("install", vec!["shared"]);
+        preview.cwd = temp_root.to_string_lossy().to_string();
+        preview.source = Some("owner/repository".to_string());
+
+        assert!(matches!(
+            verify_manager_operation(&preview, &records, &before, &after),
+            Err(CommandError::VerificationFailed)
+        ));
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn update_rejects_a_changed_skill_that_swaps_source_identity() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "agent-copilot-manager-source-swap-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let skill_file = temp_root.join("codex/selected/SKILL.md");
+        fs::create_dir_all(skill_file.parent().expect("skill parent"))
+            .expect("create selected target");
+        fs::write(&skill_file, "after").expect("write selected target");
+        let skill_file = skill_file.canonicalize().expect("canonical skill");
+        let before = vec![ManagerSelectedSkillState {
+            agent: AgentId::Codex,
+            root: temp_root.join("codex"),
+            skill: "selected".to_string(),
+            exists: true,
+            canonical_skill_file: Some(skill_file.clone()),
+            source_identity: Some("expected-source".to_string()),
+            content_fingerprint: Some("before".to_string()),
+        }];
+        let after = vec![ManagerSelectedSkillState {
+            source_identity: Some("different-source".to_string()),
+            content_fingerprint: Some("after".to_string()),
+            ..before[0].clone()
+        }];
+        let records = vec![semantic_test_catalog_record(
+            "codex-selected",
+            AgentId::Codex,
+            "selected",
+            skill_file,
+        )];
+
+        assert!(matches!(
+            verify_manager_operation(
+                &semantic_test_preview("update", vec!["selected"]),
+                &records,
+                &before,
+                &after,
+            ),
+            Err(CommandError::VerificationFailed)
+        ));
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

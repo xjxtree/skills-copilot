@@ -2026,6 +2026,79 @@ fn batch_toggle_restores_every_group_when_a_later_atomic_write_fails_after_renam
 }
 
 #[test]
+fn batch_toggle_removes_private_temp_files_when_a_pre_rename_write_fails() {
+    let temp_root = temp_test_dir("batch-toggle-pre-rename-failure");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "pre-rename-claude");
+    write_pi_global_skill(&home, "pre-rename-pi");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let records = catalog.list_skill_records().expect("records");
+    let selection = vec![
+        records
+            .iter()
+            .find(|record| record.agent == "claude-code" && record.name == "pre-rename-claude")
+            .expect("Claude record")
+            .id
+            .clone(),
+        records
+            .iter()
+            .find(|record| record.agent == "pi" && record.name == "pre-rename-pi")
+            .expect("Pi record")
+            .id
+            .clone(),
+    ];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let failing_target = home.join(".pi/agent/settings.json");
+    install_atomic_pre_rename_failure_test_hook(failing_target.clone());
+
+    let error = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation)
+        .expect_err("pre-rename failure must fail the batch");
+
+    assert!(matches!(error, CommandError::VerificationFailed));
+    assert!(!home.join(".claude/settings.json").exists());
+    assert!(!failing_target.exists());
+    let mut pending = vec![home.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .expect("read fixture tree")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read fixture entry")
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                assert!(
+                    !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".tmp")),
+                    "private temporary files must be removed after pre-rename failure"
+                );
+            }
+        }
+    }
+    assert!(catalog
+        .list_skill_records()
+        .expect("records")
+        .iter()
+        .filter(|record| selection.contains(&record.id))
+        .all(|record| record.enabled));
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn batch_toggle_restores_every_group_and_catalog_when_commit_fails() {
     let temp_root = temp_test_dir("batch-toggle-commit-failure");
     let home = temp_root.join("home");
@@ -4316,6 +4389,105 @@ fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
 }
 
 #[test]
+fn local_delete_does_not_verify_a_source_recreated_after_quarantine() {
+    let temp_root = temp_test_dir("local-delete-post-rename-recreation");
+    let app_data = temp_root.join("app-data");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join("delete-recreated")
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        "---\nname: delete-recreated\ndescription: original\n---\noriginal",
+    )
+    .expect("write source");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let mut instance = install_tool_global_instance(
+        "tool-global-delete-recreated",
+        source_path.clone(),
+        "delete-recreated",
+    );
+    instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&instance)
+        .expect("upsert tool-global");
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance.id.clone(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    let canonical_source = source_path.canonicalize().expect("canonical source");
+    let recreated_path = source_path.clone();
+    skill_manager::install_local_delete_post_rename_test_hook(canonical_source, move || {
+        std::fs::create_dir_all(recreated_path.parent().expect("recreated parent"))
+            .expect("recreate source directory");
+        std::fs::write(
+            &recreated_path,
+            "---\nname: delete-recreated\ndescription: third state\n---\nthird state",
+        )
+        .expect("write unowned third state");
+    });
+
+    let result = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance.id.clone(),
+            confirmed: true,
+            preview_token: preview.preview_token.clone(),
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        })
+    ));
+    assert!(
+        std::fs::read_to_string(&source_path)
+            .expect("recreated source remains")
+            .contains("third state"),
+        "the unowned third state must never be overwritten"
+    );
+    assert!(
+        catalog
+            .get_skill_record(&instance.id)
+            .expect("catalog lookup")
+            .is_some(),
+        "the catalog transaction must roll back"
+    );
+    assert!(
+        std::fs::read_dir(
+            source_path
+                .parent()
+                .expect("source parent")
+                .parent()
+                .expect("library")
+        )
+        .expect("read library")
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".agent-copilot-delete-delete-recreated-")),
+        "the quarantined original remains available for explicit recovery"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn local_delete_reports_applied_verified_when_only_quarantine_cleanup_fails() {
     let temp_root = temp_test_dir("local-delete-cleanup-failure");
     let app_data = temp_root.join("app-data");
@@ -4612,6 +4784,72 @@ fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_ren
             record.agent == "claude-code"
                 && record.scope == Scope::AgentGlobal.as_str()
                 && record.name == "restore-install"
+        }));
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn confirmed_install_removes_temp_and_owned_parents_when_write_fails_before_rename() {
+    let temp_root = temp_test_dir("install-pre-rename-failure");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "pre-rename-install");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            "tool-global-pre-rename-install",
+            source_path,
+            "pre-rename-install",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-pre-rename-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview");
+    let target = PathBuf::from(&preview.target_path);
+    install_atomic_pre_rename_failure_test_hook(target.clone());
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+
+    let error = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-pre-rename-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    )
+    .expect_err("pre-rename failure must fail install");
+
+    assert!(matches!(error, CommandError::VerificationFailed));
+    assert!(!target.exists());
+    assert!(
+        !home.join(".claude").exists(),
+        "the complete parent chain created only for the failed install must be removed"
+    );
+    assert!(!catalog
+        .list_skill_records()
+        .expect("records")
+        .iter()
+        .any(|record| {
+            record.agent == "claude-code"
+                && record.scope == Scope::AgentGlobal.as_str()
+                && record.name == "pre-rename-install"
         }));
 
     let _ = std::fs::remove_dir_all(&temp_root);

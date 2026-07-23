@@ -1,8 +1,33 @@
 import Foundation
 
+struct ServiceErrorDetailsPayload: Codable, Hashable {
+    let operation: String
+    let state: String
+    let cleanupRequired: Bool
+    let retryAllowed: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case operation
+        case state
+        case cleanupRequired = "cleanup_required"
+        case retryAllowed = "retry_allowed"
+    }
+}
+
 struct ServiceErrorPayload: Codable, Error {
     let code: String
     let message: String
+    let details: ServiceErrorDetailsPayload?
+
+    init(
+        code: String,
+        message: String,
+        details: ServiceErrorDetailsPayload? = nil
+    ) {
+        self.code = code
+        self.message = message
+        self.details = details
+    }
 }
 
 struct AppVersion: Codable, Hashable {

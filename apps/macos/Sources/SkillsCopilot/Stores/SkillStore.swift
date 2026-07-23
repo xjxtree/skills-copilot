@@ -121,6 +121,7 @@ final class SkillStore: ObservableObject {
     @Published var skillManagerLocalArchiveImportConfirmation: SkillManagerLocalArchiveImportConfirmation?
     @Published var skillManagerLocalArchiveUpdateConfirmation: SkillManagerLocalArchiveUpdateConfirmation?
     @Published private(set) var skillManagerErrorMessage: String?
+    @Published private(set) var skillManagerWarningMessage: String?
     @Published var skillManagerMessage: String?
     @Published private(set) var isLoadingSkillManagerTools = false
     @Published private(set) var isSearchingSkillManager = false
@@ -1699,7 +1700,10 @@ final class SkillStore: ObservableObject {
                     appendVerifiedWriteRefreshWarning(error)
                 }
             } catch {
-                setSkillManagerError(error.localizedDescription)
+                if skillManagerApplyMustRetirePreview(error) {
+                    retireSkillManagerLocalCreateConfirmation(confirmation)
+                }
+                setSkillManagerApplyFailure(error)
             }
         }
     }
@@ -1764,7 +1768,10 @@ final class SkillStore: ObservableObject {
                     appendVerifiedWriteRefreshWarning(error)
                 }
             } catch {
-                setSkillManagerError(error.localizedDescription)
+                if skillManagerApplyMustRetirePreview(error) {
+                    retireSkillManagerLocalDeleteConfirmation(confirmation)
+                }
+                setSkillManagerApplyFailure(error)
             }
         }
     }
@@ -1855,12 +1862,35 @@ final class SkillStore: ObservableObject {
 
     func clearSkillManagerFeedback() {
         skillManagerErrorMessage = nil
+        skillManagerWarningMessage = nil
         skillManagerMessage = nil
     }
 
     func setSkillManagerError(_ message: String) {
         skillManagerErrorMessage = UIStrings.localizedServiceMessage(message)
+        skillManagerWarningMessage = nil
         skillManagerMessage = nil
+    }
+
+    private func setSkillManagerApplyFailure(_ error: Error) {
+        guard case let ServiceClient.ClientError.service(payload) = error,
+              let details = payload.details else {
+            setSkillManagerError(error.localizedDescription)
+            return
+        }
+        let message = UIStrings.localizedServiceMessage(payload.message)
+        if details.state == "not_started", !details.cleanupRequired {
+            setSkillManagerError(message)
+        } else {
+            skillManagerErrorMessage = nil
+            skillManagerMessage = nil
+            skillManagerWarningMessage = message
+        }
+    }
+
+    private func skillManagerApplyMustRetirePreview(_ error: Error) -> Bool {
+        guard case let ServiceClient.ClientError.service(payload) = error else { return false }
+        return payload.details?.retryAllowed == false
     }
 
     private func previewSkillManagerMutation(
@@ -2000,7 +2030,10 @@ final class SkillStore: ObservableObject {
                 }
                 await loadSkillManagerInventory()
             } catch {
-                setSkillManagerError(error.localizedDescription)
+                if skillManagerApplyMustRetirePreview(error) {
+                    retireSkillManagerMutationConfirmation(confirmation)
+                }
+                setSkillManagerApplyFailure(error)
             }
         }
     }

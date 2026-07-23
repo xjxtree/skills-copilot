@@ -237,6 +237,9 @@ struct SkillManagerPanel: View {
         if let error = store.skillManagerErrorMessage {
             WorkflowSheetInlineBanner(message: error, style: .error)
         }
+        if let warning = store.skillManagerWarningMessage {
+            WorkflowSheetInlineBanner(message: warning, style: .warning)
+        }
         if let message = store.skillManagerMessage {
             WorkflowSheetInlineBanner(message: message, style: .success)
         }

@@ -56,7 +56,33 @@ struct ServiceClientRPCTests {
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
         try actionReadbackMustMatchTheConfirmedDescriptor()
+        try structuredPartialEffectDetailsDecodeForNativeRecovery()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
+    }
+
+    private func structuredPartialEffectDetailsDecodeForNativeRecovery() throws {
+        let payload = try JSONDecoder().decode(
+            ServiceErrorPayload.self,
+            from: Data(
+                """
+                {
+                  "code": "partial_effect",
+                  "message": "The manager applied a change whose read-back is incomplete.",
+                  "details": {
+                    "operation": "skillManager.applyUpdate",
+                    "state": "applied_unverified",
+                    "cleanup_required": true,
+                    "retry_allowed": false
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        try expectEqual(payload.details?.operation, "skillManager.applyUpdate", "Partial-effect operation")
+        try expectEqual(payload.details?.state, "applied_unverified", "Partial-effect state")
+        try expectEqual(payload.details?.cleanupRequired, true, "Partial-effect cleanup flag")
+        try expectEqual(payload.details?.retryAllowed, false, "Partial-effect retry policy")
     }
 
     private func actionReadbackMustMatchTheConfirmedDescriptor() throws {

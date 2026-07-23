@@ -3853,6 +3853,9 @@ fn restore_config_state(
 ) -> Result<(), CommandError> {
     let current = read_config_state(&target.path)?;
     if current.revision == original.revision {
+        if !original.exists {
+            remove_owned_empty_directories(created_parent_candidates)?;
+        }
         return Ok(());
     }
     if current.revision != expected_applied_revision {
@@ -3874,17 +3877,7 @@ fn restore_config_state(
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        for directory in created_parent_candidates {
-            match fs::remove_dir(directory) {
-                Ok(()) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-                    ) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        remove_owned_empty_directories(created_parent_candidates)?;
     }
     if read_config_state(&target.path)?.revision != original.revision {
         return Err(CommandError::VerificationFailed);
@@ -5373,32 +5366,32 @@ fn write_config_atomic(
         current_time_ms()
     ));
 
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut tmp_file = options.open(&tmp)?;
-    set_private_file_permissions(&tmp_file)?;
-    tmp_file.write_all(content.as_bytes())?;
-    tmp_file.sync_all()?;
-    drop(tmp_file);
+    let write_result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp)?;
+        set_private_file_permissions(&tmp_file)?;
+        tmp_file.write_all(content.as_bytes())?;
+        tmp_file.sync_all()?;
+        drop(tmp_file);
 
-    validate_config_write_target(ctx, agent, scope, path)?;
-    let rename_result = fs::rename(&tmp, path);
-    if rename_result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    rename_result?;
-    run_atomic_post_rename_test_hook(path)?;
-    set_private_path_permissions(path)?;
-    validate_config_write_target(ctx, agent, scope, path)?;
-    if let Ok(parent_dir) = fs::File::open(parent) {
-        let _ = parent_dir.sync_all();
-    }
-    Ok(())
+        run_atomic_pre_rename_failure_test_hook(path)?;
+        validate_config_write_target(ctx, agent, scope, path)?;
+        fs::rename(&tmp, path)?;
+        run_atomic_post_rename_test_hook(path)?;
+        set_private_path_permissions(path)?;
+        validate_config_write_target(ctx, agent, scope, path)?;
+        if let Ok(parent_dir) = fs::File::open(parent) {
+            let _ = parent_dir.sync_all();
+        }
+        Ok(())
+    })();
+    finish_atomic_write_with_temp_cleanup("config.write", write_result, &tmp)
 }
 
 fn write_skill_file_atomic(
@@ -5419,31 +5412,82 @@ fn write_skill_file_atomic(
         current_time_ms()
     ));
 
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut tmp_file = options.open(&tmp)?;
-    set_private_file_permissions(&tmp_file)?;
-    tmp_file.write_all(content.as_bytes())?;
-    tmp_file.sync_all()?;
-    drop(tmp_file);
+    let write_result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp)?;
+        set_private_file_permissions(&tmp_file)?;
+        tmp_file.write_all(content.as_bytes())?;
+        tmp_file.sync_all()?;
+        drop(tmp_file);
 
-    validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-    let rename_result = fs::rename(&tmp, path);
-    if rename_result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        run_atomic_pre_rename_failure_test_hook(path)?;
+        validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
+        fs::rename(&tmp, path)?;
+        run_atomic_post_rename_test_hook(path)?;
+        set_private_path_permissions(path)?;
+        validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
+        if let Ok(parent_dir) = fs::File::open(parent) {
+            let _ = parent_dir.sync_all();
+        }
+        Ok(())
+    })();
+    finish_atomic_write_with_temp_cleanup("skill.install", write_result, &tmp)
+}
+
+fn finish_atomic_write_with_temp_cleanup(
+    operation: &str,
+    result: Result<(), CommandError>,
+    temporary_path: &Path,
+) -> Result<(), CommandError> {
+    let Err(error) = result else {
+        return Ok(());
+    };
+    match fs::remove_file(temporary_path) {
+        Ok(()) => Err(error),
+        Err(cleanup_error) if cleanup_error.kind() == io::ErrorKind::NotFound => Err(error),
+        Err(cleanup_error) => Err(CommandError::PartialEffect {
+            operation: operation.to_string(),
+            state: "outcome_unknown",
+            cleanup_required: true,
+            detail: format!(
+                "atomic write failed ({error}); private temporary-file cleanup failed ({cleanup_error})"
+            ),
+        }),
     }
-    rename_result?;
-    run_atomic_post_rename_test_hook(path)?;
-    set_private_path_permissions(path)?;
-    validate_skill_install_target(ctx, agent, scope, path, project_path, true)?;
-    if let Ok(parent_dir) = fs::File::open(parent) {
-        let _ = parent_dir.sync_all();
-    }
+}
+
+#[cfg(test)]
+static ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS: std::sync::Mutex<Vec<PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn install_atomic_pre_rename_failure_test_hook(path: PathBuf) {
+    ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS
+        .lock()
+        .expect("lock atomic pre-rename failure test hooks")
+        .push(path);
+}
+
+#[cfg(test)]
+fn run_atomic_pre_rename_failure_test_hook(path: &Path) -> Result<(), CommandError> {
+    let mut hooks = ATOMIC_PRE_RENAME_FAILURE_TEST_HOOKS
+        .lock()
+        .expect("lock atomic pre-rename failure test hooks");
+    let Some(index) = hooks.iter().position(|candidate| candidate == path) else {
+        return Ok(());
+    };
+    hooks.remove(index);
+    Err(CommandError::VerificationFailed)
+}
+
+#[cfg(not(test))]
+fn run_atomic_pre_rename_failure_test_hook(_path: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
@@ -5523,6 +5567,9 @@ fn restore_skill_install_target(
 ) -> Result<(), CommandError> {
     let current = read_skill_file_state(target, false)?;
     if current.revision == original.revision {
+        if !original.exists {
+            remove_owned_empty_directories(created_parent_candidates)?;
+        }
         return Ok(());
     }
     if current.revision != expected_applied_revision {
@@ -5538,21 +5585,26 @@ fn restore_skill_install_target(
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        for directory in created_parent_candidates {
-            match fs::remove_dir(directory) {
-                Ok(()) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-                    ) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        remove_owned_empty_directories(created_parent_candidates)?;
     }
     let restored = read_skill_file_state(target, false)?;
     if restored.revision != original.revision {
         return Err(CommandError::VerificationFailed);
+    }
+    Ok(())
+}
+
+fn remove_owned_empty_directories(directories: &[PathBuf]) -> Result<(), CommandError> {
+    for directory in directories {
+        match fs::remove_dir(directory) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
 }
