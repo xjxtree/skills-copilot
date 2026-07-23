@@ -10,6 +10,9 @@ const MAX_SQLITE_SESSIONS: usize = 10_000;
 const MAX_SQLITE_PREVIEW_MESSAGES: usize = 2_000;
 const MAX_SQLITE_TEXT_BYTES: usize = 32 * 1024 * 1024;
 const SQLITE_MESSAGE_SCAN_ROWS: usize = 1_000;
+const SQLITE_MESSAGE_SCAN_BYTES: usize = 32 * 1024 * 1024;
+const SQLITE_MESSAGE_SNAPSHOT_ROWS: usize = 20_000;
+const SQLITE_MESSAGE_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SqliteAgent {
@@ -151,6 +154,13 @@ struct SqliteMessage {
     text: String,
     timestamp: Option<i64>,
     kind: String,
+}
+
+#[derive(Clone)]
+struct SqliteMessageRow {
+    message: SqliteMessage,
+    raw_digest: [u8; 32],
+    raw_bytes: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -868,13 +878,51 @@ pub(super) fn list_sqlite_session_messages(
         ));
     };
     let connection = open_read_only_database(&session.db_path)?;
-    let source_revision = sqlite_message_revision(&connection, agent, &session)?;
+    connection
+        .execute_batch("BEGIN DEFERRED")
+        .map_err(sqlite_schema_error)?;
     let query_digest = sqlite_message_query_digest(agent, params);
     let cursor = params
         .cursor
         .as_deref()
         .map(|value| decode_cursor(value, MESSAGE_METHOD, &query_digest))
         .transpose()?;
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.stable_id != session.service_id)
+    {
+        return Err(ServiceError::InvalidRequest(
+            "message cursor is outside the selected SQLite session".to_string(),
+        ));
+    }
+    let fixed_end_row = cursor
+        .as_ref()
+        .and_then(|cursor| cursor.resolved_end_at)
+        .map(|value| {
+            usize::try_from(value).map_err(|_| {
+                ServiceError::InvalidRequest(
+                    "message cursor has an invalid SQLite snapshot endpoint".to_string(),
+                )
+            })
+        })
+        .transpose()?;
+    if cursor.is_some() && fixed_end_row.is_none() {
+        return Err(ServiceError::InvalidRequest(
+            "message cursor is missing the fixed SQLite snapshot endpoint".to_string(),
+        ));
+    }
+    let snapshot_was_limited = cursor
+        .as_ref()
+        .and_then(|cursor| cursor.tie_breaker_digest.as_deref())
+        == Some("safety_budget");
+    let snapshot = sqlite_message_snapshot(
+        &connection,
+        agent,
+        &session,
+        fixed_end_row,
+        snapshot_was_limited,
+    )?;
+    let source_revision = snapshot.source_revision.clone();
     if params
         .source_revision
         .as_deref()
@@ -885,32 +933,30 @@ pub(super) fn list_sqlite_session_messages(
     {
         return Err(ServiceError::SourceChanged);
     }
-    if cursor
-        .as_ref()
-        .is_some_and(|cursor| cursor.stable_id != session.service_id)
-    {
-        return Err(ServiceError::InvalidRequest(
-            "message cursor is outside the selected SQLite session".to_string(),
-        ));
-    }
     let start = cursor
         .as_ref()
-        .and_then(|cursor| usize::try_from(cursor.sort_value).ok())
+        .map(|cursor| {
+            usize::try_from(cursor.sort_value).map_err(|_| {
+                ServiceError::InvalidRequest(
+                    "message cursor has an invalid SQLite row offset".to_string(),
+                )
+            })
+        })
+        .transpose()?
         .unwrap_or(0);
-    let scan = load_final_message_page(&connection, agent, &session.native_id, start, limit)?;
-    if start > scan.total_rows {
+    if start > snapshot.end_row {
         return Err(ServiceError::InvalidRequest(
             "message cursor is outside the selected SQLite session".to_string(),
         ));
     }
+    let scan = load_final_message_page(&snapshot.rows, start, snapshot.end_row, limit);
     let mut redactor = PromptRedactor::new(redaction_roots);
     let items = scan
         .messages
         .iter()
-        .enumerate()
-        .map(|(index, message)| sqlite_content_item(message, start + index, &mut redactor))
+        .map(|(row_index, message)| sqlite_content_item(message, *row_index, &mut redactor))
         .collect::<Vec<_>>();
-    let has_more = scan.next_row < scan.total_rows;
+    let has_more = scan.next_row < snapshot.end_row;
     let next_cursor = has_more
         .then(|| {
             encode_cursor(&KeysetCursor {
@@ -922,7 +968,9 @@ pub(super) fn list_sqlite_session_messages(
                     ServiceError::InvalidRequest("SQLite message offset overflow".to_string())
                 })?,
                 stable_id: session.service_id.clone(),
-                tie_breaker_digest: None,
+                tie_breaker_digest: (snapshot.source_completeness
+                    == ListSourceCompleteness::Limited)
+                    .then_some("safety_budget".to_string()),
                 accepted_count: Some(
                     cursor
                         .as_ref()
@@ -930,9 +978,9 @@ pub(super) fn list_sqlite_session_messages(
                         .unwrap_or_default()
                         .saturating_add(items.len()),
                 ),
-                processed_prefix_digest: None,
+                processed_prefix_digest: Some(source_revision.clone()),
                 resolved_start_at: None,
-                resolved_end_at: Some(i64::try_from(scan.total_rows).unwrap_or(i64::MAX)),
+                resolved_end_at: Some(i64::try_from(snapshot.end_row).unwrap_or(i64::MAX)),
             })
         })
         .transpose()?;
@@ -952,11 +1000,15 @@ pub(super) fn list_sqlite_session_messages(
         has_more,
         next_cursor,
         source_revision,
-        source_completeness: ListSourceCompleteness::Enumerable,
-        incomplete_reason: None,
-        scanned_bytes: 0,
-        scanned_through_bytes: scan.next_row as u64,
-        snapshot_bytes: scan.total_rows as u64,
+        source_completeness: snapshot.source_completeness,
+        incomplete_reason: snapshot.incomplete_reason,
+        scanned_bytes: scan.scanned_bytes as u64,
+        scanned_through_bytes: snapshot
+            .row_sizes
+            .iter()
+            .take(scan.next_row)
+            .fold(0_u64, |total, size| total.saturating_add(*size as u64)),
+        snapshot_bytes: snapshot.snapshot_bytes as u64,
         redaction_summary: local_preview_redaction_summary_from(redactor.summary()),
         safety_flags: local_preview_safety_flags(),
         read_only: true,
@@ -1053,47 +1105,155 @@ fn load_messages(
 }
 
 struct SqliteMessagePageScan {
-    messages: Vec<SqliteMessage>,
+    messages: Vec<(usize, SqliteMessage)>,
     next_row: usize,
-    total_rows: usize,
+    scanned_bytes: usize,
+}
+
+struct SqliteMessageSnapshot {
+    end_row: usize,
+    rows: Vec<SqliteMessageRow>,
+    row_sizes: Vec<usize>,
+    snapshot_bytes: usize,
+    source_revision: String,
+    source_completeness: ListSourceCompleteness,
+    incomplete_reason: Option<ListIncompleteReason>,
+}
+
+fn sqlite_message_snapshot(
+    connection: &Connection,
+    agent: SqliteAgent,
+    session: &SqliteSession,
+    fixed_end_row: Option<usize>,
+    was_limited: bool,
+) -> Result<SqliteMessageSnapshot, ServiceError> {
+    let current_rows = sqlite_message_row_count(connection, agent, &session.native_id)?;
+    if fixed_end_row.is_some_and(|end_row| current_rows < end_row) {
+        return Err(ServiceError::SourceChanged);
+    }
+    let requested_end = fixed_end_row.unwrap_or(current_rows);
+    let row_bounded_end = requested_end.min(SQLITE_MESSAGE_SNAPSHOT_ROWS);
+    let mut snapshot_rows = Vec::with_capacity(row_bounded_end);
+    let mut row_sizes = Vec::with_capacity(row_bounded_end);
+    let mut snapshot_bytes = 0usize;
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-copilot.sqlite-session-message-snapshot.v2\0");
+    hasher.update(agent.id().as_bytes());
+    hasher.update([0]);
+    hasher.update(trace_content_hash(&session.db_path.to_string_lossy()).as_bytes());
+    hasher.update([0]);
+    hasher.update(session.service_id.as_bytes());
+
+    let mut offset = 0usize;
+    let mut byte_limited = false;
+    while offset < row_bounded_end {
+        let raw_limit = SQLITE_MESSAGE_SCAN_ROWS.min(row_bounded_end.saturating_sub(offset));
+        let sizes =
+            load_message_row_sizes(connection, agent, &session.native_id, offset, raw_limit)?;
+        if sizes.is_empty() {
+            return Err(ServiceError::SourceChanged);
+        }
+        let mut retained = 0usize;
+        for size in &sizes {
+            if snapshot_bytes.saturating_add(*size) > SQLITE_MESSAGE_SNAPSHOT_BYTES {
+                byte_limited = true;
+                break;
+            }
+            snapshot_bytes = snapshot_bytes.saturating_add(*size);
+            retained = retained.saturating_add(1);
+        }
+        if retained == 0 {
+            break;
+        }
+        let rows = load_message_rows(connection, agent, &session.native_id, offset, retained)?;
+        if rows.len() != retained {
+            return Err(ServiceError::SourceChanged);
+        }
+        for (row, expected_size) in rows.into_iter().zip(sizes) {
+            if row.raw_bytes != expected_size {
+                return Err(ServiceError::SourceChanged);
+            }
+            hasher.update((offset as u64).to_le_bytes());
+            hasher.update(row.raw_digest);
+            row_sizes.push(row.raw_bytes);
+            snapshot_rows.push(row);
+            offset = offset.saturating_add(1);
+        }
+        if byte_limited {
+            break;
+        }
+    }
+    let end_row = offset;
+    hasher.update((end_row as u64).to_le_bytes());
+    hasher.update((snapshot_bytes as u64).to_le_bytes());
+    let source_revision = format!("sha256:{}", hex_prefix(&hasher.finalize(), 64));
+    let incomplete = was_limited
+        || (fixed_end_row.is_none()
+            && (current_rows > end_row || requested_end > row_bounded_end || byte_limited));
+    Ok(SqliteMessageSnapshot {
+        end_row,
+        rows: snapshot_rows,
+        row_sizes,
+        snapshot_bytes,
+        source_revision,
+        source_completeness: if incomplete {
+            ListSourceCompleteness::Limited
+        } else {
+            ListSourceCompleteness::Enumerable
+        },
+        incomplete_reason: incomplete.then_some(ListIncompleteReason::SafetyBudget),
+    })
 }
 
 fn load_final_message_page(
-    connection: &Connection,
-    agent: SqliteAgent,
-    session_id: &str,
+    snapshot_rows: &[SqliteMessageRow],
     start_row: usize,
+    end_row: usize,
     limit: usize,
-) -> Result<SqliteMessagePageScan, ServiceError> {
-    let total_rows = sqlite_message_row_count(connection, agent, session_id)?;
-    let mut next_row = start_row.min(total_rows);
+) -> SqliteMessagePageScan {
+    let mut next_row = start_row.min(end_row);
     let mut messages = Vec::with_capacity(limit);
-    while next_row < total_rows && messages.len() < limit {
-        let remaining = total_rows.saturating_sub(next_row);
-        let raw_limit = SQLITE_MESSAGE_SCAN_ROWS.min(remaining);
-        let rows = load_message_rows(connection, agent, session_id, next_row, raw_limit)?;
-        if rows.is_empty() {
-            next_row = total_rows;
-            break;
-        }
-        for message in rows {
+    let mut scanned_rows = 0usize;
+    let mut scanned_bytes = 0usize;
+    let mut byte_budget_reached = false;
+    while next_row < end_row
+        && messages.len() < limit
+        && scanned_rows < SQLITE_MESSAGE_SCAN_ROWS
+        && scanned_bytes < SQLITE_MESSAGE_SCAN_BYTES
+    {
+        let page_end = end_row
+            .min(next_row.saturating_add(SQLITE_MESSAGE_SCAN_ROWS.saturating_sub(scanned_rows)));
+        for row in &snapshot_rows[next_row..page_end] {
+            if scanned_rows > 0
+                && scanned_bytes.saturating_add(row.raw_bytes) > SQLITE_MESSAGE_SCAN_BYTES
+            {
+                byte_budget_reached = true;
+                break;
+            }
+            let row_index = next_row;
             next_row = next_row.saturating_add(1);
-            if matches!(message.kind.as_str(), "user_message" | "agent_reply") {
-                messages.push(message);
+            scanned_rows = scanned_rows.saturating_add(1);
+            scanned_bytes = scanned_bytes.saturating_add(row.raw_bytes);
+            if matches!(row.message.kind.as_str(), "user_message" | "agent_reply") {
+                messages.push((row_index, row.message.clone()));
                 if messages.len() == limit {
                     break;
                 }
             }
         }
-        if messages.len() < limit {
+        if scanned_rows >= SQLITE_MESSAGE_SCAN_ROWS
+            || scanned_bytes >= SQLITE_MESSAGE_SCAN_BYTES
+            || messages.len() >= limit
+            || byte_budget_reached
+        {
             break;
         }
     }
-    Ok(SqliteMessagePageScan {
+    SqliteMessagePageScan {
         messages,
         next_row,
-        total_rows,
-    })
+        scanned_bytes,
+    }
 }
 
 fn sqlite_message_row_count(
@@ -1114,17 +1274,54 @@ fn sqlite_message_row_count(
     Ok(count.max(0) as usize)
 }
 
+fn load_message_row_sizes(
+    connection: &Connection,
+    agent: SqliteAgent,
+    session_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<usize>, ServiceError> {
+    let sql = match agent {
+        SqliteAgent::Opencode => {
+            "SELECT length(CAST(m.id AS BLOB)) + length(CAST(p.id AS BLOB)) + length(CAST(m.data AS BLOB)) + length(CAST(p.data AS BLOB)) + 8 FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2 OFFSET ?3"
+        }
+        SqliteAgent::Hermes => {
+            "SELECT 16 + length(CAST(role AS BLOB)) + length(CAST(COALESCE(content, '') AS BLOB)) + length(CAST(COALESCE(tool_name, '') AS BLOB)) + length(CAST(COALESCE(tool_calls, '') AS BLOB)) + length(CAST(COALESCE(reasoning, '') AS BLOB)) FROM messages WHERE session_id = ?1 ORDER BY timestamp ASC, id ASC LIMIT ?2 OFFSET ?3"
+        }
+        SqliteAgent::Openclaw => {
+            "SELECT 16 + length(CAST(event_json AS BLOB)) FROM transcript_events WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2 OFFSET ?3"
+        }
+    };
+    let mut statement = connection.prepare(sql).map_err(sqlite_schema_error)?;
+    let rows = statement
+        .query_map((session_id, limit as i64, offset as i64), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(sqlite_schema_error)?;
+    rows.map(|row| {
+        let size = row.map_err(sqlite_schema_error)?.max(0);
+        usize::try_from(size).map_err(|_| {
+            ServiceError::InvalidRequest(
+                "current local session row exceeds the supported size".to_string(),
+            )
+        })
+    })
+    .collect()
+}
+
 fn load_message_rows(
     connection: &Connection,
     agent: SqliteAgent,
     session_id: &str,
     offset: usize,
     limit: usize,
-) -> Result<Vec<SqliteMessage>, ServiceError> {
+) -> Result<Vec<SqliteMessageRow>, ServiceError> {
     match agent {
         SqliteAgent::Opencode => load_opencode_message_rows(connection, session_id, offset, limit),
         SqliteAgent::Hermes => load_hermes_message_rows(connection, session_id, offset, limit),
-        SqliteAgent::Openclaw => load_openclaw_message_rows(connection, session_id, offset, limit),
+        SqliteAgent::Openclaw => {
+            load_openclaw_raw_message_rows(connection, session_id, offset, limit)
+        }
     }
 }
 
@@ -1134,17 +1331,45 @@ fn load_openclaw_message_rows(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<SqliteMessage>, ServiceError> {
+    Ok(
+        load_openclaw_raw_message_rows(connection, session_id, offset, limit)?
+            .into_iter()
+            .map(|row| row.message)
+            .collect(),
+    )
+}
+
+fn load_openclaw_raw_message_rows(
+    connection: &Connection,
+    session_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<SqliteMessageRow>, ServiceError> {
     let mut statement = connection
-        .prepare("SELECT event_json, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2 OFFSET ?3")
+        .prepare("SELECT seq, event_json, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2 OFFSET ?3")
         .map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map((session_id, limit as i64, offset as i64), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
         })
         .map_err(sqlite_schema_error)?;
     rows.map(|row| {
-        let (event_json, timestamp) = row.map_err(sqlite_schema_error)?;
-        Ok(openclaw_message_from_json(&event_json, timestamp))
+        let (seq, event_json, timestamp) = row.map_err(sqlite_schema_error)?;
+        Ok(SqliteMessageRow {
+            message: openclaw_message_from_json(&event_json, timestamp),
+            raw_digest: sqlite_raw_message_digest(&[
+                &seq.to_le_bytes(),
+                event_json.as_bytes(),
+                &timestamp.unwrap_or_default().to_le_bytes(),
+            ]),
+            raw_bytes: event_json
+                .len()
+                .saturating_add(2 * std::mem::size_of::<i64>()),
+        })
     })
     .collect()
 }
@@ -1232,26 +1457,40 @@ fn load_opencode_message_rows(
     session_id: &str,
     offset: usize,
     limit: usize,
-) -> Result<Vec<SqliteMessage>, ServiceError> {
+) -> Result<Vec<SqliteMessageRow>, ServiceError> {
     let mut statement = connection
-        .prepare("SELECT m.data, p.data, p.time_created FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2 OFFSET ?3")
+        .prepare("SELECT m.id, p.id, m.data, p.data, p.time_created FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2 OFFSET ?3")
         .map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map((session_id, limit as i64, offset as i64), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })
         .map_err(sqlite_schema_error)?;
     rows.map(|row| {
-        let (message_json, part_json, timestamp) = row.map_err(sqlite_schema_error)?;
-        Ok(opencode_message_from_json(
-            &message_json,
-            &part_json,
-            timestamp,
-        ))
+        let (message_id, part_id, message_json, part_json, timestamp) =
+            row.map_err(sqlite_schema_error)?;
+        Ok(SqliteMessageRow {
+            message: opencode_message_from_json(&message_json, &part_json, timestamp),
+            raw_digest: sqlite_raw_message_digest(&[
+                message_id.as_bytes(),
+                part_id.as_bytes(),
+                message_json.as_bytes(),
+                part_json.as_bytes(),
+                &timestamp.to_le_bytes(),
+            ]),
+            raw_bytes: message_id
+                .len()
+                .saturating_add(part_id.len())
+                .saturating_add(message_json.len())
+                .saturating_add(part_json.len())
+                .saturating_add(std::mem::size_of::<i64>()),
+        })
     })
     .collect()
 }
@@ -1295,25 +1534,42 @@ fn load_hermes_message_rows(
     session_id: &str,
     offset: usize,
     limit: usize,
-) -> Result<Vec<SqliteMessage>, ServiceError> {
+) -> Result<Vec<SqliteMessageRow>, ServiceError> {
     let mut statement = connection
-        .prepare("SELECT role, COALESCE(content, ''), CAST(timestamp * 1000 AS INTEGER), COALESCE(tool_name, ''), COALESCE(tool_calls, ''), COALESCE(reasoning, '') FROM messages WHERE session_id = ?1 ORDER BY timestamp ASC, id ASC LIMIT ?2 OFFSET ?3")
+        .prepare("SELECT id, role, COALESCE(content, ''), CAST(timestamp * 1000 AS INTEGER), COALESCE(tool_name, ''), COALESCE(tool_calls, ''), COALESCE(reasoning, '') FROM messages WHERE session_id = ?1 ORDER BY timestamp ASC, id ASC LIMIT ?2 OFFSET ?3")
         .map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map((session_id, limit as i64, offset as i64), |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })
         .map_err(sqlite_schema_error)?;
     rows.map(|row| {
-        let (role, content, timestamp, tool_name, tool_calls, reasoning) =
+        let (row_id, role, content, timestamp, tool_name, tool_calls, reasoning) =
             row.map_err(sqlite_schema_error)?;
+        let raw_digest = sqlite_raw_message_digest(&[
+            &row_id.to_le_bytes(),
+            role.as_bytes(),
+            content.as_bytes(),
+            &timestamp.to_le_bytes(),
+            tool_name.as_bytes(),
+            tool_calls.as_bytes(),
+            reasoning.as_bytes(),
+        ]);
+        let raw_bytes = std::mem::size_of::<i64>()
+            .saturating_add(role.len())
+            .saturating_add(content.len())
+            .saturating_add(std::mem::size_of::<i64>())
+            .saturating_add(tool_name.len())
+            .saturating_add(tool_calls.len())
+            .saturating_add(reasoning.len());
         let (kind, text) = if role == "user" && !content.is_empty() {
             ("user_message", content)
         } else if role == "assistant" && !content.is_empty() {
@@ -1325,14 +1581,28 @@ fn load_hermes_message_rows(
         } else {
             ("ignored", String::new())
         };
-        Ok(SqliteMessage {
-            role,
-            text,
-            timestamp: Some(timestamp),
-            kind: kind.to_string(),
+        Ok(SqliteMessageRow {
+            message: SqliteMessage {
+                role,
+                text,
+                timestamp: Some(timestamp),
+                kind: kind.to_string(),
+            },
+            raw_digest,
+            raw_bytes,
         })
     })
     .collect()
+}
+
+fn sqlite_raw_message_digest(parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-copilot.sqlite-message-row.v1\0");
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
 }
 
 fn load_opencode_messages(
@@ -1457,6 +1727,11 @@ fn sqlite_session_row(
     max_excerpt_chars: usize,
     redactor: &mut PromptRedactor<'_>,
 ) -> Result<LocalSessionPreviewRow, ServiceError> {
+    if connection.is_autocommit() {
+        connection
+            .execute_batch("BEGIN DEFERRED")
+            .map_err(sqlite_schema_error)?;
+    }
     let (user_message_count, _agent_message_count, exact_total_count, exact_tool_count) =
         sqlite_session_counts(connection, agent, &session.native_id)?;
     let excerpt_message = load_first_final_message(connection, agent, &session.native_id)?;
@@ -1687,31 +1962,7 @@ fn sqlite_message_revision(
     agent: SqliteAgent,
     session: &SqliteSession,
 ) -> Result<String, ServiceError> {
-    let (count, latest): (i64, i64) = match agent {
-        SqliteAgent::Opencode => connection.query_row(
-            "SELECT COUNT(*), COALESCE(MAX(time_updated), 0) FROM part WHERE session_id = ?1",
-            [&session.native_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ),
-        SqliteAgent::Hermes => connection.query_row(
-            "SELECT COUNT(*), COALESCE(CAST(MAX(timestamp) * 1000 AS INTEGER), 0) FROM messages WHERE session_id = ?1",
-            [&session.native_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ),
-        SqliteAgent::Openclaw => connection.query_row(
-            "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM transcript_events WHERE session_id = ?1",
-            [&session.native_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ),
-    }
-    .map_err(sqlite_schema_error)?;
-    let mut hasher = Sha256::new();
-    hasher.update(b"agent-copilot.sqlite-session-messages.v1\0");
-    hasher.update(agent.id().as_bytes());
-    hasher.update(session.service_id.as_bytes());
-    hasher.update(count.to_le_bytes());
-    hasher.update(latest.to_le_bytes());
-    Ok(format!("sha256:{}", hex_prefix(&hasher.finalize(), 64)))
+    Ok(sqlite_message_snapshot(connection, agent, session, None, false)?.source_revision)
 }
 
 fn sqlite_preview_query_digest(

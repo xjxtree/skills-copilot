@@ -52,6 +52,34 @@ fn sqlite_message_params(
     }
 }
 
+fn opencode_message_snapshot_fixture(label: &str) -> (ServiceHost, PathBuf, PathBuf, String) {
+    let (host, root) = sqlite_host(label);
+    let db_path = host
+        .adapter_ctx
+        .user_home
+        .join(".local/share/opencode/opencode.db");
+    fs::create_dir_all(db_path.parent().expect("database parent")).expect("create database parent");
+    let connection = Connection::open(&db_path).expect("open database");
+    connection
+        .execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER);\
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);\
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);\
+             INSERT INTO session (id, directory, title, time_created, time_updated) VALUES ('session-1', '/tmp/project', 'Snapshot Session', 1000, 2000);\
+             INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('user-1', 'session-1', 1100, 1100, '{\"role\":\"user\"}');\
+             INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part-user-1', 'user-1', 'session-1', 1100, 1100, '{\"type\":\"text\",\"text\":\"A\"}');\
+             INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('assistant-1', 'session-1', 1200, 1200, '{\"role\":\"assistant\"}');\
+             INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part-assistant-1', 'assistant-1', 'session-1', 1200, 1200, '{\"type\":\"text\",\"text\":\"B\"}');",
+        )
+        .expect("create OpenCode snapshot fixture");
+    drop(connection);
+    let preview = host
+        .preview_local_sessions(sqlite_preview_params("opencode"))
+        .expect("preview OpenCode snapshot fixture");
+    let session_id = preview.session_rows[0].id.clone();
+    (host, root, db_path, session_id)
+}
+
 #[test]
 fn codex_summary_uses_effective_thread_index_and_exact_project_scope() {
     let (host, root) = sqlite_host("codex-state-index");
@@ -271,6 +299,9 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
         .expect("first OpenCode message page");
     assert!(first.content_items.is_empty());
     assert!(first.has_more);
+    assert!(first.scanned_bytes > 0);
+    assert!(first.scanned_through_bytes > 0);
+    assert!(first.scanned_through_bytes < first.snapshot_bytes);
     let second = host
         .list_local_session_messages(sqlite_message_params(
             "opencode",
@@ -306,6 +337,125 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
         .content_items
         .iter()
         .all(|item| matches!(item.kind.as_str(), "thinking" | "tool_call")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sqlite_message_snapshot_excludes_appends_until_refresh() {
+    let (host, root, db_path, session_id) =
+        opencode_message_snapshot_fixture("opencode-message-append");
+    let mut first_params = sqlite_message_params("opencode", &session_id, None, None);
+    first_params.limit = Some(1);
+    let first = host
+        .list_local_session_messages(first_params)
+        .expect("read first fixed-snapshot page");
+    assert_eq!(first.content_items[0].text, "A");
+    assert!(first.has_more);
+
+    let connection = Connection::open(&db_path).expect("reopen OpenCode database");
+    connection
+        .execute_batch(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('assistant-2', 'session-1', 1300, 1300, '{\"role\":\"assistant\"}');\
+             INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part-assistant-2', 'assistant-2', 'session-1', 1300, 1300, '{\"type\":\"text\",\"text\":\"C\"}');",
+        )
+        .expect("append OpenCode reply");
+    drop(connection);
+
+    let mut second_params = sqlite_message_params(
+        "opencode",
+        &session_id,
+        first.next_cursor,
+        Some(first.source_revision.clone()),
+    );
+    second_params.limit = Some(10);
+    let second = host
+        .list_local_session_messages(second_params)
+        .expect("continue fixed snapshot after append");
+    assert_eq!(
+        second
+            .content_items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["B"]
+    );
+    assert_eq!(second.total_count, Some(2));
+    assert_eq!(second.source_revision, first.source_revision);
+
+    let refreshed = host
+        .list_local_session_messages(sqlite_message_params("opencode", &session_id, None, None))
+        .expect("refresh OpenCode message snapshot");
+    assert_eq!(
+        refreshed
+            .content_items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["A", "B", "C"]
+    );
+    assert_ne!(refreshed.source_revision, first.source_revision);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sqlite_message_snapshot_rejects_fixed_range_deletion() {
+    let (host, root, db_path, session_id) =
+        opencode_message_snapshot_fixture("opencode-message-delete");
+    let mut first_params = sqlite_message_params("opencode", &session_id, None, None);
+    first_params.limit = Some(1);
+    let first = host
+        .list_local_session_messages(first_params)
+        .expect("read first fixed-snapshot page");
+
+    let connection = Connection::open(&db_path).expect("reopen OpenCode database");
+    connection
+        .execute("DELETE FROM part WHERE id = 'part-assistant-1'", [])
+        .expect("delete fixed-range row");
+    drop(connection);
+
+    let error = host
+        .list_local_session_messages(sqlite_message_params(
+            "opencode",
+            &session_id,
+            first.next_cursor,
+            Some(first.source_revision),
+        ))
+        .expect_err("fixed-range deletion must invalidate the cursor");
+    assert_eq!(error.code(), "source_changed");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sqlite_message_snapshot_rejects_same_count_in_place_replacement() {
+    let (host, root, db_path, session_id) =
+        opencode_message_snapshot_fixture("opencode-message-replace");
+    let mut first_params = sqlite_message_params("opencode", &session_id, None, None);
+    first_params.limit = Some(1);
+    let first = host
+        .list_local_session_messages(first_params)
+        .expect("read first fixed-snapshot page");
+
+    let connection = Connection::open(&db_path).expect("reopen OpenCode database");
+    connection
+        .execute(
+            "UPDATE part SET data = '{\"type\":\"text\",\"text\":\"C\"}' WHERE id = 'part-assistant-1'",
+            [],
+        )
+        .expect("replace fixed-range row without changing count or timestamp");
+    drop(connection);
+
+    let error = host
+        .list_local_session_messages(sqlite_message_params(
+            "opencode",
+            &session_id,
+            first.next_cursor,
+            Some(first.source_revision),
+        ))
+        .expect_err("same-count replacement must invalidate the cursor");
+    assert_eq!(error.code(), "source_changed");
 
     let _ = fs::remove_dir_all(root);
 }

@@ -1094,6 +1094,16 @@ requires another inspection and preview.
   the primary continuity timeline. Exact final-message counts replace bounded
   summary counts as pages arrive. Neither pages nor merged detail are
   persisted.
+- SQLite-backed opencode, Hermes, and OpenClaw detail fixes the ordered raw-row
+  endpoint on the first page. Its source revision hashes the database/session
+  identity plus every raw row identity and content in that fixed range, so an
+  append remains outside the snapshot while deletion, reordering, or same-count
+  in-place replacement returns `source_changed`. One page advances through at
+  most 1,000 raw rows and 32 MiB; pages containing only non-message rows may
+  return zero items with an advancing cursor. Establishing the fixed SQLite
+  snapshot is itself bounded to 20,000 raw rows and 32 MiB. A larger source
+  retains the bounded prefix and reports `limited` with
+  `incomplete_reason="safety_budget"` instead of claiming complete coverage.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
   ascending.
