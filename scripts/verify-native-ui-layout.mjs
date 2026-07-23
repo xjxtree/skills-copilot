@@ -42,7 +42,7 @@ const files = {
   sidebar: await read("apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift"),
   sidebarSelection: await read("apps/macos/Sources/SkillsCopilot/Models/SidebarSelection.swift"),
   uiOptimization: await read("apps/macos/Sources/SkillsCopilot/Models/UIOptimizationPresentation.swift"),
-  revisionAutosave: await read("apps/macos/Sources/SkillsCopilot/Models/RevisionAutosaveCoordinator.swift"),
+  confirmedMutationLane: await read("apps/macos/Sources/SkillsCopilot/Models/ConfirmedMutationLane.swift"),
   localSessionCache: await read("apps/macos/Sources/SkillsCopilot/Models/LocalSessionCache.swift"),
   listCompletenessControls: await read("apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
@@ -160,10 +160,11 @@ const checks = [
     passed: !/applicationShouldTerminate|configureAutosaveFlusher|flushPendingAutosaves/.test(files.app),
   },
   {
-    label: "confirmed config apply uses the serialized mutation lane without autosave",
-    text: files.store,
-    passed: /private let autosaveMutationLane = AutosaveMutationLane\(\)/.test(files.store)
-      && /func applyClaudeSettingsSave\([\s\S]*?autosaveMutationLane\.perform/.test(files.store)
+    label: "confirmed config apply uses the serialized confirmed mutation lane without autosave",
+    text: files.store + "\n" + files.confirmedMutationLane,
+    passed: /private let confirmedMutationLane = ConfirmedMutationLane\(\)/.test(files.store)
+      && /func applyClaudeSettingsSave\([\s\S]*?confirmedMutationLane\.perform/.test(files.store)
+      && /final class ConfirmedMutationLane[\s\S]*?func perform<Result>/.test(files.confirmedMutationLane)
       && !/submit(?:Provider|Config)Autosave/.test(files.store)
       && /deinit[\s\S]*?lane\.shutdown\(\)/.test(files.store),
   },
@@ -769,9 +770,9 @@ const checks = [
   },
   {
     label: "settings AI provider uses signed previews and explicit confirmations without autosave",
-    text: files.settings + "\n" + files.store + "\n" + files.revisionAutosave,
+    text: files.settings + "\n" + files.store + "\n" + files.confirmedMutationLane,
     passed: !/providerAutosave|submitProviderAutosave|cancelPendingProviderAutosave/.test(
-      files.settings + "\n" + files.store + "\n" + files.revisionAutosave
+      files.settings + "\n" + files.store + "\n" + files.confirmedMutationLane
     )
       && /await store\.previewDeleteAIProviderSettings\(\)/.test(files.settings)
       && /await store\.previewAIProviderConnectionTest\(\)/.test(files.settings)
