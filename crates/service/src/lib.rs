@@ -23,7 +23,7 @@ use skills_copilot_commands::{
     list_agent_config_snapshot_page_snapshot, list_agent_config_snapshots,
     list_conflicts_for_context, list_finding_triage, list_findings,
     list_installed_skills_from_projection, list_rule_tuning, list_skill_event_page_snapshot,
-    list_skill_events, list_skill_management_tools, list_snapshots,
+    list_skill_events, list_skill_management_tools, list_snapshots, lock_app_mutations,
     lock_or_create_app_mutations_with_parents, prepare_claude_settings_save,
     preview_claude_settings_save, preview_install_with_manager, preview_local_archive_import,
     preview_local_archive_update, preview_local_create_with_manager, preview_remove_with_manager,
@@ -36,7 +36,7 @@ use skills_copilot_commands::{
     validate_skill_install_confirmation, validate_skill_manager_confirmation,
     validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
     ActionConfirmation, ActionPreviewBinding, ActionReadbackRecord, AdapterCapabilityRecord,
-    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport,
+    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport, AppMutationLock,
     BatchToggleApplyRecord, BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord,
     ConfigSaveApplyRecord, ConfigSavePreviewRecord, CrossAgentAnalysisRecord,
     ScriptExecutionPreviewRecord, ScriptExecutionRequest, SkillHealthSummary,
@@ -72,14 +72,16 @@ mod service_support_helpers;
 
 use project_context::{
     clear_project_context, clear_recent_project_contexts, context_from_paths,
-    effective_project_context_revision, load_project_context_state, preview_clear_project_context,
+    effective_project_context_revision, effective_project_context_revision_while_locked,
+    load_project_context_state, preview_clear_project_context,
     preview_clear_recent_project_contexts, preview_remove_recent_project_context,
     preview_set_project_context, project_context_summary, remove_recent_project_context,
-    set_project_context, stored_active_adapter_paths, validate_project_context_for_response,
-    ProjectContext, ProjectContextActionPreview, ProjectContextApplyResult,
-    ProjectContextConfirmationParams, ProjectContextIDApplyParams, ProjectContextIDPreviewParams,
-    ProjectContextParams, ProjectContextRevisionParams, ProjectContextSetApplyParams,
-    ProjectContextSetPreviewParams, ProjectContextState, ProjectContextSummary,
+    set_project_context, stored_active_adapter_paths, stored_active_adapter_paths_while_locked,
+    validate_project_context_for_response, ProjectContext, ProjectContextActionPreview,
+    ProjectContextApplyResult, ProjectContextConfirmationParams, ProjectContextIDApplyParams,
+    ProjectContextIDPreviewParams, ProjectContextParams, ProjectContextRevisionParams,
+    ProjectContextSetApplyParams, ProjectContextSetPreviewParams, ProjectContextState,
+    ProjectContextSummary,
 };
 pub use protocol::{
     ServiceErrorDetails, ServiceErrorRecord, ServiceRequest, ServiceResponse, DEFAULT_BUNDLE_ID,
@@ -1396,6 +1398,12 @@ struct ScanActivityCounts {
     finding_count: usize,
     conflict_count: usize,
     snapshot_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScanActivityPresentation<'a> {
+    scan_label: &'a str,
+    adapter_ctx: &'a AdapterContext,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -5,11 +5,20 @@ use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 thread_local! {
     static INJECT_NEXT_SCAN_COMMIT_FAILURE: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+    static SCAN_POST_COMMIT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
 pub(crate) fn inject_next_scan_commit_failure_for_test() {
     INJECT_NEXT_SCAN_COMMIT_FAILURE.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn inject_scan_post_commit_hook_for_test(hook: impl FnOnce() + 'static) {
+    SCAN_POST_COMMIT_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
 }
 
 impl ServiceHost {
@@ -847,9 +856,17 @@ impl ServiceHost {
         catalog: &Catalog,
     ) -> Result<Vec<SkillRecord>, ServiceError> {
         let adapter_ctx = self.effective_adapter_ctx()?;
+        self.list_visible_skill_records_for_context(catalog, &adapter_ctx)
+    }
+
+    fn list_visible_skill_records_for_context(
+        &self,
+        catalog: &Catalog,
+        adapter_ctx: &AdapterContext,
+    ) -> Result<Vec<SkillRecord>, ServiceError> {
         let mut skills =
             catalog.list_skill_records_for_project_context(adapter_ctx.project_root.as_deref())?;
-        apply_current_config_overrides_to_skill_records(&adapter_ctx, &mut skills)?;
+        apply_current_config_overrides_to_skill_records(adapter_ctx, &mut skills)?;
         Ok(skills
             .into_iter()
             .filter(|skill| !is_pi_plain_markdown_catalog_noise(skill))
@@ -880,13 +897,30 @@ impl ServiceHost {
     }
 
     pub(crate) fn open_catalog(&self) -> Result<Catalog, ServiceError> {
-        let _owner = lock_or_create_app_mutations_with_parents(&self.app_data_dir)?;
-        self.open_catalog_while_mutation_owner_held()
+        let owner = lock_or_create_app_mutations_with_parents(&self.app_data_dir)?;
+        self.open_catalog_while_mutation_owner_held(&owner)
     }
 
-    fn open_catalog_while_mutation_owner_held(&self) -> Result<Catalog, ServiceError> {
+    fn open_catalog_while_mutation_owner_held(
+        &self,
+        owner: &AppMutationLock,
+    ) -> Result<Catalog, ServiceError> {
+        owner.validate_owner_path_binding()?;
+        #[cfg(unix)]
+        let catalog = Catalog::open_anchored(owner.open_owner_directory()?)?;
+        #[cfg(not(unix))]
         let catalog = Catalog::open(&self.catalog_path())?;
+        catalog.ensure_mutation_owner(owner.owner_directory())?;
         catalog.init()?;
+        if owner.validate_owner_path_binding().is_err() {
+            return Err(CommandError::PartialEffect {
+                operation: "catalog initialization".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: false,
+                detail: "catalog initialization completed on the accepted app-data owner, but that owner is no longer bound to the configured app-data path".to_string(),
+            }
+            .into());
+        }
         Ok(catalog)
     }
 
@@ -920,9 +954,9 @@ impl ServiceHost {
             return Err(CommandError::StaleActionReference.into());
         }
 
-        let _owner = lock_or_create_app_mutations_with_parents(&self.app_data_dir)?;
+        let owner = lock_or_create_app_mutations_with_parents(&self.app_data_dir)?;
         let accepted_context_revision =
-            effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?;
+            effective_project_context_revision_while_locked(env_context.as_ref(), &owner)?;
         if params
             .expected_context_revision
             .as_deref()
@@ -930,20 +964,22 @@ impl ServiceHost {
         {
             return Err(CommandError::StaleActionReference.into());
         }
-        let adapter_ctx = self.effective_adapter_ctx()?;
-        if effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?
+        let adapter_ctx = self.effective_adapter_ctx_while_mutation_owner_held(&owner)?;
+        if effective_project_context_revision_while_locked(env_context.as_ref(), &owner)?
             != accepted_context_revision
         {
             return Err(CommandError::StaleActionReference.into());
         }
 
-        let catalog = self.open_catalog_while_mutation_owner_held()?;
+        let catalog = self.open_catalog_while_mutation_owner_held(&owner)?;
         #[cfg(test)]
         INJECT_NEXT_SCAN_COMMIT_FAILURE.with(|flag| {
             if flag.replace(false) {
                 catalog.inject_next_commit_failure_for_test();
             }
         });
+        owner.validate_owner_path_binding()?;
+        catalog.ensure_mutation_owner(owner.owner_directory())?;
         let transaction = catalog.begin_immediate_transaction()?;
         let operation = if scan_all {
             "catalog.scanAll"
@@ -957,21 +993,25 @@ impl ServiceHost {
             } else {
                 vec![scan_claude_catalog_report(&adapter_ctx, &catalog)?]
             };
-            if effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?
+            if effective_project_context_revision_while_locked(env_context.as_ref(), &owner)?
                 != accepted_context_revision
             {
                 return Err(CommandError::StaleActionReference.into());
             }
 
             let scanned_count = reports.iter().map(|report| report.scanned_count).sum();
-            let skills = self.list_visible_skill_records(&catalog)?;
+            let skills = self.list_visible_skill_records_for_context(&catalog, &adapter_ctx)?;
             let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
             let conflicts: Vec<ConflictGroupRecord> =
                 list_conflicts_for_context(&catalog, &adapter_ctx)?;
             let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
             let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
-            let agent_summaries =
-                self.agent_refresh_summaries(&reports, &skills, &adapter_diagnostics);
+            let agent_summaries = self.agent_refresh_summaries_for_context(
+                &reports,
+                &skills,
+                &adapter_diagnostics,
+                &adapter_ctx,
+            );
             let roots = reports
                 .iter()
                 .flat_map(|agent| agent.roots_considered.iter().cloned())
@@ -981,9 +1021,8 @@ impl ServiceHost {
             } else {
                 "Claude Code".to_string()
             };
-            let activity = self.scan_activity(
+            let activity = self.scan_activity_for_context(
                 operation,
-                &scan_label,
                 roots,
                 started_at,
                 ScanActivityCounts {
@@ -994,6 +1033,10 @@ impl ServiceHost {
                     snapshot_count: snapshots.len(),
                 },
                 Some(agent_summaries),
+                ScanActivityPresentation {
+                    scan_label: &scan_label,
+                    adapter_ctx: &adapter_ctx,
+                },
             );
             let catalog_scan_revision =
                 catalog.advance_catalog_scan_revision(operation, &accepted_context_revision)?;
@@ -1046,8 +1089,25 @@ impl ServiceHost {
                 .into());
             }
         }
+        #[cfg(test)]
+        SCAN_POST_COMMIT_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         match catalog.catalog_scan_revision() {
-            Ok(revision) if revision.revision == result.catalog_scan_revision => Ok(result),
+            Ok(revision) if revision.revision == result.catalog_scan_revision => {
+                if owner.validate_owner_path_binding().is_err() {
+                    return Err(CommandError::PartialEffect {
+                        operation: operation.to_string(),
+                        state: "outcome_unknown",
+                        cleanup_required: false,
+                        detail: "catalog scan committed and was verified on the accepted app-data owner, but that owner is no longer bound to the configured app-data path".to_string(),
+                    }
+                    .into());
+                }
+                Ok(result)
+            }
             _ => Err(CommandError::PartialEffect {
                 operation: operation.to_string(),
                 state: "applied_unverified",
@@ -1059,9 +1119,8 @@ impl ServiceHost {
     }
 
     pub(crate) fn open_catalog_for_read(&self) -> Result<Catalog, ServiceError> {
-        let path = self.catalog_path();
-        if path.exists() {
-            return Catalog::open_read_only_current(&path).map_err(Into::into);
+        if let Some(catalog) = self.open_existing_catalog_read_only()? {
+            return Ok(catalog);
         }
         let catalog = Catalog::in_memory()?;
         catalog.init()?;
@@ -1073,9 +1132,8 @@ impl ServiceHost {
     /// Unlike normal read surfaces, this path never migrates an outdated
     /// catalog because rejected authorization must not write app-local state.
     pub(crate) fn open_catalog_for_action_preflight(&self) -> Result<Catalog, ServiceError> {
-        let path = self.catalog_path();
-        if path.exists() {
-            return Catalog::open_read_only_current(&path).map_err(Into::into);
+        if let Some(catalog) = self.open_existing_catalog_read_only()? {
+            return Ok(catalog);
         }
         let catalog = Catalog::in_memory()?;
         catalog.init()?;
@@ -1083,11 +1141,30 @@ impl ServiceHost {
     }
 
     pub(crate) fn open_existing_catalog_read_only(&self) -> Result<Option<Catalog>, ServiceError> {
-        let catalog_path = self.catalog_path();
-        if !catalog_path.exists() {
-            return Ok(None);
+        #[cfg(unix)]
+        {
+            let owner = match lock_app_mutations(&self.app_data_dir) {
+                Ok(owner) => owner,
+                Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(None)
+                }
+                Err(error) => return Err(error.into()),
+            };
+            owner.validate_owner_path_binding()?;
+            let catalog =
+                Catalog::open_read_only_current_anchored_if_exists(owner.open_owner_directory()?)
+                    .map_err(ServiceError::from)?;
+            owner.validate_owner_path_binding()?;
+            Ok(catalog)
         }
-        Ok(Some(Catalog::open_read_only_current(&catalog_path)?))
+        #[cfg(not(unix))]
+        {
+            let catalog_path = self.catalog_path();
+            if !catalog_path.exists() {
+                return Ok(None);
+            }
+            Ok(Some(Catalog::open_read_only_current(&catalog_path)?))
+        }
     }
 
     pub(crate) fn catalog_path(&self) -> PathBuf {
@@ -1546,6 +1623,25 @@ impl ServiceHost {
         Ok(ctx)
     }
 
+    fn effective_adapter_ctx_while_mutation_owner_held(
+        &self,
+        owner: &AppMutationLock,
+    ) -> Result<AdapterContext, ServiceError> {
+        if self.has_env_project_context() {
+            return Ok(self.adapter_ctx.clone());
+        }
+
+        let Some((root_path, current_cwd)) = stored_active_adapter_paths_while_locked(owner)?
+        else {
+            return Ok(self.adapter_ctx.clone());
+        };
+
+        let mut ctx = self.adapter_ctx.clone();
+        ctx.project_root = Some(root_path);
+        ctx.project_cwd = Some(current_cwd);
+        Ok(ctx)
+    }
+
     pub(crate) fn has_env_project_context(&self) -> bool {
         self.adapter_ctx.project_root.is_some() || self.adapter_ctx.project_cwd.is_some()
     }
@@ -1561,6 +1657,7 @@ impl ServiceHost {
             .unwrap_or_else(|_| self.adapter_ctx.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn scan_activity(
         &self,
         operation: &'static str,
@@ -1570,8 +1667,32 @@ impl ServiceHost {
         counts: ScanActivityCounts,
         agent_summaries: Option<Vec<AgentRefreshSummary>>,
     ) -> RefreshActivity {
+        let adapter_ctx = self.status_adapter_ctx();
+        self.scan_activity_for_context(
+            operation,
+            roots,
+            started_at,
+            counts,
+            agent_summaries,
+            ScanActivityPresentation {
+                scan_label,
+                adapter_ctx: &adapter_ctx,
+            },
+        )
+    }
+
+    fn scan_activity_for_context(
+        &self,
+        operation: &'static str,
+        roots: Vec<PathBuf>,
+        started_at: i64,
+        counts: ScanActivityCounts,
+        agent_summaries: Option<Vec<AgentRefreshSummary>>,
+        presentation: ScanActivityPresentation<'_>,
+    ) -> RefreshActivity {
         let roots_count = roots.len();
-        let diagnostic_redaction_roots = self.scan_diagnostic_redaction_roots(&roots, &[]);
+        let diagnostic_redaction_roots =
+            self.scan_diagnostic_redaction_roots(&roots, &[], presentation.adapter_ctx);
         let redacted_roots = roots
             .iter()
             .map(|path| {
@@ -1586,7 +1707,10 @@ impl ServiceHost {
         let mut log_entries = vec![
             RefreshLogEntry {
                 level: "info",
-                message: format!("Queued {scan_label} scan across {roots_count} root(s)."),
+                message: format!(
+                    "Queued {} scan across {roots_count} root(s).",
+                    presentation.scan_label
+                ),
             },
             RefreshLogEntry {
                 level: "info",
@@ -1600,7 +1724,8 @@ impl ServiceHost {
             log_entries.push(RefreshLogEntry {
                 level: "warning",
                 message: format!(
-                    "No skills were discovered for {scan_label}. Check the configured roots, then retry Scan."
+                    "No skills were discovered for {}. Check the configured roots, then retry Scan.",
+                    presentation.scan_label
                 ),
             });
         }
@@ -1675,11 +1800,28 @@ impl ServiceHost {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn agent_refresh_summaries(
         &self,
         agent_reports: &[AgentCatalogScanReport],
         skills: &[SkillRecord],
         adapter_diagnostics: &[AdapterDiagnosticsRecord],
+    ) -> Vec<AgentRefreshSummary> {
+        let adapter_ctx = self.status_adapter_ctx();
+        self.agent_refresh_summaries_for_context(
+            agent_reports,
+            skills,
+            adapter_diagnostics,
+            &adapter_ctx,
+        )
+    }
+
+    fn agent_refresh_summaries_for_context(
+        &self,
+        agent_reports: &[AgentCatalogScanReport],
+        skills: &[SkillRecord],
+        adapter_diagnostics: &[AdapterDiagnosticsRecord],
+        adapter_ctx: &AdapterContext,
     ) -> Vec<AgentRefreshSummary> {
         let all_considered_roots = agent_reports
             .iter()
@@ -1689,8 +1831,11 @@ impl ServiceHost {
             .iter()
             .flat_map(|report| report.root_aliases.iter().cloned())
             .collect::<Vec<_>>();
-        let diagnostic_redaction_roots =
-            self.scan_diagnostic_redaction_roots(&all_considered_roots, &all_root_aliases);
+        let diagnostic_redaction_roots = self.scan_diagnostic_redaction_roots(
+            &all_considered_roots,
+            &all_root_aliases,
+            adapter_ctx,
+        );
         agent_reports
             .iter()
             .map(|agent_report| {
@@ -1822,8 +1967,8 @@ impl ServiceHost {
         &self,
         adapter_roots: &[PathBuf],
         root_aliases: &[AgentCatalogScanPathAlias],
+        adapter_ctx: &AdapterContext,
     ) -> Vec<(String, &'static str)> {
-        let adapter_ctx = self.status_adapter_ctx();
         let privacy_roots = [
             (&self.app_data_dir, "<app-data-dir>"),
             (&adapter_ctx.user_home, "$HOME"),

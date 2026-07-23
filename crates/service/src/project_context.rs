@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    io::{self, Read},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -8,16 +7,29 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skills_copilot_commands::{
     action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,
-    lock_or_create_app_mutations_with_parents, ActionConfirmation, ActionPrecondition,
-    ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation, ActionReadbackRecord,
-    CommandError,
+    lock_app_mutations, lock_or_create_app_mutations_with_parents, ActionConfirmation,
+    ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation,
+    ActionReadbackRecord, AppMutationLock, CommandError,
 };
 use skills_copilot_core::{
     canonical_project_id, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
     ActionReadbackDomain, ActionTargetKind, ActionTargetRef,
 };
 
-use crate::{display_path, unix_timestamp_millis, write_private_bytes_file, ServiceError};
+use crate::{display_path, unix_timestamp_millis, ServiceError};
+
+#[cfg(test)]
+thread_local! {
+    static PROJECT_CONTEXT_POST_WRITE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn inject_project_context_post_write_hook_for_test(hook: impl FnOnce() + 'static) {
+    PROJECT_CONTEXT_POST_WRITE_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
 
 const PROJECT_CONTEXT_SCHEMA_VERSION: u32 = 1;
 const PROJECT_CONTEXT_FILE: &str = "project-context.json";
@@ -159,10 +171,6 @@ struct PreparedProjectContextMutation {
     candidate_bytes: Vec<u8>,
 }
 
-pub fn project_context_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join(PROJECT_CONTEXT_FILE)
-}
-
 pub fn load_project_context_state(
     app_data_dir: &Path,
 ) -> Result<ProjectContextState, ServiceError> {
@@ -181,6 +189,7 @@ pub fn preview_set_project_context(
             last_used_at: unix_timestamp_millis(),
         },
         Some(&params.expected_revision),
+        None,
     )
     .map(|prepared| prepared.preview)
 }
@@ -207,6 +216,7 @@ pub fn preview_clear_project_context(
         app_data_dir,
         ProjectContextMutation::ClearActive,
         Some(&params.expected_revision),
+        None,
     )
     .map(|prepared| prepared.preview)
 }
@@ -230,6 +240,7 @@ pub fn preview_remove_recent_project_context(
         app_data_dir,
         ProjectContextMutation::RemoveRecent { id: params.id },
         Some(&params.expected_revision),
+        None,
     )
     .map(|prepared| prepared.preview)
 }
@@ -253,6 +264,7 @@ pub fn preview_clear_recent_project_contexts(
         app_data_dir,
         ProjectContextMutation::ClearRecent,
         Some(&params.expected_revision),
+        None,
     )
     .map(|prepared| prepared.preview)
 }
@@ -273,22 +285,25 @@ fn apply_project_context_mutation(
     mutation: ProjectContextMutation,
     confirmation: &ActionConfirmation,
 ) -> Result<ProjectContextApplyResult, ServiceError> {
-    let preflight = prepare_project_context_mutation(app_data_dir, mutation.clone(), None)?;
+    let preflight = prepare_project_context_mutation(app_data_dir, mutation.clone(), None, None)?;
     ensure_action_confirmed(&preview_binding(&preflight.preview), Some(confirmation))?;
 
-    let _owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
-    let locked = prepare_project_context_mutation(app_data_dir, mutation, None)?;
+    let owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
+    let locked = prepare_project_context_mutation(app_data_dir, mutation, None, Some(&owner))?;
     ensure_action_confirmed(&preview_binding(&locked.preview), Some(confirmation))?;
 
     let original_revision = locked.preview.current.revision.clone();
     let candidate_revision = locked.preview.candidate.revision.clone();
-    if let Err(write_error) =
-        write_private_bytes_file(&project_context_path(app_data_dir), &locked.candidate_bytes)
-    {
-        match load_store_snapshot(app_data_dir) {
+    owner.validate_owner_path_binding()?;
+    if let Err(write_error) = owner.owner_fs().atomic_replace_private_file(
+        Path::new(PROJECT_CONTEXT_FILE),
+        &locked.candidate_bytes,
+        "project-context",
+    ) {
+        match load_store_snapshot_at(&owner) {
             Ok(current) if current.revision == candidate_revision => {}
             Ok(current) if current.revision == original_revision => {
-                return Err(ServiceError::Io(write_error));
+                return Err(ServiceError::Command(write_error));
             }
             _ => {
                 return Err(CommandError::PartialEffect {
@@ -304,13 +319,28 @@ fn apply_project_context_mutation(
         }
     }
 
-    let readback_state = load_store_snapshot(app_data_dir)?.state();
+    let readback_state = load_store_snapshot_at(&owner)?.state();
     if readback_state.revision != candidate_revision {
         return Err(CommandError::PartialEffect {
             operation: "project context".to_string(),
             state: "applied_unverified",
             cleanup_required: false,
             detail: "project context bytes did not match the confirmed candidate".to_string(),
+        }
+        .into());
+    }
+    #[cfg(test)]
+    PROJECT_CONTEXT_POST_WRITE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+    if owner.validate_owner_path_binding().is_err() {
+        return Err(CommandError::PartialEffect {
+            operation: "project context".to_string(),
+            state: "outcome_unknown",
+            cleanup_required: false,
+            detail: "project context bytes were written and verified on the accepted app-data owner, but that owner is no longer bound to the configured app-data path".to_string(),
         }
         .into());
     }
@@ -335,8 +365,12 @@ fn prepare_project_context_mutation(
     app_data_dir: &Path,
     mutation: ProjectContextMutation,
     expected_revision: Option<&str>,
+    owner: Option<&AppMutationLock>,
 ) -> Result<PreparedProjectContextMutation, ServiceError> {
-    let current = load_store_snapshot(app_data_dir)?;
+    let current = match owner {
+        Some(owner) => load_store_snapshot_at(owner)?,
+        None => load_store_snapshot(app_data_dir)?,
+    };
     if expected_revision.is_some_and(|expected| expected != current.revision) {
         return Err(CommandError::StaleActionReference.into());
     }
@@ -637,6 +671,32 @@ pub fn effective_project_context_revision(
     })
 }
 
+pub fn effective_project_context_revision_while_locked(
+    env_context: Option<&ProjectContext>,
+    owner: &AppMutationLock,
+) -> Result<String, ServiceError> {
+    Ok(match env_context {
+        Some(context) => env_project_context_revision(context),
+        None => load_store_snapshot_at(owner)?.revision,
+    })
+}
+
+pub fn stored_active_adapter_paths_while_locked(
+    owner: &AppMutationLock,
+) -> Result<Option<(PathBuf, PathBuf)>, ServiceError> {
+    let Some(active) = load_store_snapshot_at(owner)?.store.active else {
+        return Ok(None);
+    };
+    let active = revalidate_stored_context(active);
+    if active.validation_error.is_some() {
+        return Ok(None);
+    }
+    Ok(Some((
+        PathBuf::from(active.root_path),
+        PathBuf::from(active.current_cwd),
+    )))
+}
+
 pub fn context_from_paths(root_path: &Path, current_cwd: &Path, is_active: bool) -> ProjectContext {
     let root_path = display_path(root_path);
     let current_cwd = display_path(current_cwd);
@@ -743,15 +803,29 @@ fn revalidate_stored_context(context: ProjectContext) -> ProjectContext {
 }
 
 fn load_store_snapshot(app_data_dir: &Path) -> Result<ProjectContextStoreSnapshot, ServiceError> {
-    let path = project_context_path(app_data_dir);
-    let content = match read_project_context_bytes(&path)? {
-        Some(content) => content,
-        None => {
-            return Ok(ProjectContextStoreSnapshot {
-                store: ProjectContextStore::default(),
-                revision: project_context_revision(false, &[]),
-            });
+    match lock_app_mutations(app_data_dir) {
+        Ok(owner) => load_store_snapshot_at(&owner),
+        Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(missing_store_snapshot())
         }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn load_store_snapshot_at(
+    owner: &AppMutationLock,
+) -> Result<ProjectContextStoreSnapshot, ServiceError> {
+    let content = owner
+        .owner_fs()
+        .read_bounded_regular_file(
+            Path::new(PROJECT_CONTEXT_FILE),
+            PROJECT_CONTEXT_MAX_BYTES as u64,
+            "project context state",
+        )
+        .map_err(|_| invalid_project_context_state())?;
+    let content = match content {
+        Some(content) => content,
+        None => return Ok(missing_store_snapshot()),
     };
     let mut store: ProjectContextStore = serde_json::from_slice(&content)?;
     if store.schema_version != PROJECT_CONTEXT_SCHEMA_VERSION {
@@ -767,47 +841,10 @@ fn load_store_snapshot(app_data_dir: &Path) -> Result<ProjectContextStoreSnapsho
     })
 }
 
-fn read_project_context_bytes(path: &Path) -> Result<Option<Vec<u8>>, ServiceError> {
-    let mut file = match open_project_context_file(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(invalid_project_context_state()),
-    };
-    let metadata = file
-        .metadata()
-        .map_err(|_| invalid_project_context_state())?;
-    if !metadata.is_file() || metadata.len() > PROJECT_CONTEXT_MAX_BYTES as u64 {
-        return Err(invalid_project_context_state());
-    }
-    let mut content = Vec::with_capacity(metadata.len() as usize);
-    file.by_ref()
-        .take((PROJECT_CONTEXT_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut content)
-        .map_err(|_| invalid_project_context_state())?;
-    if content.len() > PROJECT_CONTEXT_MAX_BYTES {
-        return Err(invalid_project_context_state());
-    }
-    Ok(Some(content))
-}
-
-#[cfg(unix)]
-fn open_project_context_file(path: &Path) -> io::Result<fs::File> {
-    use rustix::fs::{open, Mode, OFlags};
-
-    let flags =
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    open(path, flags, Mode::empty())
-        .map(fs::File::from)
-        .map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-fn open_project_context_file(path: &Path) -> io::Result<fs::File> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err(io::Error::new(io::ErrorKind::InvalidInput, "symlink"))
-        }
-        _ => fs::File::open(path),
+fn missing_store_snapshot() -> ProjectContextStoreSnapshot {
+    ProjectContextStoreSnapshot {
+        store: ProjectContextStore::default(),
+        revision: project_context_revision(false, &[]),
     }
 }
 

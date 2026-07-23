@@ -3399,6 +3399,120 @@ fn project_context_read_rejects_symlink_without_touching_target() {
     let _ = fs::remove_dir_all(temp_root);
 }
 
+#[cfg(unix)]
+#[test]
+fn project_context_read_rejects_symlinked_app_data_owner_without_reading_target() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-owner-symlink-state-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let victim = temp_root.join("victim");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).expect("set victim mode");
+    let original = b"{\"schema_version\":1,\"active\":null,\"recent\":[]}\n";
+    fs::write(victim.join("project-context.json"), original).expect("write victim state");
+    let original_mode = fs::metadata(&victim)
+        .expect("victim metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    symlink(&victim, &app_data_dir).expect("link app-data owner");
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("symlink-project-owner".to_string()),
+        method: "project.getContext".to_string(),
+        params: Value::Null,
+    });
+
+    assert!(!response.ok);
+    assert_eq!(
+        fs::read(victim.join("project-context.json")).expect("victim state"),
+        original
+    );
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        original_mode
+    );
+    assert_eq!(
+        fs::read_dir(&victim).expect("victim entries").count(),
+        1,
+        "read-only context lookup must not create victim children"
+    );
+    let _ = fs::remove_file(app_data_dir);
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn project_context_apply_reports_partial_effect_if_owner_binding_changes_after_write() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-owner-rebind-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let accepted_owner = temp_root.join("accepted-owner");
+    let victim = temp_root.join("victim");
+    let project = temp_root.join("project");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::create_dir_all(&project).expect("create project");
+    fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).expect("set victim mode");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("write victim sentinel");
+    let original_mode = fs::metadata(&victim)
+        .expect("victim metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    let hook_app_data = app_data_dir.clone();
+    let hook_accepted = accepted_owner.clone();
+    let hook_victim = victim.clone();
+    crate::project_context::inject_project_context_post_write_hook_for_test(move || {
+        fs::rename(&hook_app_data, &hook_accepted).expect("move accepted owner");
+        symlink(&hook_victim, &hook_app_data).expect("replace owner path");
+    });
+    let host = test_host(app_data_dir.clone());
+    let (_, response) =
+        confirmed_project_set_context(&host, json!({ "root_path": project, "name": "Accepted" }));
+
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("partial effect").code,
+        "partial_effect"
+    );
+    assert!(
+        accepted_owner.join("project-context.json").is_file(),
+        "the descriptor-anchored write remains on the accepted owner"
+    );
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert!(!victim.join("project-context.json").exists());
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        original_mode
+    );
+    assert_eq!(fs::read_dir(&victim).expect("victim entries").count(), 1);
+    let _ = fs::remove_file(app_data_dir);
+    let _ = fs::remove_dir_all(temp_root);
+}
+
 #[test]
 fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
     let temp_root = env::temp_dir().join(format!(
@@ -3465,6 +3579,82 @@ fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
         .expect("list skills after failed scan");
     assert!(skills.iter().any(|skill| skill.name == "first"));
     assert!(!skills.iter().any(|skill| skill.name == "second"));
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn scan_reports_partial_effect_if_owner_binding_changes_after_commit() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-scan-owner-rebind-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let home = temp_root.join("home");
+    let skill = home.join(".claude/skills/fixture");
+    let app_data_dir = temp_root.join("app-data");
+    let accepted_owner = temp_root.join("accepted-owner");
+    let victim = temp_root.join("victim");
+    fs::create_dir_all(&skill).expect("create skill");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: fixture\ndescription: fixture skill\n---\n",
+    )
+    .expect("write skill");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).expect("set victim mode");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("write victim sentinel");
+    let original_mode = fs::metadata(&victim)
+        .expect("victim metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    let hook_app_data = app_data_dir.clone();
+    let hook_accepted = accepted_owner.clone();
+    let hook_victim = victim.clone();
+    crate::service_host::inject_scan_post_commit_hook_for_test(move || {
+        fs::rename(&hook_app_data, &hook_accepted).expect("move accepted owner");
+        symlink(&hook_victim, &hook_app_data).expect("replace owner path");
+    });
+    let host = ServiceHost {
+        app_data_dir: app_data_dir.clone(),
+        adapter_ctx: AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let response = host.handle(ServiceRequest {
+        id: Some("scan-owner-rebind".to_string()),
+        method: "catalog.scanAll".to_string(),
+        params: json!({ "explicit_refresh": true }),
+    });
+
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("partial effect").code,
+        "partial_effect"
+    );
+    assert!(accepted_owner.join("catalog.sqlite").is_file());
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert!(!victim.join("catalog.sqlite").exists());
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        original_mode
+    );
+    assert_eq!(fs::read_dir(&victim).expect("victim entries").count(), 1);
+    let _ = fs::remove_file(app_data_dir);
     let _ = fs::remove_dir_all(temp_root);
 }
 
