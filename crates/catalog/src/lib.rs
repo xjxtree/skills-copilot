@@ -2751,6 +2751,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn anchored_catalog_rejects_main_and_journal_symlinks_without_touching_victims() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-anchored-catalog-links-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let main_owner = root.join("main-owner");
+        let main_victim = root.join("main-victim.sqlite");
+        std::fs::create_dir_all(&main_owner).expect("create main owner");
+        std::fs::write(&main_victim, b"victim-main-bytes").expect("seed main victim");
+        std::fs::set_permissions(&main_victim, std::fs::Permissions::from_mode(0o640))
+            .expect("set main victim mode");
+        symlink(&main_victim, main_owner.join("catalog.sqlite")).expect("link main catalog victim");
+        let main_before = std::fs::read(&main_victim).expect("read main victim");
+        let main_mode = std::fs::metadata(&main_victim)
+            .expect("main victim metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let main_result =
+            Catalog::open_anchored(std::fs::File::open(&main_owner).expect("open main owner"));
+        assert!(
+            main_result.is_err(),
+            "main catalog symlink must fail closed"
+        );
+        let read_result = Catalog::open_read_only_current_anchored_if_exists(
+            std::fs::File::open(&main_owner).expect("reopen main owner"),
+        );
+        assert!(
+            read_result.is_err(),
+            "read-only catalog symlink must fail closed"
+        );
+        assert_eq!(
+            std::fs::read(&main_victim).expect("main victim after rejection"),
+            main_before
+        );
+        assert_eq!(
+            std::fs::metadata(&main_victim)
+                .expect("main victim metadata after rejection")
+                .permissions()
+                .mode()
+                & 0o777,
+            main_mode
+        );
+
+        let journal_owner = root.join("journal-owner");
+        let journal_victim = root.join("journal-victim");
+        std::fs::create_dir(&journal_owner).expect("create journal owner");
+        std::fs::write(&journal_victim, b"victim-journal-bytes").expect("seed journal victim");
+        std::fs::set_permissions(&journal_victim, std::fs::Permissions::from_mode(0o640))
+            .expect("set journal victim mode");
+        let catalog = Catalog::open_anchored(
+            std::fs::File::open(&journal_owner).expect("open journal owner"),
+        )
+        .expect("open safe main catalog");
+        catalog.init().expect("initialize safe main catalog");
+        symlink(
+            &journal_victim,
+            journal_owner.join("catalog.sqlite-journal"),
+        )
+        .expect("link journal victim");
+        let journal_before = std::fs::read(&journal_victim).expect("read journal victim");
+        let journal_mode = std::fs::metadata(&journal_victim)
+            .expect("journal victim metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert!(
+            catalog.begin_immediate_transaction().is_err(),
+            "pre-existing journal symlink must prevent a transaction"
+        );
+        assert_eq!(
+            std::fs::read(&journal_victim).expect("journal victim after rejection"),
+            journal_before
+        );
+        assert_eq!(
+            std::fs::metadata(&journal_victim)
+                .expect("journal victim metadata after rejection")
+                .permissions()
+                .mode()
+                & 0o777,
+            journal_mode
+        );
+        assert!(
+            journal_owner.join("catalog.sqlite-journal").is_symlink(),
+            "fail-closed handling must not delete or replace the suspicious link"
+        );
+        drop(catalog);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn current_time_for_test() -> u128 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -142,6 +142,11 @@ unsafe extern "C" fn anchored_open(
     unsafe {
         (*file).pMethods = ptr::null();
     }
+    let flags = if name.is_null() {
+        flags
+    } else {
+        flags | ffi::SQLITE_OPEN_NOFOLLOW
+    };
     let result = with_owner_cwd(state, ffi::SQLITE_CANTOPEN, || unsafe {
         callback(state.parent, name, file, flags, out_flags)
     });
@@ -185,6 +190,9 @@ unsafe extern "C" fn anchored_delete(
     else {
         return ffi::SQLITE_IOERR_DELETE;
     };
+    if app_owned_child_is_symlink(state, name) {
+        return ffi::SQLITE_IOERR_DELETE;
+    }
     with_owner_cwd(state, ffi::SQLITE_IOERR_DELETE, || unsafe {
         callback(state.parent, name, sync_dir)
     })
@@ -204,6 +212,12 @@ unsafe extern "C" fn anchored_access(
     else {
         return ffi::SQLITE_IOERR_ACCESS;
     };
+    if app_owned_child_is_symlink(state, name) {
+        unsafe {
+            *result = 0;
+        }
+        return ffi::SQLITE_IOERR_ACCESS;
+    }
     with_owner_cwd(state, ffi::SQLITE_IOERR_ACCESS, || unsafe {
         callback(state.parent, name, flags, result)
     })
@@ -318,6 +332,14 @@ fn valid_relative_name(name: *const c_char) -> bool {
         && !bytes
             .iter()
             .any(|byte| matches!(*byte, b'/' | b'\\' | b'\0'))
+}
+
+fn app_owned_child_is_symlink(state: &AnchoredVfsState, name: *const c_char) -> bool {
+    use rustix::fs::{statat, AtFlags, FileType};
+    let name = unsafe { CStr::from_ptr(name) };
+    statat(&state.owner, name, AtFlags::SYMLINK_NOFOLLOW)
+        .map(|metadata| FileType::from_raw_mode(metadata.st_mode) == FileType::Symlink)
+        .unwrap_or(false)
 }
 
 static ANCHORED_IO_METHODS: ffi::sqlite3_io_methods = ffi::sqlite3_io_methods {
