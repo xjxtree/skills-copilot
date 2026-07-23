@@ -27,9 +27,10 @@ use skills_copilot_commands::{
     preview_claude_settings_save, preview_install_with_manager, preview_local_archive_import,
     preview_local_archive_update, preview_local_create_with_manager, preview_remove_with_manager,
     preview_script_execution, preview_skill_toggles, preview_snapshot_rollback_with_context,
-    preview_update_with_manager, read_agent_config, read_claude_settings, rollback_snapshot,
-    scan_all_catalog_report, scan_claude_catalog_report, search_skills_with_manager,
-    set_finding_triage, set_rule_severity_override, set_rule_suppression, skill_health_summary,
+    preview_update_with_manager, read_agent_config, read_claude_settings,
+    reject_non_applicable_confirmation, rollback_snapshot, scan_all_catalog_report,
+    scan_claude_catalog_report, search_skills_with_manager, set_finding_triage,
+    set_rule_severity_override, set_rule_suppression, skill_health_summary,
     user_visible_rule_findings, validate_local_delete_confirmation,
     validate_skill_install_confirmation, validate_skill_manager_confirmation,
     validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
@@ -1622,6 +1623,9 @@ impl ServiceError {
             }
             Self::Command(skills_copilot_commands::CommandError::ActionTokenUnavailable(_)) => {
                 "action_token_unavailable"
+            }
+            Self::Command(skills_copilot_commands::CommandError::NoApplicableAction(_)) => {
+                "no_applicable_action"
             }
             Self::Command(skills_copilot_commands::CommandError::VerificationFailed) => {
                 "verification_failed"

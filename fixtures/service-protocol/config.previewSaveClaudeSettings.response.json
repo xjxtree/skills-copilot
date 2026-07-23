@@ -18,7 +18,12 @@
       "source_revision": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
       "confirmation_required": true,
       "network": "none",
-      "readback": ["agent_config", "config_snapshots"],
+      "readback": [
+        "catalog_skills",
+        "skill_aggregates",
+        "agent_config",
+        "config_snapshots"
+      ],
       "evidence_refs": ["config:/tmp/skills-copilot-home/.claude/settings.json"]
     },
     "preconditions": [

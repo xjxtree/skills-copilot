@@ -132,13 +132,190 @@ fn config_save_preview_returns_confirmation_bound_action_without_writes() {
         settings_path.to_string_lossy().as_ref()
     );
     assert_eq!(result["action"]["network"], "none");
-    assert_eq!(result["action"]["readback"][0], "agent_config");
+    assert_eq!(
+        result["action"]["readback"],
+        json!([
+            "catalog_skills",
+            "skill_aggregates",
+            "agent_config",
+            "config_snapshots"
+        ])
+    );
     assert_eq!(result["preconditions"][0]["expected_revision"], revision);
     assert!(result["preview_token"]
         .as_str()
         .is_some_and(|token| token.starts_with("action-preview:v1:hmac-sha256:")));
     assert_eq!(tree_snapshot(&root), before);
     assert!(!host.app_data_dir.exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn no_op_save_preview_is_read_only_and_replayed_confirmation_has_zero_io() {
+    let root = std::env::temp_dir().join(format!(
+        "skills-copilot-service-config-no-op-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let host = config_test_host(&root);
+    let settings_path = host.adapter_ctx.user_home.join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    fs::write(&settings_path, "{}\n").expect("write initial settings");
+    let read = host.handle(ServiceRequest {
+        id: Some("read-before-no-op-preview".to_string()),
+        method: "config.readClaudeSettings".to_string(),
+        params: json!({}),
+    });
+    let revision = read
+        .result
+        .as_ref()
+        .and_then(|result| result.get("revision"))
+        .and_then(Value::as_str)
+        .expect("read revision");
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview-no-op-save".to_string()),
+        method: "config.previewSaveClaudeSettings".to_string(),
+        params: json!({"content": "{}\n", "expected_revision": revision}),
+    });
+    assert!(preview.ok, "{preview:?}");
+    let result = preview.result.as_ref().expect("preview result");
+    assert_eq!(result["changed"], false);
+    assert_eq!(result["action"]["apply_method"], Value::Null);
+    assert_eq!(result["action"]["confirmation_required"], false);
+    assert_eq!(result["action"]["impacts"], json!(["read_only"]));
+    assert!(result["action"]["source_revision"]
+        .as_str()
+        .is_some_and(|revision| revision.starts_with("no-op:sha256:")));
+    let confirmation = confirmation_from_preview(&preview);
+    let before = tree_snapshot(&root);
+
+    for attempt in 0..2 {
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("apply-no-op-save-{attempt}")),
+            method: "config.saveClaudeSettings".to_string(),
+            params: json!({"content": "{}\n", "confirmation": confirmation.clone()}),
+        });
+        assert!(!response.ok, "{response:?}");
+        assert_eq!(
+            response.error.expect("no applicable action error").code,
+            "no_applicable_action"
+        );
+        assert_eq!(tree_snapshot(&root), before);
+        assert!(!host.app_data_dir.exists());
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn no_op_rollback_preview_is_read_only_and_replayed_confirmation_has_zero_io() {
+    let root = std::env::temp_dir().join(format!(
+        "skills-copilot-service-rollback-no-op-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let host = config_test_host(&root);
+    let settings_path = host.adapter_ctx.user_home.join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    fs::write(&settings_path, "{}\n").expect("write initial settings");
+    fs::create_dir_all(&host.app_data_dir).expect("create app data");
+    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    catalog
+        .create_config_snapshot(skills_copilot_catalog::ConfigSnapshotDraft {
+            id: "service-no-op-rollback",
+            agent: "claude-code",
+            scope: "agent-global",
+            project_root: None,
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: 1,
+        })
+        .expect("create snapshot");
+    drop(catalog);
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview-no-op-rollback".to_string()),
+        method: "snapshot.previewRollback".to_string(),
+        params: json!({"snapshot_id": "service-no-op-rollback"}),
+    });
+    assert!(preview.ok, "{preview:?}");
+    let result = preview.result.as_ref().expect("preview result");
+    assert_eq!(result["changed"], false);
+    assert_eq!(result["action"]["apply_method"], Value::Null);
+    assert_eq!(result["action"]["confirmation_required"], false);
+    assert_eq!(result["action"]["impacts"], json!(["read_only"]));
+    let confirmation = confirmation_from_preview(&preview);
+    let before = tree_snapshot(&root);
+
+    for attempt in 0..2 {
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("apply-no-op-rollback-{attempt}")),
+            method: "snapshot.rollback".to_string(),
+            params: json!({
+                "snapshot_id": "service-no-op-rollback",
+                "confirmation": confirmation.clone()
+            }),
+        });
+        assert!(!response.ok, "{response:?}");
+        assert_eq!(
+            response.error.expect("no applicable action error").code,
+            "no_applicable_action"
+        );
+        assert_eq!(tree_snapshot(&root), before);
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rollback_preview_rejects_outdated_catalog_without_migrating_it() {
+    use rusqlite::Connection;
+
+    let root = std::env::temp_dir().join(format!(
+        "skills-copilot-service-rollback-strict-read-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let host = config_test_host(&root);
+    let settings_path = host.adapter_ctx.user_home.join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    fs::write(&settings_path, "{\n  \"current\": true\n}\n").expect("write settings");
+    fs::create_dir_all(&host.app_data_dir).expect("create app data");
+    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    catalog
+        .create_config_snapshot(skills_copilot_catalog::ConfigSnapshotDraft {
+            id: "strict-read-snapshot",
+            agent: "claude-code",
+            scope: "agent-global",
+            project_root: None,
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: 1,
+        })
+        .expect("create snapshot");
+    drop(catalog);
+    Connection::open(host.catalog_path())
+        .expect("open raw catalog")
+        .pragma_update(None, "user_version", 1_i64)
+        .expect("mark catalog outdated");
+    let before = tree_snapshot(&root);
+
+    let response = host.handle(ServiceRequest {
+        id: Some("preview-outdated-catalog".to_string()),
+        method: "snapshot.previewRollback".to_string(),
+        params: json!({"snapshot_id": "strict-read-snapshot"}),
+    });
+
+    assert!(!response.ok, "{response:?}");
+    assert_eq!(response.error.expect("catalog error").code, "catalog_error");
+    assert_eq!(tree_snapshot(&root), before);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -247,7 +424,7 @@ fn config_conflict_on_fresh_filesystem_creates_no_catalog_lock_parent_or_target(
 }
 
 #[test]
-fn fresh_successful_save_initializes_snapshot_writes_and_limits_readback_domains() {
+fn fresh_successful_save_initializes_snapshot_and_exact_catalog_projection_readback() {
     let root = std::env::temp_dir().join(format!(
         "skills-copilot-service-config-save-fresh-{}-{}",
         std::process::id(),
@@ -309,13 +486,21 @@ fn fresh_successful_save_initializes_snapshot_writes_and_limits_readback_domains
         1
     );
     let skills = catalog.list_skill_records().expect("list cached skills");
-    assert!(
-        skills.is_empty(),
-        "config apply must not broaden AgentConfig/ConfigSnapshots read-back into a catalog scan"
-    );
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "save-fixture");
+    assert!(!skills[0].enabled);
     assert_eq!(
         response.result.as_ref().expect("apply result")["readback"]["verified"],
         true
+    );
+    assert_eq!(
+        response.result.as_ref().expect("apply result")["readback"]["domains"],
+        json!([
+            "catalog_skills",
+            "skill_aggregates",
+            "agent_config",
+            "config_snapshots"
+        ])
     );
     assert!(fs::read_to_string(&settings_path)
         .expect("read saved settings")

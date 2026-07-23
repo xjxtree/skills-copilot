@@ -12,6 +12,7 @@ use crate::CommandError;
 const ACTION_SOURCE_REVISION_DOMAIN: &str = "agent-copilot/action-source/v1";
 const ACTION_PREVIEW_TOKEN_DOMAIN: &str = "agent-copilot/action-preview/v1";
 const ACTION_ID_DOMAIN: &str = "agent-copilot/action-id/v1";
+const NON_APPLICABLE_SOURCE_REVISION_PREFIX: &str = "no-op:";
 pub(crate) const ACTION_PREVIEW_SECRET_ENV: &str = "SKILLS_COPILOT_ACTION_PREVIEW_SECRET";
 const HMAC_BLOCK_SIZE: usize = 64;
 const ACTION_PREVIEW_SECRET_SIZE: usize = 32;
@@ -72,6 +73,31 @@ impl ActionConfirmation {
             confirmed: true,
         }
     }
+}
+
+pub fn non_applicable_source_revision(
+    operation: &str,
+    fields: &[(&str, &str)],
+) -> Result<String, CommandError> {
+    Ok(format!(
+        "{NON_APPLICABLE_SOURCE_REVISION_PREFIX}{}",
+        action_source_revision(operation, fields)?
+    ))
+}
+
+pub fn reject_non_applicable_confirmation(
+    confirmation: &ActionConfirmation,
+) -> Result<(), CommandError> {
+    if confirmation
+        .reference
+        .source_revision
+        .starts_with(NON_APPLICABLE_SOURCE_REVISION_PREFIX)
+    {
+        return Err(CommandError::NoApplicableAction(
+            "the preview does not expose a supported mutation for the current state".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -599,11 +625,11 @@ pub fn validate_action_method_ownership(
         }
         ActionKind::RollbackConfig => {
             preview_method == "snapshot.previewRollback"
-                && apply_method == Some("snapshot.rollback")
+                && matches!(apply_method, Some("snapshot.rollback") | None)
         }
         ActionKind::SaveConfig => {
             preview_method == "config.previewSaveClaudeSettings"
-                && apply_method == Some("config.saveClaudeSettings")
+                && matches!(apply_method, Some("config.saveClaudeSettings") | None)
         }
         ActionKind::ResumeSession => {
             preview_method == "session.previewResume" && apply_method.is_none()

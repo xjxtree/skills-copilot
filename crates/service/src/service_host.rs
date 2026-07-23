@@ -733,6 +733,7 @@ impl ServiceHost {
             }
             "config.saveClaudeSettings" => {
                 let params: SaveClaudeSettingsParams = serde_json::from_value(request.params)?;
+                reject_non_applicable_confirmation(&params.confirmation)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let prepared = prepare_claude_settings_save(
                     &adapter_ctx,
@@ -773,7 +774,7 @@ impl ServiceHost {
             }
             "snapshot.previewRollback" => {
                 let params: SnapshotParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog_for_read()?;
+                let catalog = self.open_catalog_for_action_preflight()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let preview: SnapshotRollbackPreviewRecord =
                     preview_snapshot_rollback_with_context(
@@ -785,8 +786,9 @@ impl ServiceHost {
             }
             "snapshot.rollback" => {
                 let params: RollbackSnapshotParams = serde_json::from_value(request.params)?;
+                reject_non_applicable_confirmation(&params.confirmation)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let read_catalog = self.open_catalog_for_read()?;
+                let read_catalog = self.open_catalog_for_action_preflight()?;
                 validate_snapshot_rollback_confirmation(
                     &read_catalog,
                     &adapter_ctx,
@@ -882,6 +884,20 @@ impl ServiceHost {
         let path = self.catalog_path();
         if path.exists() {
             return Catalog::open_read_only_after_migration(&path).map_err(Into::into);
+        }
+        let catalog = Catalog::in_memory()?;
+        catalog.init()?;
+        Ok(catalog)
+    }
+
+    /// Strictly read-only catalog open for action preview/authorization.
+    ///
+    /// Unlike normal read surfaces, this path never migrates an outdated
+    /// catalog because rejected authorization must not write app-local state.
+    pub(crate) fn open_catalog_for_action_preflight(&self) -> Result<Catalog, ServiceError> {
+        let path = self.catalog_path();
+        if path.exists() {
+            return Catalog::open_read_only_current(&path).map_err(Into::into);
         }
         let catalog = Catalog::in_memory()?;
         catalog.init()?;

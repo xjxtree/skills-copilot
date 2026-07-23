@@ -3248,11 +3248,18 @@ fn rollback_snapshot_restores_settings_and_rescans() {
     )
     .expect("rollback");
     assert!(applied.readback.verified);
+    assert_eq!(
+        applied.readback.domains,
+        vec![
+            ActionReadbackDomain::CatalogSkills,
+            ActionReadbackDomain::SkillAggregates,
+            ActionReadbackDomain::AgentConfig,
+        ]
+    );
     assert_eq!(applied.document.content, "{}\n");
 
     let settings = std::fs::read_to_string(&settings_path).expect("settings");
     assert_eq!(settings, "{}\n");
-    scan_claude_to_catalog(&ctx, &catalog).expect("refresh catalog after config-only rollback");
     let records = catalog.list_skill_records().expect("records after refresh");
     assert!(records[0].enabled);
     assert_eq!(records[0].state, "loaded");
@@ -4234,6 +4241,257 @@ fn save_third_state_after_write_is_not_overwritten_by_compensation() {
 }
 
 #[test]
+fn save_post_rename_error_is_never_reclassified_as_success() {
+    let temp_root = temp_test_dir("save-post-rename-error");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let original = "{}\n";
+    let candidate = "{\n  \"requested\": true\n}\n";
+    std::fs::write(&settings_path, original).expect("write original settings");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("read settings");
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("preview save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare save");
+    install_atomic_post_rename_test_hook(settings_path.clone(), |_| {});
+
+    let result = commit_prepared_claude_settings_save(&catalog, &app_data_dir, prepared);
+
+    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read restored settings"),
+        original
+    );
+    assert!(catalog
+        .list_all_config_snapshots(None)
+        .expect("list snapshots")
+        .is_empty());
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn rollback_post_rename_error_is_never_reclassified_as_success() {
+    let temp_root = temp_test_dir("rollback-post-rename-error");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let original = "{\n  \"current\": true\n}\n";
+    std::fs::write(&settings_path, original).expect("write original settings");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "rollback-post-rename-error",
+            agent: "claude-code",
+            scope: "agent-global",
+            project_root: None,
+            target: &settings_path.to_string_lossy(),
+            content: "{}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create snapshot");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview =
+        preview_snapshot_rollback_with_context(&catalog, &ctx, "rollback-post-rename-error")
+            .expect("preview rollback");
+    install_atomic_post_rename_test_hook(settings_path.clone(), |_| {});
+
+    let result = rollback_snapshot(
+        &catalog,
+        &app_data_dir,
+        &ctx,
+        "rollback-post-rename-error",
+        &confirmed_action(&preview.action, &preview.preview_token),
+    );
+
+    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read restored settings"),
+        original
+    );
+    assert!(catalog
+        .get_config_snapshot("rollback-post-rename-error")
+        .expect("read snapshot")
+        .is_some());
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn config_rollback_failure_is_structured_partial_effect_and_preserves_candidate() {
+    let temp_root = temp_test_dir("config-rollback-outcome-unknown");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    std::fs::write(&settings_path, "{}\n").expect("write original settings");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let current = read_claude_settings(&ctx).expect("read settings");
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("preview save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare save");
+    catalog.inject_next_rollback_failure_for_test();
+
+    let result = commit_prepared_claude_settings_save_with_hooks(
+        &catalog,
+        &app_data_dir,
+        prepared,
+        || {},
+        || Err(CommandError::VerificationFailed),
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "catalog_rollback_unknown",
+            cleanup_required: true,
+            ..
+        })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read preserved candidate"),
+        candidate
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn config_commit_outcome_unknown_is_structured_partial_effect() {
+    let temp_root = temp_test_dir("config-commit-outcome-unknown");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    std::fs::write(&settings_path, "{}\n").expect("write original settings");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let current = read_claude_settings(&ctx).expect("read settings");
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("preview save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare save");
+    catalog.inject_next_commit_outcome_unknown_for_test();
+
+    let result = commit_prepared_claude_settings_save(&catalog, &app_data_dir, prepared);
+
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "catalog_commit_unknown",
+            cleanup_required: true,
+            ..
+        })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read preserved candidate"),
+        candidate
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn config_precommit_failure_rolls_back_and_restores_original() {
+    let temp_root = temp_test_dir("config-precommit-failure");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let original = "{}\n";
+    std::fs::write(&settings_path, original).expect("write original settings");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let current = read_claude_settings(&ctx).expect("read settings");
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &current.revision).expect("preview save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare save");
+    catalog.inject_next_commit_failure_for_test();
+
+    let result = commit_prepared_claude_settings_save(&catalog, &app_data_dir, prepared);
+
+    assert!(matches!(
+        result,
+        Err(CommandError::Catalog(
+            skills_copilot_catalog::CatalogError::InjectedCommitFailure
+        ))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read restored original"),
+        original
+    );
+    assert!(catalog
+        .list_all_config_snapshots(None)
+        .expect("list snapshots")
+        .is_empty());
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 #[cfg(unix)]
 fn read_claude_settings_rejects_symlinked_config_directory() {
     let temp_root = std::env::temp_dir().join(format!(
@@ -4303,6 +4561,15 @@ fn save_claude_settings_snapshots_validates_and_rescans() {
     assert!(updated.document.exists);
     assert!(updated.document.content.contains("skillOverrides"));
     assert!(updated.readback.verified);
+    assert_eq!(
+        updated.readback.domains,
+        vec![
+            ActionReadbackDomain::CatalogSkills,
+            ActionReadbackDomain::SkillAggregates,
+            ActionReadbackDomain::AgentConfig,
+            ActionReadbackDomain::ConfigSnapshots,
+        ]
+    );
     let snapshots = catalog
         .list_config_snapshots("claude-code", &settings_path.to_string_lossy())
         .expect("snapshots");
@@ -4310,7 +4577,6 @@ fn save_claude_settings_snapshots_validates_and_rescans() {
     assert_eq!(snapshots[0].reason, "pre-config-edit");
     assert_eq!(snapshots[0].content, "{}\n");
 
-    scan_claude_to_catalog(&ctx, &catalog).expect("refresh catalog after config-only save");
     let records = catalog.list_skill_records().expect("records");
     assert_eq!(records.len(), 1);
     assert!(!records[0].enabled);

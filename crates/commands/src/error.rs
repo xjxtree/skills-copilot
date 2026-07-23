@@ -74,6 +74,8 @@ pub enum CommandError {
     ActionConfirmationRequired(String),
     #[error("action preview signing is unavailable: {0}")]
     ActionTokenUnavailable(String),
+    #[error("action has no applicable mutation: {0}")]
+    NoApplicableAction(String),
     #[error("skill manager unavailable: {0}")]
     SkillManagerUnavailable(String),
     #[error("invalid skill manager request: {0}")]

@@ -12,13 +12,13 @@
         "agent": "claude-code",
         "scope": "agent-global"
       },
-      "impacts": ["agent_config"],
+      "impacts": ["agent_config", "app_local_data"],
       "preview_method": "snapshot.previewRollback",
       "apply_method": "snapshot.rollback",
       "source_revision": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
       "confirmation_required": true,
       "network": "none",
-      "readback": ["agent_config"],
+      "readback": ["catalog_skills", "skill_aggregates", "agent_config"],
       "evidence_refs": [
         "snapshot:snapshot-id",
         "config:/tmp/skills-copilot-home/.claude/settings.json"

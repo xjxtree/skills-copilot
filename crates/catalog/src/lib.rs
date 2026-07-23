@@ -29,6 +29,8 @@ use mapping::*;
 pub struct Catalog {
     conn: Connection,
     fail_next_commit: Cell<bool>,
+    fail_next_commit_outcome: Cell<bool>,
+    fail_next_rollback: Cell<bool>,
 }
 
 /// Holds an immediate SQLite transaction on a catalog connection.
@@ -40,6 +42,22 @@ pub struct Catalog {
 pub struct CatalogImmediateTransaction<'catalog> {
     transaction: Transaction<'catalog>,
     fail_commit: bool,
+    fail_commit_outcome: bool,
+    fail_rollback: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum CatalogCommitError {
+    #[error("catalog commit was rejected before commit: {0}")]
+    NotCommitted(CatalogError),
+    #[error("catalog commit outcome is unknown: {0}")]
+    OutcomeUnknown(CatalogError),
+}
+
+impl CatalogCommitError {
+    pub fn outcome_unknown(&self) -> bool {
+        matches!(self, Self::OutcomeUnknown(_))
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -255,6 +273,10 @@ pub enum CatalogError {
     SchemaOutdated,
     #[error("injected catalog commit failure")]
     InjectedCommitFailure,
+    #[error("injected catalog commit outcome uncertainty")]
+    InjectedCommitOutcomeUnknown,
+    #[error("injected catalog rollback failure")]
+    InjectedRollbackFailure,
 }
 
 impl Catalog {
@@ -262,6 +284,8 @@ impl Catalog {
         Ok(Self {
             conn: Connection::open(path)?,
             fail_next_commit: Cell::new(false),
+            fail_next_commit_outcome: Cell::new(false),
+            fail_next_rollback: Cell::new(false),
         })
     }
 
@@ -269,7 +293,22 @@ impl Catalog {
         Ok(Self {
             conn: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
             fail_next_commit: Cell::new(false),
+            fail_next_commit_outcome: Cell::new(false),
+            fail_next_rollback: Cell::new(false),
         })
+    }
+
+    /// Open an existing catalog without performing or attempting migration.
+    ///
+    /// This is the pre-authorization path for actions whose rejected preview or
+    /// confirmation must be byte-for-byte read-only. An outdated catalog fails
+    /// closed instead of acquiring a writable connection.
+    pub fn open_read_only_current(path: &Path) -> Result<Self, CatalogError> {
+        let catalog = Self::open_read_only(path)?;
+        if !schema::is_current(&catalog.conn)? {
+            return Err(CatalogError::SchemaOutdated);
+        }
+        Ok(catalog)
     }
 
     /// Open an existing catalog for read-only service use, applying any
@@ -297,6 +336,8 @@ impl Catalog {
         Ok(Self {
             conn: Connection::open_in_memory()?,
             fail_next_commit: Cell::new(false),
+            fail_next_commit_outcome: Cell::new(false),
+            fail_next_rollback: Cell::new(false),
         })
     }
 
@@ -312,6 +353,8 @@ impl Catalog {
         Ok(CatalogImmediateTransaction {
             transaction: Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?,
             fail_commit: self.fail_next_commit.replace(false),
+            fail_commit_outcome: self.fail_next_commit_outcome.replace(false),
+            fail_rollback: self.fail_next_rollback.replace(false),
         })
     }
 
@@ -319,6 +362,18 @@ impl Catalog {
     #[doc(hidden)]
     pub fn inject_next_commit_failure_for_test(&self) {
         self.fail_next_commit.set(true);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn inject_next_commit_outcome_unknown_for_test(&self) {
+        self.fail_next_commit_outcome.set(true);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn inject_next_rollback_failure_for_test(&self) {
+        self.fail_next_rollback.set(true);
     }
     /// Migrate records whose `path` was stored as a display path (pre-refactor)
     /// to the canonical path. When a canonical path already exists for the same
@@ -860,7 +915,53 @@ impl CatalogImmediateTransaction<'_> {
         if self.fail_commit {
             return Err(CatalogError::InjectedCommitFailure);
         }
+        if self.fail_commit_outcome {
+            return Err(CatalogError::InjectedCommitOutcomeUnknown);
+        }
         self.transaction.commit().map_err(Into::into)
+    }
+
+    /// Commit with an explicit distinction between a transaction that is
+    /// proven uncommitted and one whose SQLite commit result is uncertain.
+    pub fn commit_classified(self) -> Result<(), CatalogCommitError> {
+        let Self {
+            transaction,
+            fail_commit,
+            fail_commit_outcome,
+            fail_rollback,
+        } = self;
+        if fail_commit {
+            if fail_rollback {
+                return Err(CatalogCommitError::OutcomeUnknown(
+                    CatalogError::InjectedRollbackFailure,
+                ));
+            }
+            return match transaction.rollback() {
+                Ok(()) => Err(CatalogCommitError::NotCommitted(
+                    CatalogError::InjectedCommitFailure,
+                )),
+                Err(error) => Err(CatalogCommitError::OutcomeUnknown(CatalogError::Sqlite(
+                    error,
+                ))),
+            };
+        }
+        if fail_commit_outcome {
+            return Err(CatalogCommitError::OutcomeUnknown(
+                CatalogError::InjectedCommitOutcomeUnknown,
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|error| CatalogCommitError::OutcomeUnknown(CatalogError::Sqlite(error)))
+    }
+
+    /// Explicit rollback for callers that must classify rollback failure rather
+    /// than relying on the transaction guard's best-effort drop behavior.
+    pub fn rollback(self) -> Result<(), CatalogError> {
+        if self.fail_rollback {
+            return Err(CatalogError::InjectedRollbackFailure);
+        }
+        self.transaction.rollback().map_err(Into::into)
     }
 }
 
@@ -2254,6 +2355,82 @@ mod tests {
 
         assert_ne!(reopened.triage_key, original.triage_key);
         assert_eq!(reopened.triage_status, "open");
+    }
+
+    #[test]
+    fn strict_read_only_open_rejects_outdated_schema_without_migration() {
+        let path = std::env::temp_dir().join(format!(
+            "skills-copilot-catalog-strict-read-{}-{}.sqlite",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let catalog = Catalog::open(&path).expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        catalog
+            .conn
+            .pragma_update(None, "user_version", 1_i64)
+            .expect("mark catalog outdated");
+        drop(catalog);
+        let before = std::fs::read(&path).expect("read outdated catalog");
+
+        let result = Catalog::open_read_only_current(&path);
+
+        assert!(matches!(result, Err(CatalogError::SchemaOutdated)));
+        assert_eq!(
+            std::fs::read(&path).expect("read catalog after strict open"),
+            before
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn classified_precommit_failure_proves_transaction_not_committed() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        catalog.inject_next_commit_failure_for_test();
+        let transaction = catalog
+            .begin_immediate_transaction()
+            .expect("begin transaction");
+        catalog
+            .create_config_snapshot(ConfigSnapshotDraft {
+                id: "classified-precommit",
+                agent: "claude-code",
+                scope: "agent-global",
+                project_root: None,
+                target: "/tmp/settings.json",
+                content: "{}\n",
+                reason: "test",
+                created_at_ms: 1,
+            })
+            .expect("create snapshot");
+
+        let result = transaction.commit_classified();
+
+        assert!(matches!(
+            result,
+            Err(CatalogCommitError::NotCommitted(
+                CatalogError::InjectedCommitFailure
+            ))
+        ));
+        assert!(catalog
+            .get_config_snapshot("classified-precommit")
+            .expect("read snapshot")
+            .is_none());
+    }
+
+    #[test]
+    fn explicit_rollback_failure_is_reported() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        catalog.inject_next_rollback_failure_for_test();
+        let transaction = catalog
+            .begin_immediate_transaction()
+            .expect("begin transaction");
+
+        assert!(matches!(
+            transaction.rollback(),
+            Err(CatalogError::InjectedRollbackFailure)
+        ));
     }
 
     fn current_time_for_test() -> u128 {
