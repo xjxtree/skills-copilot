@@ -35,6 +35,7 @@ use skills_copilot_core::SkillScript;
 
 mod action_lifecycle;
 mod analysis;
+mod app_data_owner_fs;
 mod config_consistency;
 mod config_lifecycle;
 mod config_support;

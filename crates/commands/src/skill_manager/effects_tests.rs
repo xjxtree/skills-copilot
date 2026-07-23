@@ -456,7 +456,7 @@ fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
     fs::create_dir_all(&root).expect("create owner parent");
 
     install_manager_pre_execute_test_hook("search", || {});
-    let result = with_search_mutation_lock(&app_data, || {
+    let result = with_search_mutation_lock(&app_data, |_| {
         Err::<(), _>(CommandError::StaleActionReference)
     });
 
@@ -484,6 +484,73 @@ fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
         "locked stale revalidation must not reach a manager process"
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
+fn search_rejects_an_owner_path_replaced_after_lock_without_touching_the_victim() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-search-owner-replacement-{}-{unique}",
+        std::process::id()
+    ));
+    let app_data = root.join("app-data");
+    let moved_owner = root.join("locked-owner");
+    let victim = root.join("victim");
+    fs::create_dir_all(&app_data).expect("create app data");
+    fs::create_dir_all(&victim).expect("create victim");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    let victim_mode = fs::metadata(&victim)
+        .expect("victim metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    let raced_app_data = app_data.clone();
+    let raced_moved_owner = moved_owner.clone();
+    let raced_victim = victim.clone();
+    install_manager_pre_execute_test_hook("search", move || {
+        fs::rename(&raced_app_data, &raced_moved_owner).expect("move locked owner");
+        symlink(&raced_victim, &raced_app_data).expect("replace owner path");
+    });
+    let result = with_search_mutation_lock(&app_data, |_| Ok(()));
+
+    assert!(
+        matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+        "locked search must fail closed when the display path no longer names the owner inode"
+    );
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        victim_mode
+    );
+    assert_eq!(
+        fs::read_dir(&victim).expect("victim entries").count(),
+        1,
+        "the victim must receive no replay or temporary files"
+    );
+    assert_eq!(
+        fs::read_dir(&moved_owner)
+            .expect("locked owner entries")
+            .count(),
+        0,
+        "fail-closed binding validation runs before replay reservation"
+    );
+
+    fs::remove_file(&app_data).expect("remove raced link");
+    fs::remove_dir_all(root).ok();
 }
 
 #[test]

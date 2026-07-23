@@ -1,5 +1,5 @@
 use super::*;
-use std::io::{Read, Write};
+use std::io::Read;
 
 const DISCOVERY_STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_DISCOVERY_STATE_BYTES: u64 = 16 * 1024;
@@ -44,8 +44,8 @@ pub fn apply_search_skills_with_manager(
     )?;
     validate_manager_preconditions(ctx, &preflight)?;
 
-    with_search_mutation_lock(app_data_dir, || {
-        let preview = build_search_preview(app_data_dir, ctx, &inputs, true)?;
+    with_search_mutation_lock(app_data_dir, |owner| {
+        let preview = build_search_preview_for_owner(owner, ctx, &inputs, true)?;
         ensure_confirmed(
             &preview,
             params.confirmed,
@@ -64,13 +64,13 @@ pub fn apply_search_skills_with_manager(
                 "skill manager search preview has no typed action".to_string(),
             )
         })?;
-        let reserved = reserve_discovery_action(app_data_dir, token, action)?;
+        let reserved = reserve_discovery_action(owner, token, action)?;
 
         let execution = match run_previewed_command(ctx, &preview) {
             Ok(execution) => execution,
             Err(error) => {
                 let state_recorded =
-                    finish_discovery_action(app_data_dir, &reserved, "outcome", "partial").is_ok();
+                    finish_discovery_action(owner, &reserved, "outcome", "partial").is_ok();
                 return Err(search_outcome_unknown(ctx, &error, state_recorded));
             }
         };
@@ -99,11 +99,11 @@ pub fn apply_search_skills_with_manager(
             Ok(verified) => verified,
             Err(error) => {
                 let state_recorded =
-                    finish_discovery_action(app_data_dir, &reserved, "outcome", "partial").is_ok();
+                    finish_discovery_action(owner, &reserved, "outcome", "partial").is_ok();
                 return Err(search_outcome_unknown(ctx, &error, state_recorded));
             }
         };
-        finish_discovery_action(app_data_dir, &reserved, "outcome", "verified").map_err(|_| {
+        finish_discovery_action(owner, &reserved, "outcome", "verified").map_err(|_| {
             CommandError::PartialEffect {
                 operation: "skillManager.applySearch".to_string(),
                 state: "applied_unverified",
@@ -441,6 +441,26 @@ fn build_search_preview(
     params: &SkillManagerSearchParams,
     confirmed: bool,
 ) -> Result<SkillManagerCommandPreview, CommandError> {
+    let accepted_revision = discovery_state_revision(app_data_dir)?;
+    build_search_preview_with_revision(ctx, params, confirmed, accepted_revision)
+}
+
+fn build_search_preview_for_owner(
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
+    ctx: &AdapterContext,
+    params: &SkillManagerSearchParams,
+    confirmed: bool,
+) -> Result<SkillManagerCommandPreview, CommandError> {
+    let accepted_revision = discovery_state_revision_for_owner(owner)?;
+    build_search_preview_with_revision(ctx, params, confirmed, accepted_revision)
+}
+
+fn build_search_preview_with_revision(
+    ctx: &AdapterContext,
+    params: &SkillManagerSearchParams,
+    confirmed: bool,
+    accepted_revision: String,
+) -> Result<SkillManagerCommandPreview, CommandError> {
     let query = params.query.trim();
     if query.is_empty() {
         return Err(CommandError::InvalidSkillManagerRequest(
@@ -471,7 +491,6 @@ fn build_search_preview(
         args.push("--owner".to_string());
         args.push(owner.to_string());
     }
-    let accepted_revision = discovery_state_revision(app_data_dir)?;
     let cwd = search_manager_cwd(ctx)?;
     command_preview(
         ctx,
@@ -533,28 +552,46 @@ fn validate_discovery_input(
     Ok(())
 }
 
-fn discovery_state_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("skill-manager-discovery-state.json")
+fn discovery_state_relative_path() -> &'static Path {
+    Path::new("skill-manager-discovery-state.json")
 }
 
 fn discovery_state_revision(app_data_dir: &Path) -> Result<String, CommandError> {
-    let path = discovery_state_path(app_data_dir);
-    let bytes = read_discovery_state_bytes(&path)?;
+    let bytes = if crate::mutation_lock::app_mutation_owner_is_missing(app_data_dir)? {
+        None
+    } else {
+        let lock = crate::mutation_lock::lock_app_mutations(app_data_dir)?;
+        lock.validate_owner_path_binding()?;
+        let owner = lock.owner_fs();
+        read_discovery_state_bytes(&owner)?
+    };
+    discovery_state_revision_from_bytes(bytes.as_deref())
+}
+
+fn discovery_state_revision_for_owner(
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
+) -> Result<String, CommandError> {
+    let bytes = read_discovery_state_bytes(owner)?;
+    discovery_state_revision_from_bytes(bytes.as_deref())
+}
+
+fn discovery_state_revision_from_bytes(bytes: Option<&[u8]>) -> Result<String, CommandError> {
     action_source_revision(
         "manager.discovery.replay-state",
         &[(
             "state",
             &bytes
-                .as_deref()
                 .map(|value| format!("{:x}", Sha256::digest(value)))
                 .unwrap_or_else(|| "missing".to_string()),
         )],
     )
 }
 
-fn read_discovery_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, CommandError> {
-    let Some(bytes) = read_bounded_regular_file_no_follow(
-        path,
+fn read_discovery_state_bytes(
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
+) -> Result<Option<Vec<u8>>, CommandError> {
+    let Some(bytes) = owner.read_bounded_regular_file(
+        discovery_state_relative_path(),
         MAX_DISCOVERY_STATE_BYTES,
         "skill manager discovery replay state",
     )?
@@ -579,12 +616,11 @@ fn read_discovery_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, CommandErr
 }
 
 fn reserve_discovery_action(
-    app_data_dir: &Path,
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
     preview_token: &str,
     action: &ActionDescriptor,
 ) -> Result<DiscoveryActionState, CommandError> {
-    let path = discovery_state_path(app_data_dir);
-    let current = read_discovery_state_bytes(&path)?
+    let current = read_discovery_state_bytes(owner)?
         .map(|bytes| serde_json::from_slice::<DiscoveryActionState>(&bytes))
         .transpose()
         .map_err(|_| {
@@ -610,18 +646,17 @@ fn reserve_discovery_action(
         phase: "reservation".to_string(),
         state: "not_started".to_string(),
     };
-    write_discovery_state(&path, &state)?;
+    write_discovery_state(owner, &state)?;
     Ok(state)
 }
 
 fn finish_discovery_action(
-    app_data_dir: &Path,
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
     reserved: &DiscoveryActionState,
     phase: &str,
     state: &str,
 ) -> Result<(), CommandError> {
-    let path = discovery_state_path(app_data_dir);
-    let current = read_discovery_state_bytes(&path)?
+    let current = read_discovery_state_bytes(owner)?
         .map(|bytes| serde_json::from_slice::<DiscoveryActionState>(&bytes))
         .transpose()
         .map_err(|_| {
@@ -637,7 +672,7 @@ fn finish_discovery_action(
         return Err(CommandError::StaleActionReference);
     }
     write_discovery_state(
-        &path,
+        owner,
         &DiscoveryActionState {
             phase: phase.to_string(),
             state: state.to_string(),
@@ -646,49 +681,22 @@ fn finish_discovery_action(
     )
 }
 
-fn write_discovery_state(path: &Path, state: &DiscoveryActionState) -> Result<(), CommandError> {
-    let parent = path.parent().ok_or_else(|| {
-        CommandError::UnsafeConfigPath(
-            "skill manager discovery state has no owner directory".to_string(),
-        )
-    })?;
-    let canonical_parent = parent.canonicalize()?;
-    if !canonical_parent.is_dir() {
-        return Err(CommandError::UnsafeConfigPath(
-            "skill manager discovery state owner is invalid".to_string(),
-        ));
-    }
+fn write_discovery_state(
+    owner: &crate::app_data_owner_fs::AppDataOwnerFs<'_>,
+    state: &DiscoveryActionState,
+) -> Result<(), CommandError> {
     let bytes = serde_json::to_vec(state)?;
     if bytes.len() as u64 > MAX_DISCOVERY_STATE_BYTES {
         return Err(CommandError::InvalidSkillManagerRequest(
             "skill manager discovery replay state exceeded its safety limit".to_string(),
         ));
     }
-    let temp = parent.join(format!(
-        ".skill-manager-discovery-state.{}.{}.tmp",
-        std::process::id(),
-        unix_timestamp_millis()
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok::<(), CommandError>(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    owner.remove_root_regular_files_matching(".skill-manager-discovery-state.", ".tmp", 64)?;
+    owner.atomic_replace_private_file(
+        discovery_state_relative_path(),
+        &bytes,
+        "skill-manager-discovery-state",
+    )
 }
 
 fn read_manager_lock_projection(
@@ -954,11 +962,13 @@ mod tests {
         )
         .expect("write outside projection");
 
-        let replay_link = discovery_state_path(&app_data);
+        let replay_link = app_data.join(discovery_state_relative_path());
         symlink(&outside, &replay_link).expect("link replay state");
+        let lock = crate::mutation_lock::lock_app_mutations(&app_data).expect("lock app data");
+        let owner = lock.owner_fs();
         assert!(matches!(
-            read_discovery_state_bytes(&replay_link),
-            Err(CommandError::Io(_))
+            read_discovery_state_bytes(&owner),
+            Err(CommandError::Io(_)) | Err(CommandError::UnsafeConfigPath(_))
         ));
 
         let lock_link = project.join("skills-lock.json");

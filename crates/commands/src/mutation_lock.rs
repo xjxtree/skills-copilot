@@ -14,6 +14,7 @@ use crate::CommandError;
 /// lock file, target directory, or other stale-preview artifact.
 pub struct AppMutationLock {
     file: File,
+    owner_path: PathBuf,
 }
 
 impl AppMutationLock {
@@ -29,6 +30,35 @@ impl AppMutationLock {
     pub fn owner_directory(&self) -> &File {
         &self.file
     }
+
+    #[cfg(not(unix))]
+    pub(crate) fn owner_path(&self) -> &Path {
+        &self.owner_path
+    }
+
+    pub(crate) fn owner_fs(&self) -> crate::app_data_owner_fs::AppDataOwnerFs<'_> {
+        crate::app_data_owner_fs::AppDataOwnerFs::new(self)
+    }
+
+    pub(crate) fn validate_owner_path_binding(&self) -> Result<(), CommandError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let reopened = open_existing_app_mutation_owner(&self.owner_path)?;
+            let locked = self.file.metadata()?;
+            let current = reopened.metadata()?;
+            if locked.dev() != current.dev() || locked.ino() != current.ino() {
+                return Err(unsafe_owner());
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            validate_existing_owner(&self.owner_path)?;
+            Ok(())
+        }
+    }
 }
 
 impl Drop for AppMutationLock {
@@ -40,7 +70,10 @@ impl Drop for AppMutationLock {
 pub fn lock_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, CommandError> {
     let file = open_existing_app_mutation_owner(app_data_dir)?;
     file.lock_exclusive()?;
-    Ok(AppMutationLock { file })
+    Ok(AppMutationLock {
+        file,
+        owner_path: app_data_dir.to_path_buf(),
+    })
 }
 
 /// Create and lock the private app-data owner for an already-confirmed action.
@@ -54,7 +87,10 @@ pub(crate) fn lock_or_create_app_mutations(
 ) -> Result<AppMutationLock, CommandError> {
     let file = open_or_create_app_mutation_owner(app_data_dir)?;
     file.lock_exclusive()?;
-    Ok(AppMutationLock { file })
+    Ok(AppMutationLock {
+        file,
+        owner_path: app_data_dir.to_path_buf(),
+    })
 }
 
 /// Create missing app-data ancestors and lock the owner for a confirmed write.
@@ -69,7 +105,10 @@ pub fn lock_or_create_app_mutations_with_parents(
 ) -> Result<AppMutationLock, CommandError> {
     let file = open_app_mutation_directory_tree(app_data_dir, true)?;
     file.lock_exclusive()?;
-    Ok(AppMutationLock { file })
+    Ok(AppMutationLock {
+        file,
+        owner_path: app_data_dir.to_path_buf(),
+    })
 }
 
 pub(crate) fn app_mutation_owner_is_missing(app_data_dir: &Path) -> Result<bool, CommandError> {

@@ -1343,17 +1343,19 @@ fn with_manager_mutation_lock<T>(
 
 fn with_search_mutation_lock<T>(
     app_data_dir: &Path,
-    action: impl FnOnce() -> Result<T, CommandError>,
+    action: impl FnOnce(&crate::app_data_owner_fs::AppDataOwnerFs<'_>) -> Result<T, CommandError>,
 ) -> Result<T, CommandError> {
     let owner_was_missing_at_preflight =
         crate::mutation_lock::app_mutation_owner_is_missing(app_data_dir)?;
-    let _mutation_lock = if owner_was_missing_at_preflight {
+    let mutation_lock = if owner_was_missing_at_preflight {
         crate::mutation_lock::lock_or_create_app_mutations(app_data_dir)?
     } else {
         crate::mutation_lock::lock_app_mutations(app_data_dir)?
     };
     run_manager_pre_execute_test_hook("search");
-    action()
+    mutation_lock.validate_owner_path_binding()?;
+    let owner = mutation_lock.owner_fs();
+    action(&owner)
 }
 
 #[cfg(test)]
