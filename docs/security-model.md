@@ -251,15 +251,20 @@ confirmation, and network posture.
   writes only to the app-owned local library. Update may replace either an
   app-owned source or one canonical descendant of the active project/global
   `.agents/skills` root after the catalog proves the selected instance and
-  scope. Preview validates a regular bounded archive, one matching `SKILL.md`,
-  safe paths, file types, counts, and expanded sizes. Its signed action binds
-  the archive bytes, the complete destination or selected source tree, and the
-  relevant catalog identity/reference set. Apply reprojects those facts under
+  scope. Preview opens the archive with no-follow semantics and uses one
+  bounded in-memory snapshot for hashing, inspection, and extraction. It
+  validates one matching `SKILL.md`, safe paths, file types, counts, and
+  expanded sizes. Its signed action binds the archive bytes, inspected archive
+  tree, complete destination or selected source tree, and relevant catalog
+  identity/reference set. Apply reprojects those facts under
   the shared owner lock and SQLite immediate transaction, uses staged
   replacement with exact-state rollback, and returns minimal verified
   `catalog_skills` plus `skill_files` read-back. Tree drift fails stale before
   replacement, and a repeated confirmation cannot reapply an already imported
-  or identical tree. Imported scripts remain data and are never run.
+  or identical tree. A proven non-commit restores the original filesystem
+  state; an uncertain commit retains the imported tree or private backup and
+  returns non-retryable `outcome_unknown` with cleanup required. Imported
+  scripts remain data and are never run.
 - A full uninstall of an app-owned local package is one composite manager
   action. The preview and single confirmation bind the manager unlink targets,
   complete local source tree, catalog row, and reference set. Apply performs
@@ -267,7 +272,8 @@ confirmation, and network posture.
   same owner lock and returns one combined read-back; the client must not issue
   a hidden second local-delete preview or apply. Any effect that crossed the
   manager boundary but cannot be proved or safely completed returns typed
-  `partial_effect` with automatic retry disabled.
+  `partial_effect` with automatic retry disabled. An uncertain catalog commit
+  retains the private local quarantine; only a proven non-commit restores it.
 - Catalog discovery never grants package-manager write authority: plugin
   caches, configured read-only roots, and native roots outside the guarded
   selected `.agents/skills` roots are excluded from editable inventory.

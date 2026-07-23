@@ -1,4 +1,5 @@
 use super::*;
+use skills_copilot_catalog::{CatalogCommitError, CatalogError, CatalogImmediateTransaction};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct CompositeLocalDeletePlan {
@@ -213,6 +214,7 @@ pub(super) fn composite_local_delete_plan(
 
 pub(super) struct CompositeLocalDeleteMutation {
     quarantine: PathBuf,
+    quarantine_tree_revision: String,
     original_directory: PathBuf,
     original_skill_path: PathBuf,
     original_tree_revision: String,
@@ -225,12 +227,27 @@ impl CompositeLocalDeleteMutation {
         if !self.active {
             return Ok(());
         }
-        restore_local_delete_quarantine(
-            &self.quarantine,
-            &self.original_directory,
-            &self.original_skill_path,
-            &self.original_tree_revision,
-        )?;
+        if self.original_directory.exists() {
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "local delete target changed to an unowned third state during compensation"
+                    .to_string(),
+            ));
+        }
+        let quarantined_skill = self.quarantine.join(
+            self.original_skill_path
+                .file_name()
+                .ok_or(CommandError::VerificationFailed)?,
+        );
+        if local_delete_tree_revision(&quarantined_skill)? != self.quarantine_tree_revision {
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "local delete quarantine changed to an unowned third state during compensation"
+                    .to_string(),
+            ));
+        }
+        fs::rename(&self.quarantine, &self.original_directory)?;
+        if local_delete_tree_revision(&self.original_skill_path)? != self.original_tree_revision {
+            return Err(CommandError::VerificationFailed);
+        }
         self.active = false;
         Ok(())
     }
@@ -242,6 +259,40 @@ impl CompositeLocalDeleteMutation {
         fs::remove_dir_all(&self.quarantine)?;
         self.active = false;
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum CompositeLocalDeleteCommit {
+    Committed,
+    NotCommitted(CatalogError),
+    OutcomeUnknown(CatalogError),
+    RestorationFailed {
+        commit_error: CatalogError,
+        cleanup_error: CommandError,
+    },
+}
+
+pub(super) fn commit_composite_local_delete(
+    transaction: CatalogImmediateTransaction<'_>,
+    cleanup: Option<&mut CompositeLocalDeleteMutation>,
+) -> CompositeLocalDeleteCommit {
+    match transaction.commit_classified() {
+        Ok(()) => CompositeLocalDeleteCommit::Committed,
+        Err(CatalogCommitError::NotCommitted(error)) => {
+            if let Some(cleanup) = cleanup {
+                if let Err(cleanup_error) = cleanup.restore() {
+                    return CompositeLocalDeleteCommit::RestorationFailed {
+                        commit_error: error,
+                        cleanup_error,
+                    };
+                }
+            }
+            CompositeLocalDeleteCommit::NotCommitted(error)
+        }
+        Err(CatalogCommitError::OutcomeUnknown(error)) => {
+            CompositeLocalDeleteCommit::OutcomeUnknown(error)
+        }
     }
 }
 
@@ -279,6 +330,12 @@ pub(super) fn apply_composite_local_delete(
         return Err(CommandError::StaleActionReference);
     }
     fs::rename(&plan.skill_directory, &quarantine)?;
+    let quarantined_skill = quarantine.join(
+        plan.skill_path
+            .file_name()
+            .ok_or(CommandError::VerificationFailed)?,
+    );
+    let quarantine_tree_revision = local_delete_tree_revision(&quarantined_skill)?;
     let missing_tree_revision = local_delete_missing_tree_revision(&plan.skill_path)?;
     let mutation = (|| -> Result<Vec<ActionReadbackObservation>, CommandError> {
         if local_delete_tree_revision(&plan.skill_path)? != missing_tree_revision {
@@ -318,6 +375,7 @@ pub(super) fn apply_composite_local_delete(
     match mutation {
         Ok(observations) => Ok(CompositeLocalDeleteMutation {
             quarantine,
+            quarantine_tree_revision,
             original_directory: plan.skill_directory.clone(),
             original_skill_path: plan.skill_path.clone(),
             original_tree_revision: plan.tree_revision.clone(),
@@ -348,7 +406,7 @@ pub(super) fn apply_composite_local_delete(
 mod tests {
     use super::*;
 
-    fn test_instance(
+    pub(super) fn test_instance(
         id: &str,
         agent: AgentId,
         scope: Scope,
@@ -486,3 +544,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 }
+
+#[cfg(test)]
+#[path = "composite_remove_fault_tests.rs"]
+mod fault_tests;

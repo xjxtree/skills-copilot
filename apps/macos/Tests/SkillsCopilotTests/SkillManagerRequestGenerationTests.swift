@@ -34,6 +34,7 @@ struct SkillManagerRequestGenerationTests {
         try await localDeleteApplyConvergesAfterCallerCancellation()
         try await applyUsesExactPreviewInputsAndToken()
         try await fullUninstallUsesOneCompositeApplyWithoutHiddenLocalDelete()
+        try terminalActionErrorsRetireConfirmedPreview()
         try await oldCompletionDoesNotClearCurrentLoadingState()
     }
 
@@ -986,6 +987,42 @@ struct SkillManagerRequestGenerationTests {
         await runner.resumeSuccess("search:second")
         await second.value
         try expectEqual(store.isSearchingSkillManager, false, "The current completion should clear its own loading state.")
+    }
+
+    private func terminalActionErrorsRetireConfirmedPreview() throws {
+        let store = makeStore(SkillManagerGenerationServiceRunner())
+        for code in [
+            "stale_action_reference",
+            "unknown_action_reference",
+            "action_target_mismatch",
+            "no_applicable_action"
+        ] {
+            let error = ServiceClient.ClientError.service(
+                ServiceErrorPayload(code: code, message: "preview is terminal")
+            )
+            try expectEqual(
+                store.skillManagerApplyMustRetirePreview(error),
+                true,
+                "\(code) must retire the consumed confirmation even without partial-effect details."
+            )
+        }
+        let retryable = ServiceClient.ClientError.service(
+            ServiceErrorPayload(
+                code: "skill_manager_command_failed",
+                message: "retryable manager failure",
+                details: ServiceErrorDetailsPayload(
+                    operation: "skillManager.applyRemove",
+                    state: "not_started",
+                    cleanupRequired: false,
+                    retryAllowed: true
+                )
+            )
+        )
+        try expectEqual(
+            store.skillManagerApplyMustRetirePreview(retryable),
+            false,
+            "A typed retryable failure may keep the current preview."
+        )
     }
 
     private func makeStore(_ runner: SkillManagerGenerationServiceRunner) -> SkillStore {

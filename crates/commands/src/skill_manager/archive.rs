@@ -1,13 +1,13 @@
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     path::{Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use skills_copilot_catalog::Catalog;
+use skills_copilot_catalog::{Catalog, CatalogCommitError};
 use skills_copilot_core::{
     ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
     ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AdapterContext, AgentId, Scope,
@@ -102,6 +102,7 @@ pub struct SkillManagerLocalArchiveImportRecord {
 }
 
 struct ArchiveInspection {
+    archive_bytes: Vec<u8>,
     archive_sha256: String,
     skill_name: String,
     skill_root: PathBuf,
@@ -165,23 +166,31 @@ pub fn apply_local_archive_import(
         Some(applied.imported.clone()),
         Some(applied.readback.clone()),
     );
-    if let Err(error) = transaction.commit() {
-        applied.restore().map_err(|cleanup_error| {
-            archive_partial(
+    match transaction.commit_classified() {
+        Ok(()) => {}
+        Err(CatalogCommitError::NotCommitted(error)) => {
+            applied.restore().map_err(|cleanup_error| {
+                archive_partial(
+                    "skillManager.applyLocalArchiveImport",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog commit was rejected ({error}); imported tree restoration failed ({cleanup_error})"
+                    ),
+                )
+            })?;
+            return Err(error.into());
+        }
+        Err(CatalogCommitError::OutcomeUnknown(error)) => {
+            return Err(archive_partial(
                 "skillManager.applyLocalArchiveImport",
                 "outcome_unknown",
                 true,
                 format!(
-                    "catalog commit failed ({error}); imported tree restoration failed ({cleanup_error})"
+                    "catalog commit outcome is unknown after local archive import; the imported tree was retained for recovery: {error}"
                 ),
-            )
-        })?;
-        return Err(archive_partial(
-            "skillManager.applyLocalArchiveImport",
-            "applied_unverified",
-            false,
-            format!("catalog commit failed after local archive import: {error}"),
-        ));
+            ));
+        }
     }
     applied.commit();
     Ok(record)
@@ -245,6 +254,7 @@ fn prepare_local_archive_import(
         "skillManager.applyLocalArchiveImport",
         &archive_path,
         &inspection.archive_sha256,
+        &inspection.tree_revision,
         &destination_skill_path,
         &target_revision,
         &catalog_revision,
@@ -368,7 +378,7 @@ fn apply_archive_import_guarded(
     ));
     ensure_child_path(&canonical_root, &temp_dir)?;
     fs::create_dir(&temp_dir)?;
-    if let Err(error) = extract_skill_root(&plan.archive_path, &plan.inspection, &temp_dir) {
+    if let Err(error) = extract_skill_root(&plan.inspection, &temp_dir) {
         return Err(cleanup_staged_archive_after_error(
             "skillManager.applyLocalArchiveImport",
             &temp_dir,
@@ -520,23 +530,31 @@ pub fn apply_local_archive_update(
         Some(applied.readback.clone()),
         None,
     );
-    if let Err(error) = transaction.commit() {
-        applied.restore().map_err(|cleanup_error| {
-            archive_partial(
+    match transaction.commit_classified() {
+        Ok(()) => {}
+        Err(CatalogCommitError::NotCommitted(error)) => {
+            applied.restore().map_err(|cleanup_error| {
+                archive_partial(
+                    "skillManager.applyLocalArchiveUpdate",
+                    "outcome_unknown",
+                    true,
+                    format!(
+                        "catalog commit was rejected ({error}); source restoration failed ({cleanup_error})"
+                    ),
+                )
+            })?;
+            return Err(error.into());
+        }
+        Err(CatalogCommitError::OutcomeUnknown(error)) => {
+            return Err(archive_partial(
                 "skillManager.applyLocalArchiveUpdate",
                 "outcome_unknown",
                 true,
                 format!(
-                    "catalog commit failed ({error}); source restoration failed ({cleanup_error})"
+                    "catalog commit outcome is unknown after local archive update; the replacement and private backup were retained for recovery: {error}"
                 ),
-            )
-        })?;
-        return Err(archive_partial(
-            "skillManager.applyLocalArchiveUpdate",
-            "applied_unverified",
-            false,
-            format!("catalog commit failed after local archive update: {error}"),
-        ));
+            ));
+        }
     }
     if applied.finish().is_err() {
         follow_up = Some(super::SkillManagerCleanupFollowUp {
@@ -621,6 +639,7 @@ fn prepare_local_archive_update(
         "skillManager.applyLocalArchiveUpdate",
         &archive_path,
         &inspection.archive_sha256,
+        &inspection.tree_revision,
         &target.skill_path,
         &target_tree_revision,
         &target.catalog_revision,
@@ -810,8 +829,9 @@ fn validate_archive_path(path: &Path) -> Result<PathBuf, CommandError> {
 }
 
 fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
-    let archive_sha256 = digest_bounded_file(path, MAX_ARCHIVE_BYTES)?;
-    let mut archive = open_archive(path)?;
+    let archive_bytes = read_archive_snapshot(path)?;
+    let archive_sha256 = format!("sha256:{:x}", Sha256::digest(&archive_bytes));
+    let mut archive = open_archive_snapshot(&archive_bytes)?;
     if archive.is_empty() || archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err(invalid_archive(
             "ZIP must contain between 1 and 2000 entries",
@@ -884,6 +904,7 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
     }
     let tree_revision = archive_tree_revision(&file_digests, &skill_root)?;
     Ok(ArchiveInspection {
+        archive_bytes,
         archive_sha256,
         skill_name,
         skill_root,
@@ -944,7 +965,7 @@ fn apply_archive_replacement_guarded(
     ensure_child_path(canonical_root, &temp_dir)?;
     ensure_child_path(canonical_root, &backup_dir)?;
     fs::create_dir(&temp_dir)?;
-    let extraction = extract_skill_root(&plan.archive_path, &plan.inspection, &temp_dir);
+    let extraction = extract_skill_root(&plan.inspection, &temp_dir);
     if let Err(error) = extraction {
         return Err(cleanup_staged_archive_after_error(
             "skillManager.applyLocalArchiveUpdate",
@@ -1194,11 +1215,10 @@ fn apply_archive_replacement_guarded(
 }
 
 fn extract_skill_root(
-    archive_path: &Path,
     inspection: &ArchiveInspection,
     destination: &Path,
 ) -> Result<(), CommandError> {
-    let mut archive = open_archive(archive_path)?;
+    let mut archive = open_archive_snapshot(&inspection.archive_bytes)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(zip_error)?;
         let path = safe_entry_path(&entry)?;
@@ -1247,8 +1267,8 @@ fn extract_skill_root(
     Ok(())
 }
 
-fn open_archive(path: &Path) -> Result<ZipArchive<File>, CommandError> {
-    ZipArchive::new(File::open(path)?).map_err(zip_error)
+fn open_archive_snapshot(bytes: &[u8]) -> Result<ZipArchive<Cursor<&[u8]>>, CommandError> {
+    ZipArchive::new(Cursor::new(bytes)).map_err(zip_error)
 }
 
 fn safe_entry_path(entry: &zip::read::ZipFile<'_>) -> Result<PathBuf, CommandError> {
@@ -1294,31 +1314,47 @@ fn ensure_child_path(root: &Path, path: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
-fn digest_bounded_file(path: &Path, max_bytes: u64) -> Result<String, CommandError> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() || metadata.len() > max_bytes {
+fn read_archive_snapshot(path: &Path) -> Result<Vec<u8>, CommandError> {
+    let mut file = open_archive_file(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(CommandError::InvalidSkillManagerRequest(
             "local archive input exceeds its safe size limit".to_string(),
         ));
     }
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut total = 0u64;
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        total += read as u64;
-        if total > max_bytes {
-            return Err(CommandError::InvalidSkillManagerRequest(
-                "local archive input exceeds its safe size limit".to_string(),
-            ));
-        }
-        hasher.update(&buffer[..read]);
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    Read::by_ref(&mut file)
+        .take(MAX_ARCHIVE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "local archive input exceeds its safe size limit".to_string(),
+        ));
     }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn open_archive_file(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{open, Mode, OFlags};
+
+    let flags =
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    open(path, flags, Mode::empty())
+        .map(File::from)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(not(unix))]
+fn open_archive_file(path: &Path) -> std::io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "archive path is a symlink",
+        ));
+    }
+    File::open(path)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1332,6 +1368,7 @@ fn local_archive_action_binding(
     apply_method: &str,
     archive_path: &Path,
     archive_revision: &str,
+    archive_tree_revision: &str,
     target_skill_path: &Path,
     target_tree_revision: &str,
     catalog_revision: &str,
@@ -1345,6 +1382,7 @@ fn local_archive_action_binding(
         "manager.local-archive.accepted-snapshot",
         &[
             ("archive_revision", archive_revision),
+            ("archive_tree_revision", archive_tree_revision),
             ("target_tree_revision", target_tree_revision),
             ("catalog_revision", catalog_revision),
         ],
@@ -2115,3 +2153,7 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 }
+
+#[cfg(test)]
+#[path = "archive_fault_tests.rs"]
+mod fault_tests;

@@ -235,7 +235,7 @@ the client.
 | `skillManager.previewLocalArchiveImport` | None | Never | Never | None |
 | `skillManager.applyLocalArchiveImport` | App-local data | Never | Never | Required |
 | `skillManager.previewLocalArchiveUpdate` | None | Never | Never | None |
-| `skillManager.applyLocalArchiveUpdate` | App-local data | Never | Never | Required |
+| `skillManager.applyLocalArchiveUpdate` | Agent skill files, App-local data | Never | Never | Required |
 | `project.getContext` | None | Never | Never | None |
 | `project.previewSetContext` | None | Never | Never | None |
 | `project.setContext` | App-local data | Never | Never | Required |
@@ -650,8 +650,9 @@ presence/value or absence verification, not secret exposure.
   semantic read-back, and commit. Install/remove/update previews bind the
   complete bounded target skill trees and manager inventory, including the
   applicable manager lock file; local-create binds its exact destination tree;
-  archive actions bind the archive bytes, complete destination/source tree,
-  and relevant catalog identity/reference set. Apply revalidates these facts
+  archive actions bind the archive bytes and inspected archive tree from one
+  bounded no-follow file snapshot, the complete destination/source tree, and
+  relevant catalog identity/reference set. Apply revalidates these facts
   after taking the lock and before creating a process or replacing a tree. The
   lock remains held through catalog scan, semantic verification, and read-back.
 - Install/remove/update success declares and verifies `catalog_skills`,
@@ -707,13 +708,20 @@ presence/value or absence verification, not secret exposure.
   service requires an absolute regular archive with exactly one matching
   `SKILL.md`, rejects path traversal, symlinks, special files, oversize entries,
   and files outside the skill root. Preview returns a signed action reference
-  and token bound to the archive bytes, complete target tree, catalog identity,
-  references, agent, scope, and project. Apply reprojects under the shared owner
-  lock, uses staged replacement and exact-state rollback, and must return
+  and token bound to the archive bytes and inspected archive tree from the same
+  no-follow file snapshot, complete target tree, catalog identity, references,
+  agent, scope, and project. Apply reprojects under the shared owner lock, uses
+  staged replacement and exact-state rollback, and must return
   verified `catalog_skills` and `skill_files` read-back. Any tree or catalog
   drift fails stale before mutation; replay cannot reimport a duplicate or
   replace an already identical complete tree. Imported scripts are never
   executed.
+- Local archive and composite-uninstall catalog commits classify a proven
+  rollback separately from an uncertain commit result. Only a proven
+  non-commit may restore the original tree. An uncertain result retains the
+  imported tree or private backup/quarantine and returns non-retryable
+  `partial_effect` with `state=outcome_unknown` and
+  `cleanup_required=true`.
 - When a removal selects every linked Agent target for an app-owned local
   source, the native confirmation identifies it as a full uninstall. One
   composite preview/action binds both manager unlink and the eligible local

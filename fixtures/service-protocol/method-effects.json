@@ -51,7 +51,7 @@
     "skillManager.previewLocalArchiveImport": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "skillManager.applyLocalArchiveImport": { "writes": ["app_data"], "process": "never", "network": "never", "confirmation": "required" },
     "skillManager.previewLocalArchiveUpdate": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
-    "skillManager.applyLocalArchiveUpdate": { "writes": ["app_data"], "process": "never", "network": "never", "confirmation": "required" },
+    "skillManager.applyLocalArchiveUpdate": { "writes": ["app_data", "agent_files"], "process": "never", "network": "never", "confirmation": "required" },
     "project.getContext": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "project.previewSetContext": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "project.setContext": { "writes": ["app_data"], "process": "never", "network": "never", "confirmation": "required" },

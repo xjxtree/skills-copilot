@@ -40,7 +40,8 @@ pub use archive::{
     SkillManagerLocalArchiveUpdateRecord,
 };
 use composite_remove::{
-    apply_composite_local_delete, bind_composite_local_delete, composite_local_delete_plan,
+    apply_composite_local_delete, bind_composite_local_delete, commit_composite_local_delete,
+    composite_local_delete_plan, CompositeLocalDeleteCommit,
 };
 pub use discovery::{
     apply_search_skills_with_manager, list_installed_skills_from_projection,
@@ -673,27 +674,44 @@ pub fn apply_remove_with_manager(
         })();
         let (mut record, mut cleanup) =
             mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
-        if let Err(error) = transaction.commit() {
-            if let Some(cleanup) = cleanup.as_mut() {
-                cleanup.restore().map_err(|cleanup_error| {
-                    manager_partial_effect(
-                        ctx,
-                        &preview,
-                        "outcome_unknown",
-                        true,
-                        &format!(
-                            "catalog commit failed ({error}); local source restoration failed ({cleanup_error})"
-                        ),
-                    )
-                })?;
+        match commit_composite_local_delete(transaction, cleanup.as_mut()) {
+            CompositeLocalDeleteCommit::Committed => {}
+            CompositeLocalDeleteCommit::NotCommitted(error) => {
+                return Err(manager_partial_effect(
+                    ctx,
+                    &preview,
+                    "applied_unverified",
+                    cleanup.is_some(),
+                    &format!(
+                        "catalog commit was rejected after manager execution and the local source was restored: {error}"
+                    ),
+                ));
             }
-            return Err(manager_partial_effect(
-                ctx,
-                &preview,
-                "applied_unverified",
-                cleanup.is_some(),
-                &format!("catalog commit failed after manager execution: {error}"),
-            ));
+            CompositeLocalDeleteCommit::OutcomeUnknown(error) => {
+                return Err(manager_partial_effect(
+                    ctx,
+                    &preview,
+                    "outcome_unknown",
+                    true,
+                    &format!(
+                        "catalog commit outcome is unknown after manager execution; private local restoration material was retained: {error}"
+                    ),
+                ));
+            }
+            CompositeLocalDeleteCommit::RestorationFailed {
+                commit_error,
+                cleanup_error,
+            } => {
+                return Err(manager_partial_effect(
+                    ctx,
+                    &preview,
+                    "outcome_unknown",
+                    true,
+                    &format!(
+                        "catalog commit was rejected ({commit_error}); local source restoration failed ({cleanup_error})"
+                    ),
+                ));
+            }
         }
         if let Some(cleanup) = cleanup.as_mut() {
             if cleanup.finish().is_err() {

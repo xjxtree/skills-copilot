@@ -1938,6 +1938,12 @@ final class SkillStore: ObservableObject {
     func skillManagerApplyMustRetirePreview(_ error: Error) -> Bool {
         guard case let ServiceClient.ClientError.service(payload) = error else { return false }
         return payload.details?.retryAllowed == false
+            || [
+                "stale_action_reference",
+                "unknown_action_reference",
+                "action_target_mismatch",
+                "no_applicable_action"
+            ].contains(payload.code)
     }
 
     private func previewSkillManagerMutation(
