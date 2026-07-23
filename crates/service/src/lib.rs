@@ -56,6 +56,7 @@ use skills_copilot_core::{
 use skills_copilot_core::{AdapterRoot, RootSource};
 use thiserror::Error;
 
+mod app_data_migration;
 mod project_context;
 mod protocol;
 mod provider;

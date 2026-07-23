@@ -133,6 +133,19 @@ confirmation, and network posture.
   covers project context, provider replay/profile/activity state, prompt-run
   metadata, and migration staging. Unsafe parent links are rejected without
   changing the linked directory's mode, contents, or children.
+- The one-time legacy bundle app-data migration locks the already-opened common
+  parent directory across processes and keeps the legacy source, private
+  staging tree, and final target descriptor-relative. It accepts only
+  current-user-owned regular files and directories, bounded to 100,000
+  entries, depth 128, 1 GiB per file, and 8 GiB total; symlinks, special files,
+  and hardlinks fail closed. Copied files and directories are synced with
+  `0600` and `0700` permissions, the path-free migration marker is written
+  through the staging descriptor, and activation uses an atomic no-replace
+  rename.
+  Failure cleanup removes a staging tree only while its root still has the
+  inode created by that attempt. The legacy source is preserved, target races
+  are never overwritten, and any binding or read-back uncertainty after
+  activation returns non-retryable `partial_effect`.
 - Every catalog commit after a config, skill-file, quarantine, archive, or
   external-manager effect classifies a proven non-commit separately from an
   uncertain commit outcome. Exact reverse compensation is allowed only after a

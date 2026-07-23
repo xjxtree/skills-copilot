@@ -86,25 +86,7 @@ pub(crate) fn legacy_app_data_dir(user_home: &Path) -> PathBuf {
 pub(crate) fn resolve_default_app_data_dir(user_home: &Path) -> Result<PathBuf, ServiceError> {
     let preferred = default_app_data_dir(user_home);
     let legacy = legacy_app_data_dir(user_home);
-    match fs::symlink_metadata(&preferred) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(ServiceError::InvalidRequest(
-                "preferred app data path must be a non-symlink directory".to_string(),
-            ))
-        }
-        Ok(_) => return Ok(preferred),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    match fs::symlink_metadata(&legacy) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Ok(preferred)
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(preferred),
-        Err(error) => return Err(error.into()),
-    }
-    migrate_legacy_app_data_dir(&legacy, &preferred)?;
+    crate::app_data_migration::migrate_legacy_app_data_dir(&legacy, &preferred)?;
     Ok(preferred)
 }
 
@@ -117,86 +99,6 @@ fn app_data_dir_for_bundle_id(user_home: &Path, bundle_id: &str) -> PathBuf {
     } else {
         user_home.join(".skills-copilot").join(bundle_id)
     }
-}
-
-fn migrate_legacy_app_data_dir(source: &Path, target: &Path) -> Result<(), ServiceError> {
-    match fs::symlink_metadata(target) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(ServiceError::InvalidRequest(
-                "app data migration target must be a non-symlink directory".to_string(),
-            ))
-        }
-        Ok(_) => return Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    validate_private_directory_no_follow(source)?;
-    let parent = target
-        .parent()
-        .ok_or_else(|| ServiceError::InvalidRequest("app data target has no parent".to_string()))?;
-    validate_private_directory_no_follow(parent)?;
-    let target_name = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("agent-copilot-app-data");
-    let staging = parent.join(format!(
-        ".{target_name}.migration-{}",
-        unix_timestamp_millis()
-    ));
-    match fs::symlink_metadata(&staging) {
-        Ok(_) => {
-            return Err(ServiceError::InvalidRequest(
-                "app data migration staging path already exists".to_string(),
-            ))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-
-    let result = (|| -> Result<(), ServiceError> {
-        create_private_dir_all(&staging)?;
-        copy_app_data_contents(source, &staging)?;
-        let marker = json!({
-            "version": 1,
-            "migration": "v2.90-agent-copilot-app-data",
-            "source_bundle_id": LEGACY_BUNDLE_ID,
-            "target_bundle_id": DEFAULT_BUNDLE_ID,
-            "source_path": display_path(source),
-            "target_path": display_path(target),
-            "migrated_at_unix_ms": unix_timestamp_millis(),
-        });
-        write_private_text_file(
-            &staging.join("agent-copilot-app-data-migration.json"),
-            &serde_json::to_string_pretty(&marker)?,
-        )?;
-        fs::rename(&staging, target)?;
-        create_private_dir_all(target)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&staging);
-    }
-    result
-}
-
-fn copy_app_data_contents(source: &Path, target: &Path) -> Result<(), ServiceError> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let destination = target.join(entry.file_name());
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            create_private_dir_all(&destination)?;
-            copy_app_data_contents(&entry.path(), &destination)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), &destination)?;
-            set_private_path_permissions(&destination)?;
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn infer_project_root(cwd: &Path) -> PathBuf {
@@ -346,11 +248,6 @@ fn create_private_directory_tree_no_follow(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn validate_private_directory_no_follow(path: &Path) -> io::Result<()> {
-    open_private_directory_tree_no_follow(path, false).map(drop)
-}
-
-#[cfg(unix)]
 fn open_private_directory_tree_no_follow(
     path: &Path,
     create_missing: bool,
@@ -404,11 +301,6 @@ fn open_private_directory_tree_no_follow(
 #[cfg(not(unix))]
 fn create_private_directory_tree_no_follow(path: &Path) -> io::Result<()> {
     walk_private_directory_tree_no_follow(path, true)
-}
-
-#[cfg(not(unix))]
-fn validate_private_directory_no_follow(path: &Path) -> io::Result<()> {
-    walk_private_directory_tree_no_follow(path, false)
 }
 
 #[cfg(not(unix))]
