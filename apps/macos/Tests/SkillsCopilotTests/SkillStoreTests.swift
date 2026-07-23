@@ -1031,7 +1031,7 @@ struct SkillStoreTests {
         store.agentFilter = .all
         store.selectedSkillID = "beta"
         fake.setScenario("stale-after-toggle")
-        await store.toggleSelectedSkill(on: false)
+        try await previewAndConfirmSelectedSkillToggle(store, on: false)
 
         try expectEqual(store.findings.map(\.id), ["finding-toggle"], "Adapter state changes should replace stale findings.")
         try expectEqual(store.selectedFindings.map(\.id), ["finding-toggle"], "Adapter state changes should keep selected findings fresh.")
@@ -2099,8 +2099,15 @@ struct SkillStoreTests {
         await store.reload()
 
         fake.setScenario("toggle-disabled")
+        guard let skill = store.selectedSkill else {
+            throw NativeModelTestFailure(description: "Toggle fixture should select a skill.")
+        }
+        await store.prepareSingleSkillTogglePreview(skill: skill, on: false)
+        guard let previewID = store.batchTogglePreview?.id else {
+            throw NativeModelTestFailure(description: "Single-skill toggle should produce a confirmation preview.")
+        }
         let task = Task {
-            await store.toggleSelectedSkill(on: false)
+            await store.applyVisibleBatchTogglePreview(confirmingPreviewID: previewID)
         }
 
         try await waitUntil("Toggle should expose writing state while the service request is in flight.") {
@@ -2113,7 +2120,11 @@ struct SkillStoreTests {
         try expectEqual(store.selectedSkillID, "beta", "Toggle refresh should keep the selected skill stable.")
         try expectEqual(store.selectedSkill?.enabled, false, "Toggle refresh should expose the updated enabled state.")
         try expectEqual(store.selectedSkillDetail?.enabled, false, "Toggle refresh should reload detail for the updated skill.")
-        try expectEqual(store.lastMutationMessage, UIStrings.toggledSkill(on: false, name: "Beta"), "Toggle should expose a success message.")
+        try expectEqual(
+            store.lastMutationMessage,
+            UIStrings.batchToggleApplied(action: BatchToggleAction.disable.title, count: 1),
+            "A confirmed single-skill toggle should use the same lifecycle result as a confirmed batch."
+        )
     }
 
     private func writeOperationsIgnoreReentryWhileBusy() async throws {
@@ -2126,14 +2137,21 @@ struct SkillStoreTests {
         await store.reload()
 
         fake.setScenario("toggle-disabled")
+        guard let skill = store.selectedSkill else {
+            throw NativeModelTestFailure(description: "Toggle fixture should select a skill.")
+        }
+        await store.prepareSingleSkillTogglePreview(skill: skill, on: false)
+        guard let previewID = store.batchTogglePreview?.id else {
+            throw NativeModelTestFailure(description: "Single-skill toggle should produce a confirmation preview.")
+        }
         let task = Task {
-            await store.toggleSelectedSkill(on: false)
+            await store.applyVisibleBatchTogglePreview(confirmingPreviewID: previewID)
         }
 
         try await waitUntil("Toggle should expose writing state while the service request is in flight.") {
             store.isWriting
         }
-        await store.toggleSelectedSkill(on: true)
+        await store.prepareSingleSkillTogglePreview(skill: skill, on: true)
         await task.value
 
         try expectEqual(countMethodCalls("batch.previewSkillToggles", in: fake.calls()), 1, "Busy write should ignore reentrant preview attempts.")
@@ -2152,7 +2170,7 @@ struct SkillStoreTests {
         await store.reload()
 
         fake.setScenario("toggle-codex-disabled")
-        await store.toggleSelectedSkill(on: false)
+        try await previewAndConfirmSelectedSkillToggle(store, on: false)
 
         try expectFalse(store.isWriting, "Codex toggle should reset writing state.")
         try expectNil(store.errorMessage, "Codex toggle should not set an error on success.")
@@ -2161,7 +2179,7 @@ struct SkillStoreTests {
         try expectEqual(store.selectedSkillDetail?.enabled, false, "Codex toggle refresh should reload detail for the updated skill.")
         try expectEqual(
             store.lastMutationMessage,
-            UIStrings.toggledSkill(on: false, name: "Gamma", agent: "codex"),
+            "\(UIStrings.batchToggleApplied(action: BatchToggleAction.disable.title, count: 1)) \(UIStrings.codexRestartRequired)",
             "Codex toggle should add the restart-required note."
         )
         try expectContains(store.lastMutationMessage, UIStrings.codexRestartRequired, "Codex toggle should mention restart.")
@@ -2186,7 +2204,7 @@ struct SkillStoreTests {
             "opencode toggle should be available in V2.12."
         )
 
-        await store.toggleSelectedSkill(on: false)
+        try await previewAndConfirmSelectedSkillToggle(store, on: false)
 
         try expectFalse(store.isWriting, "opencode toggle should finish writing state.")
         try expectNil(store.errorMessage, "opencode toggle should not surface a read-only error.")
@@ -2218,10 +2236,10 @@ struct SkillStoreTests {
             "Tool-global toggle should explain the read-only preview and confirmed install path."
         )
 
-        await store.toggleSelectedSkill(on: false)
-
         try expectFalse(store.isWriting, "Tool-global toggle should not enter writing state.")
-        try expectEqual(store.errorMessage, expectedReason, "Tool-global toggle should surface the disabled reason.")
+        try expectNil(store.errorMessage, "A disabled tool-global row must not start a mutation path.")
+        try expectFalse(fake.calls().contains("batch.previewSkillToggles"), "A disabled tool-global row must not preview a toggle.")
+        try expectFalse(fake.calls().contains("batch.applySkillToggles"), "A disabled tool-global row must not apply a toggle.")
         try expectFalse(fake.calls().contains("config.toggleSkill"), "Tool-global toggle should not call the write API.")
     }
 
@@ -2776,10 +2794,10 @@ struct SkillStoreTests {
         try expectNil(store.selectedTaskCockpitHistoryID, "Clear should reset the selected history record.")
         try expectEqual(
             FileManager.default.fileExists(atPath: historyStore.fileURL.path),
-            false,
-            "Clear should retry deletion when a legacy file survived or reappeared after startup."
+            true,
+            "Clearing in-memory history must not trigger a hidden filesystem cleanup."
         )
-        try expectNil(store.taskCockpitHistoryCleanupMessage, "Successful clear cleanup should dismiss the cleanup warning.")
+        try expectNil(store.taskCockpitHistoryCleanupMessage, "A normal in-memory clear should not manufacture a cleanup warning.")
     }
 
     private func legacyHistoryCleanupFailureShowsRedactedMessage() throws {
@@ -2853,8 +2871,8 @@ struct SkillStoreTests {
         let calls = fake.calls()
         try expectContains(calls, "llm.previewPrompt", "Exact-input test should prepare the provider-backed Task Preflight prompt.")
         try expectContains(calls, "llm.confirmPromptAndSend", "Exact-input cockpit flow should send through provider confirmation.")
-        try expectContains(calls, "\"task_text\":\"  修复 Task Cockpit 🧪\\n第二行\\t带制表  \"", "Task cockpit should pass Chinese, emoji, multiline text, tabs, and surrounding spaces unchanged.")
-        try expectFalse(calls.contains("\"task_text\":\"修复 Task Cockpit 🧪\\n第二行\\t带制表\""), "Task cockpit must not trim non-blank user text before submission.")
+        try expectContains(calls, "\"task_text\":\"[REDACTED]\"", "Captured fake-service evidence must redact exact task input.")
+        try expectFalse(calls.contains(exactTask), "Captured fake-service evidence must not retain the raw task input.")
         try expectFalse(calls.contains("config.toggleSkill"), "Exact-input cockpit flow must not call config write paths.")
         try expectFalse(calls.contains("script.execute"), "Exact-input cockpit flow must not call execution paths.")
         try expectFalse(calls.contains("credential"), "Exact-input cockpit flow must not call credential paths.")
@@ -3040,7 +3058,8 @@ struct SkillStoreTests {
 
         let calls = fake.calls()
         try expectContains(calls, "llm.previewPrompt", "Prompt preview should use the V2.42 preview method.")
-        try expectContains(calls, "\"preview_id\":\"prompt-preview-beta\"", "Confirm should send the preview id.")
+        try expectContains(calls, "\"action_id\":\"prompt-preview-beta\"", "Confirm should bind the previewed action reference.")
+        try expectContains(calls, "\"preview_token\":\"[REDACTED]\"", "Captured confirmation evidence must redact the opaque action token.")
         try expectContains(calls, "llm.confirmPromptAndSend", "Explicit send should use the V2.42 confirmation method.")
         try expectFalse(calls.contains("config.toggleSkill"), "Prompt confirmation must not call write paths.")
         try expectFalse(calls.contains("script.execute"), "Prompt confirmation must not call execution paths.")
@@ -3098,6 +3117,20 @@ struct SkillStoreTests {
 
     private func countMethodCalls(_ method: String, in calls: String) -> Int {
         countOccurrences("\"method\":\"\(method)\"", in: calls)
+    }
+
+    private func previewAndConfirmSelectedSkillToggle(
+        _ store: SkillStore,
+        on: Bool
+    ) async throws {
+        guard let skill = store.selectedSkill else {
+            throw NativeModelTestFailure(description: "Single-skill toggle requires a selected skill.")
+        }
+        await store.prepareSingleSkillTogglePreview(skill: skill, on: on)
+        guard let previewID = store.batchTogglePreview?.id else {
+            throw NativeModelTestFailure(description: "Single-skill toggle must produce a preview before apply.")
+        }
+        await store.applyVisibleBatchTogglePreview(confirmingPreviewID: previewID)
     }
 
     private func makeTemporaryTaskCockpitHistoryStore() -> TaskCockpitHistoryStore {

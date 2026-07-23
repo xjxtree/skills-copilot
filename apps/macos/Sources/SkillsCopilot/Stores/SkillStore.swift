@@ -892,12 +892,6 @@ final class SkillStore: ObservableObject {
     func clearTaskCockpitHistory() {
         taskCockpitHistory = []
         selectedTaskCockpitHistoryID = nil
-        do {
-            _ = try taskCockpitHistoryStore.purgeLegacyHistoryIfPresent()
-            taskCockpitHistoryCleanupMessage = nil
-        } catch {
-            taskCockpitHistoryCleanupMessage = UIStrings.taskCockpitHistoryCleanupFailed
-        }
     }
 
     var taskCockpitAgentOptions: [TaskCockpitAgentOption] {
@@ -1216,45 +1210,6 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func toggleSelectedSkill(on: Bool) async {
-        guard !isLoading, !isScanning, !isProjectUpdating, !isSavingSettings else {
-            errorMessage = UIStrings.operationUnavailableBusy
-            lastMutationMessage = nil
-            return
-        }
-        guard let skill = selectedSkill else { return }
-        if let disabledReason = toggleDisabledReason(for: skill) {
-            errorMessage = disabledReason
-            lastMutationMessage = nil
-            return
-        }
-
-        isWriting = true
-        errorMessage = nil
-        lastMutationMessage = nil
-        defer { isWriting = false }
-
-        do {
-            let preview = try await service.previewBatchSkillToggles(
-                instanceIDs: [skill.id],
-                on: on
-            )
-            guard preview.hasWritableChanges, preview.applySupported else {
-                throw ServiceClient.ClientError.invalidOutput(
-                    "The skill toggle preview did not contain a safe writable action."
-                )
-            }
-            _ = try await service.applyBatchSkillToggles(preview: preview)
-            invalidateDetailCaches(for: [skill.id])
-            try await refreshCollections()
-            lastMutationMessage = UIStrings.toggledSkill(on: on, name: skill.name, agent: skill.agent)
-            recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-            await loadSelectedDetail()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     func previewVisibleBatchToggle() async {
         let selectedSkills = batchToggleSelectedSkills
         guard !selectedSkills.isEmpty else {
@@ -1352,10 +1307,13 @@ final class SkillStore: ObservableObject {
         do {
             let result = try await service.applyBatchSkillToggles(preview: preview)
             invalidateDetailCaches(for: preview.affectedSkills.map(\.instanceID))
-            lastMutationMessage = UIStrings.batchToggleApplied(
+            let appliedMessage = UIStrings.batchToggleApplied(
                 action: preview.action.title,
                 count: result.updatedCount == 0 ? preview.writableCount : result.updatedCount
             )
+            lastMutationMessage = preview.affectedSkills.contains { $0.agent == SkillAgentFilter.codex.rawValue }
+                ? "\(appliedMessage) \(UIStrings.codexRestartRequired)"
+                : appliedMessage
             batchTogglePreview = nil
             do {
                 try await refreshCatalogProjectionAfterWrite()
