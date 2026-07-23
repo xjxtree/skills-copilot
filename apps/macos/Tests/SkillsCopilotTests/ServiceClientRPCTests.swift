@@ -632,9 +632,16 @@ struct ServiceClientRPCTests {
         defer { configFake.cleanup() }
         configFake.activate(scenario: "config-cas")
         let configSecretSentinel = "SENTINEL_NESTED_CONFIG_SECRET"
-        _ = try await configFake.serviceClient().saveClaudeSettings(
-            content: #"{"env":{"OPENAI_API_KEY":"\#(configSecretSentinel)"},"theme":"dark"}"#,
+        let configClient = configFake.serviceClient()
+        let configContent =
+            #"{"env":{"OPENAI_API_KEY":"\#(configSecretSentinel)"},"theme":"dark"}"#
+        let configPreview = try await configClient.previewClaudeSettingsSave(
+            content: configContent,
             expectedRevision: "sha256:settings-revision"
+        )
+        _ = try await configClient.saveClaudeSettings(
+            content: configContent,
+            confirmation: configPreview.confirmation
         )
 
         let evidence = [

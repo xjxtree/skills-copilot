@@ -2615,7 +2615,7 @@ struct SkillStoreTests {
             .map(String.init)
             .last { $0.contains("\"method\":\"llm.previewPrompt\"") && $0.contains("\"request_kind\":\"task_cockpit\"") }
         try expectContains(previewCall, "llm.previewPrompt", "Global Preflight should prepare the provider-backed task_cockpit prompt.")
-        try expectContains(previewCall, "\"task_text\":\"查看阿里云 ALB 报警历史\"", "Global Preflight should send the original Chinese task text.")
+        try expectContains(previewCall, "\"task_text\":\"[REDACTED]\"", "Captured fake-service evidence must redact the original task text.")
         try expectContains(previewCall, "\"agents\":[\"claude-code\"]", "Global Preflight should use the current sidebar agent as the default scope.")
         try expectContains(previewCall, "\"instance_ids\":[\"alpha\",\"beta\"]", "Global Preflight should include effective skills for the selected agent scope.")
         try expectFalse(previewCall?.contains("\"selected_skill_id\"") ?? false, "Global Preflight should not inherit a retained selected skill id.")
