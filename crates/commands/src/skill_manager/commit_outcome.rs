@@ -2,6 +2,23 @@ use skills_copilot_catalog::{CatalogCommitError, CatalogImmediateTransaction};
 
 use super::*;
 
+pub(super) fn manager_post_process_error(
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    error: CommandError,
+) -> CommandError {
+    if matches!(error, CommandError::PartialEffect { .. }) {
+        return error;
+    }
+    manager_partial_effect(
+        ctx,
+        preview,
+        "applied_unverified",
+        true,
+        &format!("post-execution verification failed: {error}"),
+    )
+}
+
 pub(super) fn commit_manager_catalog_transaction(
     ctx: &AdapterContext,
     preview: &SkillManagerCommandPreview,
@@ -27,4 +44,26 @@ pub(super) fn commit_manager_catalog_transaction(
         true,
         &format!("{detail}: {error}"),
     ))
+}
+
+pub(super) fn rollback_manager_catalog_transaction(
+    ctx: &AdapterContext,
+    preview: &SkillManagerCommandPreview,
+    transaction: CatalogImmediateTransaction<'_>,
+    original_error: CommandError,
+) -> CommandError {
+    match transaction.rollback() {
+        Ok(()) => original_error,
+        Err(rollback_error) => CommandError::PartialEffect {
+            operation: preview.operation.clone(),
+            state: "outcome_unknown",
+            cleanup_required: true,
+            detail: redact_command_output(
+                ctx,
+                &format!(
+                    "operation failed ({original_error}); catalog rollback could not be proven ({rollback_error}); the external manager target state was preserved for inspection"
+                ),
+            ),
+        },
+    }
 }

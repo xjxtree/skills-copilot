@@ -46,6 +46,7 @@ mod product_projection;
 mod script_execution;
 mod skill_bundle;
 mod skill_manager;
+mod transaction_lifecycle;
 
 use analysis::{
     dedupe_rule_finding_records, dedupe_rule_findings, validate_finding_triage_status,
@@ -63,6 +64,7 @@ use config_support::{
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
 pub use mutation_lock::lock_app_mutations;
+use transaction_lifecycle::rollback_catalog_before_compensation;
 
 pub use action_lifecycle::*;
 pub use analysis::*;
@@ -1358,7 +1360,12 @@ where
     let readback = match apply_result {
         Ok(readback) => readback,
         Err(error) => {
-            drop(transaction);
+            rollback_catalog_before_compensation(
+                transaction,
+                "skill.install",
+                &error,
+                "the written skill candidate was preserved for inspection",
+            )?;
             restore_skill_install_target(
                 ctx,
                 target_agent,
@@ -2646,7 +2653,12 @@ where
     let (updated_records, readback) = match apply_result {
         Ok(result) => result,
         Err(error) => {
-            drop(transaction);
+            rollback_catalog_before_compensation(
+                transaction,
+                "batch.applySkillToggles",
+                &error,
+                "the written agent config candidates were preserved for inspection",
+            )?;
             restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
                 CommandError::PartialEffect {
                     operation: "batch.applySkillToggles".to_string(),

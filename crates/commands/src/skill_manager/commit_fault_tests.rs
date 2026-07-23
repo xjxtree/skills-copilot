@@ -85,3 +85,51 @@ fn rejected_commit_reports_preserved_external_effect_for_every_manager_mutation_
         ));
     }
 }
+
+#[test]
+fn rollback_failure_is_outcome_unknown_for_every_manager_mutation_path() {
+    let ctx = context("rollback-unknown");
+    for operation in ["install", "remove", "update", "localCreate"] {
+        let catalog = Catalog::in_memory().expect("catalog");
+        catalog.init().expect("catalog schema");
+        catalog.inject_next_rollback_failure_for_test();
+        let transaction = catalog
+            .begin_immediate_transaction()
+            .expect("catalog transaction");
+
+        let error = rollback_manager_catalog_transaction(
+            &ctx,
+            &preview(operation),
+            transaction,
+            CommandError::VerificationFailed,
+        );
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn proven_manager_rollback_preserves_the_original_error_classification() {
+    let ctx = context("rollback-proven");
+    let catalog = Catalog::in_memory().expect("catalog");
+    catalog.init().expect("catalog schema");
+    let transaction = catalog
+        .begin_immediate_transaction()
+        .expect("catalog transaction");
+
+    let error = rollback_manager_catalog_transaction(
+        &ctx,
+        &preview("install"),
+        transaction,
+        CommandError::SkillManagerCommandFailed("not started".to_string()),
+    );
+
+    assert!(matches!(error, CommandError::SkillManagerCommandFailed(_)));
+}

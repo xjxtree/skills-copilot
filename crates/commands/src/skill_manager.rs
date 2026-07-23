@@ -25,8 +25,9 @@ use crate::{
     action_descriptor, action_preview_binding, action_source_revision, canonical_project_id,
     canonical_readback_domains, coverage_projection_evidence_id, ensure_action_confirmed,
     import_local_skill_to_tool_global, scan_all_catalog_report, tool_global_staging_skills_root,
-    ActionConfirmation, ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding,
-    ActionReadbackObservation, ActionReadbackRecord, ActionReference, CommandError,
+    transaction_lifecycle::rollback_catalog_before_compensation, ActionConfirmation,
+    ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation,
+    ActionReadbackRecord, ActionReference, CommandError,
 };
 
 mod archive;
@@ -40,10 +41,13 @@ pub use archive::{
     SkillManagerLocalArchiveImportRecord, SkillManagerLocalArchiveUpdateParams,
     SkillManagerLocalArchiveUpdateRecord,
 };
-use commit_outcome::commit_manager_catalog_transaction;
+use commit_outcome::{
+    commit_manager_catalog_transaction, manager_post_process_error,
+    rollback_manager_catalog_transaction,
+};
 use composite_remove::{
     apply_composite_local_delete, bind_composite_local_delete, commit_composite_local_delete,
-    composite_local_delete_plan, CompositeLocalDeleteCommit,
+    composite_local_delete_plan, rollback_composite_local_delete, CompositeLocalDeleteCommit,
 };
 pub use discovery::{
     apply_search_skills_with_manager, list_installed_skills_from_projection,
@@ -468,7 +472,17 @@ pub fn apply_install_with_manager(
         validate_manager_preconditions(ctx, &preview)?;
         let before = manager_selected_skill_snapshot(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
-        let output = run_previewed_command(ctx, &preview)?.output;
+        let output = match run_previewed_command(ctx, &preview) {
+            Ok(command) => command.output,
+            Err(error) => {
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
         let mutation = (|| {
             let scan = scan_all_catalog_report(ctx, catalog)?;
             let updated_skills = catalog.list_skill_records()?;
@@ -491,7 +505,18 @@ pub fn apply_install_with_manager(
                 follow_up: None,
             })
         })();
-        let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
+        let record = match mutation {
+            Ok(record) => record,
+            Err(error) => {
+                let error = manager_post_process_error(ctx, &preview, error);
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
         commit_manager_catalog_transaction(ctx, &preview, transaction)?;
         Ok(record)
     })
@@ -599,63 +624,39 @@ pub fn apply_remove_with_manager(
         )?;
         let before = manager_selected_skill_snapshot(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
-        let output = run_previewed_command(ctx, &preview)?.output;
+        let output = match run_previewed_command(ctx, &preview) {
+            Ok(command) => command.output,
+            Err(error) => {
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
+        let mut cleanup = None;
         let mutation = (|| {
             let scan = scan_all_catalog_report(ctx, catalog)?;
             let mut updated_skills = catalog.list_skill_records()?;
             let after = manager_selected_skill_snapshot(ctx, &preview)?;
             verify_manager_operation(&preview, &updated_skills, &before, &after)?;
             let mut extra_observations = Vec::new();
-            let mut cleanup = if let Some(plan) = locked_cleanup_plan.as_ref() {
-                let mut cleanup = apply_composite_local_delete(catalog, app_data_dir, plan)?;
-                extra_observations.extend(cleanup.observations.clone());
-                updated_skills = match catalog.list_skill_records() {
-                    Ok(records) => records,
-                    Err(error) => {
-                        cleanup.restore().map_err(|cleanup_error| {
-                            manager_partial_effect(
-                                ctx,
-                                &preview,
-                                "outcome_unknown",
-                                true,
-                                &format!(
-                                    "catalog read after local cleanup failed ({error}); local source restoration failed ({cleanup_error})"
-                                ),
-                            )
-                        })?;
-                        return Err(error.into());
-                    }
-                };
-                Some(cleanup)
-            } else {
-                None
-            };
-            let readback = match manager_mutation_readback(
+            if let Some(plan) = locked_cleanup_plan.as_ref() {
+                let applied =
+                    apply_composite_local_delete(catalog, app_data_dir, plan, &mut cleanup)?;
+                extra_observations.extend(applied.observations.clone());
+                cleanup = Some(applied);
+                updated_skills = catalog.list_skill_records()?;
+            }
+            let readback = Some(manager_mutation_readback(
                 ctx,
                 &preview,
                 &updated_skills,
                 &[],
                 &extra_observations,
-            ) {
-                Ok(readback) => Some(readback),
-                Err(error) => {
-                    if let Some(cleanup) = cleanup.as_mut() {
-                        cleanup.restore().map_err(|cleanup_error| {
-                            manager_partial_effect(
-                                ctx,
-                                &preview,
-                                "outcome_unknown",
-                                true,
-                                &format!(
-                                    "combined read-back failed ({error}); local source restoration failed ({cleanup_error})"
-                                ),
-                            )
-                        })?;
-                    }
-                    return Err(error);
-                }
-            };
-            let record = SkillManagerMutationRecord {
+            )?);
+            Ok(SkillManagerMutationRecord {
                 preview: preview.clone(),
                 output: Some(output),
                 applied: true,
@@ -663,11 +664,16 @@ pub fn apply_remove_with_manager(
                 updated_skills,
                 readback,
                 follow_up: None,
-            };
-            Ok((record, cleanup))
+            })
         })();
-        let (mut record, mut cleanup) =
-            mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
+        let mut record = match mutation {
+            Ok(record) => record,
+            Err(error) => {
+                let error = manager_post_process_error(ctx, &preview, error);
+                rollback_composite_local_delete(transaction, cleanup.as_mut(), &error)?;
+                return Err(error);
+            }
+        };
         match commit_composite_local_delete(transaction, cleanup.as_mut()) {
             CompositeLocalDeleteCommit::Committed => {}
             CompositeLocalDeleteCommit::NotCommitted(error) => {
@@ -757,7 +763,17 @@ pub fn apply_update_with_manager(
         validate_manager_preconditions(ctx, &preview)?;
         let before = manager_selected_skill_snapshot(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
-        let output = run_previewed_command(ctx, &preview)?.output;
+        let output = match run_previewed_command(ctx, &preview) {
+            Ok(command) => command.output,
+            Err(error) => {
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
         let mutation = (|| {
             let scan = scan_all_catalog_report(ctx, catalog)?;
             let updated_skills = catalog.list_skill_records()?;
@@ -780,7 +796,18 @@ pub fn apply_update_with_manager(
                 follow_up: None,
             })
         })();
-        let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
+        let record = match mutation {
+            Ok(record) => record,
+            Err(error) => {
+                let error = manager_post_process_error(ctx, &preview, error);
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
         commit_manager_catalog_transaction(ctx, &preview, transaction)?;
         Ok(record)
     })
@@ -821,7 +848,17 @@ pub fn apply_local_create_with_manager(
     with_manager_mutation_lock(app_data_dir, &operation, || {
         validate_manager_preconditions(ctx, &preview)?;
         let transaction = catalog.begin_immediate_transaction()?;
-        let output = run_previewed_command(ctx, &preview)?.output;
+        let output = match run_previewed_command(ctx, &preview) {
+            Ok(command) => command.output,
+            Err(error) => {
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
         let mutation = (|| {
             verify_manager_target_transition(&preview)?;
             let source_path = local_create_source_path(app_data_dir, &params.name)?;
@@ -856,7 +893,18 @@ pub fn apply_local_create_with_manager(
                 readback,
             })
         })();
-        let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
+        let record = match mutation {
+            Ok(record) => record,
+            Err(error) => {
+                let error = manager_post_process_error(ctx, &preview, error);
+                return Err(rollback_manager_catalog_transaction(
+                    ctx,
+                    &preview,
+                    transaction,
+                    error,
+                ));
+            }
+        };
         commit_manager_catalog_transaction(ctx, &preview, transaction)?;
         Ok(record)
     })
@@ -993,16 +1041,52 @@ pub fn delete_local_skill_with_manager(
         }
         fs::rename(skill_dir, &quarantine)?;
         run_local_delete_post_rename_test_hook(&current_canonical_path);
-        let missing_tree_revision = local_delete_missing_tree_revision(&current_canonical_path)?;
-        let observed_tree_revision = local_delete_tree_revision(&current_canonical_path)?;
+        let (missing_tree_revision, observed_tree_revision) =
+            match (|| -> Result<_, CommandError> {
+                Ok((
+                    local_delete_missing_tree_revision(&current_canonical_path)?,
+                    local_delete_tree_revision(&current_canonical_path)?,
+                ))
+            })() {
+                Ok(revisions) => revisions,
+                Err(error) => {
+                    rollback_catalog_before_compensation(
+                        transaction,
+                        "skillManager.deleteLocal",
+                        &error,
+                        "the quarantined original was preserved for inspection",
+                    )?;
+                    restore_local_delete_quarantine(
+                        &quarantine,
+                        skill_dir,
+                        &current_canonical_path,
+                        expected_tree_revision,
+                    )
+                    .map_err(|cleanup_error| CommandError::PartialEffect {
+                        operation: "skillManager.deleteLocal".to_string(),
+                        state: "outcome_unknown",
+                        cleanup_required: true,
+                        detail: format!(
+                            "post-quarantine verification failed ({error}); source restoration failed ({cleanup_error})"
+                        ),
+                    })?;
+                    return Err(error);
+                }
+            };
         if observed_tree_revision != missing_tree_revision {
-            drop(transaction);
-            return Err(CommandError::PartialEffect {
+            let error = CommandError::PartialEffect {
                 operation: "skillManager.deleteLocal".to_string(),
                 state: "outcome_unknown",
                 cleanup_required: true,
                 detail: "the original local skill path was recreated after quarantine; the unowned path and quarantined original were preserved for review".to_string(),
-            });
+            };
+            rollback_catalog_before_compensation(
+                transaction,
+                "skillManager.deleteLocal",
+                &error,
+                "the unowned path and quarantined original were preserved for inspection",
+            )?;
+            return Err(error);
         }
         let payload = serde_json::json!({
             "deleted": true,
@@ -1023,7 +1107,12 @@ pub fn delete_local_skill_with_manager(
             Ok(())
         })();
         if let Err(error) = catalog_delete {
-            drop(transaction);
+            rollback_catalog_before_compensation(
+                transaction,
+                "skillManager.deleteLocal",
+                &error,
+                "the quarantined original was preserved for inspection",
+            )?;
             restore_local_delete_quarantine(
                 &quarantine,
                 skill_dir,
@@ -1062,7 +1151,12 @@ pub fn delete_local_skill_with_manager(
         })() {
             Ok(readback) => readback,
             Err(error) => {
-                drop(transaction);
+                rollback_catalog_before_compensation(
+                    transaction,
+                    "skillManager.deleteLocal",
+                    &error,
+                    "the quarantined original was preserved for inspection",
+                )?;
                 restore_local_delete_quarantine(
                     &quarantine,
                     skill_dir,
@@ -2173,23 +2267,6 @@ fn manager_partial_effect(
         cleanup_required,
         detail,
     }
-}
-
-fn manager_post_process_error(
-    ctx: &AdapterContext,
-    preview: &SkillManagerCommandPreview,
-    error: CommandError,
-) -> CommandError {
-    if matches!(error, CommandError::PartialEffect { .. }) {
-        return error;
-    }
-    manager_partial_effect(
-        ctx,
-        preview,
-        "applied_unverified",
-        true,
-        &format!("post-execution verification failed: {error}"),
-    )
 }
 
 fn ensure_confirmed(

@@ -680,6 +680,15 @@ presence/value or absence verification, not secret exposure.
   has already been crossed. A proven catalog non-commit is
   `applied_unverified`; an uncertain commit is `outcome_unknown`, and neither
   may be retried automatically.
+- Pre-commit failure after any reversible filesystem effect explicitly rolls
+  back the open catalog transaction before exact compensation. Only a
+  successful rollback permits restoration. Rollback failure or an unknown
+  rollback result preserves the skill/config candidate and any archive backup
+  or delete quarantine, and returns non-retryable `partial_effect` with
+  `state=outcome_unknown`; implicit transaction drop is not a proven rollback.
+  External-manager process errors keep their existing not-started versus
+  possible-effect classification after a proven rollback, while rollback
+  uncertainty always upgrades the result to `outcome_unknown`.
 - Install/remove/update success declares and verifies `catalog_skills`,
   `skill_files`, and `manager_inventory` read-back. Install proves every named
   skill exists with the selected source identity and content fingerprint for
@@ -741,12 +750,11 @@ presence/value or absence verification, not secret exposure.
   drift fails stale before mutation; replay cannot reimport a duplicate or
   replace an already identical complete tree. Imported scripts are never
   executed.
-- Local archive and composite-uninstall catalog commits classify a proven
-  rollback separately from an uncertain commit result. Only a proven
-  non-commit may restore the original tree. An uncertain result retains the
-  imported tree or private backup/quarantine and returns non-retryable
-  `partial_effect` with `state=outcome_unknown` and
-  `cleanup_required=true`.
+- Local archive and composite-uninstall failures classify both explicit
+  pre-commit rollback and catalog commit results. Only a proven rollback or
+  proven non-commit may restore the original tree. An uncertain result retains
+  the imported tree or private backup/quarantine and returns non-retryable
+  `partial_effect` with `state=outcome_unknown` and `cleanup_required=true`.
 - When a removal selects every linked Agent target for an app-owned local
   source, the native confirmation identifies it as a full uninstall. One
   composite preview/action binds both manager unlink and the eligible local

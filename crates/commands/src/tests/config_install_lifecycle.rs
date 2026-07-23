@@ -1729,26 +1729,37 @@ fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
-#[test]
-fn local_delete_does_not_verify_a_source_recreated_after_quarantine() {
-    let temp_root = temp_test_dir("local-delete-post-rename-recreation");
+static LOCAL_DELETE_RECREATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn exercise_local_delete_recreation(rollback_failure: bool) {
+    let _serial = LOCAL_DELETE_RECREATION_TEST_LOCK
+        .lock()
+        .expect("serialize local-delete recreation hooks");
+    let label = if rollback_failure {
+        "local-delete-rollback-failure"
+    } else {
+        "local-delete-post-rename-recreation"
+    };
+    let skill_name = if rollback_failure {
+        "delete-rollback-unknown"
+    } else {
+        "delete-recreated"
+    };
+    let instance_id = format!("tool-global-{skill_name}");
+    let temp_root = temp_test_dir(label);
     let app_data = temp_root.join("app-data");
     let source_path = tool_global_staging_skills_root(&app_data)
-        .join("delete-recreated")
+        .join(skill_name)
         .join("SKILL.md");
     std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
     std::fs::write(
         &source_path,
-        "---\nname: delete-recreated\ndescription: original\n---\noriginal",
+        format!("---\nname: {skill_name}\ndescription: original\n---\noriginal"),
     )
     .expect("write source");
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
-    let mut instance = install_tool_global_instance(
-        "tool-global-delete-recreated",
-        source_path.clone(),
-        "delete-recreated",
-    );
+    let mut instance = install_tool_global_instance(&instance_id, source_path.clone(), skill_name);
     instance.agent = AgentId::ToolGlobal;
     catalog
         .upsert_skill_instance(&instance)
@@ -1771,10 +1782,13 @@ fn local_delete_does_not_verify_a_source_recreated_after_quarantine() {
             .expect("recreate source directory");
         std::fs::write(
             &recreated_path,
-            "---\nname: delete-recreated\ndescription: third state\n---\nthird state",
+            format!("---\nname: {skill_name}\ndescription: third state\n---\nthird state"),
         )
         .expect("write unowned third state");
     });
+    if rollback_failure {
+        catalog.inject_next_rollback_failure_for_test();
+    }
 
     let result = delete_local_skill_with_manager(
         &catalog,
@@ -1787,13 +1801,14 @@ fn local_delete_does_not_verify_a_source_recreated_after_quarantine() {
         },
     );
 
+    let error = result.expect_err("recreated source must fail closed");
     assert!(matches!(
-        result,
-        Err(CommandError::PartialEffect {
+        error,
+        CommandError::PartialEffect {
             state: "outcome_unknown",
             cleanup_required: true,
             ..
-        })
+        }
     ));
     assert!(
         std::fs::read_to_string(&source_path)
@@ -1821,11 +1836,21 @@ fn local_delete_does_not_verify_a_source_recreated_after_quarantine() {
         .any(|entry| entry
             .file_name()
             .to_string_lossy()
-            .starts_with(".agent-copilot-delete-delete-recreated-")),
+            .starts_with(&format!(".agent-copilot-delete-{skill_name}-"))),
         "the quarantined original remains available for explicit recovery"
     );
 
     let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn local_delete_does_not_verify_a_source_recreated_after_quarantine() {
+    exercise_local_delete_recreation(false);
+}
+
+#[test]
+fn local_delete_rollback_failure_preserves_recreated_source_and_quarantine() {
+    exercise_local_delete_recreation(true);
 }
 
 #[test]
@@ -2145,19 +2170,29 @@ fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
-#[test]
-fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_rename() {
-    let temp_root = temp_test_dir("install-post-rename-failure");
+fn exercise_install_post_rename_failure(rollback_failure: bool) {
+    let label = if rollback_failure {
+        "install-rollback-failure"
+    } else {
+        "install-post-rename-failure"
+    };
+    let skill_name = if rollback_failure {
+        "preserve-install"
+    } else {
+        "restore-install"
+    };
+    let instance_id = format!("tool-global-{skill_name}");
+    let temp_root = temp_test_dir(label);
     let home = temp_root.join("home");
     std::fs::create_dir_all(&home).expect("create home");
-    let source_path = write_tool_global_skill(&temp_root, "restore-install");
+    let source_path = write_tool_global_skill(&temp_root, skill_name);
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     catalog
         .upsert_skill_instance(&install_tool_global_instance(
-            "tool-global-restore-install",
+            &instance_id,
             source_path,
-            "restore-install",
+            skill_name,
         ))
         .expect("upsert tool-global");
     let ctx = AdapterContext {
@@ -2169,7 +2204,7 @@ fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_ren
     let preview = install_skill_from_tool_global(
         &catalog,
         &ctx,
-        "tool-global-restore-install",
+        &instance_id,
         AgentId::ClaudeCode,
         Scope::AgentGlobal,
         None,
@@ -2178,13 +2213,16 @@ fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_ren
     .expect("preview");
     let target = PathBuf::from(&preview.target_path);
     install_atomic_post_rename_test_hook(target.clone(), |_| {});
+    if rollback_failure {
+        catalog.inject_next_rollback_failure_for_test();
+    }
     let confirmation =
         ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
 
     let error = install_skill_from_tool_global(
         &catalog,
         &ctx,
-        "tool-global-restore-install",
+        &instance_id,
         AgentId::ClaudeCode,
         Scope::AgentGlobal,
         None,
@@ -2192,23 +2230,48 @@ fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_ren
     )
     .expect_err("post-rename failure must fail install");
 
-    assert!(matches!(error, CommandError::VerificationFailed));
-    assert!(!target.exists(), "candidate target must be removed");
-    assert!(
-        !home.join(".claude/skills/restore-install").exists(),
-        "directories created only for the failed install must be removed"
-    );
-    assert!(!catalog
-        .list_skill_records()
-        .expect("records")
-        .iter()
-        .any(|record| {
-            record.agent == "claude-code"
-                && record.scope == Scope::AgentGlobal.as_str()
-                && record.name == "restore-install"
-        }));
+    if rollback_failure {
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
+        assert!(
+            target.is_file(),
+            "unknown rollback must preserve the written skill candidate"
+        );
+    } else {
+        assert!(matches!(error, CommandError::VerificationFailed));
+        assert!(!target.exists(), "candidate target must be removed");
+        assert!(
+            !home.join(".claude/skills").join(skill_name).exists(),
+            "directories created only for the failed install must be removed"
+        );
+        assert!(!catalog
+            .list_skill_records()
+            .expect("records")
+            .iter()
+            .any(|record| {
+                record.agent == "claude-code"
+                    && record.scope == Scope::AgentGlobal.as_str()
+                    && record.name == skill_name
+            }));
+    }
 
     let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn confirmed_install_restores_a_missing_target_when_atomic_write_fails_after_rename() {
+    exercise_install_post_rename_failure(false);
+}
+
+#[test]
+fn confirmed_install_rollback_failure_preserves_the_written_candidate() {
+    exercise_install_post_rename_failure(true);
 }
 
 #[test]

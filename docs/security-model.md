@@ -133,6 +133,13 @@ confirmation, and network posture.
   external manager process has crossed its effect boundary, even a proven
   catalog non-commit preserves the manager target state and requires explicit
   catalog recovery rather than automatic process replay.
+- A pre-commit error after a skill/config candidate, archive replacement,
+  backup, or quarantine exists must explicitly roll back the open catalog
+  transaction before filesystem compensation begins. Compensation is allowed
+  only when that rollback returns success. A failed or unprovable rollback
+  preserves the candidate and all private recovery material and returns
+  non-retryable `partial_effect` with `state=outcome_unknown`; transaction-drop
+  cleanup is never treated as proof that compensation is safe.
 - Catalog scans are the narrow derived-cache exception to the signed
   preview/apply lifecycle. `catalog.scanAll` and `catalog.scanClaude` require
   `explicit_refresh: true`; the explicit refresh invocation itself is the
@@ -265,6 +272,11 @@ confirmation, and network posture.
   structured `partial_effect` with `retry_allowed=false`; compensation never
   overwrites a target whose current revision is neither the accepted original
   nor this operation's candidate revision.
+  Every manager path explicitly rolls back its open catalog transaction on
+  process or post-process failure. A proven rollback preserves the original
+  process error classification; an unprovable rollback is `outcome_unknown`.
+  Manager target effects are preserved rather than replayed or automatically
+  reversed.
   A local delete whose catalog and missing-source read-back committed remains a
   successful delete if only private quarantine cleanup fails; its typed
   path-free `follow_up` reports `cleanup_required=true` so the client cannot

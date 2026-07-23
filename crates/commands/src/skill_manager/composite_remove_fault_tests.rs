@@ -115,3 +115,62 @@ fn rejected_composite_commit_restores_local_source() {
 fn uncertain_composite_commit_retains_quarantine() {
     exercise_composite_commit_failure(true);
 }
+
+#[test]
+fn composite_rollback_failure_retains_private_quarantine() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-composite-rollback-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let app_data = root.join("app-data");
+    let skill_directory = tool_global_staging_skills_root(&app_data).join("rollback-unknown");
+    let skill_path = skill_directory.join("SKILL.md");
+    fs::create_dir_all(&skill_directory).expect("app-owned skill");
+    fs::write(
+        &skill_path,
+        "---\nname: rollback-unknown\ndescription: Fixture\n---\n# Fixture\n",
+    )
+    .expect("skill file");
+    let canonical_skill = skill_path.canonicalize().expect("canonical skill");
+    let original_revision =
+        local_delete_tree_revision(&canonical_skill).expect("original revision");
+    let quarantine = skill_directory.with_file_name(".agent-copilot-delete-rollback-unknown");
+    fs::rename(&skill_directory, &quarantine).expect("quarantine local source");
+    let mut cleanup = CompositeLocalDeleteMutation {
+        quarantine: quarantine.clone(),
+        quarantine_tree_revision: original_revision.clone(),
+        original_directory: skill_directory.clone(),
+        original_skill_path: canonical_skill,
+        original_tree_revision: original_revision,
+        observations: Vec::new(),
+        active: true,
+    };
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    catalog.inject_next_rollback_failure_for_test();
+    let transaction = catalog
+        .begin_immediate_transaction()
+        .expect("catalog transaction");
+
+    let error = rollback_composite_local_delete(
+        transaction,
+        Some(&mut cleanup),
+        &CommandError::VerificationFailed,
+    )
+    .expect_err("rollback outcome must be unknown");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert!(
+        !skill_directory.exists() && quarantine.join("SKILL.md").is_file(),
+        "unknown rollback must retain the quarantine without restoring it"
+    );
+    fs::remove_dir_all(root).ok();
+}

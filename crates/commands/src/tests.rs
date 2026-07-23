@@ -1967,9 +1967,13 @@ fn batch_toggle_prelocks_all_groups_before_the_first_write() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
-#[test]
-fn batch_toggle_restores_every_group_when_a_later_atomic_write_fails_after_rename() {
-    let temp_root = temp_test_dir("batch-toggle-post-rename-failure");
+fn exercise_batch_toggle_post_rename_failure(rollback_failure: bool) {
+    let label = if rollback_failure {
+        "batch-toggle-rollback-failure"
+    } else {
+        "batch-toggle-post-rename-failure"
+    };
+    let temp_root = temp_test_dir(label);
     let home = temp_root.join("home");
     write_claude_skill(&home, "restore-claude");
     write_pi_global_skill(&home, "restore-pi");
@@ -2003,34 +2007,62 @@ fn batch_toggle_restores_every_group_when_a_later_atomic_write_fails_after_renam
         ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
     let failing_target = home.join(".pi/agent/settings.json");
     install_atomic_post_rename_test_hook(failing_target.clone(), |_| {});
+    if rollback_failure {
+        catalog.inject_next_rollback_failure_for_test();
+    }
 
     let error = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation)
         .expect_err("post-rename failure must fail the batch");
 
-    assert!(matches!(error, CommandError::VerificationFailed));
-    assert!(
-        !home.join(".claude/settings.json").exists(),
-        "the earlier group must be restored to missing"
-    );
-    assert!(
-        !failing_target.exists(),
-        "the failed group must be restored even though rename completed"
-    );
-    assert!(
-        catalog
-            .list_all_config_snapshots(None)
-            .expect("snapshots")
-            .is_empty(),
-        "the catalog transaction must roll back"
-    );
-    assert!(catalog
-        .list_skill_records()
-        .expect("records")
-        .iter()
-        .filter(|record| selection.contains(&record.id))
-        .all(|record| record.enabled));
+    if rollback_failure {
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "outcome_unknown",
+                cleanup_required: true,
+                ..
+            }
+        ));
+        assert!(
+            home.join(".claude/settings.json").is_file() && failing_target.is_file(),
+            "unknown rollback must preserve every written config candidate"
+        );
+    } else {
+        assert!(matches!(error, CommandError::VerificationFailed));
+        assert!(
+            !home.join(".claude/settings.json").exists(),
+            "the earlier group must be restored to missing"
+        );
+        assert!(
+            !failing_target.exists(),
+            "the failed group must be restored even though rename completed"
+        );
+        assert!(
+            catalog
+                .list_all_config_snapshots(None)
+                .expect("snapshots")
+                .is_empty(),
+            "the catalog transaction must roll back"
+        );
+        assert!(catalog
+            .list_skill_records()
+            .expect("records")
+            .iter()
+            .filter(|record| selection.contains(&record.id))
+            .all(|record| record.enabled));
+    }
 
     let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn batch_toggle_restores_every_group_when_a_later_atomic_write_fails_after_rename() {
+    exercise_batch_toggle_post_rename_failure(false);
+}
+
+#[test]
+fn batch_toggle_rollback_failure_preserves_every_written_candidate() {
+    exercise_batch_toggle_post_rename_failure(true);
 }
 
 #[test]

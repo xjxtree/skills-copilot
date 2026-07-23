@@ -296,10 +296,37 @@ pub(super) fn commit_composite_local_delete(
     }
 }
 
+pub(super) fn rollback_composite_local_delete(
+    transaction: CatalogImmediateTransaction<'_>,
+    cleanup: Option<&mut CompositeLocalDeleteMutation>,
+    original_error: &CommandError,
+) -> Result<(), CommandError> {
+    crate::transaction_lifecycle::rollback_catalog_before_compensation(
+        transaction,
+        "skillManager.applyRemove",
+        original_error,
+        "the external manager result and any private local quarantine were preserved for inspection",
+    )?;
+    if let Some(cleanup) = cleanup {
+        cleanup
+            .restore()
+            .map_err(|cleanup_error| CommandError::PartialEffect {
+                operation: "skillManager.applyRemove".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "post-execution verification failed ({original_error}); local source restoration failed ({cleanup_error})"
+                ),
+            })?;
+    }
+    Ok(())
+}
+
 pub(super) fn apply_composite_local_delete(
     catalog: &Catalog,
     app_data_dir: &Path,
     plan: &CompositeLocalDeletePlan,
+    recovery: &mut Option<CompositeLocalDeleteMutation>,
 ) -> Result<CompositeLocalDeleteMutation, CommandError> {
     let meta = catalog
         .get_skill_instance_meta(&plan.instance_id)?
@@ -330,12 +357,27 @@ pub(super) fn apply_composite_local_delete(
         return Err(CommandError::StaleActionReference);
     }
     fs::rename(&plan.skill_directory, &quarantine)?;
+    *recovery = Some(CompositeLocalDeleteMutation {
+        quarantine,
+        quarantine_tree_revision: plan.tree_revision.clone(),
+        original_directory: plan.skill_directory.clone(),
+        original_skill_path: plan.skill_path.clone(),
+        original_tree_revision: plan.tree_revision.clone(),
+        observations: Vec::new(),
+        active: true,
+    });
+    let quarantine = &recovery
+        .as_ref()
+        .ok_or(CommandError::VerificationFailed)?
+        .quarantine;
     let quarantined_skill = quarantine.join(
         plan.skill_path
             .file_name()
             .ok_or(CommandError::VerificationFailed)?,
     );
-    let quarantine_tree_revision = local_delete_tree_revision(&quarantined_skill)?;
+    if local_delete_tree_revision(&quarantined_skill)? != plan.tree_revision {
+        return Err(CommandError::VerificationFailed);
+    }
     let missing_tree_revision = local_delete_missing_tree_revision(&plan.skill_path)?;
     let mutation = (|| -> Result<Vec<ActionReadbackObservation>, CommandError> {
         if local_delete_tree_revision(&plan.skill_path)? != missing_tree_revision {
@@ -373,32 +415,12 @@ pub(super) fn apply_composite_local_delete(
         ])
     })();
     match mutation {
-        Ok(observations) => Ok(CompositeLocalDeleteMutation {
-            quarantine,
-            quarantine_tree_revision,
-            original_directory: plan.skill_directory.clone(),
-            original_skill_path: plan.skill_path.clone(),
-            original_tree_revision: plan.tree_revision.clone(),
-            observations,
-            active: true,
-        }),
-        Err(error) => {
-            restore_local_delete_quarantine(
-                &quarantine,
-                &plan.skill_directory,
-                &plan.skill_path,
-                &plan.tree_revision,
-            )
-            .map_err(|cleanup_error| CommandError::PartialEffect {
-                operation: "skillManager.applyRemove".to_string(),
-                state: "outcome_unknown",
-                cleanup_required: true,
-                detail: format!(
-                    "local cleanup failed ({error}); source restoration failed ({cleanup_error})"
-                ),
-            })?;
-            Err(error)
+        Ok(observations) => {
+            let mut mutation = recovery.take().ok_or(CommandError::VerificationFailed)?;
+            mutation.observations = observations;
+            Ok(mutation)
         }
+        Err(error) => Err(error),
     }
 }
 

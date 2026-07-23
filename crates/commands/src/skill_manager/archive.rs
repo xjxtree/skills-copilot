@@ -18,8 +18,9 @@ use crate::{
     action_descriptor, action_preview_binding, action_source_revision, canonical_project_id,
     canonical_readback_domains, ensure_action_confirmed, register_tool_global_staged_skill,
     scan_all_catalog_report, tool_global_skill_name_from_content, tool_global_staging_skills_root,
-    ActionConfirmation, ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding,
-    ActionReadbackObservation, ActionReadbackRecord, ActionReference, CommandError, SkillRecord,
+    transaction_lifecycle::rollback_catalog_before_compensation, ActionConfirmation,
+    ActionPrecondition, ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation,
+    ActionReadbackRecord, ActionReference, CommandError, SkillRecord,
 };
 
 use super::{
@@ -32,6 +33,35 @@ const MAX_ARCHIVE_ENTRIES: usize = 2_000;
 const MAX_ARCHIVE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SKILL_MD_BYTES: u64 = 2 * 1024 * 1024;
+
+#[cfg(test)]
+static ARCHIVE_POST_ACTIVATION_FAILURES: std::sync::Mutex<Vec<PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn install_archive_post_activation_failure(path: PathBuf) {
+    ARCHIVE_POST_ACTIVATION_FAILURES
+        .lock()
+        .expect("lock archive activation failures")
+        .push(path);
+}
+
+#[cfg(test)]
+fn run_archive_post_activation_test_hook(path: &Path) -> Result<(), CommandError> {
+    let mut failures = ARCHIVE_POST_ACTIVATION_FAILURES
+        .lock()
+        .expect("lock archive activation failures");
+    if let Some(position) = failures.iter().position(|candidate| candidate == path) {
+        failures.remove(position);
+        return Err(CommandError::VerificationFailed);
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_archive_post_activation_test_hook(_path: &Path) -> Result<(), CommandError> {
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillManagerLocalArchiveUpdateParams {
@@ -159,7 +189,39 @@ pub fn apply_local_archive_import(
         params.action_reference.as_ref(),
     )?;
     let transaction = catalog.begin_immediate_transaction()?;
-    let mut applied = apply_archive_import_guarded(catalog, app_data_dir, ctx, &locked)?;
+    let mut recovery = None;
+    let mut applied = match apply_archive_import_guarded(
+        catalog,
+        app_data_dir,
+        ctx,
+        &locked,
+        &mut recovery,
+    ) {
+        Ok(applied) => applied,
+        Err(error) => {
+            rollback_catalog_before_compensation(
+                transaction,
+                "skillManager.applyLocalArchiveImport",
+                &error,
+                "the imported candidate was preserved for recovery",
+            )?;
+            if let Some(mut recovery) = recovery {
+                recovery
+                    .restore()
+                    .map_err(|cleanup_error| {
+                        archive_partial(
+                            "skillManager.applyLocalArchiveImport",
+                            "outcome_unknown",
+                            true,
+                            format!(
+                                "archive import failed ({error}); imported tree restoration failed ({cleanup_error})"
+                            ),
+                        )
+                    })?;
+            }
+            return Err(error);
+        }
+    };
     let record = local_archive_import_record(
         locked,
         true,
@@ -327,15 +389,13 @@ fn is_shared_agents_skill_path(path: &Path) -> bool {
             .any(|(parent, child)| parent.as_os_str() == ".agents" && child.as_os_str() == "skills")
 }
 
-struct AppliedArchiveImport {
-    imported: SkillRecord,
+struct ArchiveImportRecovery {
     destination_directory: PathBuf,
     candidate_revision: String,
-    readback: ActionReadbackRecord,
     active: bool,
 }
 
-impl AppliedArchiveImport {
+impl ArchiveImportRecovery {
     fn restore(&mut self) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
@@ -354,11 +414,28 @@ impl AppliedArchiveImport {
     }
 }
 
+struct AppliedArchiveImport {
+    imported: SkillRecord,
+    readback: ActionReadbackRecord,
+    recovery: ArchiveImportRecovery,
+}
+
+impl AppliedArchiveImport {
+    fn restore(&mut self) -> Result<(), CommandError> {
+        self.recovery.restore()
+    }
+
+    fn commit(&mut self) {
+        self.recovery.commit();
+    }
+}
+
 fn apply_archive_import_guarded(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
     plan: &LocalArchiveImportPlan,
+    recovery: &mut Option<ArchiveImportRecovery>,
 ) -> Result<AppliedArchiveImport, CommandError> {
     let skills_root = tool_global_staging_skills_root(app_data_dir);
     create_guarded_directory_chain(&skills_root)?;
@@ -410,6 +487,12 @@ fn apply_archive_import_guarded(
             error.into(),
         ));
     }
+    *recovery = Some(ArchiveImportRecovery {
+        destination_directory: destination_directory.clone(),
+        candidate_revision: candidate_revision.clone(),
+        active: true,
+    });
+    run_archive_post_activation_test_hook(&destination_directory.join("SKILL.md"))?;
     let applied = (|| -> Result<(SkillRecord, ActionReadbackRecord), CommandError> {
         let destination_skill_path = destination_directory.join("SKILL.md").canonicalize()?;
         let imported = register_tool_global_staged_skill(
@@ -447,45 +530,10 @@ fn apply_archive_import_guarded(
     match applied {
         Ok((imported, readback)) => Ok(AppliedArchiveImport {
             imported,
-            destination_directory,
-            candidate_revision,
             readback,
-            active: true,
+            recovery: recovery.take().ok_or(CommandError::VerificationFailed)?,
         }),
-        Err(error) => {
-            let current_revision =
-                skill_tree_content_revision(&destination_directory.join("SKILL.md")).map_err(
-                    |revision_error| {
-                        archive_partial(
-                            "skillManager.applyLocalArchiveImport",
-                            "outcome_unknown",
-                            true,
-                            format!(
-                                "catalog registration failed ({error}); imported target could not be inspected for rollback ({revision_error})"
-                            ),
-                        )
-                    },
-                )?;
-            if current_revision != candidate_revision {
-                return Err(archive_partial(
-                    "skillManager.applyLocalArchiveImport",
-                    "outcome_unknown",
-                    true,
-                    "the imported target changed before rollback".to_string(),
-                ));
-            }
-            fs::remove_dir_all(&destination_directory).map_err(|cleanup_error| {
-                archive_partial(
-                    "skillManager.applyLocalArchiveImport",
-                    "outcome_unknown",
-                    true,
-                    format!(
-                        "catalog registration failed ({error}); imported target rollback failed ({cleanup_error})"
-                    ),
-                )
-            })?;
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 
@@ -521,7 +569,34 @@ pub fn apply_local_archive_update(
         params.action_reference.as_ref(),
     )?;
     let transaction = catalog.begin_immediate_transaction()?;
-    let mut applied = apply_archive_replacement_guarded(catalog, ctx, &locked)?;
+    let mut recovery = None;
+    let mut applied = match apply_archive_replacement_guarded(catalog, ctx, &locked, &mut recovery)
+    {
+        Ok(applied) => applied,
+        Err(error) => {
+            rollback_catalog_before_compensation(
+                transaction,
+                "skillManager.applyLocalArchiveUpdate",
+                &error,
+                "the replacement and private backup were preserved for recovery",
+            )?;
+            if let Some(mut recovery) = recovery {
+                recovery
+                    .restore()
+                    .map_err(|cleanup_error| {
+                        archive_partial(
+                            "skillManager.applyLocalArchiveUpdate",
+                            "outcome_unknown",
+                            true,
+                            format!(
+                                "archive update failed ({error}); source restoration failed ({cleanup_error})"
+                            ),
+                        )
+                    })?;
+            }
+            return Err(error);
+        }
+    };
     let mut follow_up = None;
     let record = local_archive_update_record(
         locked,
@@ -914,26 +989,48 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
     })
 }
 
-struct AppliedArchiveUpdate {
-    updated_skill: SkillRecord,
+struct ArchiveUpdateRecovery {
     target_directory: PathBuf,
     backup_directory: PathBuf,
+    staging_directory: PathBuf,
     target_skill_path: PathBuf,
     original_tree_revision: String,
     candidate_tree_revision: String,
-    readback: ActionReadbackRecord,
     active: bool,
 }
 
-impl AppliedArchiveUpdate {
+impl ArchiveUpdateRecovery {
     fn restore(&mut self) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
         }
-        if skill_tree_content_revision(&self.target_skill_path)? != self.candidate_tree_revision {
+        match (
+            self.target_directory.exists(),
+            self.staging_directory.exists(),
+        ) {
+            (true, false) => {
+                if skill_tree_content_revision(&self.target_skill_path)?
+                    != self.candidate_tree_revision
+                {
+                    return Err(CommandError::StaleActionReference);
+                }
+                fs::remove_dir_all(&self.target_directory)?;
+            }
+            (false, true) => {
+                if skill_tree_content_revision(&self.staging_directory.join("SKILL.md"))?
+                    != self.candidate_tree_revision
+                {
+                    return Err(CommandError::StaleActionReference);
+                }
+                fs::remove_dir_all(&self.staging_directory)?;
+            }
+            _ => {
+                return Err(CommandError::StaleActionReference);
+            }
+        }
+        if !self.backup_directory.exists() {
             return Err(CommandError::StaleActionReference);
         }
-        fs::remove_dir_all(&self.target_directory)?;
         fs::rename(&self.backup_directory, &self.target_directory)?;
         if skill_tree_content_revision(&self.target_skill_path)? != self.original_tree_revision {
             return Err(CommandError::VerificationFailed);
@@ -952,10 +1049,27 @@ impl AppliedArchiveUpdate {
     }
 }
 
+struct AppliedArchiveUpdate {
+    updated_skill: SkillRecord,
+    readback: ActionReadbackRecord,
+    recovery: ArchiveUpdateRecovery,
+}
+
+impl AppliedArchiveUpdate {
+    fn restore(&mut self) -> Result<(), CommandError> {
+        self.recovery.restore()
+    }
+
+    fn finish(&mut self) -> Result<(), CommandError> {
+        self.recovery.finish()
+    }
+}
+
 fn apply_archive_replacement_guarded(
     catalog: &Catalog,
     ctx: &AdapterContext,
     plan: &LocalArchiveUpdatePlan,
+    recovery: &mut Option<ArchiveUpdateRecovery>,
 ) -> Result<AppliedArchiveUpdate, CommandError> {
     let existing_skill_path = &plan.target.skill_path;
     let canonical_root = &plan.target.canonical_root;
@@ -1056,30 +1170,19 @@ fn apply_archive_replacement_guarded(
             error.into(),
         ));
     }
+    *recovery = Some(ArchiveUpdateRecovery {
+        target_directory: target_dir.to_path_buf(),
+        backup_directory: backup_dir.clone(),
+        staging_directory: temp_dir.clone(),
+        target_skill_path: target_dir.join("SKILL.md"),
+        original_tree_revision: plan.target_tree_revision.clone(),
+        candidate_tree_revision: candidate_tree_revision.clone(),
+        active: true,
+    });
     if let Err(error) = fs::rename(&temp_dir, target_dir) {
-        let restore_result = fs::rename(&backup_dir, target_dir);
-        let staged_cleanup = fs::remove_dir_all(&temp_dir);
-        let restored_revision = restore_result
-            .as_ref()
-            .ok()
-            .and_then(|_| skill_tree_content_revision(existing_skill_path).ok());
-        if restore_result.is_err()
-            || staged_cleanup
-                .as_ref()
-                .is_err_and(|cleanup| cleanup.kind() != std::io::ErrorKind::NotFound)
-            || restored_revision.as_deref() != Some(plan.target_tree_revision.as_str())
-        {
-            return Err(archive_partial(
-                "skillManager.applyLocalArchiveUpdate",
-                "outcome_unknown",
-                true,
-                format!(
-                    "replacement activation failed ({error}); exact original-tree restoration or private staging cleanup could not be proved"
-                ),
-            ));
-        }
         return Err(error.into());
     }
+    run_archive_post_activation_test_hook(&target_dir.join("SKILL.md"))?;
 
     let registered = (|| {
         let staged_skill_path = target_dir.join("SKILL.md").canonicalize()?;
@@ -1135,82 +1238,10 @@ fn apply_archive_replacement_guarded(
     match registered {
         Ok((updated_skill, readback)) => Ok(AppliedArchiveUpdate {
             updated_skill,
-            target_directory: target_dir.to_path_buf(),
-            backup_directory: backup_dir,
-            target_skill_path: target_dir.join("SKILL.md"),
-            original_tree_revision: plan.target_tree_revision.clone(),
-            candidate_tree_revision,
             readback,
-            active: true,
+            recovery: recovery.take().ok_or(CommandError::VerificationFailed)?,
         }),
-        Err(error) => {
-            let current_revision =
-                skill_tree_content_revision(&target_dir.join("SKILL.md")).map_err(
-                    |revision_error| {
-                        archive_partial(
-                            "skillManager.applyLocalArchiveUpdate",
-                            "outcome_unknown",
-                            true,
-                            format!(
-                                "catalog projection failed ({error}); replacement tree could not be inspected for rollback ({revision_error})"
-                            ),
-                        )
-                    },
-                )?;
-            if current_revision != candidate_tree_revision {
-                return Err(archive_partial(
-                    "skillManager.applyLocalArchiveUpdate",
-                    "outcome_unknown",
-                    true,
-                    format!(
-                        "catalog projection failed ({error}) and the replacement tree changed before rollback"
-                    ),
-                ));
-            }
-            fs::remove_dir_all(target_dir).map_err(|cleanup_error| {
-                archive_partial(
-                    "skillManager.applyLocalArchiveUpdate",
-                    "outcome_unknown",
-                    true,
-                    format!(
-                        "catalog projection failed ({error}); replacement cleanup failed ({cleanup_error})"
-                    ),
-                )
-            })?;
-            fs::rename(&backup_dir, target_dir).map_err(|restore_error| {
-                archive_partial(
-                    "skillManager.applyLocalArchiveUpdate",
-                    "outcome_unknown",
-                    true,
-                    format!(
-                        "catalog projection failed ({error}); original tree restoration failed ({restore_error})"
-                    ),
-                )
-            })?;
-            let restored_revision = skill_tree_content_revision(existing_skill_path).map_err(
-                |revision_error| {
-                    archive_partial(
-                        "skillManager.applyLocalArchiveUpdate",
-                        "outcome_unknown",
-                        true,
-                        format!(
-                            "catalog projection failed ({error}); restored tree could not be verified ({revision_error})"
-                        ),
-                    )
-                },
-            )?;
-            if restored_revision != plan.target_tree_revision {
-                return Err(archive_partial(
-                    "skillManager.applyLocalArchiveUpdate",
-                    "outcome_unknown",
-                    true,
-                    format!(
-                        "catalog projection failed ({error}) and the original tree could not be verified after restoration"
-                    ),
-                ));
-            }
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 

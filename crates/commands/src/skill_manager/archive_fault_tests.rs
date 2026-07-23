@@ -118,6 +118,70 @@ fn uncertain_import_commit_retains_recovery_tree() {
     exercise_import_commit_failure(true);
 }
 
+#[test]
+fn import_rollback_failure_preserves_the_activated_candidate() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32]).expect("action preview secret");
+    let root = unique_root("import-rollback-unknown");
+    let app_data = root.join("app-data");
+    let archive = root.join("candidate.zip");
+    let skill_name = "import-rollback-unknown-skill";
+    fs::create_dir_all(&app_data).expect("app data");
+    fs::create_dir_all(root.join("home")).expect("home");
+    write_test_archive(&archive, skill_name, "Candidate");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let ctx = test_context(&root);
+    let preview = preview_local_archive_import(
+        &catalog,
+        &app_data,
+        &ctx,
+        &SkillManagerLocalArchiveImportParams {
+            archive_path: archive.to_string_lossy().to_string(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("import preview");
+    let destination = tool_global_staging_skills_root(&app_data).join(skill_name);
+    install_archive_post_activation_failure(
+        app_data
+            .canonicalize()
+            .expect("canonical app data")
+            .join("tool-global/skills")
+            .join(skill_name)
+            .join("SKILL.md"),
+    );
+    catalog.inject_next_rollback_failure_for_test();
+
+    let error = apply_local_archive_import(
+        &catalog,
+        &app_data,
+        &ctx,
+        &SkillManagerLocalArchiveImportParams {
+            archive_path: archive.to_string_lossy().to_string(),
+            confirmed: true,
+            preview_token: Some(preview.preview_token),
+            action_reference: Some(ActionReference::from(&preview.action)),
+        },
+    )
+    .expect_err("rollback fault");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert!(
+        destination.join("SKILL.md").is_file(),
+        "unknown rollback must preserve the activated import"
+    );
+    fs::remove_dir_all(root).ok();
+}
+
 fn exercise_update_commit_failure(outcome_unknown: bool) {
     crate::initialize_action_preview_secret_for_test([0xA5; 32]).expect("action preview secret");
     let label = if outcome_unknown {
@@ -222,6 +286,95 @@ fn rejected_update_commit_restores_original_tree() {
 #[test]
 fn uncertain_update_commit_retains_recovery_backup() {
     exercise_update_commit_failure(true);
+}
+
+#[test]
+fn update_rollback_failure_preserves_replacement_and_backup() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32]).expect("action preview secret");
+    let root = unique_root("update-rollback-unknown");
+    let home = root.join("home");
+    let app_data = root.join("app-data");
+    let skill_name = "update-rollback-unknown-skill";
+    let skill_dir = home.join(".agents/skills").join(skill_name);
+    let archive = root.join("candidate.zip");
+    fs::create_dir_all(&skill_dir).expect("skill directory");
+    fs::create_dir_all(&app_data).expect("app data");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        format!("---\nname: {skill_name}\ndescription: Original\n---\n# Original\n"),
+    )
+    .expect("original skill");
+    write_test_archive(&archive, skill_name, "Replacement");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog");
+    catalog.init().expect("catalog schema");
+    let ctx = test_context(&root);
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let instance = catalog
+        .list_skill_records()
+        .expect("records")
+        .into_iter()
+        .find(|record| record.name == skill_name)
+        .expect("local skill");
+    let preview = preview_local_archive_update(
+        &catalog,
+        &app_data,
+        &ctx,
+        &SkillManagerLocalArchiveUpdateParams {
+            instance_id: instance.id.clone(),
+            archive_path: archive.to_string_lossy().to_string(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("update preview");
+    install_archive_post_activation_failure(
+        skill_dir
+            .join("SKILL.md")
+            .canonicalize()
+            .expect("canonical target"),
+    );
+    catalog.inject_next_rollback_failure_for_test();
+
+    let error = apply_local_archive_update(
+        &catalog,
+        &app_data,
+        &ctx,
+        &SkillManagerLocalArchiveUpdateParams {
+            instance_id: instance.id,
+            archive_path: archive.to_string_lossy().to_string(),
+            confirmed: true,
+            preview_token: Some(preview.preview_token),
+            action_reference: Some(ActionReference::from(&preview.action)),
+        },
+    )
+    .expect_err("rollback fault");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert!(
+        fs::read_to_string(skill_dir.join("SKILL.md"))
+            .expect("active replacement")
+            .contains("Replacement"),
+        "unknown rollback must preserve the active replacement"
+    );
+    assert!(
+        fs::read_dir(home.join(".agents/skills"))
+            .expect("skills root")
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".archive-backup-")),
+        "unknown rollback must preserve the private backup"
+    );
+    fs::remove_dir_all(root).ok();
 }
 
 #[test]
