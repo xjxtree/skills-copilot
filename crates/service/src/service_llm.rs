@@ -469,8 +469,8 @@ impl ServiceHost {
         if readback.is_some() && owner.validate_owner_path_binding().is_err() {
             readback = None;
         }
-        if readback.is_some()
-            && crate::service_provider_actions::finalize_provider_action_while_locked(
+        if readback.is_some() {
+            if crate::service_provider_actions::finalize_provider_action_while_locked(
                 &self.app_data_dir,
                 &owner,
                 &preview.binding,
@@ -478,8 +478,22 @@ impl ServiceHost {
                 crate::service_provider_actions::ProviderActionState::Verified,
             )
             .is_err()
-        {
-            readback = None;
+            {
+                readback = None;
+            } else if owner.validate_owner_path_binding().is_err() {
+                if send.provider_request_sent {
+                    return Err(llm_remote_unknown(
+                        "the provider request may have left the process, and its finalized metadata owner is no longer bound to the configured path",
+                    ));
+                }
+                return Err(CommandError::PartialEffect {
+                    operation: "LLM provider prompt".to_string(),
+                    state: "applied_unverified",
+                    cleanup_required: false,
+                    detail: "LLM prompt metadata was finalized on an app-data owner that is no longer bound to the configured path".to_string(),
+                }
+                .into());
+            }
         }
         let partial_outcome = if readback.is_none() {
             let finalization =
@@ -1072,181 +1086,6 @@ impl ServiceHost {
             raw_response_persisted: false,
             raw_trace_persisted: false,
             safety_flags: model_task_match_safety_flags(true),
-        })
-    }
-
-    pub fn record_model_task_match(
-        &self,
-        params: ModelTaskMatchRecordParams,
-    ) -> Result<ModelTaskMatchRecordResult, ServiceError> {
-        let task = params.task.trim();
-        if task.is_empty() {
-            return Err(ServiceError::InvalidRequest(
-                "llm.recordModelTaskMatch requires a non-empty task".to_string(),
-            ));
-        }
-        let model = params.model.trim();
-        if model.is_empty() {
-            return Err(ServiceError::InvalidRequest(
-                "llm.recordModelTaskMatch requires a non-empty model".to_string(),
-            ));
-        }
-
-        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
-        let adapter_ctx = self.effective_adapter_ctx_while_mutation_owner_held(&owner)?;
-        let roots = self.trace_redaction_roots(&adapter_ctx);
-        let mut redactor = PromptRedactor::new(&roots);
-        let now = unix_timestamp_millis();
-        let redacted_task = truncate_chars(&redactor.redact(task), 600);
-        let redacted_model = truncate_chars(&redactor.redact(model), 160);
-        let provider = params
-            .provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 120))
-            .unwrap_or_else(|| "unknown".to_string());
-        let destination_host = params
-            .destination_host
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 160));
-        let profile_id = params
-            .profile_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 160));
-        let task_kind = params
-            .task_kind
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 120))
-            .unwrap_or_else(|| "general".to_string());
-        let agent = params
-            .agent
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 120));
-        let title = params
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 180))
-            .unwrap_or_else(|| format!("{task_kind} on {redacted_model}"));
-        let source_kind = normalize_model_task_source_kind(params.source_kind.as_deref());
-        let match_status = normalize_model_task_match_status(params.match_status.as_deref());
-        let confidence_score = params.confidence_score.map(|score| score.min(100));
-        let prompt_run_ids =
-            redact_model_task_string_list(&params.prompt_run_ids, &mut redactor, 160);
-        let benchmark_ids =
-            redact_model_task_string_list(&params.benchmark_ids, &mut redactor, 160);
-        let mut evidence_refs =
-            redact_model_task_string_list(&params.evidence_refs, &mut redactor, 180);
-        if evidence_refs.is_empty() {
-            evidence_refs.push("app-data:model-task-matches.json".to_string());
-        }
-        let gap_notes = redact_model_task_string_list(&params.gap_notes, &mut redactor, 300);
-        let blocker_notes =
-            redact_model_task_string_list(&params.blocker_notes, &mut redactor, 300);
-        let outcome_notes =
-            redact_model_task_string_list(&params.outcome_notes, &mut redactor, 300);
-        let redaction_summary = model_task_match_redaction_summary_from(redactor.summary());
-        let id = params
-            .id
-            .as_deref()
-            .map(sanitize_model_task_match_id)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| stable_model_task_match_id(&redacted_task, &redacted_model, now));
-
-        let mut records = self.load_model_task_matches_while_locked(&owner)?;
-        let created_at = records
-            .iter()
-            .find(|record| record.id == id)
-            .map(|record| record.created_at)
-            .unwrap_or(now);
-        let record = ModelTaskMatchRecord {
-            id: id.clone(),
-            title,
-            task: redacted_task,
-            task_kind,
-            agent,
-            profile_id,
-            provider,
-            model: redacted_model,
-            destination_host,
-            match_status,
-            confidence_score,
-            latency_ms: params.latency_ms,
-            estimated_total_tokens: params.estimated_total_tokens,
-            estimated_cost_usd: params.estimated_cost_usd,
-            source_kind,
-            prompt_run_ids,
-            benchmark_ids,
-            evidence_refs,
-            gap_notes,
-            blocker_notes,
-            outcome_notes,
-            created_at,
-            updated_at: now,
-            redaction_summary,
-            safety_flags: model_task_match_safety_flags(false),
-        };
-        records.retain(|existing| existing.id != id);
-        records.push(record.clone());
-        self.save_model_task_matches_while_locked(&owner, &records)?;
-
-        Ok(ModelTaskMatchRecordResult {
-            generated_by: "local-v2.91",
-            record,
-            count: records.len(),
-            app_local_only: true,
-            history_file: "model-task-matches.json",
-            provider_request_sent: false,
-            skill_files_mutated: false,
-            agent_config_mutated: false,
-            snapshot_created: false,
-            triage_mutated: false,
-            raw_prompt_persisted: false,
-            raw_response_persisted: false,
-            raw_trace_persisted: false,
-        })
-    }
-
-    pub fn delete_model_task_match(
-        &self,
-        params: ModelTaskMatchDeleteParams,
-    ) -> Result<ModelTaskMatchDeleteResult, ServiceError> {
-        let id = sanitize_model_task_match_id(&params.id);
-        if id.is_empty() {
-            return Err(ServiceError::InvalidRequest(
-                "llm.deleteModelTaskMatch requires a non-empty id".to_string(),
-            ));
-        }
-        let owner = lock_or_create_app_mutations(&self.app_data_dir)?;
-        let mut records = self.load_model_task_matches_while_locked(&owner)?;
-        let before = records.len();
-        records.retain(|record| record.id != id);
-        let deleted = records.len() != before;
-        self.save_model_task_matches_while_locked(&owner, &records)?;
-
-        Ok(ModelTaskMatchDeleteResult {
-            record_id: id,
-            deleted,
-            remaining_count: records.len(),
-            app_local_only: true,
-            provider_request_sent: false,
-            skill_files_mutated: false,
-            agent_config_mutated: false,
-            snapshot_created: false,
-            triage_mutated: false,
-            raw_prompt_persisted: false,
-            raw_response_persisted: false,
-            raw_trace_persisted: false,
         })
     }
 
@@ -2341,27 +2180,6 @@ fn normalized_model_task_filter(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-}
-
-fn redact_model_task_string_list(
-    values: &[String],
-    redactor: &mut PromptRedactor<'_>,
-    max_chars: usize,
-) -> Vec<String> {
-    let mut redacted = values
-        .iter()
-        .filter_map(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(truncate_chars(&redactor.redact(trimmed), max_chars))
-            }
-        })
-        .collect::<Vec<_>>();
-    redacted.sort();
-    redacted.dedup();
-    redacted
 }
 
 fn selected_task_cockpit_agents(

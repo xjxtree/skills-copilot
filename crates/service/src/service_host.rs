@@ -1269,6 +1269,7 @@ impl ServiceHost {
         self.save_model_task_matches_while_locked(&owner, records)
     }
 
+    #[cfg(test)]
     pub(crate) fn save_model_task_matches_while_locked(
         &self,
         owner: &AppMutationLock,

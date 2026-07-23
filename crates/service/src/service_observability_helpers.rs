@@ -153,54 +153,6 @@ pub(crate) fn normalize_model_task_source_kind(value: Option<&str>) -> String {
     }
 }
 
-pub(crate) fn sanitize_model_task_match_id(id: &str) -> String {
-    let mut value = id
-        .trim()
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    while value.contains("--") {
-        value = value.replace("--", "-");
-    }
-    value.trim_matches('-').chars().take(96).collect::<String>()
-}
-
-pub(crate) fn stable_model_task_match_id(task: &str, model: &str, now: i64) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(task.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(model.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(now.to_string().as_bytes());
-    let digest = hasher.finalize();
-    format!("model-task-{}", hex_prefix(&digest, 12))
-}
-
-pub(crate) fn model_task_match_redaction_summary_from(
-    summary: LlmPromptRedactionSummary,
-) -> LlmPromptRunRedactionSummary {
-    LlmPromptRunRedactionSummary {
-        status: "redacted-local-only".to_string(),
-        redacted_value_count: summary.redacted_value_count,
-        redacted_fields: summary.redacted_fields,
-        placeholders: summary
-            .placeholders
-            .into_iter()
-            .map(ToOwned::to_owned)
-            .collect(),
-        raw_prompt_persisted: false,
-        raw_response_persisted: false,
-        raw_trace_persisted: false,
-        raw_secret_returned: false,
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct ProviderObservabilityFilters {
     profile_id: Option<String>,
