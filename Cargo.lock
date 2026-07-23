@@ -792,6 +792,7 @@ name = "skills-copilot-catalog"
 version = "0.1.5"
 dependencies = [
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

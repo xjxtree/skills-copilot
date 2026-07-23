@@ -13,6 +13,8 @@ use skills_copilot_core::{
 };
 use thiserror::Error;
 
+#[cfg(unix)]
+mod anchored_vfs;
 mod mapping;
 mod queries;
 mod refresh;
@@ -28,6 +30,10 @@ use mapping::*;
 #[derive(Debug)]
 pub struct Catalog {
     conn: Connection,
+    // `conn` must be dropped before the registered VFS lease. Rust drops
+    // struct fields in declaration order, so keep the lease after it.
+    #[cfg(unix)]
+    _anchored_vfs: Option<anchored_vfs::AnchoredVfsLease>,
     fail_next_commit: Cell<bool>,
     fail_next_commit_outcome: Cell<bool>,
     fail_next_rollback: Cell<bool>,
@@ -283,6 +289,8 @@ pub enum CatalogError {
     InjectedCommitOutcomeUnknown,
     #[error("injected catalog rollback failure")]
     InjectedRollbackFailure,
+    #[error("descriptor-anchored catalog error: {0}")]
+    AnchoredVfs(String),
 }
 
 impl Catalog {
@@ -293,6 +301,8 @@ impl Catalog {
                 &path,
                 OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
             )?,
+            #[cfg(unix)]
+            _anchored_vfs: None,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -306,6 +316,8 @@ impl Catalog {
                 &path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
             )?,
+            #[cfg(unix)]
+            _anchored_vfs: None,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -349,10 +361,87 @@ impl Catalog {
     pub fn in_memory() -> Result<Self, CatalogError> {
         Ok(Self {
             conn: Connection::open_in_memory()?,
+            #[cfg(unix)]
+            _anchored_vfs: None,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
         })
+    }
+
+    /// Opens `catalog.sqlite` relative to an already-validated app-data
+    /// directory descriptor.
+    ///
+    /// The registered VFS keeps every SQLite main, journal, access, and delete
+    /// operation relative to that descriptor. It therefore remains on the
+    /// validated inode if the display path is renamed or replaced.
+    #[cfg(unix)]
+    pub fn open_anchored(owner: std::fs::File) -> Result<Self, CatalogError> {
+        let lease =
+            anchored_vfs::AnchoredVfsLease::register(owner).map_err(CatalogError::AnchoredVfs)?;
+        let conn = Connection::open_with_flags_and_vfs(
+            "catalog.sqlite",
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            lease.name(),
+        )?;
+        configure_anchored_connection(&conn)?;
+        Ok(Self {
+            conn,
+            _anchored_vfs: Some(lease),
+            fail_next_commit: Cell::new(false),
+            fail_next_commit_outcome: Cell::new(false),
+            fail_next_rollback: Cell::new(false),
+        })
+    }
+
+    /// Opens an existing current catalog read-only relative to an
+    /// already-validated app-data directory descriptor.
+    #[cfg(unix)]
+    pub fn open_read_only_current_anchored(owner: std::fs::File) -> Result<Self, CatalogError> {
+        let lease =
+            anchored_vfs::AnchoredVfsLease::register(owner).map_err(CatalogError::AnchoredVfs)?;
+        let conn = Connection::open_with_flags_and_vfs(
+            "catalog.sqlite",
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            lease.name(),
+        )?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        let catalog = Self {
+            conn,
+            _anchored_vfs: Some(lease),
+            fail_next_commit: Cell::new(false),
+            fail_next_commit_outcome: Cell::new(false),
+            fail_next_rollback: Cell::new(false),
+        };
+        if !schema::is_current(&catalog.conn)? {
+            return Err(CatalogError::SchemaOutdated);
+        }
+        Ok(catalog)
+    }
+
+    /// Returns `None` when the descriptor-relative catalog child is absent.
+    /// A symlink or non-regular child fails closed.
+    #[cfg(unix)]
+    pub fn open_read_only_current_anchored_if_exists(
+        owner: std::fs::File,
+    ) -> Result<Option<Self>, CatalogError> {
+        use rustix::fs::{statat, AtFlags, FileType};
+
+        match statat(&owner, "catalog.sqlite", AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) if FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile => {}
+            Ok(_) => {
+                return Err(CatalogError::AnchoredVfs(
+                    "descriptor-relative catalog must be a regular non-symlink file".to_string(),
+                ))
+            }
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => {
+                return Err(CatalogError::AnchoredVfs(format!(
+                    "checking descriptor-relative catalog failed: {error}"
+                )))
+            }
+        }
+        Self::open_read_only_current_anchored(owner).map(Some)
     }
 
     pub fn init(&self) -> Result<(), CatalogError> {
@@ -976,6 +1065,16 @@ impl Catalog {
         )?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn configure_anchored_connection(conn: &Connection) -> Result<(), CatalogError> {
+    // Keep SQLite side files inside the descriptor-anchored VFS. WAL shared
+    // memory can bypass xOpen through xShmMap, so this catalog deliberately
+    // uses the rollback journal and in-memory temporary storage.
+    conn.pragma_update(None, "journal_mode", "DELETE")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -2582,6 +2681,74 @@ mod tests {
             transaction.rollback(),
             Err(CatalogError::InjectedRollbackFailure)
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn anchored_catalog_and_journal_stay_on_the_opened_owner_after_path_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-anchored-catalog-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let owner_path = root.join("app-data");
+        let moved_owner = root.join("accepted-owner");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&owner_path).expect("create owner");
+        std::fs::create_dir(&victim).expect("create victim");
+        std::fs::write(victim.join("sentinel"), "unchanged").expect("seed victim");
+        let owner = std::fs::File::open(&owner_path).expect("open accepted owner");
+        let late_owner = owner.try_clone().expect("clone accepted owner");
+        let catalog = Catalog::open_anchored(owner).expect("open anchored catalog");
+        catalog.init().expect("initialize anchored schema");
+
+        std::fs::rename(&owner_path, &moved_owner).expect("move accepted owner");
+        symlink(&victim, &owner_path).expect("replace display path");
+
+        let transaction = catalog
+            .begin_immediate_transaction()
+            .expect("begin anchored transaction");
+        catalog
+            .create_config_snapshot(ConfigSnapshotDraft {
+                id: "anchored-snapshot",
+                agent: "claude-code",
+                scope: "agent-global",
+                project_root: None,
+                target: "/tmp/settings.json",
+                content: "{}\n",
+                reason: "anchored test",
+                created_at_ms: 1,
+            })
+            .expect("write anchored row");
+        assert!(
+            moved_owner.join("catalog.sqlite-journal").exists(),
+            "rollback journal must be created beside the accepted catalog inode"
+        );
+        assert!(
+            !victim.join("catalog.sqlite-journal").exists(),
+            "rollback journal must not follow the replaced display path"
+        );
+        transaction.commit().expect("commit anchored transaction");
+        drop(catalog);
+
+        assert!(moved_owner.join("catalog.sqlite").exists());
+        assert!(!victim.join("catalog.sqlite").exists());
+        assert_eq!(
+            std::fs::read_to_string(victim.join("sentinel")).expect("victim sentinel"),
+            "unchanged"
+        );
+        let read_only = Catalog::open_read_only_current_anchored(late_owner)
+            .expect("read anchored current catalog");
+        assert!(read_only
+            .get_config_snapshot("anchored-snapshot")
+            .expect("read anchored snapshot")
+            .is_some());
+        drop(read_only);
+
+        let _ = std::fs::remove_file(owner_path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn current_time_for_test() -> u128 {
