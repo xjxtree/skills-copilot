@@ -259,13 +259,6 @@ struct SkillManagerPanel: View {
                 )
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { Task { await store.searchSkillManager() } }
-                TextField(
-                    UIStrings.text("skillManager.owner.optional", "Owner (optional)"),
-                    text: $store.skillManagerOwner
-                )
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 180)
-                .onSubmit { Task { await store.searchSkillManager() } }
                 Button(UIStrings.text("skillManager.search.preview", "Preview Search")) {
                     Task { await store.searchSkillManager() }
                 }

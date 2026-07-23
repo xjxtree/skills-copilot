@@ -43,6 +43,7 @@ const files = {
   localSessionCache: await read("apps/macos/Sources/SkillsCopilot/Models/LocalSessionCache.swift"),
   listCompletenessControls: await read("apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
+  storeProjectionHelpers: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore+ProjectionHelpers.swift"),
   storeLocalSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore+LocalSessionDetail.swift"),
   storePresentationModels: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStorePresentationModels.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
@@ -81,6 +82,7 @@ files.serviceIPC = [
 ].join("\n");
 files.storeSurface = [
   files.store,
+  files.storeProjectionHelpers,
   files.storeDerivedState,
   files.storeWorkflow,
 ].join("\n");
@@ -225,7 +227,7 @@ const checks = [
       && !/GlassEffectContainer|glassEffect\(/.test(files.content)
       && !/\.toolbar\s*\{[\s\S]*?ToolbarItem\(placement:\s*\.navigation\)[\s\S]*?TitlebarAgentSelectorControl\(\)/.test(files.content)
       && /private struct TitlebarAgentSelectorControl:\s*View[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?TitlebarAgentSelectorLabel\([\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter/.test(files.content)
-      && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?Button\s*\{[\s\S]*?chooseProject\(\)[\s\S]*?await store\.clearRecentProjects\(\)[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?await store\.setProject\([\s\S]*?recentProjectPath\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?revealActiveProject\(\)[\s\S]*?await store\.clearProject\(\)/.test(files.content)
+      && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?Button\s*\{[\s\S]*?chooseProject\(\)[\s\S]*?await store\.previewClearRecentProjects\(\)[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?await store\.setProject\([\s\S]*?recentProjectPath\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?revealActiveProject\(\)[\s\S]*?await store\.previewClearProject\(\)/.test(files.content)
       && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(""\)/.test(files.sidebar)
       && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
       && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
@@ -253,7 +255,7 @@ const checks = [
       && !/SecondarySidebarProjectPickerMenu\(isCompact:\s*true\)[\s\S]*?frame\(maxWidth:\s*\.infinity,\s*alignment:\s*\.trailing\)/.test(files.sidebar)
       && /private struct SecondarySidebarAgentSelectorMenu:[\s\S]*?Menu\s*\{[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter[\s\S]*?SecondarySidebarAgentSelectorLabel\([\s\S]*?shortTitle\(for:\s*store\.agentFilter\)[\s\S]*?\.accessibilityValue\(store\.agentFilter\.title\)/.test(files.sidebar)
       && /private struct SecondarySidebarAgentSelectorLabel:[\s\S]*?AgentIconBadge\(filter:\s*filter,\s*size:\s*24\)[\s\S]*?Image\(systemName:\s*"chevron\.up\.chevron\.down"\)[\s\S]*?\.frame\(minWidth:\s*126[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)/.test(files.sidebar)
-      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?recentProjectTitle\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?await store\.clearRecentProjects\(\)[\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?title:\s*projectTitle[\s\S]*?return UIStrings\.toolbarNoProjectSelected[\s\S]*?private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/.test(files.sidebar)
+      && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?recentProjectTitle\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?await store\.previewClearRecentProjects\(\)[\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?title:\s*projectTitle[\s\S]*?return UIStrings\.toolbarNoProjectSelected[\s\S]*?private var projectHelp:[\s\S]*?DisplayText\.privacyPath\(rootPath,\s*privacyModeEnabled:\s*true\)/.test(files.sidebar)
       && /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?let isCompact:\s*Bool[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?isCompact:\s*isCompact/.test(files.sidebar)
       && /private struct SecondarySidebarProjectPickerLabel:[\s\S]*?let isCompact:\s*Bool[\s\S]*?if isCompact[\s\S]*?collapsedLabel[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)[\s\S]*?expandedLabel[\s\S]*?collapsedLabel[\s\S]*?\.secondarySidebarHeaderControlCapsule\(\)[\s\S]*?\.secondarySidebarHeaderControlCircle\(\)/.test(files.sidebar)
       && !/ToolbarContextSummary/.test(files.content)
@@ -392,7 +394,7 @@ const checks = [
   {
     label: "config sidebar exposes scope filtering, clean operation support, disabled skills, and selectable config history",
     text: files.sidebar + "\n" + files.agentConfigWorkspace,
-    passed: /var visibleConfigDocuments:[\s\S]*?currentAgentConfigDocuments[\s\S]*?document\.agent == agentFilter\.rawValue[\s\S]*?configScopeFilter\.includes\(document\)[\s\S]*?configDocumentMatchesSidebarQuery\(document\)[\s\S]*?lhs\.scope\.lowercased\(\)\.contains\("project"\)[\s\S]*?localizedStandardCompare/.test(files.store)
+    passed: /var visibleConfigDocuments:[\s\S]*?currentAgentConfigDocuments[\s\S]*?document\.agent == agentFilter\.rawValue[\s\S]*?configScopeFilter\.includes\(document\)[\s\S]*?configDocumentMatchesSidebarQuery\(document\)[\s\S]*?lhs\.scope\.lowercased\(\)\.contains\("project"\)[\s\S]*?localizedStandardCompare/.test(files.storeSurface)
       && /private struct ConfigSidebarPanel:[\s\S]*?private var selectedConfigDocuments:[\s\S]*?store\.visibleConfigDocuments[\s\S]*?Section\s*{[\s\S]*?configToolbar[\s\S]*?Section\(UIStrings\.currentConfigFile\)[\s\S]*?ForEach\(selectedConfigDocuments,\s*id:\s*\\\.target\)[\s\S]*?ConfigCurrentDocumentSidebarRow\([\s\S]*?document:\s*document[\s\S]*?isSelected:\s*store\.selectedSidebarSelection == \.configDocument\(document\.target\)[\s\S]*?store\.selectConfigDocument\(document\)[\s\S]*?Supported operations[\s\S]*?ConfigOperationRow\(title:\s*UIStrings\.scan[\s\S]*?ConfigOperationRow\(title:\s*UIStrings\.writableConfig[\s\S]*?UIStrings\.agentConfigSkillEnablement[\s\S]*?ConfigDisabledSkillSummaryRow\(skills:\s*disabledSkills\)[\s\S]*?ForEach\(selectedSnapshots\)[\s\S]*?ConfigSnapshotSidebarRow\([\s\S]*?store\.selectedSidebarSelection == \.configSnapshot\(snapshot\.id\)[\s\S]*?store\.selectConfigSnapshot\(snapshot\)/.test(files.sidebar)
       && /private var configToolbar:[\s\S]*?let layout = UIOptimizationPresentation\.skillList[\s\S]*?VStack\(alignment:\s*\.leading,\s*spacing:\s*8\)[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*CGFloat\(layout\.filterControlSpacing\)\)[\s\S]*?configScopePicker[\s\S]*?configRefreshButton\([\s\S]*?width:\s*CGFloat\(layout\.sortDirectionButtonWidth\),[\s\S]*?height:\s*CGFloat\(layout\.filterControlHeight\)[\s\S]*?configSearchField/.test(files.sidebar)
       && !/private var configToolbar:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)[\s\S]*?private var configScopePicker/.test(files.sidebar)
@@ -410,7 +412,7 @@ const checks = [
       && /func loadCurrentAgentConfigDocumentsIfNeeded\(agent requestedAgent:[\s\S]*?force:\s*false/.test(files.store)
       && !/\.onChange\(of:\s*store\.configScopeFilter\)[\s\S]*?loadAgentConfigSnapshots|\.onChange\(of:\s*store\.configScopeFilter\)[\s\S]*?loadCurrentAgentConfigDocuments/.test(files.sidebar)
       && /case configDocument\(String\)[\s\S]*?case \.configOverview,\s*\.configDocument,\s*\.configSnapshot/.test(files.sidebarSelection)
-      && /var selectedConfigDocument:[\s\S]*?case let \.configDocument\(target\)[\s\S]*?currentAgentConfigDocuments\.first[\s\S]*?func selectConfigDocument\(_ document:[\s\S]*?guard selectedSidebarSelection != \.configDocument\(document\.target\)[\s\S]*?selectedSidebarSelection = \.configDocument\(document\.target\)/.test(files.storeSurface)
+      && /var selectedConfigDocument:[\s\S]*?case let \.configDocument\(target\)[\s\S]*?currentAgentConfigDocuments\.first[\s\S]*?func selectConfigDocument\(_ document:[\s\S]*?guard selectedSidebarSelection != \.configDocument\(document\.target\)[\s\S]*?selectedSidebarSelection = \.configDocument\(document\.target\)/.test(files.storeProjectionHelpers + "\n" + files.store)
       && /AgentConfigOverviewDetailPanel\(selectedDocument:\s*store\.selectedConfigDocument\)[\s\S]*?let selectedDocument:[\s\S]*?if let selectedDocument[\s\S]*?currentAgentConfigSection\(documents:\s*\[selectedDocument\]\)/.test(files.agentConfigWorkspace)
       && !/AgentConfigCapabilityCard|AgentConfigDisabledSkillsPanel/.test(files.agentConfigWorkspace)
       && !/Text\(capability\?\.status/.test(files.sidebar + "\n" + files.agentConfigWorkspace),
@@ -647,7 +649,7 @@ const checks = [
   {
     label: "secondary sidebar project menu owns merged project selection and actions",
     text: files.sidebar,
-    pattern: /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?await store\.removeRecentProject\([\s\S]*?await store\.clearRecentProjects\(\)[\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?private struct SecondarySidebarProjectPickerLabel:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)/,
+    pattern: /private struct SecondarySidebarProjectPickerMenu:[\s\S]*?Menu\s*\{[\s\S]*?Label\(UIStrings\.chooseProject,\s*systemImage:\s*"folder\.badge\.plus"\)[\s\S]*?Section\(UIStrings\.recentProjects\)[\s\S]*?await store\.setProject\([\s\S]*?await store\.removeRecentProject\([\s\S]*?await store\.previewClearRecentProjects\(\)[\s\S]*?Label\(UIStrings\.revealInFinder,[\s\S]*?arrow\.up\.forward\.app[\s\S]*?Label\(UIStrings\.clearProject,[\s\S]*?xmark\.circle[\s\S]*?SecondarySidebarProjectPickerLabel\([\s\S]*?\.menuStyle\(\.button\)[\s\S]*?\.buttonStyle\(\.plain\)[\s\S]*?private struct SecondarySidebarProjectPickerLabel:[\s\S]*?ViewThatFits\(in:\s*\.horizontal\)/,
   },
   {
     label: "titlebar project popover keeps compact clear action in the recent header",
@@ -661,7 +663,7 @@ const checks = [
         && recentTitle >= 0
         && compactClear > recentTitle
         && recentRows > compactClear
-        && body.includes("Task { await store.clearRecentProjects() }")
+        && body.includes("Task { await store.previewClearRecentProjects() }")
         && !body.includes('Label(UIStrings.clearRecentProjects, systemImage: "trash.slash")')
     })(),
   },
