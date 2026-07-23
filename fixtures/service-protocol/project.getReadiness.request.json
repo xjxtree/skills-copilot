@@ -1,0 +1,9 @@
+{
+  "id": "fixture-project-readiness",
+  "method": "project.getReadiness",
+  "params": {
+    "project_id": "project-funnyaccount-system",
+    "expected_project_context_revision": "sha256:project-context-1",
+    "source_revision": "sha256:project-readiness-1"
+  }
+}

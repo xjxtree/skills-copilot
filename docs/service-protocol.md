@@ -135,28 +135,44 @@ compatibility-only blocked methods. Each returns `mutation_disabled` before
 parameter-dependent I/O; their zero-write rows in the method table are not an
 alternative apply path.
 
-## Product Design Compatibility
+## Product Read Projections
 
-The Methods table below is the callable service inventory. Product design or
-implementation documents may define a required future projection, but a client
-must not call it until `crates/service/src/protocol.rs`, method-effect tests,
-fixtures, Swift wire models, and this table expose the same method.
+The additive product read methods expose Rust-owned projections without
+removing lower-level catalog, project, session, search, or config contracts.
+They are independently prewarmed after the project context is accepted;
+`app.stateSnapshot` does not duplicate them. `app.search` remains deterministic
+and lexical and never hides a provider call. `task_cockpit` remains the
+compatible LLM action identifier even when a native UI labels the experience
+Task Readiness.
 
-The product rebuild reserves these responsibilities and preferred additive
-method names:
+- `project.getReadiness` requires `project_id` and
+  `expected_project_context_revision`; optional `source_revision` binds a
+  previously accepted projection. It returns one validated
+  `ProjectReadinessRecord`. Projection input has fixed local safety bounds;
+  reaching one returns typed limited coverage instead of an invented complete
+  total.
+- `catalog.listSkillAggregates` requires the same project and context binding.
+  Optional `agent` filters aggregates that include one of the six project
+  agents while preserving each aggregate's complete cross-agent instances.
+  `limit` is clamped to 1 through 100. Optional `cursor` and
+  `source_revision` bind keyset paging to the same project, agent filter, and
+  accepted projection. The response contains `source_revision`, `coverage`,
+  `page` metadata, and `aggregates`.
+- `session.previewResume` revalidates the same bounded local session inventory
+  used by startup prewarm. The request requires `authorized_roots`, one
+  supported `agent`, `auto_discover`, `project_root`, `current_cwd`,
+  `session_id`, `expected_source_revision`, and
+  `expected_snapshot_revision`. These fields preserve the accepted discovery
+  and project context. The response is one `SessionContinuationRecord`. A
+  supported result obtains its copy-only command exclusively from
+  `resume.argv`; an unsupported result has no argv and carries a typed reason.
+  The service never launches a terminal or process.
 
-- `project.getReadiness` for deterministic project coverage, per-agent health,
-  evidence, and attention actions;
-- `catalog.listSkillAggregates` for complete, evidence-backed skill
-  projections;
-- `session.previewResume` for an adapter-native copy-only continuation command
-  or typed unsupported reason.
-
-These names are not supported merely because they appear in this paragraph.
-Existing lower-level catalog, project, session, search, and config methods
-remain authoritative until each additive method is implemented and fixture
-backed. `task_cockpit` remains the compatible LLM action identifier even when a
-native UI labels the experience Task Readiness.
+All three methods are bounded, local-only, read-only, process-free, and
+network-free. `project_context_required`, `project_context_mismatch`,
+`stale_project_context`, `source_changed`, `session_not_found`, and
+`invalid_request` are stable errors for their applicable context, revision,
+identity, and parameter failures.
 
 ## Config Consistency
 
@@ -229,6 +245,7 @@ the client.
 | `adapter.listDiagnostics` | None | Never | Never | None |
 | `session.previewLocalSessions` | None | Never | Never | None |
 | `session.listLocalSessionMessages` | None | Never | Never | None |
+| `session.previewResume` | None | Never | Never | None |
 | `llm.status` | None | Never | Never | None |
 | `llm.listProviderProfiles` | None | Never | Never | None |
 | `llm.previewSaveProviderProfile` | None | Never | Never | None |
@@ -276,6 +293,7 @@ the client.
 | `skillManager.previewLocalArchiveUpdate` | None | Never | Never | None |
 | `skillManager.applyLocalArchiveUpdate` | Agent skill files, App-local data | Never | Never | Required |
 | `project.getContext` | None | Never | Never | None |
+| `project.getReadiness` | None | Never | Never | None |
 | `project.previewSetContext` | None | Never | Never | None |
 | `project.setContext` | App-local data | Never | Never | Required |
 | `project.previewClearContext` | None | Never | Never | None |
@@ -286,6 +304,7 @@ the client.
 | `project.clearRecentContexts` | App-local data | Never | Never | Required |
 | `project.validateContext` | None | Never | Never | None |
 | `catalog.listSkills` | None | Never | Never | None |
+| `catalog.listSkillAggregates` | None | Never | Never | None |
 | `catalog.getSkill` | None | Never | Never | None |
 | `catalog.analysis` | None | Never | Never | None |
 | `catalog.listFindings` | None | Never | Never | None |

@@ -1,0 +1,68 @@
+{
+  "id": "fixture-session-resume",
+  "ok": true,
+  "result": {
+    "id": "session:codex:fixture",
+    "agent": "codex",
+    "project_id": "project-funnyaccount-system",
+    "title": "Continue product read protocol work",
+    "intent": "Implement the typed product read service",
+    "started_at": 1784800000000,
+    "ended_at": 1784800300000,
+    "modified_at": 1784800300000,
+    "source_kind": "codex-state-index",
+    "source_revision": "sha256:session-native-1",
+    "snapshot_revision": "sha256:project-readiness-1",
+    "coverage": {
+      "completeness": "enumerable",
+      "inspected_sources": 1,
+      "expected_sources": 1
+    },
+    "resume": {
+      "state": "supported",
+      "argv": [
+        "codex",
+        "resume",
+        "native-thread-fixture"
+      ],
+      "copy_only": true
+    },
+    "evidence": [
+      {
+        "id": "evidence:session:codex:fixture",
+        "kind": "session",
+        "source_revision": "sha256:session-native-1",
+        "summary": "Codex exposes a native continuation identifier",
+        "agent": "codex",
+        "target_id": "session:codex:fixture"
+      }
+    ],
+    "actions": [
+      {
+        "id": "action:resume:codex:fixture",
+        "kind": "resume_session",
+        "intent": "resume_session",
+        "target": {
+          "kind": "session",
+          "id": "session:codex:fixture",
+          "agent": "codex",
+          "scope": "agent-project"
+        },
+        "project_id": "project-funnyaccount-system",
+        "impacts": [
+          "read_only"
+        ],
+        "preview_method": "session.previewResume",
+        "source_revision": "sha256:project-readiness-1",
+        "confirmation_required": false,
+        "network": "none",
+        "readback": [
+          "session_continuation"
+        ],
+        "evidence_refs": [
+          "evidence:session:codex:fixture"
+        ]
+      }
+    ]
+  }
+}

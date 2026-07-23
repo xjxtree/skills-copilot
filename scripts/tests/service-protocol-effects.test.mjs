@@ -14,6 +14,7 @@ import {
   validateFixtureBinding,
   validateLifecycleBindingPlacements,
   validateMethodEffects,
+  validateProductReadFixtureContracts,
   writeMethodEffectsDocTable,
 } from "../verify-service-protocol-drift.mjs";
 
@@ -556,4 +557,128 @@ test("preflights supported methods before writing the documentation table", () =
     /effect entries missing from SUPPORTED_METHODS: legacy\.method/,
   );
   assert.equal(writeCalls, 0);
+});
+
+function productReadFixtureContract() {
+  const effects = new Map([
+    ["project.getReadiness", readOnly],
+    ["catalog.listSkillAggregates", readOnly],
+    ["session.previewResume", readOnly],
+  ]);
+  return {
+    effects,
+    projectRequest: {
+      params: {
+        project_id: "project-fixture",
+        expected_project_context_revision: "sha256:context",
+        source_revision: "sha256:project",
+      },
+    },
+    projectResponse: {
+      result: {
+        project_id: "project-fixture",
+        source_revision: "sha256:project",
+        coverage: {
+          completeness: "enumerable",
+          inspected_sources: 0,
+          expected_sources: 0,
+        },
+        agents: [],
+      },
+    },
+    aggregateRequest: {
+      params: {
+        project_id: "project-fixture",
+        expected_project_context_revision: "sha256:context",
+        agent: "codex",
+        limit: 10,
+        source_revision: "sha256:aggregates",
+      },
+    },
+    aggregateResponse: {
+      result: {
+        source_revision: "sha256:aggregates",
+        coverage: {
+          completeness: "enumerable",
+          inspected_sources: 0,
+          expected_sources: 0,
+        },
+        page: {
+          returned_count: 0,
+          total_count: 0,
+          has_more: false,
+          source_completeness: "enumerable",
+        },
+        aggregates: [],
+      },
+    },
+    resumeRequest: {
+      params: {
+        authorized_roots: [],
+        auto_discover: true,
+        agent: "codex",
+        project_root: "<project-root>",
+        current_cwd: "<project-root>",
+        session_id: "session-fixture",
+        expected_source_revision: "sha256:native",
+        expected_snapshot_revision: "sha256:snapshot",
+      },
+    },
+    resumeResponse: {
+      result: {
+        id: "session-fixture",
+        agent: "codex",
+        source_revision: "sha256:native",
+        snapshot_revision: "sha256:snapshot",
+        coverage: {
+          completeness: "enumerable",
+          inspected_sources: 1,
+          expected_sources: 1,
+        },
+        resume: {
+          state: "supported",
+          argv: ["codex", "resume", "native-id"],
+          copy_only: true,
+        },
+        evidence: [],
+        actions: [],
+      },
+    },
+  };
+}
+
+test("pins product reads to local typed revision-bound fixtures", () => {
+  const fixture = productReadFixtureContract();
+  assert.deepEqual(validateProductReadFixtureContracts(fixture), []);
+
+  const unsafeEffect = productReadFixtureContract();
+  unsafeEffect.effects.set("session.previewResume", {
+    ...readOnly,
+    process: "conditional",
+  });
+  assert.match(
+    validateProductReadFixtureContracts(unsafeEffect).join("\n"),
+    /session\.previewResume must remain local/,
+  );
+
+  const missingRevision = productReadFixtureContract();
+  delete missingRevision.resumeRequest.params.expected_snapshot_revision;
+  assert.match(
+    validateProductReadFixtureContracts(missingRevision).join("\n"),
+    /session\.previewResume request params/,
+  );
+
+  const executableResume = productReadFixtureContract();
+  executableResume.resumeResponse.result.resume.copy_only = false;
+  assert.match(
+    validateProductReadFixtureContracts(executableResume).join("\n"),
+    /copy-only continuation/,
+  );
+
+  const unboundPage = productReadFixtureContract();
+  unboundPage.aggregateResponse.result.page.returned_count = 1;
+  assert.match(
+    validateProductReadFixtureContracts(unboundPage).join("\n"),
+    /paging, revision, and coverage/,
+  );
 });

@@ -36,6 +36,21 @@ extension ServiceClient {
         try await call(method: "project.getContext", params: EmptyParams())
     }
 
+    func getProjectReadiness(
+        projectID: String,
+        expectedProjectContextRevision: String,
+        sourceRevision: String? = nil
+    ) async throws -> ProjectReadinessRecord {
+        try await call(
+            method: "project.getReadiness",
+            params: ProjectReadinessParams(
+                projectID: projectID,
+                expectedProjectContextRevision: expectedProjectContextRevision,
+                sourceRevision: sourceRevision
+            )
+        )
+    }
+
     func previewSetProjectContext(
         rootPath: String,
         currentCWD: String?,
@@ -188,6 +203,32 @@ extension ServiceClient {
         try await call(
             method: "catalog.getSkill",
             params: GetSkillParams(instanceId: instanceID)
+        )
+    }
+
+    func listSkillAggregates(
+        projectID: String,
+        expectedProjectContextRevision: String,
+        agent: ProductAgentID? = nil,
+        limit: Int = 100,
+        cursor: String? = nil,
+        sourceRevision: String? = nil
+    ) async throws -> SkillAggregateListResult {
+        guard agent != .toolGlobal else {
+            throw ClientError.invalidOutput(
+                "Tool-global is not a project agent for aggregate projection."
+            )
+        }
+        return try await call(
+            method: "catalog.listSkillAggregates",
+            params: SkillAggregateListParams(
+                projectID: projectID,
+                expectedProjectContextRevision: expectedProjectContextRevision,
+                agent: agent,
+                limit: min(max(limit, 1), 100),
+                cursor: cursor,
+                sourceRevision: sourceRevision
+            )
         )
     }
 

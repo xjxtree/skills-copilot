@@ -1,6 +1,34 @@
 import Foundation
 
 extension ServiceClient {
+    func previewSessionResume(
+        authorizedRoots: [String],
+        agent: ProductAgentID,
+        project: ProjectContext,
+        sessionID: String,
+        expectedSourceRevision: String,
+        expectedSnapshotRevision: String
+    ) async throws -> SessionContinuationRecord {
+        guard ProductAgentID.projectAgents.contains(agent) else {
+            throw ClientError.invalidOutput(
+                "Tool-global does not own native sessions."
+            )
+        }
+        return try await call(
+            method: "session.previewResume",
+            params: SessionResumePreviewParams(
+                authorizedRoots: authorizedRoots,
+                autoDiscover: authorizedRoots.isEmpty,
+                agent: agent,
+                projectRoot: project.rootPath,
+                currentCWD: project.currentCWD ?? project.rootPath,
+                sessionID: sessionID,
+                expectedSourceRevision: expectedSourceRevision,
+                expectedSnapshotRevision: expectedSnapshotRevision
+            )
+        )
+    }
+
     func listLocalSessionMessages(
         authorizedRoots: [String],
         agent: String? = nil,

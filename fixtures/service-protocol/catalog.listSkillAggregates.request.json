@@ -1,0 +1,11 @@
+{
+  "id": "fixture-skill-aggregates",
+  "method": "catalog.listSkillAggregates",
+  "params": {
+    "project_id": "project-funnyaccount-system",
+    "expected_project_context_revision": "sha256:project-context-1",
+    "agent": "codex",
+    "limit": 1,
+    "source_revision": "sha256:skill-aggregates-1"
+  }
+}

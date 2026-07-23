@@ -918,6 +918,247 @@ function objectContainsActionReferenceEnvelope(value) {
   return false;
 }
 
+export function validateProductReadFixtureContracts({
+  effects,
+  projectRequest,
+  projectResponse,
+  aggregateRequest,
+  aggregateResponse,
+  resumeRequest,
+  resumeResponse,
+}) {
+  const errors = [];
+  const methods = [
+    "project.getReadiness",
+    "catalog.listSkillAggregates",
+    "session.previewResume",
+  ];
+  const readOnlyEffect = {
+    writes: [],
+    process: "never",
+    network: "never",
+    confirmation: "none",
+  };
+  for (const method of methods) {
+    if (JSON.stringify(effects.get(method)) !== JSON.stringify(readOnlyEffect)) {
+      errors.push(`${method} must remain local, read-only, process-free, and network-free`);
+    }
+  }
+
+  const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
+  const exactKeys = (value, required, optional, label) => {
+    if (!isPlainObject(value)) {
+      errors.push(`${label} must be a JSON object`);
+      return;
+    }
+    const keys = Object.keys(value);
+    const allowed = new Set([...required, ...optional]);
+    const missing = required.filter((key) => !Object.hasOwn(value, key));
+    const extra = keys.filter((key) => !allowed.has(key));
+    if (missing.length || extra.length) {
+      errors.push(`${label} fields differ from its typed contract`);
+    }
+  };
+  const validCoverage = (coverage) => {
+    if (
+      !isPlainObject(coverage)
+      || !["enumerable", "limited", "unknown"].includes(coverage.completeness)
+      || !Number.isInteger(coverage.inspected_sources)
+      || coverage.inspected_sources < 0
+      || (
+        coverage.expected_sources != null
+        && (
+          !Number.isInteger(coverage.expected_sources)
+          || coverage.expected_sources < coverage.inspected_sources
+        )
+      )
+    ) {
+      return false;
+    }
+    if (coverage.completeness === "enumerable") {
+      return coverage.incomplete_reason == null
+        && (
+          coverage.expected_sources == null
+          || coverage.expected_sources === coverage.inspected_sources
+        );
+    }
+    return nonempty(coverage.incomplete_reason);
+  };
+
+  exactKeys(
+    projectRequest?.params,
+    ["project_id", "expected_project_context_revision"],
+    ["source_revision"],
+    "project.getReadiness request params",
+  );
+  const projectParams = projectRequest?.params;
+  const projectResult = projectResponse?.result;
+  if (
+    !nonempty(projectParams?.project_id)
+    || !nonempty(projectParams?.expected_project_context_revision)
+    || (
+      projectParams?.source_revision != null
+      && !nonempty(projectParams.source_revision)
+    )
+    || !isPlainObject(projectResult)
+    || projectResult.project_id !== projectParams?.project_id
+    || !nonempty(projectResult.source_revision)
+    || (
+      projectParams?.source_revision != null
+      && projectResult.source_revision !== projectParams.source_revision
+    )
+    || !validCoverage(projectResult.coverage)
+    || !Array.isArray(projectResult.agents)
+  ) {
+    errors.push("project.getReadiness fixtures do not bind project, revision, and coverage");
+  }
+
+  exactKeys(
+    aggregateRequest?.params,
+    ["project_id", "expected_project_context_revision"],
+    ["agent", "limit", "cursor", "source_revision"],
+    "catalog.listSkillAggregates request params",
+  );
+  const aggregateParams = aggregateRequest?.params;
+  const aggregateResult = aggregateResponse?.result;
+  const projectAgents = new Set([
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi",
+    "hermes",
+    "openclaw",
+  ]);
+  const aggregates = aggregateResult?.aggregates;
+  const page = aggregateResult?.page;
+  if (
+    !nonempty(aggregateParams?.project_id)
+    || !nonempty(aggregateParams?.expected_project_context_revision)
+    || (
+      aggregateParams?.agent != null
+      && !projectAgents.has(aggregateParams.agent)
+    )
+    || (
+      aggregateParams?.limit != null
+      && (
+        !Number.isInteger(aggregateParams.limit)
+        || aggregateParams.limit < 1
+        || aggregateParams.limit > 100
+      )
+    )
+    || (
+      aggregateParams?.source_revision != null
+      && !nonempty(aggregateParams.source_revision)
+    )
+    || !isPlainObject(aggregateResult)
+    || !nonempty(aggregateResult.source_revision)
+    || (
+      aggregateParams?.source_revision != null
+      && aggregateResult.source_revision !== aggregateParams.source_revision
+    )
+    || !validCoverage(aggregateResult.coverage)
+    || !isPlainObject(page)
+    || !Array.isArray(aggregates)
+    || page.returned_count !== aggregates?.length
+    || page.source_completeness !== aggregateResult?.coverage?.completeness
+    || (page.incomplete_reason ?? null)
+      !== (aggregateResult?.coverage?.incomplete_reason ?? null)
+    || aggregates?.some(
+      (aggregate) => aggregate?.source_revision !== aggregateResult.source_revision,
+    )
+  ) {
+    errors.push("catalog.listSkillAggregates fixtures do not bind paging, revision, and coverage");
+  }
+
+  exactKeys(
+    resumeRequest?.params,
+    [
+      "authorized_roots",
+      "auto_discover",
+      "agent",
+      "project_root",
+      "current_cwd",
+      "session_id",
+      "expected_source_revision",
+      "expected_snapshot_revision",
+    ],
+    [],
+    "session.previewResume request params",
+  );
+  const resumeParams = resumeRequest?.params;
+  const resumeResult = resumeResponse?.result;
+  const evidence = Array.isArray(resumeResult?.evidence) ? resumeResult.evidence : [];
+  const evidenceIDs = new Set(evidence.map((reference) => reference?.id));
+  const actions = Array.isArray(resumeResult?.actions) ? resumeResult.actions : [];
+  const supported = resumeResult?.resume?.state === "supported";
+  const unsupported = resumeResult?.resume?.state === "unsupported";
+  if (
+    !Array.isArray(resumeParams?.authorized_roots)
+    || typeof resumeParams?.auto_discover !== "boolean"
+    || !projectAgents.has(resumeParams?.agent)
+    || !nonempty(resumeParams?.project_root)
+    || !nonempty(resumeParams?.current_cwd)
+    || !nonempty(resumeParams?.session_id)
+    || !nonempty(resumeParams?.expected_source_revision)
+    || !nonempty(resumeParams?.expected_snapshot_revision)
+    || !isPlainObject(resumeResult)
+    || resumeResult.id !== resumeParams?.session_id
+    || resumeResult.agent !== resumeParams?.agent
+    || resumeResult.source_revision !== resumeParams?.expected_source_revision
+    || resumeResult.snapshot_revision !== resumeParams?.expected_snapshot_revision
+    || !validCoverage(resumeResult.coverage)
+    || resumeResult?.resume?.copy_only !== true
+    || !(
+      (
+        supported
+        && Array.isArray(resumeResult.resume.argv)
+        && resumeResult.resume.argv.length > 0
+        && resumeResult.resume.argv.every(nonempty)
+        && resumeResult.resume.unsupported_reason == null
+      )
+      || (
+        unsupported
+        && (
+          resumeResult.resume.argv == null
+          || (
+            Array.isArray(resumeResult.resume.argv)
+            && resumeResult.resume.argv.length === 0
+          )
+        )
+        && nonempty(resumeResult.resume.unsupported_reason)
+      )
+    )
+    || evidence.some(
+      (reference) => (
+        !nonempty(reference?.id)
+        || reference?.source_revision !== resumeResult.source_revision
+      ),
+    )
+    || actions.some(
+      (action) => (
+        action?.kind !== "resume_session"
+        || action?.intent !== "resume_session"
+        || action?.target?.kind !== "session"
+        || action?.target?.id !== resumeResult.id
+        || action?.target?.agent !== resumeResult.agent
+        || JSON.stringify(action?.impacts) !== JSON.stringify(["read_only"])
+        || action?.preview_method !== "session.previewResume"
+        || action?.apply_method != null
+        || action?.source_revision !== resumeResult.snapshot_revision
+        || action?.confirmation_required !== false
+        || action?.network !== "none"
+        || JSON.stringify(action?.readback) !== JSON.stringify(["session_continuation"])
+        || !Array.isArray(action?.evidence_refs)
+        || action.evidence_refs.length === 0
+        || action.evidence_refs.some((id) => !evidenceIDs.has(id))
+      ),
+    )
+  ) {
+    errors.push("session.previewResume fixtures do not bind discovery, revisions, and copy-only continuation");
+  }
+  return uniqueSorted(errors);
+}
+
 function validateLifecycleFixtures(fixturesDir, inventory, swiftRoot) {
   const errors = [];
   for (const [applyMethod, lifecycle] of inventory.lifecycle) {
@@ -1352,6 +1593,29 @@ function main() {
     actionInventory,
     join(repoRoot, "apps", "macos", "Sources", "SkillsCopilot"),
   )) {
+    errors.push([error, []]);
+  }
+  for (const error of validateProductReadFixtureContracts({
+    effects,
+    projectRequest: JSON.parse(
+      readRequired(join(fixturesDir, "project.getReadiness.request.json")),
+    ),
+    projectResponse: JSON.parse(
+      readRequired(join(fixturesDir, "project.getReadiness.response.json")),
+    ),
+    aggregateRequest: JSON.parse(
+      readRequired(join(fixturesDir, "catalog.listSkillAggregates.request.json")),
+    ),
+    aggregateResponse: JSON.parse(
+      readRequired(join(fixturesDir, "catalog.listSkillAggregates.response.json")),
+    ),
+    resumeRequest: JSON.parse(
+      readRequired(join(fixturesDir, "session.previewResume.request.json")),
+    ),
+    resumeResponse: JSON.parse(
+      readRequired(join(fixturesDir, "session.previewResume.response.json")),
+    ),
+  })) {
     errors.push([error, []]);
   }
 

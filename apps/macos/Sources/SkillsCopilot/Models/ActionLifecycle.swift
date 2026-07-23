@@ -82,6 +82,94 @@ struct ActionDescriptorWire: Codable, Hashable {
     }
 
     @discardableResult
+    func validatedProjection(
+        sourceRevision expectedSourceRevision: String,
+        evidenceIDs: Set<String>
+    ) throws -> ActionDescriptorWire {
+        let targetKinds: Set<String> = [
+            "project",
+            "agent",
+            "skill",
+            "session",
+            "config",
+            "package",
+            "provider_profile",
+            "app_data",
+        ]
+        let impactKinds: Set<String> = [
+            "read_only",
+            "app_local_data",
+            "credential_store",
+            "agent_config",
+            "skill_files",
+            "external_manager",
+        ]
+        let networkPostures: Set<String> = ["none", "conditional", "required"]
+        let readbackDomains: Set<String> = [
+            "project_context",
+            "catalog_skills",
+            "skill_aggregates",
+            "skill_files",
+            "agent_config",
+            "config_snapshots",
+            "manager_inventory",
+            "session_continuation",
+            "blocked_attempt_audit",
+            "provider_profiles",
+            "provider_credentials",
+            "provider_activity",
+            "prompt_runs",
+            "private_content",
+        ]
+        let knownAgents = Self.configMutationAgents.union(["tool-global"])
+        let knownScopes = Set(["tool-global", "agent-global", "agent-project"])
+        let validMethod: (String) -> Bool = { value in
+            let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+            return parts.count == 2
+                && parts.allSatisfy({ part in
+                    !part.isEmpty && part.allSatisfy(\.isASCIIServiceIdentifierCharacter)
+                })
+        }
+        let readOnly = impacts.allSatisfy { $0 == "read_only" }
+        guard !id.trimmedForProjectionValidation.isEmpty,
+              !kind.trimmedForProjectionValidation.isEmpty,
+              !intent.trimmedForProjectionValidation.isEmpty,
+              targetKinds.contains(target.kind),
+              !target.id.trimmedForProjectionValidation.isEmpty,
+              target.agent.map(knownAgents.contains) ?? true,
+              target.scope.map(knownScopes.contains) ?? true,
+              target.scope != "agent-project"
+                  || projectID?.trimmedForProjectionValidation.isEmpty == false,
+              target.kind != "project" || projectID == target.id,
+              projectID?.trimmedForProjectionValidation.isEmpty != true,
+              !impacts.isEmpty,
+              Set(impacts).count == impacts.count,
+              impacts.allSatisfy(impactKinds.contains),
+              validMethod(previewMethod),
+              sourceRevision == expectedSourceRevision,
+              !sourceRevision.trimmedForProjectionValidation.isEmpty,
+              networkPostures.contains(network),
+              !readback.isEmpty,
+              Set(readback).count == readback.count,
+              readback.allSatisfy(readbackDomains.contains),
+              !evidenceRefs.isEmpty,
+              Set(evidenceRefs).count == evidenceRefs.count,
+              evidenceRefs.allSatisfy({
+                  !$0.trimmedForProjectionValidation.isEmpty && evidenceIDs.contains($0)
+              }) else {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        if let applyMethod {
+            guard validMethod(applyMethod), !readOnly, confirmationRequired else {
+                throw ActionDescriptorValidationError.invalidLifecycle
+            }
+        } else if !readOnly {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        return self
+    }
+
+    @discardableResult
     func validated(
         previewMethod expectedPreviewMethod: String,
         applyMethod expectedApplyMethod: String,
@@ -162,6 +250,18 @@ struct ActionDescriptorWire: Codable, Hashable {
             throw ActionDescriptorValidationError.invalidLifecycle
         }
         return self
+    }
+}
+
+private extension Character {
+    var isASCIIServiceIdentifierCharacter: Bool {
+        isASCII && (isLetter || isNumber)
+    }
+}
+
+private extension String {
+    var trimmedForProjectionValidation: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

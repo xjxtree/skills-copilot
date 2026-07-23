@@ -11,6 +11,8 @@ enum ListIncompleteReason: String, Codable, Hashable {
     case unreadableSource = "unreadable_source"
     case pageFailed = "page_failed"
     case unsupportedProtocol = "unsupported_protocol"
+    case staleSource = "stale_source"
+    case notInspected = "not_inspected"
 }
 
 enum ListCompleteness: Equatable {

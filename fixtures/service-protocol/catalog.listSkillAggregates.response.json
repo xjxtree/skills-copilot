@@ -1,0 +1,90 @@
+{
+  "id": "fixture-skill-aggregates",
+  "ok": true,
+  "result": {
+    "source_revision": "sha256:skill-aggregates-1",
+    "coverage": {
+      "completeness": "enumerable",
+      "inspected_sources": 1,
+      "expected_sources": 1
+    },
+    "page": {
+      "returned_count": 1,
+      "total_count": 1,
+      "has_more": false,
+      "source_completeness": "enumerable"
+    },
+    "aggregates": [
+      {
+        "id": "aggregate:review",
+        "definition_id": "definition:review",
+        "definition_fingerprint": "sha256:definition-review",
+        "canonical_name": "review",
+        "display_name": "Review",
+        "description": "Review source changes with deterministic local evidence.",
+        "source_kind": "codex-native",
+        "source_identity": "codex-native-global",
+        "runtime_identity": "codex:review",
+        "instance_ids": [
+          "instance:codex:review"
+        ],
+        "agents": [
+          "codex"
+        ],
+        "scopes": [
+          "agent-global"
+        ],
+        "installed_instance_count": 1,
+        "enabled_instance_count": 1,
+        "effective_instance_count": 1,
+        "primary_effectiveness": "effective",
+        "effectiveness_counts": [
+          {
+            "state": "effective",
+            "count": 1
+          }
+        ],
+        "instance_effectiveness": [
+          {
+            "instance_id": "instance:codex:review",
+            "agent": "codex",
+            "scope": "agent-global",
+            "source_identity": "codex-native-global",
+            "runtime_identity": "codex:review",
+            "installed": true,
+            "linked": true,
+            "enabled": true,
+            "precedence_proven": true,
+            "state": "effective",
+            "coverage": {
+              "completeness": "enumerable",
+              "inspected_sources": 1,
+              "expected_sources": 1
+            },
+            "evidence_refs": [
+              "evidence:instance:codex:review"
+            ]
+          }
+        ],
+        "finding_count": 0,
+        "conflict_count": 0,
+        "source_revision": "sha256:skill-aggregates-1",
+        "coverage": {
+          "completeness": "enumerable",
+          "inspected_sources": 1,
+          "expected_sources": 1
+        },
+        "evidence": [
+          {
+            "id": "evidence:instance:codex:review",
+            "kind": "skill_instance",
+            "source_revision": "sha256:skill-aggregates-1",
+            "summary": "Codex selects the native Review definition",
+            "agent": "codex",
+            "target_id": "instance:codex:review"
+          }
+        ]
+      }
+    ]
+  }
+}

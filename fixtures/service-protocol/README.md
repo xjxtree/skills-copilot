@@ -35,6 +35,9 @@ truth, and `docs/service-protocol.md` describes the current semantics.
   local archive path described in the service protocol.
 - Session fixtures cover bounded local inventory, summary/detail separation,
   paging, redaction, and supported agent stores.
+- Product read fixtures cover revision-bound project readiness, complete
+  aggregate paging metadata, and adapter-native copy-only session continuation.
+  These methods remain local, read-only, process-free, and network-free.
 - Analysis and finding fixtures are read-only and must not imply config writes,
   CLI calls, execution, or unsupported-root inference.
 

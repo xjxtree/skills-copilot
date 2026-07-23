@@ -10,9 +10,9 @@ final class FullNativeModelSuiteTests: XCTestCase {
     func testCompleteNativeModelRegistry() async throws {
         let summary = try await runAllNativeModelTestsAsync()
         XCTAssertEqual(summary.serviceSuiteCount, 2)
-        XCTAssertEqual(summary.mainSuiteCount, 24)
+        XCTAssertEqual(summary.mainSuiteCount, 25)
         XCTAssertEqual(summary.skillStoreGroupCount, 64)
-        XCTAssertEqual(summary.namedExecutionCount, 90)
+        XCTAssertEqual(summary.namedExecutionCount, 91)
     }
 }
 #endif

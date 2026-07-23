@@ -98,6 +98,36 @@ struct GetSkillParams: Encodable {
     }
 }
 
+struct ProjectReadinessParams: Encodable {
+    let projectID: String
+    let expectedProjectContextRevision: String
+    let sourceRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case projectID = "project_id"
+        case expectedProjectContextRevision = "expected_project_context_revision"
+        case sourceRevision = "source_revision"
+    }
+}
+
+struct SkillAggregateListParams: Encodable {
+    let projectID: String
+    let expectedProjectContextRevision: String
+    let agent: ProductAgentID?
+    let limit: Int
+    let cursor: String?
+    let sourceRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case projectID = "project_id"
+        case expectedProjectContextRevision = "expected_project_context_revision"
+        case agent
+        case limit
+        case cursor
+        case sourceRevision = "source_revision"
+    }
+}
+
 struct ToggleSkillParams: Encodable {
     let instanceId: String
     let on: Bool
@@ -204,6 +234,28 @@ struct LocalSessionMessagePageParams: Encodable {
         case limit
         case cursor
         case sourceRevision = "source_revision"
+    }
+}
+
+struct SessionResumePreviewParams: Encodable {
+    let authorizedRoots: [String]
+    let autoDiscover: Bool
+    let agent: ProductAgentID
+    let projectRoot: String
+    let currentCWD: String
+    let sessionID: String
+    let expectedSourceRevision: String
+    let expectedSnapshotRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case authorizedRoots = "authorized_roots"
+        case autoDiscover = "auto_discover"
+        case agent
+        case projectRoot = "project_root"
+        case currentCWD = "current_cwd"
+        case sessionID = "session_id"
+        case expectedSourceRevision = "expected_source_revision"
+        case expectedSnapshotRevision = "expected_snapshot_revision"
     }
 }
 
