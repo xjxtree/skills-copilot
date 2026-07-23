@@ -8,6 +8,26 @@ struct ActionTargetWire: Codable, Hashable {
 }
 
 struct ActionDescriptorWire: Codable, Hashable {
+    static let configMutationAgents: Set<String> = [
+        "claude-code",
+        "codex",
+        "hermes",
+        "openclaw",
+        "opencode",
+        "pi",
+    ]
+    static let configMutationAgentScopes: Set<String> = [
+        "claude-code:agent-global",
+        "claude-code:agent-project",
+        "codex:agent-global",
+        "hermes:agent-global",
+        "openclaw:agent-global",
+        "opencode:agent-global",
+        "opencode:agent-project",
+        "pi:agent-global",
+        "pi:agent-project",
+    ]
+
     let id: String
     let kind: String
     let intent: String
@@ -52,6 +72,7 @@ struct ActionDescriptorWire: Codable, Hashable {
             target: target.id,
             agent: target.agent,
             scope: target.scope,
+            projectID: projectID,
             impacts: impacts,
             network: network,
             sourceRevision: sourceRevision,
@@ -104,6 +125,40 @@ struct ActionDescriptorWire: Codable, Hashable {
         let hasProjectScope = target.scope == "agent-project"
         guard hasProject == hasProjectScope,
               target.scope == nil || hasProjectScope else {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        return self
+    }
+
+    @discardableResult
+    func validatedConfigMutationBinding() throws -> ActionDescriptorWire {
+        let project = projectID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let agent = target.agent,
+              Self.configMutationAgents.contains(agent),
+              let scope = target.scope,
+              ["agent-global", "agent-project"].contains(scope),
+              Self.configMutationAgentScopes.contains("\(agent):\(scope)"),
+              project?.isEmpty != true,
+              scope != "agent-project" || project?.isEmpty == false else {
+            throw ActionDescriptorValidationError.invalidLifecycle
+        }
+        return self
+    }
+
+    @discardableResult
+    func validatedBatchToggleBinding() throws -> ActionDescriptorWire {
+        let project = projectID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let agent = target.agent?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scope = target.scope?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard agent?.isEmpty != true,
+              scope?.isEmpty != true,
+              project?.isEmpty != true,
+              agent == nil || Self.configMutationAgents.contains(agent!),
+              scope == nil || ["agent-global", "agent-project"].contains(scope!),
+              agent == nil
+                  || scope == nil
+                  || Self.configMutationAgentScopes.contains("\(agent!):\(scope!)"),
+              scope != "agent-project" || project?.isEmpty == false else {
             throw ActionDescriptorValidationError.invalidLifecycle
         }
         return self
@@ -191,6 +246,7 @@ struct ActionConfirmationSummary: Hashable {
     let target: String
     let agent: String?
     let scope: String?
+    let projectID: String?
     let impacts: [String]
     let network: String
     let sourceRevision: String
@@ -209,6 +265,11 @@ struct ActionConfirmationSummary: Hashable {
         if let scope, !scope.isEmpty {
             lines.append(
                 "\(UIStrings.text("actionConfirmation.scope", "Scope")): \(scope)"
+            )
+        }
+        if let projectID, !projectID.isEmpty {
+            lines.append(
+                "\(UIStrings.text("actionConfirmation.project", "Project")): \(projectID)"
             )
         }
         lines.append(

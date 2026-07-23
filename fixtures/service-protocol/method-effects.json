@@ -165,12 +165,12 @@
       "intents": ["enable_skill", "disable_skill"],
       "target_kinds": ["skill"],
       "precondition_kinds": ["agent_config", "catalog_record"],
-      "target_agent_binding": "absent",
-      "target_scope_binding": "absent",
-      "project_binding": "absent",
+      "target_agent_binding": "affected_common_or_absent",
+      "target_scope_binding": "affected_common_or_absent",
+      "project_binding": "scope_dependent_optional",
       "network": "none",
       "impacts": ["app_local_data", "agent_config"],
-      "readback": ["agent_config", "skill_aggregates", "config_snapshots"]
+      "readback": ["catalog_skills", "agent_config", "config_snapshots"]
     },
     "skillManager.applySearch": {
       "type": "signed_preview",
@@ -391,7 +391,7 @@
       "precondition_kinds": ["agent_config"],
       "target_agent_binding": "claude_code",
       "target_scope_binding": "agent_global",
-      "project_binding": "absent",
+      "project_binding": "optional",
       "network": "none",
       "impacts": ["agent_config", "app_local_data"],
       "readback": ["catalog_skills", "skill_aggregates", "agent_config", "config_snapshots"]
@@ -403,9 +403,9 @@
       "intents": ["rollback_config"],
       "target_kinds": ["config"],
       "precondition_kinds": ["catalog_record", "agent_config"],
-      "target_agent_binding": "claude_code",
-      "target_scope_binding": "agent_global",
-      "project_binding": "absent",
+      "target_agent_binding": "config_agent",
+      "target_scope_binding": "agent_config_scope",
+      "project_binding": "scope_dependent_optional",
       "network": "none",
       "impacts": ["agent_config", "app_local_data"],
       "readback": ["catalog_skills", "skill_aggregates", "agent_config"]

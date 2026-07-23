@@ -11,6 +11,8 @@ import {
   replaceMethodEffectsTable,
   renderMethodEffectsTable,
   validateActionInventory,
+  validateFixtureBinding,
+  validateLifecycleBindingPlacements,
   validateMethodEffects,
   writeMethodEffectsDocTable,
 } from "../verify-service-protocol-drift.mjs";
@@ -201,6 +203,206 @@ test("requires every effectful method to have a complete lifecycle", () => {
     swiftRPC: { methods: [], dynamicCalls: [], fallbackFiles: [] },
   });
   assert.match(errors.join("\n"), /effectful methods missing action lifecycle/);
+});
+
+test("validates config rollback agent, scope, and project binding combinations", () => {
+  const lifecycle = {
+    ...signedLifecycle,
+    target_agent_binding: "config_agent",
+    target_scope_binding: "agent_config_scope",
+    project_binding: "scope_dependent_optional",
+  };
+  const action = (agent, scope, projectID) => ({
+    target: { agent, scope },
+    project_id: projectID,
+  });
+
+  assert.deepEqual(
+    validateFixtureBinding(
+      action("claude-code", "agent-global", null),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    validateFixtureBinding(
+      action("codex", "agent-global", "project-current"),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    validateFixtureBinding(
+      action("opencode", "agent-project", "project-current"),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ),
+    [],
+  );
+  assert.match(
+    validateFixtureBinding(
+      action("opencode", "agent-project", null),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ).join("\n"),
+    /requires a project binding/,
+  );
+  assert.match(
+    validateFixtureBinding(
+      action("tool-global", "agent-global", null),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ).join("\n"),
+    /not a supported config agent/,
+  );
+  assert.match(
+    validateFixtureBinding(
+      action("codex", "tool-global", null),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ).join("\n"),
+    /not a supported config scope/,
+  );
+  assert.match(
+    validateFixtureBinding(
+      action("codex", "agent-project", "project-current"),
+      {},
+      lifecycle,
+      "snapshot.rollback",
+    ).join("\n"),
+    /unsupported config agent\/scope combination/,
+  );
+});
+
+test("binds batch toggle action agent and scope to affected items", () => {
+  const lifecycle = {
+    ...signedLifecycle,
+    target_agent_binding: "affected_common_or_absent",
+    target_scope_binding: "affected_common_or_absent",
+    project_binding: "scope_dependent_optional",
+  };
+  const mixedAgentGlobal = {
+    affected_items: [
+      { agent: "claude-code", scope: "agent-global" },
+      { agent: "codex", scope: "agent-global" },
+    ],
+  };
+  assert.deepEqual(
+    validateFixtureBinding(
+      {
+        target: { agent: null, scope: "agent-global" },
+        project_id: null,
+      },
+      {},
+      lifecycle,
+      "batch.applySkillToggles",
+      mixedAgentGlobal,
+    ),
+    [],
+  );
+  assert.match(
+    validateFixtureBinding(
+      {
+        target: { agent: "claude-code", scope: null },
+        project_id: null,
+      },
+      {},
+      lifecycle,
+      "batch.applySkillToggles",
+      mixedAgentGlobal,
+    ).join("\n"),
+    /target agent binding differs/,
+  );
+
+  const project = {
+    affected_items: [
+      { agent: "opencode", scope: "agent-project" },
+    ],
+  };
+  assert.deepEqual(
+    validateFixtureBinding(
+      {
+        target: { agent: "opencode", scope: "agent-project" },
+        project_id: "project-current",
+      },
+      {},
+      lifecycle,
+      "batch.applySkillToggles",
+      project,
+    ),
+    [],
+  );
+  assert.match(
+    validateFixtureBinding(
+      {
+        target: { agent: "opencode", scope: "agent-project" },
+        project_id: null,
+      },
+      {},
+      lifecycle,
+      "batch.applySkillToggles",
+      project,
+    ).join("\n"),
+    /requires a project binding/,
+  );
+});
+
+test("keeps batch-only affected-item bindings off provider lifecycles", () => {
+  const providerLifecycle = {
+    ...signedLifecycle,
+    target_agent_binding: "absent",
+    target_scope_binding: "absent",
+    project_binding: "absent",
+  };
+  const inventory = {
+    lifecycle: new Map([
+      ["llm.saveProviderProfile", providerLifecycle],
+      ["batch.applySkillToggles", {
+        ...signedLifecycle,
+        target_agent_binding: "affected_common_or_absent",
+        target_scope_binding: "affected_common_or_absent",
+        project_binding: "scope_dependent_optional",
+      }],
+      ["snapshot.rollback", {
+        ...signedLifecycle,
+        target_agent_binding: "config_agent",
+        target_scope_binding: "agent_config_scope",
+        project_binding: "scope_dependent_optional",
+      }],
+    ]),
+  };
+  assert.deepEqual(validateLifecycleBindingPlacements(inventory), []);
+
+  inventory.lifecycle.set("llm.saveProviderProfile", {
+    ...providerLifecycle,
+    target_agent_binding: "affected_common_or_absent",
+  });
+  inventory.lifecycle.set("batch.applySkillToggles", signedLifecycle);
+  inventory.lifecycle.set("llm.deleteProviderProfile", {
+    ...signedLifecycle,
+    target_scope_binding: "agent_config_scope",
+  });
+  const errors = validateLifecycleBindingPlacements(inventory);
+  assert.ok(errors.includes(
+    "llm.saveProviderProfile illegally owns batch affected-item bindings",
+  ));
+  assert.ok(errors.includes(
+    "llm.deleteProviderProfile illegally owns snapshot config bindings",
+  ));
+  assert.ok(errors.includes(
+    "llm.saveProviderProfile lifecycle binding placement is invalid",
+  ));
+  assert.ok(errors.includes(
+    "batch.applySkillToggles lifecycle binding placement is invalid",
+  ));
 });
 
 test("rejects blocked compatibility methods with effects or Swift calls", () => {

@@ -15,15 +15,16 @@ enum ToolInstallTarget: String, Codable, CaseIterable, Identifiable, Hashable {
     }
 
     static func supportedTargets(from capabilities: [AdapterCapabilityRecord]) -> [ToolInstallTarget] {
-        guard !capabilities.isEmpty else {
-            return allCases
-        }
-        return capabilities
-            .filter {
-                $0.install.supported
-                    && $0.install.status.lowercased().hasPrefix("verified")
+        var seen: Set<ToolInstallTarget> = []
+        return capabilities.compactMap { capability in
+            guard capability.install.supported,
+                  capability.install.status.lowercased().hasPrefix("verified"),
+                  let target = ToolInstallTarget(rawValue: capability.agent),
+                  seen.insert(target).inserted else {
+                return nil
             }
-            .compactMap { ToolInstallTarget(rawValue: $0.agent) }
+            return target
+        }
     }
 }
 

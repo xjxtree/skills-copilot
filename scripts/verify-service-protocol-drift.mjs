@@ -380,6 +380,8 @@ export function parseActionInventory(raw) {
         "request_single_agent_or_absent",
         "tool_global",
         "claude_code",
+        "config_agent",
+        "affected_common_or_absent",
       ]
         .includes(record.target_agent_binding)
     ) {
@@ -394,6 +396,8 @@ export function parseActionInventory(raw) {
         "project_context_optional",
         "tool_global",
         "agent_global",
+        "agent_config_scope",
+        "affected_common_or_absent",
       ].includes(record.target_scope_binding)
     ) {
       throw new Error(`invalid target_scope_binding for ${method}`);
@@ -405,6 +409,7 @@ export function parseActionInventory(raw) {
         "required",
         "matches_target",
         "scope_dependent",
+        "scope_dependent_optional",
         "project_context_optional",
       ]
         .includes(record.project_binding)
@@ -446,6 +451,58 @@ export function collectSwiftRPCMethods(swiftRoot) {
   };
 }
 
+export function validateLifecycleBindingPlacements(inventory) {
+  const errors = [];
+  const expected = new Map([
+    ["llm.saveProviderProfile", ["absent", "absent", "absent"]],
+    [
+      "batch.applySkillToggles",
+      [
+        "affected_common_or_absent",
+        "affected_common_or_absent",
+        "scope_dependent_optional",
+      ],
+    ],
+    [
+      "snapshot.rollback",
+      ["config_agent", "agent_config_scope", "scope_dependent_optional"],
+    ],
+  ]);
+  for (const [method, lifecycle] of inventory.lifecycle) {
+    if (
+      (
+        lifecycle.target_agent_binding === "affected_common_or_absent"
+        || lifecycle.target_scope_binding === "affected_common_or_absent"
+      )
+      && method !== "batch.applySkillToggles"
+    ) {
+      errors.push(`${method} illegally owns batch affected-item bindings`);
+    }
+    if (
+      (
+        lifecycle.target_agent_binding === "config_agent"
+        || lifecycle.target_scope_binding === "agent_config_scope"
+      )
+      && method !== "snapshot.rollback"
+    ) {
+      errors.push(`${method} illegally owns snapshot config bindings`);
+    }
+  }
+  for (const [method, bindings] of expected) {
+    const lifecycle = inventory.lifecycle.get(method);
+    if (!lifecycle) continue;
+    const actual = [
+      lifecycle.target_agent_binding,
+      lifecycle.target_scope_binding,
+      lifecycle.project_binding,
+    ];
+    if (JSON.stringify(actual) !== JSON.stringify(bindings)) {
+      errors.push(`${method} lifecycle binding placement is invalid`);
+    }
+  }
+  return errors;
+}
+
 export function validateActionInventory({
   effects,
   inventory,
@@ -467,6 +524,7 @@ export function validateActionInventory({
   if (extraLifecycle.length) {
     errors.push(`action lifecycle declarations without declared effects: ${extraLifecycle.join(", ")}`);
   }
+  errors.push(...validateLifecycleBindingPlacements(inventory));
 
   const blocked = new Set(inventory.blockedCompatibilityMethods);
   for (const method of inventory.blockedCompatibilityMethods) {
@@ -579,7 +637,13 @@ function normalizeScopeBinding(scope) {
   return scope;
 }
 
-function validateFixtureBinding(action, requestParams, lifecycle, method) {
+export function validateFixtureBinding(
+  action,
+  requestParams,
+  lifecycle,
+  method,
+  previewResult = null,
+) {
   const errors = [];
   const agent = action?.target?.agent ?? null;
   const scope = action?.target?.scope ?? null;
@@ -588,6 +652,13 @@ function validateFixtureBinding(action, requestParams, lifecycle, method) {
     if (actual !== expected) {
       errors.push(`${method} preview fixture ${label} binding differs from its request`);
     }
+  };
+  const affectedItems = Array.isArray(previewResult?.affected_items)
+    ? previewResult.affected_items
+    : [];
+  const commonAffectedValue = (field) => {
+    const values = new Set(affectedItems.map((item) => item?.[field] ?? null));
+    return values.size === 1 ? [...values][0] : null;
   };
 
   switch (lifecycle.target_agent_binding) {
@@ -617,6 +688,21 @@ function validateFixtureBinding(action, requestParams, lifecycle, method) {
     break;
   case "claude_code":
     requireEqual(agent, "claude-code", "target agent");
+    break;
+  case "config_agent":
+    if (![
+      "claude-code",
+      "codex",
+      "hermes",
+      "openclaw",
+      "opencode",
+      "pi",
+    ].includes(agent)) {
+      errors.push(`${method} preview fixture target agent is not a supported config agent`);
+    }
+    break;
+  case "affected_common_or_absent":
+    requireEqual(agent, commonAffectedValue("agent"), "target agent");
     break;
   default:
     errors.push(`${method} has an unsupported target agent binding`);
@@ -653,6 +739,14 @@ function validateFixtureBinding(action, requestParams, lifecycle, method) {
   case "agent_global":
     requireEqual(scope, "agent-global", "target scope");
     break;
+  case "agent_config_scope":
+    if (!["agent-global", "agent-project"].includes(scope)) {
+      errors.push(`${method} preview fixture target scope is not a supported config scope`);
+    }
+    break;
+  case "affected_common_or_absent":
+    requireEqual(scope, commonAffectedValue("scope"), "target scope");
+    break;
   default:
     errors.push(`${method} has an unsupported target scope binding`);
   }
@@ -686,6 +780,18 @@ function validateFixtureBinding(action, requestParams, lifecycle, method) {
       requireEqual(projectID, null, "project");
     }
     break;
+  case "scope_dependent_optional":
+    if (scope === "agent-project") {
+      if (typeof projectID !== "string" || projectID.length === 0) {
+        errors.push(`${method} project-scoped preview fixture requires a project binding`);
+      }
+    } else if (
+      projectID !== null
+      && (typeof projectID !== "string" || projectID.length === 0)
+    ) {
+      errors.push(`${method} preview fixture has an invalid optional project binding`);
+    }
+    break;
   case "project_context_optional":
     if (
       !(
@@ -698,6 +804,42 @@ function validateFixtureBinding(action, requestParams, lifecycle, method) {
     break;
   default:
     errors.push(`${method} has an unsupported project binding`);
+  }
+  if (
+    lifecycle.target_agent_binding === "config_agent"
+    && lifecycle.target_scope_binding === "agent_config_scope"
+    && !new Set([
+      "claude-code:agent-global",
+      "claude-code:agent-project",
+      "codex:agent-global",
+      "hermes:agent-global",
+      "openclaw:agent-global",
+      "opencode:agent-global",
+      "opencode:agent-project",
+      "pi:agent-global",
+      "pi:agent-project",
+    ]).has(`${agent}:${scope}`)
+  ) {
+    errors.push(`${method} preview fixture has an unsupported config agent/scope combination`);
+  }
+  if (
+    lifecycle.target_agent_binding === "affected_common_or_absent"
+    && lifecycle.target_scope_binding === "affected_common_or_absent"
+    && agent !== null
+    && scope !== null
+    && !new Set([
+      "claude-code:agent-global",
+      "claude-code:agent-project",
+      "codex:agent-global",
+      "hermes:agent-global",
+      "openclaw:agent-global",
+      "opencode:agent-global",
+      "opencode:agent-project",
+      "pi:agent-global",
+      "pi:agent-project",
+    ]).has(`${agent}:${scope}`)
+  ) {
+    errors.push(`${method} preview fixture has an unsupported config agent/scope combination`);
   }
   return errors;
 }
@@ -753,6 +895,27 @@ function objectContainsForbiddenKeys(value, forbiddenKeys) {
     }
   }
   return uniqueSorted(found);
+}
+
+function objectContainsActionReferenceEnvelope(value) {
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (Array.isArray(current)) {
+      pending.push(...current);
+    } else if (isPlainObject(current)) {
+      if (
+        isPlainObject(current.reference)
+        && typeof current.reference.action_id === "string"
+        && typeof current.reference.source_revision === "string"
+        && isPlainObject(current.reference.target)
+      ) {
+        return true;
+      }
+      pending.push(...Object.values(current));
+    }
+  }
+  return false;
 }
 
 function validateLifecycleFixtures(fixturesDir, inventory, swiftRoot) {
@@ -816,6 +979,7 @@ function validateLifecycleFixtures(fixturesDir, inventory, swiftRoot) {
       previewRequest?.params,
       lifecycle,
       applyMethod,
+      response?.result,
     ));
     if (
       lifecycle.target_agent_binding === "request_single_agent_or_absent"
@@ -861,12 +1025,15 @@ function validateLifecycleFixtures(fixturesDir, inventory, swiftRoot) {
     }
     const leakedAuthorizationKeys = objectContainsForbiddenKeys(
       applyResponse?.result,
-      new Set(["preview_token", "action_confirmation", "confirmation"]),
+      new Set(["preview_token", "action_confirmation", "action_reference"]),
     );
     if (leakedAuthorizationKeys.length > 0) {
       errors.push(
         `${applyMethod} apply response fixture leaks consumed authorization fields: ${leakedAuthorizationKeys.join(", ")}`,
       );
+    }
+    if (objectContainsActionReferenceEnvelope(applyResponse?.result)) {
+      errors.push(`${applyMethod} apply response fixture leaks a consumed action-reference envelope`);
     }
     const returnedAction = actionFromResponse(applyResponse);
     if (

@@ -1246,3 +1246,4 @@
 "skillManager.inventory.sort.source" = "Source";
 "skillManager.remove.cleanupBlocked" = "Agent links were removed, but the local source is still referenced and could not be deleted. Refresh and review the remaining references.";
 "skillManager.confirm.fullUninstall" = "After every selected agent link is removed, the app-owned local source and its catalog record will also be deleted if the service confirms there are no remaining references.";
+"actionConfirmation.project" = "Project";

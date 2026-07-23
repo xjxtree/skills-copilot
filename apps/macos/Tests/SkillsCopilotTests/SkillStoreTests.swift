@@ -248,8 +248,8 @@ struct SkillStoreTests {
         try await runCase("projectValidationErrorSkipsScanAndSurfacesMessage") {
             try await projectValidationErrorSkipsScanAndSurfacesMessage()
         }
-        try await runCase("reloadFallsBackToDisabledLLMWhenOldServiceDoesNotSupportMethods") {
-            try await reloadFallsBackToDisabledLLMWhenOldServiceDoesNotSupportMethods()
+        try await runCase("reloadSurfacesUnsupportedLLMStatusMethod") {
+            try await reloadSurfacesUnsupportedLLMStatusMethod()
         }
         try await runCase("providerObservabilityUsesReadOnlyServiceContract") {
             try await providerObservabilityUsesReadOnlyServiceContract()
@@ -257,8 +257,8 @@ struct SkillStoreTests {
         try await runCase("providerObservabilityPreloadsAtStartupAndRefreshesWithReload") {
             try await providerObservabilityPreloadsAtStartupAndRefreshesWithReload()
         }
-        try await runCase("providerObservabilityFallsBackWhenMethodUnavailable") {
-            try await providerObservabilityFallsBackWhenMethodUnavailable()
+        try await runCase("providerObservabilitySurfacesMethodUnavailable") {
+            try await providerObservabilitySurfacesMethodUnavailable()
         }
         try await runCase("providerActivityAccumulatesAllPagesWithoutChangingSummary") {
             try await providerActivityAccumulatesAllPagesWithoutChangingSummary()
@@ -296,8 +296,8 @@ struct SkillStoreTests {
         try await runCase("taskCockpitWhitespaceOnlyInputRequiresTask") {
             try await taskCockpitWhitespaceOnlyInputRequiresTask()
         }
-        try await runCase("taskCockpitFallsBackWhenMethodUnavailable") {
-            try await taskCockpitFallsBackWhenMethodUnavailable()
+        try await runCase("taskCockpitSurfacesMethodUnavailable") {
+            try await taskCockpitSurfacesMethodUnavailable()
         }
         try await runCase("taskCockpitTimeoutShowsRecoveryAndIgnoresStaleResponse") {
             try await taskCockpitTimeoutShowsRecoveryAndIgnoresStaleResponse()
@@ -928,11 +928,11 @@ struct SkillStoreTests {
         try expectEqual(countOccurrences("catalog.listFindings", in: calls), 0, "Reload collection refresh should not launch a separate findings list sidecar.")
         try expectEqual(countOccurrences("catalog.listConflicts", in: calls), 0, "Reload collection refresh should not launch a separate conflicts list sidecar.")
         try expectEqual(countMethodCalls("snapshot.list", in: calls), 0, "Reload collection refresh should not launch a global snapshots list sidecar.")
-        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: calls), 0, "Reload should not block the core refresh on selected agent config history.")
+        try expectEqual(countMethodCalls("snapshot.listAgentConfigPage", in: calls), 0, "Reload should not block the core refresh on selected agent config history.")
         try expectContains(calls, "llm.status", "Reload should preserve the separate LLM status behavior.")
         try expectContains(calls, "project.getContext", "Reload should preserve the separate project context behavior.")
         try await waitUntil("Reload should refresh selected agent config history in the background.") {
-            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+            countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()) == 1
         }
     }
 
@@ -954,7 +954,7 @@ struct SkillStoreTests {
         try expectNil(store.errorMessage, "Startup should not surface a background error on success.")
         try expectEqual(store.selectedSkillDetail?.id, "alpha", "Startup should prewarm the first selected skill detail.")
         try expectEqual(countOccurrences("app.stateSnapshot", in: calls), 1, "Startup should use the combined state snapshot once.")
-        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: calls), 0, "Startup should not block the progress overlay on selected-agent config history.")
+        try expectEqual(countMethodCalls("snapshot.listAgentConfigPage", in: calls), 0, "Startup should not block the progress overlay on selected-agent config history.")
         try expectFalse(calls.contains("session.previewLocalSessions"), "Startup should not block the progress overlay on selected-agent local sessions.")
         try expectFalse(calls.contains("config.readAgentConfig"), "Startup should not block the progress overlay on selected-agent current config documents.")
         try expectContains(calls, "catalog.getSkill", "Startup should prewarm the selected skill detail.")
@@ -965,7 +965,7 @@ struct SkillStoreTests {
         try expectFalse(calls.contains("\"method\":\"config.toggleSkill\""), "Startup should not write agent config.")
         try await waitUntil("Startup should prewarm supplemental launch data in the background.") {
             store.localSessionPreviewResult.sessionRows.count == 2
-                && countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+                && countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()) == 1
                 && fake.calls().contains("config.readAgentConfig")
                 && countMethodCalls("llm.listProviderProfiles", in: fake.calls()) == 1
         }
@@ -1098,7 +1098,7 @@ struct SkillStoreTests {
             "Catalog scan requests must carry explicit refresh authorization."
         )
         try expectEqual(
-            countMethodCalls("snapshot.listAgentConfig", in: calls),
+            countMethodCalls("snapshot.listAgentConfigPage", in: calls),
             0,
             "Catalog scan read-back should not launch unrelated agent config history requests."
         )
@@ -1215,11 +1215,11 @@ struct SkillStoreTests {
         try expectEqual(store.agentConfigSnapshots.map(\.id), ["snap-claude-new", "snap-claude-old"], "Claude filter should show only Claude config snapshots.")
         try expectEqual(Set(store.agentConfigSnapshots.map(\.agent)), Set(["claude-code"]), "Claude timeline should not include other agents.")
 
-        let callsAfterReload = countMethodCalls("snapshot.listAgentConfig", in: fake.calls())
+        let callsAfterReload = countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls())
         store.selectedSkillID = "alpha"
         await store.loadSelectedDetail()
         try expectEqual(store.agentConfigSnapshots.map(\.id), ["snap-claude-new", "snap-claude-old"], "Changing skill selection within an agent must not turn config snapshots into per-skill history.")
-        try expectEqual(countMethodCalls("snapshot.listAgentConfig", in: fake.calls()), callsAfterReload, "Skill detail changes should not reload agent config history.")
+        try expectEqual(countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()), callsAfterReload, "Skill detail changes should not reload agent config history.")
 
         store.agentFilter = .codex
         try await waitUntil("Codex filter should load only Codex config snapshots.") {
@@ -1305,6 +1305,9 @@ struct SkillStoreTests {
         let store = SkillStore(service: runner.serviceClient())
 
         await store.reload()
+        try await waitUntil("Initial selected history should accept the first page before exposing the partial retry state.") {
+            store.skillEventsByID["skill-1"]?.count == 100
+        }
         try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "Initial selected history should preserve the first page.")
         try expectEqual(store.selectedSkillEventCompleteness.completeness, .incomplete, "The selected cached failure must be visibly incomplete.")
 
@@ -1615,7 +1618,7 @@ struct SkillStoreTests {
 
         try expectEqual(saved, false, "Missing snapshot read-back must fail closed in the native client.")
         try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Read-back rejection must not retry the write.")
-        try expectContains(store.settingsErrorMessage, "verified AgentConfig and ConfigSnapshots", "The user should be told that verification was incomplete.")
+        try expectContains(store.settingsErrorMessage, "does not cover every declared domain", "The user should be told that the declared read-back coverage was incomplete.")
         try expectNil(store.lastMutationMessage, "Incomplete read-back must not publish saved feedback.")
         guard case .failed = store.configMutationState else {
             throw NativeModelTestFailure(description: "Incomplete read-back should leave the config editor in a failed state.")
@@ -1654,7 +1657,7 @@ struct SkillStoreTests {
         await store.loadAgentConfigSnapshotsIfNeeded(agent: "claude-code")
 
         let configReadsAfterFirstLoad = countMethodCalls("config.readAgentConfig", in: fake.calls())
-        let snapshotReadsAfterFirstLoad = countMethodCalls("snapshot.listAgentConfig", in: fake.calls())
+        let snapshotReadsAfterFirstLoad = countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls())
 
         await store.loadCurrentAgentConfigDocumentsIfNeeded(agent: "claude-code")
         await store.loadAgentConfigSnapshotsIfNeeded(agent: "claude-code")
@@ -1665,7 +1668,7 @@ struct SkillStoreTests {
             "Need-based current config load should not reread the same agent/project payload."
         )
         try expectEqual(
-            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()),
+            countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()),
             snapshotReadsAfterFirstLoad,
             "Need-based config history load should not reread the same agent/project payload."
         )
@@ -1678,7 +1681,7 @@ struct SkillStoreTests {
             "Config scope changes should filter cached current documents locally."
         )
         try expectEqual(
-            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()),
+            countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()),
             snapshotReadsAfterFirstLoad,
             "Config scope changes should filter cached history locally."
         )
@@ -1692,7 +1695,7 @@ struct SkillStoreTests {
             "Manual current config refresh should still force a new read."
         )
         try expectEqual(
-            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()),
+            countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()),
             snapshotReadsAfterFirstLoad + 1,
             "Manual config history refresh should still force a new read."
         )
@@ -2419,7 +2422,7 @@ struct SkillStoreTests {
         try expectFalse(fake.calls().contains("catalog.scanAll"), "Invalid project set should not scan.")
     }
 
-    private func reloadFallsBackToDisabledLLMWhenOldServiceDoesNotSupportMethods() async throws {
+    private func reloadSurfacesUnsupportedLLMStatusMethod() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "old-service")
@@ -2427,9 +2430,8 @@ struct SkillStoreTests {
         let store = SkillStore(service: fake.serviceClient())
         await store.reload()
 
-        try expectNil(store.errorMessage, "Old service LLM fallback should not fail reload.")
-        try expectFalse(store.llmStatus.enabled, "Old service LLM fallback should be disabled.")
-        try expectEqual(store.llmStatus.disabledReason, UIStrings.llmDisabledFallback, "Old service LLM fallback should expose a stable reason.")
+        try expectContains(store.errorMessage, "unknown_method", "Reload should fail closed when a required LLM status method is unavailable.")
+        try expectFalse(store.isLoading, "A failed reload should still reset its loading state.")
         try expectContains(fake.calls(), "llm.status", "Reload should ask the service for LLM status.")
     }
 
@@ -2442,7 +2444,7 @@ struct SkillStoreTests {
         store.selectedSkillID = "beta"
         await store.reload()
         try await waitUntil("Reload supplemental reads should settle before the observability contract check.") {
-            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+            countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()) == 1
                 && countMethodCalls("llm.providerObservability", in: fake.calls()) == 1
                 && !store.isLoadingProviderObservability
                 && store.providerObservabilityResult != nil
@@ -2563,7 +2565,7 @@ struct SkillStoreTests {
         store.taskCockpitText = "Prepare local release audit work."
         await store.reload()
         try await waitUntil("Reload supplemental reads should settle before the Task Cockpit contract check.") {
-            countMethodCalls("snapshot.listAgentConfig", in: fake.calls()) == 1
+            countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()) == 1
         }
         store.selectedSidebarSelection = .skill("beta")
         let snapshotCallsBeforeCockpit = countOccurrences("snapshot.", in: fake.calls())
@@ -2791,7 +2793,7 @@ struct SkillStoreTests {
         try expectEqual(store.taskCockpitResult?.fallbackReason, UIStrings.taskCockpitTaskRequired, "Whitespace-only cockpit input should ask for a task.")
     }
 
-    private func taskCockpitFallsBackWhenMethodUnavailable() async throws {
+    private func taskCockpitSurfacesMethodUnavailable() async throws {
         let runner = TaskCockpitFallbackServiceRunner()
 
         let store = SkillStore(
@@ -2805,12 +2807,12 @@ struct SkillStoreTests {
         await store.reload()
         await store.buildTaskCockpit()
 
-        try expectEqual(store.taskCockpitResult?.isUnavailable, true, "Task cockpit should expose unavailable fallback for older services.")
-        try expectEqual(store.taskCockpitResult?.fallbackReason, UIStrings.taskCockpitUnavailable, "Unknown method fallback should use the localized unavailable copy.")
+        try expectEqual(store.taskCockpitResult?.isUnavailable, true, "Task cockpit should expose an unavailable result when the required method is absent.")
+        try expectContains(store.taskCockpitResult?.fallbackReason, "unknown_method", "A missing required method must remain visible instead of silently falling back.")
         try expectFalse(store.isBuildingTaskCockpit, "Unavailable task cockpit should reset loading state.")
         let calls = await runner.calls()
-        try expectContains(calls, "llm.previewPrompt", "Fallback should still prove the intended provider preview method was attempted.")
-        try expectContains(calls, "\"task_text\":\"Route a local audit release note task.\"", "Fallback should reuse existing routing task text when cockpit input is blank.")
+        try expectContains(calls, "llm.previewPrompt", "The failed request should still prove the intended provider preview method was attempted.")
+        try expectContains(calls, "\"task_text\":\"Route a local audit release note task.\"", "The failed request should reuse existing routing task text when cockpit input is blank.")
         try expectFalse(calls.contains("llm.confirmPromptAndSend"), "Unavailable cockpit flow must not send to provider.")
         try expectFalse(calls.contains("config.toggleSkill"), "Unavailable cockpit flow must not call config write paths.")
         try expectFalse(calls.contains("script.execute"), "Unavailable cockpit flow must not call execution paths.")
@@ -3160,8 +3162,17 @@ private actor ExplicitProviderMutationControlServiceState {
             return Self.ok(["records": []])
         case "llm.listPromptRuns":
             return Self.ok(["runs": []])
-        case "skill.listEvents":
-            return Self.ok([])
+        case "skill.listEventsPage", "snapshot.listAgentConfigPage":
+            return Self.ok([
+                "records": [],
+                "source_revision": "sha256:empty-history",
+                "returned_count": 0,
+                "total_count": 0,
+                "has_more": false,
+                "next_cursor": NSNull(),
+                "source_completeness": "enumerable",
+                "incomplete_reason": NSNull(),
+            ])
         default:
             return Self.error(code: "unknown_method", message: "unknown method: \(method)")
         }
@@ -3209,6 +3220,8 @@ private actor ExplicitProviderMutationControlServiceState {
                 "app.stateSnapshot",
                 "llm.listProviderProfiles",
                 "llm.saveProviderProfile",
+                "skill.listEventsPage",
+                "snapshot.listAgentConfigPage",
             ],
         ]
     }
@@ -3276,6 +3289,20 @@ final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Sendable {
                 return Self.selectedSkillStateSnapshot()
             case "catalog.getSkill":
                 return Self.selectedSkillDetail()
+            case "llm.status":
+                return Self.response(result: [
+                    "enabled": false,
+                    "disabled_reason": "disabled",
+                    "supported_actions": [],
+                ])
+            case "project.getContext":
+                return Self.response(result: [
+                    "active": NSNull(),
+                    "recent": [],
+                    "revision": "sha256:project-context-empty",
+                ])
+            case "rules.listTuning":
+                return Self.response(result: ["records": []])
             default:
                 break
             }
@@ -3441,7 +3468,14 @@ final class LocalHistoryPageRunner: ServiceProcessRunning, @unchecked Sendable {
                 "app_data_dir": "/tmp/app-data",
                 "catalog_path": "/tmp/app-data/catalog.sqlite",
                 "user_home": "/tmp/home",
-                "supported_methods": ["app.stateSnapshot", "catalog.getSkill", "skill.listEventsPage"],
+                "supported_methods": [
+                    "app.stateSnapshot",
+                    "catalog.getSkill",
+                    "llm.status",
+                    "project.getContext",
+                    "rules.listTuning",
+                    "skill.listEventsPage",
+                ],
             ],
             "skills": [[
                 "id": "skill-1",
@@ -3596,10 +3630,8 @@ final class CatalogRefreshServiceRunner: ServiceProcessRunning {
             return Self.ok(Self.stateSnapshot)
         case "catalog.getSkill":
             return Self.ok(Self.detail(for: rawInput))
-        case "skill.listEvents", "snapshot.listAgentConfig":
-            return Self.ok("[]")
         case "skill.listEventsPage", "snapshot.listAgentConfigPage":
-            return Self.unknown(method)
+            return Self.ok(Self.emptyHistoryPage)
         case "project.getContext":
             return Self.ok(Self.projectContext)
         case "llm.status",
@@ -3660,7 +3692,11 @@ final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     }
 
     private static let supportedMethods = """
-    ["app.stateSnapshot","catalog.scanAll","catalog.getSkill","skill.listEvents","snapshot.listAgentConfig","project.getContext","llm.status","llm.listProviderProfiles","llm.listPromptRuns","rules.listTuning"]
+    ["app.stateSnapshot","catalog.scanAll","catalog.getSkill","skill.listEventsPage","snapshot.listAgentConfigPage","project.getContext","llm.status","llm.listProviderProfiles","llm.listPromptRuns","rules.listTuning"]
+    """
+
+    private static let emptyHistoryPage = """
+    {"records":[],"source_revision":"sha256:empty-history","returned_count":0,"total_count":0,"has_more":false,"next_cursor":null,"source_completeness":"enumerable","incomplete_reason":null}
     """
 
     private static let status = """

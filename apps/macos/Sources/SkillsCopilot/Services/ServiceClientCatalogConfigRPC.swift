@@ -258,6 +258,14 @@ extension ServiceClient {
             guard let action = preview.actionDescriptor else {
                 throw ClientError.invalidOutput("Batch preview omitted its typed action.")
             }
+            let agents = Set(preview.affectedSkills.map(\.agent))
+            let scopes = Set(preview.affectedSkills.map(\.scope))
+            let expectedAgent: ActionStringExpectation = agents.count == 1
+                ? .exact(agents.first!)
+                : .absent
+            let expectedScope: ActionStringExpectation = scopes.count == 1
+                ? .exact(scopes.first!)
+                : .absent
             do {
                 try action.validated(
                     previewMethod: "batch.previewSkillToggles",
@@ -268,13 +276,14 @@ extension ServiceClient {
                         intent: on ? "enable_skill" : "disable_skill",
                         targetKind: "skill",
                         targetID: .present,
-                        targetAgent: .absent,
-                        targetScope: .absent,
-                        projectID: .absent,
+                        targetAgent: expectedAgent,
+                        targetScope: expectedScope,
+                        projectID: .optional,
                         impacts: ["app_local_data", "agent_config"],
-                        readback: ["agent_config", "skill_aggregates", "config_snapshots"]
+                        readback: ["catalog_skills", "agent_config", "config_snapshots"]
                     )
                 )
+                try action.validatedBatchToggleBinding()
                 try preview.preconditions.validated(
                     kinds: ["agent_config", "catalog_record"]
                 )
@@ -410,7 +419,9 @@ extension ServiceClient {
             intent: "save_config",
             impacts: ["agent_config", "app_local_data"],
             readback: ["catalog_skills", "skill_aggregates", "agent_config", "config_snapshots"],
-            preconditionKinds: ["agent_config"]
+            preconditionKinds: ["agent_config"],
+            targetAgent: .exact("claude-code"),
+            targetScope: .exact("agent-global")
         )
         return preview
     }
@@ -444,7 +455,9 @@ extension ServiceClient {
             intent: "rollback_config",
             impacts: ["agent_config", "app_local_data"],
             readback: ["catalog_skills", "skill_aggregates", "agent_config"],
-            preconditionKinds: ["catalog_record", "agent_config"]
+            preconditionKinds: ["catalog_record", "agent_config"],
+            targetAgent: .oneOf(ActionDescriptorWire.configMutationAgents),
+            targetScope: .oneOf(["agent-global", "agent-project"])
         )
         return preview
     }
@@ -506,8 +519,7 @@ extension ServiceClient {
         _ result: ProjectContextApplyResult,
         preview: ProjectContextActionPreview
     ) throws {
-        guard result.action == preview.action,
-              result.previewToken == preview.previewToken else {
+        guard result.action == preview.action else {
             throw ClientError.invalidOutput("Project context response belongs to another preview.")
         }
         _ = try result.readback.validated(for: preview.action)
@@ -560,7 +572,9 @@ extension ServiceClient {
         intent: String,
         impacts: [String],
         readback: [String],
-        preconditionKinds: Set<String>
+        preconditionKinds: Set<String>,
+        targetAgent: ActionStringExpectation,
+        targetScope: ActionStringExpectation
     ) throws {
         do {
             try action.validated(
@@ -572,13 +586,14 @@ extension ServiceClient {
                     intent: intent,
                     targetKind: "config",
                     targetID: .present,
-                    targetAgent: .exact("claude-code"),
-                    targetScope: .exact("agent-global"),
-                    projectID: .absent,
+                    targetAgent: targetAgent,
+                    targetScope: targetScope,
+                    projectID: .optional,
                     impacts: impacts,
                     readback: readback
                 )
             )
+            try action.validatedConfigMutationBinding()
             try preconditions.validated(kinds: preconditionKinds)
         } catch {
             throw ClientError.invalidOutput(error.localizedDescription)

@@ -8,7 +8,8 @@
       "intent": "disable_skill",
       "target": {
         "kind": "skill",
-        "id": "selection:claude-global-fixture,pi-global-fixture"
+        "id": "selection:claude-global-fixture,pi-global-fixture",
+        "scope": "agent-global"
       },
       "impacts": ["app_local_data", "agent_config"],
       "preview_method": "batch.previewSkillToggles",
@@ -16,7 +17,7 @@
       "source_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "confirmation_required": true,
       "network": "none",
-      "readback": ["agent_config", "skill_aggregates", "config_snapshots"],
+      "readback": ["catalog_skills", "agent_config", "config_snapshots"],
       "evidence_refs": ["skill:claude-global-fixture", "skill:pi-global-fixture"]
     },
     "target_enabled": false,
@@ -94,11 +95,11 @@
     "readback": {
       "action_id": "action:disable_skill:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "source_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "domains": ["agent_config", "skill_aggregates", "config_snapshots"],
+      "domains": ["catalog_skills", "agent_config", "config_snapshots"],
       "target_ids": [
         "/tmp/skills-copilot-home/.claude/settings.json",
         "/tmp/skills-copilot-home/.pi/agent/settings.json",
-        "skill-aggregates",
+        "catalog-skills",
         "config-snapshots"
       ],
       "observations": [
@@ -113,8 +114,8 @@
           "revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
         },
         {
-          "domain": "skill_aggregates",
-          "target_id": "skill-aggregates",
+          "domain": "catalog_skills",
+          "target_id": "catalog-skills",
           "revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
         },
         {

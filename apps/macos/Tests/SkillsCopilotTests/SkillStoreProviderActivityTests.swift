@@ -4,7 +4,7 @@ import Foundation
 
 @MainActor
 extension SkillStoreTests {
-    func providerObservabilityFallsBackWhenMethodUnavailable() async throws {
+    func providerObservabilitySurfacesMethodUnavailable() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "normal")
@@ -14,10 +14,10 @@ extension SkillStoreTests {
         await store.reload()
         await store.loadProviderObservability()
 
-        try expectEqual(store.providerObservabilityResult?.isUnavailable, true, "Provider observability should expose unavailable fallback for older services.")
-        try expectEqual(store.providerObservabilityResult?.fallbackReason, UIStrings.providerObservabilityUnavailable, "Unknown method fallback should use the localized unavailable copy.")
+        try expectEqual(store.providerObservabilityResult?.isUnavailable, true, "Provider observability should expose the service failure as unavailable.")
+        try expectContains(store.providerObservabilityResult?.fallbackReason, "unknown_method", "Unknown methods should remain visible instead of being rewritten as a compatibility fallback.")
         try expectFalse(store.isLoadingProviderObservability, "Unavailable provider observability should reset loading state.")
-        try expectContains(fake.calls(), "llm.providerObservability", "Fallback should still prove the intended V2.64 method was attempted.")
+        try expectContains(fake.calls(), "llm.providerObservability", "The unavailable result should still prove the intended method was attempted.")
     }
 
     func providerActivityAccumulatesAllPagesWithoutChangingSummary() async throws {
@@ -36,11 +36,11 @@ extension SkillStoreTests {
         try expectEqual(store.providerActivityCompleteness.completeness, .complete, "Provider activity should become complete")
         try expectEqual(store.providerObservabilityResult?.summary, summary, "Paging must not change aggregate summary")
         try expectEqual(runner.activityRequestCount(), 3, "Provider activity requests should be serialized into three 50-row pages.")
-        try await providerActivityMethodUnavailableIsExplicit()
+        try await providerActivityMethodUnavailableUsesRetryableFailure()
         try await providerActivityInitialFailureRetriesFromNilCursor()
     }
 
-    private func providerActivityMethodUnavailableIsExplicit() async throws {
+    private func providerActivityMethodUnavailableUsesRetryableFailure() async throws {
         let runner = ProviderActivityPageRunner(
             totalCount: 50,
             activityFailureCode: "unknown_method",
@@ -52,8 +52,8 @@ extension SkillStoreTests {
         try expectEqual(store.providerObservabilityResult?.isUnavailable, false, "Activity method fallback must not discard the available aggregate summary.")
         try expectEqual(store.providerActivityRows, [], "Unavailable activity method must not invent rows.")
         try expectEqual(store.providerActivityCompleteness.isComplete, false, "Unavailable activity method must remain incomplete.")
-        try expectEqual(store.providerActivityCompleteness.incompleteReason, .unsupportedProtocol, "Unknown activity method must expose unsupported_protocol.")
-        try expectEqual(store.providerActivityCompleteness.canLoadAll, false, "Unsupported activity cannot offer a retry loop.")
+        try expectEqual(store.providerActivityCompleteness.incompleteReason, .pageFailed, "Unknown activity methods should use the same visible page_failed state as other service failures.")
+        try expectEqual(store.providerActivityCompleteness.canLoadAll, true, "An initial activity failure should offer a safe retry from the nil cursor.")
     }
 
     private func providerActivityInitialFailureRetriesFromNilCursor() async throws {

@@ -13,7 +13,8 @@
         "source_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "target": {
           "kind": "skill",
-          "id": "selection:claude-global-fixture,pi-global-fixture"
+          "id": "selection:claude-global-fixture,pi-global-fixture",
+          "scope": "agent-global"
         }
       },
       "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",

@@ -1066,7 +1066,6 @@ final class SkillStore: ObservableObject {
         preview: ProjectContextActionPreview
     ) throws {
         guard result.action == preview.action,
-              result.previewToken == preview.previewToken,
               result.affectedCount == preview.affectedCount,
               result.state.revision == preview.candidate.revision else {
             throw ServiceClient.ClientError.invalidOutput(

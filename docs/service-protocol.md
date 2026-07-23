@@ -123,9 +123,12 @@ that clients may infer for arbitrary mutations.
 - Confirmation material is request-only authority. A successful apply response
   may return the original action descriptor for correlation and must return its
   verified action-bound read-back, but must not echo `preview_token`,
-  `action_confirmation`, or `confirmation` anywhere in the result. Native
-  clients compare any returned action with the reviewed preview and validate
-  the response using that original preview before publishing success.
+  `action_confirmation`, `action_reference`, or an equivalent action-reference
+  authorization envelope anywhere in the result. Human-readable confirmation
+  metadata without a token or action reference is not authorization and may be
+  returned for UI explanation. Native clients compare any returned action with
+  the reviewed preview and validate the response using that original preview
+  before publishing success.
 
 `script.execute`, `catalog.importSkill`, and `skill.exportBundle` are
 compatibility-only blocked methods. Each returns `mutation_disabled` before

@@ -937,15 +937,16 @@ mod tests {
                 scope: Some(Scope::AgentGlobal),
             },
             None,
-            vec![ActionImpact::AgentConfig],
+            vec![ActionImpact::AppLocalData, ActionImpact::AgentConfig],
             "batch.previewSkillToggles",
             Some("batch.applySkillToggles"),
             revision.to_string(),
             true,
             ActionNetworkPosture::None,
             vec![
+                ActionReadbackDomain::CatalogSkills,
                 ActionReadbackDomain::AgentConfig,
-                ActionReadbackDomain::SkillAggregates,
+                ActionReadbackDomain::ConfigSnapshots,
             ],
             vec![format!("skill:{target_id}")],
         )
@@ -1484,9 +1485,14 @@ mod tests {
                     revision: "sha256:config".to_string(),
                 },
                 ActionReadbackObservation {
-                    domain: ActionReadbackDomain::SkillAggregates,
+                    domain: ActionReadbackDomain::CatalogSkills,
                     target_id: "skill-1".to_string(),
                     revision: "sha256:skill".to_string(),
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::ConfigSnapshots,
+                    target_id: "snapshot-1".to_string(),
+                    revision: "sha256:snapshot".to_string(),
                 },
                 ActionReadbackObservation {
                     domain: ActionReadbackDomain::ManagerInventory,

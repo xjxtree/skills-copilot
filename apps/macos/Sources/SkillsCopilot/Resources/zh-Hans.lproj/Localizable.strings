@@ -1246,3 +1246,4 @@
 "skillManager.inventory.sort.source" = "来源";
 "skillManager.remove.cleanupBlocked" = "Agent 链接已移除，但本地源仍被引用，无法删除。请刷新并检查剩余引用。";
 "skillManager.confirm.fullUninstall" = "移除全部所选 Agent 链接后，如果服务确认没有剩余引用，还会删除应用管理的本地源及其 Catalog 记录。";
+"actionConfirmation.project" = "项目";

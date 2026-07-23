@@ -235,7 +235,10 @@ struct SkillManagerCommandPreview: Codable, Hashable {
             source: try container.decodeIfPresent(String.self, forKey: .source),
             skills: try container.decodeIfPresent([String].self, forKey: .skills),
             action: action,
-            preconditions: try container.decode([ActionPreconditionWire].self, forKey: .preconditions)
+            preconditions: try container.decodeIfPresent(
+                [ActionPreconditionWire].self,
+                forKey: .preconditions
+            ) ?? []
         )
     }
 

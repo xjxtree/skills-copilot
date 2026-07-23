@@ -92,14 +92,12 @@ struct ProjectContextActionPreview: Codable, Hashable {
 
 struct ProjectContextApplyResult: Codable, Hashable {
     let action: ActionDescriptorWire
-    let previewToken: String
     let state: ProjectContextState
     let affectedCount: Int
     let readback: ActionReadbackWire
 
     enum CodingKeys: String, CodingKey {
         case action
-        case previewToken = "preview_token"
         case state
         case affectedCount = "affected_count"
         case readback

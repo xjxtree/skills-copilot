@@ -1283,14 +1283,20 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                     "raw": [:],
                 ] as [String: Any]
             }
-            var searchResult: [String: Any] = [
-                "preview": preview(
+            var searchPreview = preview(
                     operation: "search",
                     token: "search:\(query)",
                     source: nil,
                     skills: [],
                     targetID: query
-                ),
+                )
+            if call.method == "skillManager.applySearch" {
+                searchPreview.removeValue(forKey: "preview_token")
+                searchPreview["confirmed"] = true
+                searchPreview["will_run"] = true
+            }
+            var searchResult: [String: Any] = [
+                "preview": searchPreview,
                 "output": call.method == "skillManager.applySearch" ? output : NSNull(),
                 "results": results,
                 "returned_count": results.count,
@@ -1342,22 +1348,40 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
             result = mutationResponse(call: call, operation: "update")
         case "skillManager.previewLocalCreate", "skillManager.applyLocalCreate":
             let name = call.name ?? ""
-            result = [
-                "preview": preview(operation: "localCreate", token: "local-create:\(name)", source: nil, skills: [name]),
+            var localCreatePreview = preview(
+                operation: "localCreate",
+                token: "local-create:\(name)",
+                source: nil,
+                skills: [name]
+            )
+            if call.confirmed {
+                localCreatePreview.removeValue(forKey: "preview_token")
+                localCreatePreview["confirmed"] = true
+                localCreatePreview["will_run"] = true
+            }
+            var localCreateResult: [String: Any] = [
+                "preview": localCreatePreview,
                 "output": NSNull(),
                 "imported": NSNull(),
                 "instance_id": "local:\(name)",
                 "source_path": "/tmp/fixture/\(name)",
                 "applied": call.confirmed
             ]
+            if call.confirmed {
+                localCreateResult["readback"] = readback(
+                    operation: "localCreate",
+                    targetID: name
+                )
+            }
+            result = localCreateResult
         case "skillManager.deleteLocal":
             let instanceID = call.instanceID ?? ""
-            result = [
+            var localDeleteResult: [String: Any] = [
                 "action": action(
                     operation: "localDelete",
                     targetID: instanceID
                 ),
-                "preview_token": call.previewToken ?? "preview:localDelete:\(instanceID)",
+                "preconditions": preconditions(operation: "localDelete", targetID: instanceID),
                 "instance_id": instanceID,
                 "skill_name": instanceID,
                 "path": "/tmp/fixture/\(instanceID)",
@@ -1368,6 +1392,15 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
                 "deleted": call.confirmed,
                 "summary": "fixture local delete"
             ]
+            if call.confirmed {
+                localDeleteResult["readback"] = readback(
+                    operation: "localDelete",
+                    targetID: instanceID
+                )
+            } else {
+                localDeleteResult["preview_token"] = "preview:localDelete:\(instanceID)"
+            }
+            result = localDeleteResult
         case "app.stateSnapshot":
             let localSkills = (0..<31).map { index in
                 [
@@ -1410,13 +1443,32 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
 
     private static func mutationResponse(call: RecordedSkillManagerCall, operation: String) -> [String: Any] {
         let token = call.confirmed ? (call.previewToken ?? "missing-token") : "preview:\(operation):\(call.source ?? call.skills.joined(separator: ","))"
-        return [
-            "preview": preview(operation: operation, token: token, source: call.source, skills: call.skills),
+        let targetID = call.source ?? call.skills.first ?? operation
+        var mutationPreview = preview(
+            operation: operation,
+            token: token,
+            source: call.source,
+            skills: call.skills,
+            targetID: targetID,
+            agents: call.agents,
+            scope: call.scope
+        )
+        if call.confirmed {
+            mutationPreview.removeValue(forKey: "preview_token")
+            mutationPreview["confirmed"] = true
+            mutationPreview["will_run"] = true
+        }
+        var result: [String: Any] = [
+            "preview": mutationPreview,
             "output": NSNull(),
             "applied": call.confirmed,
             "scanned_count": 0,
             "updated_skills": []
         ]
+        if call.confirmed {
+            result["readback"] = readback(operation: operation, targetID: targetID)
+        }
+        return result
     }
 
     private static func preview(
@@ -1424,7 +1476,9 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         token: String,
         source: String?,
         skills: [String],
-        targetID: String? = nil
+        targetID: String? = nil,
+        agents: [String] = [],
+        scope: String? = nil
     ) -> [String: Any] {
         var result: [String: Any] = [
             "tool_id": "npx-skills",
@@ -1446,6 +1500,12 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         if ["search", "install", "remove", "update", "localCreate"].contains(operation) {
             result["action"] = action(
                 operation: operation,
+                targetID: targetID ?? source ?? skills.first ?? operation,
+                agents: agents,
+                scope: scope
+            )
+            result["preconditions"] = preconditions(
+                operation: operation,
                 targetID: targetID ?? source ?? skills.first ?? operation
             )
         }
@@ -1454,7 +1514,9 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
 
     private static func action(
         operation: String,
-        targetID: String
+        targetID: String,
+        agents: [String] = [],
+        scope: String? = nil
     ) -> [String: Any] {
         let methods: (kind: String, intent: String, preview: String, apply: String)
         switch operation {
@@ -1471,25 +1533,71 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         default:
             methods = ("manager_local_delete", "manager_local_delete", "skillManager.deleteLocal", "skillManager.deleteLocal")
         }
+        var target: [String: Any] = [
+            "kind": "skill",
+            "id": targetID
+        ]
+        let uniqueAgents = Array(Set(agents.filter { !$0.isEmpty })).sorted()
+        if uniqueAgents.count == 1 {
+            target["agent"] = uniqueAgents[0]
+        }
+        if let scope {
+            target["scope"] = scope == "project" ? "agent-project" : "agent-global"
+        }
+        let impacts: [String]
+        let readbackDomains: [String]
+        switch operation {
+        case "search":
+            impacts = ["read_only", "external_manager", "app_local_data"]
+            readbackDomains = ["manager_inventory"]
+        case "localCreate":
+            impacts = ["external_manager", "skill_files", "app_local_data"]
+            readbackDomains = ["catalog_skills", "skill_files"]
+        case "localDelete":
+            impacts = ["skill_files", "app_local_data"]
+            readbackDomains = ["skill_files", "catalog_skills"]
+            target["agent"] = "tool-global"
+            target["scope"] = "tool-global"
+        default:
+            impacts = ["app_local_data", "external_manager", "skill_files"]
+            readbackDomains = ["catalog_skills", "skill_files", "manager_inventory"]
+        }
         return [
             "id": "action:\(methods.intent):\(targetID)",
             "kind": methods.kind,
             "intent": methods.intent,
-            "target": [
-                "kind": ["search", "localDelete"].contains(operation) ? "skill" : "package",
-                "id": targetID
-            ],
-            "impacts": operation == "search"
-                ? ["read_only", "external_manager", "app_local_data"]
-                : ["skill_files", "app_local_data"],
+            "target": target,
+            "impacts": impacts,
             "preview_method": methods.preview,
             "apply_method": methods.apply,
             "source_revision": "sha256:fixture",
             "confirmation_required": true,
             "network": ["search", "install", "remove", "update", "localCreate"].contains(operation) ? "required" : "none",
-            "readback": operation == "search" ? ["manager_inventory"] : ["catalog_skills"],
+            "readback": readbackDomains,
             "evidence_refs": ["skill:\(targetID)"]
         ]
+    }
+
+    private static func preconditions(
+        operation: String,
+        targetID: String
+    ) -> [[String: String]] {
+        let kinds: [String]
+        switch operation {
+        case "search":
+            kinds = ["source_file"]
+        case "localDelete":
+            kinds = ["catalog_record", "source_file"]
+        default:
+            kinds = ["target_file", "source_file"]
+        }
+        return kinds.map { kind in
+            [
+                "kind": kind,
+                "target_id": "\(kind):\(targetID)",
+                "expected_revision": "sha256:\(kind):\(targetID)",
+            ]
+        }
     }
 
     private static func readback(
@@ -1497,16 +1605,19 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         targetID: String
     ) -> [String: Any] {
         let descriptor = action(operation: operation, targetID: targetID)
+        let domains = descriptor["readback"] as? [String] ?? []
         return [
             "action_id": descriptor["id"]!,
             "source_revision": "sha256:verified:\(operation):\(targetID)",
-            "domains": operation == "search" ? ["manager_inventory"] : ["catalog_skills"],
-            "target_ids": [targetID],
-            "observations": [[
-                "domain": operation == "search" ? "manager_inventory" : "catalog_skills",
-                "target_id": targetID,
-                "revision": "sha256:observed:\(operation):\(targetID)"
-            ]],
+            "domains": domains,
+            "target_ids": domains.map { "\($0):\(targetID)" },
+            "observations": domains.map { domain in
+                [
+                    "domain": domain,
+                    "target_id": "\(domain):\(targetID)",
+                    "revision": "sha256:observed:\(operation):\(domain):\(targetID)"
+                ]
+            },
             "verified": true
         ]
     }

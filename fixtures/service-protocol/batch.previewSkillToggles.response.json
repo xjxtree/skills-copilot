@@ -8,7 +8,8 @@
       "intent": "disable_skill",
       "target": {
         "kind": "skill",
-        "id": "selection:claude-global-fixture,pi-global-fixture"
+        "id": "selection:claude-global-fixture,pi-global-fixture",
+        "scope": "agent-global"
       },
       "impacts": ["app_local_data", "agent_config"],
       "preview_method": "batch.previewSkillToggles",
@@ -16,7 +17,7 @@
       "source_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "confirmation_required": true,
       "network": "none",
-      "readback": ["agent_config", "skill_aggregates", "config_snapshots"],
+      "readback": ["catalog_skills", "agent_config", "config_snapshots"],
       "evidence_refs": ["skill:claude-global-fixture", "skill:pi-global-fixture"]
     },
     "preconditions": [

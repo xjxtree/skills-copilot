@@ -6,6 +6,7 @@ struct ToolGlobalModelTests {
         try toolGlobalScopeDisplaysAsReadOnlyPreview()
         try piNativeSkillsRequireGuardedToggleCapabilityButDoNotDisplayAsReadOnly()
         try piInstallTargetRemainsBlockedEvenIfCapabilityPayloadClaimsSupport()
+        try installTargetCapabilitiesFailClosedAndDeduplicate()
         try verifiedDirectInstallTargetsCoverAllSupportedAgents()
         try backendInstallPreviewDecodesAsConfirmable()
     }
@@ -110,6 +111,47 @@ struct ToolGlobalModelTests {
             agents,
             "Guarded local-library install targets should include every verified supported agent."
         )
+    }
+
+    private func installTargetCapabilitiesFailClosedAndDeduplicate() throws {
+        try expectEqual(
+            ToolInstallTarget.supportedTargets(from: []),
+            [],
+            "Missing capability evidence must not expose speculative install targets."
+        )
+
+        let payload = try JSONSerialization.data(withJSONObject: [
+            installCapability(agent: "codex", supported: true, status: "verified"),
+            installCapability(agent: "codex", supported: true, status: "verified-native"),
+            installCapability(agent: "claude-code", supported: true, status: "blocked"),
+            installCapability(agent: "opencode", supported: true, status: "guarded"),
+            installCapability(agent: "hermes", supported: false, status: "verified"),
+        ])
+        let capabilities = try JSONDecoder().decode([AdapterCapabilityRecord].self, from: payload)
+        try expectEqual(
+            ToolInstallTarget.supportedTargets(from: capabilities),
+            [.codex],
+            "Partial capability evidence should expose only one stable entry per verified target."
+        )
+    }
+
+    private func installCapability(
+        agent: String,
+        supported: Bool,
+        status: String
+    ) -> [String: Any] {
+        [
+            "agent": agent,
+            "display_name": agent,
+            "status": status,
+            "scan": ["supported": true, "status": "verified", "reason": NSNull()],
+            "project_scan": ["supported": true, "status": "verified", "reason": NSNull()],
+            "config_toggle": ["supported": false, "status": "blocked", "reason": NSNull()],
+            "config_snapshot": ["supported": false, "status": "blocked", "reason": NSNull()],
+            "install": ["supported": supported, "status": status, "reason": NSNull()],
+            "writable": ["supported": supported, "status": status, "reason": NSNull()],
+            "blockers": [],
+        ]
     }
 
     private func backendInstallPreviewDecodesAsConfirmable() throws {
