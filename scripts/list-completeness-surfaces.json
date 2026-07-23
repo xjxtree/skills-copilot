@@ -77,6 +77,19 @@
       "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
     },
     {
+      "id": "sessions.workspace-detail-messages",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SessionWorkspaceDetailView.swift",
+      "owner": "SessionWorkspaceTimelineLayer",
+      "source": "presentation.timelineItems",
+      "policy": "paged",
+      "control_scope": "body",
+      "control_anchor": "state: messageCompleteness",
+      "total_count_source": "fixed-revision local-session message page metadata total_count",
+      "status_id": "session-workspace-messages.completeness",
+      "full_access_id": "session-workspace-messages.load-all",
+      "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
+    },
+    {
       "id": "config.history",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
       "owner": "ConfigSidebarPanel",

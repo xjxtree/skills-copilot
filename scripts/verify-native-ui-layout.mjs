@@ -40,6 +40,12 @@ const files = {
   skillWorkspaceStore: await read(
     "apps/macos/Sources/SkillsCopilot/Stores/SkillWorkspaceStore.swift",
   ),
+  sessionWorkspaceDetail: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/SessionWorkspaceDetailView.swift",
+  ),
+  sessionWorkspaceDetailModel: await read(
+    "apps/macos/Sources/SkillsCopilot/Models/SessionWorkspaceDetailPresentation.swift",
+  ),
   detail: await read("apps/macos/Sources/SkillsCopilot/Views/DetailView.swift"),
   agentSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Views/AgentSessionDetailPanel.swift"),
   detailSection: await read("apps/macos/Sources/SkillsCopilot/Models/DetailSection.swift"),
@@ -376,6 +382,17 @@ const checks = [
       && /case \.answer:[\s\S]*?answerLayer[\s\S]*?case \.evidence:[\s\S]*?evidenceLayer[\s\S]*?case \.advanced:[\s\S]*?advancedLayer/.test(files.skillAggregateDetail)
       && /private func normalizeSelection[\s\S]*?selectedAggregateID = nil/.test(files.skillWorkspaceStore)
       && /static func add\([\s\S]*?static func packageDetail\([\s\S]*?static func update\([\s\S]*?static func remove\(/.test(files.skillManagerEntryContext),
+  },
+  {
+    label: "session detail is Summary-first, fixed-snapshot paged, and copy-only",
+    text: files.sessionWorkspaceDetail + "\n" + files.sessionWorkspaceDetailModel,
+    passed: /enum SessionWorkspaceDetailLayer:[\s\S]*?case summary[\s\S]*?case timeline[\s\S]*?case evidence/.test(files.sessionWorkspaceDetailModel)
+      && /case \.summary:[\s\S]*?summaryLayer\(presentation\)[\s\S]*?case \.timeline:[\s\S]*?timelineLayer\(presentation\)[\s\S]*?case \.evidence:[\s\S]*?evidenceLayer\(presentation\)/.test(files.sessionWorkspaceDetail)
+      && /presentation\.timelineItems[\s\S]*?ListCompletenessFooter\([\s\S]*?state:\s*messageCompleteness[\s\S]*?onLoadMore:\s*onLoadMore[\s\S]*?onLoadAll:\s*onLoadAll[\s\S]*?onCancel:\s*onCancel/.test(files.sessionWorkspaceDetail)
+      && /case \.notPreviewed:[\s\S]*?Button\(action:\s*onPreviewResume\)/.test(files.sessionWorkspaceDetail)
+      && /case \.supported\(let command\):[\s\S]*?onCopyResumeCommand\(command\)/.test(files.sessionWorkspaceDetail)
+      && /never launches a terminal, runs this command, or translates the session to another agent/.test(files.sessionWorkspaceDetail)
+      && !/NSWorkspace|Process\(|Terminal|osascript/.test(files.sessionWorkspaceDetail),
   },
   {
     label: "secondary sidebar omits the agent profile row and switches session, skill, or config lists",
