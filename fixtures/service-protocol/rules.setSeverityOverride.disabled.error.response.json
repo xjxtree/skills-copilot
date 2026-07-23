@@ -1,0 +1,8 @@
+{
+  "id": "fixture-rules-set-severity-override",
+  "ok": false,
+  "error": {
+    "code": "mutation_disabled",
+    "message": "mutation disabled: rules.setSeverityOverride has no guarded product action and performs no I/O"
+  }
+}

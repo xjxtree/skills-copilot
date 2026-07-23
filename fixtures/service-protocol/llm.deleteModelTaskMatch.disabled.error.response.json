@@ -1,0 +1,8 @@
+{
+  "id": "fixture-llm-delete-model-task-match",
+  "ok": false,
+  "error": {
+    "code": "mutation_disabled",
+    "message": "mutation disabled: llm.deleteModelTaskMatch has no guarded product action and performs no I/O"
+  }
+}

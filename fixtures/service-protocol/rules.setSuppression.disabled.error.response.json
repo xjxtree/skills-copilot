@@ -1,0 +1,8 @@
+{
+  "id": "fixture-rules-set-suppression",
+  "ok": false,
+  "error": {
+    "code": "mutation_disabled",
+    "message": "mutation disabled: rules.setSuppression has no guarded product action and performs no I/O"
+  }
+}

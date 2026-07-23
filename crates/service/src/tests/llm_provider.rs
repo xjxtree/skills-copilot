@@ -2312,101 +2312,39 @@ fn model_task_matches_empty_list_is_safe_and_does_not_initialize_app_data() {
 }
 
 #[test]
-fn model_task_match_record_rejects_empty_task_or_model() {
+fn model_task_match_mutations_are_disabled_before_validation_or_io() {
     let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-model-task-invalid-{}-{}",
+        "skills-copilot-model-task-disabled-{}-{}",
         std::process::id(),
         unique_suffix(),
     ));
     let host = test_host(app_data_dir.clone());
 
-    let missing_task = host.handle(ServiceRequest {
-        id: Some("model-task-record-missing-task".to_string()),
-        method: "llm.recordModelTaskMatch".to_string(),
-        params: json!({ "task": " ", "model": "fixture-model" }),
-    });
-    assert!(!missing_task.ok);
-    assert_eq!(
-        missing_task.error.expect("missing task error").code,
-        "invalid_request"
-    );
-
-    let missing_model = host.handle(ServiceRequest {
-        id: Some("model-task-record-missing-model".to_string()),
-        method: "llm.recordModelTaskMatch".to_string(),
-        params: json!({ "task": "fixture task", "model": " " }),
-    });
-    assert!(!missing_model.ok);
-    assert_eq!(
-        missing_model.error.expect("missing model error").code,
-        "invalid_request"
-    );
-
-    assert!(
-        !app_data_dir.exists(),
-        "invalid model-task record requests must not initialize app data"
-    );
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
-fn model_task_match_record_redacts_and_writes_only_app_local_history() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-model-task-record-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-    let local_path = app_data_dir
-        .join("fixture-project")
-        .join("SKILL.md")
-        .to_string_lossy()
-        .to_string();
-    let secret = "ABCDEF1234567890ABCDEF1234567890";
-
-    let response = host.handle(ServiceRequest {
-        id: Some("model-task-record".to_string()),
-        method: "llm.recordModelTaskMatch".to_string(),
-        params: json!({
-            "id": "model-task-redaction",
-            "title": format!("Review api_key {secret}"),
-            "task": format!("Audit task at {local_path} api_key {secret}"),
-            "task_kind": "task_cockpit",
-            "provider": "openai-compatible",
-            "model": "fixture-model",
-            "destination_host": "https://api.fixture.invalid/v1",
-            "match_status": "fit",
-            "source_kind": "manual",
-            "evidence_refs": [format!("path:{local_path}")],
-            "outcome_notes": [format!("Observed api_key {secret}")]
-        }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("model task record result");
-    let serialized = serde_json::to_string(&result).expect("serialize result");
-    assert!(!serialized.contains(&local_path));
-    assert!(!serialized.contains(secret));
-    assert!(serialized.contains("<app-data-dir>"));
-    assert!(serialized.contains("<redacted"));
-    assert_eq!(
-        result
-            .pointer("/record/safety_flags/provider_request_sent")
-            .and_then(Value::as_bool),
-        Some(false)
-    );
-    assert!(host.model_task_matches_path().exists());
-    assert!(
-        !host.llm_prompt_runs_path().exists(),
-        "recording model-task history must not create prompt-run history"
-    );
-
-    let content =
-        fs::read_to_string(host.model_task_matches_path()).expect("model task history content");
-    assert!(!content.contains(&local_path));
-    assert!(!content.contains(secret));
-    assert!(content.contains("<app-data-dir>"));
+    for (method, params) in [
+        (
+            "llm.recordModelTaskMatch",
+            json!({ "task": " ", "model": " " }),
+        ),
+        (
+            "llm.deleteModelTaskMatch",
+            json!({ "id": "../../untrusted" }),
+        ),
+    ] {
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("disabled-{method}")),
+            method: method.to_string(),
+            params,
+        });
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.expect("mutation disabled error").code,
+            "mutation_disabled"
+        );
+        assert!(
+            !app_data_dir.exists(),
+            "{method} must not initialize app data"
+        );
+    }
 
     let _ = fs::remove_dir_all(app_data_dir);
 }
@@ -2469,26 +2407,65 @@ fn model_task_match_list_aggregates_records_and_prompt_runs_with_filters() {
     host.save_llm_prompt_runs(&[prompt_run])
         .expect("save prompt run");
 
-    let record = host.handle(ServiceRequest {
-        id: Some("model-task-record".to_string()),
-        method: "llm.recordModelTaskMatch".to_string(),
-        params: json!({
-            "id": "model-task-fit",
-            "title": "Fixture model fit",
-            "task": "Review release evidence.",
-            "task_kind": "task_cockpit",
-            "agent": "codex",
-            "provider": "openai-compatible",
-            "model": "fixture-model",
-            "destination_host": "api.fixture.invalid",
-            "match_status": "fit",
-            "confidence_score": 90,
-            "estimated_total_tokens": 75,
-            "estimated_cost_usd": 0.02,
-            "evidence_refs": ["prompt-run:prompt-run-model-task"]
-        }),
-    });
-    assert!(record.ok, "{:?}", record.error);
+    host.save_model_task_matches(&[ModelTaskMatchRecord {
+        id: "model-task-fit".to_string(),
+        title: "Fixture model fit".to_string(),
+        task: "Review release evidence.".to_string(),
+        task_kind: "task_cockpit".to_string(),
+        agent: Some("codex".to_string()),
+        profile_id: Some("fixture-openai".to_string()),
+        provider: "openai-compatible".to_string(),
+        model: "fixture-model".to_string(),
+        destination_host: Some("api.fixture.invalid".to_string()),
+        match_status: "fit".to_string(),
+        confidence_score: Some(90),
+        latency_ms: None,
+        estimated_total_tokens: Some(75),
+        estimated_cost_usd: Some(0.02),
+        source_kind: "fixture".to_string(),
+        prompt_run_ids: vec!["prompt-run-model-task".to_string()],
+        benchmark_ids: Vec::new(),
+        evidence_refs: vec!["prompt-run:prompt-run-model-task".to_string()],
+        gap_notes: Vec::new(),
+        blocker_notes: Vec::new(),
+        outcome_notes: Vec::new(),
+        created_at: 10,
+        updated_at: 20,
+        redaction_summary: LlmPromptRunRedactionSummary {
+            status: "redacted-local-only".to_string(),
+            redacted_value_count: 0,
+            redacted_fields: Vec::new(),
+            placeholders: Vec::new(),
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+            raw_secret_returned: false,
+        },
+        safety_flags: ModelTaskMatchSafetyFlags {
+            read_only: true,
+            app_local_only: true,
+            provider_request_sent: false,
+            credential_accessed: false,
+            draft_copy_only: true,
+            write_back_allowed: false,
+            write_actions_available: false,
+            skill_files_mutated: false,
+            agent_config_mutated: false,
+            script_execution_allowed: false,
+            execution_actions_available: false,
+            config_mutation_allowed: false,
+            snapshot_created: false,
+            triage_mutation_allowed: false,
+            raw_secret_returned: false,
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+            unredacted_paths_returned: false,
+            cloud_sync_performed: false,
+            telemetry_emitted: false,
+        },
+    }])
+    .expect("seed model-task fixture");
 
     let response = host.handle(ServiceRequest {
         id: Some("model-task-list-filtered".to_string()),
@@ -2702,55 +2679,6 @@ fn model_task_match_list_returns_full_history_without_limit_and_reports_limited_
 }
 
 #[test]
-fn model_task_match_delete_is_app_local_only() {
-    let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-model-task-delete-{}-{}",
-        std::process::id(),
-        unique_suffix(),
-    ));
-    let host = test_host(app_data_dir.clone());
-
-    let record = host.handle(ServiceRequest {
-        id: Some("model-task-record".to_string()),
-        method: "llm.recordModelTaskMatch".to_string(),
-        params: json!({
-            "id": "model-task-delete-me",
-            "task": "Fixture task",
-            "model": "fixture-model"
-        }),
-    });
-    assert!(record.ok, "{:?}", record.error);
-
-    let response = host.handle(ServiceRequest {
-        id: Some("model-task-delete".to_string()),
-        method: "llm.deleteModelTaskMatch".to_string(),
-        params: json!({ "id": "model-task-delete-me" }),
-    });
-
-    assert!(response.ok, "{:?}", response.error);
-    let result = response.result.expect("delete result");
-    assert_eq!(result.get("deleted").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        result
-            .pointer("/provider_request_sent")
-            .and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result
-            .pointer("/skill_files_mutated")
-            .and_then(Value::as_bool),
-        Some(false)
-    );
-    let records = host
-        .load_model_task_matches()
-        .expect("load model task matches");
-    assert!(records.is_empty());
-
-    let _ = fs::remove_dir_all(app_data_dir);
-}
-
-#[test]
 fn app_version_returns_version_and_protocol() {
     let host = ServiceHost {
         app_data_dir: PathBuf::from("/tmp/skills-copilot-test"),
@@ -2780,135 +2708,55 @@ fn app_version_returns_version_and_protocol() {
 }
 
 #[test]
-fn rules_tuning_methods_store_app_local_state_and_affect_findings() {
+fn rule_tuning_mutations_are_disabled_and_do_not_initialize_app_data() {
     let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-rule-tuning-service-test-{}-{}",
+        "skills-copilot-rule-tuning-disabled-{}-{}",
         std::process::id(),
         unique_suffix(),
     ));
     let host = test_host(app_data_dir.clone());
-    fs::create_dir_all(&host.app_data_dir).expect("create app data");
-    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
-    catalog.init().expect("init catalog");
-    let skill_path = app_data_dir.join("skills/review/SKILL.md");
-    let instance = SkillInstance {
-        id: "rule-tuning-skill-id".to_string(),
-        agent: AgentId::Codex,
-        scope: Scope::AgentGlobal,
-        project_root: None,
-        path: skill_path.clone(),
-        display_path: skill_path,
-        definition_id: "rule-tuning-definition-id".to_string(),
-        name: "rule-tuning-fixture".to_string(),
-        display_name: "rule-tuning-fixture".to_string(),
-        description: "Rule tuning fixture.".to_string(),
-        version: None,
-        state: SkillState::Loaded,
-        enabled: true,
-        frontmatter_raw: "name: rule-tuning-fixture\ndescription: Rule tuning fixture\n"
-            .to_string(),
-        body: "Fixture body.".to_string(),
-        scripts: Vec::new(),
-        permissions: PermissionRequest::default(),
-        fingerprint: "rule-tuning-fingerprint".to_string(),
-        mtime: 1,
-        first_seen: 1,
-        last_seen: 1,
-    };
-    catalog
-        .upsert_skill_instance(&instance)
-        .expect("upsert skill");
-    catalog
-        .refresh_rule_findings(&[RuleFindingDraft {
-            id: "rule-tuning-finding-id".to_string(),
-            instance_id: Some(instance.id.clone()),
-            definition_id: Some(instance.definition_id.clone()),
-            rule_id: "body.too-long".to_string(),
-            severity: "warn".to_string(),
-            message: "Skill body is longer than the local review threshold.".to_string(),
-            suggestion: Some("Move long reference material into references/.".to_string()),
-            created_at: 1,
-        }])
-        .expect("seed finding");
-    drop(catalog);
 
-    let override_response = host.handle(ServiceRequest {
-        id: Some("set-override".to_string()),
-        method: "rules.setSeverityOverride".to_string(),
-        params: json!({
-            "rule_id": "body.too-long",
-            "agent": "codex",
-            "severity": "info"
-        }),
-    });
-    assert!(override_response.ok);
-
-    let suppression_response = host.handle(ServiceRequest {
-        id: Some("set-suppression".to_string()),
-        method: "rules.setSuppression".to_string(),
-        params: json!({
-            "rule_id": "body.too-long",
-            "agent": "codex",
-            "reason": "Accepted locally after review.",
-            "note": "V2.32 app-local suppression."
-        }),
-    });
-    assert!(suppression_response.ok);
-
-    let findings_response = host.handle(ServiceRequest {
-        id: Some("list-findings".to_string()),
-        method: "catalog.listFindings".to_string(),
-        params: Value::Null,
-    });
-    assert!(findings_response.ok);
-    let findings = findings_response
-        .result
-        .expect("findings result")
-        .as_array()
-        .expect("findings array")
-        .clone();
-    let finding = findings.first().expect("finding exists");
-    assert_eq!(
-        finding.get("effective_severity").and_then(Value::as_str),
-        Some("info")
-    );
-    assert_eq!(
-        finding.get("suppressed").and_then(Value::as_bool),
-        Some(true)
-    );
-
-    let clear_suppression_response = host.handle(ServiceRequest {
-        id: Some("clear-suppression".to_string()),
-        method: "rules.clearSuppression".to_string(),
-        params: json!({
-            "rule_id": "body.too-long",
-            "agent": "codex"
-        }),
-    });
-    assert!(clear_suppression_response.ok);
-    let clear_override_response = host.handle(ServiceRequest {
-        id: Some("clear-override".to_string()),
-        method: "rules.clearSeverityOverride".to_string(),
-        params: json!({
-            "rule_id": "body.too-long",
-            "agent": "codex"
-        }),
-    });
-    assert!(clear_override_response.ok);
-
-    let tuning_response = host.handle(ServiceRequest {
-        id: Some("list-tuning".to_string()),
-        method: "rules.listTuning".to_string(),
-        params: Value::Null,
-    });
-    assert!(tuning_response.ok);
-    assert_eq!(
-        tuning_response
-            .result
-            .and_then(|value| value.as_array().cloned())
-            .map(|rows| rows.len()),
-        Some(0)
-    );
+    for (method, params) in [
+        (
+            "rules.setSeverityOverride",
+            json!({
+                "rule_id": "body.too-long",
+                "agent": "codex",
+                "severity": "info"
+            }),
+        ),
+        (
+            "rules.clearSeverityOverride",
+            json!({ "rule_id": "body.too-long", "agent": "codex" }),
+        ),
+        (
+            "rules.setSuppression",
+            json!({
+                "rule_id": "body.too-long",
+                "agent": "codex",
+                "reason": "Accepted locally after review."
+            }),
+        ),
+        (
+            "rules.clearSuppression",
+            json!({ "rule_id": "body.too-long", "agent": "codex" }),
+        ),
+    ] {
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("disabled-{method}")),
+            method: method.to_string(),
+            params,
+        });
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.expect("mutation disabled error").code,
+            "mutation_disabled"
+        );
+        assert!(
+            !app_data_dir.exists(),
+            "{method} must not initialize app data"
+        );
+    }
 
     let _ = fs::remove_dir_all(app_data_dir);
 }
@@ -2970,94 +2818,57 @@ fn app_state_snapshot_returns_current_catalog_state() {
 }
 
 #[test]
-fn finding_triage_service_writes_only_app_local_catalog() {
+fn finding_triage_mutations_are_disabled_and_do_not_initialize_app_data() {
     let unique = unique_suffix();
     let app_data_dir = env::temp_dir().join(format!(
-        "skills-copilot-triage-service-test-{}-{unique}",
+        "skills-copilot-triage-disabled-{}-{unique}",
         std::process::id()
     ));
     let user_home = env::temp_dir().join(format!(
-        "skills-copilot-triage-home-test-{}-{unique}",
+        "skills-copilot-triage-disabled-home-{}-{unique}",
         std::process::id()
     ));
-    let settings_path = user_home.join(".claude/settings.json");
-    fs::create_dir_all(settings_path.parent().expect("settings parent"))
-        .expect("create settings parent");
-    fs::write(&settings_path, "{\"skillOverrides\":{\"keep\":\"on\"}}\n").expect("write settings");
     let host = ServiceHost {
         app_data_dir: app_data_dir.clone(),
         adapter_ctx: AdapterContext {
-            user_home: user_home.clone(),
+            user_home,
             project_root: None,
             project_cwd: None,
             extra_roots: Vec::new(),
         },
     };
-    fs::create_dir_all(&host.app_data_dir).expect("create app data");
-    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
-    catalog.init().expect("init catalog");
-    catalog
-        .refresh_rule_findings(&[RuleFindingDraft {
-            id: "triage-finding-id".to_string(),
-            instance_id: Some("triage-skill-id".to_string()),
-            definition_id: Some("triage-definition-id".to_string()),
-            rule_id: "body.too-long".to_string(),
-            severity: "warn".to_string(),
-            message: "Skill body is longer than the local review threshold.".to_string(),
-            suggestion: Some("Split long reference material into references/.".to_string()),
-            created_at: 1,
-        }])
-        .expect("seed finding");
-    let triage_key = catalog
-        .list_rule_findings()
-        .expect("list findings")
-        .pop()
-        .expect("finding exists")
-        .triage_key;
 
-    let response = host.handle(ServiceRequest {
-        id: Some("set-triage".to_string()),
-        method: "catalog.setFindingTriage".to_string(),
-        params: json!({
-            "triage_key": triage_key,
-            "status": "ignored",
-            "note": "not actionable locally"
-        }),
-    });
-
-    assert!(
-        response.ok,
-        "triage set should succeed: {:?}",
-        response.error
-    );
-    assert_eq!(
-        fs::read_to_string(&settings_path).expect("read settings"),
-        "{\"skillOverrides\":{\"keep\":\"on\"}}\n",
-        "finding triage must not write agent config"
-    );
-    let catalog = Catalog::open(&host.catalog_path()).expect("reopen catalog");
-    catalog.init().expect("re-init catalog");
-    assert_eq!(
-        catalog
-            .list_all_config_snapshots(None)
-            .expect("snapshots")
-            .len(),
-        0,
-        "finding triage must not create agent config snapshots"
-    );
-    let finding = catalog
-        .list_rule_findings()
-        .expect("findings")
-        .pop()
-        .expect("finding exists");
-    assert_eq!(finding.triage_status, "ignored");
-    assert_eq!(
-        finding.triage_note.as_deref(),
-        Some("not actionable locally")
-    );
+    for (method, params) in [
+        (
+            "catalog.setFindingTriage",
+            json!({
+                "triage_key": "../../untrusted",
+                "status": "ignored",
+                "note": "not actionable locally"
+            }),
+        ),
+        (
+            "catalog.clearFindingTriage",
+            json!({ "triage_key": "../../untrusted" }),
+        ),
+    ] {
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("disabled-{method}")),
+            method: method.to_string(),
+            params,
+        });
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.expect("mutation disabled error").code,
+            "mutation_disabled"
+        );
+        assert!(
+            !app_data_dir.exists(),
+            "{method} must not initialize app data"
+        );
+    }
 
     let _ = fs::remove_dir_all(app_data_dir);
-    let _ = fs::remove_dir_all(user_home);
 }
 
 #[test]

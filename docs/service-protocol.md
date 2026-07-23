@@ -202,14 +202,14 @@ the client.
 | `llm.providerObservability` | None | Never | Never | None |
 | `llm.listProviderActivity` | None | Never | Never | None |
 | `llm.listModelTaskMatches` | None | Never | Never | None |
-| `llm.recordModelTaskMatch` | App-local data | Never | Never | None |
-| `llm.deleteModelTaskMatch` | App-local data | Never | Never | None |
+| `llm.recordModelTaskMatch` | None | Never | Never | None |
+| `llm.deleteModelTaskMatch` | None | Never | Never | None |
 | `llm.prepareAction` | None | Never | Never | None |
 | `rules.listTuning` | None | Never | Never | None |
-| `rules.setSeverityOverride` | App-local data | Never | Never | None |
-| `rules.clearSeverityOverride` | App-local data | Never | Never | None |
-| `rules.setSuppression` | App-local data | Never | Never | None |
-| `rules.clearSuppression` | App-local data | Never | Never | None |
+| `rules.setSeverityOverride` | None | Never | Never | None |
+| `rules.clearSeverityOverride` | None | Never | Never | None |
+| `rules.setSuppression` | None | Never | Never | None |
+| `rules.clearSuppression` | None | Never | Never | None |
 | `batch.previewSkillToggles` | None | Never | Never | None |
 | `batch.applySkillToggles` | Agent config, App-local data | Never | Never | Required |
 | `script.previewExecution` | None | Never | Never | None |
@@ -241,8 +241,8 @@ the client.
 | `catalog.analysis` | None | Never | Never | None |
 | `catalog.listFindings` | None | Never | Never | None |
 | `catalog.listFindingTriage` | None | Never | Never | None |
-| `catalog.setFindingTriage` | App-local data | Never | Never | None |
-| `catalog.clearFindingTriage` | App-local data | Never | Never | None |
+| `catalog.setFindingTriage` | None | Never | Never | None |
+| `catalog.clearFindingTriage` | None | Never | Never | None |
 | `catalog.listConflicts` | None | Never | Never | None |
 | `catalog.importSkill` | None | Never | Never | None |
 | `catalog.scanClaude` | App-local data | Never | Never | None |
@@ -262,17 +262,13 @@ the client.
 | `snapshot.previewRollback` | None | Never | Never | None |
 | `snapshot.rollback` | Agent config, App-local data | Never | Never | Required |
 
-## Rule Suppression And Script Preview
+## Disabled Compatibility Mutations And Script Preview
 
-`rules.setSuppression` accepts `rule_id`, a required non-empty `reason`, and an
-optional `note`. Optional `agent` and `scope` fields narrow the catalog rule
-target; `scope` is an adapter skill scope and is valid only with `agent`.
-`rules.clearSuppression` uses the same rule/agent/scope key. The native client
-currently creates rule-wide app-local suppressions, so it omits `agent` and
-`scope`. Finding-group suppression is not a service capability and must fail
-closed in clients instead of being silently widened to a whole-rule
-suppression. A returned record is suppressed when `suppression_reason` is
-present.
+`llm.recordModelTaskMatch`, `llm.deleteModelTaskMatch`, the four `rules.*`
+mutation methods, and the two finding-triage mutation methods remain recognized
+wire identifiers but return `mutation_disabled` before parsing targets or
+opening app data. They have no guarded product action and therefore perform no
+I/O. Their corresponding list methods remain read-only.
 
 `script.previewExecution` accepts either an explicit command preview request or
 the native client's skill identity (`instance_id`, `definition_id`, `agent`).

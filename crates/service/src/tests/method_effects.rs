@@ -179,7 +179,7 @@ fn request_fixture(method: &str, home: &Path, project: &Path) -> ServiceRequest 
 }
 
 #[test]
-fn blocked_compatibility_mutations_reject_malformed_inputs_before_any_io() {
+fn blocked_compatibility_mutations_reject_inputs_before_any_io() {
     let root = temp_test_dir("effects-blocked-compatibility");
     let home = root.join("home");
     fs::create_dir_all(&home).expect("create fixture home");
@@ -217,6 +217,51 @@ fn blocked_compatibility_mutations_reject_malformed_inputs_before_any_io() {
                 "confirmed": true,
                 "initiated_by": "llm"
             }),
+        ),
+        (
+            "llm.recordModelTaskMatch",
+            json!({
+                "id": "../../escape",
+                "task": marker.to_string_lossy(),
+                "model": "fixture-model"
+            }),
+        ),
+        ("llm.deleteModelTaskMatch", json!({ "id": "../../escape" })),
+        (
+            "rules.setSeverityOverride",
+            json!({
+                "rule_id": "../../escape",
+                "agent": "codex",
+                "severity": "critical"
+            }),
+        ),
+        (
+            "rules.clearSeverityOverride",
+            json!({ "rule_id": "../../escape", "agent": "codex" }),
+        ),
+        (
+            "rules.setSuppression",
+            json!({
+                "rule_id": "../../escape",
+                "agent": "codex",
+                "reason": marker.to_string_lossy()
+            }),
+        ),
+        (
+            "rules.clearSuppression",
+            json!({ "rule_id": "../../escape", "agent": "codex" }),
+        ),
+        (
+            "catalog.setFindingTriage",
+            json!({
+                "triage_key": "../../escape",
+                "status": "ignored",
+                "note": marker.to_string_lossy()
+            }),
+        ),
+        (
+            "catalog.clearFindingTriage",
+            json!({ "triage_key": "../../escape" }),
         ),
     ];
 

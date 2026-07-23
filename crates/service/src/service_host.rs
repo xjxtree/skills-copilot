@@ -162,12 +162,14 @@ impl ServiceHost {
                 serde_json::to_value(self.list_model_task_matches(params)?).map_err(Into::into)
             }
             "llm.recordModelTaskMatch" => {
-                let params: ModelTaskMatchRecordParams = serde_json::from_value(request.params)?;
-                serde_json::to_value(self.record_model_task_match(params)?).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "llm.recordModelTaskMatch has no guarded product action and performs no I/O",
+                ))
             }
             "llm.deleteModelTaskMatch" => {
-                let params: ModelTaskMatchDeleteParams = serde_json::from_value(request.params)?;
-                serde_json::to_value(self.delete_model_task_match(params)?).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "llm.deleteModelTaskMatch has no guarded product action and performs no I/O",
+                ))
             }
             "llm.prepareAction" => {
                 let params: LlmPrepareActionParams = serde_json::from_value(request.params)?;
@@ -179,51 +181,24 @@ impl ServiceHost {
                 serde_json::to_value(tuning).map_err(Into::into)
             }
             "rules.setSeverityOverride" => {
-                let params: SetSeverityOverrideParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let tuning: RuleTuningRecord = set_rule_severity_override(
-                    &catalog,
-                    &params.rule_id,
-                    params.agent.as_deref(),
-                    params.scope.as_deref(),
-                    &params.severity,
-                )?;
-                serde_json::to_value(tuning).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "rules.setSeverityOverride has no guarded product action and performs no I/O",
+                ))
             }
             "rules.clearSeverityOverride" => {
-                let params: RuleTuningScopeParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let cleared: bool = clear_rule_severity_override(
-                    &catalog,
-                    &params.rule_id,
-                    params.agent.as_deref(),
-                    params.scope.as_deref(),
-                )?;
-                serde_json::to_value(cleared).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "rules.clearSeverityOverride has no guarded product action and performs no I/O",
+                ))
             }
             "rules.setSuppression" => {
-                let params: SetSuppressionParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let tuning: RuleTuningRecord = set_rule_suppression(
-                    &catalog,
-                    &params.rule_id,
-                    params.agent.as_deref(),
-                    params.scope.as_deref(),
-                    &params.reason,
-                    params.note.as_deref(),
-                )?;
-                serde_json::to_value(tuning).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "rules.setSuppression has no guarded product action and performs no I/O",
+                ))
             }
             "rules.clearSuppression" => {
-                let params: RuleTuningScopeParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let cleared: bool = clear_rule_suppression(
-                    &catalog,
-                    &params.rule_id,
-                    params.agent.as_deref(),
-                    params.scope.as_deref(),
-                )?;
-                serde_json::to_value(cleared).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "rules.clearSuppression has no guarded product action and performs no I/O",
+                ))
             }
             "batch.previewSkillToggles" => {
                 let params: BatchPreviewSkillTogglesParams =
@@ -542,21 +517,14 @@ impl ServiceHost {
                 serde_json::to_value(triage).map_err(Into::into)
             }
             "catalog.setFindingTriage" => {
-                let params: SetFindingTriageParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let triage: FindingTriageRecord = set_finding_triage(
-                    &catalog,
-                    &params.triage_key,
-                    &params.status,
-                    params.note.as_deref(),
-                )?;
-                serde_json::to_value(triage).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "catalog.setFindingTriage has no guarded product action and performs no I/O",
+                ))
             }
             "catalog.clearFindingTriage" => {
-                let params: ClearFindingTriageParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let cleared: bool = clear_finding_triage(&catalog, &params.triage_key)?;
-                serde_json::to_value(cleared).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "catalog.clearFindingTriage has no guarded product action and performs no I/O",
+                ))
             }
             "catalog.listConflicts" => {
                 let catalog = self.open_catalog_for_read()?;
