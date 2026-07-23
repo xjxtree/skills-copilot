@@ -2,6 +2,7 @@ use super::*;
 use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
+use skills_copilot_core::SourceCoverage;
 
 const PREVIEW_METHOD: &str = "session.previewLocalSessions";
 const MESSAGE_METHOD: &str = "session.listLocalSessionMessages";
@@ -125,6 +126,7 @@ fn openclaw_workspace_for_agent(
 struct SqliteSession {
     db_path: PathBuf,
     native_id: String,
+    resume_locator: String,
     service_id: String,
     title: String,
     project_root: Option<String>,
@@ -133,6 +135,14 @@ struct SqliteSession {
     ended_at: Option<i64>,
     declared_message_count: usize,
     declared_tool_count: usize,
+}
+
+pub(super) struct SqliteSessionResumeSnapshot {
+    pub(super) row: LocalSessionPreviewRow,
+    pub(super) resume_locator: SessionNativeResumeLocator,
+    pub(super) source_revision: String,
+    pub(super) coverage: SourceCoverage,
+    pub(super) project_matches_selected_context: bool,
 }
 
 #[derive(Clone)]
@@ -644,6 +654,186 @@ fn codex_index_source_revision(sessions: &[CodexIndexedSession], db_path: &Path)
     format!("sha256:{}", hex_prefix(&hasher.finalize(), 64))
 }
 
+pub(super) fn preview_sqlite_session_resume(
+    ctx: &AdapterContext,
+    requested_agent: AgentId,
+    session_id: &str,
+    expected_source_revision: &str,
+    project_filter_roots: &[PathBuf],
+    redaction_roots: &[(String, &'static str)],
+) -> Result<Option<SqliteSessionResumeSnapshot>, SessionResumePreviewError> {
+    if requested_agent == AgentId::Codex {
+        return preview_codex_session_resume(
+            ctx,
+            session_id,
+            expected_source_revision,
+            project_filter_roots,
+            redaction_roots,
+        );
+    }
+    let agent = match requested_agent {
+        AgentId::Opencode => SqliteAgent::Opencode,
+        AgentId::Hermes => SqliteAgent::Hermes,
+        AgentId::Openclaw => SqliteAgent::Openclaw,
+        _ => return Ok(None),
+    };
+    let db_sources = agent
+        .database_paths(ctx)
+        .into_iter()
+        .filter(|(path, _)| path.is_file())
+        .collect::<Vec<_>>();
+    if db_sources.is_empty() {
+        return Ok(None);
+    }
+
+    let mut sessions = Vec::new();
+    let mut source_limited = false;
+    for (db_path, project_root) in &db_sources {
+        let connection =
+            open_read_only_database(db_path).map_err(sqlite_resume_source_unavailable)?;
+        let loaded = load_sessions(&connection, agent, db_path, project_root.as_deref())
+            .map_err(sqlite_resume_source_unavailable)?;
+        source_limited |= loaded.len() == MAX_SQLITE_SESSIONS;
+        sessions.extend(loaded);
+    }
+    sort_sqlite_sessions(
+        &mut sessions,
+        LocalSessionSort::ModifiedAt,
+        SortDirection::Desc,
+    );
+    let source_revision = sqlite_source_revision(&sessions, agent);
+    if source_revision != expected_source_revision {
+        return Err(SessionResumePreviewError::SourceChanged);
+    }
+    let Some(session) = sessions
+        .into_iter()
+        .find(|session| session.service_id == session_id)
+    else {
+        return Err(SessionResumePreviewError::SessionNotFound);
+    };
+    let project_matches_selected_context = session.project_root.as_ref().is_some_and(|root| {
+        project_filter_roots
+            .iter()
+            .any(|project| local_session_paths_match(project, Path::new(root)))
+    });
+    let connection =
+        open_read_only_database(&session.db_path).map_err(sqlite_resume_source_unavailable)?;
+    let mut redactor = PromptRedactor::new(redaction_roots);
+    let row = sqlite_session_row(
+        &connection,
+        agent,
+        &session,
+        LocalSessionScope::All,
+        false,
+        1_000,
+        &mut redactor,
+    )
+    .map_err(sqlite_resume_source_unavailable)?;
+    let source_count = db_sources.len();
+    let coverage = if source_limited {
+        SourceCoverage::incomplete(
+            source_count,
+            Some(source_count),
+            ListIncompleteReason::SafetyBudget,
+        )
+    } else {
+        SourceCoverage::enumerable(source_count, Some(source_count))
+    };
+    let resume_locator = match agent {
+        SqliteAgent::Openclaw => {
+            SessionNativeResumeLocator::OpenClawSessionKey(session.resume_locator)
+        }
+        _ => SessionNativeResumeLocator::NativeId(session.resume_locator),
+    };
+    Ok(Some(SqliteSessionResumeSnapshot {
+        row,
+        resume_locator,
+        source_revision,
+        coverage,
+        project_matches_selected_context,
+    }))
+}
+
+fn preview_codex_session_resume(
+    ctx: &AdapterContext,
+    session_id: &str,
+    expected_source_revision: &str,
+    project_filter_roots: &[PathBuf],
+    redaction_roots: &[(String, &'static str)],
+) -> Result<Option<SqliteSessionResumeSnapshot>, SessionResumePreviewError> {
+    let Some(db_path) = codex_state_database_path(ctx) else {
+        return Ok(None);
+    };
+    let connection = open_read_only_database(&db_path).map_err(sqlite_resume_source_unavailable)?;
+    let sessions =
+        load_codex_indexed_sessions(&connection).map_err(sqlite_resume_source_unavailable)?;
+    let source_limited = sessions.len() == MAX_SQLITE_SESSIONS;
+    let source_revision = codex_index_source_revision(&sessions, &db_path);
+    if source_revision != expected_source_revision {
+        return Err(SessionResumePreviewError::SourceChanged);
+    }
+    let Some(session) = sessions
+        .into_iter()
+        .find(|session| session.service_id == session_id)
+    else {
+        return Err(SessionResumePreviewError::SessionNotFound);
+    };
+    let project_matches_selected_context = project_filter_roots
+        .iter()
+        .any(|project| local_session_paths_match(project, Path::new(&session.cwd)));
+    let mut redactor = PromptRedactor::new(redaction_roots);
+    let title = if session.title.trim().is_empty() {
+        truncate_chars(&session.preview, 120)
+    } else {
+        truncate_chars(&session.title, 120)
+    };
+    let excerpt = truncate_chars(&redactor.redact(&session.preview), 1_000);
+    let row = LocalSessionPreviewRow {
+        id: session.service_id,
+        title,
+        source_kind: "codex-state-index".to_string(),
+        scope: LocalSessionScope::All.as_str().to_string(),
+        agent: Some(AgentId::Codex.as_str().to_string()),
+        project_root: Some(redactor.redact(&session.cwd)),
+        redacted_path: format!(
+            "<codex-session-index>#{}",
+            &session.native_id[..session.native_id.len().min(20)]
+        ),
+        modified_at: Some(session.modified_at),
+        started_at: Some(session.started_at),
+        ended_at: Some(session.modified_at),
+        excerpt_char_count: excerpt.chars().count(),
+        excerpt,
+        user_message_count: 0,
+        total_message_count: 0,
+        tool_call_count: 0,
+        skill_call_count: 0,
+        content_hash: format!(
+            "sha256:{}",
+            trace_content_hash(&format!("{}|{}", session.native_id, session.modified_at))
+        ),
+        evidence_refs: vec!["codex:thread-index".to_string()],
+        content_included: false,
+        content_items: Vec::new(),
+    };
+    let coverage = if source_limited {
+        SourceCoverage::incomplete(1, Some(1), ListIncompleteReason::SafetyBudget)
+    } else {
+        SourceCoverage::enumerable(1, Some(1))
+    };
+    Ok(Some(SqliteSessionResumeSnapshot {
+        row,
+        resume_locator: SessionNativeResumeLocator::NativeId(session.native_id),
+        source_revision,
+        coverage,
+        project_matches_selected_context,
+    }))
+}
+
+fn sqlite_resume_source_unavailable(_error: ServiceError) -> SessionResumePreviewError {
+    SessionResumePreviewError::SourceUnavailable
+}
+
 pub(super) fn list_sqlite_session_messages(
     ctx: &AdapterContext,
     params: &LocalSessionMessagePageParams,
@@ -799,16 +989,22 @@ fn load_sessions(
         SqliteAgent::Opencode if sqlite_table_has_column(connection, "session", "time_archived")? => "SELECT id, title, directory, time_created, time_updated, NULL, 0, 0 FROM session WHERE parent_id IS NULL AND time_archived IS NULL ORDER BY time_updated DESC, id ASC LIMIT ?1",
         SqliteAgent::Opencode => "SELECT id, title, directory, time_created, time_updated, NULL, 0, 0 FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC, id ASC LIMIT ?1",
         SqliteAgent::Hermes => "SELECT id, COALESCE(title, id), NULL, CAST(started_at * 1000 AS INTEGER), CAST(COALESCE(ended_at, started_at) * 1000 AS INTEGER), CAST(ended_at * 1000 AS INTEGER), COALESCE(message_count, 0), COALESCE(tool_call_count, 0) FROM sessions WHERE source NOT IN ('cron', 'batch', 'subagent', 'memory', 'memory_consolidation') ORDER BY COALESCE(ended_at, started_at) DESC, id ASC LIMIT ?1",
-        SqliteAgent::Openclaw => "SELECT s.session_id, COALESCE(NULLIF(s.display_name, ''), s.session_key), NULL, s.started_at, s.updated_at, s.ended_at, 0, 0 FROM sessions s WHERE COALESCE(s.status, 'active') NOT IN ('archived', 'deleted') AND EXISTS (SELECT 1 FROM session_routes r WHERE r.session_id = s.session_id) AND NOT EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id = s.session_id AND json_extract(e.entry_json, '$.archivedAt') IS NOT NULL) AND lower(s.session_key) NOT LIKE 'cron:%' AND lower(s.session_key) NOT LIKE 'hook:%' AND lower(s.session_key) NOT LIKE '%:subagent:%' AND lower(s.session_key) NOT LIKE '%:cron:%' AND lower(s.session_key) NOT LIKE '%:hook:%' AND lower(s.session_key) NOT LIKE '%:heartbeat:%' AND lower(s.session_key) NOT LIKE '%:acp:%' ORDER BY s.updated_at DESC, s.session_id ASC LIMIT ?1",
+        SqliteAgent::Openclaw => "SELECT s.session_id, COALESCE(NULLIF(s.display_name, ''), s.session_key), NULL, s.started_at, s.updated_at, s.ended_at, 0, 0, s.session_key FROM sessions s WHERE COALESCE(s.status, 'active') NOT IN ('archived', 'deleted') AND EXISTS (SELECT 1 FROM session_routes r WHERE r.session_id = s.session_id) AND NOT EXISTS (SELECT 1 FROM session_entries e WHERE e.session_id = s.session_id AND json_extract(e.entry_json, '$.archivedAt') IS NOT NULL) AND lower(s.session_key) NOT LIKE 'cron:%' AND lower(s.session_key) NOT LIKE 'hook:%' AND lower(s.session_key) NOT LIKE '%:subagent:%' AND lower(s.session_key) NOT LIKE '%:cron:%' AND lower(s.session_key) NOT LIKE '%:hook:%' AND lower(s.session_key) NOT LIKE '%:heartbeat:%' AND lower(s.session_key) NOT LIKE '%:acp:%' ORDER BY s.updated_at DESC, s.session_id ASC LIMIT ?1",
     };
     let mut statement = connection.prepare(sql).map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map([MAX_SQLITE_SESSIONS as i64], |row| {
             let native_id: String = row.get(0)?;
+            let resume_locator = if agent == SqliteAgent::Openclaw {
+                row.get(8)?
+            } else {
+                native_id.clone()
+            };
             Ok(SqliteSession {
                 db_path: db_path.to_path_buf(),
                 service_id: sqlite_service_id(agent, db_path, &native_id),
                 native_id,
+                resume_locator,
                 title: row.get(1)?,
                 project_root: project_root.map(ToString::to_string).or(row.get(2)?),
                 started_at: row.get(3)?,

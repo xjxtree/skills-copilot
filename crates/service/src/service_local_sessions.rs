@@ -15,12 +15,23 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 mod classification;
 mod message_paging;
 mod paging;
+// Task 4's protocol dispatch consumes these items after the product snapshot
+// and native wire branches are merged. Keep this isolated branch warning-free
+// while the callable integration point lives in a disjoint worktree.
+#[allow(dead_code)]
+mod resume;
 mod sqlite_sessions;
 
 use classification::{
     is_internal_local_session_title_block, is_supported_local_session_file,
     is_unhelpful_local_session_title, local_session_metadata_is_internal,
     local_session_role_classification, local_session_type_name_classification,
+};
+#[allow(unused_imports)]
+pub(crate) use resume::{
+    native_resume_locator_from_file_content, preview_session_resume_from_snapshot,
+    project_session_continuation, SessionNativeResumeLocator, SessionResumeEvidence,
+    SessionResumePreviewError, SessionResumePreviewParams,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -570,6 +581,8 @@ fn run_scheduled_local_session_root_swap_test_hook(_user_home: &Path) {}
 struct LocalSessionPreviewEntry {
     row: LocalSessionPreviewRow,
     skill_mentions: Vec<LocalSessionSkillMention>,
+    resume_locator: Option<SessionNativeResumeLocator>,
+    project_matches_selected_context: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1157,6 +1170,13 @@ fn local_session_preview_row(
         .project_root
         .as_deref()
         .map(|project| truncate_chars(&redactor.redact(project), 180));
+    let native_resume_agent = agent.as_deref().unwrap_or_default();
+    let resume_locator = native_resume_locator_from_file_content(native_resume_agent, &content);
+    let project_matches_selected_context = local_session_matches_scope(
+        LocalSessionScope::Project,
+        options.project_filter_roots,
+        metadata.project_root.as_deref(),
+    );
     Ok(LocalSessionPreviewReadOutcome {
         entry: Some(LocalSessionPreviewEntry {
             row: LocalSessionPreviewRow {
@@ -1185,6 +1205,8 @@ fn local_session_preview_row(
                 content_items,
             },
             skill_mentions,
+            resume_locator,
+            project_matches_selected_context,
         }),
         budget_exhausted,
     })
