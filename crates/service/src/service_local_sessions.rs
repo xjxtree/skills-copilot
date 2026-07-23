@@ -12,6 +12,7 @@ use skills_copilot_adapters::{
 use std::collections::HashMap;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+mod all_agent_paging;
 mod classification;
 mod message_paging;
 mod paging;
@@ -154,6 +155,14 @@ impl ServiceHost {
             return Err(ServiceError::InvalidRequest(
                 "source_revision requires keyset paging".to_string(),
             ));
+        }
+
+        if requested_agent.is_none()
+            && requested_roots.is_empty()
+            && auto_discover
+            && uses_keyset_paging
+        {
+            return self.preview_all_agent_sessions_keyset(&params);
         }
 
         if requested_roots.is_empty() && auto_discover {
@@ -753,10 +762,13 @@ fn auto_local_session_roots(
         );
     }
 
-    if local_session_agent_matches(requested_agent, AgentId::Opencode.as_str())
-        && opencode_data_dir(adapter_ctx).join("opencode.db").exists()
-    {
-        notes.push("OpenCode sessions are loaded from its current SQLite database.".to_string());
+    if local_session_agent_matches(requested_agent, AgentId::Opencode.as_str()) {
+        if opencode_data_dir(adapter_ctx).join("opencode.db").exists() {
+            notes
+                .push("OpenCode sessions are loaded from its current SQLite database.".to_string());
+        } else {
+            notes.push("No canonical opencode SQLite session store was detected.".to_string());
+        }
     }
 
     if local_session_agent_matches(requested_agent, AgentId::Pi.as_str()) {
@@ -791,6 +803,8 @@ fn auto_local_session_roots(
         if state_db.exists() {
             notes
                 .push("Hermes sessions are loaded from its canonical SQLite database.".to_string());
+        } else {
+            notes.push("No canonical Hermes state.db session store was detected.".to_string());
         }
     }
 
@@ -806,12 +820,16 @@ fn auto_local_session_roots(
                 "Legacy OpenClaw JSON/JSONL files were detected but are not active session storage; no canonical per-agent SQLite database was found."
                     .to_string(),
             );
+        } else {
+            notes.push(
+                "No canonical OpenClaw per-agent SQLite session store was detected.".to_string(),
+            );
         }
     }
 
     if roots.is_empty() && notes.is_empty() {
         notes.push(
-            "No supported local session store was detected for Claude Code, Codex, opencode, or Pi."
+            "No supported local session store was detected for Claude Code, Codex, opencode, Pi, Hermes, or OpenClaw."
                 .to_string(),
         );
     }
@@ -3472,7 +3490,13 @@ fn local_session_matches_scope(
 fn local_session_paths_match(project: &Path, session_path: &Path) -> bool {
     let left = local_session_normalized_path(project);
     let right = local_session_normalized_path(session_path);
-    left == right || right.starts_with(&(left + "/"))
+    left == right
+}
+
+fn local_session_path_is_within(root: &Path, candidate: &Path) -> bool {
+    let root = local_session_normalized_path(root);
+    let candidate = local_session_normalized_path(candidate);
+    candidate == root || candidate.starts_with(&(root + "/"))
 }
 
 fn local_session_normalized_path(path: &Path) -> String {

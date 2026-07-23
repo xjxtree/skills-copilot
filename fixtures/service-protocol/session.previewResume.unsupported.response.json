@@ -1,0 +1,33 @@
+{
+  "id": "fixture-session-resume-unsupported",
+  "ok": true,
+  "result": {
+    "id": "session:hermes:unassigned",
+    "agent": "hermes",
+    "title": "Hermes session without project identity",
+    "modified_at": 1784800300000,
+    "source_kind": "hermes-sqlite",
+    "source_revision": "sha256:session-native-hermes-1",
+    "snapshot_revision": "sha256:project-readiness-1",
+    "coverage": {
+      "completeness": "enumerable",
+      "inspected_sources": 1,
+      "expected_sources": 1
+    },
+    "resume": {
+      "state": "unsupported",
+      "unsupported_reason": "invalid_project_context",
+      "copy_only": true
+    },
+    "evidence": [
+      {
+        "id": "evidence:session:hermes:unassigned",
+        "kind": "session",
+        "source_revision": "sha256:session-native-hermes-1",
+        "summary": "Hermes canonical session metadata has no verified project path",
+        "agent": "hermes",
+        "target_id": "session:hermes:unassigned"
+      }
+    ]
+  }
+}

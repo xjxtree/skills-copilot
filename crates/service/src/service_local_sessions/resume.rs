@@ -248,7 +248,7 @@ fn validate_active_project_context(
     );
     let requested_cwd = local_session_normalized_path(requested_current_cwd);
     if requested_cwd != active_cwd
-        || !super::local_session_paths_match(active_project_root, requested_current_cwd)
+        || !super::local_session_path_is_within(active_project_root, requested_current_cwd)
     {
         return Err(SessionResumePreviewError::InvalidProjectContext);
     }
@@ -444,11 +444,12 @@ fn resume_evidence_from_file(
     coverage: SourceCoverage,
 ) -> SessionResumeEvidence {
     let row = selected.entry.row;
+    let project_match = selected.entry.project_matches_selected_context;
     SessionResumeEvidence {
         id: row.id,
         agent,
-        project_id,
-        project_match: selected.entry.project_matches_selected_context,
+        project_id: project_id.filter(|_| project_match),
+        project_match,
         title: row.title,
         intent: None,
         started_at: row.started_at,
@@ -474,11 +475,12 @@ fn resume_evidence_from_sqlite(
     snapshot_revision: &str,
 ) -> SessionResumeEvidence {
     let row = snapshot.row;
+    let project_match = snapshot.project_matches_selected_context;
     SessionResumeEvidence {
         id: row.id,
         agent,
-        project_id,
-        project_match: snapshot.project_matches_selected_context,
+        project_id: project_id.filter(|_| project_match),
+        project_match,
         title: row.title,
         intent: None,
         started_at: row.started_at,
@@ -1355,6 +1357,96 @@ mod tests {
             native_resume_locator_from_file_content("claude-code", &conflicting),
             None
         );
+    }
+
+    #[test]
+    fn hermes_without_project_identity_remains_typed_unsupported() {
+        let fixture = session_fixture("hermes-unassigned-resume");
+        let project = fixture.join("project");
+        let home = fixture.join("home");
+        let db_path = home.join(".hermes/state.db");
+        fs::create_dir_all(&project).expect("create project");
+        fs::create_dir_all(db_path.parent().expect("Hermes database parent"))
+            .expect("create Hermes database directory");
+        let connection = Connection::open(&db_path).expect("open Hermes database");
+        connection
+            .execute_batch(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, parent_session_id TEXT, started_at REAL, ended_at REAL, message_count INTEGER, tool_call_count INTEGER, title TEXT);\
+                 CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, timestamp REAL, tool_name TEXT, tool_calls TEXT, reasoning TEXT);",
+            )
+            .expect("create Hermes schema");
+        connection
+            .execute(
+                "INSERT INTO sessions (id, source, started_at, ended_at, message_count, tool_call_count, title) VALUES (?1, 'cli', 10.0, 20.0, 0, 0, ?2)",
+                params!["20260724_091523_a1b2c3", "Hermes unassigned session"],
+            )
+            .expect("insert Hermes session");
+        drop(connection);
+
+        let host = ServiceHost {
+            app_data_dir: fixture.join("app-data"),
+            adapter_ctx: AdapterContext {
+                user_home: home,
+                project_root: Some(project.clone()),
+                project_cwd: Some(project.clone()),
+                extra_roots: Vec::new(),
+            },
+        };
+        let list = host
+            .preview_local_sessions(LocalSessionPreviewParams {
+                auto_discover: Some(true),
+                agent: Some("hermes".to_string()),
+                scope: Some("all".to_string()),
+                include_content_items: Some(false),
+                paging_mode: Some("keyset".to_string()),
+                limit: Some(20),
+                ..LocalSessionPreviewParams::default()
+            })
+            .expect("Hermes summary");
+        assert_eq!(list.session_rows.len(), 1);
+        assert!(list.session_rows[0].project_root.is_none());
+        assert!(list
+            .gap_notes
+            .iter()
+            .any(|note| note.contains("remain unassigned")));
+
+        let record = host
+            .preview_session_resume(
+                SessionResumePreviewParams {
+                    authorized_roots: Vec::new(),
+                    auto_discover: true,
+                    agent: "hermes".to_string(),
+                    project_root: project.to_string_lossy().to_string(),
+                    current_cwd: project.to_string_lossy().to_string(),
+                    session_id: list.session_rows[0].id.clone(),
+                    expected_source_revision: list.source_revision.expect("source revision"),
+                    expected_snapshot_revision: SNAPSHOT_REVISION.to_string(),
+                },
+                SNAPSHOT_REVISION,
+                Some("project:test".to_string()),
+            )
+            .expect("typed unsupported Hermes preview");
+        assert_eq!(record.resume.state, ResumeCapabilityState::Unsupported);
+        assert_eq!(
+            record.resume.unsupported_reason,
+            Some(ResumeUnsupportedReason::InvalidProjectContext)
+        );
+        assert!(record.project_id.is_none());
+        assert!(record.resume.argv.is_empty());
+        assert!(record.actions.is_empty());
+
+        let project_only = host
+            .preview_local_sessions(LocalSessionPreviewParams {
+                auto_discover: Some(true),
+                agent: Some("hermes".to_string()),
+                scope: Some("project".to_string()),
+                include_content_items: Some(false),
+                limit: Some(20),
+                ..LocalSessionPreviewParams::default()
+            })
+            .expect("Hermes project summary");
+        assert!(project_only.session_rows.is_empty());
+        let _ = fs::remove_dir_all(fixture);
     }
 
     #[test]

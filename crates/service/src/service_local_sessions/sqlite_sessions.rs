@@ -220,15 +220,19 @@ pub(super) fn preview_sqlite_sessions(
     }
 
     let mut sessions = Vec::new();
+    let mut source_limited = false;
     for (db_path, project_root) in &db_sources {
         let connection = open_read_only_database(db_path)?;
-        sessions.extend(load_sessions(
-            &connection,
-            agent,
-            db_path,
-            project_root.as_deref(),
-        )?);
+        let mut loaded = load_sessions(&connection, agent, db_path, project_root.as_deref())?;
+        source_limited |= truncate_sqlite_session_inventory(&mut loaded);
+        sessions.extend(loaded);
     }
+    sort_sqlite_sessions(
+        &mut sessions,
+        LocalSessionSort::ModifiedAt,
+        SortDirection::Desc,
+    );
+    source_limited |= truncate_sqlite_session_inventory(&mut sessions);
     if let Some(session_id) = params
         .session_id
         .as_deref()
@@ -299,7 +303,7 @@ pub(super) fn preview_sqlite_sessions(
             &mut redactor,
         )?);
     }
-    let has_more = end < sessions.len();
+    let has_more = !source_limited && end < sessions.len();
     let next_cursor = if has_more {
         page.last()
             .map(|session| {
@@ -351,16 +355,20 @@ pub(super) fn preview_sqlite_sessions(
         next_offset: (params.cursor.is_none() && has_more).then_some(end),
         next_cursor,
         source_revision: Some(source_revision),
-        source_completeness: ListSourceCompleteness::Enumerable,
-        incomplete_reason: None,
-        candidate_set_truncated: false,
+        source_completeness: if source_limited {
+            ListSourceCompleteness::Limited
+        } else {
+            ListSourceCompleteness::Enumerable
+        },
+        incomplete_reason: source_limited.then_some(ListIncompleteReason::SafetyBudget),
+        candidate_set_truncated: source_limited,
         user_message_count,
         total_message_count,
         tool_call_count,
         skill_call_count: 0,
         skill_usage_rows: Vec::new(),
         session_rows: rows,
-        gap_notes: Vec::new(),
+        gap_notes: sqlite_session_gap_notes(agent, source_limited),
         blocker_notes: Vec::new(),
         redaction_summary: local_preview_redaction_summary_from(redactor.summary()),
         safety_flags: local_preview_safety_flags(),
@@ -416,6 +424,7 @@ fn preview_codex_state_sessions(
 
     let connection = open_read_only_database(&db_path)?;
     let mut sessions = load_codex_indexed_sessions(&connection)?;
+    let source_limited = truncate_codex_session_inventory(&mut sessions);
     if scope == LocalSessionScope::Project {
         let project_roots = local_session_project_filter_roots(
             ctx,
@@ -526,7 +535,7 @@ fn preview_codex_state_sessions(
             }
         })
         .collect::<Vec<_>>();
-    let has_more = end < sessions.len();
+    let has_more = !source_limited && end < sessions.len();
     let next_cursor = if has_more {
         page.last()
             .map(|session| {
@@ -569,16 +578,23 @@ fn preview_codex_state_sessions(
         next_offset: (params.cursor.is_none() && has_more).then_some(end),
         next_cursor,
         source_revision: Some(source_revision),
-        source_completeness: ListSourceCompleteness::Enumerable,
-        incomplete_reason: None,
-        candidate_set_truncated: false,
+        source_completeness: if source_limited {
+            ListSourceCompleteness::Limited
+        } else {
+            ListSourceCompleteness::Enumerable
+        },
+        incomplete_reason: source_limited.then_some(ListIncompleteReason::SafetyBudget),
+        candidate_set_truncated: source_limited,
         user_message_count: 0,
         total_message_count: 0,
         tool_call_count: 0,
         skill_call_count: 0,
         skill_usage_rows: Vec::new(),
         session_rows: rows,
-        gap_notes: Vec::new(),
+        gap_notes: source_limited
+            .then(|| "Codex session inventory reached its bounded thread-index limit.".to_string())
+            .into_iter()
+            .collect(),
         blocker_notes: Vec::new(),
         redaction_summary: local_preview_redaction_summary_from(redactor.summary()),
         safety_flags: local_preview_safety_flags(),
@@ -632,7 +648,7 @@ fn load_codex_indexed_sessions(
         )
         .map_err(sqlite_schema_error)?;
     let rows = statement
-        .query_map([MAX_SQLITE_SESSIONS as i64], |row| {
+        .query_map([(MAX_SQLITE_SESSIONS + 1) as i64], |row| {
             let native_id: String = row.get(0)?;
             let rollout_path = PathBuf::from(row.get::<_, String>(3)?);
             Ok(CodexIndexedSession {
@@ -701,9 +717,9 @@ pub(super) fn preview_sqlite_session_resume(
     for (db_path, project_root) in &db_sources {
         let connection =
             open_read_only_database(db_path).map_err(sqlite_resume_source_unavailable)?;
-        let loaded = load_sessions(&connection, agent, db_path, project_root.as_deref())
+        let mut loaded = load_sessions(&connection, agent, db_path, project_root.as_deref())
             .map_err(sqlite_resume_source_unavailable)?;
-        source_limited |= loaded.len() == MAX_SQLITE_SESSIONS;
+        source_limited |= truncate_sqlite_session_inventory(&mut loaded);
         sessions.extend(loaded);
     }
     sort_sqlite_sessions(
@@ -711,6 +727,7 @@ pub(super) fn preview_sqlite_session_resume(
         LocalSessionSort::ModifiedAt,
         SortDirection::Desc,
     );
+    source_limited |= truncate_sqlite_session_inventory(&mut sessions);
     let source_revision = sqlite_source_revision(&sessions, agent);
     if source_revision != expected_source_revision {
         return Err(SessionResumePreviewError::SourceChanged);
@@ -775,9 +792,9 @@ fn preview_codex_session_resume(
         return Ok(None);
     };
     let connection = open_read_only_database(&db_path).map_err(sqlite_resume_source_unavailable)?;
-    let sessions =
+    let mut sessions =
         load_codex_indexed_sessions(&connection).map_err(sqlite_resume_source_unavailable)?;
-    let source_limited = sessions.len() == MAX_SQLITE_SESSIONS;
+    let source_limited = truncate_codex_session_inventory(&mut sessions);
     let source_revision = codex_index_source_revision(&sessions, &db_path);
     if source_revision != expected_source_revision {
         return Err(SessionResumePreviewError::SourceChanged);
@@ -861,18 +878,23 @@ pub(super) fn list_sqlite_session_messages(
     if db_sources.is_empty() {
         return Ok(None);
     }
-    let mut selected = None;
+    let mut sessions = Vec::new();
     for (db_path, project_root) in &db_sources {
         let connection = open_read_only_database(db_path)?;
-        if let Some(session) = load_sessions(&connection, agent, db_path, project_root.as_deref())?
-            .into_iter()
-            .find(|session| session.service_id == params.session_id)
-        {
-            selected = Some(session);
-            break;
-        }
+        let mut loaded = load_sessions(&connection, agent, db_path, project_root.as_deref())?;
+        truncate_sqlite_session_inventory(&mut loaded);
+        sessions.extend(loaded);
     }
-    let Some(session) = selected else {
+    sort_sqlite_sessions(
+        &mut sessions,
+        LocalSessionSort::ModifiedAt,
+        SortDirection::Desc,
+    );
+    truncate_sqlite_session_inventory(&mut sessions);
+    let Some(session) = sessions
+        .into_iter()
+        .find(|session| session.service_id == params.session_id)
+    else {
         return Err(ServiceError::InvalidRequest(
             "selected session was not found in the current SQLite store".to_string(),
         ));
@@ -1045,7 +1067,7 @@ fn load_sessions(
     };
     let mut statement = connection.prepare(sql).map_err(sqlite_schema_error)?;
     let rows = statement
-        .query_map([MAX_SQLITE_SESSIONS as i64], |row| {
+        .query_map([(MAX_SQLITE_SESSIONS + 1) as i64], |row| {
             let native_id: String = row.get(0)?;
             let resume_locator = if agent == SqliteAgent::Openclaw {
                 row.get(8)?
@@ -1071,6 +1093,35 @@ fn load_sessions(
         .collect::<Result<Vec<_>, _>>()
         .map_err(sqlite_schema_error)?;
     Ok(sessions)
+}
+
+fn truncate_sqlite_session_inventory(sessions: &mut Vec<SqliteSession>) -> bool {
+    let truncated = sessions.len() > MAX_SQLITE_SESSIONS;
+    sessions.truncate(MAX_SQLITE_SESSIONS);
+    truncated
+}
+
+fn truncate_codex_session_inventory(sessions: &mut Vec<CodexIndexedSession>) -> bool {
+    let truncated = sessions.len() > MAX_SQLITE_SESSIONS;
+    sessions.truncate(MAX_SQLITE_SESSIONS);
+    truncated
+}
+
+fn sqlite_session_gap_notes(agent: SqliteAgent, source_limited: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if agent == SqliteAgent::Hermes {
+        notes.push(
+            "Hermes session records do not expose a verified project path; sessions remain unassigned and project-scoped continuation is unsupported."
+                .to_string(),
+        );
+    }
+    if source_limited {
+        notes.push(format!(
+            "{} session inventory reached its bounded SQLite row limit.",
+            agent.id()
+        ));
+    }
+    notes
 }
 
 fn sqlite_table_has_column(

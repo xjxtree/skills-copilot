@@ -115,6 +115,21 @@ session identity, and revision revalidation, the copy-only argv forms are
 undocumented native identity returns a typed unsupported reason and no argv.
 The app copies a supported command only; it does not spawn the runtime.
 
+Session continuation uses only adapter-owned identity evidence:
+
+| Adapter | Project identity fact | Native continuation locator | Copy-only argv |
+| --- | --- | --- | --- |
+| Claude Code | Project encoding and transcript `cwd` | Top-level transcript `sessionId` | `claude --resume <session-id>` |
+| Codex | Thread-index `cwd`; rollout metadata is detail-only evidence | Thread id or matching rollout `session_meta` id | `codex resume <thread-id>` |
+| opencode | Canonical `session.directory` | Canonical `session.id` | `opencode --session <session-id>` |
+| Pi | Project session-directory encoding and transcript `cwd` | Native `{type:"session", id}` record | `pi --session <session-id>` |
+| Hermes | No verified project identity in canonical `state.db`; rows remain unassigned | Canonical session id, but selected-project continuation remains unsupported | No argv for project continuation |
+| OpenClaw | Configured per-agent workspace | Routed `session_key`, never transcript `session_id` | `openclaw tui --session <session-key>` |
+
+An absent, conflicting, incomplete, unsafe, or project-mismatched locator
+produces a typed unsupported capability with no argv. These commands are
+preview data only; the app never launches them.
+
 All filesystem walkers prune VCS, cache, temporary, build, distribution,
 coverage, quarantine, archive, and language-cache directories before inspecting
 skill files. A configured root that is itself a skill file is accepted only by

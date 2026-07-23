@@ -1022,6 +1022,11 @@ requires another inspection and preview.
 - `session.previewLocalSessions` supports complete, stateless summary paging.
   A first page explicitly sends `paging_mode="keyset"`; a continuation sends
   the opaque `cursor` and matching `source_revision` (and may repeat the mode).
+  With no agent filter and canonical auto-discovery, the service merges
+  Claude Code, Codex, opencode, Pi, Hermes, and OpenClaw through their
+  adapter-specific bounded readers into one revision-bound keyset. A missing
+  canonical store remains visible through source notes; it is never silently
+  replaced by a four-agent filesystem-only result.
   Cursor pages are limited to 100 rows,
   inventory every authorized root within the existing request budgets, and use
   canonical `(modified_at DESC, stable row id ASC, normalized path digest ASC)`
@@ -1130,6 +1135,18 @@ requires another inspection and preview.
   repeated cursor as no progress. While rejected candidates are being excluded,
   `total_matched_count` may decrease from an earlier candidate upper bound; at
   EOF it is the exact accepted total.
+- Canonical SQLite inventories and the Codex thread index probe one row beyond
+  their 10,000-row metadata bound. Detecting another row beyond that bound is terminal
+  `safety_budget`/`limited` evidence with no continuation cursor; it is never
+  reported as an enumerable 10,000-row total.
+- Hermes `state.db` sessions do not expose a verified project path. All-scope
+  inventory retains them with an unassigned project, project scope excludes
+  them, and `session.previewResume` returns typed
+  `invalid_project_context` with no argv. The service does not infer a project
+  from title, source, time, or the selected app project.
+- Project session membership requires normalized equality with either the
+  selected project root or its accepted current cwd. A different descendant
+  directory is not silently promoted into the selected project.
 - `include_content_items` defaults to `true` when omitted for compatibility.
   Summary/list clients send `false`; every returned row then has
   `content_included=false` and `content_items=[]` while retaining bounded title,
@@ -1158,12 +1175,13 @@ requires another inspection and preview.
   raw session content.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
-- Clients must not infer a command from session metadata.
-  `session.previewResume` revalidates the exact session against the accepted
-  native inventory revision and product snapshot revision. Supported responses
-  contain ordered, adapter-native `resume.argv` with `copy_only=true`;
-  unsupported responses contain no argv and one typed reason. The method is
-  read-only, process-free, network-free, and never launches a terminal.
+- `session.previewResume` is the only resume-command preview. Clients must not
+  infer a command from session metadata, titles, source paths, or agent names.
+  It revalidates the exact session against the accepted native inventory
+  revision and product snapshot revision. Supported responses contain ordered,
+  adapter-native `resume.argv` with `copy_only=true`; unsupported responses
+  contain no argv and one typed reason. The method is read-only, process-free,
+  network-free, and never launches a terminal.
 
 ## App Search
 

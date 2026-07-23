@@ -667,3 +667,118 @@ fn openclaw_uses_current_agent_sqlite_and_ignores_legacy_or_internal_sessions() 
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn sqlite_and_codex_hard_inventory_limits_are_terminal_and_typed() {
+    const OVER_LIMIT: usize = 10_001;
+
+    let (host, root) = sqlite_host("sqlite-hard-limit");
+    let opencode_db = host
+        .adapter_ctx
+        .user_home
+        .join(".local/share/opencode/opencode.db");
+    fs::create_dir_all(opencode_db.parent().expect("OpenCode database parent"))
+        .expect("create OpenCode database directory");
+    let mut opencode = Connection::open(&opencode_db).expect("open OpenCode database");
+    opencode
+        .execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER);\
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);\
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .expect("create OpenCode schema");
+    let transaction = opencode.transaction().expect("OpenCode transaction");
+    for index in 0..OVER_LIMIT {
+        transaction
+            .execute(
+                "INSERT INTO session (id, directory, title, time_created, time_updated) VALUES (?1, '/tmp/project', ?2, ?3, ?3)",
+                params![
+                    format!("session-{index:05}"),
+                    format!("OpenCode session {index:05}"),
+                    index as i64
+                ],
+            )
+            .expect("insert OpenCode session");
+    }
+    transaction.commit().expect("commit OpenCode sessions");
+    drop(opencode);
+
+    let opencode_result = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            auto_discover: Some(true),
+            agent: Some("opencode".to_string()),
+            scope: Some("all".to_string()),
+            include_content_items: Some(false),
+            paging_mode: Some("keyset".to_string()),
+            limit: Some(10),
+            ..LocalSessionPreviewParams::default()
+        })
+        .expect("bounded OpenCode inventory");
+    assert_eq!(
+        opencode_result.source_completeness,
+        ListSourceCompleteness::Limited
+    );
+    assert_eq!(
+        opencode_result.incomplete_reason,
+        Some(ListIncompleteReason::SafetyBudget)
+    );
+    assert!(opencode_result.candidate_set_truncated);
+    assert!(!opencode_result.has_more);
+    assert!(opencode_result.next_cursor.is_none());
+    assert_eq!(opencode_result.session_rows.len(), 10);
+
+    let codex_home = host.adapter_ctx.user_home.join(".codex");
+    fs::create_dir_all(&codex_home).expect("create Codex home");
+    let codex_db = codex_home.join("state_5.sqlite");
+    let mut codex = Connection::open(&codex_db).expect("open Codex state database");
+    codex
+        .execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, preview TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, updated_at_ms INTEGER);",
+        )
+        .expect("create Codex thread index");
+    let transaction = codex.transaction().expect("Codex transaction");
+    for index in 0..OVER_LIMIT {
+        transaction
+            .execute(
+                "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, cwd, title, preview, archived, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?3, 'cli', '/tmp/project', ?4, ?4, 0, ?3, ?3)",
+                params![
+                    format!("019f0000-0000-7000-8000-{index:012}"),
+                    codex_home
+                        .join(format!("sessions/rollout-{index:05}.jsonl"))
+                        .to_string_lossy()
+                        .to_string(),
+                    index as i64,
+                    format!("Codex session {index:05}")
+                ],
+            )
+            .expect("insert Codex thread");
+    }
+    transaction.commit().expect("commit Codex threads");
+    drop(codex);
+
+    let codex_result = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            auto_discover: Some(true),
+            agent: Some("codex".to_string()),
+            scope: Some("all".to_string()),
+            include_content_items: Some(false),
+            paging_mode: Some("keyset".to_string()),
+            limit: Some(10),
+            ..LocalSessionPreviewParams::default()
+        })
+        .expect("bounded Codex inventory");
+    assert_eq!(
+        codex_result.source_completeness,
+        ListSourceCompleteness::Limited
+    );
+    assert_eq!(
+        codex_result.incomplete_reason,
+        Some(ListIncompleteReason::SafetyBudget)
+    );
+    assert!(codex_result.candidate_set_truncated);
+    assert!(!codex_result.has_more);
+    assert!(codex_result.next_cursor.is_none());
+    assert_eq!(codex_result.session_rows.len(), 10);
+
+    let _ = fs::remove_dir_all(root);
+}
