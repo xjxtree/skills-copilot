@@ -213,6 +213,8 @@ fn migrate_legacy_app_data_dir_unix(
             Path::new(""),
             0,
             owner_uid,
+            source_identity.device,
+            staging.identity.device,
             &mut copy_budget,
             &mut copied_manifest,
         )?;
@@ -225,6 +227,7 @@ fn migrate_legacy_app_data_dir_unix(
             Path::new(""),
             0,
             owner_uid,
+            source_identity.device,
             &mut verification_budget,
             &mut source_manifest,
         )?;
@@ -544,6 +547,8 @@ fn copy_directory_contents(
     relative: &Path,
     depth: usize,
     owner_uid: u32,
+    source_device: u64,
+    destination_device: u64,
     budget: &mut CopyBudget,
     manifest: &mut Vec<ManifestEntry>,
 ) -> Result<(), ServiceError> {
@@ -562,13 +567,15 @@ fn copy_directory_contents(
         let stat = statat(source, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)?;
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::Directory => {
-                let source_child = open_verified_directory(source, &name, &stat, owner_uid)?;
+                let source_child =
+                    open_verified_directory(source, &name, &stat, owner_uid, source_device)?;
                 mkdirat(destination, &name, directory_mode).map_err(io::Error::from)?;
                 let destination_child = open_verified_directory(
                     destination,
                     &name,
                     &stat_for_created(destination, &name)?,
                     owner_uid,
+                    destination_device,
                 )?;
                 fchmod(&destination_child, directory_mode).map_err(io::Error::from)?;
                 manifest.push(ManifestEntry {
@@ -581,6 +588,8 @@ fn copy_directory_contents(
                     &child_relative,
                     depth + 1,
                     owner_uid,
+                    source_device,
+                    destination_device,
                     budget,
                     manifest,
                 )?;
@@ -646,6 +655,7 @@ fn snapshot_directory_contents(
     relative: &Path,
     depth: usize,
     owner_uid: u32,
+    source_device: u64,
     budget: &mut CopyBudget,
     manifest: &mut Vec<ManifestEntry>,
 ) -> Result<(), ServiceError> {
@@ -662,7 +672,8 @@ fn snapshot_directory_contents(
         let stat = statat(source, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)?;
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::Directory => {
-                let child = open_verified_directory(source, &name, &stat, owner_uid)?;
+                let child =
+                    open_verified_directory(source, &name, &stat, owner_uid, source_device)?;
                 manifest.push(ManifestEntry {
                     relative: child_relative.clone(),
                     kind: ManifestKind::Directory,
@@ -672,6 +683,7 @@ fn snapshot_directory_contents(
                     &child_relative,
                     depth + 1,
                     owner_uid,
+                    source_device,
                     budget,
                     manifest,
                 )?;
@@ -733,6 +745,7 @@ fn open_verified_directory(
     name: &OsStr,
     stat: &rustix::fs::Stat,
     owner_uid: u32,
+    expected_device: u64,
 ) -> Result<File, ServiceError> {
     use std::os::unix::fs::MetadataExt;
 
@@ -749,11 +762,12 @@ fn open_verified_directory(
     let metadata = directory.metadata()?;
     if !metadata.is_dir()
         || metadata.uid() != owner_uid
+        || metadata.dev() != expected_device
         || metadata.dev() != stat.st_dev as u64
         || metadata.ino() != stat.st_ino
     {
         return Err(invalid_migration(
-            "legacy app data directory changed during migration",
+            "legacy app data migration refuses cross-device directories or directory races",
         ));
     }
     Ok(directory)
@@ -979,7 +993,7 @@ fn cleanup_staging_if_bound(
             "private migration staging is no longer bound to its original inode",
         ));
     }
-    remove_directory_contents(&current)?;
+    remove_directory_contents(&current, expected_identity.device)?;
     rustix::fs::unlinkat(parent, staging_name, rustix::fs::AtFlags::REMOVEDIR)
         .map_err(io::Error::from)?;
     rustix::fs::fsync(parent).map_err(io::Error::from)?;
@@ -987,7 +1001,7 @@ fn cleanup_staging_if_bound(
 }
 
 #[cfg(unix)]
-fn remove_directory_contents(directory: &File) -> Result<(), ServiceError> {
+fn remove_directory_contents(directory: &File, expected_device: u64) -> Result<(), ServiceError> {
     use rustix::fs::{openat, statat, unlinkat, AtFlags, FileType, Mode, OFlags};
 
     for name in directory_entry_names(directory)? {
@@ -1006,13 +1020,16 @@ fn remove_directory_contents(directory: &File) -> Result<(), ServiceError> {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::MetadataExt;
-                    if metadata.dev() != stat.st_dev as u64 || metadata.ino() != stat.st_ino {
+                    if metadata.dev() != expected_device
+                        || metadata.dev() != stat.st_dev as u64
+                        || metadata.ino() != stat.st_ino
+                    {
                         return Err(invalid_migration(
-                            "private migration staging changed during cleanup",
+                            "private migration staging changed or crossed a filesystem during cleanup",
                         ));
                     }
                 }
-                remove_directory_contents(&child)?;
+                remove_directory_contents(&child, expected_device)?;
                 unlinkat(directory, &name, AtFlags::REMOVEDIR).map_err(io::Error::from)?;
             }
             _ => {

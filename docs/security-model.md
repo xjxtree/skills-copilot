@@ -138,10 +138,10 @@ confirmation, and network posture.
   staging tree, and final target descriptor-relative. It accepts only
   current-user-owned regular files and directories, bounded to 100,000
   entries, depth 128, 1 GiB per file, and 8 GiB total; symlinks, special files,
-  and hardlinks fail closed. Copied files and directories are synced with
-  `0600` and `0700` permissions, the path-free migration marker is written
-  through the staging descriptor, and activation uses an atomic no-replace
-  rename.
+  hardlinks, and cross-filesystem directory traversal fail closed. Copied files
+  and directories are synced with `0600` and `0700` permissions, the path-free
+  migration marker is written through the staging descriptor, and activation
+  uses an atomic no-replace rename.
   Failure cleanup removes a staging tree only while its root still has the
   inode created by that attempt. The legacy source is preserved, target races
   are never overwritten, and any binding or read-back uncertainty after

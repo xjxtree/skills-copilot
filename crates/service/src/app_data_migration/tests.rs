@@ -53,6 +53,35 @@ fn assert_partial(result: Result<(), ServiceError>) {
 
 #[test]
 #[cfg(unix)]
+fn verified_directory_rejects_a_device_outside_the_accepted_tree() {
+    use std::os::unix::fs::MetadataExt;
+
+    let (root, source, _) = fixture("cross-device");
+    let child_name = OsStr::new("mounted-child");
+    fs::create_dir(source.join(child_name)).expect("create child");
+    let source_directory = File::open(&source).expect("open source");
+    let stat = rustix::fs::statat(
+        &source_directory,
+        child_name,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .expect("stat child");
+    let source_metadata = source_directory.metadata().expect("source metadata");
+
+    let result = open_verified_directory(
+        &source_directory,
+        child_name,
+        &stat,
+        source_metadata.uid(),
+        source_metadata.dev().wrapping_add(1),
+    );
+
+    assert!(matches!(result, Err(ServiceError::InvalidRequest(_))));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
 fn migration_copies_a_stable_tree_privately_and_writes_a_path_free_marker() {
     let (root, source, target) = fixture("normal");
     let nested = source.join("llm");
