@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use skills_copilot_adapters::{
     claude_config_dir, hermes_home_dir, openclaw_state_dir, opencode_user_skills_dir, pi_agent_dir,
 };
-use skills_copilot_catalog::{Catalog, SkillEventDraft, SkillRecord};
+use skills_copilot_catalog::{Catalog, CatalogCommitError, SkillEventDraft, SkillRecord};
 use skills_copilot_core::{
     ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
     ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AdapterContext, AgentId,
@@ -30,6 +30,7 @@ use crate::{
 };
 
 mod archive;
+mod commit_outcome;
 mod composite_remove;
 mod discovery;
 pub use archive::{
@@ -39,6 +40,7 @@ pub use archive::{
     SkillManagerLocalArchiveImportRecord, SkillManagerLocalArchiveUpdateParams,
     SkillManagerLocalArchiveUpdateRecord,
 };
+use commit_outcome::commit_manager_catalog_transaction;
 use composite_remove::{
     apply_composite_local_delete, bind_composite_local_delete, commit_composite_local_delete,
     composite_local_delete_plan, CompositeLocalDeleteCommit,
@@ -490,15 +492,7 @@ pub fn apply_install_with_manager(
             })
         })();
         let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
-        transaction.commit().map_err(|error| {
-            manager_partial_effect(
-                ctx,
-                &preview,
-                "applied_unverified",
-                true,
-                &format!("catalog commit failed after manager execution: {error}"),
-            )
-        })?;
+        commit_manager_catalog_transaction(ctx, &preview, transaction)?;
         Ok(record)
     })
 }
@@ -787,15 +781,7 @@ pub fn apply_update_with_manager(
             })
         })();
         let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
-        transaction.commit().map_err(|error| {
-            manager_partial_effect(
-                ctx,
-                &preview,
-                "applied_unverified",
-                true,
-                &format!("catalog commit failed after manager execution: {error}"),
-            )
-        })?;
+        commit_manager_catalog_transaction(ctx, &preview, transaction)?;
         Ok(record)
     })
 }
@@ -871,15 +857,7 @@ pub fn apply_local_create_with_manager(
             })
         })();
         let record = mutation.map_err(|error| manager_post_process_error(ctx, &preview, error))?;
-        transaction.commit().map_err(|error| {
-            manager_partial_effect(
-                ctx,
-                &preview,
-                "applied_unverified",
-                true,
-                &format!("catalog commit failed after manager execution: {error}"),
-            )
-        })?;
+        commit_manager_catalog_transaction(ctx, &preview, transaction)?;
         Ok(record)
     })
 }
@@ -1102,22 +1080,35 @@ pub fn delete_local_skill_with_manager(
                 return Err(error);
             }
         };
-        if let Err(error) = transaction.commit() {
-            restore_local_delete_quarantine(
-                &quarantine,
-                skill_dir,
-                &current_canonical_path,
-                expected_tree_revision,
-            )
-            .map_err(|cleanup_error| CommandError::PartialEffect {
-                operation: "skillManager.deleteLocal".to_string(),
-                state: "outcome_unknown",
-                cleanup_required: true,
-                detail: format!(
-                    "catalog commit failed ({error}); source restoration failed ({cleanup_error})"
-                ),
-            })?;
-            return Err(error.into());
+        match transaction.commit_classified() {
+            Ok(()) => {}
+            Err(CatalogCommitError::NotCommitted(error)) => {
+                restore_local_delete_quarantine(
+                    &quarantine,
+                    skill_dir,
+                    &current_canonical_path,
+                    expected_tree_revision,
+                )
+                .map_err(|cleanup_error| CommandError::PartialEffect {
+                    operation: "skillManager.deleteLocal".to_string(),
+                    state: "outcome_unknown",
+                    cleanup_required: true,
+                    detail: format!(
+                        "catalog commit was rejected ({error}); source restoration failed ({cleanup_error})"
+                    ),
+                })?;
+                return Err(error.into());
+            }
+            Err(CatalogCommitError::OutcomeUnknown(error)) => {
+                return Err(CommandError::PartialEffect {
+                    operation: "skillManager.deleteLocal".to_string(),
+                    state: "outcome_unknown",
+                    cleanup_required: true,
+                    detail: format!(
+                        "catalog commit outcome is unknown after the local source was quarantined and verified missing ({error}); private restoration material was retained for inspection"
+                    ),
+                });
+            }
         }
         let cleanup_result = if inject_local_delete_cleanup_failure(&current_canonical_path) {
             Err(std::io::Error::other(
@@ -4185,6 +4176,9 @@ fn unix_timestamp_millis() -> i64 {
         .unwrap_or_default()
         .as_millis() as i64
 }
+
+#[cfg(test)]
+mod commit_fault_tests;
 
 #[cfg(test)]
 mod effects_tests;

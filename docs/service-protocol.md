@@ -655,6 +655,16 @@ presence/value or absence verification, not secret exposure.
   relevant catalog identity/reference set. Apply revalidates these facts
   after taking the lock and before creating a process or replacing a tree. The
   lock remains held through catalog scan, semantic verification, and read-back.
+- Catalog commit results after any config, skill-file, quarantine, archive, or
+  manager effect are classified. A proven non-commit permits exact
+  compensation only for wholly app-owned reversible state. An uncertain commit
+  preserves the candidate or private recovery material and returns
+  non-retryable `partial_effect` with `state=outcome_unknown`; it never runs
+  reverse compensation. Manager install/update/local-create preserve their
+  target state after either commit class because the external process boundary
+  has already been crossed. A proven catalog non-commit is
+  `applied_unverified`; an uncertain commit is `outcome_unknown`, and neither
+  may be retried automatically.
 - Install/remove/update success declares and verifies `catalog_skills`,
   `skill_files`, and `manager_inventory` read-back. Install proves every named
   skill exists with the selected source identity and content fingerprint for

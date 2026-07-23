@@ -110,6 +110,16 @@ confirmation, and network posture.
   through process execution or staged filesystem replacement, catalog refresh,
   semantic verification, and read-back. A stale preview runs no manager
   process and writes neither targets nor app data.
+- Every catalog commit after a config, skill-file, quarantine, archive, or
+  external-manager effect classifies a proven non-commit separately from an
+  uncertain commit outcome. Exact reverse compensation is allowed only after a
+  proven non-commit and only for wholly app-owned reversible state. An
+  uncertain commit never triggers reverse compensation; it preserves the
+  candidate, private quarantine or backup, or manager target state and returns
+  a non-retryable `partial_effect` with `state=outcome_unknown`. Once an
+  external manager process has crossed its effect boundary, even a proven
+  catalog non-commit preserves the manager target state and requires explicit
+  catalog recovery rather than automatic process replay.
 - Catalog scans are the narrow derived-cache exception to the signed
   preview/apply lifecycle. `catalog.scanAll` and `catalog.scanClaude` require
   `explicit_refresh: true`; the explicit refresh invocation itself is the

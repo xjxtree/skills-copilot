@@ -1914,6 +1914,87 @@ fn local_delete_reports_applied_verified_when_only_quarantine_cleanup_fails() {
 }
 
 #[test]
+fn local_delete_retains_quarantine_when_commit_outcome_is_unknown() {
+    let temp_root = temp_test_dir("local-delete-commit-outcome-unknown");
+    let app_data = temp_root.join("app-data");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join("delete-commit-unknown")
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        "---\nname: delete-commit-unknown\ndescription: fixture\n---\nbody",
+    )
+    .expect("write source");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let mut instance = install_tool_global_instance(
+        "tool-global-delete-commit-unknown",
+        source_path.clone(),
+        "delete-commit-unknown",
+    );
+    instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&instance)
+        .expect("upsert tool-global");
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance.id.clone(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    catalog.inject_next_commit_outcome_unknown_for_test();
+
+    let error = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance.id,
+            confirmed: true,
+            preview_token: preview.preview_token,
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    )
+    .expect_err("unknown commit outcome must return a partial effect");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert!(
+        !source_path.exists(),
+        "an uncertain catalog commit must not restore the source"
+    );
+    assert!(
+        std::fs::read_dir(
+            source_path
+                .parent()
+                .expect("source parent")
+                .parent()
+                .expect("library root")
+        )
+        .expect("read library")
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".agent-copilot-delete-delete-commit-unknown-")),
+        "private restoration material must remain available for inspection"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn local_delete_rechecks_catalog_references_under_the_shared_lock() {
     let temp_root = temp_test_dir("local-delete-reference-race");
     let app_data = temp_root.join("app-data");
@@ -2332,6 +2413,71 @@ fn confirmed_install_restores_files_and_catalog_when_commit_fails() {
             .expect("snapshots")
             .is_empty(),
         "no transaction-owned catalog state may commit"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn confirmed_install_preserves_candidate_when_commit_outcome_is_unknown() {
+    let temp_root = temp_test_dir("install-commit-outcome-unknown");
+    let home = temp_root.join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let source_path = write_tool_global_skill(&temp_root, "commit-unknown-install");
+    let expected_content = std::fs::read_to_string(&source_path).expect("source content");
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            "tool-global-commit-unknown-install",
+            source_path,
+            "commit-unknown-install",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-commit-unknown-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview");
+    let target = PathBuf::from(&preview.target_path);
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    catalog.inject_next_commit_outcome_unknown_for_test();
+
+    let error = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-commit-unknown-install",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    )
+    .expect_err("unknown commit outcome must return a partial effect");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("preserved candidate target"),
+        expected_content,
+        "an uncertain catalog commit must never trigger reverse compensation"
     );
 
     let _ = std::fs::remove_dir_all(&temp_root);

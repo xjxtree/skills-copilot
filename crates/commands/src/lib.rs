@@ -1380,26 +1380,39 @@ where
             return Err(error);
         }
     };
-    if let Err(commit_error) = transaction.commit() {
-        restore_skill_install_target(
-            ctx,
-            target_agent,
-            target_scope,
-            &target,
-            project_path,
-            &locked_target,
-            &applied_target_revision,
-            &created_parent_candidates,
-        )
-        .map_err(|cleanup_error| CommandError::PartialEffect {
-            operation: "skill.install".to_string(),
-            state: "outcome_unknown",
-            cleanup_required: true,
-            detail: format!(
-                "catalog commit failed ({commit_error}); target restoration failed ({cleanup_error})"
-            ),
-        })?;
-        return Err(commit_error.into());
+    match transaction.commit_classified() {
+        Ok(()) => {}
+        Err(CatalogCommitError::NotCommitted(commit_error)) => {
+            restore_skill_install_target(
+                ctx,
+                target_agent,
+                target_scope,
+                &target,
+                project_path,
+                &locked_target,
+                &applied_target_revision,
+                &created_parent_candidates,
+            )
+            .map_err(|cleanup_error| CommandError::PartialEffect {
+                operation: "skill.install".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "catalog commit was rejected ({commit_error}); target restoration failed ({cleanup_error})"
+                ),
+            })?;
+            return Err(commit_error.into());
+        }
+        Err(CatalogCommitError::OutcomeUnknown(commit_error)) => {
+            return Err(CommandError::PartialEffect {
+                operation: "skill.install".to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "catalog commit outcome is unknown after the skill target was written and verified ({commit_error}); the candidate target was preserved for inspection"
+                ),
+            });
+        }
     }
 
     Ok(SkillInstallPreviewRecord {
@@ -2647,18 +2660,31 @@ where
             return Err(error);
         }
     };
-    if let Err(commit_error) = transaction.commit() {
-        restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
-            CommandError::PartialEffect {
+    match transaction.commit_classified() {
+        Ok(()) => {}
+        Err(CatalogCommitError::NotCommitted(commit_error)) => {
+            restore_batch_toggle_plans(ctx, &plans).map_err(|cleanup_error| {
+                CommandError::PartialEffect {
+                    operation: "batch.applySkillToggles".to_string(),
+                    state: "outcome_unknown",
+                    cleanup_required: true,
+                    detail: format!(
+                        "catalog commit was rejected ({commit_error}); reverse restoration failed ({cleanup_error})"
+                    ),
+                }
+            })?;
+            return Err(commit_error.into());
+        }
+        Err(CatalogCommitError::OutcomeUnknown(commit_error)) => {
+            return Err(CommandError::PartialEffect {
                 operation: "batch.applySkillToggles".to_string(),
                 state: "outcome_unknown",
                 cleanup_required: true,
                 detail: format!(
-                    "catalog commit failed ({commit_error}); reverse restoration failed ({cleanup_error})"
+                    "catalog commit outcome is unknown after the agent configs were written and verified ({commit_error}); the candidate configs were preserved for inspection"
                 ),
-            }
-        })?;
-        return Err(commit_error.into());
+            });
+        }
     }
     Ok(BatchToggleApplyRecord {
         action: preview.action,

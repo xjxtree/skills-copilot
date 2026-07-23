@@ -2175,6 +2175,63 @@ fn batch_toggle_restores_every_group_and_catalog_when_commit_fails() {
 }
 
 #[test]
+fn batch_toggle_preserves_candidate_configs_when_commit_outcome_is_unknown() {
+    let temp_root = temp_test_dir("batch-toggle-commit-outcome-unknown");
+    let home = temp_root.join("home");
+    write_claude_skill(&home, "unknown-commit-claude");
+    write_pi_global_skill(&home, "unknown-commit-pi");
+
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    scan_all_to_catalog(&ctx, &catalog).expect("scan all");
+    let records = catalog.list_skill_records().expect("records");
+    let selection = vec![
+        records
+            .iter()
+            .find(|record| record.agent == "claude-code" && record.name == "unknown-commit-claude")
+            .expect("Claude record")
+            .id
+            .clone(),
+        records
+            .iter()
+            .find(|record| record.agent == "pi" && record.name == "unknown-commit-pi")
+            .expect("Pi record")
+            .id
+            .clone(),
+    ];
+    let preview = preview_skill_toggles(&catalog, &ctx, &selection, false).expect("preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    catalog.inject_next_commit_outcome_unknown_for_test();
+
+    let error = apply_skill_toggles(&catalog, &ctx, &selection, false, &confirmation)
+        .expect_err("unknown commit outcome must return a partial effect");
+
+    assert!(matches!(
+        error,
+        CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        }
+    ));
+    let claude_candidate =
+        std::fs::read_to_string(home.join(".claude/settings.json")).expect("Claude candidate");
+    let pi_candidate =
+        std::fs::read_to_string(home.join(".pi/agent/settings.json")).expect("Pi candidate");
+    assert!(claude_candidate.contains("\"off\""));
+    assert!(pi_candidate.contains("unknown-commit-pi/SKILL.md"));
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
 fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
     let temp_root = temp_test_dir("pi-toggle-global");
     let home = temp_root.join("home");
