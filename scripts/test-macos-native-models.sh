@@ -61,6 +61,8 @@ fi
 
 rm -rf "${PACKAGE_DIR}"
 mkdir -p "${TARGET_DIR}"
+mkdir -p "${BUILD_ROOT}/fixtures"
+cp -R "${REPO_ROOT}/fixtures/service-protocol" "${BUILD_ROOT}/fixtures/"
 
 rsync -a \
   --exclude='Views/**' \
