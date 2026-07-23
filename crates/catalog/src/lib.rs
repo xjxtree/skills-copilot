@@ -34,9 +34,28 @@ pub struct Catalog {
     // struct fields in declaration order, so keep the lease after it.
     #[cfg(unix)]
     _anchored_vfs: Option<anchored_vfs::AnchoredVfsLease>,
+    storage: CatalogStorageKind,
     fail_next_commit: Cell<bool>,
     fail_next_commit_outcome: Cell<bool>,
     fail_next_rollback: Cell<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(unix)]
+struct UnixOwnerIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[derive(Debug)]
+enum CatalogStorageKind {
+    InMemory,
+    #[cfg(unix)]
+    Anchored(UnixOwnerIdentity),
+    #[cfg(unix)]
+    LegacyPathBacked(UnixOwnerIdentity),
+    #[cfg(not(unix))]
+    LegacyPathBacked,
 }
 
 /// Holds an immediate SQLite transaction on a catalog connection.
@@ -291,11 +310,14 @@ pub enum CatalogError {
     InjectedRollbackFailure,
     #[error("descriptor-anchored catalog error: {0}")]
     AnchoredVfs(String),
+    #[error("catalog mutation owner does not match catalog storage: {0}")]
+    MutationOwner(String),
 }
 
 impl Catalog {
     pub fn open(path: &Path) -> Result<Self, CatalogError> {
         let path = normalize_sqlite_root_alias(path);
+        let storage = legacy_path_storage(&path)?;
         Ok(Self {
             conn: Connection::open_with_flags(
                 &path,
@@ -303,6 +325,7 @@ impl Catalog {
             )?,
             #[cfg(unix)]
             _anchored_vfs: None,
+            storage,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -311,6 +334,7 @@ impl Catalog {
 
     pub fn open_read_only(path: &Path) -> Result<Self, CatalogError> {
         let path = normalize_sqlite_root_alias(path);
+        let storage = legacy_path_storage(&path)?;
         Ok(Self {
             conn: Connection::open_with_flags(
                 &path,
@@ -318,6 +342,7 @@ impl Catalog {
             )?,
             #[cfg(unix)]
             _anchored_vfs: None,
+            storage,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -363,6 +388,7 @@ impl Catalog {
             conn: Connection::open_in_memory()?,
             #[cfg(unix)]
             _anchored_vfs: None,
+            storage: CatalogStorageKind::InMemory,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -377,6 +403,7 @@ impl Catalog {
     /// validated inode if the display path is renamed or replaced.
     #[cfg(unix)]
     pub fn open_anchored(owner: std::fs::File) -> Result<Self, CatalogError> {
+        let owner_identity = unix_owner_identity(&owner)?;
         let lease =
             anchored_vfs::AnchoredVfsLease::register(owner).map_err(CatalogError::AnchoredVfs)?;
         let conn = Connection::open_with_flags_and_vfs(
@@ -388,6 +415,7 @@ impl Catalog {
         Ok(Self {
             conn,
             _anchored_vfs: Some(lease),
+            storage: CatalogStorageKind::Anchored(owner_identity),
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -398,6 +426,7 @@ impl Catalog {
     /// already-validated app-data directory descriptor.
     #[cfg(unix)]
     pub fn open_read_only_current_anchored(owner: std::fs::File) -> Result<Self, CatalogError> {
+        let owner_identity = unix_owner_identity(&owner)?;
         let lease =
             anchored_vfs::AnchoredVfsLease::register(owner).map_err(CatalogError::AnchoredVfs)?;
         let conn = Connection::open_with_flags_and_vfs(
@@ -409,6 +438,7 @@ impl Catalog {
         let catalog = Self {
             conn,
             _anchored_vfs: Some(lease),
+            storage: CatalogStorageKind::Anchored(owner_identity),
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -448,6 +478,35 @@ impl Catalog {
         schema::init_schema(&self.conn)?;
         self.canonicalize_legacy_paths()?;
         Ok(())
+    }
+
+    /// Proves that a catalog and the caller's actual mutation lock refer to
+    /// the same app-data owner before the first filesystem, SQLite, or process
+    /// effect.
+    ///
+    /// In-memory catalogs are ownerless and remain valid for pure unit tests.
+    /// Descriptor-anchored catalogs require an exact owner inode match.
+    /// Legacy path-backed catalogs compare the parent identity captured at
+    /// open time; production service code must use descriptor-anchored opens.
+    pub fn ensure_mutation_owner(&self, owner: &std::fs::File) -> Result<(), CatalogError> {
+        match self.storage {
+            CatalogStorageKind::InMemory => Ok(()),
+            #[cfg(unix)]
+            CatalogStorageKind::Anchored(expected)
+            | CatalogStorageKind::LegacyPathBacked(expected) => {
+                let actual = unix_owner_identity(owner)?;
+                if actual == expected {
+                    Ok(())
+                } else {
+                    Err(CatalogError::MutationOwner(
+                        "the locked app-data owner inode differs from the catalog owner"
+                            .to_string(),
+                    ))
+                }
+            }
+            #[cfg(not(unix))]
+            CatalogStorageKind::LegacyPathBacked => Ok(()),
+        }
     }
 
     pub fn begin_immediate_transaction(
@@ -1075,6 +1134,47 @@ fn configure_anchored_connection(conn: &Connection) -> Result<(), CatalogError> 
     conn.pragma_update(None, "journal_mode", "DELETE")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn unix_owner_identity(owner: &std::fs::File) -> Result<UnixOwnerIdentity, CatalogError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = owner.metadata().map_err(|error| {
+        CatalogError::MutationOwner(format!(
+            "reading the catalog owner identity failed: {error}"
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(CatalogError::MutationOwner(
+            "the catalog owner must be a directory".to_string(),
+        ));
+    }
+    Ok(UnixOwnerIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(unix)]
+fn legacy_path_storage(path: &Path) -> Result<CatalogStorageKind, CatalogError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let owner = std::fs::File::open(parent).map_err(|error| {
+        CatalogError::MutationOwner(format!(
+            "opening the legacy path-backed catalog parent failed: {error}"
+        ))
+    })?;
+    Ok(CatalogStorageKind::LegacyPathBacked(unix_owner_identity(
+        &owner,
+    )?))
+}
+
+#[cfg(not(unix))]
+fn legacy_path_storage(_path: &Path) -> Result<CatalogStorageKind, CatalogError> {
+    Ok(CatalogStorageKind::LegacyPathBacked)
 }
 
 #[cfg(unix)]
@@ -2746,6 +2846,61 @@ mod tests {
             .expect("read anchored snapshot")
             .is_some());
         drop(read_only);
+
+        let _ = std::fs::remove_file(owner_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mutation_owner_binding_rejects_a_rebound_owner_for_anchored_and_legacy_catalogs() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-catalog-owner-binding-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        let owner_path = root.join("app-data");
+        let moved_owner = root.join("accepted-owner");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&owner_path).expect("create owner");
+        std::fs::create_dir(&victim).expect("create victim");
+        std::fs::write(victim.join("sentinel"), b"unchanged").expect("seed victim");
+
+        let accepted = std::fs::File::open(&owner_path).expect("open accepted owner");
+        let catalog = Catalog::open_anchored(
+            accepted
+                .try_clone()
+                .expect("clone accepted owner for catalog"),
+        )
+        .expect("open anchored catalog");
+        assert!(catalog.ensure_mutation_owner(&accepted).is_ok());
+
+        std::fs::rename(&owner_path, &moved_owner).expect("move accepted owner");
+        symlink(&victim, &owner_path).expect("replace owner path");
+        let rebound = std::fs::File::open(&owner_path).expect("open rebound owner");
+        assert!(matches!(
+            catalog.ensure_mutation_owner(&rebound),
+            Err(CatalogError::MutationOwner(_))
+        ));
+        assert_eq!(
+            std::fs::read(victim.join("sentinel")).expect("victim sentinel"),
+            b"unchanged"
+        );
+        assert!(!victim.join("catalog.sqlite").exists());
+        drop(catalog);
+
+        let legacy =
+            Catalog::open(&moved_owner.join("legacy.sqlite")).expect("open legacy catalog");
+        assert!(legacy.ensure_mutation_owner(&accepted).is_ok());
+        assert!(matches!(
+            legacy.ensure_mutation_owner(&rebound),
+            Err(CatalogError::MutationOwner(_))
+        ));
+
+        let in_memory = Catalog::in_memory().expect("open in-memory catalog");
+        assert!(in_memory.ensure_mutation_owner(&rebound).is_ok());
 
         let _ = std::fs::remove_file(owner_path);
         let _ = std::fs::remove_dir_all(root);
