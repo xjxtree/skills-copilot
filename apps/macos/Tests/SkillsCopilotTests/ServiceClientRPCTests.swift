@@ -51,9 +51,94 @@ struct ServiceClientRPCTests {
         try await providerActivityPageRequestUsesExactBindings()
         try await localSessionCursorRequestDecodesCompleteness()
         try await localSessionMessagePageRequestUsesExactBindings()
+        try await ruleSuppressionRequestsMatchServiceContract()
+        try await nativeScriptPreviewUsesIdentityOnlyAndDecodesBlockedResponse()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
+    }
+
+    private func ruleSuppressionRequestsMatchServiceContract() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+
+        let setRecord = try await client.setSuppression(
+            ruleId: "dependency.unknown",
+            scope: .rule,
+            findingGroupId: nil,
+            note: "Reviewed locally."
+        )
+        let listedRecords = try await client.listRuleTuning()
+        _ = try await client.clearSuppression(
+            ruleId: "dependency.unknown",
+            scope: .rule,
+            findingGroupId: nil
+        )
+
+        let setParams = try runner.params(for: "rules.setSuppression")
+        try expectEqual(
+            setParams["reason"] as? String,
+            Optional("Suppressed locally in Agent Copilot after user review."),
+            "Suppression requests must include the Rust-required reason."
+        )
+        try expectNil(setParams["suppressed"], "Suppression requests must not send an unsupported suppressed flag.")
+        try expectNil(setParams["finding_group_id"], "Rule-wide suppression must not send an unsupported finding group.")
+        try expectNil(setParams["scope"], "Native rule-wide suppression must not overload adapter scope.")
+        try expectEqual(setRecord?.suppressed, true, "A suppression reason in the canonical response must decode as suppressed.")
+        try expectEqual(
+            listedRecords.first?.suppressed,
+            true,
+            "Suppression read-back must preserve the state encoded by suppression_reason."
+        )
+
+        let clearParams = try runner.params(for: "rules.clearSuppression")
+        try expectNil(clearParams["finding_group_id"], "Clear suppression must use the Rust rule tuning key.")
+        try expectNil(clearParams["scope"], "Clear suppression must not overload adapter scope.")
+
+        let requestCountBeforeUnsupportedScope = runner.requests.count
+        do {
+            _ = try await client.setSuppression(
+                ruleId: "dependency.unknown",
+                scope: .findingGroup,
+                findingGroupId: "group-a"
+            )
+            throw NativeModelTestFailure(description: "Finding-group suppression must fail closed.")
+        } catch ServiceClient.ClientError.service(let error) {
+            try expectEqual(error.code, "unsupported_scope", "Finding-group suppression should report its unsupported scope.")
+        }
+        try expectEqual(
+            runner.requests.count,
+            requestCountBeforeUnsupportedScope,
+            "Unsupported finding-group suppression must not be silently sent as rule-wide."
+        )
+    }
+
+    private func nativeScriptPreviewUsesIdentityOnlyAndDecodesBlockedResponse() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
+        let skill = SkillRecord(
+            id: "skill-fixture",
+            agent: "codex",
+            scope: "agent-global",
+            path: "/tmp/skill/SKILL.md",
+            displayPath: "$HOME/.codex/skills/skill/SKILL.md",
+            definitionId: "definition-fixture",
+            name: "Fixture",
+            state: "loaded",
+            enabled: true
+        )
+
+        let preview = try await client.previewScriptExecution(skill: skill)
+        let params = try runner.params(for: "script.previewExecution")
+
+        try expectEqual(params["instance_id"] as? String, Optional("skill-fixture"), "Script preview stable instance id")
+        try expectEqual(params["definition_id"] as? String, Optional("definition-fixture"), "Script preview definition id")
+        try expectEqual(params["agent"] as? String, Optional("codex"), "Script preview agent")
+        try expectNil(params["command"], "Native script preview must not guess a command.")
+        try expectEqual(preview.skillID, "skill-fixture", "Canonical Rust identity must decode.")
+        try expectEqual(preview.commandPreview, [], "Blocked identity-only preview must keep command argv empty.")
+        try expectEqual(preview.executionAllowed, false, "Identity-only preview must remain blocked.")
+        try expectContains(preview.disabledReason, "No verified script command", "Blocked preview must explain why no command is available.")
     }
 
     private func localHistoryPageRequestsDecodeAliases() async throws {
@@ -821,6 +906,14 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.previewResponse.utf8)
         case "llm.confirmPromptAndSend":
             return Data(Self.sendResponse.utf8)
+        case "rules.setSuppression":
+            return Data(Self.ruleSuppressionResponse.utf8)
+        case "rules.listTuning":
+            return Data(Self.ruleTuningListResponse.utf8)
+        case "rules.clearSuppression":
+            return Data(Self.clearSuppressionResponse.utf8)
+        case "script.previewExecution":
+            return Data(Self.scriptPreviewResponse.utf8)
         default:
             return Data(Self.unknownMethodResponse.utf8)
         }
@@ -828,6 +921,22 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
 
     private static let previewResponse = """
     {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","request_kind":"task_cockpit","scope":"agents","prompt_scope":"Task Preflight","enabled":true,"provider":"openai-compatible","model":"gpt-test","destination_host":"llm.example.com","included_fields":[],"excluded_fields":[],"redaction":{"status":"redacted","summary":"ok","redacted_fields":[],"placeholders":[]},"confirmation_required":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"draft_copy_only":true,"redacted_prompt_preview":"preview"}}
+    """
+
+    private static let ruleSuppressionResponse = """
+    {"id":"test","ok":true,"result":{"rule_id":"dependency.unknown","agent":null,"scope":null,"severity_override":null,"suppression_reason":"Suppressed locally in Agent Copilot after user review.","suppression_note":"Reviewed locally.","updated_at":1}}
+    """
+
+    private static let ruleTuningListResponse = """
+    {"id":"test","ok":true,"result":[{"rule_id":"dependency.unknown","agent":null,"scope":null,"severity_override":null,"suppression_reason":"Suppressed locally in Agent Copilot after user review.","suppression_note":"Reviewed locally.","updated_at":1}]}
+    """
+
+    private static let clearSuppressionResponse = """
+    {"id":"test","ok":true,"result":true}
+    """
+
+    private static let scriptPreviewResponse = """
+    {"id":"test","ok":true,"result":{"skill_instance_id":"skill-fixture","initiated_by":"user","initiator_allowed":true,"cwd":{"requested":null,"effective":"/tmp","source":"project"},"env":{"inherit_parent":false,"provided_keys":[],"redacted_keys":[],"value_policy":"values-redacted"},"network":{"requested":"none","allowed":false,"reason":"Network access is not granted because script execution is disabled."},"files":{"requested":[],"read_allowed":false,"write_allowed":false,"allowed_roots":[]},"command_preview":{"argv":[],"display":"","shell":null},"risks":["No verified script command was supplied; Agent Copilot will not infer or execute one."],"confirmation":{"required":true,"confirmed":false,"fields":["command_preview"],"message":"Per-request user confirmation is required before any execution attempt."},"execution_allowed":false,"disabled_reason":"No verified script command was supplied; Agent Copilot will not infer or execute one."}}
     """
 
     private static let configSaveResponse = """

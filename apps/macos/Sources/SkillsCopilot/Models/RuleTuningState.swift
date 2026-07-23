@@ -99,11 +99,11 @@ struct RuleTuningRecord: Decodable, Identifiable, Hashable {
         let decodedOverride = try container.decodeIfPresent(String.self, forKey: .severityOverride)
             ?? container.decodeIfPresent(String.self, forKey: .overrideSeverity)
         let decodedEffective = try container.decodeIfPresent(String.self, forKey: .effectiveSeverity)
-        let decodedSuppressed = try container.decodeIfPresent(Bool.self, forKey: .suppressed)
-            ?? container.decodeIfPresent(Bool.self, forKey: .isSuppressed)
-            ?? false
         let decodedReason = try container.decodeIfPresent(String.self, forKey: .suppressionReason)
             ?? container.decodeIfPresent(String.self, forKey: .note)
+        let decodedSuppressed = try container.decodeIfPresent(Bool.self, forKey: .suppressed)
+            ?? container.decodeIfPresent(Bool.self, forKey: .isSuppressed)
+            ?? (decodedReason != nil)
         let decodedUpdatedAt = try container.decodeIfPresent(Int64.self, forKey: .updatedAt)
 
         self.init(

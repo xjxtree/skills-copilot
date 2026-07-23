@@ -188,6 +188,27 @@ conditional on the exact local state that the client reviewed.
 | `snapshot.previewRollback` | None | Never | Never | None |
 | `snapshot.rollback` | Agent config, App-local data | Never | Never | Required |
 
+## Rule Suppression And Script Preview
+
+`rules.setSuppression` accepts `rule_id`, a required non-empty `reason`, and an
+optional `note`. Optional `agent` and `scope` fields narrow the catalog rule
+target; `scope` is an adapter skill scope and is valid only with `agent`.
+`rules.clearSuppression` uses the same rule/agent/scope key. The native client
+currently creates rule-wide app-local suppressions, so it omits `agent` and
+`scope`. Finding-group suppression is not a service capability and must fail
+closed in clients instead of being silently widened to a whole-rule
+suppression. A returned record is suppressed when `suppression_reason` is
+present.
+
+`script.previewExecution` accepts either an explicit command preview request or
+the native client's skill identity (`instance_id`, `definition_id`, `agent`).
+For identity-only requests, the service returns a deterministic blocked preview
+with empty `command_preview.argv` and an unavailable reason. It never infers a
+command from skill metadata, reads a script to construct one, writes an audit,
+or spawns a process. `script.execute` still requires explicit confirmation and
+a non-empty command argv; confirmed attempts are audited as blocked and never
+spawn a process.
+
 ## Provider Observability
 
 `llm.providerObservability` is a read-only, app-local dashboard over redacted

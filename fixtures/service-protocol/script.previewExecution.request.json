@@ -2,20 +2,8 @@
   "id": "fixture-script-preview-execution",
   "method": "script.previewExecution",
   "params": {
-    "command": [
-      "python3",
-      "scripts/demo.py",
-      "--dry-run"
-    ],
-    "cwd": "/tmp/skills-copilot-project",
-    "env": {
-      "API_TOKEN": "fixture-redacted-value"
-    },
-    "network": "none",
-    "files": [
-      "/tmp/skills-copilot-project/scripts/demo.py"
-    ],
-    "skill_instance_id": "skill-instance-id",
-    "initiated_by": "user"
+    "instance_id": "skill-instance-id",
+    "definition_id": "definition-id",
+    "agent": "codex"
   }
 }

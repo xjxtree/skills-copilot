@@ -131,13 +131,19 @@ extension ServiceClient {
     }
 
     func setSuppression(ruleId: String, scope: RuleTuningScope, findingGroupId: String?, note: String? = nil) async throws -> RuleTuningRecord? {
+        guard scope == .rule else {
+            throw ClientError.service(
+                ServiceErrorPayload(
+                    code: "unsupported_scope",
+                    message: "Finding-group suppression is not part of the service contract; choose rule-wide suppression."
+                )
+            )
+        }
         let result: RuleTuningMutationResult = try await call(
             method: "rules.setSuppression",
             params: SetRuleSuppressionParams(
                 ruleId: ruleId,
-                scope: scope.rawValue,
-                findingGroupId: scope == .findingGroup ? findingGroupId : nil,
-                suppressed: true,
+                reason: "Suppressed locally in Agent Copilot after user review.",
                 note: note
             )
         )
@@ -145,13 +151,17 @@ extension ServiceClient {
     }
 
     func clearSuppression(ruleId: String, scope: RuleTuningScope, findingGroupId: String?) async throws -> RuleTuningRecord? {
+        guard scope == .rule else {
+            throw ClientError.service(
+                ServiceErrorPayload(
+                    code: "unsupported_scope",
+                    message: "Finding-group suppression is not part of the service contract; choose rule-wide suppression."
+                )
+            )
+        }
         let result: RuleTuningMutationResult = try await call(
             method: "rules.clearSuppression",
-            params: ClearRuleSuppressionParams(
-                ruleId: ruleId,
-                scope: scope.rawValue,
-                findingGroupId: scope == .findingGroup ? findingGroupId : nil
-            )
+            params: ClearRuleSuppressionParams(ruleId: ruleId)
         )
         return result.record
     }

@@ -6,18 +6,14 @@
     "initiated_by": "user",
     "initiator_allowed": true,
     "cwd": {
-      "requested": "/tmp/skills-copilot-project",
+      "requested": null,
       "effective": "/tmp/skills-copilot-project",
-      "source": "request"
+      "source": "project"
     },
     "env": {
       "inherit_parent": false,
-      "provided_keys": [
-        "API_TOKEN"
-      ],
-      "redacted_keys": [
-        "API_TOKEN"
-      ],
+      "provided_keys": [],
+      "redacted_keys": [],
       "value_policy": "values-redacted"
     },
     "network": {
@@ -26,26 +22,18 @@
       "reason": "Network access is not granted because script execution is disabled."
     },
     "files": {
-      "requested": [
-        "/tmp/skills-copilot-project/scripts/demo.py"
-      ],
+      "requested": [],
       "read_allowed": false,
       "write_allowed": false,
       "allowed_roots": []
     },
     "command_preview": {
-      "argv": [
-        "python3",
-        "scripts/demo.py",
-        "--dry-run"
-      ],
-      "display": "python3 scripts/demo.py --dry-run",
+      "argv": [],
+      "display": "",
       "shell": null
     },
     "risks": [
-      "Script execution is disabled by default; the service will not spawn a process.",
-      "File access was requested but no read or write roots are granted.",
-      "Environment values are accepted only for preview and audit metadata; values are redacted."
+      "No verified script command was supplied; Agent Copilot will not infer or execute one."
     ],
     "confirmation": {
       "required": true,
@@ -61,6 +49,6 @@
       "message": "Per-request user confirmation is required before any execution attempt."
     },
     "execution_allowed": false,
-    "disabled_reason": "Script execution is disabled by default; the service will not spawn a process."
+    "disabled_reason": "No verified script command was supplied; Agent Copilot will not infer or execute one."
   }
 }

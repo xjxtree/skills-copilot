@@ -409,29 +409,21 @@ struct ClearRuleSeverityOverrideParams: Encodable {
 
 struct SetRuleSuppressionParams: Encodable {
     let ruleId: String
-    let scope: String
-    let findingGroupId: String?
-    let suppressed: Bool
+    let reason: String
     let note: String?
 
     enum CodingKeys: String, CodingKey {
         case ruleId = "rule_id"
-        case scope
-        case findingGroupId = "finding_group_id"
-        case suppressed
+        case reason
         case note
     }
 }
 
 struct ClearRuleSuppressionParams: Encodable {
     let ruleId: String
-    let scope: String
-    let findingGroupId: String?
 
     enum CodingKeys: String, CodingKey {
         case ruleId = "rule_id"
-        case scope
-        case findingGroupId = "finding_group_id"
     }
 }
 

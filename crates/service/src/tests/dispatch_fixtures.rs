@@ -126,8 +126,9 @@ fn dispatch_coverage_params(method: &str) -> Value {
             "limit": 4
         }),
         "script.previewExecution" => json!({
-            "command": ["echo", "preview-only"],
-            "initiated_by": "user"
+            "instance_id": "missing-skill",
+            "definition_id": "missing-definition",
+            "agent": "codex"
         }),
         "script.execute" => json!({
             "command": ["echo", "blocked"],

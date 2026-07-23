@@ -1056,6 +1056,58 @@ fn script_preview_returns_disabled_scope_without_writing_audit() {
 }
 
 #[test]
+fn script_preview_accepts_native_skill_identity_without_guessing_a_command() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-script-native-preview-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("script-native-preview".to_string()),
+        method: "script.previewExecution".to_string(),
+        params: json!({
+            "instance_id": "skill-fixture",
+            "definition_id": "definition-fixture",
+            "agent": "codex"
+        }),
+    });
+
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("preview result");
+    assert_eq!(
+        result.get("skill_instance_id").and_then(Value::as_str),
+        Some("skill-fixture")
+    );
+    assert_eq!(
+        result
+            .pointer("/command_preview/argv")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "identity-only preview must never invent a command"
+    );
+    assert_eq!(
+        result.get("execution_allowed").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        result
+            .get("disabled_reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("No verified script command")),
+        "identity-only preview must explain that no verified command is available"
+    );
+    assert!(
+        !host.script_execution_audit_path().exists(),
+        "preview must not write audit records"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn script_execute_requires_per_request_confirmation() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-script-confirm-test-{}-{}",
@@ -1079,6 +1131,38 @@ fn script_execute_requires_per_request_confirmation() {
     assert!(
         !host.script_execution_audit_path().exists(),
         "unconfirmed execute must not write an audit record"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn script_execute_rejects_confirmed_identity_without_command_or_audit_write() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-script-empty-execute-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("script-execute-empty".to_string()),
+        method: "script.execute".to_string(),
+        params: json!({
+            "instance_id": "skill-fixture",
+            "definition_id": "definition-fixture",
+            "agent": "codex",
+            "confirmed": true
+        }),
+    });
+
+    assert!(!response.ok);
+    let error = response.error.expect("invalid request error");
+    assert_eq!(error.code, "command_error");
+    assert!(error.message.contains("non-empty command argv"));
+    assert!(
+        !host.script_execution_audit_path().exists(),
+        "a command-less execute request must not write an audit record"
     );
 
     let _ = fs::remove_dir_all(app_data_dir);

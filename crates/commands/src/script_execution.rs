@@ -12,6 +12,8 @@ use super::{current_time_ms, ensure_path_inside, CommandError};
 
 pub const SCRIPT_EXECUTION_DISABLED_REASON: &str =
     "Script execution is disabled by default; the service will not spawn a process.";
+pub const SCRIPT_EXECUTION_COMMAND_UNAVAILABLE_REASON: &str =
+    "No verified script command was supplied; Agent Copilot will not infer or execute one.";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +37,7 @@ fn default_script_execution_initiator() -> ScriptExecutionInitiator {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScriptExecutionRequest {
+    #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
@@ -45,6 +48,7 @@ pub struct ScriptExecutionRequest {
     #[serde(default)]
     pub files: Vec<String>,
     #[serde(default)]
+    #[serde(alias = "instance_id")]
     pub skill_instance_id: Option<String>,
     #[serde(default = "default_script_execution_initiator")]
     pub initiated_by: ScriptExecutionInitiator,
@@ -129,12 +133,6 @@ pub fn preview_script_execution(
     ctx: &AdapterContext,
     request: &ScriptExecutionRequest,
 ) -> Result<ScriptExecutionPreviewRecord, CommandError> {
-    if request.command.is_empty() {
-        return Err(CommandError::InvalidScriptExecutionRequest(
-            "script execution preview requires a non-empty command argv".to_string(),
-        ));
-    }
-
     let (effective_cwd, cwd_source) = effective_script_cwd(ctx, request.cwd.as_deref());
     let provided_keys: Vec<String> = request.env.keys().cloned().collect();
     let requested_network = request
@@ -144,7 +142,12 @@ pub fn preview_script_execution(
         .unwrap_or("none")
         .to_string();
     let initiator_allowed = request.initiated_by != ScriptExecutionInitiator::Llm;
-    let mut risks = vec![SCRIPT_EXECUTION_DISABLED_REASON.to_string()];
+    let disabled_reason = if request.command.is_empty() {
+        SCRIPT_EXECUTION_COMMAND_UNAVAILABLE_REASON
+    } else {
+        SCRIPT_EXECUTION_DISABLED_REASON
+    };
+    let mut risks = vec![disabled_reason.to_string()];
     if !initiator_allowed {
         risks.push("LLM-initiated script execution is rejected by the service.".to_string());
     }
@@ -212,7 +215,7 @@ pub fn preview_script_execution(
                 .to_string(),
         },
         execution_allowed: false,
-        disabled_reason: SCRIPT_EXECUTION_DISABLED_REASON.to_string(),
+        disabled_reason: disabled_reason.to_string(),
     })
 }
 
@@ -222,6 +225,11 @@ pub fn record_blocked_script_execution(
     audit_path: &Path,
     request: &ScriptExecutionRequest,
 ) -> Result<ScriptExecutionAttemptRecord, CommandError> {
+    if request.command.is_empty() {
+        return Err(CommandError::InvalidScriptExecutionRequest(
+            "script execution requires a non-empty command argv".to_string(),
+        ));
+    }
     let preview = preview_script_execution(ctx, request)?;
     let created_at = current_time_ms();
     let outcome = if request.initiated_by == ScriptExecutionInitiator::Llm {

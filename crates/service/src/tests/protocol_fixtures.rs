@@ -726,7 +726,13 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 decode_fixture_result(method, result, path);
             assert!(!preview.execution_allowed);
             assert!(preview.confirmation.required);
-            assert!(!preview.command_preview.argv.is_empty());
+            assert!(
+                preview.command_preview.argv.is_empty(),
+                "native identity-only preview must not invent a command"
+            );
+            assert!(preview
+                .disabled_reason
+                .contains("No verified script command"));
         }
         "script.execute" => {
             let attempt: WireScriptExecutionAttemptRecord =
