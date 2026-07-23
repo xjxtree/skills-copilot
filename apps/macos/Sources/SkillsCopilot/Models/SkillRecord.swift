@@ -1276,45 +1276,6 @@ struct AgentRefreshSummary: Codable, Hashable, Identifiable {
     }
 }
 
-struct SnapshotRollbackPreviewRecord: Codable, Identifiable, Hashable {
-    let snapshot: ConfigSnapshotRecord
-    let currentContent: String
-    let currentReadError: String?
-    let currentRevision: String?
-    let previewToken: String?
-    let changed: Bool
-    let redacted: Bool
-    let rollbackSupported: Bool
-
-    var id: String { snapshot.id }
-
-    enum CodingKeys: String, CodingKey {
-        case snapshot
-        case currentContent = "current_content"
-        case currentReadError = "current_read_error"
-        case currentRevision = "current_revision"
-        case previewToken = "preview_token"
-        case changed
-        case redacted
-        case rollbackSupported = "rollback_supported"
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        snapshot = try container.decode(ConfigSnapshotRecord.self, forKey: .snapshot)
-        currentContent = try container.decode(String.self, forKey: .currentContent)
-        currentReadError = try container.decodeIfPresent(String.self, forKey: .currentReadError)
-        currentRevision = try container.decodeIfPresent(String.self, forKey: .currentRevision)
-        previewToken = try container.decodeIfPresent(String.self, forKey: .previewToken)
-        changed = try container.decode(Bool.self, forKey: .changed)
-        redacted = try container.decodeIfPresent(Bool.self, forKey: .redacted) ?? false
-        let serviceSupportsRollback = try container.decodeIfPresent(Bool.self, forKey: .rollbackSupported) ?? !redacted
-        rollbackSupported = serviceSupportsRollback
-            && currentRevision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            && previewToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-}
-
 struct ConfigDocumentRecord: Codable, Hashable {
     let agent: String
     let scope: String

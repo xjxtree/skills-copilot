@@ -145,15 +145,12 @@ const checks = [
       && /static func configureWindow\(_ window: NSWindow,\s*theme: AppTheme = \.current\)[\s\S]*?window\.appearance = theme\.nsAppearance[\s\S]*?window\.isMovableByWindowBackground = false/.test(files.mainWindowCoordinator),
   },
   {
-    label: "application termination waits for pending and active autosaves",
+    label: "application termination does not initiate hidden config or provider writes",
     text: files.app + "\n" + files.store,
-    passed: /applicationShouldTerminate\(_ sender:\s*NSApplication\)[\s\S]*?\.terminateLater[\s\S]*?flushPendingAutosaves\(\)[\s\S]*?reply\(toApplicationShouldTerminate:\s*true\)/.test(files.app)
-      && /hasRepliedToTerminationRequest = false[\s\S]*?guard !hasRepliedToTerminationRequest[\s\S]*?self\.hasRepliedToTerminationRequest = true[\s\S]*?reply\(toApplicationShouldTerminate:\s*true\)/.test(files.app)
-      && /configureAutosaveFlusher\([\s\S]*?store:\s*SkillStore/.test(files.app)
-      && /appDelegate\.configureAutosaveFlusher\(store:\s*store\)/.test(files.app),
+    passed: !/applicationShouldTerminate|configureAutosaveFlusher|flushPendingAutosaves/.test(files.app),
   },
   {
-    label: "autosave mutation lane durably cancels pre-owner revision tokens and drains them on shutdown",
+    label: "provider autosave and explicit config apply share the serialized mutation lane",
     text: files.revisionAutosave + "\n" + files.store,
     passed: /struct AutosaveMutationLaneToken:[\s\S]*?case config[\s\S]*?case provider[\s\S]*?let revision:\s*UInt64/.test(files.revisionAutosave)
       && /enum AutosaveMutationLaneResult<Result>[\s\S]*?case completed\(Result\)[\s\S]*?case cancelled/.test(files.revisionAutosave)
@@ -166,12 +163,10 @@ const checks = [
       && /private func enqueue\(token:[\s\S]*?cancelledTokens\.remove\(token\)[\s\S]*?waiters\.append/.test(files.revisionAutosave)
       && /func shutdown\(\)[\s\S]*?waiters\.removeAll\(\)[\s\S]*?resume\(returning:\s*false\)/.test(files.revisionAutosave)
       && /waiters\.removeFirst\(\)\.continuation\.resume\(returning:\s*true\)/.test(files.revisionAutosave)
-      && /workerWillStart:\s*\{[\s\S]*?autosaveMutationLane\.register\([\s\S]*?family:\s*\.config/.test(files.store)
       && /workerWillStart:\s*\{[\s\S]*?autosaveMutationLane\.register\([\s\S]*?family:\s*\.provider/.test(files.store)
-      && /submitConfigAutosave\(content:[\s\S]*?validationError != nil[\s\S]*?cancelQueued/.test(files.store)
       && /submitProviderAutosave\(draft:[\s\S]*?draft\.validationMessage != nil[\s\S]*?cancelQueued/.test(files.store)
-      && /cancelPendingConfigAutosave\(\)[\s\S]*?AutosaveMutationLaneToken\(family:\s*\.config,\s*revision:\s*activeRevision\)/.test(files.store)
       && /cancelPendingProviderAutosave\(\)[\s\S]*?AutosaveMutationLaneToken\(family:\s*\.provider,\s*revision:\s*activeRevision\)/.test(files.store)
+      && /func applyClaudeSettingsSave\([\s\S]*?autosaveMutationLane\.perform/.test(files.store)
       && /deinit[\s\S]*?lane\.shutdown\(\)/.test(files.store),
   },
   {
@@ -436,11 +431,11 @@ const checks = [
     label: "current config detail uses the unified single-card editor layout",
     text: files.agentConfigWorkspace + "\n" + files.uiOptimization,
     passed: /static let configEditor = ConfigEditorPresentation\(\)/.test(files.uiOptimization)
-      && /struct ConfigEditorPresentation:[\s\S]*?usesSingleCodeCard = true[\s\S]*?showsLineNumbers = true[\s\S]*?usesCompactToolbarActions = true[\s\S]*?primarySaveButtonVisible = false[\s\S]*?autosaveEnabled = true/.test(files.uiOptimization)
+      && /struct ConfigEditorPresentation:[\s\S]*?usesSingleCodeCard = true[\s\S]*?showsLineNumbers = true[\s\S]*?usesCompactToolbarActions = true[\s\S]*?primarySaveButtonVisible = true[\s\S]*?autosaveEnabled = false/.test(files.uiOptimization)
       && /private struct ConfigCodeCard<[\s\S]*?PrivacyPathText\(path:\s*path[\s\S]*?toolbar\(\)[\s\S]*?content\(\)[\s\S]*?\.nativePanelSurface\(\)/.test(files.agentConfigWorkspace)
       && /private struct ConfigCodeToolbar:[\s\S]*?UIStrings\.reload[\s\S]*?UIStrings\.formatJSON[\s\S]*?isSensitiveVisible \? "eye\.slash" : "eye"[\s\S]*?onReveal/.test(files.agentConfigWorkspace)
       && /private struct AgentCurrentConfigDocumentsSection:[\s\S]*?ConfigCodeCard\([\s\S]*?title:\s*UIStrings\.currentConfigFile[\s\S]*?path:\s*primaryDocument\?\.target[\s\S]*?statusText:\s*primaryDocument\?\.exists == true \? UIStrings\.existingFile : UIStrings\.willCreateFile[\s\S]*?ConfigCodeToolbar\([\s\S]*?onReload:\s*reload[\s\S]*?JSONSyntaxHighlightedText\(content:\s*displayedContent\)/.test(files.agentConfigWorkspace)
-      && !/Label\(UIStrings\.save,\s*systemImage:\s*"square\.and\.arrow\.down"\)/.test(files.agentConfigWorkspace)
+      && /Button\(UIStrings\.text\("settings\.agentConfig\.save",\s*"Save"\)\)[\s\S]*?previewConfigSave\(\)/.test(files.agentConfigWorkspace)
       && !/Read-only agent config previews intentionally keep the save slot disabled/.test(files.agentConfigWorkspace)
       && !/AgentCurrentConfigDocumentPane/.test(files.agentConfigWorkspace)
       && !/UIStrings\.agentConfigReadOnlyPreview/.test(files.agentConfigWorkspace)
@@ -451,39 +446,38 @@ const checks = [
     text: files.agentConfigWorkspace + "\n" + files.store + "\n" + files.uiStrings + "\n" + files.localizable + "\n" + files.localizableZh,
     passed: /@State private var isConfirmingConfigEdit = false/.test(files.agentConfigWorkspace)
       && !/@State private var configAutosaveTask: Task<Void,\s*Never>\?/.test(files.agentConfigWorkspace)
-      && /private func toggleSensitiveEditing\(\)[\s\S]*?if revealsSensitiveConfig \{[\s\S]*?resetDraftFromStore\(\)[\s\S]*?\} else \{[\s\S]*?isConfirmingConfigEdit = true[\s\S]*?\}/.test(files.agentConfigWorkspace)
+      && /private func toggleSensitiveEditing\(\)[\s\S]*?if revealsSensitiveConfig \{[\s\S]*?revealsSensitiveConfig = false[\s\S]*?\} else \{[\s\S]*?isConfirmingConfigEdit = true[\s\S]*?\}/.test(files.agentConfigWorkspace)
       && /\.confirmationDialog\(\s*UIStrings\.agentConfigEditConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingConfigEdit[\s\S]*?Button\(UIStrings\.agentConfigShowSensitive,\s*role:\s*\.destructive\)[\s\S]*?revealsSensitiveConfig = true[\s\S]*?Text\(UIStrings\.agentConfigEditConfirmationMessage\)/.test(files.agentConfigWorkspace)
       && /if revealsSensitiveConfig \{[\s\S]*?JSONLineNumberedEditor\(text:\s*displayedDraft\)[\s\S]*?\} else \{[\s\S]*?JSONSyntaxHighlightedText\(content:\s*displayedDraft\.wrappedValue\)/.test(files.agentConfigWorkspace)
-      && /private func handleConfigDraftChange\(\)[\s\S]*?ConfigAutosaveDraftReducer\.reduce\([\s\S]*?event:\s*\.userChanged[\s\S]*?case let \.submit\(content,\s*validationError\)[\s\S]*?store\.submitConfigAutosave/.test(files.agentConfigWorkspace)
-      && !/private func handleConfigDraftChange\(\)[\s\S]*?Task\.sleep|private func handleConfigDraftChange\(\)[\s\S]*?store\.saveClaudeSettings/.test(files.agentConfigWorkspace)
-      && /@Published private\(set\) var configAutosavePhase:\s*RevisionAutosavePhase = \.idle/.test(files.store)
-      && /private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<ConfigSaveBinding>/.test(files.store)
+      && /private func handleConfigDraftChange\(\)[\s\S]*?configConfirmationToApply = nil[\s\S]*?store\.clearSettingsFeedback\(\)/.test(files.agentConfigWorkspace)
+      && !extractFunctionBody(files.agentConfigWorkspace, "handleConfigDraftChange").includes("Task.sleep")
+      && !extractFunctionBody(files.agentConfigWorkspace, "handleConfigDraftChange").includes("saveClaudeSettings")
+      && !extractFunctionBody(files.agentConfigWorkspace, "handleConfigDraftChange").includes("previewClaudeSettingsSave")
+      && /@Published private\(set\) var configMutationState:\s*ConfigMutationState = \.idle/.test(files.store)
+      && /func previewClaudeSettingsSave\(content:[\s\S]*?service\.previewClaudeSettingsSave/.test(files.store)
+      && /func applyClaudeSettingsSave\([\s\S]*?service\.saveClaudeSettings/.test(files.store)
+      && /confirmationDialog\([\s\S]*?"settings\.agentConfig\.confirmSave"[\s\S]*?applyClaudeSettingsSave/.test(files.agentConfigWorkspace)
       && /private struct JSONSyntaxHighlightedText:[\s\S]*?ForEach\(Array\(Self\.lines\(in:\s*content\)\.enumerated\(\)\)[\s\S]*?Text\(Self\.highlighted[\s\S]*?NSRegularExpression[\s\S]*?AttributedString/.test(files.agentConfigWorkspace)
       && /private struct JSONLineNumberedEditor:[\s\S]*?ConfigLineNumberColumn\(lineCount:\s*lineCount\)[\s\S]*?TextEditor\(text:\s*\$text\)/.test(files.agentConfigWorkspace)
       && /static var agentConfigEditConfirmationTitle/.test(files.uiStrings)
       && /static var agentConfigEditConfirmationMessage/.test(files.uiStrings)
-      && /static var configAutosavePending/.test(files.uiStrings)
-      && /static var configAutosaveSaving/.test(files.uiStrings)
       && /static var formatJSON/.test(files.uiStrings)
       && /"settings\.agentConfig\.editConfirmation\.title"/.test(files.localizable)
       && /"settings\.agentConfig\.editConfirmation\.message"/.test(files.localizableZh)
-      && /"settings\.agentConfig\.autosavePending"/.test(files.localizable)
-      && /"settings\.agentConfig\.autosaveSaving"/.test(files.localizableZh)
+      && /"settings\.agentConfig\.confirmSave"/.test(files.localizable)
+      && /"settings\.agentConfig\.awaitingConfirmation"/.test(files.localizableZh)
       && /"action\.formatJSON"/.test(files.localizableZh),
   },
   {
-    label: "config passive hydration preserves pending work and adopts persisted state after success",
-    text: files.agentConfigWorkspace + "\n" + files.store + "\n" + files.revisionAutosave,
-    passed: /@Published private\(set\) var configAutosaveDraft:\s*String\?/.test(files.store)
-      && /private func hydrateConfigDraftFromStore\([\s\S]*?ConfigAutosaveDraftReducer\.reduce\([\s\S]*?event:\s*\.hydrate\([\s\S]*?storeDraft:\s*store\.configAutosaveDraft[\s\S]*?persistedContent:\s*store\.claudeSettings\?\.content/.test(files.agentConfigWorkspace)
+    label: "config draft stays local until preview and explicit confirmation",
+    text: files.agentConfigWorkspace + "\n" + files.store,
+    passed: /@State private var draft = ""/.test(files.agentConfigWorkspace)
+      && /private func hydrateConfigDraftFromStore\([\s\S]*?draft = store\.claudeSettings\?\.content \?\? ""[\s\S]*?configConfirmationToApply = nil/.test(files.agentConfigWorkspace)
       && /\.onChange\(of:\s*store\.claudeSettings\)[\s\S]*?hydrateConfigDraftFromStore\(revealsSensitive:\s*revealsSensitiveConfig\)/.test(files.agentConfigWorkspace)
-      && /\.onChange\(of:\s*store\.configAutosaveDraft\)[\s\S]*?hydrateConfigDraftFromStore\(revealsSensitive:\s*revealsSensitiveConfig\)/.test(files.agentConfigWorkspace)
       && /\.task\(id:\s*store\.selectedAgentConfigRefreshKey\)[\s\S]*?hydrateConfigDraftFromStore\(\)/.test(files.agentConfigWorkspace)
-      && !extractFunctionBody(files.agentConfigWorkspace, "hydrateConfigDraftFromStore").includes("cancelPendingConfigAutosave")
-      && /enum ConfigAutosaveDraftReducer[\s\S]*?case let \.hydrate\(storeDraft,\s*persistedContent\)[\s\S]*?AutosaveDraftPresentation\.resolve[\s\S]*?action:\s*\.none/.test(files.revisionAutosave)
-      && /private func handleConfigDraftChange\([\s\S]*?configAutosaveHasActiveSave[\s\S]*?submitConfigAutosave/.test(files.agentConfigWorkspace)
-      && /latestConfigAutosaveRevision/.test(files.store)
-      && /handleConfigAutosaveCompletion\([\s\S]*?completion\.revision == latestConfigAutosaveRevision[\s\S]*?configAutosaveDraft = nil/.test(files.store),
+      && /private func previewConfigSave\(\)[\s\S]*?previewClaudeSettingsSave\(content:\s*draft\)/.test(files.agentConfigWorkspace)
+      && /private func resetDraftFromStore\([\s\S]*?hydrateConfigDraftFromStore[\s\S]*?clearSettingsFeedback/.test(files.agentConfigWorkspace)
+      && !/submitConfigAutosave|configAutosaveCoordinator|configAutosaveDraft/.test(files.agentConfigWorkspace + "\n" + files.store),
   },
   {
     label: "rollback preview presentation rejects stale view tasks across replacement selection and disappearance",

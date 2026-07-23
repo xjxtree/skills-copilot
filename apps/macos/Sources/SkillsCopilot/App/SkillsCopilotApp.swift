@@ -3,14 +3,6 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private weak var autosaveStore: SkillStore?
-    private var terminationFlushTask: Task<Void, Never>?
-    private var hasRepliedToTerminationRequest = false
-
-    func configureAutosaveFlusher(store: SkillStore) {
-        autosaveStore = store
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainWindowCoordinator.configureApplicationAppearance()
         MainWindowCoordinator.activateApplication()
@@ -31,19 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let autosaveStore else { return .terminateNow }
-        guard !hasRepliedToTerminationRequest else { return .terminateNow }
-        guard terminationFlushTask == nil else { return .terminateLater }
-
-        terminationFlushTask = Task { @MainActor [weak self, sender, autosaveStore] in
-            await autosaveStore.flushPendingAutosaves()
-            guard let self, !self.hasRepliedToTerminationRequest else { return }
-            self.hasRepliedToTerminationRequest = true
-            sender.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
-    }
 }
 
 @main
@@ -66,7 +45,6 @@ struct SkillsCopilotApp: App {
                 .frame(minWidth: CGFloat(MainWindowModel.minimumWidth), minHeight: CGFloat(MainWindowModel.minimumHeight))
                 .background(MainWindowConfigurator(theme: appTheme))
                 .onAppear {
-                    appDelegate.configureAutosaveFlusher(store: store)
                     MainWindowCoordinator.applyAppearance(appTheme)
                 }
                 .onChange(of: appThemeRawValue) { newValue in

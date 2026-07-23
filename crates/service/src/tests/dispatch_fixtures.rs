@@ -138,9 +138,26 @@ fn dispatch_coverage_params(method: &str) -> Value {
         "config.readAgentConfig" => json!({ "agent": "codex" }),
         "snapshot.listAgentConfigPage" => json!({ "agent": "codex", "limit": 2 }),
         "skill.listEventsPage" => json!({ "instance_id": "missing-skill", "limit": 2 }),
-        "config.saveClaudeSettings" => json!({
+        "config.previewSaveClaudeSettings" => json!({
             "content": "{}\n",
             "expected_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }),
+        "config.saveClaudeSettings" => json!({
+            "content": "{}\n",
+            "confirmation": {
+                "reference": {
+                    "action_id": "action:save_config:missing",
+                    "source_revision": "sha256:missing",
+                    "target": {
+                        "kind": "config",
+                        "id": "/tmp/missing/.claude/settings.json",
+                        "agent": "claude-code",
+                        "scope": "agent-global"
+                    }
+                },
+                "preview_token": "action-preview:v1:hmac-sha256:missing",
+                "confirmed": true
+            }
         }),
         "project.setContext" | "project.validateContext" => {
             json!({ "root_path": "/tmp/skills-copilot-missing-project" })
@@ -151,7 +168,20 @@ fn dispatch_coverage_params(method: &str) -> Value {
         }
         "snapshot.rollback" => json!({
             "snapshot_id": "missing-snapshot",
-            "preview_token": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            "confirmation": {
+                "reference": {
+                    "action_id": "action:rollback_config:missing",
+                    "source_revision": "sha256:missing",
+                    "target": {
+                        "kind": "config",
+                        "id": "/tmp/missing/.claude/settings.json",
+                        "agent": "claude-code",
+                        "scope": "agent-global"
+                    }
+                },
+                "preview_token": "action-preview:v1:hmac-sha256:missing",
+                "confirmed": true
+            }
         }),
         "catalog.setFindingTriage" => json!({
             "triage_key": "missing-finding-key",
@@ -1800,6 +1830,29 @@ pub(super) struct WireConfigDocumentRecord {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct WireConfigSavePreviewRecord {
+    pub(super) action: WireActionDescriptor,
+    pub(super) preconditions: Vec<WireActionPrecondition>,
+    pub(super) preview_token: String,
+    pub(super) current: WireConfigDocumentRecord,
+    pub(super) candidate_content_digest: String,
+    pub(super) current_revision: String,
+    pub(super) changed: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireConfigSaveApplyRecord {
+    pub(super) action: WireActionDescriptor,
+    pub(super) document: WireConfigDocumentRecord,
+    pub(super) snapshot_id: String,
+    pub(super) readback: WireActionReadbackRecord,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WireSkillInstallPreviewRecord {
     pub(super) action: WireActionDescriptor,
     pub(super) preconditions: Vec<WireActionPrecondition>,
@@ -1895,12 +1948,25 @@ pub(super) struct WireSkillEventPageResult {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WireSnapshotRollbackPreviewRecord {
+    pub(super) action: WireActionDescriptor,
+    pub(super) preconditions: Vec<WireActionPrecondition>,
+    pub(super) preview_token: String,
     pub(super) snapshot: WireConfigSnapshotRecord,
+    pub(super) snapshot_content_digest: String,
     pub(super) current_content: String,
     pub(super) current_read_error: Option<String>,
     pub(super) current_revision: String,
-    pub(super) preview_token: String,
     pub(super) changed: bool,
     pub(super) redacted: bool,
     pub(super) rollback_supported: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireSnapshotRollbackApplyRecord {
+    pub(super) action: WireActionDescriptor,
+    pub(super) snapshot_id: String,
+    pub(super) document: WireConfigDocumentRecord,
+    pub(super) readback: WireActionReadbackRecord,
 }

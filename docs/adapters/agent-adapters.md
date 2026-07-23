@@ -239,8 +239,8 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Agent enable/disable stays outside the Skill Manager surface; package manager
   state and agent config state are separate. Native single and multi-skill UI
   changes use `batch.previewSkillToggles` and
-  `batch.applySkillToggles`. `config.toggleSkill` remains a lower-level
-  compatibility method.
+  `batch.applySkillToggles`. `config.toggleSkill` is a compatibility-only
+  blocked method and returns `mutation_disabled`.
 - ChatGPT's Plugin Directory is also separate from Skill Manager. Only enabled,
   installed, manifest-declared plugin skills participate in current projections;
   arbitrary plugin cache content and Deleted cache noise remain excluded;

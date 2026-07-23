@@ -1,0 +1,8 @@
+{
+  "id": "fixture-config-preview-save-claude-settings",
+  "method": "config.previewSaveClaudeSettings",
+  "params": {
+    "content": "{\n  \"skillOverrides\": {}\n}\n",
+    "expected_revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9"
+  }
+}

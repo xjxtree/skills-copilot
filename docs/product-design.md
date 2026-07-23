@@ -220,6 +220,12 @@ Detect -> Explain -> Evidence -> Preview -> Confirm -> Apply -> Read-back
 - Apply uses the existing guarded service path.
 - Read-back refreshes the smallest affected domain and recomputes projections.
 
+Advanced config editing keeps draft bytes local and never autosaves. Save and
+snapshot rollback each require a fresh typed preview and one explicit
+confirmation. A stale or partially verified outcome stops the flow; the app
+does not retry a write, and a verified apply is not reclassified by failure of
+a later supporting-timeline refresh.
+
 AI may recommend an existing typed action reference. It cannot create an
 arbitrary command, preview token, write target, or hidden apply path.
 

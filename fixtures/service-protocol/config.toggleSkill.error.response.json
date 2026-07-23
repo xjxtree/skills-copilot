@@ -1,0 +1,8 @@
+{
+  "id": "fixture-config-toggle-skill",
+  "ok": false,
+  "error": {
+    "code": "mutation_disabled",
+    "message": "config.toggleSkill is compatibility-only and cannot write without the batch preview/confirmation/read-back lifecycle"
+  }
+}

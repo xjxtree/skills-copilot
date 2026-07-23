@@ -18,7 +18,6 @@ struct RevisionAutosaveCoordinatorTests {
         try await editsBAndCDuringSaveRunOnlyLatestC()
         try persistedValueDuringActiveSaveMustSubmit()
         try passiveHydrationUsesPendingDraftOrLatestPersistedValue()
-        try configDraftExternalRefreshHydratesWithoutWrite()
         try await cancelledSaveSettlesIdleWithoutFailure()
         try await mutationLaneCancellationBeforeRegistrationIsDurable()
         try await mutationLaneCancellationIsIdempotent()
@@ -361,56 +360,6 @@ struct RevisionAutosaveCoordinatorTests {
             pendingProvider,
             "Provider hydration should keep a genuinely pending or failed draft."
         )
-    }
-
-    private func configDraftExternalRefreshHydratesWithoutWrite() throws {
-        let hydration = ConfigAutosaveDraftReducer.reduce(
-            content: "config-a",
-            event: .hydrate(
-                storeDraft: nil,
-                persistedContent: "config-external-y"
-            )
-        )
-        try expectEqual(
-            hydration.content,
-            "config-external-y",
-            "A revealed config editor must adopt external Y after successful draft A retires."
-        )
-        try expectEqual(
-            hydration.action,
-            .none,
-            "Programmatic external hydration must not itself request a write."
-        )
-
-        let resultingChange = ConfigAutosaveDraftReducer.reduce(
-            content: hydration.content,
-            event: .userChanged(
-                storeDraft: nil,
-                persistedContent: "config-external-y",
-                revealsSensitiveConfig: true,
-                hasActiveSave: false,
-                validationError: nil
-            )
-        )
-        try expectEqual(
-            resultingChange.action,
-            .none,
-            "The on-change callback caused by programmatic hydration must issue zero writes."
-        )
-
-        let pendingHydration = ConfigAutosaveDraftReducer.reduce(
-            content: "config-a",
-            event: .hydrate(
-                storeDraft: "config-pending-b",
-                persistedContent: "config-external-y"
-            )
-        )
-        try expectEqual(
-            pendingHydration.content,
-            "config-pending-b",
-            "An external refresh must preserve a genuinely pending Store-owned draft."
-        )
-        try expectEqual(pendingHydration.action, .none, "Passive pending-draft hydration must remain write-free.")
     }
 
     private func cancelledSaveSettlesIdleWithoutFailure() async throws {

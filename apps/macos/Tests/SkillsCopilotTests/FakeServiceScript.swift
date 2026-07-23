@@ -10,7 +10,6 @@ final class FakeServiceScript: ServiceProcessRunning {
     let executableURL: URL
     private let stateURL: URL
     private let callRecorder = FakeServiceCallRecorder()
-    private let delayedConfigSaveReleaseURL: URL
     private let delayedProviderSaveAReleaseURL: URL
     private let delayedProviderSaveBReleaseURL: URL
     private let responseReleaseURL: URL
@@ -23,7 +22,6 @@ final class FakeServiceScript: ServiceProcessRunning {
             .appendingPathComponent("skills-copilot-fake-service-\(UUID().uuidString)", isDirectory: true)
         executableURL = directory.appendingPathComponent("fake-service.sh")
         stateURL = directory.appendingPathComponent("method-state.log")
-        delayedConfigSaveReleaseURL = directory.appendingPathComponent("release-config-save-a")
         delayedProviderSaveAReleaseURL = directory.appendingPathComponent("release-provider-save-a")
         delayedProviderSaveBReleaseURL = directory.appendingPathComponent("release-provider-save-b")
         responseReleaseURL = directory.appendingPathComponent("release-response")
@@ -49,11 +47,6 @@ final class FakeServiceScript: ServiceProcessRunning {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: directory)
-    }
-
-    @discardableResult
-    func releaseDelayedConfigSave() -> Bool {
-        FileManager.default.createFile(atPath: delayedConfigSaveReleaseURL.path, contents: Data())
     }
 
     @discardableResult
@@ -90,7 +83,6 @@ final class FakeServiceScript: ServiceProcessRunning {
             environmentOverrides: [
                 "SKILLS_COPILOT_FAKE_SERVICE_SCENARIO": scenario,
                 "SKILLS_COPILOT_FAKE_SERVICE_CALLS": stateURL.path,
-                "SKILLS_COPILOT_FAKE_CONFIG_RELEASE": delayedConfigSaveReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_A_RELEASE": delayedProviderSaveAReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_PROVIDER_B_RELEASE": delayedProviderSaveBReleaseURL.path,
                 "SKILLS_COPILOT_FAKE_SERVICE_RESPONSE_RELEASE": responseReleaseURL.path,
@@ -147,7 +139,7 @@ final class FakeServiceScript: ServiceProcessRunning {
         }
 
         status_response() {
-          respond '{"id":"test","ok":true,"result":{"protocol_version":'"$protocol_version"', "version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.removeRecentContext","project.clearRecentContexts","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'}}'
+          respond '{"id":"test","ok":true,"result":{"protocol_version":'"$protocol_version"', "version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.previewSaveClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.removeRecentContext","project.clearRecentContexts","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'}}'
         }
 
         adapter_capabilities='[{"agent":"claude-code","display_name":"Claude Code","status":"verified","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":true,"status":"verified","reason":null},"config_snapshot":{"supported":true,"status":"verified","reason":null},"install":{"supported":true,"status":"verified","reason":null},"writable":{"supported":true,"status":"verified","reason":null},"blockers":[]},{"agent":"codex","display_name":"Codex","status":"verified","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":true,"status":"verified","reason":null},"config_snapshot":{"supported":true,"status":"verified","reason":null},"install":{"supported":false,"status":"planned","reason":"Install is not part of this slice."},"writable":{"supported":true,"status":"verified","reason":null},"blockers":[]},{"agent":"opencode","display_name":"opencode","status":"verified","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":true,"status":"verified","reason":null},"config_snapshot":{"supported":true,"status":"verified","reason":null},"install":{"supported":true,"status":"verified","reason":null},"writable":{"supported":true,"status":"verified","reason":null},"blockers":[]},{"agent":"pi","display_name":"Pi","status":"read-only","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":false,"status":"read-only","reason":"Pi writable support is blocked pending evidence."},"config_snapshot":{"supported":false,"status":"read-only","reason":"Pi is read-only."},"install":{"supported":false,"status":"read-only","reason":"Pi is read-only."},"writable":{"supported":false,"status":"read-only","reason":"Pi is read-only."},"blockers":["Pi writable support is blocked pending evidence."]},{"agent":"hermes","display_name":"Hermes","status":"read-only","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":false,"status":"read-only","reason":"Hermes project skills are not confirmed."},"config_toggle":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"config_snapshot":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"install":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"writable":{"supported":false,"status":"read-only","reason":"Hermes is read-only."},"blockers":["Hermes is read-only."]},{"agent":"openclaw","display_name":"OpenClaw","status":"read-only","scan":{"supported":true,"status":"verified","reason":null},"project_scan":{"supported":true,"status":"verified","reason":null},"config_toggle":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"config_snapshot":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"install":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"writable":{"supported":false,"status":"read-only","reason":"OpenClaw is read-only."},"blockers":["OpenClaw is read-only."]}]'
@@ -174,6 +166,9 @@ final class FakeServiceScript: ServiceProcessRunning {
         snapshots_claude='[{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},{"id":"snap-claude-old","agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","content":"{}\\n","reason":"pre-config-edit","created_at":20}]'
         snapshots_codex='[{"id":"snap-codex","agent":"codex","scope":"agent-global","target":"/tmp/home/.codex/config.toml","content":"disable_response_storage = true\\n","reason":"pre-toggle","created_at":40}]'
         snapshots_opencode='[{"id":"snap-opencode","agent":"opencode","scope":"agent-global","target":"/tmp/home/.config/opencode/opencode.json","content":"{}\\n","reason":"pre-toggle","created_at":50}]'
+        config_save_action='{"id":"action:save_config:global","kind":"save_config","intent":"save_config","target":{"kind":"config","id":"/tmp/home/.claude/settings.json","agent":"claude-code","scope":"agent-global"},"project_id":null,"impacts":["agent_config","app_local_data"],"preview_method":"config.previewSaveClaudeSettings","apply_method":"config.saveClaudeSettings","source_revision":"sha256:settings-revision","confirmation_required":true,"network":"none","readback":["agent_config","config_snapshots"],"evidence_refs":["config:/tmp/home/.claude/settings.json"]}'
+        rollback_action_global='{"id":"action:rollback_config:global","kind":"rollback_config","intent":"rollback_config","target":{"kind":"config","id":"/tmp/home/.claude/settings.json","agent":"claude-code","scope":"agent-global"},"project_id":null,"impacts":["agent_config"],"preview_method":"snapshot.previewRollback","apply_method":"snapshot.rollback","source_revision":"sha256:rollback-global-source","confirmation_required":true,"network":"none","readback":["agent_config"],"evidence_refs":["snapshot:snap-claude-new","config:/tmp/home/.claude/settings.json"]}'
+        rollback_action_project='{"id":"action:rollback_config:project","kind":"rollback_config","intent":"rollback_config","target":{"kind":"config","id":"/tmp/project/.claude/settings.local.json","agent":"claude-code","scope":"agent-project"},"project_id":null,"impacts":["agent_config"],"preview_method":"snapshot.previewRollback","apply_method":"snapshot.rollback","source_revision":"sha256:rollback-project-source","confirmation_required":true,"network":"none","readback":["agent_config"],"evidence_refs":["snapshot:snap-claude-old","config:/tmp/project/.claude/settings.local.json"]}'
         agent_config_claude='[{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"skillOverrides\\":{}}\\n","exists":true,"revision":"sha256:claude-global"},{"agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","format":"json","content":"{\\"permissions\\":{\\"allow\\":[\\"Bash(grep *)\\"]}}\\n","exists":true,"revision":"sha256:claude-project"}]'
         agent_config_codex='[{"agent":"codex","scope":"agent-global","target":"/tmp/home/.codex/config.toml","format":"toml","content":"model = \\"gpt-5\\"\\n","exists":true,"revision":"sha256:codex-global"},{"agent":"codex","scope":"agent-project","target":"/tmp/project/.codex/config.toml","format":"toml","content":"approval_policy = \\"never\\"\\n","exists":true,"revision":"sha256:codex-project"}]'
         agent_config_opencode='[{"agent":"opencode","scope":"agent-global","target":"/tmp/home/.config/opencode/opencode.json","format":"json","content":"{\\"permission\\":{\\"skill\\":{}}}\\n","exists":true,"revision":"sha256:opencode-global"},{"agent":"opencode","scope":"agent-project","target":"/tmp/project/opencode.json","format":"json","content":"{\\"permission\\":{\\"skill\\":{\\"local-review\\":\\"deny\\"}}}\\n","exists":true,"revision":"sha256:opencode-project"}]'
@@ -240,7 +235,7 @@ final class FakeServiceScript: ServiceProcessRunning {
             state_findings='[]'
             state_conflicts='[]'
           fi
-          respond '{"id":"test","ok":true,"result":{"status":{"protocol_version":'"$protocol_version"', "version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.removeRecentContext","project.clearRecentContexts","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'},"skills":'"$state_skills"',"findings":'"$state_findings"',"conflicts":'"$state_conflicts"',"snapshots":[]}}'
+          respond '{"id":"test","ok":true,"result":{"status":{"protocol_version":'"$protocol_version"', "version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","service.status","catalog.listSkills","catalog.scanAll","catalog.getSkill","catalog.listFindings","catalog.listConflicts","skill.listEvents","snapshot.list","snapshot.listAgentConfig","snapshot.previewRollback","snapshot.rollback","config.toggleSkill","config.readAgentConfig","config.readClaudeSettings","config.previewSaveClaudeSettings","config.saveClaudeSettings","batch.previewSkillToggles","batch.applySkillToggles","project.getContext","project.setContext","project.clearContext","project.removeRecentContext","project.clearRecentContexts","project.validateContext"],"adapter_capabilities":'"$adapter_capabilities"'},"skills":'"$state_skills"',"findings":'"$state_findings"',"conflicts":'"$state_conflicts"',"snapshots":[]}}'
         }
 
         detail_alpha='{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","description":"Alpha skill","state":"loaded","enabled":true,"frontmatter_raw":"name: Alpha","body":"Alpha body","permissions":{"marker":"alpha"},"fingerprint":"fp-alpha"}'
@@ -602,21 +597,7 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":true,"result":[]}'
             ;;
           *\\"config.readClaudeSettings\\"*)
-            if [ "$scenario" = "autosave-external-after-save" ]; then
-              save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
-              if [ "$save_count" -gt 0 ]; then
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-external","exists":true,"revision":"sha256:external-after-a"}}'
-              fi
-              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-x","exists":true,"revision":"sha256:autosave-initial"}}'
-            elif [ "$scenario" = "autosave-delayed-config" ] || [ "$scenario" = "autosave-delayed-config-failure" ]; then
-              save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
-              if [ "$save_count" -gt 1 ]; then
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
-              elif [ "$save_count" -gt 0 ]; then
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
-              fi
-              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-x","exists":true,"revision":"sha256:autosave-initial"}}'
-            elif [ "$scenario" = "config-legacy" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
+            if [ "$scenario" = "config-legacy" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{}\\n","exists":true}}'
             elif [ "$scenario" = "protocol-v1-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"legacy\\"}\\n","exists":true,"revision":"sha256:malicious-v1-revision"}}'
@@ -626,7 +607,13 @@ final class FakeServiceScript: ServiceProcessRunning {
                 respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"external\\"}\\n","exists":true,"revision":"sha256:external-revision"}}'
               fi
               respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"}}'
-            elif [ "$scenario" = "config-cas" ]; then
+            elif [ "$scenario" = "config-save-stale" ]; then
+              save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
+              if [ "$save_count" -gt 0 ]; then
+                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"external\\"}\\n","exists":true,"revision":"sha256:external-revision"}}'
+              fi
+              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"}}'
+            elif [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
               save_count=$(grep -c '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS")
               if [ "$save_count" -gt 0 ]; then
                 respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"}}'
@@ -635,32 +622,19 @@ final class FakeServiceScript: ServiceProcessRunning {
             fi
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings"}}'
             ;;
+          *\\"config.previewSaveClaudeSettings\\"*)
+            if [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-stale" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
+              respond '{"id":"test","ok":true,"result":{"action":'"$config_save_action"',"preconditions":[{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:settings-revision"}],"preview_token":"action-preview:v1:hmac-sha256:config-save-preview","current":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"light\\"}\\n","exists":true,"revision":"sha256:settings-revision"},"candidate_content_digest":"sha256:config-save-candidate","current_revision":"sha256:settings-revision","changed":true}}'
+            fi
+            respond '{"id":"test","ok":false,"result":null,"error":{"code":"test.missing","message":"missing Claude settings save preview"}}'
+            ;;
           *\\"config.saveClaudeSettings\\"*)
-            if [ "$scenario" = "autosave-external-after-save" ]; then
-              if printf '%s' "$input" | grep -q 'config-a' && printf '%s' "$input" | grep -q '"expected_revision":"sha256:autosave-initial"'; then
-                wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
-              elif printf '%s' "$input" | grep -q 'config-b' && printf '%s' "$input" | grep -q '"expected_revision":"sha256:external-after-a"'; then
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
-              fi
-              respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config changed since it was read"}}'
-            elif [ "$scenario" = "autosave-delayed-config" ] || [ "$scenario" = "autosave-delayed-config-failure" ]; then
-              if printf '%s' "$input" | grep -q 'config-a'; then
-                if ! printf '%s' "$input" | grep -q '"expected_revision":"sha256:autosave-initial"'; then
-                  respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config A used the wrong expected revision"}}'
-                fi
-                wait_for_release "$SKILLS_COPILOT_FAKE_CONFIG_RELEASE" || service_error
-                if [ "$scenario" = "autosave-delayed-config-failure" ]; then
-                  respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_save_failed","message":"config A failed"}}'
-                fi
-                respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-a","exists":true,"revision":"sha256:autosave-a"}}'
-              fi
-              if ! printf '%s' "$input" | grep -q '"expected_revision":"sha256:autosave-a"'; then
-                respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config B used the wrong expected revision"}}'
-              fi
-              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"config-b","exists":true,"revision":"sha256:autosave-b"}}'
-            elif [ "$scenario" = "config-cas" ]; then
-              respond '{"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"}}'
+            if [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ]; then
+              respond '{"id":"test","ok":true,"result":{"action":'"$config_save_action"',"document":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"},"snapshot_id":"snapshot-config-save","readback":{"action_id":"action:save_config:global","source_revision":"sha256:saved-revision","project_id":null,"domains":["agent_config","config_snapshots"],"target_ids":["/tmp/home/.claude/settings.json","snapshot-config-save"],"observations":[{"domain":"agent_config","target_id":"/tmp/home/.claude/settings.json","revision":"sha256:saved-revision"},{"domain":"config_snapshots","target_id":"snapshot-config-save","revision":"sha256:snapshot-config-save"}],"verified":true}}}'
+            elif [ "$scenario" = "config-save-readback-mismatch" ]; then
+              respond '{"id":"test","ok":true,"result":{"action":'"$config_save_action"',"document":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{\\"theme\\":\\"dark\\"}\\n","exists":true,"revision":"sha256:saved-revision"},"snapshot_id":"snapshot-config-save","readback":{"action_id":"action:save_config:global","source_revision":"sha256:saved-revision","project_id":null,"domains":["agent_config"],"target_ids":["/tmp/home/.claude/settings.json"],"observations":[{"domain":"agent_config","target_id":"/tmp/home/.claude/settings.json","revision":"sha256:saved-revision"}],"verified":true}}}'
+            elif [ "$scenario" = "config-save-stale" ]; then
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_action_reference","message":"preview no longer matches current state"}}'
             elif [ "$scenario" = "config-conflict" ]; then
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"config_conflict","message":"config changed since it was read"}}'
             elif [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
@@ -670,24 +644,24 @@ final class FakeServiceScript: ServiceProcessRunning {
             ;;
           *\\"snapshot.previewRollback\\"*)
             if [ "$scenario" = "timeline" ]; then
-              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"skillOverrides\\":{\\"beta\\":false}}\\n","current_read_error":null,"current_revision":"sha256:timeline-current","preview_token":"sha256:timeline-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+              respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_global"',"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-new","expected_revision":"sha256:snapshot-global"},{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:timeline-current"}],"preview_token":"action-preview:v1:hmac-sha256:timeline-preview","snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"snapshot_content_digest":"sha256:snapshot-global-content","current_content":"{\\"skillOverrides\\":{\\"beta\\":false}}\\n","current_read_error":null,"current_revision":"sha256:timeline-current","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "config-cas" ]; then
               case "$input" in
                 *\\"snapshot_id\\":\\"snap-claude-old\\"*)
-                  respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-old","agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","content":"{}\\n","reason":"pre-config-edit","created_at":20},"current_content":"{\\"permissions\\":{}}\\n","current_read_error":null,"current_revision":"sha256:rollback-current-2","preview_token":"sha256:rollback-preview-2","changed":true,"redacted":false,"rollback_supported":true}}'
+                  respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_project"',"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-old","expected_revision":"sha256:snapshot-project"},{"kind":"agent_config","target_id":"/tmp/project/.claude/settings.local.json","expected_revision":"sha256:rollback-current-2"}],"preview_token":"action-preview:v1:hmac-sha256:rollback-preview-2","snapshot":{"id":"snap-claude-old","agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","content":"{}\\n","reason":"pre-config-edit","created_at":20},"snapshot_content_digest":"sha256:snapshot-project-content","current_content":"{\\"permissions\\":{}}\\n","current_read_error":null,"current_revision":"sha256:rollback-current-2","changed":true,"redacted":false,"rollback_supported":true}}'
                   ;;
                 *)
-                  respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-current","preview_token":"sha256:rollback-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+                  respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_global"',"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-new","expected_revision":"sha256:snapshot-global"},{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:rollback-current"}],"preview_token":"action-preview:v1:hmac-sha256:rollback-preview","snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"snapshot_content_digest":"sha256:snapshot-global-content","current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-current","changed":true,"redacted":false,"rollback_supported":true}}'
                   ;;
               esac
             elif [ "$scenario" = "rollback-stale" ]; then
-              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"external\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-stale-current","preview_token":"sha256:rollback-stale-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+              respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_global"',"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-new","expected_revision":"sha256:snapshot-global"},{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:rollback-stale-current"}],"preview_token":"action-preview:v1:hmac-sha256:rollback-stale-preview","snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"snapshot_content_digest":"sha256:snapshot-global-content","current_content":"{\\"theme\\":\\"external\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-stale-current","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "rollback-preview-delay" ]; then
               sleep 1
-              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-delay-current","preview_token":"sha256:rollback-delay-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+              respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_global"',"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-new","expected_revision":"sha256:snapshot-global"},{"kind":"agent_config","target_id":"/tmp/home/.claude/settings.json","expected_revision":"sha256:rollback-delay-current"}],"preview_token":"action-preview:v1:hmac-sha256:rollback-delay-preview","snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"snapshot_content_digest":"sha256:snapshot-global-content","current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-delay-current","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "rollback-preview-mismatch-blocked" ]; then
               wait_for_response_release
-              respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-old","agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","content":"{}\\n","reason":"pre-config-edit","created_at":20},"current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-mismatch-current","preview_token":"sha256:rollback-mismatch-preview","changed":true,"redacted":false,"rollback_supported":true}}'
+              respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_project"',"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-old","expected_revision":"sha256:snapshot-project"},{"kind":"agent_config","target_id":"/tmp/project/.claude/settings.local.json","expected_revision":"sha256:rollback-mismatch-current"}],"preview_token":"action-preview:v1:hmac-sha256:rollback-mismatch-preview","snapshot":{"id":"snap-claude-old","agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","content":"{}\\n","reason":"pre-config-edit","created_at":20},"snapshot_content_digest":"sha256:snapshot-project-content","current_content":"{\\"theme\\":\\"dark\\"}\\n","current_read_error":null,"current_revision":"sha256:rollback-mismatch-current","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "protocol-v1-bindings" ]; then
               respond '{"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","content":"{}\\n","reason":"pre-toggle","created_at":30},"current_content":"{\\"theme\\":\\"legacy\\"}\\n","current_read_error":null,"current_revision":"sha256:malicious-v1-current","preview_token":"sha256:malicious-v1-token","changed":true,"redacted":false,"rollback_supported":true}}'
             elif [ "$scenario" = "protocol-v2-missing-bindings" ]; then
@@ -698,21 +672,21 @@ final class FakeServiceScript: ServiceProcessRunning {
           *\\"snapshot.rollback\\"*)
             if [ "$scenario" = "config-cas" ]; then
               case "$input" in
-                *\\"snapshot_id\\":\\"snap-claude-new\\"*\\"preview_token\\":\\"sha256:rollback-preview\\"*|*\\"preview_token\\":\\"sha256:rollback-preview\\"*\\"snapshot_id\\":\\"snap-claude-new\\"*)
-                  respond '{"id":"test","ok":true,"result":3}'
+                *\\"snapshot_id\\":\\"snap-claude-new\\"*\\"preview_token\\":\\"action-preview:v1:hmac-sha256:rollback-preview\\"*|*\\"preview_token\\":\\"action-preview:v1:hmac-sha256:rollback-preview\\"*\\"snapshot_id\\":\\"snap-claude-new\\"*)
+                  respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_global"',"snapshot_id":"snap-claude-new","document":{"agent":"claude-code","scope":"agent-global","target":"/tmp/home/.claude/settings.json","format":"json","content":"{}\\n","exists":true,"revision":"sha256:rollback-restored"},"readback":{"action_id":"action:rollback_config:global","source_revision":"sha256:rollback-restored","project_id":null,"domains":["agent_config"],"target_ids":["/tmp/home/.claude/settings.json"],"observations":[{"domain":"agent_config","target_id":"/tmp/home/.claude/settings.json","revision":"sha256:rollback-restored"}],"verified":true}}}'
                   ;;
-                *\\"snapshot_id\\":\\"snap-claude-old\\"*\\"preview_token\\":\\"sha256:rollback-preview-2\\"*|*\\"preview_token\\":\\"sha256:rollback-preview-2\\"*\\"snapshot_id\\":\\"snap-claude-old\\"*)
-                  respond '{"id":"test","ok":true,"result":3}'
+                *\\"snapshot_id\\":\\"snap-claude-old\\"*\\"preview_token\\":\\"action-preview:v1:hmac-sha256:rollback-preview-2\\"*|*\\"preview_token\\":\\"action-preview:v1:hmac-sha256:rollback-preview-2\\"*\\"snapshot_id\\":\\"snap-claude-old\\"*)
+                  respond '{"id":"test","ok":true,"result":{"action":'"$rollback_action_project"',"snapshot_id":"snap-claude-old","document":{"agent":"claude-code","scope":"agent-project","target":"/tmp/project/.claude/settings.local.json","format":"json","content":"{}\\n","exists":true,"revision":"sha256:rollback-restored-2"},"readback":{"action_id":"action:rollback_config:project","source_revision":"sha256:rollback-restored-2","project_id":null,"domains":["agent_config"],"target_ids":["/tmp/project/.claude/settings.local.json"],"observations":[{"domain":"agent_config","target_id":"/tmp/project/.claude/settings.local.json","revision":"sha256:rollback-restored-2"}],"verified":true}}}'
                   ;;
               esac
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"invalid_preview_binding","message":"rollback inputs did not match the preview"}}'
             elif [ "$scenario" = "timeline" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               respond '{"id":"test","ok":true,"result":3}'
             elif [ "$scenario" = "rollback-stale" ]; then
-              respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_preview_token","message":"preview no longer matches current state"}}'
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_action_reference","message":"preview no longer matches current state"}}'
             elif [ "$scenario" = "rollback-stale-blocked" ]; then
               wait_for_response_release
-              respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_preview_token","message":"preview no longer matches current state"}}'
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"stale_action_reference","message":"preview no longer matches current state"}}'
             elif [ "$scenario" = "rollback-error-blocked" ]; then
               wait_for_response_release
               respond '{"id":"test","ok":false,"result":null,"error":{"code":"rollback_failed","message":"rollback service failed"}}'
@@ -723,7 +697,10 @@ final class FakeServiceScript: ServiceProcessRunning {
             respond '{"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: snapshot.listAgentConfigPage"}}'
             ;;
           *\\"snapshot.listAgentConfig\\"*)
-            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "rollback-stale" ] || [ "$scenario" = "rollback-preview-delay" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
+            if [ "$scenario" = "config-save-snapshot-refresh-fails" ] && grep -q '"method":"config.saveClaudeSettings"' "$SKILLS_COPILOT_FAKE_SERVICE_CALLS"; then
+              respond '{"id":"test","ok":false,"result":null,"error":{"code":"snapshot_refresh_failed","message":"snapshot refresh failed"}}'
+            fi
+            if [ "$scenario" = "timeline" ] || [ "$scenario" = "config-cas" ] || [ "$scenario" = "config-save-stale" ] || [ "$scenario" = "config-save-readback-mismatch" ] || [ "$scenario" = "config-save-snapshot-refresh-fails" ] || [ "$scenario" = "rollback-stale" ] || [ "$scenario" = "rollback-preview-delay" ] || [ "$scenario" = "protocol-v1-bindings" ] || [ "$scenario" = "protocol-v2-missing-bindings" ]; then
               case "$input" in
                 *\\"agent\\":\\"claude-code\\"*)
                   respond '{"id":"test","ok":true,"result":'"$snapshots_claude"'}'

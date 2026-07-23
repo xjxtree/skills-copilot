@@ -39,6 +39,15 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   semantically distinct.
 - Every action follows Detect, Explain, Evidence, Preview, Confirm, Apply, and
   Read-back. The UI never treats AI prose as a write control.
+- The advanced config editor never autosaves. Editing creates only a local
+  draft; Save requests a typed preview, shows the reviewed impact for explicit
+  confirmation, and applies that immutable confirmation once. Revert restores
+  the loaded document locally without a write.
+- A stale config save or rollback discards its confirmation, loads current
+  config evidence, and requires another preview; it is never retried
+  automatically. Verified apply publishes the returned config document and
+  refreshes only the affected config-snapshot timeline. A later timeline
+  refresh failure must not be presented as failure of the verified write.
 
 ## Responsive Loading Defaults
 

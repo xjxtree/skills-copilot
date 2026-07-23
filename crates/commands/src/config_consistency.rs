@@ -23,6 +23,36 @@ pub(crate) fn config_revision(exists: bool, content: &str) -> String {
     format!("sha256:{:x}", digest.finalize())
 }
 
+pub(crate) fn config_content_digest(content: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"agent-copilot/config-content/v1\0");
+    digest.update(content.as_bytes());
+    format!("sha256:{:x}", digest.finalize())
+}
+
+pub(crate) fn snapshot_binding_revision(snapshot: &ConfigSnapshotRecord) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"agent-copilot/config-snapshot/v1\0");
+    digest.update(snapshot.id.as_bytes());
+    digest.update(b"\0");
+    digest.update(snapshot.agent.as_bytes());
+    digest.update(b"\0");
+    digest.update(snapshot.scope.as_bytes());
+    digest.update(b"\0");
+    digest.update(
+        snapshot
+            .project_root
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    digest.update(b"\0");
+    digest.update(snapshot.target.as_bytes());
+    digest.update(b"\0");
+    digest.update(config_content_digest(&snapshot.content).as_bytes());
+    format!("sha256:{:x}", digest.finalize())
+}
+
 pub(crate) fn read_config_state(path: &Path) -> Result<ConfigState, CommandError> {
     let (exists, content) = match fs::read_to_string(path) {
         Ok(content) => (true, content),
@@ -47,46 +77,6 @@ pub(crate) fn ensure_expected_revision(
             expected: expected.to_string(),
             actual: actual.revision.clone(),
         })
-    }
-}
-
-pub(crate) fn rollback_preview_token(
-    snapshot: &ConfigSnapshotRecord,
-    current_revision: &str,
-) -> String {
-    let mut snapshot_content = Sha256::new();
-    snapshot_content.update(snapshot.content.as_bytes());
-    let snapshot_content_hash = format!("{:x}", snapshot_content.finalize());
-    let mut token = Sha256::new();
-    token.update(b"snapshot-rollback-preview\0");
-    token.update(snapshot.id.as_bytes());
-    token.update(b"\0");
-    token.update(snapshot.target.as_bytes());
-    token.update(b"\0");
-    token.update(
-        snapshot
-            .project_root
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes(),
-    );
-    token.update(b"\0");
-    token.update(snapshot_content_hash.as_bytes());
-    token.update(b"\0");
-    token.update(current_revision.as_bytes());
-    format!("sha256:{:x}", token.finalize())
-}
-
-pub(crate) fn ensure_rollback_preview_token(
-    provided: &str,
-    snapshot: &ConfigSnapshotRecord,
-    current_revision: &str,
-) -> Result<(), CommandError> {
-    let expected = rollback_preview_token(snapshot, current_revision);
-    if provided == expected {
-        Ok(())
-    } else {
-        Err(CommandError::StalePreviewToken)
     }
 }
 
@@ -141,19 +131,6 @@ pub(crate) fn validate_snapshot_project_binding(
 mod tests {
     use super::*;
 
-    fn config_snapshot(id: &str, target: &str, content: &str) -> ConfigSnapshotRecord {
-        ConfigSnapshotRecord {
-            id: id.to_string(),
-            agent: "claude-code".to_string(),
-            scope: "agent-global".to_string(),
-            project_root: None,
-            target: target.to_string(),
-            content: content.to_string(),
-            reason: "test".to_string(),
-            created_at: 1,
-        }
-    }
-
     #[test]
     fn missing_and_present_empty_files_have_different_revisions() {
         assert_ne!(config_revision(false, ""), config_revision(true, ""));
@@ -186,42 +163,10 @@ mod tests {
     }
 
     #[test]
-    fn rollback_token_changes_with_snapshot_id_target_content_or_current_revision() {
-        let base = config_snapshot("snap-1", "/tmp/config.json", "{}\n");
-        let base_token = rollback_preview_token(&base, "sha256:current-a");
+    fn content_digest_covers_all_candidate_bytes() {
         assert_ne!(
-            base_token,
-            rollback_preview_token(&base, "sha256:current-b")
+            config_content_digest("{\"value\":1}\n"),
+            config_content_digest("{\"value\":1}")
         );
-        assert_ne!(
-            base_token,
-            rollback_preview_token(
-                &config_snapshot("snap-2", "/tmp/config.json", "{}\n"),
-                "sha256:current-a",
-            )
-        );
-        assert_ne!(
-            base_token,
-            rollback_preview_token(
-                &config_snapshot("snap-1", "/tmp/other.json", "{}\n"),
-                "sha256:current-a",
-            )
-        );
-        assert_ne!(
-            base_token,
-            rollback_preview_token(
-                &config_snapshot("snap-1", "/tmp/config.json", "{\"changed\":true}\n"),
-                "sha256:current-a",
-            )
-        );
-    }
-
-    #[test]
-    fn forged_rollback_token_is_rejected() {
-        let snapshot = config_snapshot("snap-1", "/tmp/config.json", "{}\n");
-        assert!(matches!(
-            ensure_rollback_preview_token("sha256:forged", &snapshot, "sha256:current"),
-            Err(CommandError::StalePreviewToken)
-        ));
     }
 }

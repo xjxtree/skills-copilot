@@ -227,9 +227,7 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingAIProvider = false
     @Published private(set) var isSavingAIProvider = false
     @Published private(set) var isTestingAIProvider = false
-    @Published private(set) var configAutosavePhase: RevisionAutosavePhase = .idle
     @Published private(set) var providerAutosavePhase: RevisionAutosavePhase = .idle
-    @Published private(set) var configAutosaveDraft: String?
     @Published private(set) var providerAutosaveDraft: AIProviderSettingsDraft?
     @Published private(set) var lastMutationMessage: String? {
         didSet { scheduleLastMutationMessageDismissal() }
@@ -402,6 +400,15 @@ final class SkillStore: ObservableObject {
         (status?.protocolVersion ?? 0) >= 2
     }
 
+    var supportsConfigActionLifecycle: Bool {
+        guard supportsConfigConsistencyProtocol else { return false }
+        let methods = Set(status?.supportedMethods ?? [])
+        return methods.contains("config.previewSaveClaudeSettings")
+            && methods.contains("config.saveClaudeSettings")
+            && methods.contains("snapshot.previewRollback")
+            && methods.contains("snapshot.rollback")
+    }
+
     let service: ServiceClient
     let providerActivityController: ProviderActivityController
     private var lastRefreshAction: RefreshAction = .reload
@@ -473,44 +480,7 @@ final class SkillStore: ObservableObject {
     private let taskCockpitHistoryStore: TaskCockpitHistoryStore
     private let autosaveDelayNanoseconds: UInt64
     private let autosaveMutationLane = AutosaveMutationLane()
-    private var configAutosaveAgentByRevision: [UInt64: String] = [:]
-    private var configAutosaveCommittedRevisionByRevision: [UInt64: String] = [:]
-    private var latestConfigAutosaveRevision: UInt64?
     private var latestProviderAutosaveRevision: UInt64?
-    private lazy var configAutosaveCoordinator = RevisionAutosaveCoordinator<ConfigSaveBinding>(
-        delayNanoseconds: autosaveDelayNanoseconds,
-        workerWillStart: { [weak self] revision in
-            self?.autosaveMutationLane.register(
-                AutosaveMutationLaneToken(family: .config, revision: revision)
-            )
-        },
-        save: { [weak self] binding, revision in
-            guard let lane = self?.autosaveMutationLane else { return .cancelled }
-            let result = await lane.perform(
-                token: AutosaveMutationLaneToken(family: .config, revision: revision)
-            ) { [weak self] in
-                guard let self else { return false }
-                let submittedAgent = self.configAutosaveAgentByRevision[revision]
-                    ?? SkillAgentFilter.claudeCode.rawValue
-                return await self.saveClaudeSettingsInsideMutationLane(
-                    binding: binding,
-                    submittedAgent: submittedAgent,
-                    autosaveRevision: revision
-                )
-            }
-            switch result {
-            case .completed(true): return .succeeded
-            case .completed(false): return .failed
-            case .cancelled: return .cancelled
-            }
-        },
-        phaseChanged: { [weak self] phase in
-            self?.configAutosavePhase = phase
-        },
-        completion: { [weak self] completion in
-            self?.handleConfigAutosaveCompletion(completion)
-        }
-    )
     private lazy var providerAutosaveCoordinator = RevisionAutosaveCoordinator<AIProviderSettingsDraft>(
         delayNanoseconds: autosaveDelayNanoseconds,
         workerWillStart: { [weak self] revision in
@@ -547,7 +517,7 @@ final class SkillStore: ObservableObject {
         service: ServiceClient,
         taskCockpitTimeoutSeconds: TimeInterval = 300,
         taskCockpitHistoryStore: TaskCockpitHistoryStore = TaskCockpitHistoryStore(),
-        autosaveDelayNanoseconds: UInt64 = UIOptimizationPresentation.configEditor.autosaveDelayNanoseconds
+        autosaveDelayNanoseconds: UInt64 = 900_000_000
     ) {
         self.service = service
         providerActivityController = ProviderActivityController(service: service)
@@ -3239,8 +3209,25 @@ final class SkillStore: ObservableObject {
                 let message = "Rollback preview did not match the requested snapshot."
                 throw ServiceClient.ClientError.invalidOutput(message)
             }
+            guard preview.action.previewMethod == "snapshot.previewRollback",
+                  preview.action.applyMethod == "snapshot.rollback",
+                  preview.action.target.kind == "config",
+                  preview.action.target.id == preview.snapshot.target,
+                  preview.action.target.agent == preview.snapshot.agent,
+                  preview.action.target.scope == preview.snapshot.scope,
+                  preview.action.network == "none",
+                  preview.action.readback.contains("agent_config"),
+                  preview.preconditions.contains(where: {
+                      $0.kind == "agent_config"
+                          && $0.targetID == preview.snapshot.target
+                          && $0.expectedRevision == preview.currentRevision
+                  }) else {
+                throw ServiceClient.ClientError.invalidOutput(
+                    "Rollback preview action does not match the requested config target."
+                )
+            }
             if previewGeneration == rollbackPreviewGeneration,
-               supportsConfigConsistencyProtocol {
+               supportsConfigActionLifecycle {
                 rollbackConfirmation = RollbackConfirmation(preview: preview)
             }
             return preview
@@ -3263,7 +3250,7 @@ final class SkillStore: ObservableObject {
             errorMessage = UIStrings.operationUnavailableBusy
             return false
         }
-        guard supportsConfigConsistencyProtocol else {
+        guard supportsConfigActionLifecycle else {
             errorMessage = UIStrings.configConsistencyProtocolRequired
             lastMutationMessage = nil
             return false
@@ -3286,17 +3273,32 @@ final class SkillStore: ObservableObject {
         defer { isWriting = false }
 
         do {
-            let scannedCount = try await service.rollbackSnapshot(
+            let applied = try await service.rollbackSnapshot(
                 snapshotID: confirmation.snapshotID,
-                previewToken: confirmation.previewToken
+                confirmation: confirmation.wire
             )
-            detailsByID.removeAll()
-            try await refreshCollections()
-            lastMutationMessage = UIStrings.rollbackRescanned(scannedCount)
-            recordLocalRefresh(message: UIStrings.refreshAfterRollback(scannedCount))
-            await loadSelectedDetail()
+            guard applied.snapshotID == confirmation.snapshotID,
+                  applied.action == confirmation.action,
+                  applied.readback.verifies(
+                      action: applied.action,
+                      document: applied.document
+                  ) else {
+                throw ServiceClient.ClientError.invalidOutput(
+                    "Rollback read-back did not verify the confirmed AgentConfig target."
+                )
+            }
+            publishVerifiedConfigDocument(applied.document)
+            lastMutationMessage = UIStrings.text(
+                "snapshot.rollback.completed",
+                "Config rollback completed and AgentConfig read-back was verified."
+            )
             return true
-        } catch ServiceClient.ClientError.service(let error) where error.code == "stale_preview_token" {
+        } catch ServiceClient.ClientError.service(let error)
+            where [
+                "stale_action_reference",
+                "unknown_action_reference",
+                "action_target_mismatch"
+            ].contains(error.code) {
             if rollbackFeedbackGeneration == rollbackPreviewGeneration,
                selectedConfigSnapshot?.id == confirmation.snapshotID {
                 errorMessage = UIStrings.rollbackPreviewAgain
@@ -3309,6 +3311,27 @@ final class SkillStore: ObservableObject {
             }
             return false
         }
+    }
+
+    private func publishVerifiedConfigDocument(_ document: ConfigDocumentRecord) {
+        if document.agent == SkillAgentFilter.claudeCode.rawValue,
+           document.scope.localizedCaseInsensitiveContains("global") {
+            claudeSettings = document
+            loadedClaudeSettingsRequestKey = claudeSettingsRequestKey()
+        }
+        if let index = currentAgentConfigDocuments.firstIndex(where: {
+            $0.agent == document.agent
+                && $0.scope == document.scope
+                && $0.target == document.target
+        }) {
+            currentAgentConfigDocuments[index] = document
+        } else if normalizedConfigAgent(nil) == document.agent {
+            currentAgentConfigDocuments.append(document)
+            currentAgentConfigDocuments.sort {
+                $0.target.localizedStandardCompare($1.target) == .orderedAscending
+            }
+        }
+        normalizeConfigSelection()
     }
 
     func loadSelectedAgentConfigDataIfNeeded() async {
@@ -3430,42 +3453,6 @@ final class SkillStore: ObservableObject {
     }
 
     @discardableResult
-    func submitConfigAutosave(content: String, validationError: String?) -> UInt64 {
-        configAutosaveDraft = content
-        let submittedAgent = agentFilter.rawValue
-        let activeRevision = configAutosaveCoordinator.activeSaveRevision
-        if validationError != nil, let activeRevision {
-            autosaveMutationLane.cancelQueued(
-                AutosaveMutationLaneToken(family: .config, revision: activeRevision)
-            )
-        }
-        configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
-            $0.key == activeRevision
-        }
-        let binding = makeClaudeSettingsSaveBinding(content: content)
-            ?? ConfigSaveBinding(content: content, expectedRevision: "")
-        let bindingError = binding.expectedRevision.isEmpty
-            ? (supportsConfigConsistencyProtocol
-                ? UIStrings.configRevisionUnavailable
-                : UIStrings.configConsistencyProtocolRequired)
-            : nil
-        if let bindingError, validationError == nil {
-            settingsErrorMessage = bindingError
-            settingsMessage = nil
-            configMutationState = .failed(bindingError)
-        }
-        let revision = configAutosaveCoordinator.submit(
-            binding,
-            validationError: validationError ?? bindingError
-        )
-        latestConfigAutosaveRevision = revision
-        if validationError == nil, bindingError == nil {
-            configAutosaveAgentByRevision[revision] = submittedAgent
-        }
-        return revision
-    }
-
-    @discardableResult
     func submitProviderAutosave(draft: AIProviderSettingsDraft) -> UInt64 {
         providerAutosaveDraft = draft
         if draft.validationMessage != nil,
@@ -3482,21 +3469,6 @@ final class SkillStore: ObservableObject {
         return revision
     }
 
-    func cancelPendingConfigAutosave() {
-        let activeRevision = configAutosaveCoordinator.activeSaveRevision
-        if let activeRevision {
-            autosaveMutationLane.cancelQueued(
-                AutosaveMutationLaneToken(family: .config, revision: activeRevision)
-            )
-        }
-        configAutosaveCoordinator.cancelPendingDebounce()
-        configAutosaveAgentByRevision = configAutosaveAgentByRevision.filter {
-            $0.key == activeRevision
-        }
-        latestConfigAutosaveRevision = nil
-        configAutosaveDraft = nil
-    }
-
     func cancelPendingProviderAutosave() {
         if let activeRevision = providerAutosaveCoordinator.activeSaveRevision {
             autosaveMutationLane.cancelQueued(
@@ -3509,42 +3481,11 @@ final class SkillStore: ObservableObject {
     }
 
     func flushPendingAutosaves() async {
-        await configAutosaveCoordinator.flush()
         await providerAutosaveCoordinator.flush()
-    }
-
-    var configAutosaveHasActiveSave: Bool {
-        configAutosaveCoordinator.hasActiveSave
     }
 
     var providerAutosaveHasActiveSave: Bool {
         providerAutosaveCoordinator.hasActiveSave
-    }
-
-    private func handleConfigAutosaveCompletion(
-        _ completion: RevisionAutosaveCompletion<ConfigSaveBinding>
-    ) {
-        configAutosaveAgentByRevision.removeValue(forKey: completion.revision)
-        let committedRevision = configAutosaveCommittedRevisionByRevision.removeValue(
-            forKey: completion.revision
-        )
-        if completion.succeeded,
-           let committedRevision,
-           !committedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            configAutosaveCoordinator.updatePendingValue { pendingBinding in
-                guard pendingBinding.expectedRevision == completion.value.expectedRevision else {
-                    return pendingBinding
-                }
-                return ConfigSaveBinding(
-                    content: pendingBinding.content,
-                    expectedRevision: committedRevision
-                )
-            }
-        }
-        guard completion.revision == latestConfigAutosaveRevision,
-              completion.succeeded else { return }
-        latestConfigAutosaveRevision = nil
-        configAutosaveDraft = nil
     }
 
     private func handleProviderAutosaveCompletion(
@@ -3779,194 +3720,209 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func makeClaudeSettingsSaveBinding(content: String) -> ConfigSaveBinding? {
-        guard supportsConfigConsistencyProtocol,
-              let expectedRevision = claudeSettings?.revision,
-              !expectedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return ConfigSaveBinding(content: content, expectedRevision: expectedRevision)
-    }
-
-    @discardableResult
-    func saveClaudeSettings(content: String) async -> Bool {
-        let binding = makeClaudeSettingsSaveBinding(content: content)
-            ?? ConfigSaveBinding(content: content, expectedRevision: "")
-        return await saveClaudeSettings(binding: binding)
-    }
-
-    func saveClaudeSettings(binding: ConfigSaveBinding) async -> Bool {
-        await saveClaudeSettings(binding: binding, submittedAgent: agentFilter.rawValue)
-    }
-
-    private func saveClaudeSettings(
-        binding: ConfigSaveBinding,
-        submittedAgent: String
-    ) async -> Bool {
-        await autosaveMutationLane.perform { [self] in
-            await saveClaudeSettingsInsideMutationLane(
-                binding: binding,
-                submittedAgent: submittedAgent,
-                autosaveRevision: nil
-            )
-        }
-    }
-
-    private func saveClaudeSettingsInsideMutationLane(
-        binding: ConfigSaveBinding,
-        submittedAgent: String,
-        autosaveRevision: UInt64?
-    ) async -> Bool {
+    func previewClaudeSettingsSave(content: String) async -> ConfigSaveConfirmation? {
         guard !isRefreshBusy else {
             publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
+                message: nil,
+                error: UIStrings.operationUnavailableBusy,
+                mutationState: .failed(UIStrings.operationUnavailableBusy)
+            )
+            return nil
+        }
+        guard supportsConfigActionLifecycle else {
+            publishConfigSaveFeedback(
+                message: nil,
+                error: UIStrings.configConsistencyProtocolRequired,
+                mutationState: .failed(UIStrings.configConsistencyProtocolRequired)
+            )
+            return nil
+        }
+        guard let currentDocument = claudeSettings,
+              let currentRevision = currentDocument.revision,
+              !currentRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            publishConfigSaveFeedback(
+                message: nil,
+                error: UIStrings.configRevisionUnavailable,
+                mutationState: .failed(UIStrings.configRevisionUnavailable)
+            )
+            return nil
+        }
+        isSavingSettings = true
+        publishConfigSaveFeedback(
+            message: nil,
+            error: nil,
+            mutationState: .previewing
+        )
+        defer { isSavingSettings = false }
+
+        do {
+            let preview = try await service.previewClaudeSettingsSave(
+                content: content,
+                expectedRevision: currentRevision
+            )
+            guard preview.action.previewMethod == "config.previewSaveClaudeSettings",
+                  preview.action.applyMethod == "config.saveClaudeSettings",
+                  preview.action.confirmationRequired,
+                  preview.action.network == "none",
+                  preview.action.target.kind == "config",
+                  preview.action.target.id == currentDocument.target,
+                  preview.action.target.agent == currentDocument.agent,
+                  preview.action.target.scope == currentDocument.scope,
+                  preview.current == currentDocument,
+                  preview.currentRevision == currentRevision,
+                  preview.action.readback.contains("agent_config"),
+                  preview.action.readback.contains("config_snapshots"),
+                  !preview.candidateContentDigest
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  preview.preconditions.contains(where: {
+                      $0.kind == "agent_config"
+                          && $0.targetID == currentDocument.target
+                          && $0.expectedRevision == currentRevision
+                  }) else {
+                throw ServiceClient.ClientError.invalidOutput(
+                    "Config save preview does not match the loaded AgentConfig target."
+                )
+            }
+            publishConfigSaveFeedback(
+                message: nil,
+                error: nil,
+                mutationState: .awaitingConfirmation
+            )
+            return ConfigSaveConfirmation(content: content, preview: preview)
+        } catch ServiceClient.ClientError.service(let error) where error.code == "config_conflict" {
+            let latestDocument = try? await service.readClaudeSettings()
+            let conflict = ConfigConflictState(
+                attemptedRevision: currentRevision,
+                latestRevision: latestDocument?.revision,
+                displayMessage: UIStrings.configConflict
+            )
+            publishConfigSaveFeedback(
+                message: nil,
+                error: conflict.displayMessage,
+                mutationState: .conflict(conflict)
+            )
+            if let latestDocument {
+                publishVerifiedConfigDocument(latestDocument)
+            }
+            return nil
+        } catch {
+            publishConfigSaveFeedback(
+                message: nil,
+                error: error.localizedDescription,
+                mutationState: .failed(error.localizedDescription)
+            )
+            return nil
+        }
+    }
+
+    func applyClaudeSettingsSave(_ confirmation: ConfigSaveConfirmation) async -> Bool {
+        guard !isRefreshBusy else {
+            publishConfigSaveFeedback(
                 message: nil,
                 error: UIStrings.operationUnavailableBusy,
                 mutationState: .failed(UIStrings.operationUnavailableBusy)
             )
             return false
         }
-        guard supportsConfigConsistencyProtocol else {
+        guard supportsConfigActionLifecycle,
+              let loadedDocument = claudeSettings,
+              loadedDocument == confirmation.preview.current,
+              loadedDocument.revision == confirmation.preview.currentRevision else {
             publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
                 message: nil,
-                error: UIStrings.configConsistencyProtocolRequired,
-                mutationState: .failed(UIStrings.configConsistencyProtocolRequired)
+                error: UIStrings.configConflict,
+                mutationState: .conflict(
+                    ConfigConflictState(
+                        attemptedRevision: confirmation.preview.currentRevision,
+                        latestRevision: claudeSettings?.revision,
+                        displayMessage: UIStrings.configConflict
+                    )
+                )
             )
             return false
         }
-        guard let currentRevision = claudeSettings?.revision,
-              !currentRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: UIStrings.configRevisionUnavailable,
-                mutationState: .failed(UIStrings.configRevisionUnavailable)
-            )
-            return false
-        }
-        guard currentRevision == binding.expectedRevision else {
-            let conflict = ConfigConflictState(
-                attemptedRevision: binding.expectedRevision,
-                latestRevision: currentRevision,
-                displayMessage: UIStrings.configConflict
-            )
-            publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: conflict.displayMessage,
-                mutationState: .conflict(conflict)
-            )
-            return false
-        }
-        isSavingSettings = true
-        publishConfigSaveFeedback(
-            autosaveRevision: autosaveRevision,
-            message: nil,
-            error: nil,
-            mutationState: .saving
-        )
-        defer { isSavingSettings = false }
 
-        do {
-            let savedSettings = try await service.saveClaudeSettings(
-                content: binding.content,
-                expectedRevision: binding.expectedRevision
-            )
-            if let autosaveRevision,
-               let committedRevision = savedSettings.revision,
-               !committedRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                configAutosaveCommittedRevisionByRevision[autosaveRevision] = committedRevision
+        return await autosaveMutationLane.perform { [self] in
+            isSavingSettings = true
+            publishConfigSaveFeedback(message: nil, error: nil, mutationState: .saving)
+            defer { isSavingSettings = false }
+
+            do {
+                let applied = try await service.saveClaudeSettings(
+                    content: confirmation.content,
+                    confirmation: confirmation.wire
+                )
+                guard applied.action == confirmation.preview.action,
+                      applied.document.content == confirmation.content,
+                      applied.snapshotID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+                      applied.readback.verifies(
+                          action: applied.action,
+                          document: applied.document,
+                          snapshotID: applied.snapshotID
+                      ) else {
+                    throw ServiceClient.ClientError.invalidOutput(
+                        "Config write returned without a verified AgentConfig and ConfigSnapshots read-back. Reload before another write."
+                    )
+                }
+                publishVerifiedConfigDocument(applied.document)
+                invalidateAgentConfigSnapshotCache()
+                await loadAgentConfigSnapshots(agent: applied.document.agent)
+                publishConfigSaveFeedback(
+                    message: UIStrings.savedSettings,
+                    error: nil,
+                    mutationState: .idle
+                )
+                return true
+            } catch ServiceClient.ClientError.service(let error)
+                where [
+                    "config_conflict",
+                    "stale_action_reference",
+                    "unknown_action_reference",
+                    "action_target_mismatch"
+                ].contains(error.code) {
+                let latestDocument = try? await service.readClaudeSettings()
+                if let latestDocument {
+                    publishVerifiedConfigDocument(latestDocument)
+                }
+                let conflict = ConfigConflictState(
+                    attemptedRevision: confirmation.preview.currentRevision,
+                    latestRevision: latestDocument?.revision,
+                    displayMessage: UIStrings.configConflict
+                )
+                publishConfigSaveFeedback(
+                    message: nil,
+                    error: conflict.displayMessage,
+                    mutationState: .conflict(conflict)
+                )
+                return false
+            } catch {
+                publishConfigSaveFeedback(
+                    message: nil,
+                    error: error.localizedDescription,
+                    mutationState: .failed(error.localizedDescription)
+                )
+                return false
             }
-            invalidateConfigReadGenerations()
-            claudeSettings = savedSettings
-            detailsByID.removeAll()
-            try await refreshCollections(includeSupplementalData: false)
-            await refreshConfigCachesAfterSave(submittedAgent: submittedAgent)
-            publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: UIStrings.savedSettings,
-                error: nil,
-                mutationState: .idle
-            )
-            recordLocalRefresh(message: UIStrings.refreshAfterSettingsSave)
-            await loadSelectedDetail()
-            return true
-        } catch ServiceClient.ClientError.service(let error) where error.code == "config_conflict" {
-            let latestDocument = try? await service.readClaudeSettings()
-            let conflict = ConfigConflictState(
-                attemptedRevision: binding.expectedRevision,
-                latestRevision: latestDocument?.revision,
-                displayMessage: UIStrings.configConflict
-            )
-            publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: conflict.displayMessage,
-                mutationState: .conflict(conflict)
-            )
-            if let latestDocument {
-                claudeSettings = latestDocument
-            }
-            return false
-        } catch {
-            publishConfigSaveFeedback(
-                autosaveRevision: autosaveRevision,
-                message: nil,
-                error: error.localizedDescription,
-                mutationState: .failed(error.localizedDescription)
-            )
-            return false
         }
     }
 
     private func publishConfigSaveFeedback(
-        autosaveRevision: UInt64?,
         message: String?,
         error: String?,
         mutationState: ConfigMutationState
     ) {
-        guard autosaveRevision == nil || autosaveRevision == latestConfigAutosaveRevision else {
-            return
-        }
         settingsMessage = message
         settingsErrorMessage = error
         lastMutationMessage = message
         configMutationState = mutationState
     }
 
-    private func invalidateConfigReadGenerations() {
-        claudeSettingsLoadGeneration &+= 1
-        agentConfigDocumentLoadGeneration &+= 1
+    private func invalidateAgentConfigSnapshotCache() {
         agentConfigSnapshotLoadGeneration &+= 1
-        activeClaudeSettingsRequestKey = nil
-        activeAgentConfigDocumentRequestKey = nil
         activeAgentConfigSnapshotRequest = nil
-        loadedClaudeSettingsRequestKey = nil
-        loadedAgentConfigDocumentRequestKey = nil
         loadedAgentConfigSnapshotRequestKey = nil
-        isLoadingSettings = false
-        isLoadingAgentConfigDocuments = false
         agentConfigSnapshotAccumulator.cancel()
         publishAgentConfigSnapshotPaging()
-    }
-
-    private func refreshConfigCachesAfterSave(submittedAgent: String) async {
-        await loadClaudeSettings()
-
-        let visibleAgent = normalizedConfigAgent(nil)
-        if visibleAgent == submittedAgent {
-            await loadCurrentAgentConfigDocuments(agent: submittedAgent)
-            await loadAgentConfigSnapshots(agent: submittedAgent)
-            return
-        }
-
-        _ = try? await service.readAgentConfig(agent: submittedAgent)
-        _ = try? await service.listAgentConfigSnapshots(agent: submittedAgent, scope: nil)
-        if let visibleAgent {
-            await loadCurrentAgentConfigDocuments(agent: visibleAgent)
-            await loadAgentConfigSnapshots(agent: visibleAgent)
-        }
     }
 
     func loadSelectedDetail() async {

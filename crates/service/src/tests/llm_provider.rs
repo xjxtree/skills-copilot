@@ -3161,7 +3161,7 @@ fn get_skill_requires_instance_id_param() {
 }
 
 #[test]
-fn toggle_requires_on_param() {
+fn toggle_is_disabled_before_parameter_parsing() {
     let host = ServiceHost {
         app_data_dir: PathBuf::from("/tmp/skills-copilot-test"),
         adapter_ctx: AdapterContext {
@@ -3178,7 +3178,7 @@ fn toggle_requires_on_param() {
     });
 
     assert!(!response.ok);
-    assert_eq!(response.error.expect("error").code, "json_error");
+    assert_eq!(response.error.expect("error").code, "mutation_disabled");
 }
 
 #[test]

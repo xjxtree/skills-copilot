@@ -10,7 +10,7 @@ struct UIOptimizationModelTests {
         try emptyAgentSkillListsExplainAgentContext()
         try detailHeaderUsesCompactCopyableMetadata()
         try detailFeedbackUsesInlineToast()
-        try configEditorUsesAutosaveCodeCardPresentation()
+        try configEditorUsesExplicitSaveCodeCardPresentation()
         try settingsWindowUsesSidebarAndCloseOnlyControls()
         try settingsProviderObservabilityUsesBoundedScopedRendering()
         try modalWorkflowsUseSharedSheetChromeAndColumns()
@@ -214,7 +214,7 @@ struct UIOptimizationModelTests {
         )
     }
 
-    private func configEditorUsesAutosaveCodeCardPresentation() throws {
+    private func configEditorUsesExplicitSaveCodeCardPresentation() throws {
         try expectEqual(
             UIOptimizationPresentation.configEditor.usesSingleCodeCard,
             true,
@@ -232,13 +232,13 @@ struct UIOptimizationModelTests {
         )
         try expectEqual(
             UIOptimizationPresentation.configEditor.primarySaveButtonVisible,
-            false,
-            "Config editing should not depend on a persistent large Save button under the editor."
+            true,
+            "Dirty config editing should expose an explicit Save action."
         )
         try expectEqual(
             UIOptimizationPresentation.configEditor.autosaveEnabled,
-            true,
-            "Editable JSON config changes should autosave through the verified service save flow."
+            false,
+            "Editable JSON config changes must not write without preview and explicit confirmation."
         )
     }
 

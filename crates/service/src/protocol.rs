@@ -76,6 +76,7 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "config.toggleSkill",
     "config.readAgentConfig",
     "config.readClaudeSettings",
+    "config.previewSaveClaudeSettings",
     "config.saveClaudeSettings",
     "snapshot.list",
     "snapshot.listAgentConfig",

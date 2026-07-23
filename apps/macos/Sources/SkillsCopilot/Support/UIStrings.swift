@@ -483,15 +483,13 @@ enum UIStrings {
     static var agentConfigShowSensitive: String { text("settings.agentConfig.showSensitive", "Show & Edit") }
     static var agentConfigShowSensitiveValues: String { text("settings.agentConfig.showSensitiveValues", "Show Values") }
     static var agentConfigHideSensitive: String { text("settings.agentConfig.hideSensitive", "Hide") }
-    static var configAutosavePending: String { text("settings.agentConfig.autosavePending", "Valid changes will be saved automatically.") }
-    static var configAutosaveSaving: String { text("settings.agentConfig.autosaveSaving", "Saving settings...") }
     static var configConsistencyProtocolRequired: String { text("settings.agentConfig.protocolV2Required", "Config writes require service protocol v2. Reload after updating the service; settings and rollback remain read-only.") }
     static var configRevisionUnavailable: String { text("settings.agentConfig.revisionUnavailable", "This service did not provide a config revision. Reload with protocol v2; settings remain read-only.") }
     static var configConflict: String { text("settings.agentConfig.conflict", "Settings changed outside Agent Copilot. Your draft was kept; compare it with the latest config before saving again.") }
     static var rollbackPreviewAgain: String { text("snapshot.rollback.previewAgain", "The rollback preview is no longer current. Preview again before applying.") }
     static var rollbackBindingUnavailable: String { text("snapshot.rollback.bindingUnavailable", "This service did not provide a rollback preview token. Rollback remains read-only until you reconnect with protocol v2.") }
     static var agentConfigEditConfirmationTitle: String { text("settings.agentConfig.editConfirmation.title", "Show and edit raw config?") }
-    static var agentConfigEditConfirmationMessage: String { text("settings.agentConfig.editConfirmation.message", "This reveals sensitive config values and enables raw editing. Valid changes auto-save through the verified snapshot flow.") }
+    static var agentConfigEditConfirmationMessage: String { text("settings.agentConfig.editConfirmation.message", "This reveals sensitive config values and enables raw editing. Changes remain local until you preview and explicitly confirm Save.") }
     static var agentConfigSkillEnablement: String { text("settings.agentConfig.skillEnablement", "Skill enablement") }
     static var agentConfigDisabledSkillsTitle: String { text("settings.agentConfig.disabledSkills", "Disabled skills") }
     static var agentConfigDisabledSkillsEmpty: String { text("settings.agentConfig.disabledSkills.empty", "No config-disabled skills detected.") }
@@ -1206,7 +1204,6 @@ enum UIStrings {
         format("refresh.afterRollback", "Catalog refreshed after agent config rollback with %d scanned skills.", count)
     }
 
-    static var refreshAfterSettingsSave: String { text("refresh.afterSettingsSave", "Catalog refreshed after saving settings.") }
 
     static func charactersCaptured(_ count: Int) -> String {
         format("snapshot.charactersCaptured", "%d characters captured", count)
@@ -1241,7 +1238,7 @@ enum UIStrings {
         }
     }
 
-    static var savedSettings: String { text("message.savedSettings", "Saved settings and refreshed catalog.") }
+    static var savedSettings: String { text("message.savedSettings", "Settings saved and verified.") }
 
     static func projectSelectedAndScanned(_ name: String) -> String {
         format("message.projectSelectedAndScanned", "Selected %@ and refreshed catalog.", name)

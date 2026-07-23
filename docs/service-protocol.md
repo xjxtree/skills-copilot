@@ -83,9 +83,10 @@ that clients may infer for arbitrary mutations.
   retry any such response.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, Skill Manager
-  install/remove/update/local-create, and eligible app-owned local deletion.
-  Other callable mutations retain their documented method-specific
-  consistency contracts until they explicitly adopt these fields.
+  install/remove/update/local-create, eligible app-owned local deletion,
+  explicit Claude settings saves, and config snapshot rollback. Other callable
+  mutations retain their documented method-specific consistency contracts
+  until they explicitly adopt these fields.
 
 `script.execute`, `catalog.importSkill`, and `skill.exportBundle` are
 compatibility-only blocked methods. Each returns `mutation_disabled` before
@@ -117,8 +118,9 @@ native UI labels the experience Task Readiness.
 
 ## Config Consistency
 
-Protocol version 2 makes direct config saves and snapshot rollback confirmations
-conditional on the exact local state that the client reviewed.
+Protocol version 2 puts direct Claude settings saves and snapshot rollback on
+the typed action lifecycle and binds both to the exact local state reviewed by
+the client.
 
 - `config.readClaudeSettings` and every row from `config.readAgentConfig`
   include an opaque tagged `revision`. The revision is `sha256:` plus a
@@ -126,33 +128,50 @@ conditional on the exact local state that the client reviewed.
   `missing\0`. A missing file is therefore distinct from an existing empty
   file, while UI-only default content does not change the missing-file
   revision.
-- `config.saveClaudeSettings` requires `content` and `expected_revision`. The
-  service first performs a non-creating read preflight before initializing the
-  catalog or preparing a lock path. If that passes, it acquires the existing
-  config lock and authoritatively rereads and compares the target again before
-  catalog initialization, snapshot creation, or a target write. An initial
-  mismatch returns the stable `config_conflict` error with no filesystem
-  entries created; either mismatch leaves the external bytes, catalog, and
-  snapshot history unchanged.
-- `snapshot.previewRollback` returns `current_revision` and an opaque
-  `preview_token`. The token binds the snapshot id, target, a digest of the
-  snapshot content, and the current target revision; it does not expose the
-  snapshot content or config values.
-- `snapshot.rollback` accepts only `snapshot_id` and `preview_token`. It checks
-  the token before write preparation, acquires the config lock, reloads the
-  snapshot by id, rereads the target, and checks the token again before writing
-  the reloaded snapshot content. Snapshot replacement or target drift returns
-  the stable `stale_preview_token` error without a target write, catalog
-  refresh, or rollback-owned snapshot. A snapshot deleted after preview, or a
-  snapshot whose agent, scope, or target no longer validates, is also reported
-  as `stale_preview_token`; rollback does not read a rejected drifted target.
-- Clients must surface either conflict and ask the user to read or preview
-  again. They must not automatically retry a stale save or rollback. A bare
-  revision is not a rollback authorization token. Batch toggle confirmation
-  carries the accepted action source revision and opaque token, then rereads
-  every config and catalog precondition under its target locks. The low-level
-  `config.toggleSkill` compatibility method retains its separate guarded
-  latest-content behavior and is not the native UI toggle path.
+- `config.previewSaveClaudeSettings` accepts `content` and
+  `expected_revision`. It validates JSON and the authorized target, then
+  returns `action`, sorted `preconditions`, an opaque HMAC `preview_token`, the
+  current document, the candidate-content digest, and whether bytes differ.
+  It is read-only and creates no app-data directory, catalog, lock artifact,
+  snapshot, config parent, or target.
+- `config.saveClaudeSettings` accepts the exact `content` plus
+  `confirmation`. The confirmation contains the preview's action reference,
+  token, and `confirmed=true`; an expected revision alone is not
+  authorization. The service completes a non-creating preflight before opening
+  a writable catalog. A stale preflight returns `config_conflict` or
+  `stale_action_reference` with no new filesystem or catalog artifacts.
+- A valid save may initialize the app catalog, then acquires the shared
+  cross-process mutation owner lock on the already existing app-data directory.
+  Under that lock it revalidates the target and complete action binding, begins
+  an SQLite `IMMEDIATE` transaction, records the safety snapshot, atomically
+  writes the config without a target `.lock` file, semantically reads back the
+  config and snapshot, commits the transaction, and finally releases the owner
+  lock.
+- `snapshot.previewRollback` returns the same typed action fields plus the
+  snapshot-content digest and current target revision. Its token binds snapshot
+  identity and content, agent, scope, project, target, and current config
+  revision. `snapshot.rollback` accepts `snapshot_id` plus the exact typed
+  `confirmation`; a bare revision or token is insufficient.
+- Rollback validates the confirmation against an existing read-only catalog
+  before any writable open. A valid apply takes the same mutation owner lock,
+  begins an SQLite `IMMEDIATE` transaction, reloads the snapshot and target,
+  and revalidates all preconditions before the atomic write and semantic
+  read-back. Deleted, replaced, retargeted, or otherwise drifted inputs return
+  `stale_action_reference` or `action_target_mismatch` without a target write.
+- A failed save or rollback first rolls back its open catalog transaction. File
+  compensation occurs only when the target is still the exact candidate just
+  written. It restores the exact prior state, including absence, and removes
+  only empty ancestor directories created by that write. If the target is a
+  third state, cannot be read, or compensation fails, the service never
+  overwrites it and returns `partial_effect`; the outcome requires inspection
+  and must not be retried automatically.
+- Clients must discard a consumed or stale confirmation, load the latest
+  config, and require another preview. The native editor never autosaves. After
+  verified apply it publishes the returned config document and refreshes only
+  config snapshots; failure of that later timeline refresh cannot reclassify
+  the already verified write. The compatibility-only `config.toggleSkill`
+  method returns `mutation_disabled`; native single and batch toggles use the
+  typed `batch.*` lifecycle.
 
 ## Methods
 
@@ -226,10 +245,11 @@ conditional on the exact local state that the client reviewed.
 | `skill.install` | Agent skill files, App-local data | Never | Never | Required |
 | `skill.listEvents` | None | Never | Never | None |
 | `skill.listEventsPage` | None | Never | Never | None |
-| `config.toggleSkill` | Agent config, App-local data | Never | Never | None |
+| `config.toggleSkill` | None | Never | Never | None |
 | `config.readAgentConfig` | None | Never | Never | None |
 | `config.readClaudeSettings` | None | Never | Never | None |
-| `config.saveClaudeSettings` | Agent config, App-local data | Never | Never | None |
+| `config.previewSaveClaudeSettings` | None | Never | Never | None |
+| `config.saveClaudeSettings` | Agent config, App-local data | Never | Never | Required |
 | `snapshot.list` | None | Never | Never | None |
 | `snapshot.listAgentConfig` | None | Never | Never | None |
 | `snapshot.listAgentConfigPage` | None | Never | Never | None |
@@ -552,7 +572,7 @@ or expose write controls.
 - Enable/disable is agent config state, not manager package state. The native
   UI routes both single and multi-skill changes through
   `batch.previewSkillToggles` and `batch.applySkillToggles`;
-  `config.toggleSkill` remains a lower-level compatibility method.
+  `config.toggleSkill` is compatibility-only and returns `mutation_disabled`.
 - The native client prewarms project and global skill inventories during app
   startup. Opening the Skill Manager performs no read; its Load Data button is
   the only page-local refresh trigger. Local app-owned skills are merged into

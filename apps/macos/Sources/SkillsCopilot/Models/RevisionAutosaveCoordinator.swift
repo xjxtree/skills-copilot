@@ -37,68 +37,6 @@ enum AutosaveDraftPresentation {
     }
 }
 
-enum ConfigAutosaveDraftEvent: Equatable {
-    case hydrate(storeDraft: String?, persistedContent: String)
-    case userChanged(
-        storeDraft: String?,
-        persistedContent: String,
-        revealsSensitiveConfig: Bool,
-        hasActiveSave: Bool,
-        validationError: String?
-    )
-}
-
-enum ConfigAutosaveDraftAction: Equatable {
-    case none
-    case cancelPending
-    case submit(content: String, validationError: String?)
-}
-
-struct ConfigAutosaveDraftTransition: Equatable {
-    let content: String
-    let action: ConfigAutosaveDraftAction
-}
-
-enum ConfigAutosaveDraftReducer {
-    static func reduce(
-        content: String,
-        event: ConfigAutosaveDraftEvent
-    ) -> ConfigAutosaveDraftTransition {
-        switch event {
-        case let .hydrate(storeDraft, persistedContent):
-            return ConfigAutosaveDraftTransition(
-                content: AutosaveDraftPresentation.resolve(
-                    storeDraft: storeDraft,
-                    persistedValue: persistedContent
-                ),
-                action: .none
-            )
-
-        case let .userChanged(
-            storeDraft,
-            persistedContent,
-            revealsSensitiveConfig,
-            hasActiveSave,
-            validationError
-        ):
-            guard revealsSensitiveConfig, storeDraft != content else {
-                return ConfigAutosaveDraftTransition(content: content, action: .none)
-            }
-            guard AutosaveDraftSubmissionPolicy.shouldSubmit(
-                hasChangesFromPersistedValue: content != persistedContent,
-                hasActiveSave: hasActiveSave
-            ) else {
-                let action: ConfigAutosaveDraftAction = storeDraft == nil ? .none : .cancelPending
-                return ConfigAutosaveDraftTransition(content: content, action: action)
-            }
-            return ConfigAutosaveDraftTransition(
-                content: content,
-                action: .submit(content: content, validationError: validationError)
-            )
-        }
-    }
-}
-
 @MainActor
 struct AutosaveMutationLaneToken: Hashable {
     enum Family: Hashable {

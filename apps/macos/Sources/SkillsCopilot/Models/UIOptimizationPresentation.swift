@@ -169,9 +169,8 @@ struct ConfigEditorPresentation: Equatable {
     let usesSingleCodeCard = true
     let showsLineNumbers = true
     let usesCompactToolbarActions = true
-    let primarySaveButtonVisible = false
-    let autosaveEnabled = true
-    let autosaveDelayNanoseconds: UInt64 = 900_000_000
+    let primarySaveButtonVisible = true
+    let autosaveEnabled = false
     let codeCardMinHeight = 320
     let lineNumberGutterWidth = 42
 }

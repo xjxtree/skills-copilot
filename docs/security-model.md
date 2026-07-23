@@ -102,11 +102,34 @@ confirmation, and network posture.
   writes neither targets nor app data.
 - The lifecycle currently covers single and batch agent-config toggles through
   `batch.*`, `skill.install`, Skill Manager install/remove/update/local create,
-  and physical deletion of an eligible app-owned local source. Direct config
-  save/toggle compatibility methods, snapshot rollback, local archive
-  import/update, provider/profile calls, and LLM send keep their existing
-  method-specific guards and must not be presented as action-reference-backed
-  until their contracts are migrated.
+  physical deletion of an eligible app-owned local source, explicit Claude
+  settings saves, and config snapshot rollback. Local archive import/update,
+  provider/profile calls, and LLM send keep their existing method-specific
+  guards and must not be presented as action-reference-backed until their
+  contracts are migrated. `config.toggleSkill` is compatibility-only and
+  cannot mutate.
+
+### Config Mutation Atomicity
+
+- Config save and rollback perform a non-creating, read-only preflight before a
+  writable catalog is opened. Rejected or stale preflight must not create the
+  app-data directory, catalog, lock artifact, config parent, target, snapshot,
+  or audit row.
+- A valid apply may initialize the app catalog, then takes the cross-process
+  mutation owner lock on the existing app-data directory. While holding that
+  owner it revalidates every action precondition, begins an SQLite `IMMEDIATE`
+  transaction, performs the atomic file replacement, semantically reads back
+  every declared domain, commits, and releases the owner. It never creates a
+  target-side `.lock` file.
+- Failure rolls back the open catalog transaction before file compensation.
+  Compensation may restore the original config only when the current target is
+  still byte-for-byte the candidate written by that apply. An originally
+  missing target returns to missing, including removal of only the empty
+  ancestor directories created for the failed write.
+- A third target state, unreadable target, or failed compensation is an unknown
+  outcome. The service must not overwrite that state; it returns
+  `partial_effect` with cleanup required, and clients must stop automatic
+  retries and require inspection.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not
   be triggered by imports, LLM output, analyzer recommendations, previews, or

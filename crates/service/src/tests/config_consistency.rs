@@ -74,6 +74,75 @@ fn catalog_bytes(app_data_dir: &Path) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
+fn confirmation_from_preview(response: &ServiceResponse) -> Value {
+    let result = response.result.as_ref().expect("preview result");
+    let action = result.get("action").expect("preview action");
+    json!({
+        "reference": {
+            "action_id": action["id"].clone(),
+            "source_revision": action["source_revision"].clone(),
+            "project_id": action.get("project_id").cloned().unwrap_or(Value::Null),
+            "target": action["target"].clone()
+        },
+        "preview_token": result["preview_token"].clone(),
+        "confirmed": true
+    })
+}
+
+#[test]
+fn config_save_preview_returns_confirmation_bound_action_without_writes() {
+    let root = std::env::temp_dir().join(format!(
+        "skills-copilot-service-config-preview-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let host = config_test_host(&root);
+    let settings_path = host.adapter_ctx.user_home.join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    fs::write(&settings_path, "{}\n").expect("write initial settings");
+    let read = host.handle(ServiceRequest {
+        id: Some("read-before-preview".to_string()),
+        method: "config.readClaudeSettings".to_string(),
+        params: json!({}),
+    });
+    let revision = read
+        .result
+        .as_ref()
+        .and_then(|result| result.get("revision"))
+        .and_then(Value::as_str)
+        .expect("read revision");
+    let before = tree_snapshot(&root);
+
+    let response = host.handle(ServiceRequest {
+        id: Some("preview-config-save".to_string()),
+        method: "config.previewSaveClaudeSettings".to_string(),
+        params: json!({
+            "content": "{\n  \"requested\": true\n}\n",
+            "expected_revision": revision
+        }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    let result = response.result.expect("preview result");
+    assert_eq!(result["action"]["kind"], "save_config");
+    assert_eq!(result["action"]["target"]["kind"], "config");
+    assert_eq!(
+        result["action"]["target"]["id"],
+        settings_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(result["action"]["network"], "none");
+    assert_eq!(result["action"]["readback"][0], "agent_config");
+    assert_eq!(result["preconditions"][0]["expected_revision"], revision);
+    assert!(result["preview_token"]
+        .as_str()
+        .is_some_and(|token| token.starts_with("action-preview:v1:hmac-sha256:")));
+    assert_eq!(tree_snapshot(&root), before);
+    assert!(!host.app_data_dir.exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn config_conflict_rejects_stale_json_rpc_save_without_snapshot_or_write() {
     let root = std::env::temp_dir().join(format!(
@@ -99,6 +168,17 @@ fn config_conflict_rejects_stale_json_rpc_save_without_snapshot_or_write() {
         .and_then(Value::as_str)
         .expect("read revision")
         .to_string();
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview-before-stale-save".to_string()),
+        method: "config.previewSaveClaudeSettings".to_string(),
+        params: json!({
+            "content": candidate,
+            "expected_revision": revision
+        }),
+    });
+    assert!(preview.ok, "{preview:?}");
+    let confirmation = confirmation_from_preview(&preview);
     let external_content = "{\n  \"external\": true\n}\n";
     fs::write(&settings_path, external_content).expect("write external change");
 
@@ -106,8 +186,8 @@ fn config_conflict_rejects_stale_json_rpc_save_without_snapshot_or_write() {
         id: Some("stale-save".to_string()),
         method: "config.saveClaudeSettings".to_string(),
         params: json!({
-            "content": "{\n  \"requested\": true\n}\n",
-            "expected_revision": revision
+            "content": candidate,
+            "confirmation": confirmation
         }),
     });
 
@@ -116,8 +196,8 @@ fn config_conflict_rejects_stale_json_rpc_save_without_snapshot_or_write() {
         "stale save unexpectedly succeeded: {response:?}"
     );
     assert_eq!(
-        response.error.expect("config conflict error").code,
-        "config_conflict"
+        response.error.expect("stale action error").code,
+        "stale_action_reference"
     );
     assert_eq!(
         fs::read_to_string(&settings_path).expect("read preserved settings"),
@@ -145,7 +225,7 @@ fn config_conflict_on_fresh_filesystem_creates_no_catalog_lock_parent_or_target(
 
     let response = host.handle(ServiceRequest {
         id: Some("stale-save-fresh".to_string()),
-        method: "config.saveClaudeSettings".to_string(),
+        method: "config.previewSaveClaudeSettings".to_string(),
         params: json!({
             "content": "{}\n",
             "expected_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -167,7 +247,7 @@ fn config_conflict_on_fresh_filesystem_creates_no_catalog_lock_parent_or_target(
 }
 
 #[test]
-fn fresh_successful_save_initializes_catalog_snapshots_writes_and_rescans() {
+fn fresh_successful_save_initializes_snapshot_writes_and_limits_readback_domains() {
     let root = std::env::temp_dir().join(format!(
         "skills-copilot-service-config-save-fresh-{}-{}",
         std::process::id(),
@@ -197,13 +277,24 @@ fn fresh_successful_save_initializes_catalog_snapshots_writes_and_rescans() {
         .and_then(|result| result.get("revision"))
         .and_then(Value::as_str)
         .expect("read revision");
+    let content = "{\n  \"skillOverrides\": {\n    \"save-fixture\": \"off\"\n  }\n}\n";
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview-successful-save".to_string()),
+        method: "config.previewSaveClaudeSettings".to_string(),
+        params: json!({
+            "content": content,
+            "expected_revision": revision
+        }),
+    });
+    assert!(preview.ok, "{preview:?}");
+    let confirmation = confirmation_from_preview(&preview);
 
     let response = host.handle(ServiceRequest {
         id: Some("successful-save".to_string()),
         method: "config.saveClaudeSettings".to_string(),
         params: json!({
-            "content": "{\n  \"skillOverrides\": {\n    \"save-fixture\": \"off\"\n  }\n}\n",
-            "expected_revision": revision
+            "content": content,
+            "confirmation": confirmation
         }),
     });
 
@@ -217,9 +308,15 @@ fn fresh_successful_save_initializes_catalog_snapshots_writes_and_rescans() {
             .len(),
         1
     );
-    let skills = catalog.list_skill_records().expect("list rescanned skills");
-    assert_eq!(skills.len(), 1);
-    assert!(!skills[0].enabled);
+    let skills = catalog.list_skill_records().expect("list cached skills");
+    assert!(
+        skills.is_empty(),
+        "config apply must not broaden AgentConfig/ConfigSnapshots read-back into a catalog scan"
+    );
+    assert_eq!(
+        response.result.as_ref().expect("apply result")["readback"]["verified"],
+        true
+    );
     assert!(fs::read_to_string(&settings_path)
         .expect("read saved settings")
         .contains("skillOverrides"));
@@ -228,7 +325,7 @@ fn fresh_successful_save_initializes_catalog_snapshots_writes_and_rescans() {
 }
 
 #[test]
-fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutation() {
+fn stale_action_reference_rejects_json_rpc_rollback_without_target_or_catalog_mutation() {
     let root = std::env::temp_dir().join(format!(
         "skills-copilot-service-stale-preview-{}-{}",
         std::process::id(),
@@ -268,13 +365,7 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
         params: json!({"snapshot_id": "service-rollback-snapshot"}),
     });
     assert!(preview.ok, "{preview:?}");
-    let preview_token = preview
-        .result
-        .as_ref()
-        .and_then(|result| result.get("preview_token"))
-        .and_then(Value::as_str)
-        .expect("preview token")
-        .to_string();
+    let confirmation = confirmation_from_preview(&preview);
     let external_content = "{\n  \"externalAfterPreview\": true\n}\n";
     fs::write(&settings_path, external_content).expect("write external change");
     let catalog_bytes_before = catalog_bytes(&host.app_data_dir);
@@ -284,7 +375,7 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
         method: "snapshot.rollback".to_string(),
         params: json!({
             "snapshot_id": "service-rollback-snapshot",
-            "preview_token": preview_token
+            "confirmation": confirmation
         }),
     });
 
@@ -293,8 +384,8 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
         "stale rollback unexpectedly succeeded: {response:?}"
     );
     assert_eq!(
-        response.error.expect("stale preview error").code,
-        "stale_preview_token"
+        response.error.expect("stale action error").code,
+        "stale_action_reference"
     );
     assert_eq!(
         fs::read_to_string(&settings_path).expect("read preserved settings"),
@@ -323,7 +414,7 @@ fn stale_preview_token_rejects_json_rpc_rollback_without_target_or_catalog_mutat
 }
 
 #[test]
-fn stale_preview_token_maps_deleted_snapshot_to_json_rpc_without_writes() {
+fn stale_action_reference_maps_deleted_snapshot_to_json_rpc_without_writes() {
     use rusqlite::Connection;
 
     let root = std::env::temp_dir().join(format!(
@@ -358,13 +449,7 @@ fn stale_preview_token_maps_deleted_snapshot_to_json_rpc_without_writes() {
         method: "snapshot.previewRollback".to_string(),
         params: json!({"snapshot_id": "deleted-service-snapshot"}),
     });
-    let preview_token = preview
-        .result
-        .as_ref()
-        .and_then(|result| result.get("preview_token"))
-        .and_then(Value::as_str)
-        .expect("preview token")
-        .to_string();
+    let confirmation = confirmation_from_preview(&preview);
     Connection::open(host.catalog_path())
         .expect("open raw catalog")
         .execute(
@@ -379,7 +464,7 @@ fn stale_preview_token_maps_deleted_snapshot_to_json_rpc_without_writes() {
         method: "snapshot.rollback".to_string(),
         params: json!({
             "snapshot_id": "deleted-service-snapshot",
-            "preview_token": preview_token
+            "confirmation": confirmation
         }),
     });
 
@@ -388,8 +473,8 @@ fn stale_preview_token_maps_deleted_snapshot_to_json_rpc_without_writes() {
         "deleted snapshot rollback succeeded: {response:?}"
     );
     assert_eq!(
-        response.error.expect("stale preview error").code,
-        "stale_preview_token"
+        response.error.expect("stale action error").code,
+        "stale_action_reference"
     );
     assert_eq!(
         fs::read_to_string(&settings_path).expect("read unchanged target"),
@@ -401,7 +486,7 @@ fn stale_preview_token_maps_deleted_snapshot_to_json_rpc_without_writes() {
 }
 
 #[test]
-fn stale_preview_token_maps_unsafe_target_drift_without_accessing_drifted_target() {
+fn stale_action_reference_maps_unsafe_target_drift_without_accessing_drifted_target() {
     use rusqlite::{params, Connection};
 
     let root = std::env::temp_dir().join(format!(
@@ -441,13 +526,7 @@ fn stale_preview_token_maps_unsafe_target_drift_without_accessing_drifted_target
         method: "snapshot.previewRollback".to_string(),
         params: json!({"snapshot_id": "unsafe-target-service-snapshot"}),
     });
-    let preview_token = preview
-        .result
-        .as_ref()
-        .and_then(|result| result.get("preview_token"))
-        .and_then(Value::as_str)
-        .expect("preview token")
-        .to_string();
+    let confirmation = confirmation_from_preview(&preview);
     Connection::open(host.catalog_path())
         .expect("open raw catalog")
         .execute(
@@ -465,7 +544,7 @@ fn stale_preview_token_maps_unsafe_target_drift_without_accessing_drifted_target
         method: "snapshot.rollback".to_string(),
         params: json!({
             "snapshot_id": "unsafe-target-service-snapshot",
-            "preview_token": preview_token
+            "confirmation": confirmation
         }),
     });
 
@@ -474,8 +553,8 @@ fn stale_preview_token_maps_unsafe_target_drift_without_accessing_drifted_target
         "unsafe drift rollback succeeded: {response:?}"
     );
     assert_eq!(
-        response.error.expect("stale preview error").code,
-        "stale_preview_token"
+        response.error.expect("target mismatch error").code,
+        "action_target_mismatch"
     );
     assert_eq!(
         fs::read_to_string(&settings_path).expect("read unchanged target"),

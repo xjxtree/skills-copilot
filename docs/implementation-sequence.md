@@ -164,6 +164,16 @@ Evidence, Preview, Confirm, Apply, and Read-back.
   project, scope, impact, and network posture where applicable.
 - Reject stale, unknown, mismatched, or AI-invented action references before
   mutation.
+- Route direct config save and snapshot rollback through typed preview,
+  immutable confirmation, apply, and semantic read-back. Keep config drafts
+  local until explicit confirmation; do not autosave or retry stale actions.
+- Serialize config and catalog mutation with the shared cross-process app-data
+  owner lock. Revalidate under that owner and keep catalog changes in an SQLite
+  `IMMEDIATE` transaction through file read-back and commit.
+- On config failure, roll back catalog state and compensate the file only when
+  it is still the exact written candidate. Restore a prior missing state and
+  its newly created empty ancestor chain; preserve any third state and report a
+  typed partial effect.
 - Standardize read-back so each apply refreshes only the affected domain and
   recomputes projections.
 - Keep skill package management, config toggles, rollback, local ZIP, and
@@ -185,6 +195,9 @@ Evidence, Preview, Confirm, Apply, and Read-back.
 - Stale revision and target mismatch tests prove no write or hidden retry
   occurs.
 - Read-back tests prove the returned projection reflects the applied mutation.
+- Cross-process contention tests prove config mutation waits for the common
+  owner. Fault-injection tests prove transaction rollback, exact filesystem
+  restoration, and fail-closed third-state handling.
 - AI output cannot directly authorize or synthesize a write.
 
 ### Verification
@@ -192,6 +205,8 @@ Evidence, Preview, Confirm, Apply, and Read-back.
 ```sh
 cargo test -p skills-copilot-commands
 cargo test -p skills-copilot-service method_effects
+cargo test -p skills-copilot-service --test action_lifecycle_process
+pnpm test:macos-native-models
 pnpm verify:service-protocol-drift
 ```
 

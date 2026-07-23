@@ -53,7 +53,7 @@ struct ServiceClientRPCTests {
         try await localSessionMessagePageRequestUsesExactBindings()
         try await ruleSuppressionRequestsMatchServiceContract()
         try await nativeScriptPreviewUsesIdentityOnlyAndDecodesBlockedResponse()
-        try legacyConfigResponsesAreReadOnly()
+        try legacyConfigResponsesFailClosed()
         try unrelatedWritesDoNotGainConfigCASFields()
         try actionReadbackMustMatchTheConfirmedDescriptor()
         try structuredPartialEffectDetailsDecodeForNativeRecovery()
@@ -392,34 +392,50 @@ struct ServiceClientRPCTests {
         let runner = RecordingServiceProcessRunner()
         let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
 
-        let saved = try await client.saveClaudeSettings(
+        let savePreview = try await client.previewClaudeSettingsSave(
             content: "{\"enabled\":true}\n",
             expectedRevision: "sha256:before"
+        )
+        let saved = try await client.saveClaudeSettings(
+            content: "{\"enabled\":true}\n",
+            confirmation: savePreview.confirmation
         )
         let preview = try await client.previewSnapshotRollback(snapshotID: "snap-claude-new")
         let rolledBack = try await client.rollbackSnapshot(
             snapshotID: preview.snapshot.id,
-            previewToken: preview.previewToken ?? ""
+            confirmation: ActionConfirmationWire(
+                action: preview.action,
+                previewToken: preview.previewToken
+            )
         )
 
-        try expectEqual(saved.revision, Optional("sha256:after"), "Config save should decode the returned revision.")
-        try expectEqual(preview.currentRevision, Optional("sha256:current"), "Rollback preview should decode current_revision.")
-        try expectEqual(preview.previewToken, Optional("rollback:token-1"), "Rollback preview should decode preview_token.")
-        try expectEqual(rolledBack, 3, "Rollback should decode the scanned count.")
+        try expectEqual(saved.document.revision, Optional("sha256:after"), "Config save should decode the verified document revision.")
+        try expectEqual(preview.currentRevision, "sha256:current", "Rollback preview should decode current_revision.")
+        try expectEqual(preview.previewToken, "action-preview:v1:hmac-sha256:rollback-token", "Rollback preview should decode the HMAC preview token.")
+        try expectEqual(rolledBack.document.revision, Optional("sha256:restored"), "Rollback should decode the verified restored document.")
 
+        let previewParams = try runner.params(for: "config.previewSaveClaudeSettings")
+        try expectEqual(Set(previewParams.keys), Set(["content", "expected_revision"]), "Config preview should bind exact content and revision.")
         let saveParams = try runner.params(for: "config.saveClaudeSettings")
-        try expectEqual(Set(saveParams.keys), Set(["content", "expected_revision"]), "Config save request should contain only content and expected_revision.")
+        try expectEqual(Set(saveParams.keys), Set(["content", "confirmation"]), "Config save request should contain content and typed confirmation only.")
         try expectEqual(saveParams["content"] as? String, Optional("{\"enabled\":true}\n"), "Config save should preserve exact content.")
-        try expectEqual(saveParams["expected_revision"] as? String, Optional("sha256:before"), "Config save should send the loaded revision.")
+        guard let saveConfirmation = saveParams["confirmation"] as? [String: Any] else {
+            throw NativeModelTestFailure(description: "Config save confirmation should be an object.")
+        }
+        try expectEqual(saveConfirmation["confirmed"] as? Bool, true, "Config save should send an explicit confirmation.")
+        try expectEqual(saveConfirmation["preview_token"] as? String, Optional("action-preview:v1:hmac-sha256:save-token"), "Config save should send the opaque HMAC token.")
 
         let rollbackParams = try runner.params(for: "snapshot.rollback")
-        try expectEqual(Set(rollbackParams.keys), Set(["snapshot_id", "preview_token"]), "Rollback request should contain only snapshot_id and preview_token.")
+        try expectEqual(Set(rollbackParams.keys), Set(["snapshot_id", "confirmation"]), "Rollback request should contain snapshot id and typed confirmation.")
         try expectEqual(rollbackParams["snapshot_id"] as? String, Optional("snap-claude-new"), "Rollback should send the previewed snapshot id.")
-        try expectEqual(rollbackParams["preview_token"] as? String, Optional("rollback:token-1"), "Rollback should send the opaque preview token.")
-        try expectNil(rollbackParams["expected_revision"], "A bare revision must never be sent as rollback authorization.")
+        guard let rollbackConfirmation = rollbackParams["confirmation"] as? [String: Any] else {
+            throw NativeModelTestFailure(description: "Rollback confirmation should be an object.")
+        }
+        try expectEqual(rollbackConfirmation["preview_token"] as? String, Optional("action-preview:v1:hmac-sha256:rollback-token"), "Rollback should send the opaque HMAC token.")
+        try expectNil(rollbackParams["preview_token"], "A bare preview token must never be sent as rollback authorization.")
     }
 
-    private func legacyConfigResponsesAreReadOnly() throws {
+    private func legacyConfigResponsesFailClosed() throws {
         let legacyDocument = try JSONDecoder().decode(
             ConfigDocumentRecord.self,
             from: Data(#"{"agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","format":"json","content":"{}\n","exists":true}"#.utf8)
@@ -427,13 +443,17 @@ struct ServiceClientRPCTests {
         try expectNil(legacyDocument.revision, "A legal legacy config response should decode without a revision.")
         try expectFalse(legacyDocument.supportsCompareAndSwap, "A config response without a revision must remain read-only.")
 
-        let legacyPreview = try JSONDecoder().decode(
-            SnapshotRollbackPreviewRecord.self,
-            from: Data(#"{"snapshot":{"id":"snap-legacy","agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","content":"{}\n","reason":"legacy","created_at":1},"current_content":"{}\n","current_read_error":null,"changed":false,"redacted":false,"rollback_supported":true}"#.utf8)
-        )
-        try expectNil(legacyPreview.previewToken, "A legal legacy rollback preview should decode without a token.")
-        try expectNil(legacyPreview.currentRevision, "A legal legacy rollback preview should decode without a current revision.")
-        try expectFalse(legacyPreview.rollbackSupported, "A preview missing protocol-v2 bindings must remain read-only.")
+        do {
+            _ = try JSONDecoder().decode(
+                SnapshotRollbackPreviewRecord.self,
+                from: Data(#"{"snapshot":{"id":"snap-legacy","agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","content":"{}\n","reason":"legacy","created_at":1},"current_content":"{}\n","current_read_error":null,"changed":false,"redacted":false,"rollback_supported":true}"#.utf8)
+            )
+            throw NativeModelTestFailure(
+                description: "A rollback preview missing its typed action and HMAC binding must fail closed."
+            )
+        } catch is DecodingError {
+            // Expected: legacy token-shaped rollback previews cannot authorize a write.
+        }
     }
 
     private func unrelatedWritesDoNotGainConfigCASFields() throws {
@@ -997,6 +1017,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
         methods.append(method)
 
         switch method {
+        case "config.previewSaveClaudeSettings":
+            return Data(Self.configSavePreviewResponse.utf8)
         case "config.saveClaudeSettings":
             return Data(Self.configSaveResponse.utf8)
         case "snapshot.previewRollback":
@@ -1050,16 +1072,20 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
     {"id":"test","ok":true,"result":{"skill_instance_id":"skill-fixture","initiated_by":"user","initiator_allowed":true,"cwd":{"requested":null,"effective":"/tmp","source":"project"},"env":{"inherit_parent":false,"provided_keys":[],"redacted_keys":[],"value_policy":"values-redacted"},"network":{"requested":"none","allowed":false,"reason":"Network access is not granted because script execution is disabled."},"files":{"requested":[],"read_allowed":false,"write_allowed":false,"allowed_roots":[]},"command_preview":{"argv":[],"display":"","shell":null},"risks":["No verified script command was supplied; Agent Copilot will not infer or execute one."],"confirmation":{"required":true,"confirmed":false,"fields":["command_preview"],"message":"Per-request user confirmation is required before any execution attempt."},"execution_allowed":false,"disabled_reason":"No verified script command was supplied; Agent Copilot will not infer or execute one."}}
     """
 
+    private static let configSavePreviewResponse = """
+    {"id":"test","ok":true,"result":{"action":{"id":"action:save_config:test","kind":"save_config","intent":"save_config","target":{"kind":"config","id":"/tmp/settings.json","agent":"claude-code","scope":"agent-global"},"impacts":["agent_config","app_local_data"],"preview_method":"config.previewSaveClaudeSettings","apply_method":"config.saveClaudeSettings","source_revision":"sha256:before","confirmation_required":true,"network":"none","readback":["agent_config","config_snapshots"],"evidence_refs":["config:/tmp/settings.json"]},"preconditions":[{"kind":"agent_config","target_id":"/tmp/settings.json","expected_revision":"sha256:before"}],"preview_token":"action-preview:v1:hmac-sha256:save-token","current":{"agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","format":"json","content":"{}\\n","exists":true,"revision":"sha256:before"},"candidate_content_digest":"sha256:candidate","current_revision":"sha256:before","changed":true}}
+    """
+
     private static let configSaveResponse = """
-    {"id":"test","ok":true,"result":{"agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","format":"json","content":"{\\"enabled\\":true}\\n","exists":true,"revision":"sha256:after"}}
+    {"id":"test","ok":true,"result":{"action":{"id":"action:save_config:test","kind":"save_config","intent":"save_config","target":{"kind":"config","id":"/tmp/settings.json","agent":"claude-code","scope":"agent-global"},"impacts":["agent_config","app_local_data"],"preview_method":"config.previewSaveClaudeSettings","apply_method":"config.saveClaudeSettings","source_revision":"sha256:before","confirmation_required":true,"network":"none","readback":["agent_config","config_snapshots"],"evidence_refs":["config:/tmp/settings.json"]},"document":{"agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","format":"json","content":"{\\"enabled\\":true}\\n","exists":true,"revision":"sha256:after"},"snapshot_id":"snapshot-save","readback":{"action_id":"action:save_config:test","source_revision":"sha256:after","domains":["agent_config","config_snapshots"],"target_ids":["/tmp/settings.json","snapshot-save"],"observations":[{"domain":"agent_config","target_id":"/tmp/settings.json","revision":"sha256:after"},{"domain":"config_snapshots","target_id":"snapshot-save","revision":"sha256:snapshot-save"}],"verified":true}}}
     """
 
     private static let rollbackPreviewResponse = """
-    {"id":"test","ok":true,"result":{"snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","content":"{}\\n","reason":"test","created_at":1},"current_content":"{\\"enabled\\":true}\\n","current_read_error":null,"current_revision":"sha256:current","preview_token":"rollback:token-1","changed":true,"redacted":false,"rollback_supported":true}}
+    {"id":"test","ok":true,"result":{"action":{"id":"action:rollback_config:test","kind":"rollback_config","intent":"rollback_config","target":{"kind":"config","id":"/tmp/settings.json","agent":"claude-code","scope":"agent-global"},"impacts":["agent_config"],"preview_method":"snapshot.previewRollback","apply_method":"snapshot.rollback","source_revision":"sha256:current","confirmation_required":true,"network":"none","readback":["agent_config"],"evidence_refs":["snapshot:snap-claude-new","config:/tmp/settings.json"]},"preconditions":[{"kind":"catalog_record","target_id":"snap-claude-new","expected_revision":"sha256:snapshot"},{"kind":"agent_config","target_id":"/tmp/settings.json","expected_revision":"sha256:current"}],"preview_token":"action-preview:v1:hmac-sha256:rollback-token","snapshot":{"id":"snap-claude-new","agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","content":"{}\\n","reason":"test","created_at":1},"snapshot_content_digest":"sha256:snapshot-content","current_content":"{\\"enabled\\":true}\\n","current_read_error":null,"current_revision":"sha256:current","changed":true,"redacted":false,"rollback_supported":true}}
     """
 
     private static let rollbackResponse = """
-    {"id":"test","ok":true,"result":3}
+    {"id":"test","ok":true,"result":{"action":{"id":"action:rollback_config:test","kind":"rollback_config","intent":"rollback_config","target":{"kind":"config","id":"/tmp/settings.json","agent":"claude-code","scope":"agent-global"},"impacts":["agent_config"],"preview_method":"snapshot.previewRollback","apply_method":"snapshot.rollback","source_revision":"sha256:current","confirmation_required":true,"network":"none","readback":["agent_config"],"evidence_refs":["snapshot:snap-claude-new","config:/tmp/settings.json"]},"snapshot_id":"snap-claude-new","document":{"agent":"claude-code","scope":"agent-global","target":"/tmp/settings.json","format":"json","content":"{}\\n","exists":true,"revision":"sha256:restored"},"readback":{"action_id":"action:rollback_config:test","source_revision":"sha256:restored","domains":["agent_config"],"target_ids":["/tmp/settings.json"],"observations":[{"domain":"agent_config","target_id":"/tmp/settings.json","revision":"sha256:restored"}],"verified":true}}}
     """
 
     private static let configSnapshotPageResponse = """

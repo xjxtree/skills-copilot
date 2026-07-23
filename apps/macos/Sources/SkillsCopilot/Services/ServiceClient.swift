@@ -450,7 +450,7 @@ struct ClearRuleSuppressionParams: Encodable {
     }
 }
 
-struct SaveClaudeSettingsParams: Encodable {
+struct PreviewSaveClaudeSettingsParams: Encodable {
     let content: String
     let expectedRevision: String
 
@@ -460,13 +460,18 @@ struct SaveClaudeSettingsParams: Encodable {
     }
 }
 
+struct SaveClaudeSettingsParams: Encodable {
+    let content: String
+    let confirmation: ActionConfirmationWire
+}
+
 struct RollbackSnapshotParams: Encodable {
     let snapshotId: String
-    let previewToken: String
+    let confirmation: ActionConfirmationWire
 
     enum CodingKeys: String, CodingKey {
         case snapshotId = "snapshot_id"
-        case previewToken = "preview_token"
+        case confirmation
     }
 }
 

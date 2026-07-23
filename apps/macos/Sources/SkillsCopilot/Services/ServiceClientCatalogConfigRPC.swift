@@ -354,10 +354,26 @@ extension ServiceClient {
         )
     }
 
-    func saveClaudeSettings(content: String, expectedRevision: String) async throws -> ConfigDocumentRecord {
+    func previewClaudeSettingsSave(
+        content: String,
+        expectedRevision: String
+    ) async throws -> ConfigSavePreviewRecord {
+        try await call(
+            method: "config.previewSaveClaudeSettings",
+            params: PreviewSaveClaudeSettingsParams(
+                content: content,
+                expectedRevision: expectedRevision
+            )
+        )
+    }
+
+    func saveClaudeSettings(
+        content: String,
+        confirmation: ActionConfirmationWire
+    ) async throws -> ConfigSaveApplyRecord {
         try await call(
             method: "config.saveClaudeSettings",
-            params: SaveClaudeSettingsParams(content: content, expectedRevision: expectedRevision)
+            params: SaveClaudeSettingsParams(content: content, confirmation: confirmation)
         )
     }
 
@@ -368,10 +384,16 @@ extension ServiceClient {
         )
     }
 
-    func rollbackSnapshot(snapshotID: String, previewToken: String) async throws -> Int {
+    func rollbackSnapshot(
+        snapshotID: String,
+        confirmation: ActionConfirmationWire
+    ) async throws -> SnapshotRollbackApplyRecord {
         try await call(
             method: "snapshot.rollback",
-            params: RollbackSnapshotParams(snapshotId: snapshotID, previewToken: previewToken)
+            params: RollbackSnapshotParams(
+                snapshotId: snapshotID,
+                confirmation: confirmation
+            )
         )
     }
 }

@@ -29,10 +29,15 @@ pub enum CommandError {
     UnsupportedScope(Scope),
     #[error("config write verification failed; rolled back")]
     VerificationFailed,
+    #[error("{operation} reached {state}; cleanup_required={cleanup_required}: {detail}")]
+    PartialEffect {
+        operation: String,
+        state: &'static str,
+        cleanup_required: bool,
+        detail: String,
+    },
     #[error("config changed since it was read (expected {expected}, actual {actual})")]
     ConfigConflict { expected: String, actual: String },
-    #[error("snapshot rollback preview is stale; preview again before confirming")]
-    StalePreviewToken,
     #[error("invalid json config: {0}")]
     InvalidJson(String),
     #[error("unsafe config path: {0}")]
@@ -75,11 +80,4 @@ pub enum CommandError {
     InvalidSkillManagerRequest(String),
     #[error("skill manager command failed: {0}")]
     SkillManagerCommandFailed(String),
-    #[error("{operation} reached {state}; cleanup_required={cleanup_required}: {detail}")]
-    PartialEffect {
-        operation: String,
-        state: &'static str,
-        cleanup_required: bool,
-        detail: String,
-    },
 }

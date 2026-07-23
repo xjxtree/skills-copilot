@@ -51,8 +51,8 @@ use analysis::{
     validate_rule_tuning_key,
 };
 use config_consistency::{
-    canonical_snapshot_project_root, config_revision, ensure_expected_revision,
-    ensure_rollback_preview_token, read_config_state, rollback_preview_token,
+    canonical_snapshot_project_root, config_content_digest, config_revision,
+    ensure_expected_revision, read_config_state, snapshot_binding_revision,
     snapshot_project_root_for_scope, validate_snapshot_project_binding, ConfigState,
 };
 use config_support::{
@@ -60,6 +60,7 @@ use config_support::{
     batch_snapshot_rollback_notes, minimal_skill_instance, normalize_initial_config_text,
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
+use mutation_lock::lock_app_mutations;
 
 pub use action_lifecycle::*;
 pub use analysis::*;
@@ -2402,145 +2403,537 @@ pub fn read_claude_settings(ctx: &AdapterContext) -> Result<ConfigDocumentRecord
     })
 }
 
-pub fn save_claude_settings(
-    catalog: &Catalog,
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigSavePreviewRecord {
+    pub action: ActionDescriptor,
+    pub preconditions: Vec<ActionPrecondition>,
+    pub preview_token: String,
+    pub current: ConfigDocumentRecord,
+    pub candidate_content_digest: String,
+    pub current_revision: String,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigSaveApplyRecord {
+    pub action: ActionDescriptor,
+    pub document: ConfigDocumentRecord,
+    pub snapshot_id: String,
+    pub readback: ActionReadbackRecord,
+}
+
+pub fn preview_claude_settings_save(
     ctx: &AdapterContext,
     content: &str,
     expected_revision: &str,
-) -> Result<ConfigDocumentRecord, CommandError> {
-    let prepared = prepare_claude_settings_save(ctx, content, expected_revision)?;
-    commit_prepared_claude_settings_save(catalog, prepared)
+) -> Result<ConfigSavePreviewRecord, CommandError> {
+    validate_claude_settings_content(content)?;
+    let target = claude_global_settings_path(ctx);
+    validate_config_read_target(ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
+    let current = read_config_state(&target)?;
+    ensure_expected_revision(expected_revision, &current)?;
+    build_claude_settings_save_preview(ctx, &target, content, current)
 }
 
-/// Opaque, lock-bearing save state returned only after both the non-creating
-/// preflight and the authoritative under-lock revision check succeed.
+fn build_claude_settings_save_preview(
+    ctx: &AdapterContext,
+    target: &Path,
+    content: &str,
+    current: config_consistency::ConfigState,
+) -> Result<ConfigSavePreviewRecord, CommandError> {
+    let target_text = target.to_string_lossy().into_owned();
+    let candidate_content_digest = config_content_digest(content);
+    let project_id = canonical_project_id(ctx.project_root.as_deref());
+    let project_binding = project_id.as_deref().unwrap_or_default();
+    let source_revision = action_source_revision(
+        "config.save_claude_settings",
+        &[
+            ("agent", AgentId::ClaudeCode.as_str()),
+            ("scope", Scope::AgentGlobal.as_str()),
+            ("project_id", project_binding),
+            ("target", &target_text),
+            ("candidate_content_digest", &candidate_content_digest),
+            ("current_revision", &current.revision),
+        ],
+    )?;
+    let action = action_descriptor(
+        ActionKind::SaveConfig,
+        ActionIntent::SaveConfig,
+        ActionTargetRef {
+            kind: ActionTargetKind::Config,
+            id: target_text.clone(),
+            agent: Some(AgentId::ClaudeCode),
+            scope: Some(Scope::AgentGlobal),
+        },
+        project_id,
+        vec![ActionImpact::AgentConfig, ActionImpact::AppLocalData],
+        "config.previewSaveClaudeSettings",
+        Some("config.saveClaudeSettings"),
+        source_revision,
+        true,
+        ActionNetworkPosture::None,
+        canonical_readback_domains([
+            ActionReadbackDomain::AgentConfig,
+            ActionReadbackDomain::ConfigSnapshots,
+        ]),
+        vec![format!("config:{target_text}")],
+    )?;
+    let binding = action_preview_binding(
+        action,
+        vec![ActionPrecondition {
+            kind: ActionPreconditionKind::AgentConfig,
+            target_id: target_text,
+            expected_revision: current.revision.clone(),
+        }],
+    )?;
+    Ok(ConfigSavePreviewRecord {
+        action: binding.action,
+        preconditions: binding.preconditions,
+        preview_token: binding.preview_token,
+        current: config_document_record(
+            AgentId::ClaudeCode,
+            Scope::AgentGlobal,
+            target,
+            ConfigFormat::Json,
+            &current,
+        ),
+        candidate_content_digest,
+        current_revision: current.revision,
+        changed: !current.exists || current.content != content,
+    })
+}
+
+pub fn save_claude_settings(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    content: &str,
+    confirmation: &ActionConfirmation,
+) -> Result<ConfigSaveApplyRecord, CommandError> {
+    let prepared = prepare_claude_settings_save(ctx, content, confirmation)?;
+    commit_prepared_claude_settings_save(catalog, app_data_dir, prepared)
+}
+
+/// Opaque read-only preflight state. Constructing it creates no directory,
+/// lock file, catalog, snapshot, or config write.
 pub struct PreparedClaudeSettingsSave {
     ctx: AdapterContext,
     target: PathBuf,
     content: String,
-    current: config_consistency::ConfigState,
-    lock_file: fs::File,
+    confirmation: ActionConfirmation,
 }
 
-/// Validate a Claude settings save without touching the catalog. Initial
-/// conflicts return before directory or lock-file preparation; a second check
-/// under the config lock closes the preflight-to-lock race.
 pub fn prepare_claude_settings_save(
     ctx: &AdapterContext,
     content: &str,
-    expected_revision: &str,
+    confirmation: &ActionConfirmation,
 ) -> Result<PreparedClaudeSettingsSave, CommandError> {
-    prepare_claude_settings_save_with_before_lock(ctx, content, expected_revision, || {})
+    prepare_claude_settings_save_with_after_preflight(ctx, content, confirmation, || {})
 }
 
-fn prepare_claude_settings_save_with_before_lock(
+fn prepare_claude_settings_save_with_after_preflight(
     ctx: &AdapterContext,
     content: &str,
-    expected_revision: &str,
-    before_lock: impl FnOnce(),
+    confirmation: &ActionConfirmation,
+    after_preflight: impl FnOnce(),
 ) -> Result<PreparedClaudeSettingsSave, CommandError> {
-    serde_json::from_str::<serde_json::Value>(content)
-        .map_err(|err| CommandError::InvalidJson(err.to_string()))?;
-
+    validate_claude_settings_content(content)?;
     let target = claude_global_settings_path(ctx);
     validate_config_read_target(ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
     let preflight = read_config_state(&target)?;
-    ensure_expected_revision(expected_revision, &preflight)?;
-
-    before_lock();
-    validate_config_write_target(ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
-    let lock_file = lock_config(ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
-    let current = match read_config_state(&target) {
-        Ok(current) => current,
-        Err(error) => {
-            lock_file.unlock()?;
-            return Err(error);
-        }
-    };
-    if let Err(error) = ensure_expected_revision(expected_revision, &current) {
-        lock_file.unlock()?;
-        return Err(error);
-    }
+    let preflight_preview = build_claude_settings_save_preview(ctx, &target, content, preflight)?;
+    ensure_action_confirmed(
+        &ActionPreviewBinding {
+            action: preflight_preview.action.clone(),
+            preconditions: preflight_preview.preconditions.clone(),
+            preview_token: preflight_preview.preview_token.clone(),
+        },
+        Some(confirmation),
+    )?;
+    after_preflight();
 
     Ok(PreparedClaudeSettingsSave {
         ctx: ctx.clone(),
         target,
         content: content.to_string(),
-        current,
-        lock_file,
+        confirmation: confirmation.clone(),
     })
 }
 
-/// Commit a prepared settings save while its config lock remains held, then
-/// unlock before rescanning the catalog.
 pub fn commit_prepared_claude_settings_save(
     catalog: &Catalog,
+    app_data_dir: &Path,
     prepared: PreparedClaudeSettingsSave,
-) -> Result<ConfigDocumentRecord, CommandError> {
+) -> Result<ConfigSaveApplyRecord, CommandError> {
+    commit_prepared_claude_settings_save_with_after_lock(catalog, app_data_dir, prepared, || {})
+}
+
+fn commit_prepared_claude_settings_save_with_after_lock(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    prepared: PreparedClaudeSettingsSave,
+    after_lock: impl FnOnce(),
+) -> Result<ConfigSaveApplyRecord, CommandError> {
+    commit_prepared_claude_settings_save_with_hooks(
+        catalog,
+        app_data_dir,
+        prepared,
+        after_lock,
+        || Ok(()),
+    )
+}
+
+fn commit_prepared_claude_settings_save_with_hooks(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    prepared: PreparedClaudeSettingsSave,
+    after_lock: impl FnOnce(),
+    after_write: impl FnOnce() -> Result<(), CommandError>,
+) -> Result<ConfigSaveApplyRecord, CommandError> {
     let PreparedClaudeSettingsSave {
         ctx,
         target,
         content,
-        current,
-        lock_file,
+        confirmation,
     } = prepared;
-
-    let mutation_result = (|| -> Result<(), CommandError> {
-        let snapshot_id = generate_snapshot_id();
-        let snapshot_content = redact_snapshot_content(&current.content);
-        let target_text = target.to_string_lossy().to_string();
-        catalog.create_config_snapshot(ConfigSnapshotDraft {
-            id: &snapshot_id,
-            agent: ClaudeCodeAdapter.id().as_str(),
-            scope: Scope::AgentGlobal.as_str(),
-            project_root: None,
-            target: &target_text,
-            content: &snapshot_content,
-            reason: "pre-config-edit",
-            created_at_ms: current_time_ms(),
-        })?;
-
-        write_config_atomic(
-            &ctx,
-            AgentId::ClaudeCode,
-            Scope::AgentGlobal,
-            &target,
-            &content,
-        )?;
-        let written = read_config_state(&target)?;
-        if written.content != content {
-            let _ = write_config_atomic(
-                &ctx,
-                AgentId::ClaudeCode,
-                Scope::AgentGlobal,
-                &target,
-                &current.content,
-            );
-            return Err(CommandError::VerificationFailed);
-        }
-        Ok(())
-    })();
-    let unlock_result = lock_file.unlock();
-    if let Err(error) = mutation_result {
-        let _ = unlock_result;
-        return Err(error);
+    let _owner_lock = lock_app_mutations(app_data_dir)?;
+    after_lock();
+    validate_config_read_target(&ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
+    let current = read_config_state(&target)?;
+    let preview = build_claude_settings_save_preview(&ctx, &target, &content, current.clone())?;
+    ensure_action_confirmed(
+        &ActionPreviewBinding {
+            action: preview.action.clone(),
+            preconditions: preview.preconditions.clone(),
+            preview_token: preview.preview_token.clone(),
+        },
+        Some(&confirmation),
+    )?;
+    let missing_parents = missing_parent_chain(&target);
+    let compensation = ConfigCompensation {
+        ctx: &ctx,
+        agent: AgentId::ClaudeCode,
+        scope: Scope::AgentGlobal,
+        target: &target,
+        candidate_content: &content,
+        original: &current,
+        missing_parents: &missing_parents,
+        operation: "config save",
+    };
+    let transaction = catalog.begin_immediate_transaction()?;
+    let target_text = target.to_string_lossy().into_owned();
+    let snapshot_id = generate_snapshot_id();
+    let snapshot_content = redact_snapshot_content(&current.content);
+    let created_at = current_time_ms();
+    let snapshot = ConfigSnapshotRecord {
+        id: snapshot_id.clone(),
+        agent: AgentId::ClaudeCode.as_str().to_string(),
+        scope: Scope::AgentGlobal.as_str().to_string(),
+        project_root: None,
+        target: target_text.clone(),
+        content: snapshot_content,
+        reason: "pre-config-edit".to_string(),
+        created_at,
+    };
+    if let Err(error) = catalog.create_config_snapshot(ConfigSnapshotDraft {
+        id: &snapshot.id,
+        agent: &snapshot.agent,
+        scope: &snapshot.scope,
+        project_root: None,
+        target: &snapshot.target,
+        content: &snapshot.content,
+        reason: &snapshot.reason,
+        created_at_ms: snapshot.created_at,
+    }) {
+        return Err(error.into());
     }
-    unlock_result?;
 
-    scan_claude_to_catalog(&ctx, catalog)?;
-    read_claude_settings(&ctx)
+    let write_result = write_config_atomic(
+        &ctx,
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        &target,
+        &content,
+    );
+    let injected_readback_error = after_write();
+    if let Err(write_error) = write_result {
+        let observed = read_config_state(&target);
+        if observed
+            .as_ref()
+            .is_ok_and(|state| state.exists && state.content == content)
+        {
+            match finish_claude_settings_save(catalog, &target, &content, preview, snapshot) {
+                Ok(record) => {
+                    if let Err(commit_error) = transaction.commit() {
+                        return compensate_config_failure(&compensation, commit_error.into());
+                    }
+                    return Ok(record);
+                }
+                Err(readback_error) => {
+                    drop(transaction);
+                    return compensate_config_failure(&compensation, readback_error);
+                }
+            }
+        }
+        drop(transaction);
+        if observed.as_ref().is_ok_and(|state| state == &current) {
+            return Err(write_error);
+        }
+        return compensate_config_failure(&compensation, write_error);
+    }
+    if let Err(readback_error) = injected_readback_error {
+        drop(transaction);
+        return compensate_config_failure(&compensation, readback_error);
+    }
+    let record = match finish_claude_settings_save(catalog, &target, &content, preview, snapshot) {
+        Ok(record) => record,
+        Err(readback_error) => {
+            drop(transaction);
+            return compensate_config_failure(&compensation, readback_error);
+        }
+    };
+    if let Err(commit_error) = transaction.commit() {
+        return compensate_config_failure(&compensation, commit_error.into());
+    }
+    Ok(record)
+}
+
+fn finish_claude_settings_save(
+    catalog: &Catalog,
+    target: &Path,
+    content: &str,
+    preview: ConfigSavePreviewRecord,
+    snapshot: ConfigSnapshotRecord,
+) -> Result<ConfigSaveApplyRecord, CommandError> {
+    let written = read_config_state(target)?;
+    if !written.exists
+        || written.content != content
+        || written.revision != config_consistency::config_revision(true, content)
+    {
+        return Err(CommandError::VerificationFailed);
+    }
+    let stored_snapshot = catalog
+        .get_config_snapshot(&snapshot.id)?
+        .ok_or_else(|| CommandError::VerificationFailed)?;
+    if stored_snapshot != snapshot {
+        return Err(CommandError::VerificationFailed);
+    }
+    let document = config_document_record(
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        target,
+        ConfigFormat::Json,
+        &written,
+    );
+    let readback = ActionReadbackRecord::verified(
+        &preview.action,
+        vec![
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::AgentConfig,
+                target_id: document.target.clone(),
+                revision: document.revision.clone(),
+            },
+            ActionReadbackObservation {
+                domain: ActionReadbackDomain::ConfigSnapshots,
+                target_id: stored_snapshot.id.clone(),
+                revision: snapshot_binding_revision(&stored_snapshot),
+            },
+        ],
+    )?;
+    Ok(ConfigSaveApplyRecord {
+        action: preview.action,
+        document,
+        snapshot_id: stored_snapshot.id,
+        readback,
+    })
+}
+
+struct ConfigCompensation<'a> {
+    ctx: &'a AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    target: &'a Path,
+    candidate_content: &'a str,
+    original: &'a config_consistency::ConfigState,
+    missing_parents: &'a [PathBuf],
+    operation: &'static str,
+}
+
+fn compensate_config_failure<T>(
+    compensation: &ConfigCompensation<'_>,
+    original_error: CommandError,
+) -> Result<T, CommandError> {
+    let ConfigCompensation {
+        ctx,
+        agent,
+        scope,
+        target,
+        candidate_content,
+        original,
+        missing_parents,
+        operation,
+    } = compensation;
+    let candidate = config_consistency::ConfigState {
+        exists: true,
+        content: (*candidate_content).to_string(),
+        revision: config_consistency::config_revision(true, candidate_content),
+    };
+    match read_config_state(target) {
+        Ok(observed) if observed == candidate => {}
+        Ok(observed) => {
+            return Err(CommandError::PartialEffect {
+                operation: (*operation).to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "original failure: {original_error}; compensation was not attempted because the target changed after the confirmed write (observed revision {})",
+                    observed.revision
+                ),
+            });
+        }
+        Err(read_error) => {
+            return Err(CommandError::PartialEffect {
+                operation: (*operation).to_string(),
+                state: "outcome_unknown",
+                cleanup_required: true,
+                detail: format!(
+                    "original failure: {original_error}; compensation was not attempted because the current target could not be verified: {read_error}"
+                ),
+            });
+        }
+    }
+    match restore_config_state(
+        ctx,
+        *agent,
+        *scope,
+        target,
+        original,
+        missing_parents,
+    ) {
+        Ok(()) => Err(original_error),
+        Err(compensation_error) => Err(CommandError::PartialEffect {
+            operation: (*operation).to_string(),
+            state: "file_mutated_compensation_failed",
+            cleanup_required: true,
+            detail: format!(
+                "original failure: {original_error}; restoring the original config state failed: {compensation_error}"
+            ),
+        }),
+    }
+}
+
+fn restore_config_state(
+    ctx: &AdapterContext,
+    agent: AgentId,
+    scope: Scope,
+    target: &Path,
+    original: &config_consistency::ConfigState,
+    missing_parents: &[PathBuf],
+) -> Result<(), CommandError> {
+    if original.exists {
+        write_config_atomic(ctx, agent, scope, target, &original.content)?;
+    } else {
+        validate_config_read_target(ctx, agent, scope, target)?;
+        match fs::symlink_metadata(target) {
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {
+                return Err(CommandError::UnsafeConfigPath(
+                    "compensation target changed into a non-file".to_string(),
+                ));
+            }
+            Ok(_) => fs::remove_file(target)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        for parent in missing_parents {
+            match fs::remove_dir(parent) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let restored = read_config_state(target)?;
+    if &restored != original {
+        return Err(CommandError::VerificationFailed);
+    }
+    if missing_parents.iter().any(|parent| parent.exists()) {
+        return Err(CommandError::VerificationFailed);
+    }
+    Ok(())
+}
+
+fn missing_parent_chain(target: &Path) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    let mut cursor = target.parent();
+    while let Some(parent) = cursor {
+        if parent.exists() {
+            break;
+        }
+        missing.push(parent.to_path_buf());
+        cursor = parent.parent();
+    }
+    missing
+}
+
+fn validate_claude_settings_content(content: &str) -> Result<(), CommandError> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .map(|_| ())
+        .map_err(|error| CommandError::InvalidJson(error.to_string()))
+}
+
+fn config_document_record(
+    agent: AgentId,
+    scope: Scope,
+    target: &Path,
+    format: ConfigFormat,
+    state: &config_consistency::ConfigState,
+) -> ConfigDocumentRecord {
+    let content = if state.exists {
+        state.content.clone()
+    } else {
+        match format {
+            ConfigFormat::Json => "{}\n".to_string(),
+            ConfigFormat::Toml | ConfigFormat::Yaml | ConfigFormat::Markdown => String::new(),
+        }
+    };
+    ConfigDocumentRecord {
+        agent: agent.as_str().to_string(),
+        scope: scope.as_str().to_string(),
+        target: target.to_string_lossy().into_owned(),
+        format: match format {
+            ConfigFormat::Json => "json",
+            ConfigFormat::Toml => "toml",
+            ConfigFormat::Yaml => "yaml",
+            ConfigFormat::Markdown => "markdown",
+        }
+        .to_string(),
+        content,
+        exists: state.exists,
+        revision: state.revision.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotRollbackPreviewRecord {
+    pub action: ActionDescriptor,
+    pub preconditions: Vec<ActionPrecondition>,
+    pub preview_token: String,
     pub snapshot: ConfigSnapshotRecord,
+    pub snapshot_content_digest: String,
     pub current_content: String,
     pub current_read_error: Option<String>,
     pub current_revision: String,
-    pub preview_token: String,
     pub changed: bool,
     pub redacted: bool,
     pub rollback_supported: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotRollbackApplyRecord {
+    pub action: ActionDescriptor,
+    pub snapshot_id: String,
+    pub document: ConfigDocumentRecord,
+    pub readback: ActionReadbackRecord,
 }
 
 pub fn preview_snapshot_rollback(
@@ -2579,15 +2972,72 @@ fn preview_snapshot_rollback_for_record(
     let current = read_config_state(&target)?;
     let current_read_error = (!current.exists)
         .then(|| "target file does not exist; rollback will recreate it".to_string());
-    let preview_token = rollback_preview_token(&snapshot, &current.revision);
     let redacted = is_redacted_snapshot_content(&snapshot.content);
     let changed = redacted || current.content != snapshot.content;
+    let snapshot_content_digest = config_content_digest(&snapshot.content);
+    let snapshot_revision = snapshot_binding_revision(&snapshot);
+    let target_text = target.to_string_lossy().into_owned();
+    let project_id = canonical_project_id(ctx.project_root.as_deref());
+    let project_binding = project_id.as_deref().unwrap_or_default();
+    let source_revision = action_source_revision(
+        "snapshot.rollback",
+        &[
+            ("snapshot_id", &snapshot.id),
+            ("snapshot_revision", &snapshot_revision),
+            ("agent", agent.as_str()),
+            ("scope", scope.as_str()),
+            ("project_id", project_binding),
+            ("target", &target_text),
+            ("snapshot_content_digest", &snapshot_content_digest),
+            ("current_revision", &current.revision),
+        ],
+    )?;
+    let action = action_descriptor(
+        ActionKind::RollbackConfig,
+        ActionIntent::RollbackConfig,
+        ActionTargetRef {
+            kind: ActionTargetKind::Config,
+            id: target_text.clone(),
+            agent: Some(agent),
+            scope: Some(scope),
+        },
+        project_id,
+        vec![ActionImpact::AgentConfig],
+        "snapshot.previewRollback",
+        Some("snapshot.rollback"),
+        source_revision,
+        true,
+        ActionNetworkPosture::None,
+        vec![ActionReadbackDomain::AgentConfig],
+        vec![
+            format!("snapshot:{}", snapshot.id),
+            format!("config:{target_text}"),
+        ],
+    )?;
+    let binding = action_preview_binding(
+        action,
+        vec![
+            ActionPrecondition {
+                kind: ActionPreconditionKind::AgentConfig,
+                target_id: target_text,
+                expected_revision: current.revision.clone(),
+            },
+            ActionPrecondition {
+                kind: ActionPreconditionKind::CatalogRecord,
+                target_id: snapshot.id.clone(),
+                expected_revision: snapshot_revision,
+            },
+        ],
+    )?;
     Ok(SnapshotRollbackPreviewRecord {
+        action: binding.action,
+        preconditions: binding.preconditions,
+        preview_token: binding.preview_token,
         snapshot,
+        snapshot_content_digest,
         current_content: current.content,
         current_read_error,
         current_revision: current.revision,
-        preview_token,
         changed,
         redacted,
         rollback_supported: !redacted,
@@ -2596,124 +3046,254 @@ fn preview_snapshot_rollback_for_record(
 
 pub fn rollback_snapshot(
     catalog: &Catalog,
+    app_data_dir: &Path,
     ctx: &AdapterContext,
     snapshot_id: &str,
-    preview_token: &str,
-) -> Result<usize, CommandError> {
-    rollback_snapshot_with_after_lock(catalog, ctx, snapshot_id, preview_token, || {})
+    confirmation: &ActionConfirmation,
+) -> Result<SnapshotRollbackApplyRecord, CommandError> {
+    rollback_snapshot_with_after_lock(catalog, app_data_dir, ctx, snapshot_id, confirmation, || {})
+}
+
+pub fn validate_snapshot_rollback_confirmation(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    snapshot_id: &str,
+    confirmation: &ActionConfirmation,
+) -> Result<SnapshotRollbackPreviewRecord, CommandError> {
+    let snapshot = catalog
+        .get_config_snapshot(snapshot_id)?
+        .ok_or(CommandError::StaleActionReference)?;
+    validate_rollback_reference_identity(ctx, &snapshot, confirmation)?;
+    validate_snapshot_project_binding(ctx, &snapshot)
+        .map_err(|error| CommandError::MismatchedActionReference(error.to_string()))?;
+    let preview = preview_snapshot_rollback_for_record(ctx, snapshot)?;
+    ensure_action_confirmed(
+        &ActionPreviewBinding {
+            action: preview.action.clone(),
+            preconditions: preview.preconditions.clone(),
+            preview_token: preview.preview_token.clone(),
+        },
+        Some(confirmation),
+    )?;
+    Ok(preview)
 }
 
 fn rollback_snapshot_with_after_lock(
     catalog: &Catalog,
+    app_data_dir: &Path,
     ctx: &AdapterContext,
     snapshot_id: &str,
-    preview_token: &str,
+    confirmation: &ActionConfirmation,
     after_lock: impl FnOnce(),
-) -> Result<usize, CommandError> {
-    let snapshot = catalog
-        .get_config_snapshot(snapshot_id)?
-        .ok_or(CommandError::StalePreviewToken)?;
-    validate_snapshot_project_binding(ctx, &snapshot)
-        .map_err(|_| CommandError::StalePreviewToken)?;
-    let target = PathBuf::from(&snapshot.target);
-    let scope =
-        scope_from_snapshot(&snapshot.scope).map_err(|_| CommandError::StalePreviewToken)?;
-    let agent =
-        agent_from_snapshot(&snapshot.agent).map_err(|_| CommandError::StalePreviewToken)?;
-    if !matches!(
-        agent,
-        AgentId::ClaudeCode
-            | AgentId::Codex
-            | AgentId::Opencode
-            | AgentId::Pi
-            | AgentId::Hermes
-            | AgentId::Openclaw
-    ) {
-        return Err(CommandError::StalePreviewToken);
-    }
-    validate_config_read_target(ctx, agent, scope, &target)
-        .map_err(|_| CommandError::StalePreviewToken)?;
-    let before_lock = read_config_state(&target).map_err(|_| CommandError::StalePreviewToken)?;
-    ensure_rollback_preview_token(preview_token, &snapshot, &before_lock.revision)?;
-    validate_config_write_target(ctx, agent, scope, &target)?;
-    let lock_file = lock_config(ctx, agent, scope, &target)?;
+) -> Result<SnapshotRollbackApplyRecord, CommandError> {
+    rollback_snapshot_with_hooks(
+        catalog,
+        app_data_dir,
+        ctx,
+        snapshot_id,
+        confirmation,
+        after_lock,
+        || Ok(()),
+    )
+}
+
+fn rollback_snapshot_with_hooks(
+    catalog: &Catalog,
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    snapshot_id: &str,
+    confirmation: &ActionConfirmation,
+    after_lock: impl FnOnce(),
+    after_write: impl FnOnce() -> Result<(), CommandError>,
+) -> Result<SnapshotRollbackApplyRecord, CommandError> {
+    let preflight =
+        validate_snapshot_rollback_confirmation(catalog, ctx, snapshot_id, confirmation)?;
+    let agent = agent_from_snapshot(&preflight.snapshot.agent)?;
+    let scope = scope_from_snapshot(&preflight.snapshot.scope)?;
+    let target = PathBuf::from(&preflight.snapshot.target);
+    let _owner_lock = lock_app_mutations(app_data_dir)?;
     after_lock();
-    let locked_snapshot = match catalog.get_config_snapshot(snapshot_id)? {
-        Some(snapshot) => snapshot,
-        None => {
-            lock_file.unlock()?;
-            return Err(CommandError::StalePreviewToken);
-        }
-    };
-    let locked_agent = match agent_from_snapshot(&locked_snapshot.agent) {
-        Ok(agent) => agent,
-        Err(_) => {
-            lock_file.unlock()?;
-            return Err(CommandError::StalePreviewToken);
-        }
-    };
-    let locked_scope = match scope_from_snapshot(&locked_snapshot.scope) {
-        Ok(scope) => scope,
-        Err(_) => {
-            lock_file.unlock()?;
-            return Err(CommandError::StalePreviewToken);
-        }
-    };
-    if locked_agent != agent || locked_scope != scope {
-        lock_file.unlock()?;
-        return Err(CommandError::StalePreviewToken);
+    let locked_snapshot = catalog
+        .get_config_snapshot(snapshot_id)?
+        .ok_or(CommandError::StaleActionReference)?;
+    let (locked_agent, locked_scope, locked_target) =
+        validate_rollback_reference_identity(ctx, &locked_snapshot, confirmation)?;
+    if locked_agent != agent || locked_scope != scope || locked_target != target {
+        return Err(CommandError::MismatchedActionReference(
+            "snapshot target identity changed after the app mutation lock".to_string(),
+        ));
     }
-    if validate_snapshot_project_binding(ctx, &locked_snapshot).is_err() {
-        lock_file.unlock()?;
-        return Err(CommandError::StalePreviewToken);
-    }
-    if validate_config_read_target(ctx, agent, scope, &target).is_err() {
-        lock_file.unlock()?;
-        return Err(CommandError::StalePreviewToken);
-    }
-    let current = match read_config_state(&target) {
-        Ok(current) => current,
-        Err(_) => {
-            lock_file.unlock()?;
-            return Err(CommandError::StalePreviewToken);
-        }
-    };
-    if let Err(error) =
-        ensure_rollback_preview_token(preview_token, &locked_snapshot, &current.revision)
-    {
-        lock_file.unlock()?;
-        return Err(error);
-    }
+    validate_snapshot_project_binding(ctx, &locked_snapshot)
+        .map_err(|error| CommandError::MismatchedActionReference(error.to_string()))?;
+    validate_config_read_target(ctx, agent, scope, &target).map_err(|error| {
+        CommandError::MismatchedActionReference(format!(
+            "config target changed after the rollback preview: {error}"
+        ))
+    })?;
+    let current = read_config_state(&target).map_err(|_| CommandError::StaleActionReference)?;
+    let locked_preview = preview_snapshot_rollback_for_record(ctx, locked_snapshot.clone())?;
+    ensure_action_confirmed(
+        &ActionPreviewBinding {
+            action: locked_preview.action.clone(),
+            preconditions: locked_preview.preconditions.clone(),
+            preview_token: locked_preview.preview_token.clone(),
+        },
+        Some(confirmation),
+    )?;
     if is_redacted_snapshot_content(&locked_snapshot.content) {
-        lock_file.unlock()?;
         return Err(CommandError::UnsafeConfigPath(
             "snapshot content was redacted and cannot be rolled back directly".to_string(),
         ));
     }
-    if let Err(error) = write_config_atomic(
+    let missing_parents = missing_parent_chain(&target);
+    let candidate_content = locked_snapshot.content.clone();
+    let compensation = ConfigCompensation {
         ctx,
+        agent: locked_agent,
+        scope: locked_scope,
+        target: &target,
+        candidate_content: &candidate_content,
+        original: &current,
+        missing_parents: &missing_parents,
+        operation: "snapshot rollback",
+    };
+    let transaction = catalog.begin_immediate_transaction()?;
+    let write_result =
+        write_config_atomic(ctx, locked_agent, locked_scope, &target, &candidate_content);
+    let injected_readback_error = after_write();
+    if let Err(write_error) = write_result {
+        let observed = read_config_state(&target);
+        if observed
+            .as_ref()
+            .is_ok_and(|state| state.exists && state.content == candidate_content)
+        {
+            match finish_snapshot_rollback(
+                &target,
+                locked_agent,
+                locked_scope,
+                locked_snapshot,
+                locked_preview,
+            ) {
+                Ok(record) => {
+                    if let Err(commit_error) = transaction.commit() {
+                        return compensate_config_failure(&compensation, commit_error.into());
+                    }
+                    return Ok(record);
+                }
+                Err(readback_error) => {
+                    drop(transaction);
+                    return compensate_config_failure(&compensation, readback_error);
+                }
+            }
+        }
+        drop(transaction);
+        if observed.as_ref().is_ok_and(|state| state == &current) {
+            return Err(write_error);
+        }
+        return compensate_config_failure(&compensation, write_error);
+    }
+    if let Err(readback_error) = injected_readback_error {
+        drop(transaction);
+        return compensate_config_failure(&compensation, readback_error);
+    }
+    let record = match finish_snapshot_rollback(
+        &target,
         locked_agent,
         locked_scope,
-        &target,
-        &locked_snapshot.content,
+        locked_snapshot,
+        locked_preview,
     ) {
-        lock_file.unlock()?;
-        return Err(error);
-    }
-    let written = match read_config_state(&target) {
-        Ok(written) => written,
-        Err(error) => {
-            lock_file.unlock()?;
-            return Err(error);
+        Ok(record) => record,
+        Err(readback_error) => {
+            drop(transaction);
+            return compensate_config_failure(&compensation, readback_error);
         }
     };
-    if written.content != locked_snapshot.content {
-        let _ = write_config_atomic(ctx, agent, scope, &target, &current.content);
-        lock_file.unlock()?;
+    if let Err(commit_error) = transaction.commit() {
+        return compensate_config_failure(&compensation, commit_error.into());
+    }
+    Ok(record)
+}
+
+fn validate_rollback_reference_identity(
+    ctx: &AdapterContext,
+    snapshot: &ConfigSnapshotRecord,
+    confirmation: &ActionConfirmation,
+) -> Result<(AgentId, Scope, PathBuf), CommandError> {
+    let agent = agent_from_snapshot(&snapshot.agent).map_err(|error| {
+        CommandError::MismatchedActionReference(format!(
+            "snapshot agent no longer matches the confirmed target: {error}"
+        ))
+    })?;
+    let scope = scope_from_snapshot(&snapshot.scope).map_err(|error| {
+        CommandError::MismatchedActionReference(format!(
+            "snapshot scope no longer matches the confirmed target: {error}"
+        ))
+    })?;
+    let target = PathBuf::from(&snapshot.target);
+    let reference = &confirmation.reference;
+    if reference.project_id != canonical_project_id(ctx.project_root.as_deref())
+        || reference.target.kind != ActionTargetKind::Config
+        || reference.target.id != snapshot.target
+        || reference.target.agent != Some(agent)
+        || reference.target.scope != Some(scope)
+    {
+        return Err(CommandError::MismatchedActionReference(
+            "snapshot id, project, agent, scope, or target path changed after preview".to_string(),
+        ));
+    }
+    Ok((agent, scope, target))
+}
+
+fn finish_snapshot_rollback(
+    target: &Path,
+    agent: AgentId,
+    scope: Scope,
+    snapshot: ConfigSnapshotRecord,
+    preview: SnapshotRollbackPreviewRecord,
+) -> Result<SnapshotRollbackApplyRecord, CommandError> {
+    let written = read_config_state(target)?;
+    if !written.exists
+        || written.content != snapshot.content
+        || written.revision != config_consistency::config_revision(true, &snapshot.content)
+    {
         return Err(CommandError::VerificationFailed);
     }
-    lock_file.unlock()?;
-    scan_agent_id_to_catalog(agent, ctx, catalog)
+    let document = config_document_record(
+        agent,
+        scope,
+        target,
+        config_format_for_snapshot_agent(agent)?,
+        &written,
+    );
+    let readback = ActionReadbackRecord::verified(
+        &preview.action,
+        vec![ActionReadbackObservation {
+            domain: ActionReadbackDomain::AgentConfig,
+            target_id: document.target.clone(),
+            revision: document.revision.clone(),
+        }],
+    )?;
+    Ok(SnapshotRollbackApplyRecord {
+        action: preview.action,
+        snapshot_id: snapshot.id,
+        document,
+        readback,
+    })
+}
+
+fn config_format_for_snapshot_agent(agent: AgentId) -> Result<ConfigFormat, CommandError> {
+    match agent {
+        AgentId::Codex => Ok(ConfigFormat::Toml),
+        AgentId::Hermes => Ok(ConfigFormat::Yaml),
+        AgentId::ClaudeCode | AgentId::Opencode | AgentId::Pi | AgentId::Openclaw => {
+            Ok(ConfigFormat::Json)
+        }
+        _ => Err(CommandError::UnsafeConfigPath(format!(
+            "{} config rollback is not supported",
+            agent.as_str()
+        ))),
+    }
 }
 
 fn refresh_catalog_rule_outputs(
@@ -3828,7 +4408,7 @@ fn restore_batch_toggle_plans(
 ) -> Result<(), CommandError> {
     let mut first_error = None;
     for plan in plans.iter().rev() {
-        if let Err(error) = restore_config_state(
+        if let Err(error) = restore_batch_config_state(
             ctx,
             &plan.target,
             &plan.original,
@@ -3844,7 +4424,7 @@ fn restore_batch_toggle_plans(
     Ok(())
 }
 
-fn restore_config_state(
+fn restore_batch_config_state(
     ctx: &AdapterContext,
     target: &ConfigTarget,
     original: &ConfigState,

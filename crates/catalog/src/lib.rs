@@ -320,7 +320,6 @@ impl Catalog {
     pub fn inject_next_commit_failure_for_test(&self) {
         self.fail_next_commit.set(true);
     }
-
     /// Migrate records whose `path` was stored as a display path (pre-refactor)
     /// to the canonical path. When a canonical path already exists for the same
     /// (agent, scope) the non-canonical duplicate is deleted.

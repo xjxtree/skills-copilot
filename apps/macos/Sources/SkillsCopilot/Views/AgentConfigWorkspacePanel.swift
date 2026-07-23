@@ -82,6 +82,7 @@ private struct AgentConfigOverviewDetailPanel: View {
     @State private var draft = ""
     @State private var revealsSensitiveConfig = false
     @State private var isConfirmingConfigEdit = false
+    @State private var configConfirmationToApply: ConfigSaveConfirmation?
 
     private var validationMessage: String? {
         guard let data = draft.data(using: .utf8) else {
@@ -100,7 +101,7 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private var hasWritableConfigBinding: Bool {
-        store.supportsConfigConsistencyProtocol
+        store.supportsConfigActionLifecycle
             && store.claudeSettings?.supportsCompareAndSwap == true
     }
 
@@ -121,12 +122,13 @@ private struct AgentConfigOverviewDetailPanel: View {
         return false
     }
 
-    private var canAutosaveConfig: Bool {
+    private var canSaveConfig: Bool {
         revealsSensitiveConfig
             && hasWritableConfigBinding
             && !hasConfigConflict
             && hasDraftChanges
             && validationMessage == nil
+            && !store.isSavingSettings
     }
 
     private var displayedDraft: Binding<String> {
@@ -178,9 +180,6 @@ private struct AgentConfigOverviewDetailPanel: View {
         .onChange(of: selectedDocument?.target) { _ in
             revealsSensitiveConfig = false
             hydrateConfigDraftFromStore()
-        }
-        .onChange(of: store.configAutosaveDraft) { _ in
-            hydrateConfigDraftFromStore(revealsSensitive: revealsSensitiveConfig)
         }
         .onChange(of: draft) { _ in
             handleConfigDraftChange()
@@ -236,22 +235,66 @@ private struct AgentConfigOverviewDetailPanel: View {
 
             if let validationMessage {
                 ConfigInlineBanner(message: validationMessage, systemImage: "exclamationmark.triangle.fill", color: .red)
-            } else if store.claudeSettings != nil && !store.supportsConfigConsistencyProtocol {
+            } else if store.claudeSettings != nil && !store.supportsConfigActionLifecycle {
                 ConfigInlineBanner(message: UIStrings.configConsistencyProtocolRequired, systemImage: "lock.fill", color: .orange)
             } else if store.claudeSettings != nil && !hasWritableConfigBinding {
                 ConfigInlineBanner(message: UIStrings.configRevisionUnavailable, systemImage: "lock.fill", color: .orange)
             } else {
-                switch store.configAutosavePhase {
+                switch store.configMutationState {
+                case .previewing:
+                    ConfigInlineBanner(
+                        message: UIStrings.text(
+                            "settings.agentConfig.previewing",
+                            "Preparing a signed config preview..."
+                        ),
+                        systemImage: "doc.text.magnifyingglass",
+                        color: .secondary
+                    )
+                case .awaitingConfirmation:
+                    ConfigInlineBanner(
+                        message: UIStrings.text(
+                            "settings.agentConfig.awaitingConfirmation",
+                            "Review the exact target, impact, revision, and read-back before saving."
+                        ),
+                        systemImage: "checkmark.shield",
+                        color: .orange
+                    )
                 case .saving:
-                    ConfigInlineBanner(message: UIStrings.configAutosaveSaving, systemImage: "hourglass", color: .secondary)
-                case .debouncing, .pendingAfterSave:
-                    ConfigInlineBanner(message: UIStrings.configAutosavePending, systemImage: "clock.arrow.circlepath", color: .secondary)
-                case .idle:
-                    if canAutosaveConfig {
-                        ConfigInlineBanner(message: UIStrings.jsonValidSettingsWrite, systemImage: "checkmark.circle.fill", color: .green)
+                    ConfigInlineBanner(
+                        message: UIStrings.text(
+                            "settings.agentConfig.savingConfirmed",
+                            "Applying the confirmed config and verifying read-back..."
+                        ),
+                        systemImage: "hourglass",
+                        color: .secondary
+                    )
+                case .idle, .conflict, .failed:
+                    if canSaveConfig {
+                        ConfigInlineBanner(
+                            message: UIStrings.text(
+                                "settings.agentConfig.dirty",
+                                "Unsaved valid changes. Preview them before Save."
+                            ),
+                            systemImage: "pencil.and.list.clipboard",
+                            color: .blue
+                        )
                     }
-                case .failed:
-                    EmptyView()
+                }
+            }
+
+            if revealsSensitiveConfig {
+                HStack(spacing: 10) {
+                    Spacer()
+                    Button(UIStrings.text("settings.agentConfig.revert", "Revert")) {
+                        resetDraftFromStore(revealsSensitive: true)
+                    }
+                    .disabled(!hasDraftChanges || store.isSavingSettings)
+
+                    Button(UIStrings.text("settings.agentConfig.save", "Save")) {
+                        previewConfigSave()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canSaveConfig)
                 }
             }
 
@@ -278,27 +321,51 @@ private struct AgentConfigOverviewDetailPanel: View {
         } message: {
             Text(UIStrings.agentConfigEditConfirmationMessage)
         }
+        .confirmationDialog(
+            UIStrings.text("settings.agentConfig.confirmSave", "Confirm Config Save"),
+            isPresented: Binding(
+                get: { configConfirmationToApply != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        configConfirmationToApply = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(UIStrings.text("settings.agentConfig.save", "Save"), role: .destructive) {
+                guard let confirmation = configConfirmationToApply else { return }
+                configConfirmationToApply = nil
+                Task {
+                    let succeeded = await store.applyClaudeSettingsSave(confirmation)
+                    if succeeded {
+                        hydrateConfigDraftFromStore(revealsSensitive: true)
+                    }
+                }
+            }
+            Button(UIStrings.cancel, role: .cancel) {
+                configConfirmationToApply = nil
+            }
+        } message: {
+            if let confirmation = configConfirmationToApply {
+                Text(configConfirmationSummary(confirmation.preview))
+            }
+        }
     }
 
     private func hydrateConfigDraftFromStore(revealsSensitive: Bool = false) {
-        let transition = ConfigAutosaveDraftReducer.reduce(
-            content: draft,
-            event: .hydrate(
-                storeDraft: store.configAutosaveDraft,
-                persistedContent: store.claudeSettings?.content ?? ""
-            )
-        )
-        draft = transition.content
+        draft = store.claudeSettings?.content ?? ""
+        configConfirmationToApply = nil
         revealsSensitiveConfig = revealsSensitive
     }
 
     private func resetDraftFromStore(revealsSensitive: Bool = false) {
-        store.cancelPendingConfigAutosave()
         hydrateConfigDraftFromStore(revealsSensitive: revealsSensitive)
+        store.clearSettingsFeedback()
     }
 
     private func reloadClaudeConfig() {
-        store.cancelPendingConfigAutosave()
+        configConfirmationToApply = nil
         Task {
             await store.refreshSelectedAgentConfigData()
             resetDraftFromStore()
@@ -307,7 +374,7 @@ private struct AgentConfigOverviewDetailPanel: View {
 
     private func toggleSensitiveEditing() {
         if revealsSensitiveConfig {
-            resetDraftFromStore()
+            revealsSensitiveConfig = false
         } else {
             isConfirmingConfigEdit = true
         }
@@ -324,27 +391,37 @@ private struct AgentConfigOverviewDetailPanel: View {
     }
 
     private func handleConfigDraftChange() {
-        let transition = ConfigAutosaveDraftReducer.reduce(
-            content: draft,
-            event: .userChanged(
-                storeDraft: store.configAutosaveDraft,
-                persistedContent: store.claudeSettings?.content ?? "",
-                revealsSensitiveConfig: revealsSensitiveConfig,
-                hasActiveSave: store.configAutosaveHasActiveSave,
-                validationError: validationMessage
-            )
-        )
-        switch transition.action {
-        case .none:
-            return
-        case .cancelPending:
-            store.cancelPendingConfigAutosave()
-        case let .submit(content, validationError):
-            store.submitConfigAutosave(
-                content: content,
-                validationError: validationError
-            )
+        configConfirmationToApply = nil
+        if !store.isSavingSettings {
+            store.clearSettingsFeedback()
         }
+    }
+
+    private func previewConfigSave() {
+        guard canSaveConfig else { return }
+        configConfirmationToApply = nil
+        Task {
+            configConfirmationToApply = await store.previewClaudeSettingsSave(content: draft)
+        }
+    }
+
+    private func configConfirmationSummary(_ preview: ConfigSavePreviewRecord) -> String {
+        let action = preview.action
+        let scope = action.target.scope ?? UIStrings.unknown
+        let impacts = action.impacts.joined(separator: ", ")
+        let readback = action.readback.joined(separator: ", ")
+        let evidence = action.evidenceRefs.isEmpty
+            ? UIStrings.unknown
+            : action.evidenceRefs.joined(separator: "\n")
+        return [
+            "\(UIStrings.text("action.target", "Target")): \(action.target.id)",
+            "\(UIStrings.text("action.scope", "Scope")): \(scope)",
+            "\(UIStrings.text("action.impact", "Impact")): \(impacts)",
+            "\(UIStrings.text("action.network", "Network")): \(action.network)",
+            "\(UIStrings.text("action.revision", "Current revision")): \(preview.currentRevision)",
+            "\(UIStrings.text("action.readback", "Read-back")): \(readback)",
+            "\(UIStrings.text("action.evidence", "Evidence")):\n\(evidence)"
+        ].joined(separator: "\n")
     }
 
     private static func formattedJSON(_ content: String) -> String? {
@@ -436,7 +513,7 @@ private struct AgentConfigSnapshotDetailPanel: View {
     }
 
     private var confirmedPreview: SnapshotRollbackPreviewRecord? {
-        guard store.supportsConfigConsistencyProtocol,
+        guard store.supportsConfigActionLifecycle,
               let preview,
               preview.snapshot.id == snapshot.id,
               preview.rollbackSupported,
@@ -506,7 +583,7 @@ private struct AgentConfigSnapshotDetailPanel: View {
                         ErrorBanner(message: readError)
                     }
 
-                    if !store.supportsConfigConsistencyProtocol {
+                    if !store.supportsConfigActionLifecycle {
                         ErrorBanner(message: UIStrings.configConsistencyProtocolRequired)
                     } else if !preview.rollbackSupported {
                         ErrorBanner(message: UIStrings.rollbackBindingUnavailable)
@@ -574,9 +651,9 @@ private struct AgentConfigSnapshotDetailPanel: View {
                 confirmationToApply = nil
             }
         } message: {
-            Text(UIStrings.agentConfigTimelineRollbackConfirm(
-                AgentConfigDisplay.pathSummary(snapshot.target)
-            ))
+            if let confirmation = confirmationToApply {
+                Text(rollbackConfirmationSummary(confirmation))
+            }
         }
         .onChange(of: snapshot.id) { _ in
             revealsSnapshotContent = false
@@ -590,6 +667,25 @@ private struct AgentConfigSnapshotDetailPanel: View {
     private func snapshotDisplayContent(_ content: String) -> String {
         let value = content.isEmpty ? UIStrings.emptyPlaceholder : content
         return revealsSnapshotContent ? value : ConfigContentRedactor.redactedForDisplay(value)
+    }
+
+    private func rollbackConfirmationSummary(_ confirmation: RollbackConfirmation) -> String {
+        let action = confirmation.action
+        let scope = action.target.scope ?? UIStrings.unknown
+        let impacts = action.impacts.joined(separator: ", ")
+        let readback = action.readback.joined(separator: ", ")
+        let evidence = action.evidenceRefs.isEmpty
+            ? UIStrings.unknown
+            : action.evidenceRefs.joined(separator: "\n")
+        return [
+            "\(UIStrings.text("action.target", "Target")): \(action.target.id)",
+            "\(UIStrings.text("action.scope", "Scope")): \(scope)",
+            "\(UIStrings.text("action.impact", "Impact")): \(impacts)",
+            "\(UIStrings.text("action.network", "Network")): \(action.network)",
+            "\(UIStrings.text("action.revision", "Source revision")): \(action.sourceRevision)",
+            "\(UIStrings.text("action.readback", "Read-back")): \(readback)",
+            "\(UIStrings.text("action.evidence", "Evidence")):\n\(evidence)"
+        ].joined(separator: "\n")
     }
 
     private func loadPreview() {

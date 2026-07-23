@@ -24,6 +24,9 @@ skills-copilot-core.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+[dev-dependencies]
+fs4.workspace = true
+
 [[bin]]
 name = "skills-copilot-service"
 path = "src/main.rs"

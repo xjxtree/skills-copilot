@@ -24,23 +24,25 @@ use skills_copilot_commands::{
     list_conflicts_for_context, list_finding_triage, list_findings,
     list_installed_skills_with_manager, list_rule_tuning, list_skill_event_page_snapshot,
     list_skill_events, list_skill_management_tools, list_snapshots, prepare_claude_settings_save,
-    preview_install_with_manager, preview_local_archive_import, preview_local_archive_update,
-    preview_local_create_with_manager, preview_remove_with_manager, preview_script_execution,
-    preview_skill_toggles, preview_snapshot_rollback_with_context, preview_update_with_manager,
-    read_agent_config, read_claude_settings, rollback_snapshot, scan_all_catalog_report,
-    scan_claude_catalog_report, search_skills_with_manager, set_finding_triage,
-    set_rule_severity_override, set_rule_suppression, skill_health_summary, toggle_skill,
+    preview_claude_settings_save, preview_install_with_manager, preview_local_archive_import,
+    preview_local_archive_update, preview_local_create_with_manager, preview_remove_with_manager,
+    preview_script_execution, preview_skill_toggles, preview_snapshot_rollback_with_context,
+    preview_update_with_manager, read_agent_config, read_claude_settings, rollback_snapshot,
+    scan_all_catalog_report, scan_claude_catalog_report, search_skills_with_manager,
+    set_finding_triage, set_rule_severity_override, set_rule_suppression, skill_health_summary,
     user_visible_rule_findings, validate_local_delete_confirmation,
     validate_skill_install_confirmation, validate_skill_manager_confirmation,
-    validate_skill_toggle_confirmation, ActionConfirmation, AdapterCapabilityRecord,
-    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport,
-    BatchToggleApplyRecord, BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord,
-    CrossAgentAnalysisRecord, ScriptExecutionPreviewRecord, ScriptExecutionRequest,
-    SkillHealthSummary, SkillInstallPreviewRecord, SkillManagerDeleteLocalParams,
-    SkillManagerInstallParams, SkillManagerListInstalledParams,
+    validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
+    ActionConfirmation, AdapterCapabilityRecord, AdapterDiagnosticsRecord,
+    AgentCatalogScanPathAlias, AgentCatalogScanReport, BatchToggleApplyRecord,
+    BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord, ConfigSaveApplyRecord,
+    ConfigSavePreviewRecord, CrossAgentAnalysisRecord, ScriptExecutionPreviewRecord,
+    ScriptExecutionRequest, SkillHealthSummary, SkillInstallPreviewRecord,
+    SkillManagerDeleteLocalParams, SkillManagerInstallParams, SkillManagerListInstalledParams,
     SkillManagerLocalArchiveImportParams, SkillManagerLocalArchiveUpdateParams,
     SkillManagerLocalCreateParams, SkillManagerRemoveParams, SkillManagerSearchParams,
-    SkillManagerUpdateParams, SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
+    SkillManagerUpdateParams, SnapshotRollbackApplyRecord, SnapshotRollbackPreviewRecord,
+    SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_core::{
     AdapterContext, AgentId, ListIncompleteReason, ListPageMetadata, ListSourceCompleteness, Scope,
@@ -1483,7 +1485,7 @@ pub struct SnapshotParams {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RollbackSnapshotParams {
     pub snapshot_id: String,
-    pub preview_token: String,
+    pub confirmation: ActionConfirmation,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1522,9 +1524,15 @@ pub struct ReadAgentConfigParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct SaveClaudeSettingsParams {
+pub struct PreviewSaveClaudeSettingsParams {
     pub content: String,
     pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveClaudeSettingsParams {
+    pub content: String,
+    pub confirmation: ActionConfirmation,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1584,9 +1592,6 @@ impl ServiceError {
             Self::Catalog(_) => "catalog_error",
             Self::Command(skills_copilot_commands::CommandError::ConfigConflict { .. }) => {
                 "config_conflict"
-            }
-            Self::Command(skills_copilot_commands::CommandError::StalePreviewToken) => {
-                "stale_preview_token"
             }
             Self::Command(skills_copilot_commands::CommandError::UnknownActionReference(_)) => {
                 "unknown_action_reference"

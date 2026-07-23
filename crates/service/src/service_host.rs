@@ -642,12 +642,9 @@ impl ServiceHost {
                 ))
             }
             "config.toggleSkill" => {
-                let params: ToggleSkillParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
-                let adapter_ctx = self.effective_adapter_ctx()?;
-                let record: SkillRecord =
-                    toggle_skill(&catalog, &adapter_ctx, &params.instance_id, params.on)?;
-                serde_json::to_value(record).map_err(Into::into)
+                Err(ServiceError::MutationDisabled(
+                    "config.toggleSkill is compatibility-only and cannot write without the batch preview/confirmation/read-back lifecycle",
+                ))
             }
             "skill.install" => {
                 let params: InstallSkillParams = serde_json::from_value(request.params)?;
@@ -707,18 +704,33 @@ impl ServiceHost {
                     read_agent_config(&adapter_ctx, &params.agent, params.scope.as_deref())?;
                 serde_json::to_value(documents).map_err(Into::into)
             }
+            "config.previewSaveClaudeSettings" => {
+                let params: PreviewSaveClaudeSettingsParams =
+                    serde_json::from_value(request.params)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                let preview: ConfigSavePreviewRecord = preview_claude_settings_save(
+                    &adapter_ctx,
+                    &params.content,
+                    &params.expected_revision,
+                )?;
+                serde_json::to_value(preview).map_err(Into::into)
+            }
             "config.saveClaudeSettings" => {
                 let params: SaveClaudeSettingsParams = serde_json::from_value(request.params)?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
                 let prepared = prepare_claude_settings_save(
                     &adapter_ctx,
                     &params.content,
-                    &params.expected_revision,
+                    &params.confirmation,
                 )?;
                 let catalog = self.open_catalog()?;
-                let document: ConfigDocumentRecord =
-                    commit_prepared_claude_settings_save(&catalog, prepared)?;
-                serde_json::to_value(document).map_err(Into::into)
+                let result: ConfigSaveApplyRecord =
+                    commit_prepared_claude_settings_save(
+                        &catalog,
+                        &self.app_data_dir,
+                        prepared,
+                    )?;
+                serde_json::to_value(result).map_err(Into::into)
             }
             "snapshot.list" => {
                 let catalog = self.open_catalog_for_read()?;
@@ -757,15 +769,24 @@ impl ServiceHost {
             }
             "snapshot.rollback" => {
                 let params: RollbackSnapshotParams = serde_json::from_value(request.params)?;
-                let catalog = self.open_catalog()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                let scanned_count = rollback_snapshot(
-                    &catalog,
+                let read_catalog = self.open_catalog_for_read()?;
+                validate_snapshot_rollback_confirmation(
+                    &read_catalog,
                     &adapter_ctx,
                     &params.snapshot_id,
-                    &params.preview_token,
+                    &params.confirmation,
                 )?;
-                serde_json::to_value(scanned_count).map_err(Into::into)
+                drop(read_catalog);
+                let catalog = self.open_catalog()?;
+                let result: SnapshotRollbackApplyRecord = rollback_snapshot(
+                    &catalog,
+                    &self.app_data_dir,
+                    &adapter_ctx,
+                    &params.snapshot_id,
+                    &params.confirmation,
+                )?;
+                serde_json::to_value(result).map_err(Into::into)
             }
             method => Err(ServiceError::UnknownMethod(method.to_string())),
         }

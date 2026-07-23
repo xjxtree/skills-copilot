@@ -3,6 +3,19 @@
   "method": "snapshot.rollback",
   "params": {
     "snapshot_id": "snapshot-id",
-    "preview_token": "sha256:a42abe9ac6a482bf8ca8030d1c518ef35d9aa3c870b86f8184c31831e7393c20"
+    "confirmation": {
+      "reference": {
+        "action_id": "action:rollback_config:0707070707070707070707070707070707070707070707070707070707070707",
+        "source_revision": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+        "target": {
+          "kind": "config",
+          "id": "/tmp/skills-copilot-home/.claude/settings.json",
+          "agent": "claude-code",
+          "scope": "agent-global"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:1010101010101010101010101010101010101010101010101010101010101010",
+      "confirmed": true
+    }
   }
 }

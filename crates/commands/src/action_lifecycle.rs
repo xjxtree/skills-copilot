@@ -577,11 +577,8 @@ pub fn validate_action_method_ownership(
                 && apply_method == Some("snapshot.rollback")
         }
         ActionKind::SaveConfig => {
-            preview_method == "config.readAgentConfig"
-                && matches!(
-                    apply_method,
-                    Some("config.saveClaudeSettings") | Some("config.toggleSkill")
-                )
+            preview_method == "config.previewSaveClaudeSettings"
+                && apply_method == Some("config.saveClaudeSettings")
         }
         ActionKind::ResumeSession => {
             preview_method == "session.previewResume" && apply_method.is_none()

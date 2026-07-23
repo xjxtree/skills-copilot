@@ -1,5 +1,52 @@
 {
   "id": "fixture-snapshot-rollback",
   "ok": true,
-  "result": 1
+  "result": {
+    "action": {
+      "id": "action:rollback_config:0707070707070707070707070707070707070707070707070707070707070707",
+      "kind": "rollback_config",
+      "intent": "rollback_config",
+      "target": {
+        "kind": "config",
+        "id": "/tmp/skills-copilot-home/.claude/settings.json",
+        "agent": "claude-code",
+        "scope": "agent-global"
+      },
+      "impacts": ["agent_config"],
+      "preview_method": "snapshot.previewRollback",
+      "apply_method": "snapshot.rollback",
+      "source_revision": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["agent_config"],
+      "evidence_refs": [
+        "snapshot:snapshot-id",
+        "config:/tmp/skills-copilot-home/.claude/settings.json"
+      ]
+    },
+    "snapshot_id": "snapshot-id",
+    "document": {
+      "agent": "claude-code",
+      "scope": "agent-global",
+      "target": "/tmp/skills-copilot-home/.claude/settings.json",
+      "format": "json",
+      "content": "{}\n",
+      "exists": true,
+      "revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9"
+    },
+    "readback": {
+      "action_id": "action:rollback_config:0707070707070707070707070707070707070707070707070707070707070707",
+      "source_revision": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "domains": ["agent_config"],
+      "target_ids": ["/tmp/skills-copilot-home/.claude/settings.json"],
+      "observations": [
+        {
+          "domain": "agent_config",
+          "target_id": "/tmp/skills-copilot-home/.claude/settings.json",
+          "revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9"
+        }
+      ],
+      "verified": true
+    }
+  }
 }

@@ -1183,9 +1183,31 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 "{method} revisions must use the tagged digest contract"
             );
         }
-        "config.readClaudeSettings" | "config.saveClaudeSettings" => {
+        "config.readClaudeSettings" => {
             let document: WireConfigDocumentRecord = decode_fixture_result(method, result, path);
             assert!(document.revision.starts_with("sha256:"));
+        }
+        "config.previewSaveClaudeSettings" => {
+            let preview: WireConfigSavePreviewRecord = decode_fixture_result(method, result, path);
+            assert_eq!(preview.action.preview_method, method);
+            assert_eq!(
+                preview.action.apply_method.as_deref(),
+                Some("config.saveClaudeSettings")
+            );
+            assert!(preview.current_revision.starts_with("sha256:"));
+            assert!(preview.candidate_content_digest.starts_with("sha256:"));
+            assert!(preview
+                .preview_token
+                .starts_with("action-preview:v1:hmac-sha256:"));
+            assert!(!preview.preconditions.is_empty());
+        }
+        "config.saveClaudeSettings" => {
+            let applied: WireConfigSaveApplyRecord = decode_fixture_result(method, result, path);
+            assert_eq!(applied.action.apply_method.as_deref(), Some(method));
+            assert!(applied.document.revision.starts_with("sha256:"));
+            assert!(applied.readback.verified);
+            assert_eq!(applied.readback.action_id, applied.action.id);
+            assert!(!applied.snapshot_id.is_empty());
         }
         "snapshot.list" | "snapshot.listAgentConfig" => {
             let _: Vec<WireConfigSnapshotRecord> = decode_fixture_result(method, result, path);
@@ -1208,10 +1230,20 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let preview: WireSnapshotRollbackPreviewRecord =
                 decode_fixture_result(method, result, path);
             assert!(preview.current_revision.starts_with("sha256:"));
-            assert!(preview.preview_token.starts_with("sha256:"));
+            assert!(preview.snapshot_content_digest.starts_with("sha256:"));
+            assert!(preview
+                .preview_token
+                .starts_with("action-preview:v1:hmac-sha256:"));
+            assert_eq!(preview.action.preview_method, method);
+            assert!(!preview.preconditions.is_empty());
         }
         "snapshot.rollback" => {
-            let _: usize = decode_fixture_result(method, result, path);
+            let applied: WireSnapshotRollbackApplyRecord =
+                decode_fixture_result(method, result, path);
+            assert_eq!(applied.action.apply_method.as_deref(), Some(method));
+            assert!(applied.readback.verified);
+            assert_eq!(applied.readback.action_id, applied.action.id);
+            assert_eq!(applied.snapshot_id, "snapshot-id");
         }
         _ => panic!("no typed response decoder for fixture method {method}"),
     }

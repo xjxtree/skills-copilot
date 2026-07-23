@@ -966,7 +966,7 @@ fn tool_global_and_agent_global_same_name_overlap_without_runtime_conflict() {
     let catalog = Catalog::in_memory().expect("catalog opens");
     catalog.init().expect("catalog initializes");
     let ctx = AdapterContext {
-        user_home: home,
+        user_home: home.clone(),
         project_root: None,
         project_cwd: None,
         extra_roots: vec![],
@@ -1064,13 +1064,20 @@ fn toggle_opencode_skill_writes_permission_skill_deny_and_rollback_restores_snap
     assert!(preview.changed);
     assert!(preview.rollback_supported);
 
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
-        .expect("opencode rollback succeeds");
+    rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        &snapshots[0].id,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("opencode rollback succeeds");
     let config_text = std::fs::read_to_string(&config_path).expect("rolled back opencode config");
     assert_eq!(config_text, "{}\n");
+    scan_all_to_catalog(&ctx, &catalog).expect("refresh catalog after config-only rollback");
     let rolled_back_record = catalog
         .list_skill_records()
-        .expect("records after opencode rollback")
+        .expect("records after explicit refresh")
         .into_iter()
         .find(|record| record.agent == "opencode" && record.name == "writable-skill")
         .expect("opencode record after rollback");
@@ -2221,8 +2228,14 @@ fn toggle_pi_global_skill_writes_settings_rescans_and_rolls_back() {
     );
     let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
         .expect("Pi rollback preview");
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
-        .expect("Pi rollback succeeds");
+    rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        &snapshots[0].id,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("Pi rollback succeeds");
     let rolled_back = std::fs::read_to_string(&settings_path).unwrap_or_default();
     assert!(
         !rolled_back.contains("pi-toggle"),
@@ -2381,8 +2394,14 @@ fn toggle_hermes_global_skill_writes_config_rescans_and_rolls_back() {
     assert_eq!(snapshots.len(), 1);
     let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
         .expect("Hermes rollback preview");
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
-        .expect("Hermes rollback succeeds");
+    rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        &snapshots[0].id,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("Hermes rollback succeeds");
     let rolled_back = std::fs::read_to_string(&config_path).unwrap_or_default();
     assert!(!rolled_back.contains("hermes-toggle"));
 
@@ -2442,8 +2461,14 @@ fn toggle_openclaw_skill_writes_json5_entries_rescans_and_rolls_back() {
     assert_eq!(snapshots.len(), 1);
     let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, &snapshots[0].id)
         .expect("OpenClaw rollback preview");
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token)
-        .expect("OpenClaw rollback succeeds");
+    rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        &snapshots[0].id,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("OpenClaw rollback succeeds");
     let rolled_back = std::fs::read_to_string(&config_path).unwrap_or_default();
     assert!(!rolled_back.contains("routed-openclaw"));
     assert!(rolled_back.contains("other-skill"));
@@ -3174,6 +3199,8 @@ fn rescan_records_fingerprint_changed_finding() {
 
 #[test]
 fn rollback_snapshot_restores_settings_and_rescans() {
+    initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
     let temp_root =
         std::env::temp_dir().join(format!("skills-copilot-rollback-{}", std::process::id()));
     let home = temp_root.join("home");
@@ -3212,13 +3239,21 @@ fn rollback_snapshot_restores_settings_and_rescans() {
     assert!(preview.changed, "preview detects changed content");
     assert!(!preview.redacted);
     assert!(preview.rollback_supported);
-    rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token).expect("rollback");
+    let applied = rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        &snapshots[0].id,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("rollback");
+    assert!(applied.readback.verified);
+    assert_eq!(applied.document.content, "{}\n");
 
     let settings = std::fs::read_to_string(&settings_path).expect("settings");
     assert_eq!(settings, "{}\n");
-    let records = catalog
-        .list_skill_records()
-        .expect("records after rollback");
+    scan_claude_to_catalog(&ctx, &catalog).expect("refresh catalog after config-only rollback");
+    let records = catalog.list_skill_records().expect("records after refresh");
     assert!(records[0].enabled);
     assert_eq!(records[0].state, "loaded");
 
@@ -3312,7 +3347,9 @@ fn stale_rollback_preview_token_rejects_external_change_without_writes() {
     let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "stale-preview-snapshot")
         .expect("preview rollback");
     assert!(preview.current_revision.starts_with("sha256:"));
-    assert!(preview.preview_token.starts_with("sha256:"));
+    assert!(preview
+        .preview_token
+        .starts_with("action-preview:v1:hmac-sha256:"));
     let external_content = "{\n  \"external\": true\n}\n";
     std::fs::write(&settings_path, external_content).expect("write external change");
     let snapshots_before = catalog
@@ -3321,12 +3358,13 @@ fn stale_rollback_preview_token_rejects_external_change_without_writes() {
 
     let result = rollback_snapshot(
         &catalog,
+        &ctx.user_home,
         &ctx,
         "stale-preview-snapshot",
-        &preview.preview_token,
+        &confirmed_action(&preview.action, &preview.preview_token),
     );
 
-    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read preserved external content"),
         external_content
@@ -3395,12 +3433,13 @@ fn rollback_deleted_before_invocation_returns_stale_without_writes() {
 
     let result = rollback_snapshot(
         &catalog,
+        &ctx.user_home,
         &ctx,
         "deleted-before-call",
-        &preview.preview_token,
+        &confirmed_action(&preview.action, &preview.preview_token),
     );
 
-    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read unchanged target"),
         current_content
@@ -3465,13 +3504,18 @@ fn rollback_preview_to_call_snapshot_identity_drift_returns_stale_without_writes
 
         let result = rollback_snapshot(
             &catalog,
+            &ctx.user_home,
             &ctx,
             "identity-drift-before-call",
-            &preview.preview_token,
+            &confirmed_action(&preview.action, &preview.preview_token),
         );
 
         assert!(
-            matches!(result, Err(CommandError::StalePreviewToken)),
+            matches!(
+                result,
+                Err(CommandError::MismatchedActionReference(_))
+                    | Err(CommandError::StaleActionReference)
+            ),
             "{changed_field} drift returned {result:?}"
         );
         assert_eq!(
@@ -3527,16 +3571,17 @@ fn rollback_rechecks_state_after_lock() {
 
     let result = rollback_snapshot_with_after_lock(
         &catalog,
+        &ctx.user_home,
         &ctx,
         "lock-recheck-snapshot",
-        &preview.preview_token,
+        &confirmed_action(&preview.action, &preview.preview_token),
         || {
             std::fs::write(&settings_path, external_content)
                 .expect("write concurrent external change");
         },
     );
 
-    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read preserved external content"),
         external_content
@@ -3562,7 +3607,80 @@ fn rollback_rechecks_state_after_lock() {
 }
 
 #[test]
-fn rollback_maps_unreadable_target_shape_after_lock_to_stale() {
+fn rollback_readback_failure_restores_multilevel_missing_target_tree() {
+    let temp_root = temp_test_dir("rollback-readback-compensation-missing");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let settings_path = home.join(".config/opencode/opencode.json");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    catalog
+        .create_config_snapshot(ConfigSnapshotDraft {
+            id: "missing-target-rollback",
+            agent: OpencodeAdapter.id().as_str(),
+            scope: Scope::AgentGlobal.as_str(),
+            project_root: None,
+            target: &settings_path.to_string_lossy(),
+            content: "{\n  \"restored\": true\n}\n",
+            reason: "pre-config-edit",
+            created_at_ms: current_time_ms(),
+        })
+        .expect("create rollback snapshot");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = preview_snapshot_rollback_with_context(&catalog, &ctx, "missing-target-rollback")
+        .expect("preview rollback");
+
+    let result = rollback_snapshot_with_hooks(
+        &catalog,
+        &app_data_dir,
+        &ctx,
+        "missing-target-rollback",
+        &confirmed_action(&preview.action, &preview.preview_token),
+        || {},
+        || Err(CommandError::VerificationFailed),
+    );
+
+    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert!(
+        !settings_path.exists(),
+        "rollback compensation must restore a missing target to missing"
+    );
+    assert!(
+        !settings_path.parent().expect("settings parent").exists(),
+        "rollback compensation must remove the deepest parent created solely by the failed write"
+    );
+    assert!(
+        !home.join(".config").exists(),
+        "rollback compensation must remove every newly created empty ancestor"
+    );
+    assert!(
+        std::fs::read_dir(&home)
+            .expect("list restored home tree")
+            .next()
+            .is_none(),
+        "the user-home tree must exactly match its pre-write empty state"
+    );
+    assert!(
+        catalog
+            .get_config_snapshot("missing-target-rollback")
+            .expect("read rollback snapshot")
+            .is_some(),
+        "the pre-existing rollback snapshot must remain available"
+    );
+
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn rollback_maps_unreadable_target_shape_after_lock_to_stale_action() {
     let temp_root = temp_test_dir("rollback-directory-after-lock");
     let home = temp_root.join("home");
     let settings_path = home.join(".claude/settings.json");
@@ -3594,16 +3712,17 @@ fn rollback_maps_unreadable_target_shape_after_lock_to_stale() {
 
     let result = rollback_snapshot_with_after_lock(
         &catalog,
+        &ctx.user_home,
         &ctx,
         "directory-after-lock",
-        &preview.preview_token,
+        &confirmed_action(&preview.action, &preview.preview_token),
         || {
             std::fs::remove_file(&settings_path).expect("remove target after lock");
             std::fs::create_dir(&settings_path).expect("replace target with directory");
         },
     );
 
-    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
     assert!(settings_path.is_dir());
     let _ = std::fs::remove_dir_all(&temp_root);
 }
@@ -3647,9 +3766,10 @@ fn rollback_revalidates_symlinked_target_after_lock_before_reading_it() {
 
     let result = rollback_snapshot_with_after_lock(
         &catalog,
+        &ctx.user_home,
         &ctx,
         "symlink-after-lock",
-        &preview.preview_token,
+        &confirmed_action(&preview.action, &preview.preview_token),
         || {
             std::fs::remove_file(&settings_path).expect("remove target after lock");
             std::os::unix::fs::symlink(&outside_target, &settings_path)
@@ -3657,7 +3777,10 @@ fn rollback_revalidates_symlinked_target_after_lock_before_reading_it() {
         },
     );
 
-    assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+    assert!(matches!(
+        result,
+        Err(CommandError::MismatchedActionReference(_))
+    ));
     assert_eq!(
         std::fs::read_to_string(&outside_target).expect("read outside sentinel"),
         current_content
@@ -3715,9 +3838,10 @@ fn rollback_reloaded_snapshot_target_or_content_changes_invalidate_token() {
 
         let result = rollback_snapshot_with_after_lock(
             &catalog,
+            &ctx.user_home,
             &ctx,
             "reloaded-snapshot",
-            &preview.preview_token,
+            &confirmed_action(&preview.action, &preview.preview_token),
             || {
                 let connection = Connection::open(&catalog_path).expect("open raw catalog");
                 let sql = format!("UPDATE config_snapshot SET {changed_field} = ?1 WHERE id = ?2");
@@ -3727,7 +3851,11 @@ fn rollback_reloaded_snapshot_target_or_content_changes_invalidate_token() {
             },
         );
 
-        assert!(matches!(result, Err(CommandError::StalePreviewToken)));
+        assert!(matches!(
+            result,
+            Err(CommandError::StaleActionReference)
+                | Err(CommandError::MismatchedActionReference(_))
+        ));
         assert_eq!(
             std::fs::read_to_string(&settings_path).expect("read unchanged target"),
             current_content,
@@ -3873,7 +4001,7 @@ fn read_agent_config_returns_codex_user_and_project_documents_without_enabling_p
 }
 
 #[test]
-fn stale_claude_settings_save_is_rejected_without_snapshot_or_write() {
+fn stale_claude_settings_confirmation_is_rejected_without_snapshot_or_write() {
     let temp_root = temp_test_dir("stale-claude-settings-save");
     let home = temp_root.join("home");
     let settings_path = home.join(".claude/settings.json");
@@ -3889,17 +4017,21 @@ fn stale_claude_settings_save_is_rejected_without_snapshot_or_write() {
         extra_roots: vec![],
     };
     let read = read_claude_settings(&ctx).expect("read initial settings");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &read.revision).expect("preview config save");
     let external_content = "{\n  \"externallyChanged\": true\n}\n";
     std::fs::write(&settings_path, external_content).expect("write external change");
 
     let result = save_claude_settings(
         &catalog,
+        &ctx.user_home,
         &ctx,
-        "{\n  \"requested\": true\n}\n",
-        &read.revision,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
     );
 
-    assert!(matches!(result, Err(CommandError::ConfigConflict { .. })));
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read preserved external content"),
         external_content
@@ -3932,19 +4064,28 @@ fn save_rechecks_state_after_preflight_under_lock() {
     let revision = read_claude_settings(&ctx)
         .expect("read initial settings")
         .revision;
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview =
+        preview_claude_settings_save(&ctx, candidate, &revision).expect("preview config save");
+    let confirmation = confirmed_action(&preview.action, &preview.preview_token);
     let external_content = "{\n  \"changedAfterPreflight\": true\n}\n";
-
-    let result = prepare_claude_settings_save_with_before_lock(
-        &ctx,
-        "{\n  \"requested\": true\n}\n",
-        &revision,
+    let app_data_dir = temp_root.join("app-data");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let prepared = prepare_claude_settings_save(&ctx, candidate, &confirmation)
+        .expect("read-only config save preflight");
+    let result = commit_prepared_claude_settings_save_with_after_lock(
+        &catalog,
+        &app_data_dir,
+        prepared,
         || {
             std::fs::write(&settings_path, external_content)
                 .expect("write concurrent external change");
         },
     );
 
-    assert!(matches!(result, Err(CommandError::ConfigConflict { .. })));
+    assert!(matches!(result, Err(CommandError::StaleActionReference)));
     assert_eq!(
         std::fs::read_to_string(&settings_path).expect("read preserved external content"),
         external_content
@@ -3959,6 +4100,136 @@ fn save_rechecks_state_after_preflight_under_lock() {
                 .ends_with(".tmp")),
         "lock-time conflict must not prepare a temporary config file"
     );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn save_readback_failure_rolls_back_snapshot_and_restores_missing_target() {
+    let temp_root = temp_test_dir("save-readback-compensation-missing");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let settings_path = home.join(".claude/settings.json");
+    let current = read_claude_settings(&ctx).expect("read missing config state");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview = preview_claude_settings_save(&ctx, candidate, &current.revision)
+        .expect("preview missing config save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare config save");
+
+    let result = commit_prepared_claude_settings_save_with_hooks(
+        &catalog,
+        &app_data_dir,
+        prepared,
+        || {},
+        || Err(CommandError::VerificationFailed),
+    );
+
+    assert!(matches!(result, Err(CommandError::VerificationFailed)));
+    assert!(
+        !settings_path.exists(),
+        "compensation must restore an originally missing config target to missing"
+    );
+    assert!(
+        !settings_path.parent().expect("settings parent").exists(),
+        "compensation must remove the config parent created solely by the failed write"
+    );
+    assert!(
+        std::fs::read_dir(&home)
+            .expect("list restored home tree")
+            .next()
+            .is_none(),
+        "the user-home tree must exactly match its pre-write empty state"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("list snapshots after rollback")
+            .is_empty(),
+        "the immediate catalog transaction must roll back the safety snapshot"
+    );
+    assert!(
+        !settings_path.with_extension("lock").exists(),
+        "a failed save must not leave a target lock artifact"
+    );
+
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[test]
+fn save_third_state_after_write_is_not_overwritten_by_compensation() {
+    let temp_root = temp_test_dir("save-compensation-partial-effect");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    let catalog = Catalog::open(&app_data_dir.join("catalog.sqlite")).expect("open catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let settings_path = home.join(".claude/settings.json");
+    let current = read_claude_settings(&ctx).expect("read missing config state");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview = preview_claude_settings_save(&ctx, candidate, &current.revision)
+        .expect("preview missing config save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare config save");
+
+    let result = commit_prepared_claude_settings_save_with_hooks(
+        &catalog,
+        &app_data_dir,
+        prepared,
+        || {},
+        || {
+            std::fs::remove_file(&settings_path).expect("remove written config");
+            std::fs::create_dir(&settings_path).expect("inject uncompensatable target shape");
+            Ok(())
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: true,
+            ..
+        })
+    ));
+    assert!(
+        settings_path.is_dir(),
+        "a third state observed after the write must be preserved for user inspection"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("list snapshots after rollback")
+            .is_empty(),
+        "the catalog transaction must still roll back when file compensation fails"
+    );
+
+    drop(catalog);
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
@@ -4019,19 +4290,19 @@ fn save_claude_settings_snapshots_validates_and_rescans() {
     let initial_revision = read_claude_settings(&ctx)
         .expect("read initial settings")
         .revision;
-    let invalid = save_claude_settings(&catalog, &ctx, "{ broken", &initial_revision);
+    let invalid = preview_claude_settings_save(&ctx, "{ broken", &initial_revision);
     assert!(matches!(invalid, Err(CommandError::InvalidJson(_))));
 
-    let updated = save_claude_settings(
+    let updated = save_claude_settings_after_preview(
         &catalog,
         &ctx,
         "{\n  \"skillOverrides\": {\n    \"config-editor\": \"off\"\n  }\n}\n",
-        &initial_revision,
     )
     .expect("save config");
 
-    assert!(updated.exists);
-    assert!(updated.content.contains("skillOverrides"));
+    assert!(updated.document.exists);
+    assert!(updated.document.content.contains("skillOverrides"));
+    assert!(updated.readback.verified);
     let snapshots = catalog
         .list_config_snapshots("claude-code", &settings_path.to_string_lossy())
         .expect("snapshots");
@@ -4039,6 +4310,7 @@ fn save_claude_settings_snapshots_validates_and_rescans() {
     assert_eq!(snapshots[0].reason, "pre-config-edit");
     assert_eq!(snapshots[0].content, "{}\n");
 
+    scan_claude_to_catalog(&ctx, &catalog).expect("refresh catalog after config-only save");
     let records = catalog.list_skill_records().expect("records");
     assert_eq!(records.len(), 1);
     assert!(!records[0].enabled);
@@ -5541,8 +5813,7 @@ fn save_claude_settings_redacts_sensitive_snapshot_content() {
         extra_roots: vec![],
     };
 
-    let revision = read_claude_settings(&ctx).expect("read config").revision;
-    save_claude_settings(&catalog, &ctx, "{}\n", &revision).expect("save config");
+    save_claude_settings_after_preview(&catalog, &ctx, "{}\n").expect("save config");
 
     let snapshots = catalog
         .list_config_snapshots("claude-code", &settings_path.to_string_lossy())
@@ -5558,7 +5829,13 @@ fn save_claude_settings_redacts_sensitive_snapshot_content() {
         .expect("preview redacted snapshot");
     assert!(preview.redacted);
     assert!(!preview.rollback_supported);
-    let rollback = rollback_snapshot(&catalog, &ctx, &snapshots[0].id, &preview.preview_token);
+    let rollback = rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        &snapshots[0].id,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    );
     assert!(
         matches!(rollback, Err(CommandError::UnsafeConfigPath(_))),
         "redacted snapshots must not be written back"
@@ -5569,7 +5846,7 @@ fn save_claude_settings_redacts_sensitive_snapshot_content() {
 
 #[test]
 #[cfg(unix)]
-fn save_claude_settings_writes_private_config_and_lock_permissions() {
+fn save_claude_settings_writes_private_config_without_lock_artifact() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp_root = std::env::temp_dir().join(format!(
@@ -5590,27 +5867,19 @@ fn save_claude_settings_writes_private_config_and_lock_permissions() {
         extra_roots: vec![],
     };
 
-    let revision = read_claude_settings(&ctx).expect("read config").revision;
-    save_claude_settings(
-        &catalog,
-        &ctx,
-        "{\n  \"skillOverrides\": {}\n}\n",
-        &revision,
-    )
-    .expect("save config");
+    save_claude_settings_after_preview(&catalog, &ctx, "{\n  \"skillOverrides\": {}\n}\n")
+        .expect("save config");
 
     let config_mode = std::fs::metadata(&settings_path)
         .expect("config metadata")
         .permissions()
         .mode()
         & 0o777;
-    let lock_mode = std::fs::metadata(settings_path.with_extension("lock"))
-        .expect("lock metadata")
-        .permissions()
-        .mode()
-        & 0o777;
     assert_eq!(config_mode, 0o600);
-    assert_eq!(lock_mode, 0o600);
+    assert!(
+        !settings_path.with_extension("lock").exists(),
+        "config save must coordinate through the existing app-data owner and leave no target lock artifact"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_root);
 }
@@ -5637,7 +5906,7 @@ fn save_claude_settings_rejects_symlinked_config_directory() {
         extra_roots: vec![],
     };
 
-    let result = save_claude_settings(&catalog, &ctx, "{}\n", "sha256:missing");
+    let result = preview_claude_settings_save(&ctx, "{}\n", "sha256:missing");
 
     assert!(
         matches!(result, Err(CommandError::UnsafeConfigPath(_))),
@@ -5682,11 +5951,31 @@ fn rollback_snapshot_maps_target_outside_expected_config_path_to_stale_preview()
         extra_roots: vec![],
     };
 
-    let result = rollback_snapshot(&catalog, &ctx, "tampered-snapshot", "sha256:unused");
+    let result = rollback_snapshot(
+        &catalog,
+        &ctx.user_home,
+        &ctx,
+        "tampered-snapshot",
+        &ActionConfirmation {
+            reference: ActionReference {
+                action_id: "action:rollback_config:forged".to_string(),
+                source_revision: "sha256:forged".to_string(),
+                project_id: None,
+                target: ActionTargetRef {
+                    kind: ActionTargetKind::Config,
+                    id: outside_target.to_string_lossy().into_owned(),
+                    agent: Some(AgentId::ClaudeCode),
+                    scope: Some(Scope::AgentGlobal),
+                },
+            },
+            preview_token: "action-preview:v1:hmac-sha256:forged".to_string(),
+            confirmed: true,
+        },
+    );
 
     assert!(
-        matches!(result, Err(CommandError::StalePreviewToken)),
-        "rollback must map a drifted snapshot target to a stale preview token"
+        matches!(result, Err(CommandError::UnsafeConfigPath(_))),
+        "rollback must reject a snapshot target outside the adapter write scope"
     );
     assert!(
         !outside_target.exists(),
@@ -5811,6 +6100,27 @@ fn temp_test_dir(label: &str) -> PathBuf {
             .expect("system clock")
             .as_nanos()
     ))
+}
+
+fn confirmed_action(action: &ActionDescriptor, preview_token: &str) -> ActionConfirmation {
+    ActionConfirmation::confirmed(action, preview_token.to_string())
+}
+
+fn save_claude_settings_after_preview(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    content: &str,
+) -> Result<ConfigSaveApplyRecord, CommandError> {
+    initialize_action_preview_secret_for_test([0xA5; 32])?;
+    let revision = read_claude_settings(ctx)?.revision;
+    let preview = preview_claude_settings_save(ctx, content, &revision)?;
+    save_claude_settings(
+        catalog,
+        &ctx.user_home,
+        ctx,
+        content,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
 }
 
 fn path_text(path: &Path) -> String {

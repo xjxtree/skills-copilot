@@ -143,20 +143,20 @@ struct SkillStoreTests {
         try await runCase("readOnlyAgentConfigLoadsCurrentDocuments") {
             try await readOnlyAgentConfigLoadsCurrentDocuments()
         }
+        try await runCase("explicitConfigSaveRequiresPreviewAndVerifiedApply") {
+            try await explicitConfigSaveRequiresPreviewAndVerifiedApply()
+        }
+        try await runCase("staleConfigSaveDoesNotRetryAndReloadsCurrentDocument") {
+            try await staleConfigSaveDoesNotRetryAndReloadsCurrentDocument()
+        }
+        try await runCase("configSaveRejectsIncompleteReadback") {
+            try await configSaveRejectsIncompleteReadback()
+        }
+        try await runCase("snapshotRefreshFailureDoesNotReclassifyVerifiedConfigSave") {
+            try await snapshotRefreshFailureDoesNotReclassifyVerifiedConfigSave()
+        }
         try await runCase("agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally") {
             try await agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally()
-        }
-        try await runCase("settingsFeedbackClearsAfterFailedConfigSave") {
-            try await settingsFeedbackClearsAfterFailedConfigSave()
-        }
-        try await runCase("configAutosaveKeepsEditArrivingDuringSave") {
-            try await configAutosaveKeepsEditArrivingDuringSave()
-        }
-        try await runCase("queuedConfigAutosaveNeverInheritsExternalPostSaveRevision") {
-            try await queuedConfigAutosaveNeverInheritsExternalPostSaveRevision()
-        }
-        try await runCase("olderConfigAutosaveFeedbackDoesNotPublishForNewerDraft") {
-            try await olderConfigAutosaveFeedbackDoesNotPublishForNewerDraft()
         }
         try await runCase("providerAutosaveKeepsEditArrivingDuringSave") {
             try await providerAutosaveKeepsEditArrivingDuringSave()
@@ -164,71 +164,14 @@ struct SkillStoreTests {
         try await runCase("olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft") {
             try await olderProviderAutosaveFeedbackDoesNotPublishForNewerDraft()
         }
-        try await runCase("configAutosaveQueuesRevertDuringActiveSave") {
-            try await configAutosaveQueuesRevertDuringActiveSave()
-        }
         try await runCase("providerAutosaveQueuesRevertDuringActiveSave") {
             try await providerAutosaveQueuesRevertDuringActiveSave()
-        }
-        try await runCase("configAndProviderAutosavesShareOneMutationLane") {
-            try await configAndProviderAutosavesShareOneMutationLane()
-        }
-        try await runCase("cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs") {
-            try await cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs()
-        }
-        try await runCase("cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs") {
-            try await cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs()
-        }
-        try await runCase("cancellingQueuedProviderAutosaveMakesZeroRPCs") {
-            try await cancellingQueuedProviderAutosaveMakesZeroRPCs()
-        }
-        try await runCase("cancellingQueuedConfigAutosaveMakesZeroRPCs") {
-            try await cancellingQueuedConfigAutosaveMakesZeroRPCs()
-        }
-        try await runCase("invalidConfigDraftCancelsQueuedValidAutosave") {
-            try await invalidConfigDraftCancelsQueuedValidAutosave()
-        }
-        try await runCase("invalidProviderDraftCancelsQueuedValidAutosave") {
-            try await invalidProviderDraftCancelsQueuedValidAutosave()
-        }
-        try await runCase("releasingStoreCancelsQueuedAutosaveWaiter") {
-            try await releasingStoreCancelsQueuedAutosaveWaiter()
-        }
-        try await runCase("configSaveInvalidatesInFlightConfigReaders") {
-            try await configSaveInvalidatesInFlightConfigReaders()
-        }
-        try await runCase("configSaveRefreshesTheSubmittedAgentAfterSelectionChanges") {
-            try await configSaveRefreshesTheSubmittedAgentAfterSelectionChanges()
         }
         try await runCase("providerUnknownMutationDoesNotReportSaved") {
             try await providerUnknownMutationDoesNotReportSaved()
         }
-        try await runCase("successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh") {
-            try await successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh()
-        }
         try await runCase("successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh") {
             try await successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh()
-        }
-        try await runCase("failedConfigAutosaveKeepsDraft") {
-            try await failedConfigAutosaveKeepsDraft()
-        }
-        try await runCase("configSaveUsesLoadedRevision") {
-            try await configSaveUsesLoadedRevision()
-        }
-        try await runCase("configSaveNeverFallsBackWithoutRevision") {
-            try await configSaveNeverFallsBackWithoutRevision()
-        }
-        try await runCase("configConflictPreservesDraftAndReloadsRevision") {
-            try await configConflictPreservesDraftAndReloadsRevision()
-        }
-        try await runCase("pendingConfigDraftNeverRebindsToReloadedRevision") {
-            try await pendingConfigDraftNeverRebindsToReloadedRevision()
-        }
-        try await runCase("protocolV1BindingsRemainReadOnlyBeforeAndAfterStatusLoad") {
-            try await protocolV1BindingsRemainReadOnlyBeforeAndAfterStatusLoad()
-        }
-        try await runCase("protocolV2MissingBindingsRemainReadOnly") {
-            try await protocolV2MissingBindingsRemainReadOnly()
         }
         try await runCase("previewRollbackShowsDiffWithoutCallingRollback") {
             try await previewRollbackShowsDiffWithoutCallingRollback()
@@ -1566,6 +1509,109 @@ struct SkillStoreTests {
         try expectEqual(countMethodCalls("config.toggleSkill", in: fake.calls()), 0, "Config preview must not call toggle or write paths.")
     }
 
+    private func explicitConfigSaveRequiresPreviewAndVerifiedApply() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-cas")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        await store.loadClaudeSettings()
+        guard let loaded = store.claudeSettings else {
+            throw NativeModelTestFailure(description: "Config action fixture should load Claude settings.")
+        }
+        let candidate = "{\"theme\":\"dark\"}\n"
+        guard let confirmation = await store.previewClaudeSettingsSave(content: candidate) else {
+            throw NativeModelTestFailure(description: "A valid config preview should create an immutable confirmation.")
+        }
+
+        try expectEqual(confirmation.content, candidate, "Confirmation should preserve the exact reviewed candidate content.")
+        try expectEqual(confirmation.preview.current, loaded, "Preview should be bound to the exact loaded config document.")
+        try expectEqual(countMethodCalls("config.previewSaveClaudeSettings", in: fake.calls()), 1, "Save should issue one read-only preview.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Preview must not apply the config write.")
+        try expectEqual(store.configMutationState, .awaitingConfirmation, "A valid preview should wait for explicit confirmation.")
+        try expectNil(store.lastMutationMessage, "Preview must not publish saved feedback.")
+
+        let saved = await store.applyClaudeSettingsSave(confirmation)
+
+        try expectEqual(saved, true, "A matching confirmed save with complete read-back should succeed.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Explicit confirmation should issue exactly one apply RPC.")
+        try expectEqual(store.claudeSettings?.content, Optional(candidate), "Verified apply should publish the returned current document.")
+        try expectContains(store.lastMutationMessage, UIStrings.savedSettings, "Verified apply should publish success feedback.")
+        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), 1, "A config apply should not trigger an unrelated full-state refresh.")
+    }
+
+    private func staleConfigSaveDoesNotRetryAndReloadsCurrentDocument() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-save-stale")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        await store.loadClaudeSettings()
+        let candidate = "{\"theme\":\"dark\"}\n"
+        guard let confirmation = await store.previewClaudeSettingsSave(content: candidate) else {
+            throw NativeModelTestFailure(description: "Stale-save fixture should first produce a valid preview.")
+        }
+
+        let saved = await store.applyClaudeSettingsSave(confirmation)
+
+        try expectEqual(saved, false, "A stale action reference must not report config save success.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "A stale apply must never be retried automatically.")
+        try expectEqual(countMethodCalls("config.previewSaveClaudeSettings", in: fake.calls()), 1, "A stale apply must require the user to request another preview.")
+        try expectContains(store.claudeSettings?.content, "external", "Conflict handling should reload the latest config document once.")
+        try expectNil(store.lastMutationMessage, "A stale apply must not publish saved feedback.")
+        guard case .conflict = store.configMutationState else {
+            throw NativeModelTestFailure(description: "A stale apply should leave the config editor in conflict state.")
+        }
+    }
+
+    private func configSaveRejectsIncompleteReadback() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-save-readback-mismatch")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        await store.loadClaudeSettings()
+        let candidate = "{\"theme\":\"dark\"}\n"
+        guard let confirmation = await store.previewClaudeSettingsSave(content: candidate) else {
+            throw NativeModelTestFailure(description: "Read-back mismatch fixture should first produce a valid preview.")
+        }
+
+        let saved = await store.applyClaudeSettingsSave(confirmation)
+
+        try expectEqual(saved, false, "Missing snapshot read-back must fail closed in the native client.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Read-back rejection must not retry the write.")
+        try expectContains(store.settingsErrorMessage, "verified AgentConfig and ConfigSnapshots", "The user should be told that verification was incomplete.")
+        try expectNil(store.lastMutationMessage, "Incomplete read-back must not publish saved feedback.")
+        guard case .failed = store.configMutationState else {
+            throw NativeModelTestFailure(description: "Incomplete read-back should leave the config editor in a failed state.")
+        }
+    }
+
+    private func snapshotRefreshFailureDoesNotReclassifyVerifiedConfigSave() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "config-save-snapshot-refresh-fails")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        await store.loadClaudeSettings()
+        let candidate = "{\"theme\":\"dark\"}\n"
+        guard let confirmation = await store.previewClaudeSettingsSave(content: candidate) else {
+            throw NativeModelTestFailure(description: "Refresh-failure fixture should first produce a valid preview.")
+        }
+
+        let saved = await store.applyClaudeSettingsSave(confirmation)
+
+        try expectEqual(saved, true, "A later timeline refresh failure must not reclassify an already verified config write.")
+        try expectEqual(store.claudeSettings?.content, Optional(candidate), "The verified config document should remain published.")
+        try expectContains(store.lastMutationMessage, UIStrings.savedSettings, "Verified write success should remain visible.")
+        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Timeline refresh failure must not retry the write.")
+        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), 1, "Timeline recovery must not broaden into a full-state refresh.")
+    }
+
     private func agentConfigRefreshIfNeededSkipsLoadedRequestAndScopeFiltersLocally() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -1617,178 +1663,6 @@ struct SkillStoreTests {
             countMethodCalls("snapshot.listAgentConfig", in: fake.calls()),
             snapshotReadsAfterFirstLoad + 1,
             "Manual config history refresh should still force a new read."
-        )
-    }
-
-    private func settingsFeedbackClearsAfterFailedConfigSave() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "normal")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-        let saved = await store.saveClaudeSettings(
-            binding: ConfigSaveBinding(content: "{", expectedRevision: "sha256:not-loaded")
-        )
-
-        try expectFalse(saved, "Unsupported fake settings save should fail in this scenario.")
-        try expectEqual(
-            store.settingsErrorMessage,
-            Optional(UIStrings.configRevisionUnavailable),
-            "A save attempted without a loaded revision should surface the read-only recovery message."
-        )
-
-        store.clearSettingsFeedback()
-
-        try expectNil(store.settingsErrorMessage, "Continuing to edit settings should clear stale config save errors.")
-        try expectNil(store.settingsMessage, "Continuing to edit settings should clear stale config save success messages.")
-    }
-
-    private func prepareConfigConsistencyContext(_ store: SkillStore) async {
-        await store.reload()
-        await store.loadClaudeSettings()
-    }
-
-    private func configAutosaveKeepsEditArrivingDuringSave() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "autosave-delayed-config")
-
-        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        let revisionA = store.submitConfigAutosave(content: "config-a", validationError: nil)
-        try await waitUntil("Config autosave A should reach the service.", timeout: 5) {
-            countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
-        }
-
-        let revisionB = store.submitConfigAutosave(content: "config-b", validationError: nil)
-        try expectEqual(
-            store.configAutosavePhase,
-            .pendingAfterSave(revision: revisionB),
-            "Config edit B should remain pending while A is writing."
-        )
-        try expectEqual(revisionB, revisionA + 1, "Config autosave revisions should remain ordered.")
-
-        fake.releaseDelayedConfigSave()
-        await store.flushPendingAutosaves()
-
-        let calls = fake.calls()
-        try expectEqual(
-            countMethodCalls("config.saveClaudeSettings", in: calls),
-            2,
-            "Both config revisions should reach the service exactly once."
-        )
-        try expectContains(
-            calls,
-            #""expected_revision":"sha256:autosave-initial""#,
-            "Autosave A should use the revision loaded with its original draft."
-        )
-        try expectContains(
-            calls,
-            #""expected_revision":"sha256:autosave-a""#,
-            "Queued autosave B should advance only to the revision committed by its successful predecessor."
-        )
-        guard let callA = calls.range(of: "config-a"), let callB = calls.range(of: "config-b") else {
-            throw NativeModelTestFailure(description: "Config autosave calls should preserve both draft values.")
-        }
-        try expectEqual(callA.lowerBound < callB.lowerBound, true, "Config autosave should preserve A then B service order.")
-        try expectEqual(store.claudeSettings?.content, "config-b", "The final stored config should be revision B.")
-        try expectEqual(store.settingsMessage, Optional(UIStrings.savedSettings), "The exact latest config completion should publish saved feedback.")
-        try expectEqual(store.configAutosavePhase, .idle, "Config autosave should settle after both writes.")
-    }
-
-    private func queuedConfigAutosaveNeverInheritsExternalPostSaveRevision() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "autosave-external-after-save")
-
-        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        let revisionA = store.submitConfigAutosave(content: "config-a", validationError: nil)
-        try await waitUntil("Config autosave A should reach the external-race service.", timeout: 5) {
-            countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
-        }
-
-        let revisionB = store.submitConfigAutosave(content: "config-b", validationError: nil)
-        try expectEqual(revisionB, revisionA + 1, "The queued external-race draft should retain FIFO revision order.")
-        fake.releaseDelayedConfigSave()
-        await store.flushPendingAutosaves()
-
-        let calls = fake.calls()
-        try expectEqual(
-            countMethodCalls("config.saveClaudeSettings", in: calls),
-            1,
-            "External RX observed during A's post-save read must stop B locally before a second write RPC."
-        )
-        try expectContains(
-            calls,
-            #""expected_revision":"sha256:autosave-initial""#,
-            "A should retain its original R0 authorization."
-        )
-        try expectFalse(
-            calls.contains(#""expected_revision":"sha256:external-after-a""#),
-            "Queued B must never inherit mutable external revision RX."
-        )
-        try expectEqual(store.configAutosaveDraft, "config-b", "Rejected B should remain available as the unsaved draft.")
-        guard case let .conflict(conflict) = store.configMutationState else {
-            throw NativeModelTestFailure(description: "Queued B should preserve CAS conflict semantics against external RX.")
-        }
-        try expectEqual(conflict.attemptedRevision, "sha256:autosave-a", "B should remain bound to A's exact returned revision R1.")
-        try expectEqual(conflict.latestRevision, Optional("sha256:external-after-a"), "The local CAS boundary should expose external RX without authorizing B with it.")
-    }
-
-    private func olderConfigAutosaveFeedbackDoesNotPublishForNewerDraft() async throws {
-        for (scenario, expectsSuccess) in [
-            ("autosave-delayed-config", true),
-            ("autosave-delayed-config-failure", false),
-        ] {
-            let fake = try FakeServiceScript()
-            defer { fake.cleanup() }
-            fake.activate(scenario: scenario)
-
-            let store = SkillStore(
-                service: fake.serviceClient(),
-                autosaveDelayNanoseconds: 500_000_000
-            )
-            await prepareConfigConsistencyContext(store)
-            _ = store.submitConfigAutosave(content: "config-a", validationError: nil)
-            try await waitUntil("Config autosave A should reach the feedback service.", timeout: 5) {
-                countMethodCalls("config.saveClaudeSettings", in: fake.calls()) == 1
-            }
-
-            let revisionB = store.submitConfigAutosave(content: "config-b", validationError: nil)
-            fake.releaseDelayedConfigSave()
-            try await waitUntil("Config A should finish while B owns visible feedback.", timeout: 5) {
-                store.configAutosavePhase == .debouncing(revision: revisionB)
-            }
-
-            try expectNil(store.settingsMessage, "Older config A success must not publish a saved banner for B.")
-            try expectNil(store.settingsErrorMessage, "Older config A failure must not publish an error for B.")
-            if expectsSuccess {
-                try expectFalse(store.configMutationState == .idle, "Older config A success must not publish terminal idle state for B.")
-            } else {
-                guard case .saving = store.configMutationState else {
-                    throw NativeModelTestFailure(description: "Older config A failure must leave B's in-progress mutation state untouched.")
-                }
-            }
-            store.cancelPendingConfigAutosave()
-        }
-
-        let latestFake = try FakeServiceScript()
-        defer { latestFake.cleanup() }
-        latestFake.activate(scenario: "autosave-delayed-config-failure")
-        let latestStore = SkillStore(service: latestFake.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(latestStore)
-        _ = latestStore.submitConfigAutosave(content: "config-a", validationError: nil)
-        try await waitUntil("Latest config failure should reach the service.", timeout: 5) {
-            countMethodCalls("config.saveClaudeSettings", in: latestFake.calls()) == 1
-        }
-        latestFake.releaseDelayedConfigSave()
-        await latestStore.flushPendingAutosaves()
-        try expectContains(
-            latestStore.settingsErrorMessage ?? "",
-            "config A failed",
-            "The exact latest config failure should publish terminal feedback."
         )
     }
 
@@ -1906,49 +1780,8 @@ struct SkillStoreTests {
         )
     }
 
-    private func configAutosaveQueuesRevertDuringActiveSave() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-
-        _ = store.submitConfigAutosave(content: "config-a", validationError: nil)
-        try expectEqual(
-            store.configAutosaveDraft,
-            "config-a",
-            "The Store should own the latest config draft while its view is absent."
-        )
-        try await waitUntil("Config autosave A should start in the continuation runner.") {
-            await runner.startedConfigSaveCount == 1
-        }
-
-        _ = store.submitConfigAutosave(content: "config-x", validationError: nil)
-        try expectEqual(
-            store.configAutosaveDraft,
-            "config-x",
-            "A newer reverted config draft should replace A in Store-owned presentation state."
-        )
-        await runner.releaseNextConfigSave()
-        try await waitUntil("Reverting to X during A should enqueue a second config save.") {
-            await runner.startedConfigSaveCount == 2
-        }
-        try expectEqual(
-            store.configAutosaveDraft,
-            "config-x",
-            "Completion A must not clear the newer reverted config draft."
-        )
-        await runner.releaseNextConfigSave()
-        await store.flushPendingAutosaves()
-
-        try expectEqual(
-            await runner.configSaveContents,
-            ["config-a", "config-x"],
-            "X to A saving to X must persist the final revert as a newer revision."
-        )
-        try expectEqual(store.claudeSettings?.content, "config-x", "The config cache should settle on the reverted X content.")
-    }
-
     private func providerAutosaveQueuesRevertDuringActiveSave() async throws {
-        let runner = AutosaveControlServiceRunner()
+        let runner = ProviderAutosaveControlServiceRunner()
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
         await store.loadAIProviderStatus()
         let baseline = AIProviderSettingsDraft(status: store.aiProviderStatus)
@@ -1986,397 +1819,8 @@ struct SkillStoreTests {
         try expectEqual(committedDraft.apiKey, "", "Hydrating the newest committed revision must not restore its API key.")
     }
 
-    private func configAndProviderAutosavesShareOneMutationLane() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        _ = store.submitConfigAutosave(content: "config-lane-a", validationError: nil)
-        try await waitUntil("Config mutation should own the autosave lane first.") {
-            await runner.startedConfigSaveCount == 1
-        }
-
-        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        providerDraft.endpoint = "https://lane-provider.example.com/v1"
-        providerDraft.model = "lane-model"
-        providerDraft.apiKey = "lane-secret"
-        _ = store.submitProviderAutosave(draft: providerDraft)
-        try await Task.sleep(nanoseconds: 30_000_000)
-        try expectEqual(
-            await runner.startedProviderSaveCount,
-            0,
-            "Provider mutation B must not start before config mutation A is released."
-        )
-
-        await runner.releaseNextConfigSave()
-        try await waitUntil("Provider mutation should start after config A leaves the shared lane.") {
-            await runner.startedProviderSaveCount == 1
-        }
-        try expectEqual(
-            await runner.maximumConcurrentMutationCount,
-            1,
-            "Config and provider autosaves must never overlap mutating RPCs."
-        )
-
-        await runner.releaseNextProviderSave()
-        await store.flushPendingAutosaves()
-        try expectEqual(store.configAutosavePhase, .idle, "Config autosave should settle after the shared lane drains.")
-        try expectEqual(store.providerAutosavePhase, .idle, "Provider autosave should settle after the shared lane drains.")
-    }
-
-    private func cancellingConfigAutosaveBeforeWaiterRegistrationMakesZeroRPCs() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        var providerOwner = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        providerOwner.endpoint = "https://provider-pre-registration-owner.example.com/v1"
-        providerOwner.model = "owner-model"
-        _ = store.submitProviderAutosave(draft: providerOwner)
-        try await waitUntil("Provider should own the lane before pre-registration config cancellation.") {
-            await runner.startedProviderSaveCount == 1
-        }
-
-        var cancellationTriggered = false
-        let phaseObserver = store.$configAutosavePhase.sink { phase in
-            guard case .saving = phase, !cancellationTriggered else { return }
-            cancellationTriggered = true
-            store.cancelPendingConfigAutosave()
-        }
-        _ = store.submitConfigAutosave(
-            content: "config-pre-registration-cancelled",
-            validationError: nil
-        )
-        try await waitUntil("Config cancellation should run synchronously from the saving transition.") {
-            cancellationTriggered
-        }
-        phaseObserver.cancel()
-
-        await runner.releaseNextProviderSave()
-        try await waitUntil("Pre-registration config cancellation should settle after its owner.", timeout: 5) {
-            await runner.startedConfigSaveCount > 0
-                || (store.providerAutosavePhase == .idle && store.configAutosavePhase == .idle)
-        }
-        let unexpectedConfigCalls = await runner.startedConfigSaveCount
-        if unexpectedConfigCalls > 0 {
-            await runner.releaseNextConfigSave()
-        }
-        await store.flushPendingAutosaves()
-
-        try expectEqual(unexpectedConfigCalls, 0, "Cancelling config before waiter registration must make zero config RPCs.")
-        try expectNil(store.configAutosaveDraft, "Explicit pre-registration config cancellation should retire its draft.")
-        try expectEqual(store.configAutosavePhase, .idle, "Pre-registration config cancellation should settle idle.")
-    }
-
-    private func cancellingProviderAutosaveBeforeWaiterRegistrationMakesZeroRPCs() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        _ = store.submitConfigAutosave(content: "config-pre-registration-owner", validationError: nil)
-        try await waitUntil("Config should own the lane before pre-registration provider cancellation.") {
-            await runner.startedConfigSaveCount == 1
-        }
-
-        var cancellationTriggered = false
-        let phaseObserver = store.$providerAutosavePhase.sink { phase in
-            guard case .saving = phase, !cancellationTriggered else { return }
-            cancellationTriggered = true
-            store.cancelPendingProviderAutosave()
-        }
-        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        providerDraft.endpoint = "https://provider-pre-registration-cancelled.example.com/v1"
-        providerDraft.model = "cancelled-model"
-        _ = store.submitProviderAutosave(draft: providerDraft)
-        try await waitUntil("Provider cancellation should run synchronously from the saving transition.") {
-            cancellationTriggered
-        }
-        phaseObserver.cancel()
-
-        await runner.releaseNextConfigSave()
-        try await waitUntil("Pre-registration provider cancellation should settle after its owner.", timeout: 5) {
-            await runner.startedProviderSaveCount > 0
-                || (store.configAutosavePhase == .idle && store.providerAutosavePhase == .idle)
-        }
-        let unexpectedProviderCalls = await runner.startedProviderSaveCount
-        if unexpectedProviderCalls > 0 {
-            await runner.releaseNextProviderSave()
-        }
-        await store.flushPendingAutosaves()
-
-        try expectEqual(unexpectedProviderCalls, 0, "Cancelling provider before waiter registration must make zero provider RPCs.")
-        try expectNil(store.providerAutosaveDraft, "Explicit pre-registration provider cancellation should retire its draft.")
-        try expectEqual(store.providerAutosavePhase, .idle, "Pre-registration provider cancellation should settle idle.")
-    }
-
-    private func cancellingQueuedProviderAutosaveMakesZeroRPCs() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        _ = store.submitConfigAutosave(content: "config-owner", validationError: nil)
-        try await waitUntil("Config autosave should own the lane before provider cancellation.") {
-            await runner.startedConfigSaveCount == 1
-        }
-
-        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        providerDraft.endpoint = "https://provider-cancelled.example.com/v1"
-        providerDraft.model = "cancelled-model"
-        _ = store.submitProviderAutosave(draft: providerDraft)
-        try await waitUntil("Provider autosave worker should be waiting for the lane.") {
-            store.providerAutosaveHasActiveSave
-        }
-        try expectEqual(await runner.startedProviderSaveCount, 0, "Queued provider autosave must not start before lane ownership.")
-
-        store.cancelPendingProviderAutosave()
-        await runner.releaseNextConfigSave()
-        try await waitUntil("Config owner and cancelled provider waiter should settle.", timeout: 5) {
-            await runner.startedProviderSaveCount == 1
-                || (store.configAutosavePhase == .idle && store.providerAutosavePhase == .idle)
-        }
-
-        let unexpectedProviderCalls = await runner.startedProviderSaveCount
-        if unexpectedProviderCalls > 0 {
-            await runner.releaseNextProviderSave()
-            await store.flushPendingAutosaves()
-        }
-        try expectEqual(unexpectedProviderCalls, 0, "Cancelling a provider waiter before lane ownership must make zero provider RPCs.")
-        try expectEqual(store.providerAutosavePhase, .idle, "A cancelled provider waiter should settle idle, not failed.")
-        try expectNil(store.aiProviderErrorMessage, "A cancelled provider waiter should not publish a failure.")
-    }
-
-    private func cancellingQueuedConfigAutosaveMakesZeroRPCs() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        var providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        providerDraft.endpoint = "https://provider-owner.example.com/v1"
-        providerDraft.model = "owner-model"
-        _ = store.submitProviderAutosave(draft: providerDraft)
-        try await waitUntil("Provider autosave should own the lane before config cancellation.") {
-            await runner.startedProviderSaveCount == 1
-        }
-
-        _ = store.submitConfigAutosave(content: "config-cancelled", validationError: nil)
-        try await waitUntil("Config autosave worker should be waiting for the lane.") {
-            store.configAutosaveHasActiveSave
-        }
-        try expectEqual(await runner.startedConfigSaveCount, 0, "Queued config autosave must not start before lane ownership.")
-
-        store.cancelPendingConfigAutosave()
-        await runner.releaseNextProviderSave()
-        try await waitUntil("Provider owner and cancelled config waiter should settle.", timeout: 5) {
-            await runner.startedConfigSaveCount == 1
-                || (store.providerAutosavePhase == .idle && store.configAutosavePhase == .idle)
-        }
-
-        let unexpectedConfigCalls = await runner.startedConfigSaveCount
-        if unexpectedConfigCalls > 0 {
-            await runner.releaseNextConfigSave()
-            await store.flushPendingAutosaves()
-        }
-        try expectEqual(unexpectedConfigCalls, 0, "Cancelling a config waiter before lane ownership must make zero config RPCs.")
-        try expectEqual(store.configAutosavePhase, .idle, "A cancelled config waiter should settle idle, not failed.")
-        try expectNil(store.settingsErrorMessage, "A cancelled config waiter should not publish a failure.")
-    }
-
-    private func invalidConfigDraftCancelsQueuedValidAutosave() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        var providerOwner = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        providerOwner.endpoint = "https://provider-invalid-config-owner.example.com/v1"
-        providerOwner.model = "owner-model"
-        _ = store.submitProviderAutosave(draft: providerOwner)
-        try await waitUntil("Provider should own the lane before config becomes invalid.") {
-            await runner.startedProviderSaveCount == 1
-        }
-
-        _ = store.submitConfigAutosave(content: "config-valid-a", validationError: nil)
-        try await waitUntil("Valid config A should wait for lane ownership.") {
-            store.configAutosaveHasActiveSave
-        }
-        try await Task.sleep(nanoseconds: 30_000_000)
-        _ = store.submitConfigAutosave(
-            content: "config-invalid-b",
-            validationError: "invalid config B"
-        )
-
-        await runner.releaseNextProviderSave()
-        try await waitUntil("Invalid config B should cancel queued valid A.", timeout: 5) {
-            await runner.startedConfigSaveCount > 0
-                || (store.providerAutosavePhase == .idle && store.configAutosavePhase == .idle)
-        }
-        let unexpectedConfigCalls = await runner.startedConfigSaveCount
-        if unexpectedConfigCalls > 0 {
-            await runner.releaseNextConfigSave()
-        }
-        await store.flushPendingAutosaves()
-
-        try expectEqual(unexpectedConfigCalls, 0, "Invalid config B must cancel pre-owner valid A with zero config RPCs.")
-        try expectEqual(store.configAutosaveDraft, "config-invalid-b", "The current invalid config B should remain available for correction.")
-        try expectEqual(store.configAutosavePhase, .idle, "Cancelling pre-owner valid A for invalid B should settle idle.")
-    }
-
-    private func invalidProviderDraftCancelsQueuedValidAutosave() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-        await store.loadAIProviderStatus()
-
-        _ = store.submitConfigAutosave(content: "config-invalid-provider-owner", validationError: nil)
-        try await waitUntil("Config should own the lane before provider becomes invalid.") {
-            await runner.startedConfigSaveCount == 1
-        }
-
-        var validProviderA = AIProviderSettingsDraft(status: store.aiProviderStatus)
-        validProviderA.endpoint = "https://provider-valid-a.example.com/v1"
-        validProviderA.model = "valid-model-a"
-        _ = store.submitProviderAutosave(draft: validProviderA)
-        try await waitUntil("Valid provider A should wait for lane ownership.") {
-            store.providerAutosaveHasActiveSave
-        }
-        try await Task.sleep(nanoseconds: 30_000_000)
-        var invalidProviderB = validProviderA
-        invalidProviderB.endpoint = ""
-        _ = store.submitProviderAutosave(draft: invalidProviderB)
-
-        await runner.releaseNextConfigSave()
-        try await waitUntil("Invalid provider B should cancel queued valid A.", timeout: 5) {
-            await runner.startedProviderSaveCount > 0
-                || (store.configAutosavePhase == .idle && store.providerAutosavePhase == .idle)
-        }
-        let unexpectedProviderCalls = await runner.startedProviderSaveCount
-        if unexpectedProviderCalls > 0 {
-            await runner.releaseNextProviderSave()
-        }
-        await store.flushPendingAutosaves()
-
-        try expectEqual(unexpectedProviderCalls, 0, "Invalid provider B must cancel pre-owner valid A with zero provider RPCs.")
-        try expectEqual(store.providerAutosaveDraft?.endpoint, "", "The current invalid provider B should remain available for correction.")
-        try expectEqual(store.providerAutosavePhase, .idle, "Cancelling pre-owner valid A for invalid B should settle idle.")
-    }
-
-    private func releasingStoreCancelsQueuedAutosaveWaiter() async throws {
-        let runner = AutosaveControlServiceRunner()
-        var store: SkillStore? = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        let releasedStore = WeakReference(store)
-        guard store != nil else {
-            throw NativeModelTestFailure(description: "Store should exist for release testing.")
-        }
-        await store?.loadAIProviderStatus()
-        if let store {
-            await prepareConfigConsistencyContext(store)
-        }
-
-        var providerDraft = AIProviderSettingsDraft(status: store?.aiProviderStatus ?? .unavailable())
-        providerDraft.endpoint = "https://provider-release-owner.example.com/v1"
-        providerDraft.model = "release-owner"
-        _ = store?.submitProviderAutosave(draft: providerDraft)
-        try await waitUntil("Provider owner should hold the lane before Store release.") {
-            await runner.startedProviderSaveCount == 1
-        }
-        _ = store?.submitConfigAutosave(content: "config-must-not-outlive-store", validationError: nil)
-        try await waitUntil("Config worker should queue before Store release.") {
-            store?.configAutosaveHasActiveSave == true
-        }
-        try expectEqual(await runner.startedConfigSaveCount, 0, "Queued config mutation should not own the lane yet.")
-
-        store = nil
-        await runner.releaseNextProviderSave()
-        try await waitUntil("Store should release or expose the old queued mutation.", timeout: 5) {
-            if releasedStore.value == nil { return true }
-            return await runner.startedConfigSaveCount == 1
-        }
-        let unexpectedConfigCalls = await runner.startedConfigSaveCount
-        if unexpectedConfigCalls > 0 {
-            await runner.releaseNextConfigSave()
-        }
-        try await waitUntil("Store should deinitialize after its active owner finishes.", timeout: 5) {
-            releasedStore.value == nil
-        }
-
-        try expectEqual(unexpectedConfigCalls, 0, "Store release must cancel a queued autosave before it reaches the service.")
-    }
-
-    private func configSaveInvalidatesInFlightConfigReaders() async throws {
-        let runner = AutosaveControlServiceRunner(
-            suspendMutations: false,
-            suspendInitialConfigReads: true
-        )
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-
-        await prepareConfigConsistencyContext(store)
-        await store.loadCurrentAgentConfigDocuments(agent: SkillAgentFilter.claudeCode.rawValue)
-        await store.loadAgentConfigSnapshots(agent: SkillAgentFilter.claudeCode.rawValue)
-        await runner.activateConfigReadSuspension()
-
-        let claudeRead = Task { @MainActor in await store.loadClaudeSettings() }
-        let documentRead = Task { @MainActor in
-            await store.loadCurrentAgentConfigDocuments(agent: SkillAgentFilter.claudeCode.rawValue)
-        }
-        let snapshotRead = Task { @MainActor in
-            await store.loadAgentConfigSnapshots(agent: SkillAgentFilter.claudeCode.rawValue)
-        }
-        try await waitUntil("All three pre-save config reads should be suspended.") {
-            await runner.suspendedInitialConfigReadCount == 3
-        }
-
-        let saved = await store.saveClaudeSettings(content: "config-new")
-        try expectEqual(saved, true, "The controlled config mutation should succeed.")
-        await runner.releaseInitialConfigReads()
-        await claudeRead.value
-        await documentRead.value
-        await snapshotRead.value
-
-        try expectEqual(
-            store.claudeSettings?.content,
-            "config-new",
-            "A stale pre-save Claude read must not overwrite the saved config cache."
-        )
-        try expectEqual(
-            store.currentAgentConfigDocuments.first?.content,
-            "config-new",
-            "A stale pre-save config document read must not overwrite the post-save document cache."
-        )
-        try expectEqual(
-            store.agentConfigSnapshots.first?.id,
-            "snapshot-new",
-            "A stale pre-save snapshot read must not overwrite the post-save timeline cache."
-        )
-    }
-
-    private func configSaveRefreshesTheSubmittedAgentAfterSelectionChanges() async throws {
-        let runner = AutosaveControlServiceRunner()
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-
-        _ = store.submitConfigAutosave(content: "config-captured-agent", validationError: nil)
-        try await waitUntil("Captured-agent config save should start.") {
-            await runner.startedConfigSaveCount == 1
-        }
-        store.agentFilter = .codex
-        await runner.releaseNextConfigSave()
-        await store.flushPendingAutosaves()
-
-        let refreshedAgents = await runner.configRefreshAgentsAfterFirstSave
-        try expectEqual(
-            refreshedAgents.contains(SkillAgentFilter.claudeCode.rawValue),
-            true,
-            "Post-save config and snapshot refresh must still target the agent captured at submission time."
-        )
-    }
-
     private func providerUnknownMutationDoesNotReportSaved() async throws {
-        let runner = AutosaveControlServiceRunner(providerMutationUnavailable: true)
+        let runner = ProviderAutosaveControlServiceRunner(providerMutationUnavailable: true)
         let store = SkillStore(service: runner.serviceClient())
         var draft = AIProviderSettingsDraft(status: .unavailable())
         draft.endpoint = "https://unavailable-provider.example.com/v1"
@@ -2401,30 +1845,8 @@ struct SkillStoreTests {
         }
     }
 
-    private func successfulConfigAutosaveRetiresDraftAndAdoptsExternalRefresh() async throws {
-        let runner = AutosaveControlServiceRunner(suspendMutations: false)
-        let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
-        await prepareConfigConsistencyContext(store)
-
-        _ = store.submitConfigAutosave(content: "config-saved", validationError: nil)
-        await store.flushPendingAutosaves()
-        try expectNil(
-            store.configAutosaveDraft,
-            "The latest successful config completion should retire its Store-owned draft."
-        )
-
-        await runner.setExternalConfigContent("config-external")
-        await store.loadClaudeSettings()
-        let effectiveDraft = store.configAutosaveDraft ?? store.claudeSettings?.content
-        try expectEqual(
-            effectiveDraft,
-            "config-external",
-            "Passive config hydration should adopt an external refresh after the last draft commits."
-        )
-    }
-
     private func successfulProviderAutosaveRetiresDraftAndAdoptsExternalRefresh() async throws {
-        let runner = AutosaveControlServiceRunner(suspendMutations: false)
+        let runner = ProviderAutosaveControlServiceRunner(suspendMutations: false)
         let store = SkillStore(service: runner.serviceClient(), autosaveDelayNanoseconds: 0)
         await store.loadAIProviderStatus()
         var draft = AIProviderSettingsDraft(status: store.aiProviderStatus)
@@ -2457,221 +1879,6 @@ struct SkillStoreTests {
         try expectEqual(effectiveDraft.apiKey, "", "External provider hydration must not restore an API key draft.")
     }
 
-    private func failedConfigAutosaveKeepsDraft() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "normal")
-        let store = SkillStore(service: fake.serviceClient(), autosaveDelayNanoseconds: 0)
-
-        _ = store.submitConfigAutosave(content: "config-unsaved", validationError: nil)
-        await store.flushPendingAutosaves()
-
-        try expectEqual(
-            store.configAutosaveDraft,
-            "config-unsaved",
-            "A failed config completion must retain the unsaved draft."
-        )
-        try expectEqual(
-            store.configAutosavePhase,
-            .idle,
-            "A fail-closed autosave without a protocol binding should remain idle because it made no write attempt."
-        )
-        try expectEqual(
-            store.configMutationState,
-            .failed(UIStrings.configConsistencyProtocolRequired),
-            "A fail-closed autosave should surface the protocol-v2 requirement."
-        )
-    }
-
-    private func configSaveUsesLoadedRevision() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "config-cas")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-        await store.loadClaudeSettings()
-        try expectEqual(store.claudeSettings?.revision, Optional("sha256:settings-revision"), "Config load should retain the exact service revision.")
-        guard let binding = store.makeClaudeSettingsSaveBinding(content: "{\"theme\":\"dark\"}\n") else {
-            throw NativeModelTestFailure(description: "Protocol v2 config load should create an immutable save binding.")
-        }
-
-        let saved = await store.saveClaudeSettings(binding: binding)
-
-        try expectEqual(saved, true, "A revision-bound config save should succeed.")
-        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "Config save should call the mutation RPC once.")
-        try expectContains(fake.calls(), #""expected_revision":"sha256:settings-revision""#, "Config save should send the revision paired with the loaded document.")
-        try expectEqual(store.claudeSettings?.revision, Optional("sha256:saved-revision"), "Successful save should publish the service's new revision.")
-        try expectEqual(store.configMutationState, .idle, "Successful save should leave the config mutation state idle.")
-    }
-
-    private func configSaveNeverFallsBackWithoutRevision() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "config-legacy")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-        await store.loadClaudeSettings()
-        try expectFalse(store.claudeSettings?.supportsCompareAndSwap ?? true, "Legacy config responses should be read-only.")
-        try expectNil(store.makeClaudeSettingsSaveBinding(content: "{\"theme\":\"dark\"}\n"), "Missing revision must not create a save binding.")
-
-        let saved = await store.saveClaudeSettings(
-            binding: ConfigSaveBinding(content: "{\"theme\":\"dark\"}\n", expectedRevision: "sha256:not-issued")
-        )
-
-        try expectEqual(saved, false, "A config document without a revision must not be saved.")
-        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Missing revision must make no write RPC call.")
-        try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configRevisionUnavailable), "Missing CAS capability should show a localized read-only message.")
-        try expectEqual(store.configMutationState, .failed(UIStrings.configRevisionUnavailable), "Missing CAS capability should publish a failed mutation state.")
-    }
-
-    private func configConflictPreservesDraftAndReloadsRevision() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "config-conflict")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-        await store.loadClaudeSettings()
-        let draft = "{\"theme\":\"draft\"}\n"
-        guard let binding = store.makeClaudeSettingsSaveBinding(content: draft) else {
-            throw NativeModelTestFailure(description: "Protocol v2 conflict fixture should create a save binding.")
-        }
-        let snapshotsBeforeSave = countMethodCalls("app.stateSnapshot", in: fake.calls())
-
-        let saved = await store.saveClaudeSettings(binding: binding)
-
-        try expectEqual(saved, false, "A stale revision must not be reported as saved.")
-        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 1, "A config conflict must not retry the write.")
-        try expectEqual(countMethodCalls("config.readClaudeSettings", in: fake.calls()), 2, "A config conflict should perform one fresh read for comparison.")
-        try expectContains(fake.calls(), #""content":"{\"theme\":\"draft\"}\n""#, "The attempted draft should remain the exact write input.")
-        try expectEqual(store.claudeSettings?.content, Optional("{\"theme\":\"external\"}\n"), "Conflict handling should publish the freshly read external document for comparison.")
-        try expectEqual(store.claudeSettings?.revision, Optional("sha256:external-revision"), "Conflict reread should publish the latest revision without retrying.")
-        try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configConflict), "Config conflict should use localized recovery guidance.")
-        try expectNil(store.settingsMessage, "Config conflict must not publish save success.")
-        try expectNil(store.lastMutationMessage, "Config conflict must not publish a success mutation message.")
-        try expectEqual(countMethodCalls("app.stateSnapshot", in: fake.calls()), snapshotsBeforeSave, "Config conflict must not perform a success-style collections refresh.")
-
-        guard case let .conflict(conflict) = store.configMutationState else {
-            throw NativeModelTestFailure(description: "Config conflict should publish conflict state.")
-        }
-        try expectEqual(conflict.attemptedRevision, "sha256:settings-revision", "Conflict state should retain the attempted revision.")
-        try expectEqual(conflict.latestRevision, Optional("sha256:external-revision"), "Conflict state should expose the freshly read revision for comparison.")
-        try expectEqual(conflict.displayMessage, UIStrings.configConflict, "Conflict state should use localized recovery guidance.")
-    }
-
-    private func pendingConfigDraftNeverRebindsToReloadedRevision() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "config-conflict")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-        await store.loadClaudeSettings()
-        try expectEqual(store.claudeSettings?.revision, Optional("sha256:settings-revision"), "Initial editor document should use revision A.")
-
-        let draft = "{\"theme\":\"draft-from-a\"}\n"
-        guard let pendingSave = store.makeClaudeSettingsSaveBinding(content: draft) else {
-            throw NativeModelTestFailure(description: "Protocol v2 editor should capture an immutable pending save binding.")
-        }
-        try expectEqual(pendingSave.expectedRevision, "sha256:settings-revision", "Pending autosave should capture revision A before debounce.")
-
-        await store.loadClaudeSettings()
-        try expectEqual(store.claudeSettings?.content, Optional("{\"theme\":\"external\"}\n"), "Reload should publish external document B.")
-        try expectEqual(store.claudeSettings?.revision, Optional("sha256:external-revision"), "Reload should publish revision B.")
-
-        let saved = await store.saveClaudeSettings(binding: pendingSave)
-
-        try expectEqual(saved, false, "The old pending draft must not overwrite reloaded document B.")
-        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Revision drift before the debounce fires should be rejected without a write RPC.")
-        try expectFalse(fake.calls().contains(#""expected_revision":"sha256:external-revision""#), "Draft A must never be rebound to revision B.")
-        try expectEqual(pendingSave.content, draft, "Rejected pending save should retain the exact user draft.")
-        try expectEqual(store.claudeSettings?.content, Optional("{\"theme\":\"external\"}\n"), "Rejected pending save must preserve external document B.")
-        guard case let .conflict(conflict) = store.configMutationState else {
-            throw NativeModelTestFailure(description: "Revision drift should enter explicit conflict state.")
-        }
-        try expectEqual(conflict.attemptedRevision, "sha256:settings-revision", "Conflict should identify pending revision A.")
-        try expectEqual(conflict.latestRevision, Optional("sha256:external-revision"), "Conflict should expose current revision B.")
-    }
-
-    private func protocolV1BindingsRemainReadOnlyBeforeAndAfterStatusLoad() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "protocol-v1-bindings")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.loadClaudeSettings()
-        try expectNil(store.status, "Startup config reads may finish before service status is loaded.")
-        try expectEqual(store.claudeSettings?.revision, Optional("sha256:malicious-v1-revision"), "Protocol v1 fixture intentionally returns a revision-shaped field.")
-        try expectFalse(store.supportsConfigConsistencyProtocol, "Unknown startup protocol must default to read-only.")
-
-        let fabricatedBinding = ConfigSaveBinding(
-            content: "{\"theme\":\"unsafe\"}\n",
-            expectedRevision: "sha256:malicious-v1-revision"
-        )
-        try expectEqual(await store.saveClaudeSettings(binding: fabricatedBinding), false, "Status-not-loaded save must remain read-only.")
-        try expectEqual(store.settingsErrorMessage, Optional(UIStrings.configConsistencyProtocolRequired), "Unknown protocol should explain the protocol v2 requirement.")
-
-        await store.reload()
-        try expectEqual(store.status?.protocolVersion, Optional(1), "Fake service should expose a genuine protocol v1 status.")
-        try expectFalse(store.supportsConfigConsistencyProtocol, "Protocol v1 must remain read-only even when revision-shaped fields exist.")
-        try expectNil(store.makeClaudeSettingsSaveBinding(content: fabricatedBinding.content), "Protocol v1 must not create a save binding.")
-        try expectEqual(await store.saveClaudeSettings(binding: fabricatedBinding), false, "Protocol v1 save must remain read-only after status load.")
-        try expectEqual(store.configMutationState, .failed(UIStrings.configConsistencyProtocolRequired), "Protocol v1 save should publish localized read-only state.")
-        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Protocol v1 must make no config write RPC.")
-
-        await store.loadAgentConfigSnapshots(agent: "claude-code")
-        try await waitUntil("Protocol v1 fixture should expose a snapshot for read-only preview.") {
-            !store.agentConfigSnapshots.isEmpty
-        }
-        guard let snapshot = store.agentConfigSnapshots.first else {
-            throw NativeModelTestFailure(description: "Protocol v1 fixture should expose a snapshot for read-only preview.")
-        }
-        store.selectConfigSnapshot(snapshot)
-        let preview = try await store.previewRollback(snapshotID: snapshot.id)
-        try expectEqual(preview.previewToken, Optional("sha256:malicious-v1-token"), "Protocol v1 fixture intentionally returns a token-shaped field.")
-        try expectNil(store.rollbackConfirmation, "Protocol v1 must not create rollback authorization from token-shaped fields.")
-        let fabricatedConfirmation = RollbackConfirmation(
-            snapshotID: snapshot.id,
-            previewToken: "sha256:malicious-v1-token"
-        )
-        try expectEqual(await store.rollbackSnapshot(confirmation: fabricatedConfirmation), false, "Protocol v1 rollback must remain read-only.")
-        try expectEqual(store.errorMessage, Optional(UIStrings.configConsistencyProtocolRequired), "Protocol v1 rollback should explain the protocol v2 requirement.")
-        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "Protocol v1 must make no rollback write RPC.")
-    }
-
-    private func protocolV2MissingBindingsRemainReadOnly() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "protocol-v2-missing-bindings")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-        try expectEqual(store.status?.protocolVersion, Optional(2), "Missing-binding fixture should still use protocol v2.")
-        await store.loadClaudeSettings()
-        try expectNil(store.claudeSettings?.revision, "Protocol v2 response intentionally omits config revision.")
-        try expectNil(store.makeClaudeSettingsSaveBinding(content: "{}\n"), "Protocol v2 without revision must not create a save binding.")
-        let fabricatedBinding = ConfigSaveBinding(content: "{}\n", expectedRevision: "sha256:not-issued")
-        try expectEqual(await store.saveClaudeSettings(binding: fabricatedBinding), false, "Protocol v2 without revision must remain read-only.")
-        try expectEqual(countMethodCalls("config.saveClaudeSettings", in: fake.calls()), 0, "Missing revision must make no config write RPC.")
-
-        await store.loadAgentConfigSnapshots(agent: "claude-code")
-        try await waitUntil("Missing-binding fixture should expose a snapshot.") {
-            !store.agentConfigSnapshots.isEmpty
-        }
-        guard let snapshot = store.agentConfigSnapshots.first else {
-            throw NativeModelTestFailure(description: "Missing-binding fixture should expose a snapshot.")
-        }
-        store.selectConfigSnapshot(snapshot)
-        let preview = try await store.previewRollback(snapshotID: snapshot.id)
-        try expectFalse(preview.rollbackSupported, "Protocol v2 preview missing token/revision must decode as read-only.")
-        try expectNil(store.rollbackConfirmation, "Protocol v2 preview missing token/revision must not create confirmation.")
-        let fabricatedConfirmation = RollbackConfirmation(snapshotID: snapshot.id, previewToken: "sha256:not-issued")
-        try expectEqual(await store.rollbackSnapshot(confirmation: fabricatedConfirmation), false, "Protocol v2 without rollback binding must remain read-only.")
-        try expectEqual(countMethodCalls("snapshot.rollback", in: fake.calls()), 0, "Missing rollback binding must make no rollback write RPC.")
-    }
-
     private func rollbackUsesImmutablePreviewInputs() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -2691,7 +1898,7 @@ struct SkillStoreTests {
             throw NativeModelTestFailure(description: "A complete rollback preview should create an immutable confirmation.")
         }
         try expectEqual(confirmation.snapshotID, preview.snapshot.id, "Confirmation should capture the previewed snapshot id.")
-        try expectEqual(confirmation.previewToken, "sha256:rollback-preview", "Confirmation should capture the opaque preview token.")
+        try expectEqual(confirmation.previewToken, "action-preview:v1:hmac-sha256:rollback-preview", "Confirmation should capture the opaque preview token.")
 
         let rolledBack = await store.rollbackSnapshot(confirmation: confirmation)
 
@@ -2736,7 +1943,7 @@ struct SkillStoreTests {
 
     private func inFlightRollbackFailureDoesNotPublishAfterSelectionChanges() async throws {
         let variants = [
-            (label: "stale_preview_token", scenario: "rollback-stale-blocked", changesSelection: true, reselectSnapshotA: false, expectsCurrentError: false),
+            (label: "stale_action_reference", scenario: "rollback-stale-blocked", changesSelection: true, reselectSnapshotA: false, expectsCurrentError: false),
             (label: "generic service failure", scenario: "rollback-error-blocked", changesSelection: true, reselectSnapshotA: false, expectsCurrentError: false),
             (label: "generic failure after A-B-A reselection", scenario: "rollback-error-blocked", changesSelection: true, reselectSnapshotA: true, expectsCurrentError: false),
             (label: "generic failure while A remains current", scenario: "rollback-error-blocked", changesSelection: false, reselectSnapshotA: false, expectsCurrentError: true),
@@ -2897,8 +2104,8 @@ struct SkillStoreTests {
         guard let secondConfirmation = store.rollbackConfirmation else {
             throw NativeModelTestFailure(description: "Second preview should replace the confirmation.")
         }
-        try expectEqual(firstConfirmation.previewToken, "sha256:rollback-preview", "Previously captured confirmation should remain immutable.")
-        try expectEqual(secondConfirmation.previewToken, "sha256:rollback-preview-2", "Preview replacement should publish only the new token.")
+        try expectEqual(firstConfirmation.previewToken, "action-preview:v1:hmac-sha256:rollback-preview", "Previously captured confirmation should remain immutable.")
+        try expectEqual(secondConfirmation.previewToken, "action-preview:v1:hmac-sha256:rollback-preview-2", "Preview replacement should publish only the new token.")
 
         let rejectedOldConfirmation = await store.rollbackSnapshot(confirmation: firstConfirmation)
         try expectEqual(rejectedOldConfirmation, false, "An invalidated confirmation must be rejected before RPC.")
@@ -2962,7 +2169,30 @@ struct SkillStoreTests {
         }
 
         let rejected = await store.rollbackSnapshot(
-            confirmation: RollbackConfirmation(snapshotID: "snap-codex", previewToken: "sha256:not-visible")
+            confirmation: RollbackConfirmation(
+                snapshotID: "snap-codex",
+                action: ActionDescriptorWire(
+                    id: "action:rollback_config:not-visible",
+                    kind: "rollback_config",
+                    intent: "rollback_config",
+                    target: ActionTargetWire(
+                        kind: "config",
+                        id: "/tmp/codex.toml",
+                        agent: "codex",
+                        scope: "agent-global"
+                    ),
+                    projectID: nil,
+                    impacts: ["agent_config"],
+                    previewMethod: "snapshot.previewRollback",
+                    applyMethod: "snapshot.rollback",
+                    sourceRevision: "sha256:not-visible",
+                    confirmationRequired: true,
+                    network: "none",
+                    readback: ["agent_config"],
+                    evidenceRefs: ["snapshot:snap-codex"]
+                ),
+                previewToken: "action-preview:v1:hmac-sha256:not-visible"
+            )
         )
 
         try expectEqual(rejected, false, "Rollback should reject snapshots outside the selected timeline.")
@@ -4061,17 +3291,15 @@ private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {
     }
 }
 
-private final class AutosaveControlServiceRunner: ServiceProcessRunning {
-    private let state: AutosaveControlServiceState
+private final class ProviderAutosaveControlServiceRunner: ServiceProcessRunning {
+    private let state: ProviderAutosaveControlServiceState
 
     init(
         suspendMutations: Bool = true,
-        suspendInitialConfigReads: Bool = false,
         providerMutationUnavailable: Bool = false
     ) {
-        state = AutosaveControlServiceState(
+        state = ProviderAutosaveControlServiceState(
             suspendMutations: suspendMutations,
-            suspendInitialConfigReads: suspendInitialConfigReads,
             providerMutationUnavailable: providerMutationUnavailable
         )
     }
@@ -4089,52 +3317,16 @@ private final class AutosaveControlServiceRunner: ServiceProcessRunning {
         return try await state.response(for: input)
     }
 
-    var startedConfigSaveCount: Int {
-        get async { await state.startedConfigSaveCount }
-    }
-
     var startedProviderSaveCount: Int {
         get async { await state.startedProviderSaveCount }
-    }
-
-    var configSaveContents: [String] {
-        get async { await state.configSaveContents }
     }
 
     var providerSaveEndpoints: [String] {
         get async { await state.providerSaveEndpoints }
     }
 
-    var maximumConcurrentMutationCount: Int {
-        get async { await state.maximumConcurrentMutationCount }
-    }
-
-    var suspendedInitialConfigReadCount: Int {
-        get async { await state.suspendedInitialConfigReadCount }
-    }
-
-    var configRefreshAgentsAfterFirstSave: Set<String> {
-        get async { await state.configRefreshAgentsAfterFirstSave }
-    }
-
-    func releaseNextConfigSave() async {
-        await state.releaseNextConfigSave()
-    }
-
     func releaseNextProviderSave() async {
         await state.releaseNextProviderSave()
-    }
-
-    func releaseInitialConfigReads() async {
-        await state.releaseInitialConfigReads()
-    }
-
-    func activateConfigReadSuspension() async {
-        await state.activateConfigReadSuspension()
-    }
-
-    func setExternalConfigContent(_ content: String) async {
-        await state.setExternalConfigContent(content)
     }
 
     func setExternalProvider(endpoint: String, model: String) async {
@@ -4142,56 +3334,23 @@ private final class AutosaveControlServiceRunner: ServiceProcessRunning {
     }
 }
 
-private actor AutosaveControlServiceState {
-    private struct SuspendedConfigRead {
-        let continuation: CheckedContinuation<Data, Never>
-        let response: Data
-    }
-
+private actor ProviderAutosaveControlServiceState {
     private let suspendMutations: Bool
-    private let supportsConfigReadSuspension: Bool
     private let providerMutationUnavailable: Bool
-    private var configReadSuspensionActive = false
-    private var suspendedConfigReadMethods: Set<String> = []
-    private var configContent = "config-x"
     private var providerEndpoint = "https://provider-x.example.com/v1"
     private var providerModel = "model-x"
-    private var readCounts: [String: Int] = [:]
-    private var initialConfigReads: [SuspendedConfigRead] = []
-    private var configSaveContinuations: [CheckedContinuation<Void, Never>] = []
     private var providerSaveContinuations: [CheckedContinuation<Void, Never>] = []
-    private var activeMutationCount = 0
-    private var events: [String] = []
-    private var firstConfigSaveCompletionIndex: Int?
-    private(set) var configSaveContents: [String] = []
     private(set) var providerSaveEndpoints: [String] = []
-    private(set) var maximumConcurrentMutationCount = 0
 
     init(
         suspendMutations: Bool,
-        suspendInitialConfigReads: Bool,
         providerMutationUnavailable: Bool
     ) {
         self.suspendMutations = suspendMutations
-        supportsConfigReadSuspension = suspendInitialConfigReads
         self.providerMutationUnavailable = providerMutationUnavailable
     }
 
-    var startedConfigSaveCount: Int { configSaveContents.count }
     var startedProviderSaveCount: Int { providerSaveEndpoints.count }
-    var suspendedInitialConfigReadCount: Int { initialConfigReads.count }
-
-    var configRefreshAgentsAfterFirstSave: Set<String> {
-        guard let firstConfigSaveCompletionIndex else { return [] }
-        return Set(events.dropFirst(firstConfigSaveCompletionIndex + 1).compactMap { event in
-            let parts = event.split(separator: ":", maxSplits: 1).map(String.init)
-            guard parts.count == 2,
-                  parts[0] == "config.readAgentConfig" || parts[0] == "snapshot.listAgentConfig" else {
-                return nil
-            }
-            return parts[1]
-        })
-    }
 
     func response(for input: Data) async throws -> Data {
         guard let request = try JSONSerialization.jsonObject(with: input) as? [String: Any],
@@ -4201,30 +3360,6 @@ private actor AutosaveControlServiceState {
         let params = request["params"] as? [String: Any] ?? [:]
 
         switch method {
-        case "config.saveClaudeSettings":
-            let content = params["content"] as? String ?? ""
-            let expectedRevision = params["expected_revision"] as? String ?? ""
-            let currentRevision = "sha256:test-\(configContent)"
-            guard expectedRevision == currentRevision else {
-                return Self.error(
-                    code: "config_conflict",
-                    message: "expected \(expectedRevision), current \(currentRevision)"
-                )
-            }
-            configSaveContents.append(content)
-            beginMutation(event: "config.save.start")
-            if suspendMutations {
-                await withCheckedContinuation { continuation in
-                    configSaveContinuations.append(continuation)
-                }
-            }
-            configContent = content
-            finishMutation(event: "config.save.complete")
-            if firstConfigSaveCompletionIndex == nil {
-                firstConfigSaveCompletionIndex = events.indices.last
-            }
-            return Self.ok(configDocument(agent: "claude-code", content: content))
-
         case "llm.saveProviderProfile":
             if providerMutationUnavailable {
                 return Self.error(code: "unknown_method", message: "unknown method: llm.saveProviderProfile")
@@ -4232,7 +3367,6 @@ private actor AutosaveControlServiceState {
             let endpoint = params["base_url"] as? String ?? ""
             let model = params["model"] as? String ?? ""
             providerSaveEndpoints.append(endpoint)
-            beginMutation(event: "provider.save.start")
             if suspendMutations {
                 await withCheckedContinuation { continuation in
                     providerSaveContinuations.append(continuation)
@@ -4240,42 +3374,7 @@ private actor AutosaveControlServiceState {
             }
             providerEndpoint = endpoint
             providerModel = model
-            finishMutation(event: "provider.save.complete")
             return Self.ok(["profile": NSNull()])
-
-        case "config.readClaudeSettings":
-            return await configReadResponse(
-                method: method,
-                oldResult: configDocument(agent: "claude-code", content: "config-x"),
-                currentResult: configDocument(agent: "claude-code", content: configContent)
-            )
-
-        case "config.readAgentConfig":
-            let agent = params["agent"] as? String ?? "claude-code"
-            events.append("config.readAgentConfig:\(agent)")
-            return await configReadResponse(
-                method: method,
-                oldResult: [configDocument(agent: agent, content: "config-x")],
-                currentResult: [configDocument(agent: agent, content: configContent)]
-            )
-
-        case "snapshot.listAgentConfig":
-            let agent = params["agent"] as? String ?? "claude-code"
-            events.append("snapshot.listAgentConfig:\(agent)")
-            return await configReadResponse(
-                method: method,
-                oldResult: [snapshot(agent: agent, id: "snapshot-old", content: "config-x")],
-                currentResult: [snapshot(agent: agent, id: "snapshot-new", content: configContent)]
-            )
-
-        case "snapshot.listAgentConfigPage":
-            let agent = params["agent"] as? String ?? "claude-code"
-            events.append("snapshot.listAgentConfig:\(agent)")
-            return await configReadResponse(
-                method: method,
-                oldResult: snapshotPage(agent: agent, id: "snapshot-old", content: "config-x"),
-                currentResult: snapshotPage(agent: agent, id: "snapshot-new", content: configContent)
-            )
 
         case "llm.listProviderProfiles":
             return Self.ok(providerStatus())
@@ -4306,33 +3405,9 @@ private actor AutosaveControlServiceState {
         }
     }
 
-    func releaseNextConfigSave() {
-        guard !configSaveContinuations.isEmpty else { return }
-        configSaveContinuations.removeFirst().resume()
-    }
-
     func releaseNextProviderSave() {
         guard !providerSaveContinuations.isEmpty else { return }
         providerSaveContinuations.removeFirst().resume()
-    }
-
-    func releaseInitialConfigReads() {
-        configReadSuspensionActive = false
-        let reads = initialConfigReads
-        initialConfigReads.removeAll()
-        for read in reads {
-            read.continuation.resume(returning: read.response)
-        }
-    }
-
-    func activateConfigReadSuspension() {
-        guard supportsConfigReadSuspension else { return }
-        suspendedConfigReadMethods.removeAll()
-        configReadSuspensionActive = true
-    }
-
-    func setExternalConfigContent(_ content: String) {
-        configContent = content
     }
 
     func setExternalProvider(endpoint: String, model: String) {
@@ -4340,55 +3415,6 @@ private actor AutosaveControlServiceState {
         providerModel = model
     }
 
-    private func configReadResponse(method: String, oldResult: Any, currentResult: Any) async -> Data {
-        let count = (readCounts[method] ?? 0) + 1
-        readCounts[method] = count
-        guard configReadSuspensionActive,
-              suspendedConfigReadMethods.insert(method).inserted else {
-            return Self.ok(currentResult)
-        }
-        let oldResponse = Self.ok(oldResult)
-        return await withCheckedContinuation { continuation in
-            initialConfigReads.append(
-                SuspendedConfigRead(continuation: continuation, response: oldResponse)
-            )
-        }
-    }
-
-    private func beginMutation(event: String) {
-        activeMutationCount += 1
-        maximumConcurrentMutationCount = max(maximumConcurrentMutationCount, activeMutationCount)
-        events.append(event)
-    }
-
-    private func finishMutation(event: String) {
-        activeMutationCount -= 1
-        events.append(event)
-    }
-
-    private func configDocument(agent: String, content: String) -> [String: Any] {
-        [
-            "agent": agent,
-            "scope": "agent-global",
-            "target": "/tmp/home/.\(agent)/config",
-            "format": "json",
-            "content": content,
-            "exists": true,
-            "revision": "sha256:test-\(content)",
-        ]
-    }
-
-    private func snapshot(agent: String, id: String, content: String) -> [String: Any] {
-        [
-            "id": id,
-            "agent": agent,
-            "scope": "agent-global",
-            "target": "/tmp/home/.\(agent)/config",
-            "content": content,
-            "reason": "pre-config-edit",
-            "created_at": id == "snapshot-new" ? 2 : 1,
-        ]
-    }
 
     private func providerStatus() -> [String: Any] {
         [
@@ -4419,25 +3445,9 @@ private actor AutosaveControlServiceState {
             "user_home": "/tmp/home",
             "supported_methods": [
                 "app.stateSnapshot",
-                "config.readClaudeSettings",
-                "config.readAgentConfig",
-                "config.saveClaudeSettings",
-                "snapshot.listAgentConfig",
-                "snapshot.listAgentConfigPage",
                 "llm.listProviderProfiles",
                 "llm.saveProviderProfile",
             ],
-        ]
-    }
-
-    private func snapshotPage(agent: String, id: String, content: String) -> [String: Any] {
-        [
-            "records": [snapshot(agent: agent, id: id, content: content)],
-            "source_revision": "sha256:\(id)",
-            "returned_count": 1,
-            "total_count": 1,
-            "has_more": false,
-            "source_completeness": "enumerable",
         ]
     }
 

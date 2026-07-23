@@ -3,9 +3,12 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use fs4::FileExt;
 use serde_json::{json, Value};
 
 const ACTION_SECRET_ENV: &str = "SKILLS_COPILOT_ACTION_PREVIEW_SECRET";
@@ -118,6 +121,58 @@ impl Fixture {
 
     fn settings_path(&self) -> PathBuf {
         self.home.join(".claude/settings.json")
+    }
+
+    fn config_save_preview(&self, content: &str) -> Value {
+        let current = invoke(
+            &self.home,
+            &self.app_data,
+            Some(SECRET_A),
+            json!({"id":"config-read","method":"config.readClaudeSettings","params":{}}),
+        );
+        assert_success(&current);
+        let revision = current
+            .pointer("/result/revision")
+            .and_then(Value::as_str)
+            .expect("current config revision");
+        invoke(
+            &self.home,
+            &self.app_data,
+            Some(SECRET_A),
+            json!({
+                "id":"config-preview",
+                "method":"config.previewSaveClaudeSettings",
+                "params":{"content":content,"expected_revision":revision}
+            }),
+        )
+    }
+
+    fn config_save_request(&self, content: &str, preview: &Value) -> Value {
+        let action = preview
+            .pointer("/result/action")
+            .expect("config preview action")
+            .clone();
+        let preview_token = preview
+            .pointer("/result/preview_token")
+            .and_then(Value::as_str)
+            .expect("config preview token");
+        json!({
+            "id":"config-apply",
+            "method":"config.saveClaudeSettings",
+            "params":{
+                "content":content,
+                "confirmation":{
+                    "reference":{
+                        "action_id":action["id"],
+                        "source_revision":action["source_revision"],
+                        "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                        "target":action["target"]
+                    },
+                    "preview_token":preview_token,
+                    "confirmed":true
+                }
+            }
+        })
     }
 }
 
@@ -412,6 +467,55 @@ fn invoke_manager_preview_and_apply(
     )
 }
 
+#[test]
+#[cfg(unix)]
+fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
+    let fixture = Fixture::new("config-owner-lock");
+    let content = "{\n  \"ownerLock\": true\n}\n";
+    let preview = fixture.config_save_preview(content);
+    assert_success(&preview);
+    let request = fixture.config_save_request(content, &preview);
+
+    let lock_file = fs::File::open(
+        fixture
+            .app_data
+            .canonicalize()
+            .expect("canonical app-data owner"),
+    )
+    .expect("open app-data owner");
+    lock_file.lock_exclusive().expect("hold app mutation owner");
+    let mut child = spawn_sidecar(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[],
+        request,
+    );
+    thread::sleep(Duration::from_millis(150));
+    assert!(
+        child
+            .try_wait()
+            .expect("poll blocked config save")
+            .is_none(),
+        "config save must wait while another process owns the shared app mutation lock"
+    );
+
+    FileExt::unlock(&lock_file).expect("release app mutation owner");
+    let output = child.wait_with_output().expect("wait for config save");
+    assert!(
+        output.status.success(),
+        "sidecar failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value =
+        serde_json::from_slice(&output.stdout).expect("decode config save response");
+    assert_success(&response);
+    assert_eq!(
+        fs::read_to_string(fixture.settings_path()).expect("read saved config"),
+        content
+    );
+}
+
 fn invoke(home: &Path, app_data: &Path, secret: Option<&str>, request: Value) -> Value {
     invoke_with_extra_env(home, app_data, secret, &[], request)
 }
@@ -423,6 +527,23 @@ fn invoke_with_extra_env(
     extra_env: &[(&str, &str)],
     request: Value,
 ) -> Value {
+    let child = spawn_sidecar(home, app_data, secret, extra_env, request);
+    let output = child.wait_with_output().expect("wait for sidecar");
+    assert!(
+        output.status.success(),
+        "sidecar failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("decode sidecar response")
+}
+
+fn spawn_sidecar(
+    home: &Path,
+    app_data: &Path,
+    secret: Option<&str>,
+    extra_env: &[(&str, &str)],
+    request: Value,
+) -> std::process::Child {
     let mut command = Command::new(env!("CARGO_BIN_EXE_skills-copilot-service"));
     command
         .env("HOME", home)
@@ -443,13 +564,7 @@ fn invoke_with_extra_env(
         .expect("sidecar stdin")
         .write_all(request.to_string().as_bytes())
         .expect("write sidecar request");
-    let output = child.wait_with_output().expect("wait for sidecar");
-    assert!(
-        output.status.success(),
-        "sidecar failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("decode sidecar response")
+    child
 }
 
 fn assert_success(response: &Value) {

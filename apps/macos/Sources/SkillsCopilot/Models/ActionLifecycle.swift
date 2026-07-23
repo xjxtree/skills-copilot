@@ -140,6 +140,18 @@ struct ActionConfirmationSummary: Hashable {
     }
 }
 
+struct ActionPreconditionWire: Codable, Hashable {
+    let kind: String
+    let targetID: String
+    let expectedRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case targetID = "target_id"
+        case expectedRevision = "expected_revision"
+    }
+}
+
 struct ActionReadbackObservationWire: Codable, Hashable {
     let domain: String
     let targetID: String
@@ -239,3 +251,41 @@ enum ActionReadbackValidationError: LocalizedError, Equatable {
         }
     }
 }
+
+extension ActionReadbackWire {
+    func verifies(
+        action: ActionDescriptorWire,
+        document: ConfigDocumentRecord,
+        snapshotID: String? = nil
+    ) -> Bool {
+        guard (try? validated(for: action)) != nil,
+              targetIDs.contains(document.target),
+              let documentRevision = document.revision,
+              observations.contains(where: {
+                  $0.domain == "agent_config"
+                      && $0.targetID == document.target
+                      && $0.revision == documentRevision
+              }) else {
+            return false
+        }
+        guard action.target.id == document.target,
+              action.target.agent == document.agent,
+              action.target.scope == document.scope else {
+            return false
+        }
+        if action.readback.contains("config_snapshots") {
+            guard let snapshotID,
+                  targetIDs.contains(snapshotID),
+                  observations.contains(where: {
+                      $0.domain == "config_snapshots"
+                          && $0.targetID == snapshotID
+                          && !$0.revision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  }) else {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+typealias ActionReadbackRecordWire = ActionReadbackWire

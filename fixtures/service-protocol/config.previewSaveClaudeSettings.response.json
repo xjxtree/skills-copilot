@@ -1,0 +1,45 @@
+{
+  "id": "fixture-config-preview-save-claude-settings",
+  "ok": true,
+  "result": {
+    "action": {
+      "id": "action:save_config:0101010101010101010101010101010101010101010101010101010101010101",
+      "kind": "save_config",
+      "intent": "save_config",
+      "target": {
+        "kind": "config",
+        "id": "/tmp/skills-copilot-home/.claude/settings.json",
+        "agent": "claude-code",
+        "scope": "agent-global"
+      },
+      "impacts": ["agent_config", "app_local_data"],
+      "preview_method": "config.previewSaveClaudeSettings",
+      "apply_method": "config.saveClaudeSettings",
+      "source_revision": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["agent_config", "config_snapshots"],
+      "evidence_refs": ["config:/tmp/skills-copilot-home/.claude/settings.json"]
+    },
+    "preconditions": [
+      {
+        "kind": "agent_config",
+        "target_id": "/tmp/skills-copilot-home/.claude/settings.json",
+        "expected_revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:0303030303030303030303030303030303030303030303030303030303030303",
+    "current": {
+      "agent": "claude-code",
+      "scope": "agent-global",
+      "target": "/tmp/skills-copilot-home/.claude/settings.json",
+      "format": "json",
+      "content": "{}\n",
+      "exists": true,
+      "revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9"
+    },
+    "candidate_content_digest": "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+    "current_revision": "sha256:1bd783b3e84bdf853d2c6444293219dad3dc20f23acffdc0e4af59cd96d9ffd9",
+    "changed": true
+  }
+}

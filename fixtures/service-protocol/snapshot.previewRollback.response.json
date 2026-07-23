@@ -2,6 +2,41 @@
   "id": "fixture-snapshot-preview-rollback",
   "ok": true,
   "result": {
+    "action": {
+      "id": "action:rollback_config:0707070707070707070707070707070707070707070707070707070707070707",
+      "kind": "rollback_config",
+      "intent": "rollback_config",
+      "target": {
+        "kind": "config",
+        "id": "/tmp/skills-copilot-home/.claude/settings.json",
+        "agent": "claude-code",
+        "scope": "agent-global"
+      },
+      "impacts": ["agent_config"],
+      "preview_method": "snapshot.previewRollback",
+      "apply_method": "snapshot.rollback",
+      "source_revision": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["agent_config"],
+      "evidence_refs": [
+        "snapshot:snapshot-id",
+        "config:/tmp/skills-copilot-home/.claude/settings.json"
+      ]
+    },
+    "preconditions": [
+      {
+        "kind": "catalog_record",
+        "target_id": "snapshot-id",
+        "expected_revision": "sha256:0909090909090909090909090909090909090909090909090909090909090909"
+      },
+      {
+        "kind": "agent_config",
+        "target_id": "/tmp/skills-copilot-home/.claude/settings.json",
+        "expected_revision": "sha256:ccfff1bc63fae50b64cae13531dd306a1a84e92ba0df35ad1caacecb6e3a02c6"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:1010101010101010101010101010101010101010101010101010101010101010",
     "snapshot": {
       "id": "snapshot-id",
       "agent": "claude-code",
@@ -11,10 +46,10 @@
       "reason": "pre-toggle",
       "created_at": 1780590000000
     },
+    "snapshot_content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "current_content": "{\n  \"skillOverrides\": {\n    \"demo\": \"off\"\n  }\n}\n",
     "current_read_error": null,
     "current_revision": "sha256:ccfff1bc63fae50b64cae13531dd306a1a84e92ba0df35ad1caacecb6e3a02c6",
-    "preview_token": "sha256:a42abe9ac6a482bf8ca8030d1c518ef35d9aa3c870b86f8184c31831e7393c20",
     "changed": true,
     "redacted": false,
     "rollback_supported": true
