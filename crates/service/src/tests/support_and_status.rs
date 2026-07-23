@@ -354,6 +354,59 @@ fn resolve_default_app_data_dir_does_not_overwrite_existing_preferred_data() {
 }
 
 #[test]
+#[cfg(unix)]
+fn resolve_default_app_data_dir_rejects_a_symlink_target_without_chmod_or_migration() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let home = env::temp_dir().join(format!(
+        "skills-copilot-app-data-migration-symlink-test-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let preferred = default_app_data_dir(&home);
+    let legacy = legacy_app_data_dir(&home);
+    let victim = home.join("victim");
+    fs::create_dir_all(&legacy).expect("create legacy app data");
+    fs::write(legacy.join("project-context.json"), "{\"legacy\":true}\n")
+        .expect("seed legacy data");
+    fs::create_dir(&victim).expect("create victim");
+    fs::set_permissions(&victim, fs::Permissions::from_mode(0o755))
+        .expect("set observable victim mode");
+    fs::write(victim.join("sentinel"), "unchanged").expect("seed victim");
+    symlink(&victim, &preferred).expect("create preferred app-data symlink");
+
+    let result = resolve_default_app_data_dir(&home);
+
+    assert!(matches!(result, Err(ServiceError::InvalidRequest(_))));
+    assert_eq!(
+        fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "migration rejection must not chmod the symlink target"
+    );
+    assert_eq!(
+        fs::read_to_string(victim.join("sentinel")).expect("victim sentinel"),
+        "unchanged"
+    );
+    assert!(
+        !victim
+            .join("agent-copilot-app-data-migration.json")
+            .exists(),
+        "migration rejection must not populate the symlink target"
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.join("project-context.json")).expect("legacy source"),
+        "{\"legacy\":true}\n"
+    );
+
+    let _ = fs::remove_file(preferred);
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
 fn explicit_app_data_env_override_bypasses_default_migration() {
     let override_dir = env::temp_dir().join(format!(
         "skills-copilot-app-data-override-test-{}-{}",

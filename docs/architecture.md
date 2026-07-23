@@ -97,8 +97,10 @@ owns bounded wire exposure; Swift owns presentation and interaction state only.
 
 1. The app calls a typed service method such as `catalog.scanAll`.
 2. The service requires `explicit_refresh: true`, accepts one project-context
-   revision, takes the shared app-data mutation owner, and resolves adapter
-   roots from that locked context.
+   revision, opens or creates the app-data owner component-wise with no-follow
+   directory descriptors, locks the final owner descriptor, and resolves
+   adapter roots from that locked context. Final or intermediate owner
+   symlinks fail closed before chmod, catalog creation, or migration.
 3. Scanner enumerates candidate `SKILL.md` files inside allowed roots.
 4. Adapters parse agent-specific metadata and enabled state.
 5. Commands update skill rows, missing-state reconciliation, findings,

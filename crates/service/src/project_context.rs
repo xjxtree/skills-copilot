@@ -8,18 +8,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skills_copilot_commands::{
     action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,
-    lock_app_mutations, ActionConfirmation, ActionPrecondition, ActionPreconditionKind,
-    ActionPreviewBinding, ActionReadbackObservation, ActionReadbackRecord, CommandError,
+    lock_or_create_app_mutations_with_parents, ActionConfirmation, ActionPrecondition,
+    ActionPreconditionKind, ActionPreviewBinding, ActionReadbackObservation, ActionReadbackRecord,
+    CommandError,
 };
 use skills_copilot_core::{
     canonical_project_id, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
     ActionReadbackDomain, ActionTargetKind, ActionTargetRef,
 };
 
-use crate::{
-    create_private_dir_all, display_path, unix_timestamp_millis, write_private_bytes_file,
-    ServiceError,
-};
+use crate::{display_path, unix_timestamp_millis, write_private_bytes_file, ServiceError};
 
 const PROJECT_CONTEXT_SCHEMA_VERSION: u32 = 1;
 const PROJECT_CONTEXT_FILE: &str = "project-context.json";
@@ -278,8 +276,7 @@ fn apply_project_context_mutation(
     let preflight = prepare_project_context_mutation(app_data_dir, mutation.clone(), None)?;
     ensure_action_confirmed(&preview_binding(&preflight.preview), Some(confirmation))?;
 
-    create_private_dir_all(app_data_dir)?;
-    let _owner = lock_app_mutations(app_data_dir)?;
+    let _owner = lock_or_create_app_mutations_with_parents(app_data_dir)?;
     let locked = prepare_project_context_mutation(app_data_dir, mutation, None)?;
     ensure_action_confirmed(&preview_binding(&locked.preview), Some(confirmation))?;
 

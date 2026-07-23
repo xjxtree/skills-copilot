@@ -70,10 +70,15 @@ that clients may infer for arbitrary mutations.
   `action_reference`, `preview_token`, and `confirmed=true`.
 - Before the first product, target, process, catalog, snapshot, or audit
   effect, apply reprojects the action, checks its method and intent ownership,
-  locks every target, and revalidates each accepted revision. The confirmed
-  fresh-filesystem manager owner bootstrap described under Skill Manager is
-  the only coordination exception; a post-bootstrap stale race may retain only
-  that empty private directory. Success returns a typed `readback` covering
+  locks every target, and revalidates each accepted revision. Authorized
+  non-manager app-data initialization walks directory components with
+  no-follow opens, creates missing components privately, and locks the final
+  opened owner descriptor before catalog creation or migration. Final and
+  intermediate symlinks fail closed without changing the linked target's mode,
+  contents, or children. The confirmed fresh-filesystem manager owner
+  bootstrap described under Skill Manager remains the only case where a stale
+  race detected after a successful non-creating preflight may retain an
+  otherwise empty owner directory. Success returns a typed `readback` covering
   every domain declared by the action. Stable failures are
   `unknown_action_reference`,
   `stale_action_reference`, `action_target_mismatch`,
@@ -154,11 +159,13 @@ the client.
   `stale_action_reference` with no new filesystem or catalog artifacts.
 - A valid save may initialize the app catalog, then acquires the shared
   cross-process mutation owner lock on the already existing app-data directory.
-  Under that lock it revalidates the target and complete action binding, begins
-  an SQLite `IMMEDIATE` transaction, records the safety snapshot, atomically
-  writes the config without a target `.lock` file, semantically reads back the
-  config and snapshot, commits the transaction, and finally releases the owner
-  lock.
+  Initialization itself performs a component-wise no-follow create-and-lock on
+  the final owner descriptor before opening or migrating SQLite. Under the
+  subsequently reacquired existing-owner lock, apply revalidates the target and
+  complete action binding, begins an SQLite `IMMEDIATE` transaction, records
+  the safety snapshot, atomically writes the config without a target `.lock`
+  file, semantically reads back the config and snapshot, commits the
+  transaction, and finally releases the owner lock.
 - `snapshot.previewRollback` returns the same typed action fields plus the
   snapshot-content digest and current target revision. Its token binds snapshot
   identity and content, agent, scope, project, target, and current config
@@ -372,14 +379,16 @@ generation, token digest, action id, source revision, phase, state, and
 timestamp. Atomic `0600` replacement changes `reservation/not_started` to one
 `outcome/not_started|verified|partial`, and the next action replaces the same
 record at a higher generation. Replacement uses one fixed controlled path under
-the provider lock, removes bounded legacy crash residue, and verifies the
-parent-directory sync after rename. A failed post-rename durability check is
-`applied_unverified`; malformed, oversized, symlinked, non-regular, or
-unbounded state storage fails closed. Every consumed token is rejected on
-replay. The native client clears the pending token after every confirmed
-attempt and requires a new preview for recovery. Stale or mismatched
-confirmations are rejected before the lock or replay-state file can create an
-app-data directory.
+the provider lock, opens or creates its private parent component-wise with
+no-follow semantics, removes bounded legacy crash residue, and verifies the
+parent-directory sync after rename. A symlinked owner or intermediate component
+is rejected before any provider effect and cannot chmod or populate its target.
+A failed post-rename durability check is `applied_unverified`; malformed,
+oversized, symlinked, non-regular, or unbounded state storage fails closed.
+Every consumed token is rejected on replay. The native client clears the
+pending token after every confirmed attempt and requires a new preview for
+recovery. Stale or mismatched confirmations are rejected before the lock or
+replay-state file can create an app-data directory.
 
 Provider profile saves stage and verify credential replacement in Keychain
 before committing the profile. If the profile commit fails, the service
@@ -467,10 +476,12 @@ presence/value or absence verification, not secret exposure.
   `affected_count`, preconditions, and a signed preview token. Apply requires
   that exact `action_confirmation`.
 - Apply performs a non-creating preflight, takes the shared app-data mutation
-  owner lock, reprojects and revalidates the confirmation under the lock,
-  atomically replaces the private state file, and returns a minimal verified
-  project-context read-back. A stale or mismatched action does not create app
-  data or write state.
+  owner lock, creating an authorized missing owner chain through
+  component-wise no-follow directory descriptors when necessary, reprojects
+  and revalidates the confirmation under the lock, atomically replaces the
+  private state file, and returns a minimal verified project-context read-back.
+  A stale or mismatched action does not create app data or write state; an
+  unsafe owner link does not chmod or populate its target.
 - Clearing the active project preserves Recent Projects. Removing a recent row
   and clearing all recent rows preserve the active project even when it no
   longer appears in the recent list. Clear-recents confirmation reports the
@@ -492,9 +503,12 @@ presence/value or absence verification, not secret exposure.
   revision is checked again while the shared mutation owner lock is held.
 - One SQLite `IMMEDIATE` transaction owns all skill rows, missing-state
   reconciliation, findings, conflicts, and the scan revision for a refresh.
-  Any preparation or commit failure rolls back the whole scan. The response
-  returns `accepted_context_revision`, `catalog_scan_revision`, and a matching
-  verified `readback`.
+  The explicit refresh creates and locks an authorized missing app-data chain
+  on the final no-follow owner descriptor before opening or migrating SQLite;
+  an unsafe owner component fails before catalog creation. Any preparation or
+  commit failure rolls back the whole scan. The response returns
+  `accepted_context_revision`, `catalog_scan_revision`, and a matching verified
+  `readback`.
 - `catalog_scan_revision` versions successful catalog scans only. It is not a
   global version for every catalog mutation and must not be used to authorize
   config, install, manager, triage, or other catalog-backed actions.

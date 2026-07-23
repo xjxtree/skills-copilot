@@ -1,5 +1,6 @@
 use super::*;
 use std::io::{self, Write};
+use std::path::Component;
 use url::Url;
 
 pub(crate) fn scan_all_label(agent_reports: &[AgentCatalogScanReport]) -> String {
@@ -85,8 +86,23 @@ pub(crate) fn legacy_app_data_dir(user_home: &Path) -> PathBuf {
 pub(crate) fn resolve_default_app_data_dir(user_home: &Path) -> Result<PathBuf, ServiceError> {
     let preferred = default_app_data_dir(user_home);
     let legacy = legacy_app_data_dir(user_home);
-    if preferred.exists() || !legacy.is_dir() {
-        return Ok(preferred);
+    match fs::symlink_metadata(&preferred) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ServiceError::InvalidRequest(
+                "preferred app data path must be a non-symlink directory".to_string(),
+            ))
+        }
+        Ok(_) => return Ok(preferred),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    match fs::symlink_metadata(&legacy) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Ok(preferred)
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(preferred),
+        Err(error) => return Err(error.into()),
     }
     migrate_legacy_app_data_dir(&legacy, &preferred)?;
     Ok(preferred)
@@ -104,13 +120,21 @@ fn app_data_dir_for_bundle_id(user_home: &Path, bundle_id: &str) -> PathBuf {
 }
 
 fn migrate_legacy_app_data_dir(source: &Path, target: &Path) -> Result<(), ServiceError> {
-    if target.exists() {
-        return Ok(());
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ServiceError::InvalidRequest(
+                "app data migration target must be a non-symlink directory".to_string(),
+            ))
+        }
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
+    validate_private_directory_no_follow(source)?;
     let parent = target
         .parent()
         .ok_or_else(|| ServiceError::InvalidRequest("app data target has no parent".to_string()))?;
-    fs::create_dir_all(parent)?;
+    validate_private_directory_no_follow(parent)?;
     let target_name = target
         .file_name()
         .and_then(|value| value.to_str())
@@ -119,8 +143,14 @@ fn migrate_legacy_app_data_dir(source: &Path, target: &Path) -> Result<(), Servi
         ".{target_name}.migration-{}",
         unix_timestamp_millis()
     ));
-    if staging.exists() {
-        fs::remove_dir_all(&staging)?;
+    match fs::symlink_metadata(&staging) {
+        Ok(_) => {
+            return Err(ServiceError::InvalidRequest(
+                "app data migration staging path already exists".to_string(),
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
 
     let result = (|| -> Result<(), ServiceError> {
@@ -140,7 +170,7 @@ fn migrate_legacy_app_data_dir(source: &Path, target: &Path) -> Result<(), Servi
             &serde_json::to_string_pretty(&marker)?,
         )?;
         fs::rename(&staging, target)?;
-        set_private_dir_permissions(target)?;
+        create_private_dir_all(target)?;
         Ok(())
     })();
 
@@ -237,9 +267,7 @@ pub(crate) fn parse_scope_param(scope: &str) -> Result<Scope, ServiceError> {
 }
 
 pub(crate) fn create_private_dir_all(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
-    set_private_dir_permissions(path)?;
-    Ok(())
+    create_private_directory_tree_no_follow(path)
 }
 
 pub(crate) fn write_private_text_file(path: &Path, content: &str) -> io::Result<()> {
@@ -261,6 +289,7 @@ pub(crate) fn write_private_bytes_file(path: &Path, content: &[u8]) -> io::Resul
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
     let write_result = (|| -> io::Result<()> {
         let mut file = options.open(&tmp)?;
@@ -294,6 +323,7 @@ pub(crate) fn append_private_line(path: &Path, line: &str) -> io::Result<()> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
     let mut file = options.open(path)?;
     set_private_file_permissions(&file)?;
@@ -331,15 +361,155 @@ fn reject_symlink(path: &Path, label: &str) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn set_private_dir_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+fn create_private_directory_tree_no_follow(path: &Path) -> io::Result<()> {
+    use rustix::fs::{fchmod, Mode};
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    let directory = open_private_directory_tree_no_follow(path, true)?;
+    fchmod(&directory, Mode::from_bits_truncate(0o700)).map_err(io::Error::from)
+}
+
+#[cfg(unix)]
+fn validate_private_directory_no_follow(path: &Path) -> io::Result<()> {
+    open_private_directory_tree_no_follow(path, false).map(drop)
+}
+
+#[cfg(unix)]
+fn open_private_directory_tree_no_follow(
+    path: &Path,
+    create_missing: bool,
+) -> io::Result<fs::File> {
+    use rustix::fs::{mkdirat, open, openat, Mode, OFlags};
+    use rustix::io::Errno;
+
+    let path = normalize_private_root_alias(path)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut current = if path.is_absolute() {
+        open("/", flags, Mode::empty()).map_err(io::Error::from)?
+    } else {
+        open(".", flags, Mode::empty()).map_err(io::Error::from)?
+    };
+    let mut saw_name = false;
+    for component in path.components() {
+        let name = match component {
+            Component::RootDir | Component::CurDir => continue,
+            Component::Normal(name) => name,
+            Component::ParentDir | Component::Prefix(_) => return Err(unsafe_private_path()),
+        };
+        saw_name = true;
+        match openat(&current, name, flags, Mode::empty()) {
+            Ok(next) => current = next,
+            Err(error) if error == Errno::NOENT && create_missing => {
+                let mode = Mode::from_bits_truncate(0o700);
+                match mkdirat(&current, name, mode) {
+                    Ok(()) | Err(Errno::EXIST) => {}
+                    Err(error) => return Err(io::Error::from(error)),
+                }
+                current = openat(&current, name, flags, Mode::empty()).map_err(|error| {
+                    if error == Errno::LOOP || error == Errno::NOTDIR {
+                        unsafe_private_path()
+                    } else {
+                        io::Error::from(error)
+                    }
+                })?;
+            }
+            Err(error) if error == Errno::LOOP || error == Errno::NOTDIR => {
+                return Err(unsafe_private_path())
+            }
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    if !saw_name {
+        return Err(unsafe_private_path());
+    }
+    Ok(fs::File::from(current))
 }
 
 #[cfg(not(unix))]
-fn set_private_dir_permissions(_path: &Path) -> io::Result<()> {
+fn create_private_directory_tree_no_follow(path: &Path) -> io::Result<()> {
+    walk_private_directory_tree_no_follow(path, true)
+}
+
+#[cfg(not(unix))]
+fn validate_private_directory_no_follow(path: &Path) -> io::Result<()> {
+    walk_private_directory_tree_no_follow(path, false)
+}
+
+#[cfg(not(unix))]
+fn walk_private_directory_tree_no_follow(path: &Path, create_missing: bool) -> io::Result<()> {
+    let mut current = PathBuf::new();
+    let mut saw_name = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => return Err(unsafe_private_path()),
+            Component::Normal(name) => {
+                saw_name = true;
+                current.push(name);
+                match fs::symlink_metadata(&current) {
+                    Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                        return Err(unsafe_private_path())
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
+                        fs::create_dir(&current)?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    if !saw_name {
+        return Err(unsafe_private_path());
+    }
     Ok(())
+}
+
+#[cfg(unix)]
+fn normalize_private_root_alias(path: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return Err(unsafe_private_path());
+    }
+    let Some(Component::Normal(first)) = components.next() else {
+        return Ok(path.to_path_buf());
+    };
+    let root_entry = Path::new("/").join(first);
+    let metadata = match fs::symlink_metadata(&root_entry) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(path.to_path_buf());
+    }
+    if metadata.uid() != 0 {
+        return Err(unsafe_private_path());
+    }
+    let mut normalized = fs::canonicalize(&root_entry)?;
+    for component in components {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::RootDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(unsafe_private_path())
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn unsafe_private_path() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "private directory path must not contain symlinks or parent traversal",
+    )
 }
 
 #[cfg(unix)]
@@ -356,9 +526,17 @@ fn set_private_file_permissions(_file: &fs::File) -> io::Result<()> {
 
 #[cfg(unix)]
 fn set_private_path_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use rustix::fs::{fchmod, open, Mode, OFlags};
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = fs::File::from(open(path, flags, Mode::empty()).map_err(io::Error::from)?);
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private file destination is not a regular file",
+        ));
+    }
+    fchmod(&file, Mode::from_bits_truncate(0o600)).map_err(io::Error::from)
 }
 
 #[cfg(not(unix))]

@@ -97,9 +97,14 @@ confirmation, and network posture.
   target before locking. A changed record, reference set, source tree, or
   target revision returns a stale-action failure before any owned write.
 - Writable catalog creation and schema migration take that same owner before
-  opening the mutation connection. A confirmed action then reacquires the
-  owner and revalidates its preconditions before changing catalog or target
-  state; read-only RPCs never migrate an outdated catalog.
+  opening the mutation connection. Confirmed non-manager initialization walks
+  each app-data component with no-follow directory opens, creates only missing
+  components with private permissions, and locks the final opened owner
+  descriptor. A final or intermediate symlink fails closed before its target
+  can be chmodded, populated, or used for catalog migration. A confirmed action
+  then reacquires the existing no-follow owner and revalidates its
+  preconditions before changing catalog or target state; read-only RPCs never
+  migrate an outdated catalog.
 - Skill Manager lock projections and one-time discovery replay state are read
   once from a bounded, no-follow regular-file descriptor. Symlinks,
   non-regular files, oversized inputs, and replacement races fail closed.
@@ -123,6 +128,11 @@ confirmation, and network posture.
   read-back. A stale preview runs no manager process and writes neither targets
   nor replay, catalog, or audit state; only the already-authorized empty owner
   bootstrap may remain after a post-preflight race.
+- App-owned private-file helpers apply the same component-wise no-follow rule
+  before creating a parent directory or opening a write destination. This
+  covers project context, provider replay/profile/activity state, prompt-run
+  metadata, and migration staging. Unsafe parent links are rejected without
+  changing the linked directory's mode, contents, or children.
 - Every catalog commit after a config, skill-file, quarantine, archive, or
   external-manager effect classifies a proven non-commit separately from an
   uncertain commit outcome. Exact reverse compensation is allowed only after a
@@ -160,8 +170,10 @@ confirmation, and network posture.
 
 - Project-context reads are bounded, regular-file-only, and no-follow.
   Preview binds the exact current bytes and candidate state to a signed action;
-  apply revalidates under the shared cross-process owner lock before atomic
-  private-file replacement and semantic read-back.
+  apply creates and locks any authorized missing owner chain through the same
+  component-wise no-follow descriptor walk, then revalidates under the shared
+  cross-process owner lock before atomic private-file replacement and semantic
+  read-back.
 - A stale project preview or stale explicit scan context is rejected by a
   non-creating preflight. It must not create the app-data directory, catalog,
   target file, lock artifact, snapshot, or audit record.
@@ -179,11 +191,12 @@ confirmation, and network posture.
   app-data directory, catalog, lock artifact, config parent, target, snapshot,
   or audit row.
 - A valid apply may initialize the app catalog, then takes the cross-process
-  mutation owner lock on the existing app-data directory. While holding that
-  owner it revalidates every action precondition, begins an SQLite `IMMEDIATE`
-  transaction, performs the atomic file replacement, semantically reads back
-  every declared domain, commits, and releases the owner. It never creates a
-  target-side `.lock` file.
+  mutation owner lock on the existing app-data directory. Catalog
+  initialization creates and locks the no-follow owner on one descriptor;
+  confirmed config apply then reacquires that existing owner, revalidates every
+  action precondition, begins an SQLite `IMMEDIATE` transaction, performs the
+  atomic file replacement, semantically reads back every declared domain,
+  commits, and releases the owner. It never creates a target-side `.lock` file.
 - Failure rolls back the open catalog transaction before file compensation.
   Compensation may restore the original config only when the current target is
   still byte-for-byte the candidate written by that apply. An originally
@@ -215,10 +228,13 @@ confirmation, and network posture.
   fails closed.
 - Provider mutations use an existing canonical parent-directory lock, so a
   rejected stale or mismatched confirmation creates no lock or replay-state
-  artifact. Credential replacement is staged in Keychain, verified, and
-  compensated if the profile write fails. A credential or local metadata
-  effect that cannot be semantically verified is `partial` and
-  `applied_unverified`.
+  artifact. Provider replay and metadata parents are opened or created
+  component-wise with no-follow semantics before file replacement; a
+  symlinked app-data owner or intermediate component is rejected before any
+  provider effect and without changing the link target. Credential replacement
+  is staged in Keychain, verified, and compensated if the profile write fails.
+  A credential or local metadata effect that cannot be semantically verified is
+  `partial` and `applied_unverified`.
 - After a provider request may have left the process, post-request transport,
   response-body read, JSON/schema parsing, audit, or prompt-run persistence
   failures are returned as a typed partial outcome with

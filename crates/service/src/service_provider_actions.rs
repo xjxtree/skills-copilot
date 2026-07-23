@@ -1098,6 +1098,7 @@ fn write_provider_action_state_atomic(
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
+            options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
         }
         let mut file = options.open(&replacement)?;
         set_provider_action_state_file_permissions(&file)?;
@@ -1216,8 +1217,18 @@ fn set_provider_action_state_file_permissions(_file: &fs::File) -> io::Result<()
 
 #[cfg(unix)]
 fn set_provider_action_state_path_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    use rustix::fs::{fchmod, open, Mode, OFlags};
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = fs::File::from(open(path, flags, Mode::empty()).map_err(io::Error::from)?);
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "provider action-state destination is not a regular file",
+        ));
+    }
+    fchmod(&file, Mode::from_bits_truncate(0o600)).map_err(io::Error::from)
 }
 
 #[cfg(not(unix))]

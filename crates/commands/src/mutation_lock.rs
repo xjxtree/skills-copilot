@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io,
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
 
 use fs4::FileExt;
@@ -42,17 +42,46 @@ pub(crate) fn lock_or_create_app_mutations(
     Ok(AppMutationLock { file })
 }
 
+/// Create missing app-data ancestors and lock the owner for a confirmed write.
+///
+/// This is the recursive initialization contract used by catalog refreshes,
+/// project-context applies, and already-confirmed catalog-backed actions.
+/// Skill Manager's fresh-filesystem search exception deliberately does not use
+/// it: that path remains limited to [`lock_or_create_app_mutations`], which may
+/// create only one missing owner leaf below an existing parent.
+pub fn lock_or_create_app_mutations_with_parents(
+    app_data_dir: &Path,
+) -> Result<AppMutationLock, CommandError> {
+    let file = open_app_mutation_directory_tree(app_data_dir, true)?;
+    file.lock_exclusive()?;
+    Ok(AppMutationLock { file })
+}
+
 pub(crate) fn app_mutation_owner_is_missing(app_data_dir: &Path) -> Result<bool, CommandError> {
-    match fs::symlink_metadata(app_data_dir) {
-        Ok(_) => {
-            validate_existing_owner(app_data_dir)?;
-            Ok(false)
+    #[cfg(unix)]
+    {
+        let (parent, name) = open_app_mutation_parent(app_data_dir)?;
+        match open_app_mutation_child(&parent, name) {
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) if is_unsafe_directory_error(&error) => Err(unsafe_owner()),
+            Err(error) => Err(error.into()),
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(error.into()),
+    }
+    #[cfg(not(unix))]
+    {
+        match fs::symlink_metadata(app_data_dir) {
+            Ok(_) => {
+                validate_existing_owner(app_data_dir)?;
+                Ok(false)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
+#[cfg(not(unix))]
 fn validate_existing_owner(path: &Path) -> Result<(), CommandError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -65,17 +94,7 @@ fn validate_existing_owner(path: &Path) -> Result<(), CommandError> {
 
 #[cfg(unix)]
 fn open_existing_app_mutation_owner(path: &Path) -> Result<File, CommandError> {
-    use rustix::fs::{open, Mode, OFlags};
-
-    validate_existing_owner(path)?;
-    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = File::from(open(path, flags, Mode::empty()).map_err(io::Error::from)?);
-    if !file.metadata()?.is_dir() {
-        return Err(CommandError::UnsafeConfigPath(
-            "mutation lock owner is not the app data directory".to_string(),
-        ));
-    }
-    Ok(file)
+    open_app_mutation_directory_tree(path, false)
 }
 
 #[cfg(not(unix))]
@@ -101,7 +120,7 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
     path: &Path,
     before_parent_open: impl FnOnce(&Path),
 ) -> Result<File, CommandError> {
-    use rustix::fs::{fchmod, mkdirat, open, openat, Mode, OFlags};
+    use rustix::fs::{fchmod, mkdirat, Mode};
 
     if !app_mutation_owner_is_missing(path)? {
         return open_existing_app_mutation_owner(path);
@@ -122,26 +141,209 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
         )
     })?;
     before_parent_open(parent);
-    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let parent_file = open(parent, directory_flags, Mode::empty()).map_err(io::Error::from)?;
+    let (parent_file, opened_name) = open_app_mutation_parent(path)?;
+    if opened_name != name {
+        return Err(unsafe_owner());
+    }
     let private_mode = Mode::from_bits_truncate(0o700);
     let created = match mkdirat(&parent_file, name, private_mode).map_err(io::Error::from) {
         Ok(()) => true,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
         Err(error) => return Err(error.into()),
     };
-    let owner =
-        openat(&parent_file, name, directory_flags, Mode::empty()).map_err(io::Error::from)?;
+    let owner = open_app_mutation_child(&parent_file, name).map_err(|error| {
+        if is_unsafe_directory_error(&error) {
+            unsafe_owner()
+        } else {
+            error.into()
+        }
+    })?;
     if created {
         fchmod(&owner, private_mode).map_err(io::Error::from)?;
     }
-    let file = File::from(owner);
+    let file = owner;
     if !file.metadata()?.is_dir() {
         return Err(CommandError::UnsafeConfigPath(
             "mutation lock owner is not the app data directory".to_string(),
         ));
     }
     Ok(file)
+}
+
+#[cfg(unix)]
+fn open_app_mutation_directory_tree(
+    path: &Path,
+    create_missing: bool,
+) -> Result<File, CommandError> {
+    use rustix::fs::{fchmod, mkdirat, open, openat, Mode, OFlags};
+    use rustix::io::Errno;
+
+    let path = normalize_trusted_root_alias(path)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut current = if path.is_absolute() {
+        open("/", flags, Mode::empty()).map_err(io::Error::from)?
+    } else {
+        open(".", flags, Mode::empty()).map_err(io::Error::from)?
+    };
+    let mut saw_name = false;
+    for component in path.components() {
+        let name = match component {
+            Component::RootDir | Component::CurDir => continue,
+            Component::Normal(name) => name,
+            Component::ParentDir | Component::Prefix(_) => return Err(unsafe_owner()),
+        };
+        saw_name = true;
+        match openat(&current, name, flags, Mode::empty()) {
+            Ok(next) => current = next,
+            Err(error) if error == Errno::NOENT && create_missing => {
+                let mode = Mode::from_bits_truncate(0o700);
+                match mkdirat(&current, name, mode) {
+                    Ok(()) | Err(Errno::EXIST) => {}
+                    Err(error) => return Err(io::Error::from(error).into()),
+                }
+                let next = openat(&current, name, flags, Mode::empty()).map_err(|error| {
+                    let error = io::Error::from(error);
+                    if is_unsafe_directory_error(&error) {
+                        unsafe_owner()
+                    } else {
+                        error.into()
+                    }
+                })?;
+                fchmod(&next, mode).map_err(io::Error::from)?;
+                current = next;
+            }
+            Err(error) if error == Errno::LOOP || error == Errno::NOTDIR => {
+                return Err(unsafe_owner())
+            }
+            Err(error) => return Err(io::Error::from(error).into()),
+        }
+    }
+    if !saw_name {
+        return Err(unsafe_owner());
+    }
+    let file = File::from(current);
+    if !file.metadata()?.is_dir() {
+        return Err(unsafe_owner());
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_app_mutation_directory_tree(
+    path: &Path,
+    create_missing: bool,
+) -> Result<File, CommandError> {
+    let mut current = PathBuf::new();
+    let mut saw_name = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => return Err(unsafe_owner()),
+            Component::Normal(name) => {
+                saw_name = true;
+                current.push(name);
+                match fs::symlink_metadata(&current) {
+                    Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                        return Err(unsafe_owner())
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
+                        fs::create_dir(&current)?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+    if !saw_name {
+        return Err(unsafe_owner());
+    }
+    validate_existing_owner(path)?;
+    let canonical_owner = path.canonicalize()?;
+    let file = File::open(canonical_owner)?;
+    if !file.metadata()?.is_dir() {
+        return Err(unsafe_owner());
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_app_mutation_parent(path: &Path) -> Result<(File, &std::ffi::OsStr), CommandError> {
+    let parent = path.parent().ok_or_else(unsafe_owner)?;
+    let name = path.file_name().ok_or_else(unsafe_owner)?;
+    let file = open_app_mutation_directory_tree(parent, false)?;
+    Ok((file, name))
+}
+
+#[cfg(unix)]
+fn open_app_mutation_child(parent: &File, name: &std::ffi::OsStr) -> Result<File, io::Error> {
+    use rustix::fs::{openat, Mode, OFlags};
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    openat(parent, name, flags, Mode::empty())
+        .map(File::from)
+        .map_err(io::Error::from)
+}
+
+#[cfg(unix)]
+fn normalize_trusted_root_alias(path: &Path) -> Result<PathBuf, CommandError> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return Err(unsafe_owner());
+    }
+    let Some(Component::Normal(first)) = components.next() else {
+        return Ok(path.to_path_buf());
+    };
+    let root_entry = Path::new("/").join(first);
+    let metadata = match fs::symlink_metadata(&root_entry) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_symlink() {
+        return Ok(path.to_path_buf());
+    }
+    if metadata.uid() != 0 {
+        return Err(unsafe_owner());
+    }
+    let mut normalized = fs::canonicalize(&root_entry)?;
+    for component in components {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::RootDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(unsafe_owner())
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn unsafe_owner() -> CommandError {
+    CommandError::UnsafeConfigPath(
+        "mutation lock owner must be a non-symlink app data directory".to_string(),
+    )
+}
+
+fn is_unsafe_directory_error(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error().is_some_and(|code| {
+            code == rustix::io::Errno::LOOP.raw_os_error()
+                || code == rustix::io::Errno::NOTDIR.raw_os_error()
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        error.kind() == io::ErrorKind::InvalidInput
+    }
 }
 
 #[cfg(not(unix))]
@@ -312,6 +514,69 @@ mod tests {
             !root.join("missing-parent").exists(),
             "missing parent rejection must remain zero-write"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn recursive_confirmed_owner_creation_rejects_intermediate_and_final_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-recursive-mutation-owner-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+
+        let recursive_owner = root.join("new-parent/new-child/app-data");
+        let lock = lock_or_create_app_mutations_with_parents(&recursive_owner)
+            .expect("confirmed catalog-style owner creation");
+        assert_eq!(
+            std::fs::metadata(&recursive_owner)
+                .expect("owner metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        drop(lock);
+
+        let victim = root.join("victim");
+        std::fs::create_dir(&victim).expect("create victim");
+        std::fs::write(victim.join("sentinel"), "unchanged").expect("seed victim");
+        let linked_component = root.join("linked-component");
+        symlink(&victim, &linked_component).expect("create intermediate link");
+        let intermediate_result =
+            lock_or_create_app_mutations_with_parents(&linked_component.join("nested/app-data"));
+        assert!(matches!(
+            intermediate_result,
+            Err(CommandError::UnsafeConfigPath(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(victim.join("sentinel")).expect("victim sentinel"),
+            "unchanged"
+        );
+        assert!(
+            !victim.join("nested").exists(),
+            "an intermediate symlink must not redirect recursive creation"
+        );
+
+        let linked_owner = root.join("linked-owner");
+        symlink(&victim, &linked_owner).expect("create final owner link");
+        let final_result = lock_or_create_app_mutations_with_parents(&linked_owner);
+        assert!(matches!(
+            final_result,
+            Err(CommandError::UnsafeConfigPath(_))
+        ));
+        assert!(
+            !victim.join("catalog.sqlite").exists(),
+            "a final symlink target must remain untouched"
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

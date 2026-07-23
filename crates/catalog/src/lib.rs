@@ -287,8 +287,12 @@ pub enum CatalogError {
 
 impl Catalog {
     pub fn open(path: &Path) -> Result<Self, CatalogError> {
+        let path = normalize_sqlite_root_alias(path);
         Ok(Self {
-            conn: Connection::open(path)?,
+            conn: Connection::open_with_flags(
+                &path,
+                OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )?,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -296,8 +300,12 @@ impl Catalog {
     }
 
     pub fn open_read_only(path: &Path) -> Result<Self, CatalogError> {
+        let path = normalize_sqlite_root_alias(path);
         Ok(Self {
-            conn: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+            conn: Connection::open_with_flags(
+                &path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )?,
             fail_next_commit: Cell::new(false),
             fail_next_commit_outcome: Cell::new(false),
             fail_next_rollback: Cell::new(false),
@@ -968,6 +976,47 @@ impl Catalog {
         )?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn normalize_sqlite_root_alias(path: &Path) -> PathBuf {
+    use std::{fs, os::unix::fs::MetadataExt, path::Component};
+
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return path.to_path_buf();
+    }
+    let Some(Component::Normal(first)) = components.next() else {
+        return path.to_path_buf();
+    };
+    let root_entry = Path::new("/").join(first);
+    let Ok(metadata) = fs::symlink_metadata(&root_entry) else {
+        return path.to_path_buf();
+    };
+    if !metadata.file_type().is_symlink() || metadata.uid() != 0 {
+        return path.to_path_buf();
+    }
+    let Ok(mut normalized) = fs::canonicalize(root_entry) else {
+        return path.to_path_buf();
+    };
+    for component in components {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::RootDir | Component::ParentDir | Component::Prefix(_) => {
+                return path.to_path_buf()
+            }
+        }
+    }
+    normalized
+}
+
+#[cfg(not(unix))]
+fn normalize_sqlite_root_alias(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 impl CatalogImmediateTransaction<'_> {
@@ -2441,6 +2490,48 @@ mod tests {
             before
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn catalog_open_rejects_a_symlink_without_mutating_its_target() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-catalog-symlink-open-{}-{}",
+            std::process::id(),
+            current_time_for_test()
+        ));
+        std::fs::create_dir_all(&root).expect("create catalog test root");
+        let target = root.join("victim.sqlite");
+        let link = root.join("catalog.sqlite");
+        let catalog = Catalog::open(&target).expect("create target catalog");
+        catalog.init().expect("initialize target catalog");
+        drop(catalog);
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))
+            .expect("set observable target mode");
+        let bytes = std::fs::read(&target).expect("target bytes before rejection");
+        symlink(&target, &link).expect("create catalog symlink");
+
+        let writable = Catalog::open(&link);
+        let read_only = Catalog::open_read_only_current(&link);
+
+        assert!(writable.is_err());
+        assert!(read_only.is_err());
+        assert_eq!(
+            std::fs::read(&target).expect("target bytes after rejection"),
+            bytes
+        );
+        assert_eq!(
+            std::fs::metadata(&target)
+                .expect("target metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+        let _ = std::fs::remove_file(link);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

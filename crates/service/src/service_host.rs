@@ -880,8 +880,7 @@ impl ServiceHost {
     }
 
     pub(crate) fn open_catalog(&self) -> Result<Catalog, ServiceError> {
-        create_private_dir_all(&self.app_data_dir)?;
-        let _owner = lock_app_mutations(&self.app_data_dir)?;
+        let _owner = lock_or_create_app_mutations_with_parents(&self.app_data_dir)?;
         self.open_catalog_while_mutation_owner_held()
     }
 
@@ -921,8 +920,7 @@ impl ServiceHost {
             return Err(CommandError::StaleActionReference.into());
         }
 
-        create_private_dir_all(&self.app_data_dir)?;
-        let _owner = lock_app_mutations(&self.app_data_dir)?;
+        let _owner = lock_or_create_app_mutations_with_parents(&self.app_data_dir)?;
         let accepted_context_revision =
             effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?;
         if params
