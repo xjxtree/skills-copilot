@@ -3,296 +3,92 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var store: SkillStore
-    @State private var isSkillManagerSheetPresented = false
-    @State private var isPreflightSheetPresented = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            List {
-                Section(UIStrings.text("sidebar.primaryNavigation", "Navigate")) {
-                    VStack(spacing: 8) {
-                        SidebarNavigationCardButton(
-                            title: SidebarContentMode.skills.title,
-                            subtitle: skillButtonSubtitle,
-                            systemImage: SidebarContentMode.skills.systemImage,
-                            count: String(agentSkillCount),
-                            metrics: skillCardMetrics,
-                            isSelected: isSkillCardSelected
-                        ) {
-                            selectSkills()
-                        }
+        List(selection: routeSelection) {
+            Section(UIStrings.text("sidebar.primaryNavigation", "Navigate")) {
+                PrimarySidebarRow(
+                    title: UIStrings.text(
+                        "sidebar.route.projectOverview",
+                        "Project Overview"
+                    ),
+                    subtitle: UIStrings.text(
+                        "sidebar.route.projectOverview.subtitle",
+                        "Status, readiness, and recent work"
+                    ),
+                    systemImage: "rectangle.3.group"
+                )
+                .tag(AppRoute.overview)
 
-                        SidebarNavigationCardButton(
-                            title: SidebarContentMode.sessions.title,
-                            subtitle: sessionButtonSubtitle,
-                            systemImage: SidebarContentMode.sessions.systemImage,
-                            count: sessionNavigationCountText,
-                            metrics: sessionCardMetrics,
-                            isSelected: isSessionCardSelected
-                        ) {
-                            selectSessions()
-                        }
+                PrimarySidebarRow(
+                    title: UIStrings.text("sidebar.route.skills", "Skills"),
+                    subtitle: UIStrings.text(
+                        "sidebar.route.skills.subtitle",
+                        "Capabilities and attention"
+                    ),
+                    systemImage: "square.stack.3d.up"
+                )
+                .tag(AppRoute.skills)
 
-                        SidebarNavigationCardButton(
-                            title: SidebarContentMode.config.title,
-                            subtitle: AgentConfigDisplay.shortTargetPath(for: store.agentFilter, store: store),
-                            systemImage: SidebarContentMode.config.systemImage,
-                            count: configCountText,
-                            metrics: configCardMetrics,
-                            isSelected: isConfigCardSelected
-                        ) {
-                            selectConfig()
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
+                PrimarySidebarRow(
+                    title: UIStrings.text("sidebar.route.sessions", "Sessions"),
+                    subtitle: UIStrings.text(
+                        "sidebar.route.sessions.subtitle",
+                        "Find and continue local work"
+                    ),
+                    systemImage: "bubble.left.and.text.bubble.right"
+                )
+                .tag(AppRoute.sessions)
             }
-            .listStyle(.sidebar)
-            .frame(maxHeight: .infinity)
-
-            Divider()
-                .opacity(0.35)
-
-            SidebarFooterToolRow(
-                isSkillManagerPresented: isSkillManagerSheetPresented,
-                onOpenSkillManager: {
-                    isSkillManagerSheetPresented = true
-                },
-                onOpenPreflight: {
-                    isPreflightSheetPresented = true
-                }
-            )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .padding(.bottom, 8)
         }
+        .listStyle(.sidebar)
         .navigationTitle("")
-        .sheet(isPresented: $isSkillManagerSheetPresented) {
-            SkillPackageManagerSheet()
-                .environmentObject(store)
-        }
-        .sheet(isPresented: $isPreflightSheetPresented) {
-            TaskPreflightPreviewSheet()
-                .environmentObject(store)
-        }
     }
 
-    private var isSessionCardSelected: Bool {
-        store.sidebarContentMode == .sessions
-    }
-
-    private var isSkillCardSelected: Bool {
-        store.sidebarContentMode == .skills
-    }
-
-    private var isConfigCardSelected: Bool {
-        store.sidebarContentMode == .config
-    }
-
-    private var agentSkills: [SkillRecord] {
-        SkillListModel.currentSkills(store.skills)
-            .filter { store.agentFilter.includes($0) }
-    }
-
-    private var agentDisabledSkills: [SkillRecord] {
-        AgentConfigDisplay.disabledSkills(for: store.agentFilter, store: store)
-    }
-
-    private var agentSkillCount: Int {
-        agentSkills.count
-    }
-
-    private var agentEnabledCount: Int {
-        agentSkills.filter {
-            DisplayText.statusKind($0.state, enabled: $0.enabled) == .enabled
-        }.count
-    }
-
-    private var agentFindingCount: Int {
-        SkillListModel.displayIssueCount(
-            skills: store.skills,
-            findings: store.findings,
-            conflicts: store.conflicts,
-            agentFilter: store.agentFilter
+    private var routeSelection: Binding<AppRoute?> {
+        Binding(
+            get: {
+                switch store.appRoute {
+                case .overview, .skills, .sessions:
+                    return store.appRoute
+                case .advanced:
+                    return nil
+                }
+            },
+            set: { route in
+                guard let route else { return }
+                store.selectAppRoute(route)
+            }
         )
     }
+}
 
-    private var agentConflictCount: Int {
-        store.selectedAgentHealthSummary?.conflictCount ?? 0
-    }
+private struct PrimarySidebarRow: View {
+    let title: String
+    let subtitle: String?
+    let systemImage: String
 
-    private var agentDisabledCount: Int {
-        agentDisabledSkills.count
-    }
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.medium))
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 20)
 
-    private var sessionNavigationCountText: String {
-        let preview = store.localSessionPreviewResult
-        if preview.totalMatchedCount > preview.sessionRows.count {
-            return "\(preview.sessionRows.count)/\(preview.totalMatchedCount)"
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.body)
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
         }
-        return String(max(preview.totalMatchedCount, preview.count))
-    }
-
-    private var sessionCardMetrics: [SidebarNavigationMetric] {
-        [
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.sessions.userShort", "User"),
-                value: String(store.scopedLocalSessionUserMessageCount),
-                tone: countTone(store.scopedLocalSessionUserMessageCount, active: .info)
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.sessions.totalShort", "Msg"),
-                value: String(store.scopedLocalSessionTotalMessageCount),
-                tone: countTone(store.scopedLocalSessionTotalMessageCount, active: .info)
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.sessions.toolShort", "Tool"),
-                value: String(store.scopedLocalSessionToolCallCount),
-                tone: countTone(store.scopedLocalSessionToolCallCount, active: .warning)
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.sessions.skillShort", "Skill"),
-                value: String(store.scopedLocalSessionSkillCallCount),
-                tone: countTone(store.scopedLocalSessionSkillCallCount, active: .positive)
-            )
-        ]
-    }
-
-    private var skillCardMetrics: [SidebarNavigationMetric] {
-        [
-            SidebarNavigationMetric(
-                title: UIStrings.text("agentCopilot.metric.enabled", "Enabled"),
-                value: String(agentEnabledCount),
-                tone: countTone(agentEnabledCount, active: .positive)
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("agentCopilot.metric.disabled", "Disabled"),
-                value: String(agentDisabledCount),
-                tone: agentDisabledCount > 0 ? .warning : .positive
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("agentCopilot.metric.findings", "Issues"),
-                value: String(agentFindingCount),
-                tone: agentFindingCount > 0 ? .warning : .positive
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("agentCopilot.metric.conflicts", "Conflicts"),
-                value: String(agentConflictCount),
-                tone: agentConflictCount > 0 ? .danger : .positive
-            )
-        ]
-    }
-
-    private var configCardMetrics: [SidebarNavigationMetric] {
-        [
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.config.filesShort", "Files"),
-                value: String(configDocumentCount),
-                tone: countTone(configDocumentCount, active: .info)
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.config.projectShort", "Project"),
-                value: String(projectConfigDocumentCount),
-                tone: countTone(projectConfigDocumentCount, active: .positive)
-            ),
-            SidebarNavigationMetric(
-                title: UIStrings.text("sidebar.config.historyShort", "History"),
-                value: String(configHistoryCount),
-                tone: countTone(configHistoryCount, active: .info)
-            )
-        ]
-    }
-
-    private func countTone(_ value: Int, active: SidebarNavigationMetricTone) -> SidebarNavigationMetricTone {
-        value > 0 ? active : .muted
-    }
-
-    private var selectedConfigDocuments: [ConfigDocumentRecord] {
-        store.currentAgentConfigDocuments.filter { $0.agent == store.agentFilter.rawValue }
-    }
-
-    private var configDocumentCount: Int {
-        guard store.agentFilter != .all else { return 0 }
-        return selectedConfigDocuments.isEmpty ? expectedConfigDocumentCount : selectedConfigDocuments.count
-    }
-
-    private var projectConfigDocumentCount: Int {
-        guard store.agentFilter != .all else { return 0 }
-        let loadedProjectCount = selectedConfigDocuments.filter { document in
-            document.scope.localizedCaseInsensitiveContains("project")
-        }.count
-        return selectedConfigDocuments.isEmpty ? expectedProjectConfigDocumentCount : loadedProjectCount
-    }
-
-    private var configHistoryCount: Int {
-        AgentConfigSidebarModel.filteredSnapshots(
-            store.agentConfigSnapshots,
-            agentFilter: store.agentFilter,
-            scopeFilter: .all,
-            searchText: ""
-        ).count
-    }
-
-    private var configCountText: String? {
-        store.agentFilter == .all ? nil : String(configDocumentCount)
-    }
-
-    private var expectedConfigDocumentCount: Int {
-        switch store.agentFilter {
-        case .claudeCode, .codex, .opencode, .pi:
-            return store.activeProjectContext == nil ? 1 : 2
-        case .hermes, .openclaw:
-            return 1
-        case .all:
-            return 0
-        }
-    }
-
-    private var expectedProjectConfigDocumentCount: Int {
-        switch store.agentFilter {
-        case .claudeCode, .codex, .opencode, .pi:
-            return store.activeProjectContext == nil ? 0 : 1
-        case .hermes, .openclaw, .all:
-            return 0
-        }
-    }
-
-    private func selectSessions() {
-        store.sidebarContentMode = .sessions
-        if let session = store.selectedLocalSession ?? store.filteredLocalSessionRows.first {
-            store.selectLocalSession(session)
-        } else {
-            store.selectedSidebarSelection = nil
-        }
-        if !store.isPreviewingLocalSessions {
-            Task { await store.refreshSelectedAgentLocalSessionsIfNeeded() }
-        }
-    }
-
-    private func selectSkills() {
-        let nextSelection = store.selectedSkill.map { SidebarSelection.skill($0.id) }
-        guard store.sidebarContentMode != .skills || store.selectedSidebarSelection != nextSelection else { return }
-        store.sidebarContentMode = .skills
-        if let nextSelection {
-            store.selectedSidebarSelection = nextSelection
-        } else {
-            store.selectedSidebarSelection = nil
-        }
-    }
-
-    private func selectConfig() {
-        store.enterConfigMode()
-    }
-
-    private var sessionButtonSubtitle: String {
-        if store.localSessionPreviewResult.count == 0 {
-            return UIStrings.text("sidebar.mode.sessions.subtitle", "Local session analysis")
-        }
-        return UIStrings.text("sidebar.mode.sessions.loaded", "Local sessions")
-    }
-
-    private var skillButtonSubtitle: String {
-        UIStrings.text("sidebar.mode.skills.subtitle", "Filter and manage skills")
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
     }
 }
 
