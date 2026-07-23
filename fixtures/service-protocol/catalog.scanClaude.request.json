@@ -1,5 +1,8 @@
 {
   "id": "fixture-catalog-scan-claude",
   "method": "catalog.scanClaude",
-  "params": {}
+  "params": {
+    "explicit_refresh": true,
+    "expected_context_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
 }

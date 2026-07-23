@@ -19,7 +19,13 @@ truth, and `docs/service-protocol.md` describes the current semantics.
 - `catalog.scanAll.response.json` covers all supported adapter families and the
   complete, partial, skipped, and empty-root diagnostic shapes.
 - `catalog.scanClaude.response.json` covers the single-agent form of the same
-  typed scan diagnostics and redacted paths.
+  typed scan diagnostics and redacted paths. Both scan fixtures bind an
+  accepted project-context revision to a verified scan-only catalog revision;
+  their requests carry `explicit_refresh: true` because the invocation itself
+  confirms this derived-cache refresh.
+- Project context fixtures cover all four read-only preview and
+  confirmation-bound apply pairs, including exact affected counts and
+  project-context read-back.
 - `adapter.listCapabilities.response.json`, `service.status.response.json`, and
   `app.stateSnapshot.response.json` expose the same adapter capability matrix.
 - Catalog import/export fixtures cover local directory and app-owned staging

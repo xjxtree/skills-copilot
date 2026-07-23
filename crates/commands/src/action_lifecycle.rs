@@ -112,6 +112,7 @@ pub struct ActionPreviewBinding {
 #[non_exhaustive]
 pub enum ActionPreconditionKind {
     CatalogRecord,
+    ProjectContext,
     AgentConfig,
     SourceFile,
     TargetFile,
@@ -653,14 +654,19 @@ pub fn validate_action_method_ownership(
                 )
         }
         ActionKind::ProjectContext => {
-            preview_method == "project.validateContext"
-                && matches!(
-                    apply_method,
-                    Some("project.setContext")
-                        | Some("project.clearContext")
-                        | Some("project.removeRecentContext")
-                        | Some("project.clearRecentContexts")
-                )
+            matches!(
+                (preview_method, apply_method),
+                ("project.previewSetContext", Some("project.setContext"))
+                    | ("project.previewClearContext", Some("project.clearContext"))
+                    | (
+                        "project.previewRemoveRecentContext",
+                        Some("project.removeRecentContext")
+                    )
+                    | (
+                        "project.previewClearRecentContexts",
+                        Some("project.clearRecentContexts")
+                    )
+            )
         }
         ActionKind::ProviderProfile => {
             matches!(
@@ -728,7 +734,13 @@ pub fn validate_action_intent(kind: ActionKind, intent: ActionIntent) -> Result<
             | (ActionKind::ResumeSession, ActionIntent::ResumeSession)
             | (ActionKind::TriageFinding, ActionIntent::TriageFinding)
             | (ActionKind::TuneRule, ActionIntent::TuneRule)
-            | (ActionKind::ProjectContext, ActionIntent::SetProjectContext)
+            | (
+                ActionKind::ProjectContext,
+                ActionIntent::SetProjectContext
+                    | ActionIntent::ClearProjectContext
+                    | ActionIntent::RemoveRecentProjectContext
+                    | ActionIntent::ClearRecentProjectContexts
+            )
             | (
                 ActionKind::ProviderProfile,
                 ActionIntent::SaveProviderProfile | ActionIntent::DeleteProviderProfile
@@ -793,6 +805,9 @@ fn action_intent_wire_value(intent: ActionIntent) -> &'static str {
         ActionIntent::TriageFinding => "triage_finding",
         ActionIntent::TuneRule => "tune_rule",
         ActionIntent::SetProjectContext => "set_project_context",
+        ActionIntent::ClearProjectContext => "clear_project_context",
+        ActionIntent::RemoveRecentProjectContext => "remove_recent_project_context",
+        ActionIntent::ClearRecentProjectContexts => "clear_recent_project_contexts",
         ActionIntent::SaveProviderProfile => "save_provider_profile",
         ActionIntent::DeleteProviderProfile => "delete_provider_profile",
         ActionIntent::TestProviderConnection => "test_provider_connection",
@@ -832,6 +847,7 @@ fn action_readback_wire_value(domain: ActionReadbackDomain) -> &'static str {
 fn precondition_kind_wire_value(kind: ActionPreconditionKind) -> &'static str {
     match kind {
         ActionPreconditionKind::CatalogRecord => "catalog_record",
+        ActionPreconditionKind::ProjectContext => "project_context",
         ActionPreconditionKind::AgentConfig => "agent_config",
         ActionPreconditionKind::SourceFile => "source_file",
         ActionPreconditionKind::TargetFile => "target_file",

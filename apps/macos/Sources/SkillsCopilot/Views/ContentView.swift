@@ -493,7 +493,7 @@ private struct TitlebarProjectPickerControl: View {
                         Spacer(minLength: 8)
 
                         Button(role: .destructive) {
-                            Task { await store.clearRecentProjects() }
+                            Task { await store.previewClearRecentProjects() }
                         } label: {
                             Text(UIStrings.clearRecentProjectsCompact)
                                 .font(.caption)
@@ -562,7 +562,7 @@ private struct TitlebarProjectPickerControl: View {
 
                     Button(role: .destructive) {
                         isPopoverPresented = false
-                        Task { await store.clearProject() }
+                        Task { await store.previewClearProject() }
                     } label: {
                         Label(UIStrings.clearProject, systemImage: "xmark.circle")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -578,6 +578,23 @@ private struct TitlebarProjectPickerControl: View {
         .help(projectHelp)
         .accessibilityLabel(UIStrings.text("project.chooseMenu", "Project"))
         .accessibilityValue(projectTitle)
+        .confirmationDialog(
+            projectConfirmationTitle,
+            isPresented: Binding(
+                get: { store.projectContextPendingAction != nil },
+                set: { if !$0 { store.cancelProjectContextPendingAction() } }
+            ),
+            presenting: store.projectContextPendingAction
+        ) { pending in
+            Button(projectConfirmationButton(pending), role: .destructive) {
+                Task { await store.confirmProjectContextPendingAction() }
+            }
+            Button(UIStrings.cancel, role: .cancel) {
+                store.cancelProjectContextPendingAction()
+            }
+        } message: { pending in
+            Text(projectConfirmationMessage(pending))
+        }
     }
 
     private var projectTitle: String {
@@ -638,6 +655,36 @@ private struct TitlebarProjectPickerControl: View {
 
     private func recentProjectPath(_ context: ProjectContext) -> String {
         DisplayText.privacyPath(context.rootPath, privacyModeEnabled: true)
+    }
+
+    private var projectConfirmationTitle: String {
+        guard let pending = store.projectContextPendingAction else {
+            return UIStrings.projectActionConfirmationTitle
+        }
+        switch pending {
+        case .clearActive:
+            return UIStrings.clearProject
+        case .clearRecent:
+            return UIStrings.clearRecentProjects
+        }
+    }
+
+    private func projectConfirmationButton(_ pending: ProjectContextPendingAction) -> String {
+        switch pending {
+        case .clearActive:
+            return UIStrings.clearProject
+        case .clearRecent:
+            return UIStrings.clearRecentProjectsCompact
+        }
+    }
+
+    private func projectConfirmationMessage(_ pending: ProjectContextPendingAction) -> String {
+        switch pending {
+        case .clearActive:
+            return UIStrings.clearProjectConfirmation
+        case .clearRecent(let preview):
+            return UIStrings.clearRecentProjectsConfirmation(preview.affectedCount)
+        }
     }
 }
 

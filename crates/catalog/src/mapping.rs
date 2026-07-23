@@ -316,7 +316,7 @@ pub(crate) fn empty_string_as_none(value: String) -> Option<String> {
 }
 
 pub fn migration_count() -> usize {
-    7
+    8
 }
 
 pub(crate) fn finding_triage_key(finding: &RuleFindingDraft, triage_context: &str) -> String {

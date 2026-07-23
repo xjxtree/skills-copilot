@@ -238,6 +238,12 @@ pub struct CatalogPageSnapshot<Record> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct CatalogScanRevisionRecord {
+    pub generation: i64,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct ConflictGroupRecord {
     pub id: String,
     pub definition_id: String,
@@ -355,6 +361,60 @@ impl Catalog {
             fail_commit: self.fail_next_commit.replace(false),
             fail_commit_outcome: self.fail_next_commit_outcome.replace(false),
             fail_rollback: self.fail_next_rollback.replace(false),
+        })
+    }
+
+    pub fn catalog_scan_revision(&self) -> Result<CatalogScanRevisionRecord, CatalogError> {
+        self.conn
+            .query_row(
+                "SELECT generation, revision FROM catalog_scan_state WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(CatalogScanRevisionRecord {
+                        generation: row.get(0)?,
+                        revision: row.get(1)?,
+                    })
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    /// Advances the scan-only catalog revision inside the caller's transaction.
+    ///
+    /// Scan orchestration calls this only after every adapter row, finding, and
+    /// conflict update has succeeded, so the revision commits or rolls back
+    /// with the complete refresh.
+    pub fn advance_catalog_scan_revision(
+        &self,
+        operation: &str,
+        accepted_context_revision: &str,
+    ) -> Result<CatalogScanRevisionRecord, CatalogError> {
+        let previous = self.catalog_scan_revision()?;
+        let generation = previous.generation.saturating_add(1);
+        let generation_text = generation.to_string();
+        let mut hasher = Sha256::new();
+        for (label, value) in [
+            ("domain", "agent-copilot/catalog-scan-revision/v1"),
+            ("previous", previous.revision.as_str()),
+            ("generation", generation_text.as_str()),
+            ("operation", operation),
+            ("context", accepted_context_revision),
+        ] {
+            hasher.update((label.len() as u64).to_be_bytes());
+            hasher.update(label.as_bytes());
+            hasher.update((value.len() as u64).to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
+        let revision = format!("sha256:{:x}", hasher.finalize());
+        self.conn.execute(
+            "UPDATE catalog_scan_state
+             SET generation = ?1, revision = ?2
+             WHERE singleton = 1",
+            params![generation, revision],
+        )?;
+        Ok(CatalogScanRevisionRecord {
+            generation,
+            revision,
         })
     }
 

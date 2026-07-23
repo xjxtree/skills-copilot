@@ -61,9 +61,13 @@
         "skillManager.applyLocalArchiveUpdate",
         "skillManager.deleteLocal",
         "project.getContext",
+        "project.previewSetContext",
         "project.setContext",
+        "project.previewClearContext",
         "project.clearContext",
+        "project.previewRemoveRecentContext",
         "project.removeRecentContext",
+        "project.previewClearRecentContexts",
         "project.clearRecentContexts",
         "project.validateContext",
         "catalog.listSkills",
@@ -103,6 +107,7 @@
       },
       "project_context": {
         "source": "stored",
+        "revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "active": {
           "id": "project-fixture-id",
           "name": "Fixture Project",

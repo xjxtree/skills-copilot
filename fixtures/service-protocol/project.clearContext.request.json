@@ -1,5 +1,18 @@
 {
   "id": "fixture-project-clear-context",
   "method": "project.clearContext",
-  "params": {}
+  "params": {
+    "action_confirmation": {
+      "reference": {
+        "action_id": "action:clear_project_context:2222222222222222222222222222222222222222222222222222222222222222",
+        "source_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "target": {
+          "kind": "config",
+          "id": "project-context"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "confirmed": true
+    }
+  }
 }

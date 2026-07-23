@@ -1123,6 +1123,13 @@
 "message.savedSettings" = "设置已保存并完成验证。";
 "message.projectSelectedAndScanned" = "已选择 %@ 并刷新 catalog。";
 "message.projectClearedAndScanned" = "已清除项目上下文并刷新 catalog。";
+"message.projectSelected" = "已选择 %@。";
+"message.projectCleared" = "已清除当前项目上下文。";
+"message.projectRecentsClearedCount" = "已清空 %d 个最近项目。";
+"refresh.scan.readbackSupportingFailed" = "Catalog 扫描已生效，但无法刷新辅助证据：%@";
+"project.action.confirm.title" = "确认项目变更";
+"project.clear.confirm" = "清除当前项目上下文？最近项目将保留。";
+"project.recent.clear.confirm" = "清空 %d 个最近项目？当前项目将保持选中。";
 "message.projectRecentRemoved" = "已从最近项目中移除 %@。";
 "message.projectRecentsCleared" = "已清空最近项目。";
 "refresh.projectValidationSkipped" = "扫描前需要处理项目上下文。";

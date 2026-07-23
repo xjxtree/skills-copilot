@@ -4,6 +4,20 @@
   "params": {
     "root_path": "/tmp/skills-copilot-project",
     "current_cwd": "/tmp/skills-copilot-project",
-    "name": "Fixture Project"
+    "name": "Fixture Project",
+    "candidate_last_used_at": 1780590000000,
+    "action_confirmation": {
+      "reference": {
+        "action_id": "action:set_project_context:1111111111111111111111111111111111111111111111111111111111111111",
+        "source_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "project_id": "project-fixture-id",
+        "target": {
+          "kind": "project",
+          "id": "project-fixture-id"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "confirmed": true
+    }
   }
 }

@@ -602,7 +602,7 @@ private struct SecondarySidebarProjectPickerMenu: View {
                     Divider()
 
                     Button(role: .destructive) {
-                        Task { await store.clearRecentProjects() }
+                        Task { await store.previewClearRecentProjects() }
                     } label: {
                         Label(UIStrings.clearRecentProjects, systemImage: "trash.slash")
                     }
@@ -621,7 +621,7 @@ private struct SecondarySidebarProjectPickerMenu: View {
                 }
 
                 Button(role: .destructive) {
-                    Task { await store.clearProject() }
+                    Task { await store.previewClearProject() }
                 } label: {
                     Label(UIStrings.clearProject, systemImage: "xmark.circle")
                 }

@@ -2970,30 +2970,31 @@ fn project_context_set_get_and_clear_persist_state() {
     fs::create_dir_all(&nested).expect("create project dirs");
     let host = test_host(app_data_dir.clone());
 
-    let set_response = host.handle(ServiceRequest {
-        id: Some("set-context".to_string()),
-        method: "project.setContext".to_string(),
-        params: json!({
+    let (_, set_response) = confirmed_project_set_context(
+        &host,
+        json!({
             "root_path": root,
             "current_cwd": nested,
             "name": "Fixture Project"
         }),
-    });
+    );
     assert!(set_response.ok);
     let set_result = set_response.result.expect("set result");
     assert_eq!(
-        set_result.pointer("/active/name").and_then(Value::as_str),
+        set_result
+            .pointer("/state/active/name")
+            .and_then(Value::as_str),
         Some("Fixture Project")
     );
     assert_eq!(
         set_result
-            .pointer("/active/is_active")
+            .pointer("/state/active/is_active")
             .and_then(Value::as_bool),
         Some(true)
     );
     assert_eq!(
         set_result
-            .get("recent")
+            .pointer("/state/recent")
             .and_then(Value::as_array)
             .map(Vec::len),
         Some(1)
@@ -3015,17 +3016,20 @@ fn project_context_set_get_and_clear_persist_state() {
         Some("Fixture Project")
     );
 
-    let clear_response = host.handle(ServiceRequest {
-        id: Some("clear-context".to_string()),
-        method: "project.clearContext".to_string(),
-        params: Value::Null,
-    });
+    let (_, clear_response) = confirmed_project_revision_action(
+        &host,
+        "project.previewClearContext",
+        "project.clearContext",
+        json!({}),
+    );
     assert!(clear_response.ok);
     let clear_result = clear_response.result.expect("clear result");
-    assert!(clear_result.get("active").is_some_and(Value::is_null));
+    assert!(clear_result
+        .pointer("/state/active")
+        .is_some_and(Value::is_null));
     assert_eq!(
         clear_result
-            .pointer("/recent/0/is_active")
+            .pointer("/state/recent/0/is_active")
             .and_then(Value::as_bool),
         Some(false)
     );
@@ -3050,11 +3054,8 @@ fn project_recent_context_entries_can_be_removed_or_cleared_without_changing_act
         ("set-first", &first_root, "First Project"),
         ("set-active", &active_root, "Active Project"),
     ] {
-        let response = host.handle(ServiceRequest {
-            id: Some(id.to_string()),
-            method: "project.setContext".to_string(),
-            params: json!({ "root_path": root, "name": name }),
-        });
+        let (_, response) =
+            confirmed_project_set_context(&host, json!({ "root_path": root, "name": name }));
         assert!(response.ok, "{id} should succeed: {:?}", response.error);
     }
 
@@ -3074,11 +3075,12 @@ fn project_recent_context_entries_can_be_removed_or_cleared_without_changing_act
         Some(2)
     );
 
-    let remove = host.handle(ServiceRequest {
-        id: Some("remove-active-recent".to_string()),
-        method: "project.removeRecentContext".to_string(),
-        params: json!({ "id": active_id }),
-    });
+    let (_, remove) = confirmed_project_revision_action(
+        &host,
+        "project.previewRemoveRecentContext",
+        "project.removeRecentContext",
+        json!({ "id": active_id }),
+    );
     assert!(
         remove.ok,
         "remove recent should succeed: {:?}",
@@ -3087,46 +3089,109 @@ fn project_recent_context_entries_can_be_removed_or_cleared_without_changing_act
     let removed_state = remove.result.expect("state after remove");
     assert_eq!(
         removed_state
-            .pointer("/active/name")
+            .pointer("/state/active/name")
             .and_then(Value::as_str),
         Some("Active Project"),
         "removing a recent row must not clear the active project"
     );
     assert_eq!(
         removed_state
-            .get("recent")
+            .pointer("/state/recent")
             .and_then(Value::as_array)
             .map(Vec::len),
         Some(1)
     );
     assert_eq!(
         removed_state
-            .pointer("/recent/0/name")
+            .pointer("/state/recent/0/name")
             .and_then(Value::as_str),
         Some("First Project")
     );
 
-    let clear = host.handle(ServiceRequest {
-        id: Some("clear-recents".to_string()),
-        method: "project.clearRecentContexts".to_string(),
-        params: Value::Null,
-    });
+    let (clear_preview, clear) = confirmed_project_revision_action(
+        &host,
+        "project.previewClearRecentContexts",
+        "project.clearRecentContexts",
+        json!({}),
+    );
+    assert_eq!(
+        clear_preview.get("affected_count").and_then(Value::as_u64),
+        Some(1)
+    );
     assert!(clear.ok, "clear recents should succeed: {:?}", clear.error);
     let cleared_state = clear.result.expect("state after clearing recents");
     assert_eq!(
         cleared_state
-            .pointer("/active/name")
+            .pointer("/state/active/name")
             .and_then(Value::as_str),
         Some("Active Project")
     );
     assert_eq!(
         cleared_state
-            .get("recent")
+            .pointer("/state/recent")
             .and_then(Value::as_array)
             .map(Vec::len),
         Some(0)
     );
 
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn project_apply_rejects_a_confirmation_bound_to_an_older_revision() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-project-stale-apply-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let first = app_data_dir.join("first");
+    let second = app_data_dir.join("second");
+    fs::create_dir_all(&first).expect("create first project");
+    fs::create_dir_all(&second).expect("create second project");
+    let host = test_host(app_data_dir.clone());
+    let (_, first_apply) =
+        confirmed_project_set_context(&host, json!({ "root_path": first, "name": "First" }));
+    assert!(first_apply.ok, "{:?}", first_apply.error);
+
+    let state = project_context_state(&host);
+    let clear_preview = host.handle(ServiceRequest {
+        id: Some("clear-preview".to_string()),
+        method: "project.previewClearContext".to_string(),
+        params: json!({
+            "expected_revision": state.get("revision").expect("revision")
+        }),
+    });
+    assert!(clear_preview.ok, "{:?}", clear_preview.error);
+    let clear_preview = clear_preview.result.expect("clear preview");
+
+    let (_, second_apply) =
+        confirmed_project_set_context(&host, json!({ "root_path": second, "name": "Second" }));
+    assert!(second_apply.ok, "{:?}", second_apply.error);
+    let second_revision = second_apply
+        .result
+        .as_ref()
+        .and_then(|result| result.pointer("/state/revision"))
+        .and_then(Value::as_str)
+        .expect("second revision")
+        .to_string();
+
+    let stale = host.handle(ServiceRequest {
+        id: Some("stale-clear".to_string()),
+        method: "project.clearContext".to_string(),
+        params: json!({
+            "action_confirmation": action_confirmation_from_preview(&clear_preview)
+        }),
+    });
+    assert!(!stale.ok);
+    let after = project_context_state(&host);
+    assert_eq!(
+        after.get("revision").and_then(Value::as_str),
+        Some(second_revision.as_str())
+    );
+    assert_eq!(
+        after.pointer("/active/name").and_then(Value::as_str),
+        Some("Second")
+    );
     let _ = fs::remove_dir_all(app_data_dir);
 }
 
@@ -3170,12 +3235,14 @@ fn project_set_context_rejects_cwd_outside_root() {
     fs::create_dir_all(&outside).expect("create outside");
     let host = test_host(app_data_dir.clone());
 
+    let state = project_context_state(&host);
     let response = host.handle(ServiceRequest {
         id: Some("set-invalid-context".to_string()),
-        method: "project.setContext".to_string(),
+        method: "project.previewSetContext".to_string(),
         params: json!({
             "root_path": root,
-            "current_cwd": outside
+            "current_cwd": outside,
+            "expected_revision": state.get("revision").expect("revision")
         }),
     });
 
@@ -3205,12 +3272,14 @@ fn project_set_context_rejects_symlink_escape_cwd() {
     std::os::unix::fs::symlink(&outside, &link).expect("create symlink");
     let host = test_host(app_data_dir.clone());
 
+    let state = project_context_state(&host);
     let response = host.handle(ServiceRequest {
         id: Some("set-symlink-context".to_string()),
-        method: "project.setContext".to_string(),
+        method: "project.previewSetContext".to_string(),
         params: json!({
             "root_path": root,
-            "current_cwd": link
+            "current_cwd": link,
+            "expected_revision": state.get("revision").expect("revision")
         }),
     });
 
@@ -3221,6 +3290,182 @@ fn project_set_context_rejects_symlink_escape_cwd() {
     );
 
     let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn catalog_scan_requires_an_explicit_refresh_without_creating_app_data() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-scan-explicit-refresh-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("implicit-scan".to_string()),
+        method: "catalog.scanAll".to_string(),
+        params: Value::Null,
+    });
+
+    assert!(!response.ok);
+    assert_eq!(response.error.expect("error").code, "invalid_request");
+    assert!(!app_data_dir.exists());
+}
+
+#[test]
+fn stale_project_preview_and_scan_leave_missing_app_data_tree_absent() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-project-stale-no-write-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+
+    let preview = host.handle(ServiceRequest {
+        id: Some("stale-project-preview".to_string()),
+        method: "project.previewSetContext".to_string(),
+        params: json!({
+            "root_path": env::temp_dir(),
+            "expected_revision": "sha256:stale"
+        }),
+    });
+    assert!(!preview.ok);
+    assert!(!app_data_dir.exists());
+
+    let scan = host.handle(ServiceRequest {
+        id: Some("stale-project-scan".to_string()),
+        method: "catalog.scanAll".to_string(),
+        params: json!({
+            "explicit_refresh": true,
+            "expected_context_revision": "sha256:stale"
+        }),
+    });
+    assert!(!scan.ok);
+    assert!(!app_data_dir.exists());
+}
+
+#[test]
+fn project_context_read_rejects_oversized_state() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-project-oversized-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+    fs::write(
+        app_data_dir.join("project-context.json"),
+        vec![b'x'; 256 * 1024 + 1],
+    )
+    .expect("write oversized project state");
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("oversized-project-state".to_string()),
+        method: "project.getContext".to_string(),
+        params: Value::Null,
+    });
+
+    assert!(!response.ok);
+    assert_eq!(response.error.expect("error").code, "invalid_request");
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn project_context_read_rejects_symlink_without_touching_target() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-project-symlink-state-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let app_data_dir = temp_root.join("app-data");
+    let outside = temp_root.join("outside.json");
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+    let original = b"{\"outside\":\"unchanged\"}\n";
+    fs::write(&outside, original).expect("write outside target");
+    std::os::unix::fs::symlink(&outside, app_data_dir.join("project-context.json"))
+        .expect("link project context");
+    let host = test_host(app_data_dir.clone());
+
+    let response = host.handle(ServiceRequest {
+        id: Some("symlink-project-state".to_string()),
+        method: "project.getContext".to_string(),
+        params: Value::Null,
+    });
+
+    assert!(!response.ok);
+    assert_eq!(response.error.expect("error").code, "invalid_request");
+    assert_eq!(fs::read(&outside).expect("read outside target"), original);
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[test]
+fn scan_commit_failure_rolls_back_rows_and_scan_revision() {
+    let temp_root = env::temp_dir().join(format!(
+        "skills-copilot-scan-rollback-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let home = temp_root.join("home");
+    let skills_root = home.join(".claude/skills");
+    let first = skills_root.join("first");
+    fs::create_dir_all(&first).expect("create first skill");
+    fs::write(
+        first.join("SKILL.md"),
+        "---\nname: first\ndescription: first fixture\n---\n",
+    )
+    .expect("write first skill");
+    let host = ServiceHost {
+        app_data_dir: temp_root.join("app-data"),
+        adapter_ctx: AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        },
+    };
+    let initial = host.handle(ServiceRequest {
+        id: Some("initial-scan".to_string()),
+        method: "catalog.scanAll".to_string(),
+        params: json!({ "explicit_refresh": true }),
+    });
+    assert!(initial.ok, "{:?}", initial.error);
+    let initial = initial.result.expect("initial scan");
+    let initial_revision = initial
+        .get("catalog_scan_revision")
+        .and_then(Value::as_str)
+        .expect("initial scan revision")
+        .to_string();
+
+    let second = skills_root.join("second");
+    fs::create_dir_all(&second).expect("create second skill");
+    fs::write(
+        second.join("SKILL.md"),
+        "---\nname: second\ndescription: second fixture\n---\n",
+    )
+    .expect("write second skill");
+    crate::service_host::inject_next_scan_commit_failure_for_test();
+    let failed = host.handle(ServiceRequest {
+        id: Some("failed-scan".to_string()),
+        method: "catalog.scanAll".to_string(),
+        params: json!({ "explicit_refresh": true }),
+    });
+    assert!(!failed.ok);
+
+    let catalog = host.open_catalog().expect("open catalog after failed scan");
+    assert_eq!(
+        catalog
+            .catalog_scan_revision()
+            .expect("scan revision after failure")
+            .revision,
+        initial_revision
+    );
+    let skills = catalog
+        .list_skill_records()
+        .expect("list skills after failed scan");
+    assert!(skills.iter().any(|skill| skill.name == "first"));
+    assert!(!skills.iter().any(|skill| skill.name == "second"));
+    let _ = fs::remove_dir_all(temp_root);
 }
 
 #[test]
@@ -3251,7 +3496,7 @@ fn scan_claude_returns_refresh_activity() {
     let response = host.handle(ServiceRequest {
         id: Some("scan".to_string()),
         method: "catalog.scanClaude".to_string(),
-        params: Value::Null,
+        params: json!({ "explicit_refresh": true }),
     });
 
     assert!(response.ok);
@@ -3308,7 +3553,7 @@ fn scan_claude_surfaces_dangling_link_without_degrading_refresh_activity() {
     let response = host.handle(ServiceRequest {
         id: Some("scan-partial".to_string()),
         method: "catalog.scanClaude".to_string(),
-        params: Value::Null,
+        params: json!({ "explicit_refresh": true }),
     });
     let result = response.result.expect("scan result");
     let activity = result.get("activity").expect("activity");
@@ -3459,7 +3704,7 @@ fn scan_all_returns_multi_agent_refresh_activity() {
     let response = host.handle(ServiceRequest {
         id: Some("scan-all".to_string()),
         method: "catalog.scanAll".to_string(),
-        params: Value::Null,
+        params: json!({ "explicit_refresh": true }),
     });
 
     assert!(response.ok);
@@ -3962,20 +4207,19 @@ fn scan_all_uses_stored_project_context_when_env_context_is_absent() {
             }],
         },
     };
-    let set_response = host.handle(ServiceRequest {
-        id: Some("set-context".to_string()),
-        method: "project.setContext".to_string(),
-        params: json!({
+    let (_, set_response) = confirmed_project_set_context(
+        &host,
+        json!({
             "root_path": repo_root.join("fixtures/codex/project"),
             "current_cwd": repo_root.join("fixtures/codex/project/nested")
         }),
-    });
+    );
     assert!(set_response.ok);
 
     let scan_response = host.handle(ServiceRequest {
         id: Some("scan-all".to_string()),
         method: "catalog.scanAll".to_string(),
-        params: Value::Null,
+        params: json!({ "explicit_refresh": true }),
     });
 
     assert!(scan_response.ok);
@@ -4020,17 +4264,18 @@ fn scan_all_uses_stored_project_context_when_env_context_is_absent() {
         .expect("Pi summary");
     assert_eq!(pi.get("scanned_count").and_then(Value::as_u64), Some(3));
 
-    let clear_response = host.handle(ServiceRequest {
-        id: Some("clear-context".to_string()),
-        method: "project.clearContext".to_string(),
-        params: Value::Null,
-    });
+    let (_, clear_response) = confirmed_project_revision_action(
+        &host,
+        "project.previewClearContext",
+        "project.clearContext",
+        json!({}),
+    );
     assert!(clear_response.ok);
 
     let cleared_scan_response = host.handle(ServiceRequest {
         id: Some("scan-all-cleared".to_string()),
         method: "catalog.scanAll".to_string(),
-        params: Value::Null,
+        params: json!({ "explicit_refresh": true }),
     });
     assert!(cleared_scan_response.ok);
     let cleared = cleared_scan_response.result.expect("cleared scan result");

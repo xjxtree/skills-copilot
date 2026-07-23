@@ -1,6 +1,17 @@
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 
+#[cfg(test)]
+thread_local! {
+    static INJECT_NEXT_SCAN_COMMIT_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_next_scan_commit_failure_for_test() {
+    INJECT_NEXT_SCAN_COMMIT_FAILURE.with(|flag| flag.set(true));
+}
+
 impl ServiceHost {
     pub fn from_env() -> Result<Self, ServiceError> {
         let user_home = env::var_os("SKILLS_COPILOT_HOME")
@@ -508,24 +519,60 @@ impl ServiceHost {
                 let state: ProjectContextState = load_project_context_state(&self.app_data_dir)?;
                 serde_json::to_value(state).map_err(Into::into)
             }
+            "project.previewSetContext" => {
+                let params: ProjectContextSetPreviewParams =
+                    serde_json::from_value(request.params)?;
+                let preview: ProjectContextActionPreview =
+                    preview_set_project_context(&self.app_data_dir, params)?;
+                serde_json::to_value(preview).map_err(Into::into)
+            }
             "project.setContext" => {
-                let params: ProjectContextParams = serde_json::from_value(request.params)?;
-                let state: ProjectContextState = set_project_context(&self.app_data_dir, params)?;
-                serde_json::to_value(state).map_err(Into::into)
+                let params: ProjectContextSetApplyParams = serde_json::from_value(request.params)?;
+                let result: ProjectContextApplyResult =
+                    set_project_context(&self.app_data_dir, params)?;
+                serde_json::to_value(result).map_err(Into::into)
+            }
+            "project.previewClearContext" => {
+                let params: ProjectContextRevisionParams =
+                    serde_json::from_value(request.params)?;
+                let preview: ProjectContextActionPreview =
+                    preview_clear_project_context(&self.app_data_dir, params)?;
+                serde_json::to_value(preview).map_err(Into::into)
             }
             "project.clearContext" => {
-                let state: ProjectContextState = clear_project_context(&self.app_data_dir)?;
-                serde_json::to_value(state).map_err(Into::into)
+                let params: ProjectContextConfirmationParams =
+                    serde_json::from_value(request.params)?;
+                let result: ProjectContextApplyResult =
+                    clear_project_context(&self.app_data_dir, params)?;
+                serde_json::to_value(result).map_err(Into::into)
+            }
+            "project.previewRemoveRecentContext" => {
+                let params: ProjectContextIDPreviewParams =
+                    serde_json::from_value(request.params)?;
+                let preview: ProjectContextActionPreview =
+                    preview_remove_recent_project_context(&self.app_data_dir, params)?;
+                serde_json::to_value(preview).map_err(Into::into)
             }
             "project.removeRecentContext" => {
-                let params: ProjectContextIDParams = serde_json::from_value(request.params)?;
-                let state: ProjectContextState =
+                let params: ProjectContextIDApplyParams =
+                    serde_json::from_value(request.params)?;
+                let result: ProjectContextApplyResult =
                     remove_recent_project_context(&self.app_data_dir, params)?;
-                serde_json::to_value(state).map_err(Into::into)
+                serde_json::to_value(result).map_err(Into::into)
+            }
+            "project.previewClearRecentContexts" => {
+                let params: ProjectContextRevisionParams =
+                    serde_json::from_value(request.params)?;
+                let preview: ProjectContextActionPreview =
+                    preview_clear_recent_project_contexts(&self.app_data_dir, params)?;
+                serde_json::to_value(preview).map_err(Into::into)
             }
             "project.clearRecentContexts" => {
-                let state: ProjectContextState = clear_recent_project_contexts(&self.app_data_dir)?;
-                serde_json::to_value(state).map_err(Into::into)
+                let params: ProjectContextConfirmationParams =
+                    serde_json::from_value(request.params)?;
+                let result: ProjectContextApplyResult =
+                    clear_recent_project_contexts(&self.app_data_dir, params)?;
+                serde_json::to_value(result).map_err(Into::into)
             }
             "project.validateContext" => {
                 let params: ProjectContextParams = serde_json::from_value(request.params)?;
@@ -596,86 +643,20 @@ impl ServiceHost {
                 ))
             }
             "catalog.scanClaude" => {
-                let catalog = self.open_catalog()?;
-                let adapter_ctx = self.effective_adapter_ctx()?;
-                let started_at = unix_timestamp_millis();
-                let scan_report = scan_claude_catalog_report(&adapter_ctx, &catalog)?;
-                let scanned_count = scan_report.scanned_count;
-                let skills = self.list_visible_skill_records(&catalog)?;
-                let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
-                let conflicts: Vec<ConflictGroupRecord> =
-                    list_conflicts_for_context(&catalog, &adapter_ctx)?;
-                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
-                let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
-                let agent_summaries = self.agent_refresh_summaries(
-                    std::slice::from_ref(&scan_report),
-                    &skills,
-                    &adapter_diagnostics,
-                );
-                let activity = self.scan_activity(
-                    "catalog.scanClaude",
-                    "Claude Code",
-                    scan_report.roots_considered.clone(),
-                    started_at,
-                    ScanActivityCounts {
-                        scanned_count,
-                        skill_count: skills.len(),
-                        finding_count: findings.len(),
-                        conflict_count: conflicts.len(),
-                        snapshot_count: snapshots.len(),
-                    },
-                    Some(agent_summaries),
-                );
-                serde_json::to_value(ScanResult {
-                    scanned_count,
-                    skills,
-                    activity,
-                })
-                .map_err(Into::into)
+                let params: CatalogScanParams = if request.params.is_null() {
+                    CatalogScanParams::default()
+                } else {
+                    serde_json::from_value(request.params)?
+                };
+                serde_json::to_value(self.scan_claude_guarded(params)?).map_err(Into::into)
             }
             "catalog.scanAll" => {
-                let catalog = self.open_catalog()?;
-                let adapter_ctx = self.effective_adapter_ctx()?;
-                let started_at = unix_timestamp_millis();
-                let scan_report = scan_all_catalog_report(&adapter_ctx, &catalog)?;
-                let scanned_count = scan_report.scanned_count;
-                let skills = self.list_visible_skill_records(&catalog)?;
-                let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
-                let conflicts: Vec<ConflictGroupRecord> =
-                    list_conflicts_for_context(&catalog, &adapter_ctx)?;
-                let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
-                let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
-                let agent_summaries = self.agent_refresh_summaries(
-                    &scan_report.agents,
-                    &skills,
-                    &adapter_diagnostics,
-                );
-                let roots = scan_report
-                    .agents
-                    .iter()
-                    .flat_map(|agent| agent.roots_considered.iter().cloned())
-                    .collect();
-                let scan_label = scan_all_label(&scan_report.agents);
-                let activity = self.scan_activity(
-                    "catalog.scanAll",
-                    &scan_label,
-                    roots,
-                    started_at,
-                    ScanActivityCounts {
-                        scanned_count,
-                        skill_count: skills.len(),
-                        finding_count: findings.len(),
-                        conflict_count: conflicts.len(),
-                        snapshot_count: snapshots.len(),
-                    },
-                    Some(agent_summaries),
-                );
-                serde_json::to_value(ScanResult {
-                    scanned_count,
-                    skills,
-                    activity,
-                })
-                .map_err(Into::into)
+                let params: CatalogScanParams = if request.params.is_null() {
+                    CatalogScanParams::default()
+                } else {
+                    serde_json::from_value(request.params)?
+                };
+                serde_json::to_value(self.scan_all_guarded(params)?).map_err(Into::into)
             }
             "skill.exportBundle" => {
                 Err(ServiceError::MutationDisabled(
@@ -903,6 +884,175 @@ impl ServiceHost {
         let catalog = Catalog::open(&self.catalog_path())?;
         catalog.init()?;
         Ok(catalog)
+    }
+
+    fn scan_claude_guarded(&self, params: CatalogScanParams) -> Result<ScanResult, ServiceError> {
+        self.scan_catalog_guarded(params, false)
+    }
+
+    fn scan_all_guarded(&self, params: CatalogScanParams) -> Result<ScanResult, ServiceError> {
+        self.scan_catalog_guarded(params, true)
+    }
+
+    fn scan_catalog_guarded(
+        &self,
+        params: CatalogScanParams,
+        scan_all: bool,
+    ) -> Result<ScanResult, ServiceError> {
+        if !params.explicit_refresh {
+            return Err(ServiceError::InvalidRequest(
+                "catalog scan is a derived-cache write and requires explicit_refresh=true"
+                    .to_string(),
+            ));
+        }
+        let env_context = self.env_project_context();
+        let preflight_context_revision =
+            effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?;
+        if params
+            .expected_context_revision
+            .as_deref()
+            .is_some_and(|expected| expected != preflight_context_revision)
+        {
+            return Err(CommandError::StaleActionReference.into());
+        }
+
+        create_private_dir_all(&self.app_data_dir)?;
+        let _owner = lock_app_mutations(&self.app_data_dir)?;
+        let accepted_context_revision =
+            effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?;
+        if params
+            .expected_context_revision
+            .as_deref()
+            .is_some_and(|expected| expected != accepted_context_revision)
+        {
+            return Err(CommandError::StaleActionReference.into());
+        }
+        let adapter_ctx = self.effective_adapter_ctx()?;
+        if effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?
+            != accepted_context_revision
+        {
+            return Err(CommandError::StaleActionReference.into());
+        }
+
+        let catalog = self.open_catalog()?;
+        #[cfg(test)]
+        INJECT_NEXT_SCAN_COMMIT_FAILURE.with(|flag| {
+            if flag.replace(false) {
+                catalog.inject_next_commit_failure_for_test();
+            }
+        });
+        let transaction = catalog.begin_immediate_transaction()?;
+        let operation = if scan_all {
+            "catalog.scanAll"
+        } else {
+            "catalog.scanClaude"
+        };
+        let prepared = (|| -> Result<ScanResult, ServiceError> {
+            let started_at = unix_timestamp_millis();
+            let reports = if scan_all {
+                scan_all_catalog_report(&adapter_ctx, &catalog)?.agents
+            } else {
+                vec![scan_claude_catalog_report(&adapter_ctx, &catalog)?]
+            };
+            if effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?
+                != accepted_context_revision
+            {
+                return Err(CommandError::StaleActionReference.into());
+            }
+
+            let scanned_count = reports.iter().map(|report| report.scanned_count).sum();
+            let skills = self.list_visible_skill_records(&catalog)?;
+            let findings: Vec<RuleFindingRecord> = list_findings(&catalog)?;
+            let conflicts: Vec<ConflictGroupRecord> =
+                list_conflicts_for_context(&catalog, &adapter_ctx)?;
+            let snapshots: Vec<ConfigSnapshotRecord> = list_snapshots(&catalog, &adapter_ctx)?;
+            let adapter_diagnostics = list_adapter_diagnostics(&adapter_ctx);
+            let agent_summaries =
+                self.agent_refresh_summaries(&reports, &skills, &adapter_diagnostics);
+            let roots = reports
+                .iter()
+                .flat_map(|agent| agent.roots_considered.iter().cloned())
+                .collect();
+            let scan_label = if scan_all {
+                scan_all_label(&reports)
+            } else {
+                "Claude Code".to_string()
+            };
+            let activity = self.scan_activity(
+                operation,
+                &scan_label,
+                roots,
+                started_at,
+                ScanActivityCounts {
+                    scanned_count,
+                    skill_count: skills.len(),
+                    finding_count: findings.len(),
+                    conflict_count: conflicts.len(),
+                    snapshot_count: snapshots.len(),
+                },
+                Some(agent_summaries),
+            );
+            let catalog_scan_revision =
+                catalog.advance_catalog_scan_revision(operation, &accepted_context_revision)?;
+            if catalog.catalog_scan_revision()? != catalog_scan_revision {
+                return Err(CommandError::VerificationFailed.into());
+            }
+            Ok(ScanResult {
+                scanned_count,
+                skills,
+                activity,
+                accepted_context_revision: accepted_context_revision.clone(),
+                catalog_scan_revision: catalog_scan_revision.revision.clone(),
+                readback: CatalogScanReadback {
+                    accepted_context_revision: accepted_context_revision.clone(),
+                    catalog_scan_revision: catalog_scan_revision.revision,
+                    verified: true,
+                },
+            })
+        })();
+
+        let result = match prepared {
+            Ok(result) => result,
+            Err(error) => {
+                if transaction.rollback().is_err() {
+                    return Err(CommandError::PartialEffect {
+                        operation: operation.to_string(),
+                        state: "outcome_unknown",
+                        cleanup_required: false,
+                        detail:
+                            "catalog scan failed and transaction rollback could not be verified"
+                                .to_string(),
+                    }
+                    .into());
+                }
+                return Err(error);
+            }
+        };
+        match transaction.commit_classified() {
+            Ok(()) => {}
+            Err(CatalogCommitError::NotCommitted(error)) => {
+                return Err(ServiceError::Catalog(error));
+            }
+            Err(CatalogCommitError::OutcomeUnknown(_)) => {
+                return Err(CommandError::PartialEffect {
+                    operation: operation.to_string(),
+                    state: "outcome_unknown",
+                    cleanup_required: false,
+                    detail: "catalog scan commit outcome is unknown".to_string(),
+                }
+                .into());
+            }
+        }
+        match catalog.catalog_scan_revision() {
+            Ok(revision) if revision.revision == result.catalog_scan_revision => Ok(result),
+            _ => Err(CommandError::PartialEffect {
+                operation: operation.to_string(),
+                state: "applied_unverified",
+                cleanup_required: false,
+                detail: "catalog scan committed but its revision read-back failed".to_string(),
+            }
+            .into()),
+        }
     }
 
     pub(crate) fn open_catalog_for_read(&self) -> Result<Catalog, ServiceError> {

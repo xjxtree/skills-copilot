@@ -1,5 +1,5 @@
 {
-  "id": "fixture-project-clear-recent-contexts",
+  "id": "fixture-project-preview-clear-recent-contexts",
   "ok": true,
   "result": {
     "action": {
@@ -20,8 +20,38 @@
       "readback": ["project_context"],
       "evidence_refs": ["project-context-state:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
     },
+    "preconditions": [
+      {
+        "kind": "project_context",
+        "target_id": "project-context",
+        "expected_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ],
     "preview_token": "action-preview:v1:hmac-sha256:4444444444444444444444444444444444444444444444444444444444444444",
-    "state": {
+    "current": {
+      "revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "active": {
+        "id": "project-fixture-id",
+        "name": "Fixture Project",
+        "root_path": "/tmp/skills-copilot-project",
+        "current_cwd": "/tmp/skills-copilot-project",
+        "last_used_at": 1780590000000,
+        "is_active": true,
+        "validation_error": null
+      },
+      "recent": [
+        {
+          "id": "project-fixture-id",
+          "name": "Fixture Project",
+          "root_path": "/tmp/skills-copilot-project",
+          "current_cwd": "/tmp/skills-copilot-project",
+          "last_used_at": 1780590000000,
+          "is_active": true,
+          "validation_error": null
+        }
+      ]
+    },
+    "candidate": {
       "revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "active": {
         "id": "project-fixture-id",
@@ -34,21 +64,6 @@
       },
       "recent": []
     },
-    "affected_count": 1,
-    "readback": {
-      "action_id": "action:clear_recent_project_contexts:4444444444444444444444444444444444444444444444444444444444444444",
-      "source_revision": "sha256:4545454545454545454545454545454545454545454545454545454545454545",
-      "project_id": "project-fixture-id",
-      "domains": ["project_context"],
-      "target_ids": ["project-context"],
-      "observations": [
-        {
-          "domain": "project_context",
-          "target_id": "project-context",
-          "revision": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        }
-      ],
-      "verified": true
-    }
+    "affected_count": 1
   }
 }

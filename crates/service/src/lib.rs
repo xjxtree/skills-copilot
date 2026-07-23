@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skills_copilot_catalog::{
-    Catalog, CatalogError, ConfigSnapshotRecord, ConflictGroupRecord, FindingTriageRecord,
-    RuleFindingRecord, RuleTuningRecord, SkillDetailRecord, SkillEventRecord, SkillRecord,
+    Catalog, CatalogCommitError, CatalogError, ConfigSnapshotRecord, ConflictGroupRecord,
+    FindingTriageRecord, RuleFindingRecord, RuleTuningRecord, SkillDetailRecord, SkillEventRecord,
+    SkillRecord,
 };
 use skills_copilot_commands::{
     analyze_catalog, apply_current_config_overrides_to_skill_detail,
@@ -22,10 +23,11 @@ use skills_copilot_commands::{
     list_agent_config_snapshot_page_snapshot, list_agent_config_snapshots,
     list_conflicts_for_context, list_finding_triage, list_findings,
     list_installed_skills_from_projection, list_rule_tuning, list_skill_event_page_snapshot,
-    list_skill_events, list_skill_management_tools, list_snapshots, prepare_claude_settings_save,
-    preview_claude_settings_save, preview_install_with_manager, preview_local_archive_import,
-    preview_local_archive_update, preview_local_create_with_manager, preview_remove_with_manager,
-    preview_remove_with_manager_guarded, preview_script_execution, preview_skill_toggles,
+    list_skill_events, list_skill_management_tools, list_snapshots, lock_app_mutations,
+    prepare_claude_settings_save, preview_claude_settings_save, preview_install_with_manager,
+    preview_local_archive_import, preview_local_archive_update, preview_local_create_with_manager,
+    preview_remove_with_manager, preview_remove_with_manager_guarded, preview_script_execution,
+    preview_skill_toggles,
     preview_snapshot_rollback_with_context, preview_update_with_manager, read_agent_config,
     read_claude_settings, reject_non_applicable_confirmation, rollback_snapshot,
     scan_all_catalog_report, scan_claude_catalog_report, skill_health_summary,
@@ -70,10 +72,14 @@ mod service_support_helpers;
 
 use project_context::{
     clear_project_context, clear_recent_project_contexts, context_from_paths,
-    load_project_context_state, project_context_summary, remove_recent_project_context,
+    effective_project_context_revision, load_project_context_state, preview_clear_project_context,
+    preview_clear_recent_project_contexts, preview_remove_recent_project_context,
+    preview_set_project_context, project_context_summary, remove_recent_project_context,
     set_project_context, stored_active_adapter_paths, validate_project_context_for_response,
-    ProjectContext, ProjectContextIDParams, ProjectContextParams, ProjectContextState,
-    ProjectContextSummary,
+    ProjectContext, ProjectContextActionPreview, ProjectContextApplyResult,
+    ProjectContextConfirmationParams, ProjectContextIDApplyParams, ProjectContextIDPreviewParams,
+    ProjectContextParams, ProjectContextRevisionParams, ProjectContextSetApplyParams,
+    ProjectContextSetPreviewParams, ProjectContextState, ProjectContextSummary,
 };
 pub use protocol::{
     ServiceErrorDetails, ServiceErrorRecord, ServiceRequest, ServiceResponse, DEFAULT_BUNDLE_ID,
@@ -178,6 +184,16 @@ pub struct ScanResult {
     pub scanned_count: usize,
     pub skills: Vec<SkillRecord>,
     pub activity: RefreshActivity,
+    pub accepted_context_revision: String,
+    pub catalog_scan_revision: String,
+    pub readback: CatalogScanReadback,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CatalogScanReadback {
+    pub accepted_context_revision: String,
+    pub catalog_scan_revision: String,
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1380,6 +1396,14 @@ struct ScanActivityCounts {
     finding_count: usize,
     conflict_count: usize,
     snapshot_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CatalogScanParams {
+    #[serde(default)]
+    pub explicit_refresh: bool,
+    #[serde(default)]
+    pub expected_context_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

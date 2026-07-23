@@ -2,6 +2,19 @@
   "id": "fixture-project-remove-recent-context",
   "method": "project.removeRecentContext",
   "params": {
-    "id": "project-fixture-id"
+    "id": "project-fixture-id",
+    "action_confirmation": {
+      "reference": {
+        "action_id": "action:remove_recent_project_context:3333333333333333333333333333333333333333333333333333333333333333",
+        "source_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "project_id": "project-fixture-id",
+        "target": {
+          "kind": "project",
+          "id": "project-fixture-id"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "confirmed": true
+    }
   }
 }

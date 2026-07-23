@@ -1,8 +1,15 @@
 import Foundation
 
 struct ProjectContextState: Codable, Hashable {
+    let revision: String
     let active: ProjectContext?
     let recent: [ProjectContext]
+
+    init(revision: String = "", active: ProjectContext?, recent: [ProjectContext]) {
+        self.revision = revision
+        self.active = active
+        self.recent = recent
+    }
 }
 
 struct ProjectContext: Codable, Identifiable, Hashable {
@@ -57,6 +64,58 @@ struct ProjectContext: Codable, Identifiable, Hashable {
             lastUsedAt = String(value)
         } else {
             lastUsedAt = nil
+        }
+    }
+}
+
+struct ProjectContextActionPreview: Codable, Hashable {
+    let action: ActionDescriptorWire
+    let preconditions: [ActionPreconditionWire]
+    let previewToken: String
+    let current: ProjectContextState
+    let candidate: ProjectContextState
+    let affectedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case preconditions
+        case previewToken = "preview_token"
+        case current
+        case candidate
+        case affectedCount = "affected_count"
+    }
+
+    var confirmation: ActionConfirmationWire {
+        ActionConfirmationWire(action: action, previewToken: previewToken)
+    }
+}
+
+struct ProjectContextApplyResult: Codable, Hashable {
+    let action: ActionDescriptorWire
+    let previewToken: String
+    let state: ProjectContextState
+    let affectedCount: Int
+    let readback: ActionReadbackWire
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case previewToken = "preview_token"
+        case state
+        case affectedCount = "affected_count"
+        case readback
+    }
+}
+
+enum ProjectContextPendingAction: Hashable, Identifiable {
+    case clearActive(ProjectContextActionPreview)
+    case clearRecent(ProjectContextActionPreview)
+
+    var id: String { preview.action.id }
+
+    var preview: ProjectContextActionPreview {
+        switch self {
+        case .clearActive(let preview), .clearRecent(let preview):
+            return preview
         }
     }
 }

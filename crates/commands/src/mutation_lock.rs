@@ -8,7 +8,7 @@ use crate::CommandError;
 ///
 /// The owner directory must already exist. Acquiring this lock never creates a
 /// lock file, target directory, or other stale-preview artifact.
-pub(crate) struct AppMutationLock {
+pub struct AppMutationLock {
     file: File,
 }
 
@@ -18,7 +18,7 @@ impl Drop for AppMutationLock {
     }
 }
 
-pub(crate) fn lock_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, CommandError> {
+pub fn lock_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, CommandError> {
     let canonical_owner = app_data_dir.canonicalize()?;
     if !canonical_owner.is_dir() {
         return Err(CommandError::UnsafeConfigPath(

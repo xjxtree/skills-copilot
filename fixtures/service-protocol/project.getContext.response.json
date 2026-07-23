@@ -2,6 +2,7 @@
   "id": "fixture-project-get-context",
   "ok": true,
   "result": {
+    "revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "active": {
       "id": "project-fixture-id",
       "name": "Fixture Project",

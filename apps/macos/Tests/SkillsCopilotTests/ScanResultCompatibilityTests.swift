@@ -10,6 +10,13 @@ struct ScanResultCompatibilityTests {
         let payload = #"""
         {
           "scanned_count": 1,
+          "accepted_context_revision": "sha256:legacy-project-context",
+          "catalog_scan_revision": "sha256:legacy-catalog-scan",
+          "readback": {
+            "accepted_context_revision": "sha256:legacy-project-context",
+            "catalog_scan_revision": "sha256:legacy-catalog-scan",
+            "verified": true
+          },
           "skills": [
             {
               "id": "legacy-skill",

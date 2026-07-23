@@ -1,0 +1,7 @@
+{
+  "id": "fixture-project-preview-clear-recent-contexts",
+  "method": "project.previewClearRecentContexts",
+  "params": {
+    "expected_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

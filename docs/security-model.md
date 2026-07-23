@@ -93,9 +93,9 @@ confirmation, and network posture.
   precomputed in stable order and `skill.install` validates a non-creating
   target before locking. A changed record, reference set, source tree, or
   target revision returns a stale-action failure before any owned write.
-- Batch toggles, `skill.install`, confirmed Skill Manager search,
-  install/remove/update/local-create, local archive import/update, and
-  app-owned local deletion share one
+- Batch toggles, project-context applies, catalog scans, `skill.install`,
+  confirmed Skill Manager search, install/remove/update/local-create, local
+  archive import/update, and app-owned local deletion share one
   cross-sidecar mutation lock on the existing app-data owner directory; the
   lock creates no persistent filesystem artifact. Under that lock, the service
   rechecks the complete bounded target trees, archive bytes, relevant catalog
@@ -103,13 +103,37 @@ confirmation, and network posture.
   through process execution or staged filesystem replacement, catalog refresh,
   semantic verification, and read-back. A stale preview runs no manager
   process and writes neither targets nor app data.
+- Catalog scans are the narrow derived-cache exception to the signed
+  preview/apply lifecycle. `catalog.scanAll` and `catalog.scanClaude` require
+  `explicit_refresh: true`; the explicit refresh invocation itself is the
+  confirmation, no secondary prompt is shown, and missing authorization is
+  rejected before app-data creation. Accepted project-context and scan
+  revisions plus verified read-back make the committed cache generation
+  inspectable.
 - The lifecycle currently covers single and batch agent-config toggles through
-  `batch.*`, `skill.install`, confirmed Skill Manager search,
-  install/remove/update/local create, local archive import/update,
+  `batch.*`, all project-context mutations, `skill.install`, confirmed Skill
+  Manager search, install/remove/update/local create, local archive
+  import/update,
   physical deletion of an eligible app-owned local source, explicit Claude
   settings saves, config snapshot rollback, provider profile save/delete,
   provider connection tests, and confirmed LLM prompt sends.
   `config.toggleSkill` is compatibility-only and cannot mutate.
+
+### Project Context And Catalog Scan Atomicity
+
+- Project-context reads are bounded, regular-file-only, and no-follow.
+  Preview binds the exact current bytes and candidate state to a signed action;
+  apply revalidates under the shared cross-process owner lock before atomic
+  private-file replacement and semantic read-back.
+- A stale project preview or stale explicit scan context is rejected by a
+  non-creating preflight. It must not create the app-data directory, catalog,
+  target file, lock artifact, snapshot, or audit record.
+- Catalog scans hold the same owner lock used by config, manager, install, and
+  project mutations. Skill rows, stale-row reconciliation, findings,
+  conflicts, and the scan-only revision commit in one SQLite `IMMEDIATE`
+  transaction or roll back together.
+- The scan revision proves only the accepted scan transaction. It is not a
+  global catalog mutation revision and cannot authorize unrelated writes.
 
 ### Config Mutation Atomicity
 

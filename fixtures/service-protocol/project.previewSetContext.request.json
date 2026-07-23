@@ -1,0 +1,10 @@
+{
+  "id": "fixture-project-preview-set-context",
+  "method": "project.previewSetContext",
+  "params": {
+    "root_path": "/tmp/skills-copilot-project",
+    "current_cwd": "/tmp/skills-copilot-project",
+    "name": "Fixture Project",
+    "expected_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

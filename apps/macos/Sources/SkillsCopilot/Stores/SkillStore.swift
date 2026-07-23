@@ -211,6 +211,7 @@ final class SkillStore: ObservableObject {
             clearSkillManagerWorkflowPreviews()
         }
     }
+    @Published private(set) var projectContextPendingAction: ProjectContextPendingAction?
     @Published private(set) var startupLoadingState: AppStartupLoadingState? = AppStartupLoadingState(
         message: UIStrings.startupPreparingLoading,
         progress: 0.02
@@ -424,6 +425,7 @@ final class SkillStore: ObservableObject {
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
     private var selectedDetailLoadGeneration = 0
+    private var projectScanGeneration: UInt64 = 0
     private var loadedAgentConfigSnapshotRequestKey: String?
     private var activeAgentConfigSnapshotRequest: (key: String, id: UUID)?
     private var loadedAgentConfigDocumentRequestKey: String?
@@ -623,8 +625,6 @@ final class SkillStore: ObservableObject {
         postRefreshSupplementalLoadTask = Task { @MainActor [weak self, requestedAgentFilter] in
             guard let self, !Task.isCancelled else { return }
             await self.loadSkillManagerTools()
-            guard !Task.isCancelled else { return }
-            await self.loadSkillManagerInventory()
             guard !Task.isCancelled else { return }
             if forceAIProviderStatus {
                 await self.loadAIProviderStatus()
@@ -1035,31 +1035,75 @@ final class SkillStore: ObservableObject {
     }
 
     func scanAll() async {
-        await scanAll(allowDuringProjectUpdate: false)
+        _ = await scanAll(allowDuringProjectUpdate: false)
     }
 
-    private func scanAll(allowDuringProjectUpdate: Bool) async {
-        guard canStartScan(allowDuringProjectUpdate: allowDuringProjectUpdate) else { return }
+    @discardableResult
+    private func scanAll(
+        allowDuringProjectUpdate: Bool,
+        expectedContextRevision: String? = nil,
+        preserveMutationMessage: Bool = false
+    ) async -> Bool {
+        guard canStartScan(allowDuringProjectUpdate: allowDuringProjectUpdate) else { return false }
+        projectScanGeneration &+= 1
+        let generation = projectScanGeneration
+        let acceptedContextRevision: String
+        do {
+            if let expectedContextRevision {
+                acceptedContextRevision = expectedContextRevision
+            } else {
+                acceptedContextRevision = try await currentProjectContextState().revision
+            }
+        } catch {
+            handleRefreshFailure(error, action: .scan)
+            return false
+        }
         isScanning = true
         errorMessage = nil
-        lastMutationMessage = nil
+        if !preserveMutationMessage {
+            lastMutationMessage = nil
+        }
         beginRefresh(.scan, message: UIStrings.refreshScanning)
         defer { isScanning = false }
 
         do {
-            let result = try await service.scanAll()
+            let result = try await service.scanAll(
+                expectedContextRevision: !acceptedContextRevision.isEmpty
+                    ? acceptedContextRevision
+                    : nil
+            )
+            try result.readback.validate(result: result)
+            guard generation == projectScanGeneration,
+                  projectContextState?.revision == result.acceptedContextRevision else {
+                return false
+            }
             pruneDetailCaches(to: Set(result.skills.map(\.id)))
             if let selectedSkillID {
                 invalidateDetailCaches(for: [selectedSkillID])
             }
-            try await refreshCollections()
-            lastMutationMessage = UIStrings.scannedSkills(result.scannedCount)
+            do {
+                let snapshot = try await service.appStateSnapshot()
+                guard generation == projectScanGeneration,
+                      projectContextState?.revision == result.acceptedContextRevision else {
+                    return false
+                }
+                publishCatalogProjection(snapshot)
+            } catch {
+                skills = result.skills
+                invalidateFilteredSkillListCache()
+                errorMessage = UIStrings.catalogScanReadbackRefreshFailed(error.localizedDescription)
+            }
+            if !preserveMutationMessage {
+                lastMutationMessage = UIStrings.scannedSkills(result.scannedCount)
+            }
             applyRefreshActivity(result.activity)
             catalogListCompleteness = catalogCompleteness(after: result)
             catalogListCompletenessByAgent = catalogCompletenessByAgent(after: result)
             await loadSelectedDetail()
+            return true
         } catch {
             handleRefreshFailure(error, action: .scan)
+            return false
         }
     }
 
@@ -1076,13 +1120,23 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            let state = try await service.setProjectContext(
+            let current = try await currentProjectContextState()
+            let preview = try await service.previewSetProjectContext(
                 rootPath: rootPath,
                 currentCWD: currentCWD ?? rootPath,
-                name: resolvedName.isEmpty ? nil : resolvedName
+                name: resolvedName.isEmpty ? nil : resolvedName,
+                expectedRevision: current.revision
             )
+            let result = try await service.setProjectContext(
+                rootPath: rootPath,
+                currentCWD: currentCWD ?? rootPath,
+                name: resolvedName.isEmpty ? nil : resolvedName,
+                preview: preview
+            )
+            try validateProjectContextApply(result, preview: preview)
             clearProjectScopedPresentationState()
-            projectContextState = state
+            projectContextState = result.state
+            lastMutationMessage = UIStrings.projectSelected(activeProjectContext?.name ?? resolvedName)
 
             if let validationMessage = projectValidationMessage {
                 errorMessage = UIStrings.projectValidationFailed(validationMessage)
@@ -1091,8 +1145,12 @@ final class SkillStore: ObservableObject {
                 return
             }
 
-            await scanAll(allowDuringProjectUpdate: true)
-            if errorMessage == nil {
+            let scanned = await scanAll(
+                allowDuringProjectUpdate: true,
+                expectedContextRevision: result.state.revision,
+                preserveMutationMessage: true
+            )
+            if scanned, errorMessage == nil {
                 lastMutationMessage = UIStrings.projectSelectedAndScanned(activeProjectContext?.name ?? resolvedName)
             }
         } catch {
@@ -1100,7 +1158,7 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func clearProject() async {
+    func previewClearProject() async {
         guard !isRefreshBusy else { return }
         isProjectUpdating = true
         projectTransitionName = UIStrings.projectGlobalRootsOnly
@@ -1112,13 +1170,11 @@ final class SkillStore: ObservableObject {
         }
 
         do {
-            let state = try await service.clearProjectContext()
-            clearProjectScopedPresentationState()
-            projectContextState = state
-            await scanAll(allowDuringProjectUpdate: true)
-            if errorMessage == nil {
-                lastMutationMessage = UIStrings.projectClearedAndScanned
-            }
+            let current = try await currentProjectContextState()
+            let preview = try await service.previewClearProjectContext(
+                expectedRevision: current.revision
+            )
+            projectContextPendingAction = .clearActive(preview)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1133,14 +1189,21 @@ final class SkillStore: ObservableObject {
 
         do {
             let removedName = recentProjectContexts.first { $0.id == id }?.name
-            projectContextState = try await service.removeRecentProjectContext(id: id)
+            let current = try await currentProjectContextState()
+            let preview = try await service.previewRemoveRecentProjectContext(
+                id: id,
+                expectedRevision: current.revision
+            )
+            let result = try await service.removeRecentProjectContext(id: id, preview: preview)
+            try validateProjectContextApply(result, preview: preview)
+            projectContextState = result.state
             lastMutationMessage = UIStrings.recentProjectRemoved(removedName ?? UIStrings.projectSelectedSource)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func clearRecentProjects() async {
+    func previewClearRecentProjects() async {
         guard !isRefreshBusy else { return }
         isProjectUpdating = true
         errorMessage = nil
@@ -1148,10 +1211,87 @@ final class SkillStore: ObservableObject {
         defer { isProjectUpdating = false }
 
         do {
-            projectContextState = try await service.clearRecentProjectContexts()
-            lastMutationMessage = UIStrings.recentProjectsCleared
+            let current = try await currentProjectContextState()
+            let preview = try await service.previewClearRecentProjectContexts(
+                expectedRevision: current.revision
+            )
+            projectContextPendingAction = .clearRecent(preview)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func cancelProjectContextPendingAction() {
+        projectContextPendingAction = nil
+    }
+
+    func confirmProjectContextPendingAction() async {
+        guard !isRefreshBusy, let pending = projectContextPendingAction else { return }
+        isProjectUpdating = true
+        errorMessage = nil
+        lastMutationMessage = nil
+        defer { isProjectUpdating = false }
+
+        do {
+            switch pending {
+            case .clearActive(let preview):
+                projectTransitionName = UIStrings.projectGlobalRootsOnly
+                defer { projectTransitionName = nil }
+                let result = try await service.clearProjectContext(preview: preview)
+                try validateProjectContextApply(result, preview: preview)
+                projectContextPendingAction = nil
+                clearProjectScopedPresentationState()
+                projectContextState = result.state
+                lastMutationMessage = UIStrings.projectCleared
+                let scanned = await scanAll(
+                    allowDuringProjectUpdate: true,
+                    expectedContextRevision: result.state.revision,
+                    preserveMutationMessage: true
+                )
+                if scanned, errorMessage == nil {
+                    lastMutationMessage = UIStrings.projectClearedAndScanned
+                }
+            case .clearRecent(let preview):
+                let result = try await service.clearRecentProjectContexts(preview: preview)
+                try validateProjectContextApply(result, preview: preview)
+                projectContextPendingAction = nil
+                projectContextState = result.state
+                lastMutationMessage = UIStrings.recentProjectsClearedCount(result.affectedCount)
+            }
+        } catch {
+            projectContextPendingAction = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func currentProjectContextState() async throws -> ProjectContextState {
+        if let projectContextState {
+            return projectContextState
+        }
+        let state = try await service.getProjectContext()
+        projectContextState = state
+        return state
+    }
+
+    private func validateProjectContextApply(
+        _ result: ProjectContextApplyResult,
+        preview: ProjectContextActionPreview
+    ) throws {
+        guard result.action == preview.action,
+              result.previewToken == preview.previewToken,
+              result.affectedCount == preview.affectedCount,
+              result.state.revision == preview.candidate.revision else {
+            throw ServiceClient.ClientError.invalidOutput(
+                "Project context apply did not match the confirmed preview."
+            )
+        }
+        try result.readback.validated(for: result.action)
+        guard result.readback.observations.contains(where: {
+            $0.domain == "project_context" && $0.revision == result.state.revision
+        }) else {
+            throw ServiceClient.ClientError.invalidOutput(
+                "Project context read-back did not verify the persisted revision."
+            )
         }
     }
 

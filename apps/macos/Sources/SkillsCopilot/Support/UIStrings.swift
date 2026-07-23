@@ -109,6 +109,22 @@ enum UIStrings {
     static var manageRecentProjects: String { text("project.recent.manage", "Manage Recent Projects") }
     static var clearRecentProjects: String { text("project.recent.clear", "Clear Recent Projects") }
     static var clearRecentProjectsCompact: String { text("project.recent.clear.compact", "Clear") }
+    static var projectActionConfirmationTitle: String {
+        text("project.action.confirm.title", "Confirm Project Change")
+    }
+    static var clearProjectConfirmation: String {
+        text(
+            "project.clear.confirm",
+            "Clear the active project context? Recent Projects will be preserved."
+        )
+    }
+    static func clearRecentProjectsConfirmation(_ count: Int) -> String {
+        format(
+            "project.recent.clear.confirm",
+            "Clear %d recent projects? The active project will remain selected.",
+            count
+        )
+    }
     static func recentProjectItem(_ name: String, path: String) -> String {
         format("project.recent.item", "%@ — %@", name, path)
     }
@@ -1245,12 +1261,27 @@ enum UIStrings {
         format("message.projectSelectedAndScanned", "Selected %@ and refreshed catalog.", name)
     }
 
+    static func projectSelected(_ name: String) -> String {
+        format("message.projectSelected", "Selected %@.", name)
+    }
+
     static var projectClearedAndScanned: String { text("message.projectClearedAndScanned", "Cleared project context and refreshed catalog.") }
+    static var projectCleared: String { text("message.projectCleared", "Cleared the active project context.") }
     static func recentProjectRemoved(_ name: String) -> String {
         format("message.projectRecentRemoved", "Removed %@ from Recent Projects.", name)
     }
     static var recentProjectsCleared: String { text("message.projectRecentsCleared", "Cleared Recent Projects.") }
+    static func recentProjectsClearedCount(_ count: Int) -> String {
+        format("message.projectRecentsClearedCount", "Cleared %d recent projects.", count)
+    }
     static var projectScanSkippedValidation: String { text("refresh.projectValidationSkipped", "Project context needs attention before scanning.") }
+    static func catalogScanReadbackRefreshFailed(_ reason: String) -> String {
+        format(
+            "refresh.scan.readbackSupportingFailed",
+            "The catalog scan was applied, but supporting evidence could not be refreshed: %@",
+            reason
+        )
+    }
 
     static func projectValidationFailed(_ reason: String) -> String {
         format("project.validationFailed", "Project validation failed: %@.", reason)

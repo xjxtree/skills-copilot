@@ -131,3 +131,95 @@ fn action_confirmation_from_preview(preview_result: &Value) -> Value {
         "confirmed": true
     })
 }
+
+fn project_context_state(host: &ServiceHost) -> Value {
+    let response = host.handle(ServiceRequest {
+        id: Some("project-context-state".to_string()),
+        method: "project.getContext".to_string(),
+        params: Value::Null,
+    });
+    assert!(response.ok, "{:?}", response.error);
+    response.result.expect("project context state")
+}
+
+fn confirmed_project_set_context(host: &ServiceHost, params: Value) -> (Value, ServiceResponse) {
+    let mut preview_params = params.clone();
+    preview_params
+        .as_object_mut()
+        .expect("project set params object")
+        .insert(
+            "expected_revision".to_string(),
+            project_context_state(host)
+                .get("revision")
+                .cloned()
+                .expect("project context revision"),
+        );
+    let preview = host.handle(ServiceRequest {
+        id: Some("project-set-preview".to_string()),
+        method: "project.previewSetContext".to_string(),
+        params: preview_params,
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("project set preview result");
+    let mut apply_params = params;
+    let apply = apply_params
+        .as_object_mut()
+        .expect("project set params object");
+    apply.insert(
+        "candidate_last_used_at".to_string(),
+        preview_result
+            .pointer("/candidate/active/last_used_at")
+            .cloned()
+            .expect("candidate project timestamp"),
+    );
+    apply.insert(
+        "action_confirmation".to_string(),
+        action_confirmation_from_preview(&preview_result),
+    );
+    let response = host.handle(ServiceRequest {
+        id: Some("project-set-apply".to_string()),
+        method: "project.setContext".to_string(),
+        params: apply_params,
+    });
+    (preview_result, response)
+}
+
+fn confirmed_project_revision_action(
+    host: &ServiceHost,
+    preview_method: &str,
+    apply_method: &str,
+    params: Value,
+) -> (Value, ServiceResponse) {
+    let mut preview_params = params.clone();
+    preview_params
+        .as_object_mut()
+        .expect("project action params object")
+        .insert(
+            "expected_revision".to_string(),
+            project_context_state(host)
+                .get("revision")
+                .cloned()
+                .expect("project context revision"),
+        );
+    let preview = host.handle(ServiceRequest {
+        id: Some(format!("{preview_method}-preview")),
+        method: preview_method.to_string(),
+        params: preview_params,
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("project action preview result");
+    let mut apply_params = params;
+    apply_params
+        .as_object_mut()
+        .expect("project action params object")
+        .insert(
+            "action_confirmation".to_string(),
+            action_confirmation_from_preview(&preview_result),
+        );
+    let response = host.handle(ServiceRequest {
+        id: Some(format!("{apply_method}-apply")),
+        method: apply_method.to_string(),
+        params: apply_params,
+    });
+    (preview_result, response)
+}

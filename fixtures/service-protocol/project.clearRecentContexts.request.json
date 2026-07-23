@@ -1,5 +1,19 @@
 {
   "id": "fixture-project-clear-recent-contexts",
   "method": "project.clearRecentContexts",
-  "params": {}
+  "params": {
+    "action_confirmation": {
+      "reference": {
+        "action_id": "action:clear_recent_project_contexts:4444444444444444444444444444444444444444444444444444444444444444",
+        "source_revision": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "project_id": "project-fixture-id",
+        "target": {
+          "kind": "config",
+          "id": "project-context-recents"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "confirmed": true
+    }
+  }
 }

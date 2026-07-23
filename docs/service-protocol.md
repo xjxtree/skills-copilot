@@ -233,10 +233,14 @@ the client.
 | `skillManager.previewLocalArchiveUpdate` | None | Never | Never | None |
 | `skillManager.applyLocalArchiveUpdate` | App-local data | Never | Never | Required |
 | `project.getContext` | None | Never | Never | None |
-| `project.setContext` | App-local data | Never | Never | None |
-| `project.clearContext` | App-local data | Never | Never | None |
-| `project.removeRecentContext` | App-local data | Never | Never | None |
-| `project.clearRecentContexts` | App-local data | Never | Never | None |
+| `project.previewSetContext` | None | Never | Never | None |
+| `project.setContext` | App-local data | Never | Never | Required |
+| `project.previewClearContext` | None | Never | Never | None |
+| `project.clearContext` | App-local data | Never | Never | Required |
+| `project.previewRemoveRecentContext` | None | Never | Never | None |
+| `project.removeRecentContext` | App-local data | Never | Never | Required |
+| `project.previewClearRecentContexts` | None | Never | Never | None |
+| `project.clearRecentContexts` | App-local data | Never | Never | Required |
 | `project.validateContext` | None | Never | Never | None |
 | `catalog.listSkills` | None | Never | Never | None |
 | `catalog.getSkill` | None | Never | Never | None |
@@ -442,8 +446,50 @@ presence/value or absence verification, not secret exposure.
   loaded; broken, missing, and shadowed states remain unchanged. The projection
   does not scan directories, write config, or mutate the catalog.
 
+## Project Context Consistency
+
+- `project.getContext` returns the active project, recent projects, and a
+  stable `revision` derived from the exact app-local state bytes. Missing state
+  has a distinct stable revision. Reads accept only a bounded regular
+  `project-context.json`; symlinks, oversized content, malformed JSON, and
+  unsupported schemas fail closed.
+- Set, clear-active, remove-recent, and clear-recents each use a dedicated
+  `project.preview*`/apply pair. Preview is read-only, accepts the current
+  expected revision, and returns the current/candidate states, exact
+  `affected_count`, preconditions, and a signed preview token. Apply requires
+  that exact `action_confirmation`.
+- Apply performs a non-creating preflight, takes the shared app-data mutation
+  owner lock, reprojects and revalidates the confirmation under the lock,
+  atomically replaces the private state file, and returns a minimal verified
+  project-context read-back. A stale or mismatched action does not create app
+  data or write state.
+- Clearing the active project preserves Recent Projects. Removing a recent row
+  and clearing all recent rows preserve the active project even when it no
+  longer appears in the recent list. Clear-recents confirmation reports the
+  exact previewed row count.
+- The native app publishes a successful project apply before requesting the
+  follow-up catalog scan. A later scan or supporting-snapshot failure is
+  reported separately and never reclassifies the project write as failed.
+  Late scan responses whose accepted context revision no longer matches the
+  current project are discarded.
+
 ## Catalog Scan Diagnostics
 
+- `catalog.scanAll` and `catalog.scanClaude` accept an optional
+  `expected_context_revision` and require `explicit_refresh: true`. A catalog
+  scan rebuilds derived app-local cache state, so the explicit refresh
+  invocation is its confirmation and there is no secondary preview/confirm
+  prompt. Missing or false `explicit_refresh` and stale explicit revisions are
+  rejected by a read-only preflight before app-data creation. The context
+  revision is checked again while the shared mutation owner lock is held.
+- One SQLite `IMMEDIATE` transaction owns all skill rows, missing-state
+  reconciliation, findings, conflicts, and the scan revision for a refresh.
+  Any preparation or commit failure rolls back the whole scan. The response
+  returns `accepted_context_revision`, `catalog_scan_revision`, and a matching
+  verified `readback`.
+- `catalog_scan_revision` versions successful catalog scans only. It is not a
+  global version for every catalog mutation and must not be used to authorize
+  config, install, manager, triage, or other catalog-backed actions.
 - `catalog.scanAll` returns `activity.agent_summaries[]` with separate
   `roots_scanned`, `roots_partial`, and `roots_skipped` arrays. Only
   `roots_scanned` were completely enumerated and are eligible for catalog
@@ -490,8 +536,8 @@ presence/value or absence verification, not secret exposure.
   actions.
 - `roots_partial` and `scan_issues` are additive summary arrays. Native clients
   decode either field as an empty array when reading a legal response from a
-  pre-diagnostics service, while all pre-existing summary fields remain
-  required and keep their original wire keys.
+  pre-diagnostics service. Scan revision/read-back fields are required for a
+  scan result to be published as current catalog state.
 
 ## Finding Visibility Semantics
 
@@ -631,10 +677,11 @@ presence/value or absence verification, not secret exposure.
   UI routes both single and multi-skill changes through
   `batch.previewSkillToggles` and `batch.applySkillToggles`;
   `config.toggleSkill` is compatibility-only and returns `mutation_disabled`.
-- The native client prewarms project and global catalog/lock projections during
-  app startup. Startup, reload, project switching, ordinary catalog refresh,
-  opening Skill Manager, and its Load Data action never invoke an external
-  manager process. Local app-owned skills are merged into the same
+- Startup, manual reload, project switching, ordinary catalog refresh, and
+  opening Skill Manager do not invoke an external manager or load manager
+  inventory. The explicit Load Data action reads project/global catalog and
+  lock projections without spawning a process, using the network, or writing
+  agent config. Local app-owned skills are then merged into the same
   skill-centric inventory.
 - Search starts with a keyword and result selection. Install/remove agent
   targets and the shared install scope are chosen only after a skill is

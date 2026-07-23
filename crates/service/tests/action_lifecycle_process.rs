@@ -45,7 +45,11 @@ impl Fixture {
             &home,
             &app_data,
             Some(SECRET_A),
-            json!({"id":"scan","method":"catalog.scanAll","params":{}}),
+            json!({
+                "id":"scan",
+                "method":"catalog.scanAll",
+                "params":{"explicit_refresh":true}
+            }),
         );
         assert_success(&scan);
         let instance_id = scan
@@ -162,6 +166,69 @@ impl Fixture {
             "params":{
                 "content":content,
                 "confirmation":{
+                    "reference":{
+                        "action_id":action["id"],
+                        "source_revision":action["source_revision"],
+                        "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                        "target":action["target"]
+                    },
+                    "preview_token":preview_token,
+                    "confirmed":true
+                }
+            }
+        })
+    }
+
+    fn project_set_preview(&self) -> Value {
+        let current = invoke(
+            &self.home,
+            &self.app_data,
+            Some(SECRET_A),
+            json!({"id":"project-get","method":"project.getContext","params":{}}),
+        );
+        assert_success(&current);
+        let revision = current
+            .pointer("/result/revision")
+            .and_then(Value::as_str)
+            .expect("project context revision");
+        invoke(
+            &self.home,
+            &self.app_data,
+            Some(SECRET_A),
+            json!({
+                "id":"project-preview",
+                "method":"project.previewSetContext",
+                "params":{
+                    "root_path":self.home,
+                    "current_cwd":self.home,
+                    "name":"Process Project",
+                    "expected_revision":revision
+                }
+            }),
+        )
+    }
+
+    fn project_set_request(&self, preview: &Value) -> Value {
+        let action = preview
+            .pointer("/result/action")
+            .expect("project preview action");
+        let preview_token = preview
+            .pointer("/result/preview_token")
+            .and_then(Value::as_str)
+            .expect("project preview token");
+        let candidate_last_used_at = preview
+            .pointer("/result/candidate/active/last_used_at")
+            .and_then(Value::as_i64)
+            .expect("project candidate timestamp");
+        json!({
+            "id":"project-apply",
+            "method":"project.setContext",
+            "params":{
+                "root_path":self.home,
+                "current_cwd":self.home,
+                "name":"Process Project",
+                "candidate_last_used_at":candidate_last_used_at,
+                "action_confirmation":{
                     "reference":{
                         "action_id":action["id"],
                         "source_revision":action["source_revision"],
@@ -814,6 +881,89 @@ fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
         fs::read_to_string(fixture.settings_path()).expect("read saved config"),
         content
     );
+}
+
+#[test]
+fn project_context_apply_waits_for_the_cross_process_app_mutation_owner_lock() {
+    let fixture = Fixture::new("project-owner-lock");
+    let preview = fixture.project_set_preview();
+    assert_success(&preview);
+    let request = fixture.project_set_request(&preview);
+    let lock_file = fs::File::open(
+        fixture
+            .app_data
+            .canonicalize()
+            .expect("canonical app-data owner"),
+    )
+    .expect("open app-data owner");
+    lock_file.lock_exclusive().expect("hold app mutation owner");
+    let mut child = spawn_sidecar(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[],
+        request,
+    );
+    thread::sleep(Duration::from_millis(150));
+    assert!(
+        child
+            .try_wait()
+            .expect("poll blocked project apply")
+            .is_none(),
+        "project context apply must wait while another process owns the app mutation lock"
+    );
+
+    FileExt::unlock(&lock_file).expect("release app mutation owner");
+    let output = child.wait_with_output().expect("wait for project apply");
+    assert!(output.status.success());
+    let response: Value =
+        serde_json::from_slice(&output.stdout).expect("decode project apply response");
+    assert_success(&response);
+    assert_eq!(
+        response
+            .pointer("/result/state/active/name")
+            .and_then(Value::as_str),
+        Some("Process Project")
+    );
+}
+
+#[test]
+fn catalog_scan_waits_for_the_cross_process_app_mutation_owner_lock() {
+    let fixture = Fixture::new("scan-owner-lock");
+    let lock_file = fs::File::open(
+        fixture
+            .app_data
+            .canonicalize()
+            .expect("canonical app-data owner"),
+    )
+    .expect("open app-data owner");
+    lock_file.lock_exclusive().expect("hold app mutation owner");
+    let mut child = spawn_sidecar(
+        &fixture.home,
+        &fixture.app_data,
+        Some(SECRET_A),
+        &[],
+        json!({
+            "id":"scan",
+            "method":"catalog.scanAll",
+            "params":{"explicit_refresh":true}
+        }),
+    );
+    thread::sleep(Duration::from_millis(150));
+    assert!(
+        child.try_wait().expect("poll blocked scan").is_none(),
+        "catalog scan must wait while another process owns the app mutation lock"
+    );
+
+    FileExt::unlock(&lock_file).expect("release app mutation owner");
+    let output = child.wait_with_output().expect("wait for scan");
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).expect("decode scan response");
+    assert_success(&response);
+    assert!(response
+        .pointer("/result/readback/verified")
+        .and_then(Value::as_bool)
+        .unwrap_or(false));
 }
 
 fn invoke(home: &Path, app_data: &Path, secret: Option<&str>, request: Value) -> Value {

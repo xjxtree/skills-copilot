@@ -31,42 +31,122 @@ extension ServiceClient {
         }
     }
 
-    func scanAll() async throws -> ScanResult {
-        try await call(method: "catalog.scanAll", params: EmptyParams())
+    func scanAll(expectedContextRevision: String? = nil) async throws -> ScanResult {
+        try await call(
+            method: "catalog.scanAll",
+            params: CatalogScanParams(
+                explicitRefresh: true,
+                expectedContextRevision: expectedContextRevision
+            )
+        )
     }
 
-    func scanClaude() async throws -> ScanResult {
-        try await call(method: "catalog.scanClaude", params: EmptyParams())
+    func scanClaude(expectedContextRevision: String? = nil) async throws -> ScanResult {
+        try await call(
+            method: "catalog.scanClaude",
+            params: CatalogScanParams(
+                explicitRefresh: true,
+                expectedContextRevision: expectedContextRevision
+            )
+        )
     }
 
     func getProjectContext() async throws -> ProjectContextState {
         do {
             return try await call(method: "project.getContext", params: EmptyParams())
         } catch ClientError.service(let error) where error.code == "unknown_method" {
-            return ProjectContextState(active: nil, recent: [])
+            return ProjectContextState(revision: "", active: nil, recent: [])
         }
     }
 
-    func setProjectContext(rootPath: String, currentCWD: String?, name: String?) async throws -> ProjectContextState {
+    func previewSetProjectContext(
+        rootPath: String,
+        currentCWD: String?,
+        name: String?,
+        expectedRevision: String
+    ) async throws -> ProjectContextActionPreview {
         try await call(
-            method: "project.setContext",
-            params: ProjectContextParams(rootPath: rootPath, currentCWD: currentCWD, name: name)
+            method: "project.previewSetContext",
+            params: ProjectContextSetPreviewParams(
+                rootPath: rootPath,
+                currentCWD: currentCWD,
+                name: name,
+                expectedRevision: expectedRevision
+            )
         )
     }
 
-    func clearProjectContext() async throws -> ProjectContextState {
-        try await call(method: "project.clearContext", params: EmptyParams())
+    func setProjectContext(
+        rootPath: String,
+        currentCWD: String?,
+        name: String?,
+        preview: ProjectContextActionPreview
+    ) async throws -> ProjectContextApplyResult {
+        guard let candidateLastUsedAt = preview.candidate.active?.lastUsedAt.flatMap(Int64.init) else {
+            throw ClientError.invalidOutput("Project context preview omitted its candidate timestamp.")
+        }
+        return try await call(
+            method: "project.setContext",
+            params: ProjectContextSetApplyParams(
+                rootPath: rootPath,
+                currentCWD: currentCWD,
+                name: name,
+                candidateLastUsedAt: candidateLastUsedAt,
+                confirmation: preview.confirmation
+            )
+        )
     }
 
-    func removeRecentProjectContext(id: String) async throws -> ProjectContextState {
+    func previewClearProjectContext(expectedRevision: String) async throws -> ProjectContextActionPreview {
+        try await call(
+            method: "project.previewClearContext",
+            params: ProjectContextRevisionParams(expectedRevision: expectedRevision)
+        )
+    }
+
+    func clearProjectContext(preview: ProjectContextActionPreview) async throws -> ProjectContextApplyResult {
+        try await call(
+            method: "project.clearContext",
+            params: ProjectContextConfirmationParams(confirmation: preview.confirmation)
+        )
+    }
+
+    func previewRemoveRecentProjectContext(
+        id: String,
+        expectedRevision: String
+    ) async throws -> ProjectContextActionPreview {
+        try await call(
+            method: "project.previewRemoveRecentContext",
+            params: ProjectContextIDPreviewParams(id: id, expectedRevision: expectedRevision)
+        )
+    }
+
+    func removeRecentProjectContext(
+        id: String,
+        preview: ProjectContextActionPreview
+    ) async throws -> ProjectContextApplyResult {
         try await call(
             method: "project.removeRecentContext",
-            params: ProjectContextIDParams(id: id)
+            params: ProjectContextIDApplyParams(id: id, confirmation: preview.confirmation)
         )
     }
 
-    func clearRecentProjectContexts() async throws -> ProjectContextState {
-        try await call(method: "project.clearRecentContexts", params: EmptyParams())
+    func previewClearRecentProjectContexts(
+        expectedRevision: String
+    ) async throws -> ProjectContextActionPreview {
+        try await call(
+            method: "project.previewClearRecentContexts",
+            params: ProjectContextRevisionParams(expectedRevision: expectedRevision)
+        )
+    }
+
+    func clearRecentProjectContexts(
+        preview: ProjectContextActionPreview
+    ) async throws -> ProjectContextApplyResult {
+        try await call(
+            method: "project.clearRecentContexts",
+            params: ProjectContextConfirmationParams(confirmation: preview.confirmation)
+        )
     }
 
     func validateProjectContext(rootPath: String, currentCWD: String?, name: String?) async throws -> ProjectContext {

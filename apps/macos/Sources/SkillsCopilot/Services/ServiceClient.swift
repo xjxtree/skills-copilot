@@ -537,8 +537,80 @@ struct ProjectContextParams: Encodable {
     }
 }
 
-struct ProjectContextIDParams: Encodable {
+struct CatalogScanParams: Encodable {
+    let explicitRefresh: Bool
+    let expectedContextRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case explicitRefresh = "explicit_refresh"
+        case expectedContextRevision = "expected_context_revision"
+    }
+}
+
+struct ProjectContextSetPreviewParams: Encodable {
+    let rootPath: String
+    let currentCWD: String?
+    let name: String?
+    let expectedRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case rootPath = "root_path"
+        case currentCWD = "current_cwd"
+        case name
+        case expectedRevision = "expected_revision"
+    }
+}
+
+struct ProjectContextSetApplyParams: Encodable {
+    let rootPath: String
+    let currentCWD: String?
+    let name: String?
+    let candidateLastUsedAt: Int64
+    let confirmation: ActionConfirmationWire
+
+    enum CodingKeys: String, CodingKey {
+        case rootPath = "root_path"
+        case currentCWD = "current_cwd"
+        case name
+        case candidateLastUsedAt = "candidate_last_used_at"
+        case confirmation = "action_confirmation"
+    }
+}
+
+struct ProjectContextRevisionParams: Encodable {
+    let expectedRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case expectedRevision = "expected_revision"
+    }
+}
+
+struct ProjectContextConfirmationParams: Encodable {
+    let confirmation: ActionConfirmationWire
+
+    enum CodingKeys: String, CodingKey {
+        case confirmation = "action_confirmation"
+    }
+}
+
+struct ProjectContextIDPreviewParams: Encodable {
     let id: String
+    let expectedRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case expectedRevision = "expected_revision"
+    }
+}
+
+struct ProjectContextIDApplyParams: Encodable {
+    let id: String
+    let confirmation: ActionConfirmationWire
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case confirmation = "action_confirmation"
+    }
 }
 
 final class ServiceClient {

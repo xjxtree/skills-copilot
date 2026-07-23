@@ -39,7 +39,8 @@ extension SkillStoreTests {
 
         let store = SkillStore(service: fake.serviceClient())
         await store.reload()
-        await store.clearRecentProjects()
+        await store.previewClearRecentProjects()
+        await store.confirmProjectContextPendingAction()
 
         try expectEqual(
             store.activeProjectContext?.name,

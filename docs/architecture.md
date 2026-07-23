@@ -96,12 +96,16 @@ owns bounded wire exposure; Swift owns presentation and interaction state only.
 ## Data Flow
 
 1. The app calls a typed service method such as `catalog.scanAll`.
-2. Commands resolve project context and adapter roots.
+2. The service requires `explicit_refresh: true`, accepts one project-context
+   revision, takes the shared app-data mutation owner, and resolves adapter
+   roots from that locked context.
 3. Scanner enumerates candidate `SKILL.md` files inside allowed roots.
 4. Adapters parse agent-specific metadata and enabled state.
-5. Commands update the local catalog and derived findings.
-6. The app reads typed service results for list, detail, config, session, and
-   report surfaces.
+5. Commands update skill rows, missing-state reconciliation, findings,
+   conflicts, and the scan-only revision in one SQLite `IMMEDIATE`
+   transaction.
+6. The app publishes only a scan response whose context and scan read-back
+   match, then reads typed detail, config, session, and report surfaces.
 
 Product read projections are additive over this flow. Environment health,
 skill effectiveness, aggregate counts, evidence references, attention actions,
@@ -150,6 +154,9 @@ responses project the current guarded Codex `[[skills.config]]` overrides onto
 cached list, detail, analysis, conflict, and health records in memory. This
 keeps external ChatGPT enable/disable changes current without a directory scan
 or catalog write; filesystem inventory changes still require an explicit scan.
+Startup and reload do not invoke external manager inventory/search, perform
+manager network activity, or write agent config. Manager inventory remains an
+explicit surface-local load.
 
 ### Scanner Bounds And Catalog Completeness
 
@@ -230,9 +237,10 @@ or catalog write; filesystem inventory changes still require an explicit scan.
   filter is the only skill-list filter that shows general historical missing
   rows.
 
-Skill Manager follows a skill-first cache model. Startup and explicit manual
-refresh load project/global package inventories; opening the panel and changing
-its display scope or action targets perform no scan. Rust parses full bounded
+Skill Manager follows a skill-first cache model. Its explicit Load Data action
+loads project/global package inventories; startup, app reload, opening the
+panel, and changing display scope or action targets do not invoke the external
+manager. Rust parses full bounded
 manager JSON into compact skill rows and owns local archive validation and
 replacement. Swift renders cached rows and sends typed, confirmation-bound
 actions only after a skill is selected. Manager CLI rows are the primary

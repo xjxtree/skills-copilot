@@ -60,7 +60,7 @@ use config_support::{
     batch_snapshot_rollback_notes, minimal_skill_instance, normalize_initial_config_text,
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
-use mutation_lock::lock_app_mutations;
+pub use mutation_lock::lock_app_mutations;
 
 pub use action_lifecycle::*;
 pub use analysis::*;

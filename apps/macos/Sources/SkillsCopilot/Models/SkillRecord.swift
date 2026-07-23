@@ -1134,11 +1134,41 @@ struct ScanResult: Codable, Hashable {
     let scannedCount: Int
     let skills: [SkillRecord]
     let activity: RefreshActivity?
+    let acceptedContextRevision: String
+    let catalogScanRevision: String
+    let readback: CatalogScanReadback
 
     enum CodingKeys: String, CodingKey {
         case scannedCount = "scanned_count"
         case skills
         case activity
+        case acceptedContextRevision = "accepted_context_revision"
+        case catalogScanRevision = "catalog_scan_revision"
+        case readback
+    }
+}
+
+struct CatalogScanReadback: Codable, Hashable {
+    let acceptedContextRevision: String
+    let catalogScanRevision: String
+    let verified: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case acceptedContextRevision = "accepted_context_revision"
+        case catalogScanRevision = "catalog_scan_revision"
+        case verified
+    }
+
+    func validate(result: ScanResult) throws {
+        guard verified,
+              !acceptedContextRevision.isEmpty,
+              !catalogScanRevision.isEmpty,
+              acceptedContextRevision == result.acceptedContextRevision,
+              catalogScanRevision == result.catalogScanRevision else {
+            throw ServiceClient.ClientError.invalidOutput(
+                "Catalog scan read-back did not match the accepted context and scan revisions."
+            )
+        }
     }
 }
 

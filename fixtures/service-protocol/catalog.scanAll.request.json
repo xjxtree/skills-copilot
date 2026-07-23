@@ -1,5 +1,8 @@
 {
   "id": "fixture-scan-all",
   "method": "catalog.scanAll",
-  "params": {}
+  "params": {
+    "explicit_refresh": true,
+    "expected_context_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
 }

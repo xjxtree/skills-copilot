@@ -341,7 +341,12 @@ The product design is satisfied only when all of the following are true:
 - Installed, enabled, and effective remain visibly distinct.
 - Every status, intelligent explanation, and supported action resolves to local
   evidence.
-- Every write has deterministic preview, explicit confirmation, and read-back.
+- Every durable user-authored or remediation write has deterministic preview,
+  explicit confirmation, and read-back.
+- Catalog scans are derived-cache refreshes: the typed
+  `explicit_refresh: true` invocation is the confirmation, no secondary prompt
+  is shown, and the result carries accepted context, scan revision, and
+  verified read-back.
 - The app remains useful with provider features disabled.
 
 ### Continuity

@@ -39,6 +39,18 @@ pub(super) fn service_protocol_fixtures_decode() {
                 assert!(!params.session_id.is_empty());
             }
             match request.method.as_str() {
+                "catalog.scanClaude" | "catalog.scanAll" => {
+                    let params =
+                        serde_json::from_value::<CatalogScanParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(
+                        params.explicit_refresh,
+                        "catalog scan fixtures must prove explicit refresh authorization"
+                    );
+                    assert!(params.expected_context_revision.is_some());
+                }
                 "batch.applySkillToggles" => {
                     let params = serde_json::from_value::<BatchApplySkillTogglesParams>(
                         request.params.clone(),
@@ -174,6 +186,63 @@ pub(super) fn service_protocol_fixtures_decode() {
                     .unwrap_or_else(|error| {
                         panic!("request fixture {} params failed: {error}", path.display())
                     });
+                    assert!(params.action_confirmation.confirmed);
+                }
+                "project.previewSetContext" => {
+                    let params = serde_json::from_value::<ProjectContextSetPreviewParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(!params.expected_revision.is_empty());
+                }
+                "project.setContext" => {
+                    let params = serde_json::from_value::<ProjectContextSetApplyParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.candidate_last_used_at > 0);
+                    assert!(params.action_confirmation.confirmed);
+                }
+                "project.previewClearContext" | "project.previewClearRecentContexts" => {
+                    let params = serde_json::from_value::<ProjectContextRevisionParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(!params.expected_revision.is_empty());
+                }
+                "project.clearContext" | "project.clearRecentContexts" => {
+                    let params = serde_json::from_value::<ProjectContextConfirmationParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.action_confirmation.confirmed);
+                }
+                "project.previewRemoveRecentContext" => {
+                    let params = serde_json::from_value::<ProjectContextIDPreviewParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(!params.id.is_empty());
+                    assert!(!params.expected_revision.is_empty());
+                }
+                "project.removeRecentContext" => {
+                    let params = serde_json::from_value::<ProjectContextIDApplyParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(!params.id.is_empty());
                     assert!(params.action_confirmation.confirmed);
                 }
                 _ => {}
@@ -1202,16 +1271,36 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert!(update.readback.is_none());
             }
         }
-        "project.getContext"
-        | "project.setContext"
-        | "project.clearContext"
-        | "project.removeRecentContext"
-        | "project.clearRecentContexts" => {
+        "project.getContext" => {
             let _: ProjectContextState = decode_fixture_result(method, result, path);
             let state: WireProjectContextState = decode_fixture_result(method, result, path);
             assert!(
                 state.active.is_some() || !state.recent.is_empty(),
-                "{method} fixture should cover active or recent context state"
+                "project.getContext fixture should cover active or recent context state"
+            );
+        }
+        "project.previewSetContext"
+        | "project.previewClearContext"
+        | "project.previewRemoveRecentContext"
+        | "project.previewClearRecentContexts" => {
+            let preview: ProjectContextActionPreview = decode_fixture_result(method, result, path);
+            assert_ne!(preview.current.revision, preview.candidate.revision);
+            assert!(preview.affected_count > 0);
+        }
+        "project.setContext"
+        | "project.clearContext"
+        | "project.removeRecentContext"
+        | "project.clearRecentContexts" => {
+            let apply: ProjectContextApplyResult = decode_fixture_result(method, result, path);
+            assert!(apply.readback.verified);
+            assert_eq!(
+                apply.state.revision,
+                apply
+                    .readback
+                    .observations
+                    .first()
+                    .expect("project readback observation")
+                    .revision
             );
         }
         "project.validateContext" => {
@@ -1223,6 +1312,15 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let scan: WireScanResult = decode_fixture_result(method, result, path);
             assert_eq!(scan.activity.operation, method);
             assert_eq!(scan.scanned_count, scan.activity.scanned_count);
+            assert!(scan.readback.verified);
+            assert_eq!(
+                scan.accepted_context_revision,
+                scan.readback.accepted_context_revision
+            );
+            assert_eq!(
+                scan.catalog_scan_revision,
+                scan.readback.catalog_scan_revision
+            );
             if method == "catalog.scanAll" {
                 assert_eq!(
                     scan.activity.status, "completed-partial",

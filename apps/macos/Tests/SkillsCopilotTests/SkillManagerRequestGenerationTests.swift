@@ -84,6 +84,11 @@ struct SkillManagerRequestGenerationTests {
 
         await store.loadAppStartupDataIfNeeded()
         try expectEqual(store.localSkillLibrarySkills.map(\.id).count, 31, "App-owned local library should expose all 31 rows.")
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.listInstalled").count,
+            2,
+            "Startup must not implicitly invoke the external Skill Manager inventory path."
+        )
     }
 
     private func invalidMethodMetadataPreservesCurrentRecords() async throws {
@@ -1346,7 +1351,7 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
         case "llm.status":
             result = ["enabled": false, "disabled_reason": "disabled", "supported_actions": []]
         case "project.getContext":
-            result = ["active": NSNull(), "recent": []]
+            result = ["active": NSNull(), "recent": [], "revision": "sha256:project-context-empty"]
         case "rules.listTuning":
             result = ["records": []]
         default:

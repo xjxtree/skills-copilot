@@ -550,6 +550,18 @@ pub(super) struct WireScanResult {
     pub(super) scanned_count: usize,
     pub(super) skills: Vec<WireSkillRecord>,
     pub(super) activity: WireRefreshActivity,
+    pub(super) accepted_context_revision: String,
+    pub(super) catalog_scan_revision: String,
+    pub(super) readback: WireCatalogScanReadback,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireCatalogScanReadback {
+    pub(super) accepted_context_revision: String,
+    pub(super) catalog_scan_revision: String,
+    pub(super) verified: bool,
 }
 
 #[allow(dead_code)]
@@ -1559,6 +1571,7 @@ pub(super) struct WireScriptExecutionAttemptRecord {
 #[serde(deny_unknown_fields)]
 pub(super) struct WireProjectContextSummary {
     pub(super) source: String,
+    pub(super) revision: String,
     pub(super) active: Option<WireProjectContext>,
     pub(super) recent_count: usize,
     pub(super) validation_error: Option<String>,
@@ -1568,6 +1581,7 @@ pub(super) struct WireProjectContextSummary {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WireProjectContextState {
+    pub(super) revision: String,
     pub(super) active: Option<WireProjectContext>,
     pub(super) recent: Vec<WireProjectContext>,
 }

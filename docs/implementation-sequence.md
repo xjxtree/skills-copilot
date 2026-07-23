@@ -176,6 +176,10 @@ Evidence, Preview, Confirm, Apply, and Read-back.
   typed partial effect.
 - Standardize read-back so each apply refreshes only the affected domain and
   recomputes projections.
+- Treat catalog scans as the sole derived-cache refresh exception: require a
+  typed `explicit_refresh: true` invocation, reject its absence before I/O,
+  return revision-bound verified read-back, and do not add a redundant
+  secondary confirmation prompt.
 - Keep skill package management, config toggles, rollback, local ZIP, and
   continuation preview within their existing safety ownership.
 - Do not broaden adapter write scopes or enable skill scripts.
@@ -190,8 +194,9 @@ Evidence, Preview, Confirm, Apply, and Read-back.
 
 ### Exit Criteria
 
-- Every UI-visible write has a deterministic preview and explicit confirmation
-  contract.
+- Every durable UI-visible write has a deterministic preview and explicit
+  confirmation contract; the catalog derived-cache exception has a typed
+  explicit-refresh authorization and verified revision read-back.
 - Stale revision and target mismatch tests prove no write or hidden retry
   occurs.
 - Read-back tests prove the returned projection reflects the applied mutation.

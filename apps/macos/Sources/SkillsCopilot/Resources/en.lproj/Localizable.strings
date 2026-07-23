@@ -1123,6 +1123,13 @@
 "message.savedSettings" = "Settings saved and verified.";
 "message.projectSelectedAndScanned" = "Selected %@ and refreshed catalog.";
 "message.projectClearedAndScanned" = "Cleared project context and refreshed catalog.";
+"message.projectSelected" = "Selected %@.";
+"message.projectCleared" = "Cleared the active project context.";
+"message.projectRecentsClearedCount" = "Cleared %d recent projects.";
+"refresh.scan.readbackSupportingFailed" = "The catalog scan was applied, but supporting evidence could not be refreshed: %@";
+"project.action.confirm.title" = "Confirm Project Change";
+"project.clear.confirm" = "Clear the active project context? Recent Projects will be preserved.";
+"project.recent.clear.confirm" = "Clear %d recent projects? The active project will remain selected.";
 "message.projectRecentRemoved" = "Removed %@ from Recent Projects.";
 "message.projectRecentsCleared" = "Cleared Recent Projects.";
 "refresh.projectValidationSkipped" = "Project context needs attention before scanning.";

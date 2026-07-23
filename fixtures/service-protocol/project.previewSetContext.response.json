@@ -1,5 +1,5 @@
 {
-  "id": "fixture-project-set-context",
+  "id": "fixture-project-preview-set-context",
   "ok": true,
   "result": {
     "action": {
@@ -20,8 +20,20 @@
       "readback": ["project_context"],
       "evidence_refs": ["project-context-state:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
     },
+    "preconditions": [
+      {
+        "kind": "project_context",
+        "target_id": "project-context",
+        "expected_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
     "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "state": {
+    "current": {
+      "revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "active": null,
+      "recent": []
+    },
+    "candidate": {
       "revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "active": {
         "id": "project-fixture-id",
@@ -44,21 +56,6 @@
         }
       ]
     },
-    "affected_count": 1,
-    "readback": {
-      "action_id": "action:set_project_context:1111111111111111111111111111111111111111111111111111111111111111",
-      "source_revision": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
-      "project_id": "project-fixture-id",
-      "domains": ["project_context"],
-      "target_ids": ["project-context"],
-      "observations": [
-        {
-          "domain": "project_context",
-          "target_id": "project-context",
-          "revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        }
-      ],
-      "verified": true
-    }
+    "affected_count": 1
   }
 }

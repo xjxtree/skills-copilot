@@ -966,6 +966,8 @@ struct SkillStoreTests {
         try expectContains(calls, "catalog.getSkill", "Startup should prewarm the selected skill detail.")
         try expectEqual(countMethodCalls("llm.listProviderProfiles", in: calls), 0, "Startup should not block the progress overlay on AI provider status.")
         try expectFalse(calls.contains("\"method\":\"catalog.scanAll\""), "Startup should not scan roots automatically.")
+        try expectFalse(calls.contains("\"method\":\"skillManager.listInstalled\""), "Startup should not invoke external manager inventory.")
+        try expectFalse(calls.contains("\"method\":\"skillManager.search\""), "Startup should not invoke external manager search or network.")
         try expectFalse(calls.contains("\"method\":\"config.toggleSkill\""), "Startup should not write agent config.")
         try await waitUntil("Startup should prewarm supplemental launch data in the background.") {
             store.localSessionPreviewResult.sessionRows.count == 2
@@ -1096,7 +1098,16 @@ struct SkillStoreTests {
         try expectEqual(countOccurrences("catalog.listFindings", in: calls), 0, "Scan refresh should not launch a separate findings list sidecar.")
         try expectEqual(countOccurrences("catalog.listConflicts", in: calls), 0, "Scan refresh should not launch a separate conflicts list sidecar.")
         try expectEqual(countMethodCalls("snapshot.list", in: calls), 0, "Scan refresh should not launch a global snapshots list sidecar.")
-        try expectFalse(countMethodCalls("snapshot.listAgentConfig", in: calls) == 0, "Scan refresh should refresh at least one writable agent config history.")
+        try expectContains(
+            calls,
+            "\"explicit_refresh\":true",
+            "Catalog scan requests must carry explicit refresh authorization."
+        )
+        try expectEqual(
+            countMethodCalls("snapshot.listAgentConfig", in: calls),
+            0,
+            "Catalog scan read-back should not launch unrelated agent config history requests."
+        )
         await store.reload()
         try expectNil(store.partialScanWarningMessage, "Reloading cached data must keep the selected completed agent free of unrelated warnings.")
     }
@@ -1186,7 +1197,7 @@ struct SkillStoreTests {
         await store.scanAll()
         await store.reload()
         await store.setProject(rootPath: "/tmp/project", currentCWD: "/tmp/project", name: "Fixture Project")
-        await store.clearProject()
+        await store.previewClearProject()
         await task.value
 
         try expectEqual(countOccurrences("catalog.scanAll", in: fake.calls()), 1, "Busy scan should ignore nested scan/reload/project update attempts.")
@@ -2387,7 +2398,8 @@ struct SkillStoreTests {
         fake.activate(scenario: "project-clear")
 
         let store = SkillStore(service: fake.serviceClient())
-        await store.clearProject()
+        await store.previewClearProject()
+        await store.confirmProjectContextPendingAction()
 
         try expectFalse(store.isProjectUpdating, "Project clear should reset updating state.")
         try expectNil(store.errorMessage, "Project clear should not set an error on success.")
@@ -2604,7 +2616,11 @@ struct SkillStoreTests {
         try expectContains(calls, "llm.confirmPromptAndSend", "Task cockpit should send through the confirmation-gated provider path.")
         try expectContains(calls, "\"timeout_ms\":300000", "Task cockpit provider send should use a five minute request timeout.")
         try expectContains(calls, "\"request_kind\":\"task_cockpit\"", "Task cockpit should use the task_cockpit prompt action.")
-        try expectContains(calls, "\"task_text\":\"[REDACTED]\"", "Captured Task Cockpit evidence must redact task text.")
+        try expectContains(
+            calls,
+            "\"task_text\":\"[REDACTED]\"",
+            "Task cockpit request diagnostics must redact task text."
+        )
         try expectContains(calls, "\"agents\":[\"claude-code\"]", "Task cockpit should pass the selected agent scope.")
         try expectContains(calls, "\"instance_ids\":[\"alpha\",\"beta\"]", "Task cockpit should include effective skill candidates for selected agents.")
         try expectFalse(calls.contains("config.toggleSkill"), "Task cockpit must not call config write paths.")
@@ -3782,7 +3798,7 @@ final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     }
 
     private static func scanResult(for fixture: CatalogRefreshScanFixture) -> String {
-        switch fixture {
+        let raw = switch fixture {
         case .partial:
             partialScanResult
         case .complete:
@@ -3796,6 +3812,10 @@ final class CatalogRefreshServiceRunner: ServiceProcessRunning {
         case .legacyWithoutActivity:
             legacyActivitylessScanResult
         }
+        return raw.replacingOccurrences(
+            of: "{\"scanned_count\":",
+            with: "{\"accepted_context_revision\":\"sha256:project-context\",\"catalog_scan_revision\":\"sha256:catalog-scan\",\"readback\":{\"accepted_context_revision\":\"sha256:project-context\",\"catalog_scan_revision\":\"sha256:catalog-scan\",\"verified\":true},\"scanned_count\":"
+        )
     }
 
     private static let supportedMethods = """
@@ -3845,7 +3865,7 @@ final class CatalogRefreshServiceRunner: ServiceProcessRunning {
     """
 
     private static let projectContext = """
-    {"active":null,"recent":[]}
+    {"revision":"sha256:project-context","active":null,"recent":[]}
     """
 
     private static let detailAlpha = """

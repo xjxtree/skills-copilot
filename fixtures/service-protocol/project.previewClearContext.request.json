@@ -1,0 +1,7 @@
+{
+  "id": "fixture-project-preview-clear-context",
+  "method": "project.previewClearContext",
+  "params": {
+    "expected_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

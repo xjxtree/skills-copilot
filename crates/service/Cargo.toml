@@ -27,6 +27,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 fs4.workspace = true
+skills-copilot-catalog = { workspace = true, features = ["test-support"] }
 
 [[bin]]
 name = "skills-copilot-service"
