@@ -35,12 +35,20 @@ struct BatchSkillOperationSheet: View {
                 Task { await store.applyVisibleBatchTogglePreview(confirmingPreviewID: previewID) }
             }
         } message: { preview in
-            Text(UIStrings.batchToggleConfirmMessage(
+            let operationSummary = UIStrings.batchToggleConfirmMessage(
                 action: preview.action.title.lowercased(),
                 affected: preview.writableCount,
                 skipped: preview.skippedCount,
                 snapshot: preview.snapshotPlan.summary
-            ))
+            )
+            let signedDisclosure = preview.actionDescriptor?
+                .confirmationSummary
+                .disclosureText
+            Text(
+                [operationSummary, signedDisclosure]
+                    .compactMap { $0 }
+                    .joined(separator: "\n\n")
+            )
         }
     }
 

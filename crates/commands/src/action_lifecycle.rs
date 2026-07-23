@@ -130,6 +130,9 @@ impl ActionReadbackRecord {
                 .then_with(|| left.target_id.cmp(&right.target_id))
         });
         if observations.is_empty()
+            || observations
+                .iter()
+                .any(|observation| !action.readback.contains(&observation.domain))
             || action.readback.iter().any(|domain| {
                 !observations
                     .iter()
@@ -137,7 +140,7 @@ impl ActionReadbackRecord {
             })
         {
             return Err(CommandError::MismatchedActionReference(
-                "readback did not observe every declared domain".to_string(),
+                "readback domains do not exactly match the action contract".to_string(),
             ));
         }
         for observation in &observations {
@@ -931,5 +934,35 @@ mod tests {
         )
         .expect("other kind id");
         assert_ne!(current.id, other_kind);
+    }
+
+    #[test]
+    fn readback_rejects_observations_outside_the_declared_domains() {
+        let action = fixture_action("sha256:current", "skill-1");
+        let result = ActionReadbackRecord::verified(
+            &action,
+            vec![
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::AgentConfig,
+                    target_id: "$HOME/.codex/config.toml".to_string(),
+                    revision: "sha256:config".to_string(),
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::SkillAggregates,
+                    target_id: "skill-1".to_string(),
+                    revision: "sha256:skill".to_string(),
+                },
+                ActionReadbackObservation {
+                    domain: ActionReadbackDomain::ManagerInventory,
+                    target_id: "unexpected-ledger".to_string(),
+                    revision: "sha256:ledger".to_string(),
+                },
+            ],
+        );
+
+        assert!(matches!(
+            result,
+            Err(CommandError::MismatchedActionReference(_))
+        ));
     }
 }

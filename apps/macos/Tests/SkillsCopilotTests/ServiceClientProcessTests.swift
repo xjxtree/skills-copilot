@@ -29,6 +29,78 @@ struct ServiceClientProcessTests {
         try await emptyOutputMapsToInvalidOutput()
         try await truncatedOutputMapsToInvalidOutput()
         try await stderrOnlyFailureMapsToProcessFailed()
+        try await realRustSidecarCompletesConfirmedActionWhenConfigured()
+    }
+
+    private func realRustSidecarCompletesConfirmedActionWhenConfigured() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["SKILLS_COPILOT_NATIVE_MODEL_ISOLATED"] == "1",
+              let servicePath = environment["SKILLS_COPILOT_NATIVE_REAL_SERVICE_PATH"],
+              !servicePath.isEmpty,
+              let homePath = environment["HOME"],
+              !homePath.isEmpty else {
+            return
+        }
+
+        let serviceURL = URL(fileURLWithPath: servicePath)
+        guard FileManager.default.isExecutableFile(atPath: serviceURL.path) else {
+            throw NativeModelTestFailure(
+                description: "Configured real Rust sidecar is not executable."
+            )
+        }
+
+        let skillDirectory = URL(fileURLWithPath: homePath, isDirectory: true)
+            .appendingPathComponent(".claude/skills/native-action-e2e", isDirectory: true)
+        let skillFile = skillDirectory.appendingPathComponent("SKILL.md")
+        try FileManager.default.createDirectory(
+            at: skillDirectory,
+            withIntermediateDirectories: true
+        )
+        try """
+        ---
+        name: native-action-e2e
+        description: Isolated native runner to real Rust sidecar lifecycle fixture.
+        ---
+
+        Validate one confirmed action without touching the developer's real HOME.
+        """.write(to: skillFile, atomically: true, encoding: .utf8)
+
+        let client = ServiceClient(
+            processRunner: StdioServiceProcessRunner(),
+            serviceURL: serviceURL
+        )
+        _ = try await client.scanAll()
+        let records = try await client.listSkills()
+        guard let skill = records.first(where: {
+            $0.agent == "claude-code"
+                && $0.name.caseInsensitiveCompare("native-action-e2e") == .orderedSame
+        }) else {
+            throw NativeModelTestFailure(
+                description: "Real sidecar scan did not return the isolated Claude skill."
+            )
+        }
+
+        let preview = try await client.previewBatchSkillToggles(
+            instanceIDs: [skill.id],
+            on: false
+        )
+        try expectEqual(
+            preview.hasWritableChanges,
+            true,
+            "Real sidecar preview should expose one guarded config mutation."
+        )
+        let applied = try await client.applyBatchSkillToggles(preview: preview)
+        try expectEqual(
+            applied.readback?.verified,
+            Optional(true),
+            "Swift runner must consume a verified read-back from the real Rust sidecar."
+        )
+        let updated = try await client.getSkill(instanceID: skill.id)
+        try expectEqual(
+            updated.enabled,
+            false,
+            "Real sidecar read-back should project the confirmed disabled state."
+        )
     }
 
     private func cancelledCallTerminatesSidecarProcess() async throws {

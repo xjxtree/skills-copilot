@@ -1412,14 +1412,21 @@ final class SkillStore: ObservableObject {
         do {
             let result = try await service.applyBatchSkillToggles(preview: preview)
             invalidateDetailCaches(for: preview.affectedSkills.map(\.instanceID))
-            try await refreshCollections()
             lastMutationMessage = UIStrings.batchToggleApplied(
                 action: preview.action.title,
                 count: result.updatedCount == 0 ? preview.writableCount : result.updatedCount
             )
-            recordLocalRefresh(message: UIStrings.refreshAfterWrite)
             batchTogglePreview = nil
-            await loadSelectedDetail()
+            do {
+                try await refreshCatalogProjectionAfterWrite()
+                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                await loadSelectedDetail()
+            } catch {
+                refreshStatusMessage = UIStrings.text(
+                    "actionLifecycle.appliedRefreshFailed",
+                    "The write was verified, but the cached view could not refresh."
+                ) + " \(error.localizedDescription)"
+            }
         } catch {
             errorMessage = error.localizedDescription
             lastMutationMessage = nil
@@ -1684,9 +1691,13 @@ final class SkillStore: ObservableObject {
                     name: confirmation.name
                 )
                 retireSkillManagerLocalCreateConfirmation(confirmation)
-                try await refreshCollections()
                 skillManagerMessage = UIStrings.text("skillManager.localCreate.applied", "Local skill template created and imported.")
-                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                do {
+                    try await refreshCatalogProjectionAfterWrite()
+                    recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                } catch {
+                    appendVerifiedWriteRefreshWarning(error)
+                }
             } catch {
                 setSkillManagerError(error.localizedDescription)
             }
@@ -1740,9 +1751,13 @@ final class SkillStore: ObservableObject {
                     preview: confirmation.result
                 )
                 retireSkillManagerLocalDeleteConfirmation(confirmation)
-                try await refreshCollections()
                 skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
-                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                do {
+                    try await refreshCatalogProjectionAfterWrite()
+                    recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                } catch {
+                    appendVerifiedWriteRefreshWarning(error)
+                }
             } catch {
                 setSkillManagerError(error.localizedDescription)
             }
@@ -1779,10 +1794,17 @@ final class SkillStore: ObservableObject {
         do {
             let result = try await service.confirmToolInstall(skill: skill, preview: preview)
             invalidateDetailCaches(for: [skill.id])
-            try await refreshCollections()
             lastMutationMessage = UIStrings.toolGlobalInstalled(skill.name, preview.target.title)
-            recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-            await loadSelectedDetail()
+            do {
+                try await refreshCatalogProjectionAfterWrite()
+                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                await loadSelectedDetail()
+            } catch {
+                refreshStatusMessage = UIStrings.text(
+                    "actionLifecycle.appliedRefreshFailed",
+                    "The write was verified, but the cached view could not refresh."
+                ) + " \(error.localizedDescription)"
+            }
             return result
         } catch {
             errorMessage = error.localizedDescription
@@ -1896,6 +1918,7 @@ final class SkillStore: ObservableObject {
         await runSkillManagerConfirmedWrite { [self] in
             do {
                 let result: SkillManagerMutationRecord
+                var followUpWarning: String?
                 switch confirmation.inputs.kind {
                 case .install:
                     guard let source = confirmation.inputs.source,
@@ -1922,17 +1945,24 @@ final class SkillStore: ObservableObject {
                         scope: confirmation.inputs.scope
                     )
                     if let instanceID = confirmation.inputs.cleanupLocalInstanceID {
-                        let cleanupPreview = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
-                        guard cleanupPreview.physicalDeleteAllowed else {
-                            setSkillManagerError(UIStrings.text(
-                                "skillManager.remove.cleanupBlocked",
-                                "Agent links were removed, but the local source is still referenced and could not be deleted. Refresh and review the remaining references."
-                            ))
-                            return
+                        do {
+                            let cleanupPreview = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
+                            if cleanupPreview.physicalDeleteAllowed {
+                                _ = try await service.applySkillManagerLocalDelete(
+                                    preview: cleanupPreview
+                                )
+                            } else {
+                                followUpWarning = UIStrings.text(
+                                    "skillManager.remove.cleanupBlocked",
+                                    "Agent links were removed, but the local source is still referenced and could not be deleted. Refresh and review the remaining references."
+                                )
+                            }
+                        } catch {
+                            followUpWarning = UIStrings.text(
+                                "skillManager.remove.cleanupFailed",
+                                "Agent links were removed, but cleanup of the local source could not be verified."
+                            ) + " \(error.localizedDescription)"
                         }
-                        _ = try await service.applySkillManagerLocalDelete(
-                            preview: cleanupPreview
-                        )
                     }
                 case .update:
                     result = try await service.applySkillManagerUpdate(
@@ -1943,16 +1973,35 @@ final class SkillStore: ObservableObject {
                 }
                 retireSkillManagerMutationConfirmation(confirmation)
                 invalidateDetailCaches(for: result.updatedSkills.map(\.id))
-                try await refreshCollections()
-                pruneDetailCaches(to: Set(skills.map(\.id)))
-                await loadSkillManagerInventory()
                 skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
-                recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-                await loadSelectedDetail()
+                if let followUpWarning {
+                    skillManagerMessage = [skillManagerMessage, followUpWarning]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                }
+                do {
+                    try await refreshCatalogProjectionAfterWrite()
+                    pruneDetailCaches(to: Set(skills.map(\.id)))
+                    recordLocalRefresh(message: UIStrings.refreshAfterWrite)
+                    await loadSelectedDetail()
+                } catch {
+                    appendVerifiedWriteRefreshWarning(error)
+                }
+                await loadSkillManagerInventory()
             } catch {
                 setSkillManagerError(error.localizedDescription)
             }
         }
+    }
+
+    private func appendVerifiedWriteRefreshWarning(_ error: Error) {
+        let warning = UIStrings.text(
+            "actionLifecycle.appliedRefreshFailed",
+            "The write was verified, but the cached view could not refresh."
+        ) + " \(error.localizedDescription)"
+        skillManagerMessage = [skillManagerMessage, warning]
+            .compactMap { $0 }
+            .joined(separator: " ")
     }
 
     private func beginSkillManagerSearch(for key: SkillManagerRequestKey) -> SkillManagerRequestGeneration {
@@ -4057,18 +4106,10 @@ final class SkillStore: ObservableObject {
             fetchedAgentConfigSnapshots = nil
         }
 
-        self.status = snapshot.status
+        publishCatalogProjection(snapshot)
         self.llmStatus = fetchedLLMStatus
         self.projectContextState = fetchedProjectContextState
-        self.skills = snapshot.skills
-        self.catalogListCompleteness = unknownCatalogCompleteness(
-            loadedCount: SkillListModel.currentSkills(snapshot.skills).count
-        )
-        self.catalogListCompletenessByAgent = [:]
-        self.findings = snapshot.findings
         self.ruleTuning = fetchedRuleTuning
-        self.conflicts = snapshot.conflicts
-        self.healthSummary = snapshot.health
         if let fetchedAIProviderStatus {
             self.aiProviderStatus = fetchedAIProviderStatus
             self.hasLoadedAIProviderStatus = true
@@ -4097,18 +4138,37 @@ final class SkillStore: ObservableObject {
                 loadedAgentConfigSnapshotRequestKey = nil
             }
         }
-        let currentSkillIDs = Set(snapshot.skills.map(\.id))
-        scriptExecutionPreviews = scriptExecutionPreviews.filter { currentSkillIDs.contains($0.key) }
         if fetchedLLMPromptRuns != nil {
+            let currentSkillIDs = Set(snapshot.skills.map(\.id))
             hydratePromptSendResultsFromRuns(currentSkillIDs: currentSkillIDs)
         }
+    }
+
+    private func refreshCatalogProjectionAfterWrite() async throws {
+        let snapshot = try await service.appStateSnapshot()
+        publishCatalogProjection(snapshot)
+    }
+
+    private func publishCatalogProjection(_ snapshot: AppStateSnapshot) {
+        status = snapshot.status
+        skills = snapshot.skills
+        catalogListCompleteness = unknownCatalogCompleteness(
+            loadedCount: SkillListModel.currentSkills(snapshot.skills).count
+        )
+        catalogListCompletenessByAgent = [:]
+        findings = snapshot.findings
+        conflicts = snapshot.conflicts
+        healthSummary = snapshot.health
+
+        let currentSkillIDs = Set(snapshot.skills.map(\.id))
+        scriptExecutionPreviews = scriptExecutionPreviews.filter { currentSkillIDs.contains($0.key) }
         skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
         skillEventAccumulatorsByID = skillEventAccumulatorsByID.filter { currentSkillIDs.contains($0.key) }
         skillEventCompletenessByID = skillEventCompletenessByID.filter { currentSkillIDs.contains($0.key) }
         skillEventLoadGenerations = skillEventLoadGenerations.filter { currentSkillIDs.contains($0.key) }
         loadingSkillEventIDs = loadingSkillEventIDs.filter { currentSkillIDs.contains($0) }
         batchTogglePreview = nil
-        refreshWatcherMessage(from: self.status)
+        refreshWatcherMessage(from: status)
         normalizeSelectionToVisibleSkills()
     }
 

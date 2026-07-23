@@ -107,18 +107,107 @@ fn replace_fixture_paths(value: &mut Value, home: &Path, project: &Path) {
 }
 
 fn request_fixture(method: &str, home: &Path, project: &Path) -> ServiceRequest {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("fixtures/service-protocol")
-        .join(format!("{method}.request.json"));
+        .join("fixtures/service-protocol");
+    let exact_path = fixtures_dir.join(format!("{method}.request.json"));
+    let path = if exact_path.exists() {
+        exact_path
+    } else {
+        let prefix = format!("{method}.");
+        let mut candidates = fs::read_dir(&fixtures_dir)
+            .expect("read service protocol fixture directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(&prefix) && name.ends_with(".request.json")
+                    })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        candidates.into_iter().next().unwrap_or_else(|| {
+            panic!(
+                "no request fixture case exists for read-only method {method} under {}",
+                fixtures_dir.display()
+            )
+        })
+    };
     let mut value: Value = serde_json::from_slice(
         &fs::read(&path)
             .unwrap_or_else(|error| panic!("read request fixture {}: {error}", path.display())),
     )
     .unwrap_or_else(|error| panic!("decode request fixture {}: {error}", path.display()));
     replace_fixture_paths(&mut value, home, project);
-    serde_json::from_value(value)
-        .unwrap_or_else(|error| panic!("deserialize request fixture {}: {error}", path.display()))
+    let request: ServiceRequest = serde_json::from_value(value)
+        .unwrap_or_else(|error| panic!("deserialize request fixture {}: {error}", path.display()));
+    assert_eq!(
+        request.method, method,
+        "request fixture {} does not exercise {method}",
+        path.display()
+    );
+    request
+}
+
+#[test]
+fn blocked_compatibility_mutations_reject_malformed_inputs_before_any_io() {
+    let root = temp_test_dir("effects-blocked-compatibility");
+    let home = root.join("home");
+    fs::create_dir_all(&home).expect("create fixture home");
+    let app_data_dir = root.join("app-data");
+    let marker = root.join("process-marker");
+    let host = ServiceHost {
+        app_data_dir,
+        adapter_ctx: AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: vec![],
+        },
+    };
+    let before = tree_snapshot(&root);
+    let cases = [
+        (
+            "catalog.importSkill",
+            json!({
+                "source_path": root.join("missing-source"),
+                "github_url": "malformed://["
+            }),
+        ),
+        (
+            "skill.exportBundle",
+            json!({
+                "source_path": root.join("missing-source"),
+                "output_dir": root.join("export-target")
+            }),
+        ),
+        (
+            "script.execute",
+            json!({
+                "command": ["sh", "-c", format!("touch {}", marker.display())],
+                "confirmed": true,
+                "initiated_by": "llm"
+            }),
+        ),
+    ];
+
+    for (method, params) in cases {
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("effects-{method}")),
+            method: method.to_string(),
+            params,
+        });
+        assert!(!response.ok, "{method} must remain blocked");
+        assert_eq!(
+            response.error.expect("blocked compatibility error").code,
+            "mutation_disabled"
+        );
+        assert_tree_unchanged(method, &before, &tree_snapshot(&root));
+    }
+
+    let _ = fs::remove_dir_all(root);
 }
 
 fn catalog_file_snapshot(app_data_dir: &Path) -> BTreeMap<PathBuf, TreeEntry> {

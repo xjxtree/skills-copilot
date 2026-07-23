@@ -1083,9 +1083,21 @@ private enum SkillManagerWriteConfirmation {
                     "After every selected agent link is removed, the app-owned local source and its catalog record will also be deleted if the service confirms there are no remaining references."
                 ))
             }
+            if let disclosure = value.result.preview.action?
+                .confirmationSummary
+                .disclosureText {
+                sections.append(disclosure)
+            }
             return sections.joined(separator: "\n\n")
         case .localDelete(let value):
-            return [value.result.summary, value.result.skillName, value.result.path].joined(separator: "\n\n")
+            return [
+                value.result.summary,
+                value.result.skillName,
+                value.result.path,
+                value.result.action?.confirmationSummary.disclosureText
+            ]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
         case .localArchiveImport(let value):
             return [
                 value.result.summary,

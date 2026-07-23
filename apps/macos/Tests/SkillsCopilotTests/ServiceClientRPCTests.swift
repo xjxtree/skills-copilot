@@ -55,7 +55,70 @@ struct ServiceClientRPCTests {
         try await nativeScriptPreviewUsesIdentityOnlyAndDecodesBlockedResponse()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
+        try actionReadbackMustMatchTheConfirmedDescriptor()
         try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
+    }
+
+    private func actionReadbackMustMatchTheConfirmedDescriptor() throws {
+        let action = ActionDescriptorWire(
+            id: "action:disable-skill:readback",
+            kind: "toggle_skill",
+            intent: "disable_skill",
+            target: ActionTargetWire(
+                kind: "skill",
+                id: "skill-1",
+                agent: "codex",
+                scope: "agent-global"
+            ),
+            projectID: nil,
+            impacts: ["agent_config"],
+            previewMethod: "batch.previewSkillToggles",
+            applyMethod: "batch.applySkillToggles",
+            sourceRevision: "sha256:before",
+            confirmationRequired: true,
+            network: "none",
+            readback: ["agent_config", "skill_aggregates"],
+            evidenceRefs: ["skill:skill-1"]
+        )
+        let valid = ActionReadbackWire(
+            actionID: action.id,
+            sourceRevision: "sha256:after",
+            projectID: nil,
+            domains: action.readback,
+            targetIDs: ["config:codex", "skill-1"],
+            observations: [
+                ActionReadbackObservationWire(
+                    domain: "agent_config",
+                    targetID: "config:codex",
+                    revision: "sha256:config-after"
+                ),
+                ActionReadbackObservationWire(
+                    domain: "skill_aggregates",
+                    targetID: "skill-1",
+                    revision: "sha256:catalog-after"
+                ),
+            ],
+            verified: true
+        )
+        try valid.validated(for: action)
+
+        let mismatched = ActionReadbackWire(
+            actionID: "action:disable-skill:other",
+            sourceRevision: valid.sourceRevision,
+            projectID: nil,
+            domains: valid.domains,
+            targetIDs: valid.targetIDs,
+            observations: valid.observations,
+            verified: true
+        )
+        do {
+            try mismatched.validated(for: action)
+            throw NativeModelTestFailure(
+                description: "A read-back for a different action must fail closed."
+            )
+        } catch ActionReadbackValidationError.actionMismatch {
+            // Expected.
+        }
     }
 
     private func ruleSuppressionRequestsMatchServiceContract() async throws {

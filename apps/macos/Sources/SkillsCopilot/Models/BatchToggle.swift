@@ -231,27 +231,43 @@ struct BatchTogglePreview: Decodable, Identifiable, Hashable {
 }
 
 struct BatchToggleApplyResult: Decodable, Hashable {
+    let actionDescriptor: ActionDescriptorWire?
     let updatedCount: Int
     let skippedCount: Int
     let snapshotIDs: [String]
+    let readback: ActionReadbackWire?
 
-    init(updatedCount: Int, skippedCount: Int, snapshotIDs: [String] = []) {
+    init(
+        updatedCount: Int,
+        skippedCount: Int,
+        snapshotIDs: [String] = [],
+        actionDescriptor: ActionDescriptorWire? = nil,
+        readback: ActionReadbackWire? = nil
+    ) {
+        self.actionDescriptor = actionDescriptor
         self.updatedCount = updatedCount
         self.skippedCount = skippedCount
         self.snapshotIDs = snapshotIDs
+        self.readback = readback
     }
 
     init(from decoder: Decoder) throws {
         if let records = try? decoder.singleValueContainer().decode([SkillRecord].self) {
+            actionDescriptor = nil
             updatedCount = records.count
             skippedCount = 0
             snapshotIDs = []
+            readback = nil
             return
         }
         let container = try decoder.container(keyedBy: FlexibleCodingKey.self)
+        let actionKey = FlexibleCodingKey(stringValue: "action")!
+        let readbackKey = FlexibleCodingKey(stringValue: "readback")!
+        actionDescriptor = try container.decodeIfPresent(ActionDescriptorWire.self, forKey: actionKey)
         updatedCount = container.decodeInt(for: ["updated_count", "updatedCount", "applied_count", "appliedCount", "writable_count", "writableCount"]) ?? 0
         skippedCount = container.decodeInt(for: ["skipped_count", "skippedCount"]) ?? 0
         snapshotIDs = container.decodeStringArray(for: ["snapshot_ids", "snapshotIds", "snapshots"])
+        readback = try container.decodeIfPresent(ActionReadbackWire.self, forKey: readbackKey)
     }
 }
 

@@ -36,6 +36,8 @@ run_native_model_suite() {
     HOME="${RUNTIME_HOME}" \
     CFFIXED_USER_HOME="${RUNTIME_HOME}" \
     SKILLS_COPILOT_APP_DATA_DIR="${RUNTIME_APP_DATA_DIR}" \
+    SKILLS_COPILOT_NATIVE_MODEL_ISOLATED=1 \
+    SKILLS_COPILOT_NATIVE_REAL_SERVICE_PATH="${REAL_SERVICE_PATH}" \
     "$@"
 }
 
@@ -44,6 +46,18 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_ROOT="${RUNTIME_ROOT}/build"
 PACKAGE_DIR="${BUILD_ROOT}/package"
 TARGET_DIR="${PACKAGE_DIR}/Sources/SkillsCopilotNativeModelTests"
+REAL_SERVICE_TARGET_DIR="${CARGO_TARGET_DIR:-${BUILD_ROOT}/cargo}"
+REAL_SERVICE_PATH="${REAL_SERVICE_TARGET_DIR}/debug/skills-copilot-service"
+
+cargo build \
+  --package skills-copilot-service \
+  --bin skills-copilot-service \
+  --target-dir "${REAL_SERVICE_TARGET_DIR}"
+
+if [[ ! -x "${REAL_SERVICE_PATH}" ]]; then
+  echo "native-model-real-sidecar: built service is missing or not executable" >&2
+  exit 1
+fi
 
 rm -rf "${PACKAGE_DIR}"
 mkdir -p "${TARGET_DIR}"

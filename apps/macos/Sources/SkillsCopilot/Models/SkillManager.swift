@@ -955,6 +955,7 @@ struct SkillManagerMutationRecord: Codable, Hashable {
     let applied: Bool
     let scannedCount: Int
     let updatedSkills: [SkillRecord]
+    let readback: ActionReadbackWire?
 
     enum CodingKeys: String, CodingKey {
         case preview
@@ -962,6 +963,7 @@ struct SkillManagerMutationRecord: Codable, Hashable {
         case applied
         case scannedCount = "scanned_count"
         case updatedSkills = "updated_skills"
+        case readback
     }
 }
 
@@ -972,6 +974,7 @@ struct SkillManagerLocalCreateRecord: Codable, Hashable {
     let instanceId: String?
     let sourcePath: String
     let applied: Bool
+    let readback: ActionReadbackWire?
 
     enum CodingKeys: String, CodingKey {
         case preview
@@ -980,6 +983,7 @@ struct SkillManagerLocalCreateRecord: Codable, Hashable {
         case instanceId = "instance_id"
         case sourcePath = "source_path"
         case applied
+        case readback
     }
 }
 
@@ -1041,6 +1045,7 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
     let confirmed: Bool
     let deleted: Bool
     let summary: String
+    let readback: ActionReadbackWire?
 
     enum CodingKeys: String, CodingKey {
         case action
@@ -1054,6 +1059,7 @@ struct SkillManagerLocalDeleteRecord: Codable, Hashable {
         case confirmed
         case deleted
         case summary
+        case readback
     }
 }
 

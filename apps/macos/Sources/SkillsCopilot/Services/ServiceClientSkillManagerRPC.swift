@@ -64,7 +64,7 @@ extension ServiceClient {
         scope: SkillManagerScope
     ) async throws -> SkillManagerMutationRecord {
         let actionReference = try requiredActionReference(preview.preview)
-        return try await skillManagerInstall(
+        let result = try await skillManagerInstall(
             method: "skillManager.applyInstall",
             source: source,
             skills: skills,
@@ -76,6 +76,12 @@ extension ServiceClient {
             previewToken: preview.preview.previewToken,
             actionReference: actionReference
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: try requiredAction(preview.preview),
+            operation: "Skill Manager install"
+        )
+        return result
     }
 
     func previewSkillManagerRemove(skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
@@ -92,7 +98,7 @@ extension ServiceClient {
 
     func applySkillManagerRemove(preview: SkillManagerMutationRecord, skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
         let actionReference = try requiredActionReference(preview.preview)
-        return try await skillManagerRemove(
+        let result = try await skillManagerRemove(
             method: "skillManager.applyRemove",
             skill: skill,
             agents: agents,
@@ -101,6 +107,12 @@ extension ServiceClient {
             previewToken: preview.preview.previewToken,
             actionReference: actionReference
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: try requiredAction(preview.preview),
+            operation: "Skill Manager remove"
+        )
+        return result
     }
 
     func previewSkillManagerUpdate(skills: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
@@ -118,7 +130,7 @@ extension ServiceClient {
 
     func applySkillManagerUpdate(preview: SkillManagerMutationRecord, skills: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
         let actionReference = try requiredActionReference(preview.preview)
-        return try await skillManagerUpdate(
+        let result = try await skillManagerUpdate(
             method: "skillManager.applyUpdate",
             skills: skills,
             agents: [],
@@ -128,6 +140,12 @@ extension ServiceClient {
             previewToken: preview.preview.previewToken,
             actionReference: actionReference
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: try requiredAction(preview.preview),
+            operation: "Skill Manager update"
+        )
+        return result
     }
 
     func previewSkillManagerLocalCreate(name: String) async throws -> SkillManagerLocalCreateRecord {
@@ -144,7 +162,7 @@ extension ServiceClient {
 
     func applySkillManagerLocalCreate(preview: SkillManagerLocalCreateRecord, name: String) async throws -> SkillManagerLocalCreateRecord {
         let actionReference = try requiredActionReference(preview.preview)
-        return try await call(
+        let result: SkillManagerLocalCreateRecord = try await call(
             method: "skillManager.applyLocalCreate",
             params: SkillManagerLocalCreateParams(
                 name: name,
@@ -154,10 +172,16 @@ extension ServiceClient {
             ),
             timeoutMS: 120_000
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: try requiredAction(preview.preview),
+            operation: "Local skill creation"
+        )
+        return result
     }
 
     func previewSkillManagerLocalDelete(instanceID: String) async throws -> SkillManagerLocalDeleteRecord {
-        return try await call(
+        try await call(
             method: "skillManager.deleteLocal",
             params: SkillManagerDeleteLocalParams(
                 instanceId: instanceID,
@@ -178,7 +202,7 @@ extension ServiceClient {
                 "The local delete preview is missing its typed action confirmation."
             )
         }
-        return try await call(
+        let result: SkillManagerLocalDeleteRecord = try await call(
             method: "skillManager.deleteLocal",
             params: SkillManagerDeleteLocalParams(
                 instanceId: preview.instanceId,
@@ -187,6 +211,12 @@ extension ServiceClient {
                 actionReference: action.reference
             )
         )
+        try requireVerifiedReadback(
+            result.readback,
+            action: action,
+            operation: "Local skill deletion"
+        )
+        return result
     }
 
     func previewSkillManagerLocalArchiveUpdate(
@@ -331,12 +361,35 @@ extension ServiceClient {
     private func requiredActionReference(
         _ preview: SkillManagerCommandPreview
     ) throws -> ActionReferenceWire {
+        try requiredAction(preview).reference
+    }
+
+    private func requiredAction(
+        _ preview: SkillManagerCommandPreview
+    ) throws -> ActionDescriptorWire {
         guard let action = preview.action,
               !preview.previewToken.isEmpty else {
             throw ClientError.invalidOutput(
                 "The Skill Manager preview is missing its typed action confirmation."
             )
         }
-        return action.reference
+        return action
+    }
+
+    private func requireVerifiedReadback(
+        _ readback: ActionReadbackWire?,
+        action: ActionDescriptorWire,
+        operation: String
+    ) throws {
+        guard let readback else {
+            throw ClientError.invalidOutput(
+                "\(operation) returned no action-bound read-back."
+            )
+        }
+        do {
+            try readback.validated(for: action)
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
     }
 }

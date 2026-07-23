@@ -242,14 +242,33 @@ extension ServiceClient {
             )
         }
         let params = BatchToggleParams(
-            instanceIDs: preview.affectedSkills.map(\.instanceID),
+            // Re-submit the complete reviewed selection. The server-side action
+            // binding includes skipped/no-op entries and requested_count, so
+            // dropping them here would turn every mixed preview into a stale
+            // action before apply.
+            instanceIDs: (preview.affectedSkills + preview.skippedItems).map(\.instanceID),
             targetEnabled: preview.targetEnabled,
             confirmation: ActionConfirmationWire(
                 action: action,
                 previewToken: previewToken
             )
         )
-        return try await call(method: "batch.applySkillToggles", params: params)
+        let result: BatchToggleApplyResult = try await call(
+            method: "batch.applySkillToggles",
+            params: params
+        )
+        guard result.actionDescriptor == action,
+              let readback = result.readback else {
+            throw ClientError.invalidOutput(
+                "The batch apply response is missing its action-bound read-back."
+            )
+        }
+        do {
+            try readback.validated(for: action)
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
+        return result
     }
 
     func previewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {
@@ -280,7 +299,7 @@ extension ServiceClient {
                 "The install preview is missing its typed action confirmation."
             )
         }
-        return try await call(
+        let result: ToolGlobalInstallPreview = try await call(
             method: "skill.install",
             params: ToolInstallPreviewParams(
                 instanceId: skill.id,
@@ -293,6 +312,18 @@ extension ServiceClient {
                 )
             )
         )
+        guard result.action == action,
+              let readback = result.readback else {
+            throw ClientError.invalidOutput(
+                "The install response is missing its action-bound read-back."
+            )
+        }
+        do {
+            try readback.validated(for: action)
+        } catch {
+            throw ClientError.invalidOutput(error.localizedDescription)
+        }
+        return result
     }
 
     private func legacyPreviewToolInstall(skill: SkillRecord, target: ToolInstallTarget) async throws -> ToolGlobalInstallPreview {

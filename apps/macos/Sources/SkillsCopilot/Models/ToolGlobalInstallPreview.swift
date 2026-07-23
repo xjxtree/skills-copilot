@@ -36,6 +36,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
     let confirmationMessage: String
     let risks: [String]
     let snapshotID: String?
+    let readback: ActionReadbackWire?
 
     var id: String { "\(skillID):\(target.rawValue)" }
 
@@ -57,6 +58,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         case confirmationMessage = "confirmation_message"
         case risks
         case snapshotID = "snapshot_id"
+        case readback
     }
 
     enum ConfirmationKeys: String, CodingKey {
@@ -79,7 +81,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         summary: String,
         confirmationMessage: String,
         risks: [String],
-        snapshotID: String?
+        snapshotID: String?,
+        readback: ActionReadbackWire? = nil
     ) {
         self.skillID = skillID
         self.action = action
@@ -95,6 +98,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         self.confirmationMessage = confirmationMessage
         self.risks = risks
         self.snapshotID = snapshotID
+        self.readback = readback
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +117,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         let wrote = try container.decodeIfPresent(Bool.self, forKey: .wrote) ?? false
         let risks = try container.decodeIfPresent([String].self, forKey: .risks) ?? []
         let snapshotID = try container.decodeIfPresent(String.self, forKey: .snapshotID)
+        let readback = try container.decodeIfPresent(ActionReadbackWire.self, forKey: .readback)
 
         let confirmation = try container.decodeIfPresent(ConfirmationPayload.self, forKey: .confirmation)
         let confirmationRequired = try container.decodeIfPresent(Bool.self, forKey: .confirmationRequired)
@@ -149,7 +154,8 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
             summary: summary,
             confirmationMessage: confirmationMessage,
             risks: risks,
-            snapshotID: snapshotID
+            snapshotID: snapshotID,
+            readback: readback
         )
     }
 
@@ -169,6 +175,7 @@ struct ToolGlobalInstallPreview: Codable, Identifiable, Hashable {
         try container.encode(confirmationMessage, forKey: .confirmationMessage)
         try container.encode(risks, forKey: .risks)
         try container.encodeIfPresent(snapshotID, forKey: .snapshotID)
+        try container.encodeIfPresent(readback, forKey: .readback)
     }
 
     static func localPreview(skill: SkillRecord, target: ToolInstallTarget) -> ToolGlobalInstallPreview {

@@ -3195,6 +3195,11 @@ struct SkillStoreTests {
         try expectNil(store.batchTogglePreview, "Batch preview should clear after apply and refresh.")
         try expectContains(store.lastMutationMessage, "Disable batch applied", "Batch apply should surface an explicit success message.")
         try expectContains(fake.calls(), "batch.applySkillToggles", "Batch apply should use the service batch apply method.")
+        try expectContains(
+            fake.calls(),
+            #""instance_ids":["alpha","gamma","beta","pi-one"]"#,
+            "Batch apply must re-submit both writable and skipped entries from the reviewed selection."
+        )
         try expectFalse(fake.calls().contains("config.toggleSkill"), "Batch apply must not silently loop over single-toggle writes.")
         try expectEqual(store.skills.first { $0.id == "alpha" }?.enabled, false, "Batch apply refresh should pick up changed alpha state.")
         try expectEqual(store.skills.first { $0.id == "gamma" }?.enabled, false, "Batch apply refresh should pick up changed gamma state.")

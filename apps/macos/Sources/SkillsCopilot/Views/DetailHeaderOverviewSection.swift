@@ -552,6 +552,25 @@ struct ToolGlobalInstallPreviewSheet: View {
             Label(preview.confirmationMessage, systemImage: "checkmark.shield")
                 .foregroundStyle(.secondary)
 
+            if let action = preview.action {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(UIStrings.text(
+                        "actionConfirmation.reviewedContract",
+                        "Reviewed action contract"
+                    ))
+                    .font(.caption.bold())
+                    ForEach(
+                        Array(action.confirmationSummary.disclosureLines.enumerated()),
+                        id: \.offset
+                    ) { _, line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
             if !preview.risks.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(preview.risks, id: \.self) { risk in
@@ -583,6 +602,7 @@ struct ToolGlobalInstallPreviewSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 720, height: 420)
+        .frame(width: 720)
+        .frame(minHeight: 520)
     }
 }
