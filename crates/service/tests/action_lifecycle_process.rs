@@ -938,6 +938,13 @@ fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
     let preview = fixture.config_save_preview(content);
     assert_success(&preview);
     let request = fixture.config_save_request(content, &preview);
+    {
+        let catalog = rusqlite::Connection::open(fixture.app_data.join("catalog.sqlite"))
+            .expect("open catalog before owner contention");
+        catalog
+            .pragma_update(None, "user_version", 7)
+            .expect("mark catalog migration pending");
+    }
 
     let lock_file = fs::File::open(
         fixture
@@ -962,6 +969,16 @@ fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
             .is_none(),
         "config save must wait while another process owns the shared app mutation lock"
     );
+    let catalog = rusqlite::Connection::open(fixture.app_data.join("catalog.sqlite"))
+        .expect("inspect blocked catalog");
+    let blocked_version: i64 = catalog
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read blocked catalog version");
+    assert_eq!(
+        blocked_version, 7,
+        "catalog migration must wait for the same owner as the confirmed config write"
+    );
+    drop(catalog);
 
     FileExt::unlock(&lock_file).expect("release app mutation owner");
     let output = child.wait_with_output().expect("wait for config save");
@@ -976,6 +993,15 @@ fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
     assert_eq!(
         fs::read_to_string(fixture.settings_path()).expect("read saved config"),
         content
+    );
+    let catalog = rusqlite::Connection::open(fixture.app_data.join("catalog.sqlite"))
+        .expect("inspect migrated catalog");
+    let applied_version: i64 = catalog
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read migrated catalog version");
+    assert!(
+        applied_version > 7,
+        "catalog migration should complete only after the owner is released"
     );
 }
 

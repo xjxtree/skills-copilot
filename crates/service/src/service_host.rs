@@ -881,6 +881,11 @@ impl ServiceHost {
 
     pub(crate) fn open_catalog(&self) -> Result<Catalog, ServiceError> {
         create_private_dir_all(&self.app_data_dir)?;
+        let _owner = lock_app_mutations(&self.app_data_dir)?;
+        self.open_catalog_while_mutation_owner_held()
+    }
+
+    fn open_catalog_while_mutation_owner_held(&self) -> Result<Catalog, ServiceError> {
         let catalog = Catalog::open(&self.catalog_path())?;
         catalog.init()?;
         Ok(catalog)
@@ -934,7 +939,7 @@ impl ServiceHost {
             return Err(CommandError::StaleActionReference.into());
         }
 
-        let catalog = self.open_catalog()?;
+        let catalog = self.open_catalog_while_mutation_owner_held()?;
         #[cfg(test)]
         INJECT_NEXT_SCAN_COMMIT_FAILURE.with(|flag| {
             if flag.replace(false) {

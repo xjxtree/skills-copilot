@@ -93,6 +93,13 @@ confirmation, and network posture.
   precomputed in stable order and `skill.install` validates a non-creating
   target before locking. A changed record, reference set, source tree, or
   target revision returns a stale-action failure before any owned write.
+- Writable catalog creation and schema migration take that same owner before
+  opening the mutation connection. A confirmed action then reacquires the
+  owner and revalidates its preconditions before changing catalog or target
+  state; read-only RPCs never migrate an outdated catalog.
+- Skill Manager lock projections and one-time discovery replay state are read
+  once from a bounded, no-follow regular-file descriptor. Symlinks,
+  non-regular files, oversized inputs, and replacement races fail closed.
 - Batch toggles, project-context applies, catalog scans, `skill.install`,
   confirmed Skill Manager search, install/remove/update/local-create, local
   archive import/update, and app-owned local deletion share one

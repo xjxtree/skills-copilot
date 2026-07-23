@@ -1,5 +1,5 @@
 use super::*;
-use std::io::Write;
+use std::io::{Read, Write};
 
 const DISCOVERY_STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_DISCOVERY_STATE_BYTES: u64 = 16 * 1024;
@@ -552,20 +552,14 @@ fn discovery_state_revision(app_data_dir: &Path) -> Result<String, CommandError>
 }
 
 fn read_discovery_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, CommandError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(bytes) = read_bounded_regular_file_no_follow(
+        path,
+        MAX_DISCOVERY_STATE_BYTES,
+        "skill manager discovery replay state",
+    )?
+    else {
+        return Ok(None);
     };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_DISCOVERY_STATE_BYTES
-    {
-        return Err(CommandError::UnsafeConfigPath(
-            "skill manager discovery replay state is not a bounded regular file".to_string(),
-        ));
-    }
-    let bytes = fs::read(path)?;
     let state: DiscoveryActionState = serde_json::from_slice(&bytes).map_err(|_| {
         CommandError::InvalidSkillManagerRequest(
             "skill manager discovery replay state is invalid".to_string(),
@@ -706,24 +700,18 @@ fn read_manager_lock_projection(
     } else {
         manager_cwd(ctx, scope)?.join("skills-lock.json")
     };
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    let bytes = match read_bounded_regular_file_no_follow(
+        &path,
+        MAX_MANAGER_LOCK_BYTES,
+        "manager lock projection",
+    )? {
+        Some(bytes) => bytes,
+        None => {
             let revision =
                 action_source_revision("manager.lock.projection", &[("state", "missing")])?;
             return Ok((None, revision));
         }
-        Err(error) => return Err(error.into()),
     };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_MANAGER_LOCK_BYTES
-    {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "manager lock projection is not a bounded regular file".to_string(),
-        ));
-    }
-    let bytes = fs::read(path)?;
     let lock = serde_json::from_slice::<ManagerLockFile>(&bytes).map_err(|_| {
         CommandError::InvalidSkillManagerRequest("manager lock projection is invalid".to_string())
     })?;
@@ -732,6 +720,57 @@ fn read_manager_lock_projection(
         &[("bytes", &format!("{:x}", Sha256::digest(&bytes)))],
     )?;
     Ok((Some(lock), revision))
+}
+
+fn read_bounded_regular_file_no_follow(
+    path: &Path,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Option<Vec<u8>>, CommandError> {
+    let mut file = match open_projection_file_no_follow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(CommandError::UnsafeConfigPath(format!(
+            "{label} is not a bounded regular file"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    Read::by_ref(&mut file)
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(CommandError::UnsafeConfigPath(format!(
+            "{label} is not a bounded regular file"
+        )));
+    }
+    Ok(Some(bytes))
+}
+
+#[cfg(unix)]
+fn open_projection_file_no_follow(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{open, Mode, OFlags};
+
+    let flags =
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+    open(path, flags, Mode::empty())
+        .map(File::from)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(not(unix))]
+fn open_projection_file_no_follow(path: &Path) -> std::io::Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "projection path is a symlink",
+        ));
+    }
+    File::open(path)
 }
 
 #[cfg(test)]
@@ -891,5 +930,52 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discovery_state_and_manager_lock_reads_reject_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-discovery-no-follow-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let project = root.join("project");
+        let app_data = root.join("app-data");
+        fs::create_dir_all(&project).expect("create project");
+        fs::create_dir_all(&app_data).expect("create app data");
+        let outside = root.join("outside.json");
+        fs::write(
+            &outside,
+            r#"{"schema_version":1,"generation":1,"token_digest":"token","action_id":"action","source_revision":"revision","phase":"outcome","state":"verified"}"#,
+        )
+        .expect("write outside projection");
+
+        let replay_link = discovery_state_path(&app_data);
+        symlink(&outside, &replay_link).expect("link replay state");
+        assert!(matches!(
+            read_discovery_state_bytes(&replay_link),
+            Err(CommandError::Io(_))
+        ));
+
+        let lock_link = project.join("skills-lock.json");
+        symlink(&outside, &lock_link).expect("link manager lock");
+        let ctx = AdapterContext {
+            user_home: root.join("home"),
+            project_root: Some(project.clone()),
+            project_cwd: Some(project),
+            extra_roots: Vec::new(),
+        };
+        assert!(matches!(
+            read_manager_lock_projection(&ctx, Some("project")),
+            Err(CommandError::Io(_))
+        ));
+        assert!(
+            outside.exists(),
+            "rejected links must not touch their target"
+        );
+        fs::remove_dir_all(root).ok();
     }
 }
