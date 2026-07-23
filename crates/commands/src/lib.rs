@@ -89,6 +89,22 @@ pub(crate) use skill_bundle::{
 };
 pub use skill_manager::*;
 
+fn verify_app_data_owner_binding_after_effect(
+    owner_lock: &AppMutationLock,
+    operation: &str,
+) -> Result<(), CommandError> {
+    owner_lock
+        .validate_owner_path_binding()
+        .map_err(|error| CommandError::PartialEffect {
+            operation: operation.to_string(),
+            state: "outcome_unknown",
+            cleanup_required: false,
+            detail: format!(
+                "the confirmed mutation was committed and verified on the accepted app-data owner, but that owner is no longer bound to the configured app-data path: {error}"
+            ),
+        })
+}
+
 #[cfg(test)]
 pub(crate) use config_lifecycle::{
     commit_prepared_claude_settings_save_with_after_lock,
@@ -1169,7 +1185,7 @@ pub fn install_skill_from_tool_global_guarded(
     project_path: Option<&Path>,
     action_confirmation: Option<&ActionConfirmation>,
 ) -> Result<SkillInstallPreviewRecord, CommandError> {
-    install_skill_from_tool_global_guarded_with_after_confirmation(
+    install_skill_from_tool_global_guarded_with_hooks(
         catalog,
         app_data_dir,
         ctx,
@@ -1179,11 +1195,12 @@ pub fn install_skill_from_tool_global_guarded(
         project_path,
         action_confirmation,
         || {},
+        || {},
     )
 }
 
-#[allow(clippy::too_many_arguments)] // The final closure is a test-only race injection seam.
-fn install_skill_from_tool_global_guarded_with_after_confirmation<F>(
+#[allow(clippy::too_many_arguments)] // The final closures are test-only race injection seams.
+fn install_skill_from_tool_global_guarded_with_hooks<F, G>(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
@@ -1193,9 +1210,11 @@ fn install_skill_from_tool_global_guarded_with_after_confirmation<F>(
     project_path: Option<&Path>,
     action_confirmation: Option<&ActionConfirmation>,
     after_confirmation: F,
+    after_commit: G,
 ) -> Result<SkillInstallPreviewRecord, CommandError>
 where
     F: FnOnce(),
+    G: FnOnce(),
 {
     let Some(action_confirmation) = action_confirmation else {
         return preview_skill_install_from_tool_global(
@@ -1232,7 +1251,9 @@ where
         false,
     )?;
     validate_tool_global_source(&source)?;
-    let _mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
+    let mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
+    mutation_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
     let expected_catalog = preview
         .preconditions
         .iter()
@@ -1426,6 +1447,8 @@ where
             });
         }
     }
+    after_commit();
+    verify_app_data_owner_binding_after_effect(&mutation_lock, "skill.install")?;
 
     Ok(SkillInstallPreviewRecord {
         wrote: true,
@@ -1454,7 +1477,7 @@ fn install_skill_from_tool_global_with_after_confirmation<F>(
 where
     F: FnOnce(),
 {
-    install_skill_from_tool_global_guarded_with_after_confirmation(
+    install_skill_from_tool_global_guarded_with_hooks(
         catalog,
         &ctx.user_home,
         ctx,
@@ -1464,6 +1487,7 @@ where
         project_path,
         action_confirmation,
         after_confirmation,
+        || {},
     )
 }
 
@@ -2484,13 +2508,14 @@ pub fn apply_skill_toggles_guarded(
     target_enabled: bool,
     confirmation: &ActionConfirmation,
 ) -> Result<BatchToggleApplyRecord, CommandError> {
-    apply_skill_toggles_guarded_with_after_confirmation(
+    apply_skill_toggles_guarded_with_hooks(
         catalog,
         app_data_dir,
         ctx,
         instance_ids,
         target_enabled,
         confirmation,
+        || {},
         || {},
     )
 }
@@ -2507,7 +2532,7 @@ fn apply_skill_toggles_with_after_confirmation<F>(
 where
     F: FnOnce(),
 {
-    apply_skill_toggles_guarded_with_after_confirmation(
+    apply_skill_toggles_guarded_with_hooks(
         catalog,
         &ctx.user_home,
         ctx,
@@ -2515,10 +2540,12 @@ where
         target_enabled,
         confirmation,
         after_confirmation,
+        || {},
     )
 }
 
-fn apply_skill_toggles_guarded_with_after_confirmation<F>(
+#[allow(clippy::too_many_arguments)]
+fn apply_skill_toggles_guarded_with_hooks<F, G>(
     catalog: &Catalog,
     app_data_dir: &Path,
     ctx: &AdapterContext,
@@ -2526,9 +2553,11 @@ fn apply_skill_toggles_guarded_with_after_confirmation<F>(
     target_enabled: bool,
     confirmation: &ActionConfirmation,
     after_confirmation: F,
+    after_commit: G,
 ) -> Result<BatchToggleApplyRecord, CommandError>
 where
     F: FnOnce(),
+    G: FnOnce(),
 {
     let preview = validate_skill_toggle_confirmation(
         catalog,
@@ -2544,7 +2573,9 @@ where
         ));
     }
 
-    let _mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
+    let mutation_lock = mutation_lock::lock_app_mutations(app_data_dir)?;
+    mutation_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(mutation_lock.owner_directory())?;
     let mut groups: BTreeMap<(String, String, String, String), Vec<SkillInstanceMeta>> =
         BTreeMap::new();
     for item in &preview.affected_items {
@@ -2703,6 +2734,8 @@ where
             });
         }
     }
+    after_commit();
+    verify_app_data_owner_binding_after_effect(&mutation_lock, "batch.applySkillToggles")?;
     Ok(BatchToggleApplyRecord {
         action: preview.action,
         preview_token: preview.preview_token,

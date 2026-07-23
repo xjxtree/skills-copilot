@@ -1724,6 +1724,179 @@ fn confirmed_install_rechecks_the_source_catalog_record_under_lock() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
+#[cfg(unix)]
+#[test]
+fn confirmed_install_rejects_a_catalog_bound_to_another_app_data_owner() {
+    let temp_root = temp_test_dir("install-catalog-owner-mismatch");
+    let home = temp_root.join("home");
+    let app_data = temp_root.join("app-data");
+    let accepted_owner = temp_root.join("accepted-owner");
+    let replacement_owner = temp_root.join("replacement-owner");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&app_data).expect("create app data");
+    let source_path = write_tool_global_skill(&temp_root, "portable-owner-mismatch");
+    let catalog = Catalog::open_anchored(
+        std::fs::File::open(&app_data).expect("open accepted catalog owner"),
+    )
+    .expect("open anchored catalog");
+    catalog.init().expect("initialize catalog");
+    let instance_id = "tool-global-owner-mismatch";
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            instance_id,
+            source_path,
+            "portable-owner-mismatch",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global_guarded(
+        &catalog,
+        &app_data,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview install");
+    let confirmation = confirmed_action(&preview.action, &preview.preview_token);
+    let hook_app_data = app_data.clone();
+    let hook_accepted = accepted_owner.clone();
+    let hook_replacement = replacement_owner.clone();
+
+    let result = install_skill_from_tool_global_guarded_with_hooks(
+        &catalog,
+        &app_data,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+        move || {
+            std::fs::rename(&hook_app_data, &hook_accepted).expect("move accepted owner");
+            std::fs::create_dir(&hook_replacement).expect("create replacement owner");
+            std::fs::rename(&hook_replacement, &hook_app_data).expect("bind replacement owner");
+            std::fs::write(hook_app_data.join("sentinel"), b"unchanged")
+                .expect("seed replacement owner");
+        },
+        || {},
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommandError::Catalog(
+            skills_copilot_catalog::CatalogError::MutationOwner(_)
+        ))
+    ));
+    assert!(
+        !Path::new(&preview.target_path).exists(),
+        "owner mismatch must be rejected before writing the agent skill"
+    );
+    assert_eq!(
+        std::fs::read(app_data.join("sentinel")).expect("read replacement sentinel"),
+        b"unchanged"
+    );
+
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn confirmed_install_reports_partial_effect_if_owner_rebinds_after_commit() {
+    use std::os::unix::fs::symlink;
+
+    let temp_root = temp_test_dir("install-owner-rebind-after-commit");
+    let home = temp_root.join("home");
+    let app_data = temp_root.join("app-data");
+    let accepted_owner = temp_root.join("accepted-owner");
+    let victim = temp_root.join("victim");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&app_data).expect("create app data");
+    std::fs::create_dir_all(&victim).expect("create victim");
+    std::fs::write(victim.join("sentinel"), b"unchanged").expect("seed victim");
+    let source_path = write_tool_global_skill(&temp_root, "portable-owner-rebind");
+    let catalog = Catalog::open_anchored(
+        std::fs::File::open(&app_data).expect("open accepted catalog owner"),
+    )
+    .expect("open anchored catalog");
+    catalog.init().expect("initialize catalog");
+    let instance_id = "tool-global-owner-rebind";
+    catalog
+        .upsert_skill_instance(&install_tool_global_instance(
+            instance_id,
+            source_path,
+            "portable-owner-rebind",
+        ))
+        .expect("upsert tool-global");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let preview = install_skill_from_tool_global_guarded(
+        &catalog,
+        &app_data,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        None,
+    )
+    .expect("preview install");
+    let confirmation = confirmed_action(&preview.action, &preview.preview_token);
+    let hook_app_data = app_data.clone();
+    let hook_accepted = accepted_owner.clone();
+    let hook_victim = victim.clone();
+
+    let result = install_skill_from_tool_global_guarded_with_hooks(
+        &catalog,
+        &app_data,
+        &ctx,
+        instance_id,
+        AgentId::Codex,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+        || {},
+        move || {
+            std::fs::rename(&hook_app_data, &hook_accepted).expect("move accepted owner");
+            symlink(&hook_victim, &hook_app_data).expect("replace owner path");
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: false,
+            ..
+        })
+    ));
+    assert!(
+        Path::new(&preview.target_path).is_file(),
+        "the committed and verified agent skill remains applied"
+    );
+    assert_eq!(
+        std::fs::read(victim.join("sentinel")).expect("read victim sentinel"),
+        b"unchanged"
+    );
+    assert!(!victim.join("catalog.sqlite").exists());
+
+    drop(catalog);
+    std::fs::remove_file(&app_data).expect("remove replacement symlink");
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
 #[test]
 fn local_delete_rejects_source_drift_after_preview_without_deleting() {
     let temp_root = temp_test_dir("local-delete-source-drift");

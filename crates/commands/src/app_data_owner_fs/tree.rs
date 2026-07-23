@@ -371,6 +371,7 @@ fn directory_entry_names(directory: &File) -> Result<Vec<OsString>, CommandError
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn snapshot_child(
     directory: &File,
     name: &OsStr,

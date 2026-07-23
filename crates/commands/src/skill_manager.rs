@@ -3079,7 +3079,7 @@ fn verify_local_create_operation_content(
     if source_content != imported_content {
         return Err(CommandError::VerificationFailed);
     }
-    let parsed = super::parse_tool_global_skill(&source_content, requested_name);
+    let parsed = super::parse_tool_global_skill(source_content, requested_name);
     if super::canonical_skill_name_suggestion(&parsed.name)
         != super::canonical_skill_name_suggestion(requested_name)
     {
