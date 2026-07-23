@@ -1,6 +1,7 @@
 # UI Delivery Standards
 
-This file captures the current native UI and runtime-validation contract.
+This file captures the native UI and runtime-validation contract. Product
+meaning and acceptance criteria are defined in `docs/product-design.md`.
 
 ## Product Shell
 
@@ -9,13 +10,35 @@ This file captures the current native UI and runtime-validation contract.
 - User-facing behavior should use existing SwiftUI/AppKit view, model, service,
   localization, and fixture patterns.
 
-## Current Surface Rules
+## Product Surface Contract
 
-- Primary navigation contains Sessions, Skills, and Config.
-- Session, skill, and config detail panes should render only the selected item
-  or overview for the selected mode.
-- Agent Usage Report and Task Preflight are compact preview tools.
-- Retired surfaces should not reappear without an explicitly scoped change.
+- Toolbar order is project selector, agent filter, global search, and settings.
+- The recent-project section supports per-entry removal and a compact localized
+  `Clear` action in its header. Clearing history does not implicitly clear the
+  active project.
+- Primary navigation contains exactly Project Overview, Skills, and Sessions.
+- Project Overview renders project/agent environment health, inline task
+  readiness, a needs-attention action queue, and continue-work sessions.
+- Skill Package Manager actions are integrated into Skills. Task Preflight is
+  presented as inline task readiness rather than a separate destination.
+- Config, raw metadata, diagnostics, provider profiles, and Agent Copilot
+  provider activity are Advanced or Settings surfaces.
+- `ContentView` routes to a workspace and must not assume every selection is a
+  skill detail.
+
+## Truth And Disclosure
+
+- Environment health is distinct from task readiness. Without a task, the UI
+  may report verified environment state but not universal agent readiness.
+- Installed, enabled, and verified effective are distinct labels. Partial,
+  stale, unavailable, and source-limited evidence never renders as healthy.
+- Aggregate counts display completeness or a typed limitation.
+- Skill detail and session detail lead with Answer/Summary, then Evidence, then
+  Advanced detail. Raw paths and metadata are never the default explanation.
+- Deterministic facts, AI interpretation, and action preview are visually and
+  semantically distinct.
+- Every action follows Detect, Explain, Evidence, Preview, Confirm, Apply, and
+  Read-back. The UI never treats AI prose as a write control.
 
 ## Responsive Loading Defaults
 

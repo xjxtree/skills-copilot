@@ -46,6 +46,29 @@ verification.
 - Service method changes must update fixtures and pass
   `pnpm verify:service-protocol-drift`.
 
+## Product Design Compatibility
+
+The Methods table below is the callable service inventory. Product design or
+implementation documents may define a required future projection, but a client
+must not call it until `crates/service/src/protocol.rs`, method-effect tests,
+fixtures, Swift wire models, and this table expose the same method.
+
+The product rebuild reserves these responsibilities and preferred additive
+method names:
+
+- `project.getReadiness` for deterministic project coverage, per-agent health,
+  evidence, and attention actions;
+- `catalog.listSkillAggregates` for complete, evidence-backed skill
+  projections;
+- `session.previewResume` for an adapter-native copy-only continuation command
+  or typed unsupported reason.
+
+These names are not supported merely because they appear in this paragraph.
+Existing lower-level catalog, project, session, search, and config methods
+remain authoritative until each additive method is implemented and fixture
+backed. `task_cockpit` remains the compatible LLM action identifier even when a
+native UI labels the experience Task Readiness.
+
 ## Config Consistency
 
 Protocol version 2 makes direct config saves and snapshot rollback confirmations
@@ -585,6 +608,10 @@ or expose write controls.
   raw session content.
 - When a session store has no parseable event timestamp, the service falls back
   to the redacted read-only file metadata timestamp for row-level timing only.
+- The callable inventory does not yet expose a resume-command preview. Clients
+  must not infer a command from session metadata. `session.previewResume`
+  becomes supported only when it is added to the Methods table and fixtures
+  under the product implementation sequence.
 
 ## App Search
 
@@ -600,6 +627,9 @@ or expose write controls.
 - Result subtitles carry stable disambiguation context: skill Agent/scope and
   package provenance, session Agent/project/time, and config Agent/scope/target
   time. Search remains local and does not read skill files on each keystroke.
+- Optional semantic reranking must use a separate, explicitly previewed and
+  confirmed LLM action over the already-returned bounded candidates.
+  `app.search` never calls a provider or changes its lexical result contract.
 
 ## LLM Prompt Actions
 
@@ -610,6 +640,8 @@ or expose write controls.
   bodies, frontmatter, config contents, paths, credentials, raw prompts, raw
   responses, traces, writes, scripts, snapshots, and rollback commands are
   excluded.
+- Native UI may present `task_cockpit` as inline Task Readiness, but it must not
+  change the wire action or imply universal readiness without a task.
 - Task Preflight first ranks cached effective skills against the task, includes
   at most 24 candidates, and blocks confirmation when the estimated request
   exceeds the 12,000-token safety budget (in addition to the provider profile

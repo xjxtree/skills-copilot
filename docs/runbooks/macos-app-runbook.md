@@ -153,3 +153,45 @@ Canonical blockers include locked session, timeout, window not found, remote
 connection, missing AX window, activation failure, Screen Recording permission,
 black/flat/transparent/invalid capture, stale bundle, and unknown tool-layer
 failure.
+
+## Product Cross-Agent Acceptance
+
+Use this reusable procedure for the product-rebuild real-local acceptance pass.
+Results belong in the active issue or pull request, not in this runbook.
+
+1. Run the automated gate and build the app from the exact candidate commit:
+
+```sh
+pnpm check:macos
+pnpm dev:macos
+```
+
+2. Confirm the macOS session is unlocked and Computer Use resolves the complete
+   Agent Copilot window.
+3. Select the `funnyaccount_system` project and keep its canonical private path
+   out of screenshots and reports.
+4. For Claude Code, Codex, opencode, Pi, Hermes, and OpenClaw, compare app global
+   and project skill rows, counts, effectiveness, source labels, and coverage
+   with the documented native adapter sources.
+5. A native runtime skill inventory may be queried temporarily only as
+   comparison evidence. Do not persist it, catalog it, add its cache as a scan
+   root, or treat it as an app source of truth.
+6. For each agent, compare the app session inventory, project filtering, local
+   search, detail evidence, and continuation capability with the documented
+   native session source. A missing supported resume contract must appear as an
+   accurate typed unsupported reason, never a guessed command.
+7. Exercise Project Overview, Skills, Sessions, integrated package entry points,
+   Advanced, provider-off task readiness, project/agent switching, individual
+   recent-project removal, and the recent-project `Clear` action.
+8. Capture only the complete app window to the default temporary location.
+   Visually inspect every capture for private paths, usernames, credentials,
+   temp paths, or unrelated windows.
+9. Record comparison tables, exact commands, app behavior, mismatches, and any
+   one canonical Computer Use blocker in the issue or pull request.
+10. Finish with:
+
+```sh
+pnpm check:privacy
+```
+
+Fixture smoke may support this pass but cannot replace steps 2 through 9.

@@ -1,13 +1,22 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum AgentId {
+    #[serde(rename = "tool-global")]
     ToolGlobal,
+    #[serde(rename = "claude-code")]
     ClaudeCode,
+    #[serde(rename = "codex")]
     Codex,
+    #[serde(rename = "pi")]
     Pi,
+    #[serde(rename = "hermes")]
     Hermes,
+    #[serde(rename = "openclaw")]
     Openclaw,
+    #[serde(rename = "opencode")]
     Opencode,
 }
 
@@ -25,11 +34,14 @@ impl AgentId {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Scope {
+    #[serde(rename = "tool-global")]
     ToolGlobal,
+    #[serde(rename = "agent-global")]
     AgentGlobal,
+    #[serde(rename = "agent-project")]
     AgentProject,
 }
 

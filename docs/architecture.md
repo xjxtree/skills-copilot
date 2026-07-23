@@ -1,12 +1,17 @@
 # Architecture
 
-Agent Copilot uses a native macOS shell over a typed Rust service. Product logic
-belongs in Rust crates; the UI presents state and sends typed requests.
+Agent Copilot uses a native macOS shell over a typed Rust service. It is a
+project-first readiness and continuity control center: product truth belongs in
+Rust crates; the UI presents typed projections and sends typed requests.
 
 ## Goals
 
-- Inspect local agent sessions, skills, config snapshots, and validation
-  evidence.
+- Verify what supported coding agents can effectively use in the selected
+  project.
+- Explain deterministic problems and expose evidence-bound, guarded repair
+  actions.
+- Find local user-owned sessions and continue work through verified native
+  adapter behavior.
 - Keep deterministic local analysis useful without default Agent Copilot
   provider calls.
 - Keep write, script, credential, cloud, telemetry, and release automation
@@ -16,11 +21,43 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 ## Non-Goals
 
 - Do not replace agent runtimes or proxy their tool calls.
+- Do not become an IDE, general chat client, agent orchestrator, or generic
+  plugin marketplace.
 - Do not parse private prompts beyond explicitly authorized local preview
   flows.
 - Do not add cloud sync, accounts, telemetry, or marketplace behavior by
   default.
 - Do not reintroduce the removed Web/Tauri shell.
+
+## Product Architecture Contract
+
+Project is the primary context. Agent is a status dimension and filter; skills
+are capabilities; sessions are continuity; config is a supporting mechanism;
+optional AI interprets evidence but never creates product truth.
+
+Product-facing changes follow this flow:
+
+```text
+documented agent sources
+  -> bounded deterministic adapters and scanner
+  -> catalog plus transient session evidence
+  -> Rust-owned readiness, skill, action, and continuation projections
+  -> typed service protocol
+  -> native project, skill, session, and advanced workspaces
+```
+
+Optional intelligence branches only after deterministic projection:
+
+```text
+redacted revision-bound evidence
+  -> prompt preview and explicit confirmation
+  -> structured evidence-referencing interpretation
+  -> copy-only presentation or reference to an existing typed action
+```
+
+Mutations follow Detect, Explain, Evidence, Preview, Confirm, Apply, and
+Read-back. Preview/apply authority remains in Rust. A provider result cannot
+invent an action, target, command, revision token, or write path.
 
 ## Layers
 
@@ -34,6 +71,10 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 | Scanner | `crates/scanner` | Root walking, symlink guards, skill parsing |
 | Catalog | `crates/catalog` | Local SQLite catalog and app-local metadata |
 | AI core | `crates/ai-core` | Deterministic rules and local analysis contracts |
+
+Read projections are domain models, not UI convenience calculations. Core owns
+their stable types; commands compose adapter/catalog/session evidence; service
+owns bounded wire exposure; Swift owns presentation and interaction state only.
 
 ## Dependency Direction
 
@@ -53,6 +94,12 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 5. Commands update the local catalog and derived findings.
 6. The app reads typed service results for list, detail, config, session, and
    report surfaces.
+
+Product read projections are additive over this flow. Environment health,
+skill effectiveness, aggregate counts, evidence references, attention actions,
+and continuation capability must be computed from the same source revision and
+completeness evidence. Swift must not reinterpret a partial source as complete
+or derive an alternative enablement/precedence policy.
 
 Startup and manual reload reuse the catalog inventory, but read-only skill
 responses project the current guarded Codex `[[skills.config]]` overrides onto
@@ -159,6 +206,8 @@ confirmed Skill Manager write participates in the app-wide mutation gate.
 | --- | --- |
 | New agent | `crates/adapters/src/<agent>/`, scanner/catalog tests, adapter docs |
 | New service method | `crates/service`, fixtures, `docs/service-protocol.md` |
+| New readiness, skill aggregate, or continuation projection | `crates/core` types, `crates/commands` composition, service fixtures, native wire models |
+| New user-visible action | Deterministic `ActionDescriptor`, preview/apply/read-back service path, security review |
 | New local rule | `crates/ai-core` |
 | New macOS surface | `apps/macos` view/model/service patterns |
 | New provider behavior | Provider profile gate with preview/redaction/confirmation |

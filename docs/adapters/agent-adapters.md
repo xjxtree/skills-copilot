@@ -45,6 +45,21 @@ blocked operations. It is a current contract, not a version history.
   replacement is limited to the selected catalog instance inside the active
   project/global shared root.
 
+### Product Projection Boundary
+
+- Adapters report documented local facts: roots, scope, config state,
+  precedence inputs, source provenance, completeness, session identity, and
+  supported native continuation behavior.
+- Rust product projections combine those facts into environment health, skill
+  effectiveness, aggregates, evidence references, and typed action capability.
+  Native UI code and optional AI must not reimplement adapter policy.
+- Installed, enabled, and effective remain separate. An installed source may be
+  disabled, shadowed, unlinked, broken, or unavailable. `effective` means the
+  adapter projection selects it; it does not mean a runtime invocation was
+  observed.
+- Missing, partial, stale, or source-limited required adapter evidence blocks a
+  healthy product status and must carry a typed reason and recovery action.
+
 ## Adapter Matrix
 
 | Adapter | Scan roots | Guarded writes | Install targets | Blocked |

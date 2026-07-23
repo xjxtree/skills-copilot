@@ -5,6 +5,8 @@
     "AGENTS.md",
     "CONTRIBUTING.md",
     "docs/README.md",
+    "docs/product-design.md",
+    "docs/implementation-sequence.md",
     "docs/ai-agent-workflow.md",
     "docs/runbooks/release-checklist.md",
     "docs/runbooks/distribution-runbook.md",
@@ -18,6 +20,11 @@
     "README.md": ["## App Features", "GitHub Releases"],
     "AGENTS.md": ["## Safety Boundaries"],
     "docs/README.md": ["## Product And Architecture", "## Maintenance Rules"],
+    "docs/product-design.md": ["## Product Promise", "## Acceptance Contract"],
+    "docs/implementation-sequence.md": [
+      "## Execution Rules",
+      "## Task 14 — Real-Local Cross-Agent Acceptance"
+    ],
     "docs/runbooks/distribution-runbook.md": [
       "GitHub tags and GitHub Releases"
     ]

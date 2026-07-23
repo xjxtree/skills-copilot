@@ -8,8 +8,13 @@ This file provides Claude Code-specific guidance for this repository. Shared pro
 
 - Treat `AGENTS.md` as the canonical shared instruction entrypoint.
 - Treat Agent Copilot as the displayed product name, app bundle, and repository identity. Swift/Rust module names, sidecar names, AX identifiers, env vars, and legacy data ids may still use `SkillsCopilot` / `skills-copilot` for compatibility.
-- Keep task state, plans, and validation results out of repository docs.
+- Keep task state, dates, validation results, and handoffs out of repository
+  docs. `docs/implementation-sequence.md` is the normative dependency contract,
+  not a progress ledger.
 - Read the relevant `docs/` file before architecture, UI, validation, or adapter changes.
+- For product rearchitecture, follow `docs/product-design.md` and the numbered
+  order in `docs/implementation-sequence.md`; use the active task conversation,
+  issue, or pull request for task state.
 - Use macOS Computer Use for real app validation when the macOS session is unlocked and the app window can be resolved.
 - If Computer Use cannot resolve the app window, report the real-local blocker in the task or pull request.
 - Do not treat Smoke App Run screenshots as real local effect validation.

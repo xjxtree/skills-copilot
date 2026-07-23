@@ -825,6 +825,7 @@ name = "skills-copilot-core"
 version = "0.1.5"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

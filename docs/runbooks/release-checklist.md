@@ -9,6 +9,9 @@ a public distribution checklist.
 - [ ] Confirm `git status --short` contains only intended changes.
 - [ ] Read `README.md`, `AGENTS.md`, `docs/security-model.md`, and
   `docs/runbooks/distribution-runbook.md`.
+- [ ] For product-rebuild changes, read `docs/product-design.md`, confirm the
+  active `docs/implementation-sequence.md` task and its prior exit criteria,
+  and keep progress evidence in the issue or pull request.
 - [ ] Confirm public distribution, signing, notarization, DMG, ZIP, updater,
   and release automation remain deferred unless explicitly scoped.
 - [ ] Confirm script execution remains default-denied unless separately scoped
@@ -66,6 +69,12 @@ the canonical blocker and keep real-local validation pending.
 
 Fixture smoke is supporting evidence only; it is not a substitute for required
 real-local interaction evidence.
+
+For a product-rebuild candidate, use the Product Cross-Agent Acceptance section
+of `docs/runbooks/macos-app-runbook.md`. Confirm that incomplete evidence never
+renders healthy, installed/enabled/effective remain distinct, all three primary
+workspaces are reachable, and every write or resume action respects its typed
+preview boundary.
 
 ## Abort Conditions
 

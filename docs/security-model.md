@@ -13,6 +13,20 @@ This file describes security and privacy boundaries.
   validation may read the developer's real HOME and app data only when the
   runbook explicitly calls for it.
 
+## Product Truth And Evidence
+
+- Environment health, skill effectiveness, scan coverage, conflicts, session
+  identity, and continuation capability are deterministic Rust projections.
+  LLM output cannot originate or override them.
+- An incomplete, stale, partial, unavailable, or source-limited required input
+  cannot produce a healthy status.
+- Installed, enabled, and effective are separate facts. `effective` means the
+  documented adapter projection selected the skill; it is not runtime
+  telemetry or proof of invocation.
+- Every product status, explanation, and action must resolve to typed evidence
+  from the same project/source revision. Unknown or stale evidence references
+  fail closed.
+
 ## Privacy Rules
 
 - No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
@@ -28,6 +42,9 @@ This file describes security and privacy boundaries.
   reports must not persist secrets.
 - Session preview data is redacted and bounded before it crosses the service
   boundary.
+- AI summaries, semantic reranks, readiness interpretations, and evidence
+  envelopes remain transient. Persisted embeddings, transcript indexes, or raw
+  prompt/response caches require a new scoped privacy review.
 
 ## Credentials
 
@@ -40,6 +57,12 @@ This file describes security and privacy boundaries.
   safety review.
 
 ## Writes And Scripts
+
+Every supported mutation follows Detect, Explain, Evidence, Preview, Confirm,
+Apply, and Read-back. A typed action descriptor may identify an existing
+service path, but it is not authorization. Preview and apply must independently
+validate project, agent, scope, target, revision, confirmation, and network
+posture.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not
   be triggered by imports, LLM output, analyzer recommendations, previews, or
@@ -70,6 +93,16 @@ This file describes security and privacy boundaries.
 - Hidden apply/write paths, hidden task state, raw prompt/response/trace
   persistence, public distribution automation, signing, notarization, DMG, and
   other ZIP creation/distribution work require explicit new scope.
+
+## Session Continuation
+
+- Resume capability is derived by a supported adapter and bound to the selected
+  session and source revision.
+- The initial product action is copy-only. The app must not automatically open
+  a terminal, launch an agent, translate a session between agents, or execute a
+  resume command.
+- Unsupported or unverifiable continuation returns a typed reason; the native
+  UI must not construct a best-guess command.
 
 ## Screen Capture
 

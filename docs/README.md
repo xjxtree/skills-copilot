@@ -1,13 +1,16 @@
 # Documentation
 
-Use this page to find the current contract or reusable procedure for a change.
-Task state and future plans belong in GitHub issues or pull requests; release
-history belongs in GitHub Releases and tags.
+Use this page to find the current contract, durable product design, normative
+implementation order, or reusable procedure for a change. Task state, dates,
+command results, and handoffs belong in the active task conversation, GitHub
+issue, or pull request; release history belongs in GitHub Releases and tags.
 
 ## Product And Architecture
 
 | Document | Purpose |
 | --- | --- |
+| [Product design](product-design.md) | Product promise, ontology, information architecture, truth model, AI role, and acceptance contract |
+| [Implementation sequence](implementation-sequence.md) | Required engineering dependency order, task boundaries, exit criteria, and verification commands |
 | [Architecture](architecture.md) | Layer ownership, dependency direction, data flow, and extension points |
 | [Data model](data-model.md) | Persisted, transient, redacted, and compatibility data |
 | [Service protocol](service-protocol.md) | Typed app/service methods, effects, paging, and error contracts |
@@ -39,8 +42,12 @@ Claude Code behavior is covered by the shared adapter contract and its fixtures.
 
 - Update a focused contract when behavior changes; do not create a second
   overview for the same domain.
-- Do not store plans, task ledgers, progress reports, validation transcripts,
-  screenshots, temporary handoffs, release notes, or changelogs in `docs/`.
+- `implementation-sequence.md` is the single durable exception for normative
+  task ordering. It must contain no dates, estimates, milestones, checkboxes,
+  progress state, validation output, or temporary handoff notes.
+- Do not store other plans, task ledgers, progress reports, validation
+  transcripts, screenshots, temporary handoffs, release notes, or changelogs
+  in `docs/`.
 - Update existing focused contracts instead of adding dated or versioned
   snapshots of the same behavior.
 - Keep Markdown links relative and run `pnpm verify:doc-governance` after

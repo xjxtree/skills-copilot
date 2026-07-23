@@ -14,6 +14,44 @@ This file summarizes persisted and transient data.
 | Model-task matches | App-local JSON | Redacted metadata for Agent Copilot AI features only |
 | Skill Manager inventory | Native startup/manual-refresh cache | One row per project/global installed source, enriched by matching guarded `.agents/skills` catalog instances (including nested package layouts) and merged with non-installed app-owned local sources; not persisted by the UI |
 
+## Product Read Projections
+
+The product rebuild uses additive Rust-owned read models. Their type names and
+semantics are defined here; a projection is callable only after its method also
+appears in `docs/service-protocol.md`, protocol fixtures, and the service
+supported-method inventory.
+
+| Model | Required content | Persistence |
+| --- | --- | --- |
+| `ProjectReadinessRecord` | Project/source revision, coverage, per-agent environment health, blocking reasons, attention actions, and recent continuation summaries | Transient/cache only |
+| `SkillAggregateRecord` | Definition/source/package identity, instances, scopes, agents, effectiveness, findings, conflicts, completeness, evidence, and supported actions | Transient/cache only |
+| `SessionContinuationRecord` | Project/agent identity, stable session identity, timing, completeness, source revision, evidence, and native resume capability | Transient selected-project state only |
+| `EvidenceRef` | Stable typed id, evidence kind, source revision, and redacted display summary | Stored only when the owning existing metadata record is allowed to persist |
+| `ActionDescriptor` | Deterministic id, target, impact, preview/apply method, revision binding, network posture, and confirmation requirement | Transient; never write authorization by itself |
+
+`EnvironmentHealthState` is `healthy`, `review`, or `blocked`.
+`SkillEffectivenessState` is `effective`, `disabled`, `shadowed`,
+`installed_unlinked`, `broken`, or `unavailable`. Installed, enabled, and
+effective remain independent facts. `effective` means verified by the adapter
+projection; it does not prove runtime invocation.
+
+Core product records enforce these invariants before service exposure:
+
+- Evidence ids, revisions, and summaries are non-empty; summaries reject raw
+  Unix/Windows absolute paths and control characters while allowing logical
+  placeholders such as `$HOME` and `<project-root>`.
+- Action descriptors name typed targets and service preview/apply methods,
+  contain unique evidence references, and bind one source revision. A
+  mutating impact requires both an apply method and explicit confirmation; a
+  read-only action cannot expose an apply method.
+- Healthy project or agent readiness requires complete source coverage.
+- Supported resume capability contains non-empty native argv and remains
+  copy-only. Unsupported capability contains no argv and carries a typed
+  reason.
+- Project, skill aggregate, and session continuation records reject evidence or
+  actions bound to a different source revision and reject actions that refer to
+  unknown evidence.
+
 ## Persistence
 
 - `model-task-matches.json` stores redacted app-local metadata for Agent
@@ -57,6 +95,11 @@ This file summarizes persisted and transient data.
 - Local ZIP update previews are transient. Archive paths, hashes, counts, and
   preview tokens are not catalog payloads; only the validated replacement skill
   is registered through the existing app-owned ToolGlobal catalog path.
+- Product readiness, skill aggregate, action-queue, session continuation, AI
+  evidence-envelope, and semantic rerank results are transient. They must not
+  create a second catalog, task ledger, transcript store, raw prompt store, or
+  embedding database without a separately scoped persistence and privacy
+  review.
 
 ## Redaction
 
@@ -65,6 +108,8 @@ This file summarizes persisted and transient data.
   could expose private local state.
 - Reveal flows must be explicit and local to the UI surface.
 - Reports, screenshots, and response artifacts must not contain credentials.
+- Evidence references carry redacted summaries and stable ids, not raw local
+  paths, config values, transcript bodies, prompts, or provider responses.
 
 ## Compatibility
 

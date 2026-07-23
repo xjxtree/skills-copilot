@@ -17,9 +17,15 @@ Good contributions right now:
 - Improve native validation tooling and runtime checks
 - Add narrowly scoped implementation PRs that preserve the architecture,
   adapter, security, and write boundaries
+- Implement the product rebuild in the dependency order defined by
+  `docs/implementation-sequence.md`
 
 ## Design Rules
 
+- `docs/product-design.md` is the product and interaction contract.
+- Product-rebuild changes follow `docs/implementation-sequence.md` in numeric
+  order. The active issue or pull request records which task is being executed;
+  the repository document is not a progress tracker.
 - `docs/` describe the intended architecture and must be kept in sync with implementation changes.
 - The current adapter families are Claude Code, Codex, opencode, Pi, Hermes, and OpenClaw.
 - Claude Code and Codex have verified scan/toggle boundaries; Codex writes stay limited to the documented user/project `.agents` compatibility path.
@@ -54,6 +60,8 @@ Use this checklist for each pull request.
 Before opening a PR:
 
 - [ ] I read `README.md`, `CLAUDE.md`, and the relevant documents linked from `docs/README.md`
+- [ ] For product-rebuild work, I identified the active numbered task and
+      confirmed its preceding exit criteria
 - [ ] I kept implementation changes narrowly scoped and covered by tests where risk warrants it
 - [ ] Any new agent behavior is backed by a source or fixture
 - [ ] I updated related docs when changing scope, lifecycle, or security behavior

@@ -52,6 +52,13 @@ Use this priority order when information conflicts:
 
 If docs conflict with code, fix the docs or code as part of the task when the requested scope allows it. Do not silently proceed with stale documentation.
 
+For the product rebuild, code and `docs/service-protocol.md` remain the truth
+for behavior that is callable now, while `docs/product-design.md` defines the
+required product outcome and `docs/implementation-sequence.md` defines the
+allowed dependency order for changing that behavior. The active user request
+and, when present, its issue or pull request identify the numbered task and
+record execution state outside repository docs.
+
 ## Documentation Ownership Matrix
 
 Use this table before adding or moving documentation. Repository docs contain
@@ -63,9 +70,32 @@ current contracts and reusable procedures, not task state or validation logs.
 | `CLAUDE.md` | Claude Code | Claude-specific behavior, Computer Use defaults | Shared project rules already in `AGENTS.md` |
 | `README.md` | Humans | Product overview, app features, download/build guide, document map | Validation dumps, plans, or task ledgers |
 | `docs/README.md` | Humans + agents | Focused documentation index and ownership navigation | Product marketing, task state, or duplicated contracts |
+| `docs/product-design.md` | Product + engineering | Durable product promise, ontology, UX, truth, and acceptance contract | Delivery state, dates, or implementation history |
+| `docs/implementation-sequence.md` | Coding agents | Normative dependency order, stable task scope, exit criteria, and verification commands | Progress, estimates, milestones, command output, or handoffs |
 | GitHub issues and pull requests | Contributors | Plans, task state, decisions, command results, and handoffs | Durable product contracts |
 | GitHub Releases/tags | Humans + maintainers | Release versions, user-facing release notes, downloadable assets, checksums | Planning and implementation details |
 | Focused specs (`docs/service-protocol.md`, adapter specs, security/data/AI docs) | Implementers | Current contracts and domain-specific rules | Progress reports or dated validation results |
+
+## Product Rebuild Task Selection
+
+Use this procedure for work governed by the product rebuild:
+
+1. Read `docs/product-design.md` to understand the product invariant being
+   changed.
+2. Read `docs/implementation-sequence.md` and identify the active numbered task
+   from the user request and any linked issue or pull request.
+3. Confirm the previous task's exit criteria are evidenced in the linked issue
+   or pull request before editing a dependent layer.
+4. Limit the change to the active task and the focused contracts it names.
+5. Run the task verification plus repository-wide gates required by the type of
+   change.
+6. Record results, blockers, and handoff details in the active task
+   conversation, issue, or pull request, never by annotating the sequence
+   document.
+
+An implementation PR may split independent subtasks within one active numbered
+task only with disjoint write sets and isolated worktrees. It must not use
+parallel work to bypass task dependencies.
 
 ## Validation Rules
 
@@ -242,5 +272,7 @@ Update docs when any of the following changes:
 - Service protocol behavior.
 - UI behavior or validation flow.
 - Adapter scope or verified external agent specs.
+- Product ontology, information architecture, truth semantics, or the stable
+  dependency order for the rebuild.
 
 Keep README focused on human navigation. Keep `AGENTS.md` focused on rules that every coding agent must follow. Keep detailed procedures in `docs/`.

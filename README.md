@@ -2,11 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Agent Copilot is a native macOS app for people who work with multiple coding
-agents. It brings local sessions, skill packages, configuration snapshots, and
-app AI provider usage signals into one focused desktop workspace, so you can
-inspect what is installed, search across local agent data, and manage common
-workflows without jumping between hidden folders and terminal output.
+Agent Copilot is a native macOS readiness and continuity control center for
+people who work with multiple coding agents. It helps you verify what each agent
+can effectively use in the selected project, understand what needs attention,
+and continue local work from where it stopped.
 
 ## Project Overview
 
@@ -16,9 +15,9 @@ workflows without jumping between hidden folders and terminal output.
   page for the current app download, release notes, and checksums.
 - **Supported agent families:** Claude Code, Codex, opencode, Pi, Hermes, and
   OpenClaw.
-- **Primary use cases:** skill catalog review, local session lookup,
-  configuration inspection, app AI provider usage review, project context
-  management, and skill package workflows.
+- **Primary use cases:** project/agent environment verification, effective
+  skill review, local session continuity, evidence-backed repair, and guarded
+  skill/config workflows.
 - **Distribution:** architecture-specific macOS ZIP downloads for Apple Silicon
   and Intel Macs.
 
@@ -26,17 +25,28 @@ workflows without jumping between hidden folders and terminal output.
 
 Agent Copilot is organized as a local-first desktop product:
 
-- The macOS app provides the main navigation, detail views, settings, and
-  workflow panels.
-- A local processing layer handles scanning, catalog updates, session previews,
-  configuration reads, and package-manager operations.
+- Bounded adapters and scanners read only documented local agent sources.
+- Rust product logic derives project health, skill state, session evidence,
+  and guarded actions through a typed service protocol.
+- The native macOS app presents project, skill, session, settings, and workflow
+  views without reimplementing adapter policy.
 - Local caches keep the app responsive while preserving explicit refresh
   controls for heavier scans.
+- Optional AI interprets redacted, revision-bound evidence after prompt preview
+  and explicit confirmation; it is never the source of environment truth or
+  write authority.
 - The repository includes focused fixtures and validation scripts so app,
   service, and documentation changes can be checked together before release.
 
 This split keeps the user experience native and fast while leaving the
 agent-specific parsing and workflow rules in shared project code.
+
+The durable product and interaction contract is
+[`docs/product-design.md`](docs/product-design.md). Engineering work for that
+contract follows the numeric dependency order in
+[`docs/implementation-sequence.md`](docs/implementation-sequence.md); execution
+state and validation results stay in the active task conversation, GitHub issue,
+or pull request.
 
 ## App Features
 
@@ -49,18 +59,26 @@ a generic source, and physical cache paths are hidden. Agent Copilot does not qu
 the Codex runtime for skill inventory. Existing Codex projects and configuration
 do not need to be renamed for Agent Copilot.
 
-- **Skills:** scan supported agent roots, filter by agent/scope/status, inspect
-  metadata, review findings, and enable or disable supported local skills.
-  Filesystem-discovered skills retain source and read-only ownership
-  information; installed Codex plugin copies are visible but never writable.
-- **Sessions:** browse local Claude Code, Codex, opencode, and Pi session
-  previews; search within supported history; open a selected session with
-  redacted message and skill-usage summaries.
+- **Project context:** select the workspace whose agent evidence, skills,
+  sessions, search, and config history should be inspected. Recent projects can
+  be removed individually or cleared without silently changing the active
+  project.
+- **Skills:** scan supported agent roots, distinguish installed, enabled, and
+  effective state, filter by agent/scope/status, inspect evidence and findings,
+  and toggle supported local skills. Filesystem-discovered skills retain source
+  and read-only ownership information; installed Codex plugin copies are
+  visible but never writable.
+- **Sessions:** browse local session previews for supported adapters, search
+  within bounded history, and inspect redacted user/final-agent messages,
+  timing, source coverage, and skill-usage summaries.
 - **Global search:** search from the app toolbar and jump directly to matching
   skills, sessions, configuration entries, or detail pages.
-- **Configuration:** review supported agent config snapshots, inspect current
-  files, preview rollback changes, and apply guarded config actions where the
-  app supports them.
+- **Readiness:** deterministic local evidence reports environment coverage;
+  task-specific preflight can rank matching effective skills without claiming
+  universal readiness when no task is supplied.
+- **Configuration and evidence:** review supported agent config snapshots,
+  inspect current files and diagnostics, preview rollback changes, and apply
+  guarded config actions where the app supports them.
 - **Skill Package Manager:** search, preview, install, update, remove, and
   create local skill packages through the local `npx skills` manager.
 - **Provider Observability:** view read-only usage summaries for AI requests
@@ -68,10 +86,9 @@ do not need to be renamed for Agent Copilot.
   latency, token estimates, and cost estimates over selectable date ranges. It
   does not report usage from provider profiles configured inside managed
   agents such as Claude Code, Codex, opencode, or Pi.
-- **Task Preflight:** paste a task and review local readiness, matching skills,
-  Agent Copilot AI provider context, and diagnostic notes before taking action.
-- **Project Context:** pin or clear the current project root so app lists,
-  searches, and previews stay aligned with the workspace you are reviewing.
+- **Optional contextual AI:** preview and explicitly confirm redacted Agent
+  Copilot requests that explain or rank existing local evidence. Output remains
+  untrusted and copy-only and cannot authorize writes or execute scripts.
 - **Appearance:** follow the system appearance automatically, or choose light or
   dark mode in Settings.
 
@@ -88,8 +105,8 @@ Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
 2. Unzip it and move `AgentCopilot.app` to `/Applications` or another local
    folder you control.
 3. Open `AgentCopilot.app`.
-4. Use the sidebar to review skills, sessions, config, Agent Copilot AI
-   provider activity, and settings.
+4. Select a project and review its local skills, sessions, configuration
+   evidence, Agent Copilot AI provider activity, and settings.
 
 If macOS blocks the first launch, open the app from Finder's context menu or
 approve it in **System Settings > Privacy & Security**.
@@ -145,6 +162,8 @@ pnpm check:privacy
 | File | Use |
 | --- | --- |
 | `docs/README.md` | Documentation index and ownership guide |
+| `docs/product-design.md` | Product promise, ontology, information architecture, truth model, and acceptance contract |
+| `docs/implementation-sequence.md` | Required engineering task order, boundaries, exit criteria, and verification |
 | `docs/architecture.md` | Repository architecture and code ownership |
 | `docs/data-model.md` | Persisted and transient data overview |
 | `docs/adapters/agent-adapters.md` | Supported agent roots, config behavior, and adapter scope |
@@ -161,6 +180,8 @@ pnpm check:privacy
 Contributions are welcome. For a smooth review:
 
 - Read `AGENTS.md` and the relevant docs before editing.
+- For product-rebuild work, follow `docs/implementation-sequence.md` in numeric
+  order and keep task state in the issue or pull request.
 - Keep changes scoped to the current app surface and existing architecture.
 - Update fixtures and `docs/service-protocol.md` when service behavior changes.
 - Run focused checks for small changes and `pnpm check:macos` for UI,
