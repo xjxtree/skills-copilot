@@ -437,7 +437,8 @@ const checks = [
       && /private func toggleSensitiveEditing\(\)[\s\S]*?if revealsSensitiveConfig \{[\s\S]*?revealsSensitiveConfig = false[\s\S]*?\} else \{[\s\S]*?isConfirmingConfigEdit = true[\s\S]*?\}/.test(files.agentConfigWorkspace)
       && /\.confirmationDialog\(\s*UIStrings\.agentConfigEditConfirmationTitle,[\s\S]*?isPresented:\s*\$isConfirmingConfigEdit[\s\S]*?Button\(UIStrings\.agentConfigShowSensitive,\s*role:\s*\.destructive\)[\s\S]*?revealsSensitiveConfig = true[\s\S]*?Text\(UIStrings\.agentConfigEditConfirmationMessage\)/.test(files.agentConfigWorkspace)
       && /if revealsSensitiveConfig \{[\s\S]*?JSONLineNumberedEditor\(text:\s*displayedDraft\)[\s\S]*?\} else \{[\s\S]*?JSONSyntaxHighlightedText\(content:\s*displayedDraft\.wrappedValue\)/.test(files.agentConfigWorkspace)
-      && /private func handleConfigDraftChange\(\)[\s\S]*?configConfirmationToApply = nil[\s\S]*?store\.clearSettingsFeedback\(\)/.test(files.agentConfigWorkspace)
+      && /private func handleConfigDraftChange\(\)[\s\S]*?invalidateConfigPreview\(\)[\s\S]*?store\.clearSettingsFeedback\(\)/.test(files.agentConfigWorkspace)
+      && /private func invalidateConfigPreview\(\)[\s\S]*?configPreviewTask\?\.cancel\(\)[\s\S]*?configConfirmationToApply = nil[\s\S]*?store\.invalidateConfigSavePreview\(\)/.test(files.agentConfigWorkspace)
       && !extractFunctionBody(files.agentConfigWorkspace, "handleConfigDraftChange").includes("Task.sleep")
       && !extractFunctionBody(files.agentConfigWorkspace, "handleConfigDraftChange").includes("saveClaudeSettings")
       && !extractFunctionBody(files.agentConfigWorkspace, "handleConfigDraftChange").includes("previewClaudeSettingsSave")
@@ -460,10 +461,10 @@ const checks = [
     label: "config draft stays local until preview and explicit confirmation",
     text: files.agentConfigWorkspace + "\n" + files.store,
     passed: /@State private var draft = ""/.test(files.agentConfigWorkspace)
-      && /private func hydrateConfigDraftFromStore\([\s\S]*?draft = store\.claudeSettings\?\.content \?\? ""[\s\S]*?configConfirmationToApply = nil/.test(files.agentConfigWorkspace)
-      && /\.onChange\(of:\s*store\.claudeSettings\)[\s\S]*?hydrateConfigDraftFromStore\(revealsSensitive:\s*revealsSensitiveConfig\)/.test(files.agentConfigWorkspace)
+      && /private func hydrateConfigDraftFromStore\([\s\S]*?invalidateConfigPreview\(\)[\s\S]*?let incoming = store\.claudeSettings\?\.content \?\? ""[\s\S]*?draft = incoming/.test(files.agentConfigWorkspace)
+      && /\.onChange\(of:\s*store\.claudeSettings\)[\s\S]*?reconcileConfigDraftFromStore\(revealsSensitive:\s*revealsSensitiveConfig\)/.test(files.agentConfigWorkspace)
       && /\.task\(id:\s*store\.selectedAgentConfigRefreshKey\)[\s\S]*?hydrateConfigDraftFromStore\(\)/.test(files.agentConfigWorkspace)
-      && /private func previewConfigSave\(\)[\s\S]*?previewClaudeSettingsSave\(content:\s*draft\)/.test(files.agentConfigWorkspace)
+      && /private func previewConfigSave\(\)[\s\S]*?let candidate = draft[\s\S]*?previewClaudeSettingsSave\(content:\s*candidate\)[\s\S]*?draft == candidate[\s\S]*?confirmation\?\.content == candidate/.test(files.agentConfigWorkspace)
       && /private func resetDraftFromStore\([\s\S]*?hydrateConfigDraftFromStore[\s\S]*?clearSettingsFeedback/.test(files.agentConfigWorkspace)
       && !/submitConfigAutosave|configAutosaveCoordinator|configAutosaveDraft/.test(files.agentConfigWorkspace + "\n" + files.store),
   },
