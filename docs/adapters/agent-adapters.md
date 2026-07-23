@@ -201,12 +201,28 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   each adapter's verified native global root; Codex manager installs use the
   shared user `.agents/skills` root rather than `$CODEX_HOME/skills`. Inventory revisions also include
   project `skills-lock.json` or global `~/.agents/.skill-lock.json`.
-- A relative local install source is resolved against the previewed manager
-  working directory and canonicalized before it is classified as local.
-  Credential-bearing standard or SCP-style URL forms with disallowed userinfo,
-  query, fragment, percent encoding, or credential material are rejected
-  without including the source in an error. The only accepted SCP username
-  form is the literal `git@host:path`.
+- Raw manager install accepts only credential-free remote repository sources:
+  an HTTPS repository URL, an SSH repository URL with no username or the
+  literal `git` username, the literal `git@host:path` SCP form, or GitHub
+  `owner/repository` shorthand. HTTP, `git://`, FTP, data, JavaScript, and
+  custom schemes are rejected. Every URL/SCP source requires a non-empty host
+  and repository path and rejects empty, `.` or `..` path segments and
+  backslashes. Absolute or existing relative paths,
+  all `file://` URLs (including percent-encoded spellings), and symlinks
+  resolving to local content are rejected before action creation with a
+  path-free instruction to import a reviewed ZIP into the Local Skill Library
+  and use guarded `skill.install`; no file URL is passed to the manager and
+  errors do not include its path.
+  GitHub `owner/repository` shorthand is normalized to an explicit
+  credential-free HTTPS URL before argv and confirmation are signed, preventing
+  a later same-name cwd path from changing source interpretation. The app does
+  not pass either a user local path or an app-owned snapshot path to `npx`,
+  because an unsandboxed same-UID process can reopen a pathname and pre/post
+  hashes cannot prove the bytes it consumed. URL/SCP forms with disallowed
+  userinfo, query, fragment, percent encoding, or credential material are
+  rejected without including the source in an error. The only accepted SSH
+  username is the literal `git`; the only accepted SCP username form is the
+  literal `git@host:path`.
 - A confirmed search preserves every row returned by the manager, but the current CLI does
   not prove a remote total or advertise a continuation token. Responses must
   therefore distinguish returned rows from an unknown, source-limited total;

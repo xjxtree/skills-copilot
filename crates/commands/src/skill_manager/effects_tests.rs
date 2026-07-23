@@ -381,14 +381,8 @@ fn every_raw_npx_mutation_requires_network_permission_before_app_data_bootstrap(
     ));
     let home = root.join("home");
     let project = root.join("project");
-    let local_source = project.join("local-source");
     fs::create_dir_all(&home).expect("home");
-    fs::create_dir_all(&local_source).expect("local source");
-    fs::write(
-        local_source.join("SKILL.md"),
-        "---\nname: local-source\ndescription: fixture\n---\n",
-    )
-    .expect("local source skill");
+    fs::create_dir_all(&project).expect("project");
     let ctx = AdapterContext {
         user_home: home,
         project_root: Some(project.clone()),
@@ -398,8 +392,8 @@ fn every_raw_npx_mutation_requires_network_permission_before_app_data_bootstrap(
 
     let install_app_data = root.join("install-app-data");
     let install_params = SkillManagerInstallParams {
-        source: "local-source".to_string(),
-        skills: vec!["local-source".to_string()],
+        source: "owner/repository".to_string(),
+        skills: vec!["remote-source".to_string()],
         agents: vec!["codex".to_string()],
         scope: Some("project".to_string()),
         distribution: None,

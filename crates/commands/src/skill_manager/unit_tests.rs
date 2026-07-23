@@ -929,42 +929,175 @@ fn every_manager_spawn_action_binds_and_rejects_a_stale_executable() {
 }
 
 #[test]
-fn install_preview_resolves_relative_local_sources_from_the_manager_cwd() {
+fn install_preview_rejects_local_sources_for_every_scope_and_supported_agent_without_echo() {
     crate::initialize_action_preview_secret_for_test([0xA5; 32])
         .expect("initialize action preview test secret");
     let temp =
         std::env::temp_dir().join(format!("skill-manager-local-source-{}", std::process::id()));
+    let home = temp.join("home");
     let project = temp.join("project");
     let local_source = project.join("local-source");
+    fs::create_dir_all(&home).expect("create home");
     fs::create_dir_all(&local_source).expect("create local source");
     fs::write(local_source.join("SKILL.md"), "# Local").expect("write local source");
+    fs::create_dir_all(home.join("local-source")).expect("create global relative local source");
+    fs::write(home.join("local-source/SKILL.md"), "# Local")
+        .expect("write global relative local source");
     let ctx = AdapterContext {
-        user_home: temp.join("home"),
+        user_home: home,
         project_cwd: Some(project.clone()),
         project_root: Some(project.clone()),
         extra_roots: Vec::new(),
     };
-    let params = SkillManagerInstallParams {
-        source: "local-source".to_string(),
-        skills: vec!["local-source".to_string()],
-        agents: vec!["codex".to_string()],
+    let file_url = url::Url::from_file_path(&local_source)
+        .expect("local file URL")
+        .to_string();
+    let sources = [
+        "local-source".to_string(),
+        local_source.to_string_lossy().to_string(),
+        file_url,
+    ];
+    for scope in ["project", "global"] {
+        for agent in SUPPORTED_MANAGER_AGENTS {
+            for source in &sources {
+                let error = build_install_preview(
+                    &ctx,
+                    &SkillManagerInstallParams {
+                        source: source.clone(),
+                        skills: vec!["local-source".to_string()],
+                        agents: vec![agent.to_string()],
+                        scope: Some(scope.to_string()),
+                        distribution: None,
+                        network_allowed: true,
+                        confirmed: false,
+                        preview_token: None,
+                        action_reference: None,
+                    },
+                )
+                .expect_err("raw manager local install must fail before preview");
+                assert!(matches!(
+                    error,
+                    CommandError::LocalSkillManagerSourceUnsupported
+                ));
+                assert!(!error
+                    .to_string()
+                    .contains(&local_source.to_string_lossy().to_string()));
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+#[cfg(unix)]
+fn install_preview_rejects_symlinked_local_source_without_echo() {
+    use std::os::unix::fs::symlink;
+
+    let temp = std::env::temp_dir().join(format!(
+        "skill-manager-local-symlink-{}",
+        std::process::id()
+    ));
+    let project = temp.join("project");
+    let private_source = temp.join("private-source-name-must-not-leak");
+    let source_link = project.join("source-link");
+    fs::create_dir_all(&project).expect("create project");
+    fs::create_dir_all(&private_source).expect("create local source");
+    fs::write(private_source.join("SKILL.md"), "# Local").expect("write local source");
+    symlink(&private_source, &source_link).expect("create source symlink");
+    let ctx = AdapterContext {
+        user_home: temp.join("home"),
+        project_cwd: Some(project.clone()),
+        project_root: Some(project),
+        extra_roots: Vec::new(),
+    };
+    let error = build_install_preview(
+        &ctx,
+        &SkillManagerInstallParams {
+            source: "source-link".to_string(),
+            skills: vec!["local-source".to_string()],
+            agents: vec!["codex".to_string()],
+            scope: Some("project".to_string()),
+            distribution: None,
+            network_allowed: true,
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect_err("symlinked local source must be rejected");
+    assert!(matches!(
+        error,
+        CommandError::LocalSkillManagerSourceUnsupported
+    ));
+    assert!(!error
+        .to_string()
+        .contains("private-source-name-must-not-leak"));
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn remote_shorthand_is_normalized_before_signing_and_local_shadow_fails_before_bootstrap() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
+    let temp = std::env::temp_dir().join(format!(
+        "skill-manager-remote-shadow-{}",
+        std::process::id()
+    ));
+    let home = temp.join("home");
+    let project = temp.join("project");
+    let app_data = temp.join("app-data");
+    fs::create_dir_all(&home).expect("create home");
+    fs::create_dir_all(&project).expect("create project");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_cwd: Some(project.clone()),
+        project_root: Some(project.clone()),
+        extra_roots: Vec::new(),
+    };
+    let base = SkillManagerInstallParams {
+        source: "vercel-labs/agent-skills".to_string(),
+        skills: vec!["frontend-design".to_string()],
+        agents: SUPPORTED_MANAGER_AGENTS
+            .iter()
+            .map(|agent| (*agent).to_string())
+            .collect(),
         scope: Some("project".to_string()),
         distribution: None,
-        network_allowed: false,
+        network_allowed: true,
         confirmed: false,
         preview_token: None,
         action_reference: None,
     };
+    let preview = build_install_preview(&ctx, &base).expect("remote preview");
+    assert_eq!(
+        preview
+            .command
+            .windows(2)
+            .find(|window| window[0] == "add")
+            .map(|window| window[1].as_str()),
+        Some("https://github.com/vercel-labs/agent-skills.git")
+    );
+    assert_eq!(
+        preview.source.as_deref(),
+        Some("https://github.com/vercel-labs/agent-skills.git")
+    );
 
-    let preview = build_install_preview(&ctx, &params).expect("local preview");
-    let canonical_source = local_source.canonicalize().expect("canonical local source");
-
-    assert!(preview.network_required);
-    assert!(!preview.network_allowed);
-    assert!(preview.preconditions.iter().any(|precondition| {
-        precondition.kind == ActionPreconditionKind::SourceFile
-            && Path::new(&precondition.target_id) == canonical_source
-    }));
+    let local_shadow = project.join("vercel-labs/agent-skills");
+    fs::create_dir_all(&local_shadow).expect("create local shadow");
+    fs::write(local_shadow.join("SKILL.md"), "# Shadow").expect("write local shadow");
+    let confirmed = SkillManagerInstallParams {
+        confirmed: true,
+        preview_token: Some(preview.preview_token.clone()),
+        action_reference: preview.action.as_ref().map(ActionReference::from),
+        ..base
+    };
+    let error = apply_install_with_manager(&app_data, &ctx, &confirmed)
+        .expect_err("local shadow must fail before app-data bootstrap");
+    assert!(matches!(
+        error,
+        CommandError::LocalSkillManagerSourceUnsupported
+    ));
+    assert!(!app_data.exists());
     let _ = fs::remove_dir_all(temp);
 }
 
@@ -1007,6 +1140,180 @@ fn install_preview_rejects_credential_bearing_source_urls_without_echoing_them()
     assert!(!message.contains("user:secret"));
     assert!(!message.contains("secret"));
     assert!(!message.contains("token=abc"));
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn install_preview_accepts_only_explicit_vcs_urls_and_rejects_unsafe_schemes_and_paths_without_echo(
+) {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
+    let temp = std::env::temp_dir().join(format!(
+        "skill-manager-vcs-source-matrix-{}",
+        std::process::id()
+    ));
+    let project = temp.join("project");
+    fs::create_dir_all(&project).expect("create project");
+    let ctx = AdapterContext {
+        user_home: temp.join("home"),
+        project_cwd: Some(project.clone()),
+        project_root: Some(project),
+        extra_roots: Vec::new(),
+    };
+
+    for accepted in [
+        "https://example.com/owner/repository.git",
+        "ssh://git@example.com/owner/repository.git",
+        "git@example.com:owner/repository.git",
+    ] {
+        let preview = build_install_preview(
+            &ctx,
+            &SkillManagerInstallParams {
+                source: accepted.to_string(),
+                skills: vec!["selected".to_string()],
+                agents: vec!["codex".to_string()],
+                scope: Some("project".to_string()),
+                distribution: None,
+                network_allowed: true,
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect("explicit VCS source should be accepted");
+        assert_eq!(preview.source.as_deref(), Some(accepted));
+    }
+
+    let rejected = [
+        ("http://http-marker.example/owner/repo.git", "http-marker"),
+        ("ftp://ftp-marker.example/owner/repo.git", "ftp-marker"),
+        ("git://git-marker.example/owner/repo.git", "git-marker"),
+        ("data://data-marker.example/owner/repo.git", "data-marker"),
+        (
+            "javascript://javascript-marker.example/owner/repo.git",
+            "javascript-marker",
+        ),
+        (
+            "helper+custom://custom-marker.example/owner/repo.git",
+            "custom-marker",
+        ),
+        ("https:///empty-host-marker/repo.git", "empty-host-marker"),
+        ("https://no-path-marker.example", "no-path-marker"),
+        (
+            "https://example.com/owner/../url-traversal-marker.git",
+            "url-traversal-marker",
+        ),
+        (
+            "https://example.com/owner\\url-backslash-marker.git",
+            "url-backslash-marker",
+        ),
+        (
+            "ssh://user-marker@example.com/owner/repo.git",
+            "user-marker",
+        ),
+        (
+            "ssh://git@example.com/owner/../ssh-traversal-marker.git",
+            "ssh-traversal-marker",
+        ),
+        (
+            "ssh:///owner/ssh-empty-host-marker.git",
+            "ssh-empty-host-marker",
+        ),
+        (
+            "git@example.com:owner/../scp-traversal-marker.git",
+            "scp-traversal-marker",
+        ),
+        (
+            "git@example.com:owner\\scp-backslash-marker.git",
+            "scp-backslash-marker",
+        ),
+        (
+            "git@scp-empty-path-marker.example:",
+            "scp-empty-path-marker",
+        ),
+    ];
+    for (source, marker) in rejected {
+        let error = build_install_preview(
+            &ctx,
+            &SkillManagerInstallParams {
+                source: source.to_string(),
+                skills: vec!["selected".to_string()],
+                agents: vec!["codex".to_string()],
+                scope: Some("project".to_string()),
+                distribution: None,
+                network_allowed: true,
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect_err("unsafe remote source must fail before preview construction");
+        assert!(matches!(error, CommandError::InvalidSkillManagerRequest(_)));
+        assert!(!error.to_string().contains(source));
+        assert!(!error.to_string().contains(marker));
+    }
+    for encoded_file_source in [
+        "file:///tmp/file-url-marker%20secret/SKILL.md",
+        "FILE:///tmp/uppercase-file-url-marker%20secret/SKILL.md",
+    ] {
+        let error = build_install_preview(
+            &ctx,
+            &SkillManagerInstallParams {
+                source: encoded_file_source.to_string(),
+                skills: vec!["selected".to_string()],
+                agents: vec!["codex".to_string()],
+                scope: Some("project".to_string()),
+                distribution: None,
+                network_allowed: true,
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect_err("every file URL must be kept out of the external manager");
+        assert!(matches!(
+            error,
+            CommandError::LocalSkillManagerSourceUnsupported
+        ));
+        assert!(!error.to_string().contains(encoded_file_source));
+        assert!(!error.to_string().contains("file-url-marker"));
+    }
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn install_preview_rejects_empty_repository_after_git_suffix_normalization() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
+    let temp = std::env::temp_dir().join(format!(
+        "skill-manager-empty-repository-{}",
+        std::process::id()
+    ));
+    let project = temp.join("project");
+    fs::create_dir_all(&project).expect("create project");
+    let ctx = AdapterContext {
+        user_home: temp.join("home"),
+        project_cwd: Some(project.clone()),
+        project_root: Some(project),
+        extra_roots: Vec::new(),
+    };
+    let error = build_install_preview(
+        &ctx,
+        &SkillManagerInstallParams {
+            source: "owner/.git".to_string(),
+            skills: vec!["skill".to_string()],
+            agents: vec!["codex".to_string()],
+            scope: Some("project".to_string()),
+            distribution: None,
+            network_allowed: true,
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect_err("empty normalized repository must be rejected");
+    assert!(matches!(error, CommandError::InvalidSkillManagerRequest(_)));
+    assert!(!error.to_string().contains("owner/.git"));
     let _ = fs::remove_dir_all(temp);
 }
 

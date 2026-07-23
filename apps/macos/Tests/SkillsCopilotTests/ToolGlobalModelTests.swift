@@ -6,6 +6,7 @@ struct ToolGlobalModelTests {
         try toolGlobalScopeDisplaysAsReadOnlyPreview()
         try piNativeSkillsRequireGuardedToggleCapabilityButDoNotDisplayAsReadOnly()
         try piInstallTargetRemainsBlockedEvenIfCapabilityPayloadClaimsSupport()
+        try verifiedDirectInstallTargetsCoverAllSupportedAgents()
         try backendInstallPreviewDecodesAsConfirmable()
     }
 
@@ -83,6 +84,31 @@ struct ToolGlobalModelTests {
             ToolInstallTarget.supportedTargets(from: capabilities),
             [],
             "Pi install must not become selectable from adapter capability payloads."
+        )
+    }
+
+    private func verifiedDirectInstallTargetsCoverAllSupportedAgents() throws {
+        let agents = ["claude-code", "codex", "opencode", "pi", "hermes", "openclaw"]
+        let payload = try JSONSerialization.data(withJSONObject: agents.map { agent in
+            [
+                "agent": agent,
+                "display_name": agent,
+                "status": "verified",
+                "scan": ["supported": true, "status": "verified", "reason": NSNull()],
+                "project_scan": ["supported": true, "status": "verified", "reason": NSNull()],
+                "config_toggle": ["supported": false, "status": "blocked", "reason": NSNull()],
+                "config_snapshot": ["supported": false, "status": "blocked", "reason": NSNull()],
+                "install": ["supported": true, "status": "verified", "reason": NSNull()],
+                "writable": ["supported": true, "status": "verified", "reason": NSNull()],
+                "blockers": [],
+            ] as [String: Any]
+        })
+        let capabilities = try JSONDecoder().decode([AdapterCapabilityRecord].self, from: payload)
+
+        try expectEqual(
+            ToolInstallTarget.supportedTargets(from: capabilities).map(\.rawValue),
+            agents,
+            "Guarded local-library install targets should include every verified supported agent."
         )
     }
 

@@ -1668,6 +1668,9 @@ impl ServiceError {
             Self::Command(skills_copilot_commands::CommandError::NoApplicableAction(_)) => {
                 "no_applicable_action"
             }
+            Self::Command(
+                skills_copilot_commands::CommandError::LocalSkillManagerSourceUnsupported,
+            ) => "local_source_requires_guarded_import",
             Self::Command(skills_copilot_commands::CommandError::VerificationFailed) => {
                 "verification_failed"
             }

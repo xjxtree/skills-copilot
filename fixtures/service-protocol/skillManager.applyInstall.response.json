@@ -56,7 +56,7 @@
         "--yes",
         "skills@1.5.20",
         "add",
-        "vercel-labs/agent-skills",
+        "https://github.com/vercel-labs/agent-skills.git",
         "--skill",
         "frontend-design",
         "--full-depth",
@@ -180,7 +180,7 @@
         "The external manager writes canonical skill files and agent symlinks/copies for selected agents.",
         "This action executes the pinned external manager package skills@1.5.20 through /usr/local/bin/npx unsandboxed with the user's filesystem authority; it may read HOME files, and the executable/runtime is an explicit external-code trust boundary."
       ],
-      "source": "vercel-labs/agent-skills",
+      "source": "https://github.com/vercel-labs/agent-skills.git",
       "skills": [
         "frontend-design"
       ]

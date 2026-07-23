@@ -27,6 +27,14 @@ fn partial_effect_errors_expose_structured_non_retryable_cleanup_details() {
     );
 }
 
+#[test]
+fn raw_manager_local_source_rejection_has_a_stable_path_free_error_code() {
+    let error = ServiceError::Command(CommandError::LocalSkillManagerSourceUnsupported);
+    assert_eq!(error.code(), "local_source_requires_guarded_import");
+    assert!(!error.to_string().contains('/'));
+    assert!(error.to_string().contains("skill.install"));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TreeEntry {
     Directory,

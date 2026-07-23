@@ -66,6 +66,10 @@ pub enum CommandError {
     NoApplicableAction(String),
     #[error("skill manager unavailable: {0}")]
     SkillManagerUnavailable(String),
+    #[error(
+        "local sources cannot be passed to the external skill manager; import a reviewed ZIP into the Local Skill Library, then use the guarded skill.install action"
+    )]
+    LocalSkillManagerSourceUnsupported,
     #[error("invalid skill manager request: {0}")]
     InvalidSkillManagerRequest(String),
     #[error("skill manager command failed: {0}")]

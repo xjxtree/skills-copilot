@@ -31,10 +31,10 @@ This file describes security and privacy boundaries.
 
 - No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
   outbound network calls.
-- Every raw `npx skills` search/install/remove/update/local-create invocation is
-  treated as potentially network-backed because `npx` may resolve or download
-  the manager package even when the skill source or requested operation is
-  local. Each operation first produces a local-only signed preview and starts
+- Every admitted raw `npx skills` search/remote-repository-install/remove/update/
+  local-create invocation is treated as network-backed because `npx` may
+  resolve or download the manager package. Each operation first produces a
+  local-only signed preview and starts
   the external process only after the typed request explicitly sets
   `network_allowed=true` and the user separately confirms the disclosed
   destination, scope, and affected targets. A false or omitted network
@@ -113,7 +113,8 @@ confirmation, and network posture.
   once from a bounded, no-follow regular-file descriptor. Symlinks,
   non-regular files, oversized inputs, and replacement races fail closed.
 - Batch toggles, project-context applies, catalog scans, `skill.install`,
-  confirmed Skill Manager search, install/remove/update/local-create, local
+  confirmed Skill Manager search, remote-repository-install/remove/update/
+  local-create, local
   archive import/update, and app-owned local deletion share one
   cross-sidecar mutation lock on the app-data owner directory; the lock creates
   no persistent lock file. If a confirmed manager apply is the first durable
@@ -195,7 +196,7 @@ confirmation, and network posture.
   inspectable.
 - The lifecycle currently covers single and batch agent-config toggles through
   `batch.*`, all project-context mutations, `skill.install`, confirmed Skill
-  Manager search, install/remove/update/local create, local archive
+  Manager search, remote-repository install/remove/update/local create, local archive
   import/update,
   physical deletion of an eligible app-owned local source, explicit Claude
   settings saves, config snapshot rollback, provider profile save/delete,
@@ -341,10 +342,27 @@ confirmation, and network posture.
   sandbox: the confirmed external npm package still executes as the user with
   the real `HOME` and user filesystem access, so it is an explicit external
   code trust boundary and could deliberately read files.
-  Relative local install sources resolve and canonicalize against the displayed
-  manager working directory. Standard and SCP-style sources containing
-  userinfo other than the literal `git` SCP form, query, fragment, percent
-  encoding, or credential material are rejected without echo, and
+  Raw manager install accepts only credential-free remote repository sources:
+  HTTPS URLs, SSH URLs with no username or the literal `git` username, the
+  literal `git@host:path` SCP form, or GitHub `owner/repository` shorthand.
+  HTTP, `git://`, FTP, data, JavaScript, and custom schemes are rejected.
+  Every URL/SCP source requires a non-empty host and repository path and
+  rejects empty, `.` or `..` path segments and backslashes. An absolute or
+  existing relative path, any `file://` URL (including percent-encoded
+  spellings), or symlink resolving to local content is rejected before a
+  signed preview is created, with a path-free
+  `local_source_requires_guarded_import` error that does not include the URL
+  path. No file URL reaches the manager. GitHub `owner/repository`
+  shorthand is normalized to an explicit credential-free HTTPS URL before the
+  command is signed, so creating a same-named relative path after preview
+  cannot change the child's source interpretation. Local content instead
+  enters through the bounded Local Skill Library ZIP import and is distributed
+  by the no-process, owner-relative `skill.install` lifecycle. No app-owned
+  snapshot is handed to `npx`, and the app does not claim to prove bytes read
+  by an unsandboxed external process from a user-controlled local path.
+  URL/SCP sources containing disallowed userinfo, query, fragment, percent
+  encoding, or credential material are rejected without echo. Only the
+  literal `git` SSH username and `git@host:path` SCP form are accepted, and
   credential-shaped URLs in child output are replaced as a whole before
   parsing or returning diagnostics.
   The displayed manager working directory must already exist. On Unix it is

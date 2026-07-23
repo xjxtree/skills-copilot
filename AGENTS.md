@@ -56,7 +56,8 @@ coding agents working in this repository.
 - Network-backed installs outside the `skillManager.*` service path, scripts,
   credentials, cloud sync, telemetry, uncontrolled fetch, broad config writes,
   and release automation require a new scoped safety review. Skill Manager
-  raw `npx --yes skills@1.5.20` search/install/remove/update/local-create
+  raw `npx --yes skills@1.5.20`
+  search/remote-repository-install/remove/update/local-create
   operations may use the scoped external manager CLI path with command preview, target visibility,
   telemetry-off env, redaction, explicit network permission, and explicit
   confirmation.

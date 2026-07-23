@@ -37,7 +37,8 @@ verification.
   explicit confirmation.
 - Skill scripts remain default-denied.
 - Skill Manager may invoke supported external manager CLIs for confirmed
-  search, install, remove, update, and local template creation when the request
+  search, remote-repository install, remove, update, and local template creation
+  when the request
   exposes command preview, target agents, network posture, telemetry-off env,
   and confirmation state. Calls must use argv arrays, not shell strings.
 - App-local metadata writes must be redacted.
@@ -83,7 +84,9 @@ that clients may infer for arbitrary mutations.
   `unknown_action_reference`,
   `stale_action_reference`, `action_target_mismatch`,
   `confirmation_required`, `action_token_unavailable`, and
-  `verification_failed`. The last code means execution completed but the
+  `verification_failed`. Raw manager local-source input is rejected earlier as
+  `local_source_requires_guarded_import`. `verification_failed` means
+  execution completed but the
   required semantic postcondition could not be proved; it is never reported as
   a successful apply. A mutation that may have crossed its external effect
   boundary returns `partial_effect` with structured `details` containing
@@ -97,7 +100,7 @@ that clients may infer for arbitrary mutations.
   apply paths retain the writable migration boundary.
 - The action-reference contract currently covers single and multi-skill UI
   toggles through `batch.*`, `skill.install`, confirmed Skill Manager search
-  and install/remove/update/local-create/local-archive-import/
+  and remote-repository-install/remove/update/local-create/local-archive-import/
   local-archive-update, eligible app-owned local deletion, explicit Claude
   settings saves, config snapshot rollback, provider profile save/delete,
   provider connection tests, and confirmed LLM prompt sends.
@@ -680,10 +683,10 @@ requires another inspection and preview.
   the lock. A locked stale result therefore precedes SQLite creation. An
   unverified failure after writable catalog initialization crosses its local
   effect boundary is returned as a non-retryable partial outcome.
-- Every raw `npx --yes skills@1.5.20`
-  search/install/remove/update/local-create operation is
-  `network_required=true`, including local-source install and local template
-  creation, because `npx` may resolve or download the manager package before
+- Every admitted raw `npx --yes skills@1.5.20`
+  search/remote-repository-install/remove/update/local-create operation is
+  `network_required=true`, including local template creation, because `npx`
+  may resolve or download the manager package before
   dispatching the subcommand. Its typed request must explicitly set
   `network_allowed=true`; false or omitted permission is rejected before
   app-data owner bootstrap, catalog access, target writes, or process creation.
@@ -726,11 +729,31 @@ requires another inspection and preview.
   every post-create early return explicitly finalizes the capture and combines
   cleanup failure with its original error. Destructor cleanup is only a
   no-misdelete best-effort unwind fallback.
-- Relative local install sources resolve against the previewed manager `cwd`,
-  then require canonical regular-file or directory metadata. URL sources with
-  userinfo, query, or fragment data are rejected without echo. Credential-shaped
-  URLs in manager output are replaced before parsing, diagnostics, or response
-  serialization.
+- `skillManager.previewInstall` accepts only credential-free remote repository
+  sources for the raw manager path: HTTPS URLs, SSH URLs with no username or
+  the literal `git` username, the literal `git@host:path` SCP form, or GitHub
+  `owner/repository` shorthand. HTTP, `git://`, FTP, data, JavaScript, and
+  custom schemes are rejected. URL/SCP sources require a non-empty host and
+  repository path and reject empty, `.` or `..` path segments and backslashes.
+  Absolute or existing relative paths, all `file://` URLs including
+  percent-encoded spellings, and symlinks resolving to local content fail
+  before action creation with the
+  stable path-free error `local_source_requires_guarded_import`; no file URL
+  reaches the manager. A GitHub
+  `owner/repository` shorthand is converted to an explicit credential-free
+  HTTPS URL before argv, source revision, and token are created; a later
+  same-name path in the retained manager `cwd` therefore cannot substitute
+  local bytes. Local content is admitted only by the bounded
+  `skillManager.previewLocalArchiveImport` /
+  `skillManager.applyLocalArchiveImport` lifecycle, then distributed from the
+  locked app-data owner's `tool-global/skills/<skill>/SKILL.md` namespace by
+  the no-process `skill.install` action. The protocol intentionally does not
+  pass a user-controlled local source or an app snapshot to `npx`, because
+  pre/post hashing cannot prove which bytes an unsandboxed external process
+  opened. URL sources with disallowed userinfo, query, fragment, percent
+  encoding, or credential data are rejected without echo; only the literal
+  `git` SSH username is accepted. Credential-shaped URLs in manager output are
+  replaced before parsing, diagnostics, or response serialization.
 - A confirmed `skillManager.applySearch` returns every row emitted by the
   invoked manager and flattens list metadata into the response. Because the current manager output
   does not advertise an authoritative total or continuation token, search uses

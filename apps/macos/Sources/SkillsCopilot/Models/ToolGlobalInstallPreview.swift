@@ -4,6 +4,9 @@ enum ToolInstallTarget: String, Codable, CaseIterable, Identifiable, Hashable {
     case claudeCode = "claude-code"
     case codex
     case opencode
+    case pi
+    case hermes
+    case openclaw
 
     var id: String { rawValue }
 
@@ -16,7 +19,10 @@ enum ToolInstallTarget: String, Codable, CaseIterable, Identifiable, Hashable {
             return allCases
         }
         return capabilities
-            .filter { $0.install.supported }
+            .filter {
+                $0.install.supported
+                    && $0.install.status.lowercased().hasPrefix("verified")
+            }
             .compactMap { ToolInstallTarget(rawValue: $0.agent) }
     }
 }

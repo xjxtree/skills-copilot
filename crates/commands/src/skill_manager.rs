@@ -36,6 +36,7 @@ mod archive;
 mod commit_outcome;
 mod composite_remove;
 mod discovery;
+mod install_source;
 mod machine_capture;
 mod manager_runtime;
 pub use archive::{
@@ -57,6 +58,10 @@ use composite_remove::{
 pub use discovery::{
     apply_search_skills_with_manager, list_installed_skills_from_projection,
     preview_search_skills_with_manager,
+};
+use install_source::{
+    looks_like_scp_git_source, normalized_remote_manager_install_source, resolve_manager_source,
+    ManagerSourceResolution,
 };
 #[cfg(test)]
 use machine_capture::{
@@ -2152,11 +2157,11 @@ fn build_install_preview(
         ));
     }
     let cwd = manager_cwd(ctx, params.scope.as_deref())?;
-    resolve_manager_source(source, &cwd)?;
+    let command_source = normalized_remote_manager_install_source(source, &cwd)?;
     let mut args = vec![
         SKILLS_CLI_BINARY.to_string(),
         "add".to_string(),
-        source.to_string(),
+        command_source.clone(),
     ];
     let skill_names = normalized_skill_names(&params.skills)?;
     if skill_names.is_empty() {
@@ -2196,7 +2201,7 @@ fn build_install_preview(
                 agents.len()
             ),
             risks: install_risks(source, true),
-            source: Some(source.to_string()),
+            source: Some(command_source),
             skills: skill_names,
             accepted_revision: None,
         },
@@ -3872,14 +3877,10 @@ fn manager_source_precondition(
     else {
         return Ok(None);
     };
-    let ManagerSourceResolution::Local(source_path) = resolve_manager_source(source, cwd)? else {
-        return Ok(None);
-    };
-    Ok(Some(ActionPrecondition {
-        kind: ActionPreconditionKind::SourceFile,
-        target_id: source_path.to_string_lossy().to_string(),
-        expected_revision: manager_target_revision(&source_path)?,
-    }))
+    match resolve_manager_source(source, cwd)? {
+        ManagerSourceResolution::Network => Ok(None),
+        ManagerSourceResolution::Local(_) => Err(CommandError::LocalSkillManagerSourceUnsupported),
+    }
 }
 
 fn validate_manager_preconditions(
@@ -4353,126 +4354,6 @@ fn manager_action_agents(command: &[String]) -> Vec<AgentId> {
     agents.sort_by_key(|agent| agent.as_str());
     agents.dedup();
     agents
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-enum ManagerSourceResolution {
-    Local(PathBuf),
-    Network,
-}
-
-fn resolve_manager_source(
-    source: &str,
-    manager_cwd: &Path,
-) -> Result<ManagerSourceResolution, CommandError> {
-    let source = source.trim();
-    if source.contains('\0') {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "skill manager source contains an invalid character".to_string(),
-        ));
-    }
-    if source.contains("://") {
-        if source.contains('%') {
-            return Err(CommandError::InvalidSkillManagerRequest(
-                "skill manager source URLs cannot contain percent-encoded authority or credential data"
-                    .to_string(),
-            ));
-        }
-        let url = url::Url::parse(source).map_err(|_| {
-            CommandError::InvalidSkillManagerRequest(
-                "skill manager source URL is invalid".to_string(),
-            )
-        })?;
-        if !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(CommandError::InvalidSkillManagerRequest(
-                "skill manager source URLs cannot contain userinfo, query, or fragment data"
-                    .to_string(),
-            ));
-        }
-        if url.scheme() != "file" {
-            return Ok(ManagerSourceResolution::Network);
-        }
-        let path = url.to_file_path().map_err(|_| {
-            CommandError::InvalidSkillManagerRequest(
-                "skill manager file URL is not a valid local path".to_string(),
-            )
-        })?;
-        return resolve_local_manager_source(path);
-    }
-
-    if looks_like_scp_git_source(source) {
-        if source.contains('?')
-            || source.contains('#')
-            || source.contains('%')
-            || !source.starts_with("git@")
-        {
-            return Err(CommandError::InvalidSkillManagerRequest(
-                "skill manager scp sources must use credential-free git@host:path syntax"
-                    .to_string(),
-            ));
-        }
-        return Ok(ManagerSourceResolution::Network);
-    }
-
-    let path = PathBuf::from(source);
-    let candidate = if path.is_absolute() {
-        path
-    } else {
-        manager_cwd.join(path)
-    };
-    if candidate.exists() {
-        return resolve_local_manager_source(candidate);
-    }
-    if source.starts_with('.') || source.starts_with('/') {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local skill manager source does not exist at the selected manager scope".to_string(),
-        ));
-    }
-    Ok(ManagerSourceResolution::Network)
-}
-
-fn looks_like_scp_git_source(source: &str) -> bool {
-    if source.contains("://") {
-        return false;
-    }
-    let Some(colon) = source.find(':') else {
-        return false;
-    };
-    if colon == 0 || colon + 1 >= source.len() {
-        return false;
-    }
-    let authority = &source[..colon];
-    let path = &source[colon + 1..];
-    let valid_authority = authority
-        .split_once('@')
-        .map_or(!authority.is_empty(), |(user, host)| {
-            !user.is_empty() && !host.is_empty() && !host.contains('@')
-        });
-    valid_authority
-        && !authority.contains('/')
-        && !authority.contains('\\')
-        && !authority.chars().any(char::is_whitespace)
-        && !path.chars().any(char::is_whitespace)
-        && colon + 1 < source.len()
-}
-
-fn resolve_local_manager_source(path: PathBuf) -> Result<ManagerSourceResolution, CommandError> {
-    let canonical = path.canonicalize().map_err(|_| {
-        CommandError::InvalidSkillManagerRequest(
-            "local skill manager source cannot be resolved".to_string(),
-        )
-    })?;
-    let metadata = fs::metadata(&canonical)?;
-    if !metadata.is_file() && !metadata.is_dir() {
-        return Err(CommandError::InvalidSkillManagerRequest(
-            "local skill manager source is not a regular file or directory".to_string(),
-        ));
-    }
-    Ok(ManagerSourceResolution::Local(canonical))
 }
 
 fn install_risks(source: &str, network_required: bool) -> Vec<String> {
