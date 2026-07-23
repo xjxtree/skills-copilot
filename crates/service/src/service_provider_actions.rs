@@ -9,11 +9,57 @@ use skills_copilot_core::{
     ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture, ActionReadbackDomain,
     ActionTargetKind, ActionTargetRef,
 };
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+
+#[cfg(test)]
+use std::sync::{LazyLock, Mutex};
 
 const PROVIDER_ACTION_STATE_DOMAIN: &str = "agent-copilot/provider-action-state/v1";
 const PROVIDER_ACTION_STATE_VERSION: u32 = 1;
 const PROVIDER_ACTION_STATE_MAX_BYTES: usize = 4 * 1024;
+const PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES: usize = 256;
+const PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_PREFIX: &str = ".provider-action-state.json.";
+const PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX: &str = ".tmp";
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum TestProviderActionStateFault {
+    OutcomeDirectorySync,
+}
+
+#[cfg(test)]
+static TEST_PROVIDER_ACTION_STATE_FAULTS: LazyLock<
+    Mutex<Vec<(PathBuf, TestProviderActionStateFault)>>,
+> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(test)]
+pub(crate) fn install_test_provider_action_state_fault(
+    app_data_dir: &Path,
+    fault: TestProviderActionStateFault,
+) {
+    TEST_PROVIDER_ACTION_STATE_FAULTS
+        .lock()
+        .expect("lock provider action-state faults")
+        .push((app_data_dir.to_path_buf(), fault));
+}
+
+#[cfg(test)]
+fn take_test_provider_action_state_fault(
+    app_data_dir: &Path,
+    fault: TestProviderActionStateFault,
+) -> bool {
+    let mut faults = TEST_PROVIDER_ACTION_STATE_FAULTS
+        .lock()
+        .expect("lock provider action-state faults");
+    let Some(index) = faults
+        .iter()
+        .position(|(path, candidate)| path == app_data_dir && *candidate == fault)
+    else {
+        return false;
+    };
+    faults.swap_remove(index);
+    true
+}
 
 #[derive(Debug, Serialize)]
 pub struct ProviderActionPreviewResult {
@@ -583,33 +629,40 @@ impl ServiceHost {
         let target_matches = result.profile_id == current.profile_id
             && result.model == current.model
             && result.destination_host == current.destination_host;
-        let readback = if target_matches && result.local_metadata_persisted {
-            (|| -> Result<ActionReadbackRecord, ServiceError> {
-                let profile_revision =
-                    crate::provider::provider_profiles_revision(&self.app_data_dir)?;
-                let activity_revision =
-                    crate::provider::provider_call_metadata_revision(&self.app_data_dir)?;
-                ActionReadbackRecord::verified(
-                    &current.binding.action,
-                    vec![
-                        ActionReadbackObservation {
-                            domain: ActionReadbackDomain::ProviderProfiles,
-                            target_id: current.profile_id.clone(),
-                            revision: profile_revision,
-                        },
-                        ActionReadbackObservation {
-                            domain: ActionReadbackDomain::ProviderActivity,
-                            target_id: current.profile_id.clone(),
-                            revision: activity_revision,
-                        },
-                    ],
-                )
-                .map_err(Into::into)
-            })()
-            .ok()
-        } else {
-            None
-        };
+        let remote_result_verified = !result.provider_request_sent
+            || result.status.eq_ignore_ascii_case("succeeded")
+            || result
+                .error_code
+                .as_deref()
+                .is_some_and(|code| code.starts_with("http_"));
+        let readback =
+            if target_matches && result.local_metadata_persisted && remote_result_verified {
+                (|| -> Result<ActionReadbackRecord, ServiceError> {
+                    let profile_revision =
+                        crate::provider::provider_profiles_revision(&self.app_data_dir)?;
+                    let activity_revision =
+                        crate::provider::provider_call_metadata_revision(&self.app_data_dir)?;
+                    ActionReadbackRecord::verified(
+                        &current.binding.action,
+                        vec![
+                            ActionReadbackObservation {
+                                domain: ActionReadbackDomain::ProviderProfiles,
+                                target_id: current.profile_id.clone(),
+                                revision: profile_revision,
+                            },
+                            ActionReadbackObservation {
+                                domain: ActionReadbackDomain::ProviderActivity,
+                                target_id: current.profile_id.clone(),
+                                revision: activity_revision,
+                            },
+                        ],
+                    )
+                    .map_err(Into::into)
+                })()
+                .ok()
+            } else {
+                None
+            };
         if let Some(readback) = readback {
             if finalize_provider_action(
                 &self.app_data_dir,
@@ -646,6 +699,9 @@ impl ServiceHost {
         });
         result.error_message = Some(if !target_matches {
             "Provider request result did not match the confirmed target; outcome requires review."
+                .to_string()
+        } else if !remote_result_verified {
+            "The provider request may have left the process, but its remote result could not be verified."
                 .to_string()
         } else if !result.local_metadata_persisted {
             "Provider request returned, but local metadata persistence failed.".to_string()
@@ -896,6 +952,12 @@ fn provider_action_state_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("llm").join("provider-action-state.json")
 }
 
+fn provider_action_state_replacement_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir
+        .join("llm")
+        .join(".provider-action-state.replacement")
+}
+
 fn provider_action_state_revision_for_bytes(bytes: Option<&[u8]>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(PROVIDER_ACTION_STATE_DOMAIN.as_bytes());
@@ -1010,7 +1072,156 @@ fn write_provider_action_state(
     if bytes.len() > PROVIDER_ACTION_STATE_MAX_BYTES {
         return Err(invalid_provider_action_state());
     }
-    write_private_bytes_file(&provider_action_state_path(app_data_dir), &bytes)?;
+    write_provider_action_state_atomic(app_data_dir, record, &bytes)
+}
+
+fn write_provider_action_state_atomic(
+    app_data_dir: &Path,
+    record: &ProviderActionStateRecord,
+    bytes: &[u8],
+) -> Result<(), ServiceError> {
+    let path = provider_action_state_path(app_data_dir);
+    let replacement = provider_action_state_replacement_path(app_data_dir);
+    let parent = path.parent().ok_or_else(|| {
+        ServiceError::InvalidRequest("provider action state has no parent".to_string())
+    })?;
+    let mut renamed = false;
+    let result = (|| -> io::Result<()> {
+        create_private_dir_all(parent)?;
+        ensure_provider_action_state_destination_safe(&path)?;
+        remove_legacy_provider_action_state_replacements(parent)?;
+        remove_provider_action_state_replacement(&replacement)?;
+
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&replacement)?;
+        set_provider_action_state_file_permissions(&file)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+
+        ensure_provider_action_state_destination_safe(&path)?;
+        fs::rename(&replacement, &path)?;
+        renamed = true;
+        set_provider_action_state_path_permissions(&path)?;
+
+        if should_fail_provider_action_state_directory_sync(app_data_dir, record.phase) {
+            return Err(io::Error::other(
+                "injected provider action-state directory sync failure",
+            ));
+        }
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = remove_provider_action_state_replacement(&replacement);
+    }
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) if renamed => Err(ServiceError::AppliedUnverified(
+            "provider replay state was replaced, but its durable directory update could not be verified"
+                .to_string(),
+        )),
+        Err(_) => Err(ServiceError::ActionNotStarted(
+            "provider replay state could not be replaced before the action started".to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+fn should_fail_provider_action_state_directory_sync(
+    app_data_dir: &Path,
+    phase: ProviderActionStatePhase,
+) -> bool {
+    phase == ProviderActionStatePhase::Outcome
+        && take_test_provider_action_state_fault(
+            app_data_dir,
+            TestProviderActionStateFault::OutcomeDirectorySync,
+        )
+}
+
+#[cfg(not(test))]
+fn should_fail_provider_action_state_directory_sync(
+    _app_data_dir: &Path,
+    _phase: ProviderActionStatePhase,
+) -> bool {
+    false
+}
+
+fn ensure_provider_action_state_destination_safe(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "provider action-state destination is not a regular file",
+            ))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_provider_action_state_replacement(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "provider action-state replacement is not a regular file",
+            ))
+        }
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_legacy_provider_action_state_replacements(parent: &Path) -> io::Result<()> {
+    for (index, entry) in fs::read_dir(parent)?.enumerate() {
+        if index >= PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES {
+            return Err(io::Error::other(
+                "provider action-state directory exceeds the bounded cleanup scan",
+            ));
+        }
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_PREFIX)
+            || !name.ends_with(PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX)
+        {
+            continue;
+        }
+        remove_provider_action_state_replacement(&entry.path())?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_provider_action_state_file_permissions(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_provider_action_state_file_permissions(_file: &fs::File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_provider_action_state_path_permissions(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_provider_action_state_path_permissions(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -1114,6 +1325,11 @@ pub(crate) fn provider_action_state_snapshot(
 #[cfg(test)]
 pub(crate) fn provider_action_state_file(app_data_dir: &Path) -> PathBuf {
     provider_action_state_path(app_data_dir)
+}
+
+#[cfg(test)]
+pub(crate) fn provider_action_state_replacement_file(app_data_dir: &Path) -> PathBuf {
+    provider_action_state_replacement_path(app_data_dir)
 }
 
 fn action_token_digest(token: &str) -> String {

@@ -383,38 +383,48 @@ impl ServiceHost {
         let target_matches = send.profile_id == profile_id
             && preview.model.as_deref() == Some(send.model.as_str())
             && preview.destination_host.as_deref() == Some(send.destination_host.as_str());
+        let remote_result_verified = !send.provider_request_sent
+            || send.status.eq_ignore_ascii_case("succeeded")
+            || send
+                .audit
+                .error_code
+                .as_deref()
+                .is_some_and(|code| code.starts_with("http_"));
         // A target mismatch is handled below as an explicit partial outcome:
         // the provider request may already have left the process.
         let prompt_record_persisted = self.record_llm_prompt_run(&params, &preview, &send).is_ok();
-        let mut readback =
-            if target_matches && send.local_metadata_persisted && prompt_record_persisted {
-                let activity_revision =
-                    crate::provider::provider_call_metadata_revision(&self.app_data_dir);
-                let prompt_runs_revision = llm_prompt_runs_revision(&self.llm_prompt_runs_path());
-                match (activity_revision, prompt_runs_revision) {
-                    (Ok(activity_revision), Ok(prompt_runs_revision)) => {
-                        ActionReadbackRecord::verified(
-                            &preview.binding.action,
-                            vec![
-                                ActionReadbackObservation {
-                                    domain: ActionReadbackDomain::ProviderActivity,
-                                    target_id: profile_id.clone(),
-                                    revision: activity_revision,
-                                },
-                                ActionReadbackObservation {
-                                    domain: ActionReadbackDomain::PromptRuns,
-                                    target_id: preview.preview_id.clone(),
-                                    revision: prompt_runs_revision,
-                                },
-                            ],
-                        )
-                        .ok()
-                    }
-                    _ => None,
+        let mut readback = if target_matches
+            && remote_result_verified
+            && send.local_metadata_persisted
+            && prompt_record_persisted
+        {
+            let activity_revision =
+                crate::provider::provider_call_metadata_revision(&self.app_data_dir);
+            let prompt_runs_revision = llm_prompt_runs_revision(&self.llm_prompt_runs_path());
+            match (activity_revision, prompt_runs_revision) {
+                (Ok(activity_revision), Ok(prompt_runs_revision)) => {
+                    ActionReadbackRecord::verified(
+                        &preview.binding.action,
+                        vec![
+                            ActionReadbackObservation {
+                                domain: ActionReadbackDomain::ProviderActivity,
+                                target_id: profile_id.clone(),
+                                revision: activity_revision,
+                            },
+                            ActionReadbackObservation {
+                                domain: ActionReadbackDomain::PromptRuns,
+                                target_id: preview.preview_id.clone(),
+                                revision: prompt_runs_revision,
+                            },
+                        ],
+                    )
+                    .ok()
                 }
-            } else {
-                None
-            };
+                _ => None,
+            }
+        } else {
+            None
+        };
         if readback.is_some()
             && crate::service_provider_actions::finalize_provider_action(
                 &self.app_data_dir,

@@ -933,7 +933,7 @@ fn llm_test_provider_connection_uses_preserved_key_after_blank_save() {
 }
 
 #[test]
-fn llm_test_provider_connection_downgrades_stale_credential_metadata() {
+fn llm_test_provider_connection_does_not_rewrite_stale_credential_metadata() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-stale-key-test-{}-{}",
         std::process::id(),
@@ -960,6 +960,8 @@ fn llm_test_provider_connection_downgrades_stale_credential_metadata() {
         }),
     );
     assert!(save.ok, "{:?}", save.error);
+    let profile_bytes_before =
+        fs::read(provider_profiles_path(&app_data_dir)).expect("read profile before test");
     secret_env_guard.remove_current();
 
     let (_, test) = confirmed_action_request(
@@ -981,6 +983,11 @@ fn llm_test_provider_connection_downgrades_stale_credential_metadata() {
         result.pointer("/audit/error_code").and_then(Value::as_str),
         Some("credential_unavailable")
     );
+    assert_eq!(
+        fs::read(provider_profiles_path(&app_data_dir)).expect("read profile after test"),
+        profile_bytes_before,
+        "a connection test must not implicitly rewrite provider settings"
+    );
 
     let list = host.handle(ServiceRequest {
         id: Some("provider-list".to_string()),
@@ -993,14 +1000,14 @@ fn llm_test_provider_connection_downgrades_stale_credential_metadata() {
             .as_ref()
             .and_then(|result| result.pointer("/profiles/0/credential_status/secret_available"))
             .and_then(Value::as_bool),
-        Some(false)
+        Some(true)
     );
     assert_eq!(
         list.result
             .as_ref()
             .and_then(|result| result.pointer("/profiles/0/credential_reference/secret_persisted"))
             .and_then(Value::as_bool),
-        Some(false)
+        Some(true)
     );
 
     let _ = fs::remove_dir_all(app_data_dir);

@@ -144,9 +144,12 @@ confirmation, and network posture.
   monotonic generation, token digest, action id, source revision, phase, state,
   and timestamp. A `not_started` reservation is atomically replaced by its
   terminal `not_started`, `verified`, or `partial` outcome; the next action
-  replaces that record with a higher generation. A consumed action is never
-  automatically retried; recovery starts from a fresh preview. Malformed,
-  oversized, symlinked, or non-regular replay state fails closed.
+  replaces that record with a higher generation. Replacement uses one
+  controlled path under the provider lock, removes bounded legacy crash
+  residue, and verifies the parent-directory sync after rename. A consumed
+  action is never automatically retried; recovery starts from a fresh preview.
+  Malformed, oversized, symlinked, non-regular, or unbounded replay storage
+  fails closed.
 - Provider mutations use an existing canonical parent-directory lock, so a
   rejected stale or mismatched confirmation creates no lock or replay-state
   artifact. Credential replacement is staged in Keychain, verified, and
@@ -154,11 +157,13 @@ confirmation, and network posture.
   effect that cannot be semantically verified is `partial` and
   `applied_unverified`.
 - After a provider request may have left the process, post-request transport,
-  parsing, audit, or prompt-run persistence failures are returned as a typed
-  partial outcome with `remote_effect=remote_unknown`. The client must not
-  retry automatically. A verified apply returns read-back observations for
-  every domain declared in its action descriptor, including credential
-  semantics when Keychain is in scope.
+  response-body read, JSON/schema parsing, audit, or prompt-run persistence
+  failures are returned as a typed partial outcome with
+  `remote_effect=remote_unknown`. Provider HTTP clients do not follow
+  redirects, so Bearer and API-key credentials never leave the previewed
+  destination. The client must not retry automatically. A verified apply
+  returns read-back observations for every domain declared in its action
+  descriptor, including credential semantics when Keychain is in scope.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not
   be triggered by imports, LLM output, analyzer recommendations, previews, or

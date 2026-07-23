@@ -4,7 +4,8 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +27,7 @@ const DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT: u32 = 8_000;
 const DEFAULT_MONTHLY_BUDGET_USD: f64 = 5.0;
 const TEST_INPUT_TOKEN_ESTIMATE: u32 = 12;
 const TEST_OUTPUT_TOKEN_ESTIMATE: u32 = 4;
+const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -303,6 +305,16 @@ struct ProviderPromptHttpSuccess {
     body: String,
 }
 
+#[derive(Debug, Error)]
+enum ProviderRequestError {
+    #[error("provider HTTP transport failed")]
+    Transport(#[source] Box<UreqError>),
+    #[error("provider response body could not be read")]
+    BodyUnreadable(#[source] io::Error),
+    #[error("provider response body exceeded the local safety limit")]
+    BodyTooLarge,
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub(crate) enum ProviderMutationState {
     #[default]
@@ -339,15 +351,15 @@ impl CredentialCommit {
                 store_and_verify_secret(&self.target, secret)?;
             }
             None => {
-                let _ = delete_secret(&self.target)?;
+                delete_and_verify_secret_absent(&self.target)?;
             }
         }
-        let _ = delete_secret(&self.staging)?;
+        delete_and_verify_secret_absent(&self.staging)?;
         Ok(())
     }
 
     fn finish(self) -> Result<(), ProviderError> {
-        let _ = delete_secret(&self.staging)?;
+        delete_and_verify_secret_absent(&self.staging)?;
         Ok(())
     }
 }
@@ -364,6 +376,9 @@ pub(crate) enum TestProviderIoFault {
 pub(crate) enum TestProviderCredentialFault {
     Compensation,
     Delete,
+    StagingDelete,
+    StagingReadback,
+    StagingReadbackMismatch,
 }
 
 #[cfg(test)]
@@ -392,10 +407,20 @@ pub(crate) fn install_test_provider_credential_fault(
     profile_id: &str,
     fault: TestProviderCredentialFault,
 ) {
+    let account = match fault {
+        TestProviderCredentialFault::StagingDelete
+        | TestProviderCredentialFault::StagingReadback
+        | TestProviderCredentialFault::StagingReadbackMismatch => {
+            format!("provider:{profile_id}:staging")
+        }
+        TestProviderCredentialFault::Compensation | TestProviderCredentialFault::Delete => {
+            format!("provider:{profile_id}")
+        }
+    };
     TEST_PROVIDER_CREDENTIAL_FAULTS
         .lock()
         .expect("lock provider credential faults")
-        .push((format!("provider:{profile_id}"), fault));
+        .push((account, fault));
 }
 
 #[cfg(test)]
@@ -720,7 +745,7 @@ pub fn test_provider_connection(
     params: TestProviderConnectionParams,
 ) -> Result<TestProviderConnectionResult, ProviderError> {
     let store = load_store(app_data_dir)?;
-    let mut profile = store
+    let profile = store
         .profiles
         .iter()
         .find(|profile| profile.id == params.profile_id)
@@ -787,20 +812,8 @@ pub fn test_provider_connection(
     }
 
     let secret = match load_secret(&profile.credential_reference) {
-        Ok(secret) => {
-            mark_profile_credential_status(
-                app_data_dir,
-                &mut profile,
-                available_credential_status("API key is available from the OS credential store."),
-            );
-            secret
-        }
+        Ok(secret) => secret,
         Err(error) => {
-            mark_profile_credential_status(
-                app_data_dir,
-                &mut profile,
-                missing_credential_status(error.to_string()),
-            );
             return finish_test(
                 app_data_dir,
                 &profile,
@@ -876,7 +889,7 @@ pub fn send_provider_prompt(
     params: SendProviderPromptParams,
 ) -> Result<SendProviderPromptResult, ProviderError> {
     let store = load_store(app_data_dir)?;
-    let mut profile = store
+    let profile = store
         .profiles
         .iter()
         .find(|profile| profile.id == params.profile_id)
@@ -984,20 +997,8 @@ pub fn send_provider_prompt(
     }
 
     let secret = match load_secret(&profile.credential_reference) {
-        Ok(secret) => {
-            mark_profile_credential_status(
-                app_data_dir,
-                &mut profile,
-                available_credential_status("API key is available from the OS credential store."),
-            );
-            secret
-        }
+        Ok(secret) => secret,
         Err(error) => {
-            mark_profile_credential_status(
-                app_data_dir,
-                &mut profile,
-                missing_credential_status(error.to_string()),
-            );
             return finish_prompt(
                 app_data_dir,
                 &profile,
@@ -1169,6 +1170,19 @@ pub(crate) fn verify_provider_credential_absent(profile_id: &str) -> Result<Stri
         )),
         Err(error) => Err(ProviderError::CredentialStorageUnavailable(
             error.to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn verify_provider_staging_credential_absent(
+    profile_id: &str,
+) -> Result<(), ProviderError> {
+    let reference = staging_keychain_reference(&keychain_reference(profile_id));
+    match load_optional_secret(&reference)? {
+        None => Ok(()),
+        Some(_) => Err(ProviderError::CredentialStorageUnavailable(
+            "staging credential still exists".to_string(),
         )),
     }
 }
@@ -1356,9 +1370,11 @@ fn send_test_request(
     profile: &ProviderProfileRecord,
     secret: &str,
     timeout: Duration,
-) -> Result<u16, Box<UreqError>> {
+) -> Result<u16, ProviderRequestError> {
     let url = test_endpoint_url(profile);
-    let mut request = ureq::post(&url)
+    let agent = provider_http_agent();
+    let mut request = agent
+        .post(&url)
         .timeout(timeout)
         .set("content-type", "application/json");
     if let Some(org) = profile.organization.as_deref() {
@@ -1367,14 +1383,15 @@ fn send_test_request(
     match profile.provider_type {
         ProviderType::OpenAiCompatible => {
             request = request.set("authorization", &format!("Bearer {secret}"));
-            let response = request
-                .send_json(json!({
+            let response = send_json_without_redirect(
+                request,
+                json!({
                     "model": profile.model,
                     "messages": [{"role": "user", "content": "connection test"}],
                     "max_tokens": 1,
                     "temperature": 0
-                }))
-                .map_err(Box::new)?;
+                }),
+            )?;
             Ok(response.status())
         }
         ProviderType::ClaudeCompatible => {
@@ -1382,13 +1399,14 @@ fn send_test_request(
                 "anthropic-version",
                 profile.api_version.as_deref().unwrap_or("2023-06-01"),
             );
-            let response = request
-                .send_json(json!({
+            let response = send_json_without_redirect(
+                request,
+                json!({
                     "model": profile.model,
                     "messages": [{"role": "user", "content": "connection test"}],
                     "max_tokens": 1
-                }))
-                .map_err(Box::new)?;
+                }),
+            )?;
             Ok(response.status())
         }
     }
@@ -1400,10 +1418,12 @@ fn send_prompt_request(
     prompt: &str,
     params: &SendProviderPromptParams,
     timeout: Duration,
-) -> Result<ProviderPromptHttpSuccess, Box<UreqError>> {
+) -> Result<ProviderPromptHttpSuccess, ProviderRequestError> {
     let url = test_endpoint_url(profile);
     let max_tokens = params.estimated_output_tokens.clamp(1, 8_000);
-    let mut request = ureq::post(&url)
+    let agent = provider_http_agent();
+    let mut request = agent
+        .post(&url)
         .timeout(timeout)
         .set("content-type", "application/json");
     if let Some(org) = profile.organization.as_deref() {
@@ -1412,8 +1432,9 @@ fn send_prompt_request(
     let response = match profile.provider_type {
         ProviderType::OpenAiCompatible => {
             request = request.set("authorization", &format!("Bearer {secret}"));
-            request
-                .send_json(json!({
+            send_json_without_redirect(
+                request,
+                json!({
                     "model": profile.model,
                     "messages": [
                         {
@@ -1424,27 +1445,59 @@ fn send_prompt_request(
                     ],
                     "max_tokens": max_tokens,
                     "temperature": 0.2
-                }))
-                .map_err(Box::new)?
+                }),
+            )?
         }
         ProviderType::ClaudeCompatible => {
             request = request.set("x-api-key", secret).set(
                 "anthropic-version",
                 profile.api_version.as_deref().unwrap_or("2023-06-01"),
             );
-            request
-                .send_json(json!({
+            send_json_without_redirect(
+                request,
+                json!({
                     "model": profile.model,
                     "system": "You are reviewing AI agent skills. Return draft-only guidance; do not claim to write files, execute scripts, mutate configuration, or store credentials.",
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": max_tokens
-                }))
-                .map_err(Box::new)?
+                }),
+            )?
         }
     };
     let status = response.status();
-    let body = response.into_string().unwrap_or_default();
+    let mut body = Vec::new();
+    let mut reader = response
+        .into_reader()
+        .take((MAX_PROVIDER_RESPONSE_BYTES + 1) as u64);
+    reader
+        .read_to_end(&mut body)
+        .map_err(ProviderRequestError::BodyUnreadable)?;
+    if body.len() > MAX_PROVIDER_RESPONSE_BYTES {
+        return Err(ProviderRequestError::BodyTooLarge);
+    }
+    let body = String::from_utf8(body).map_err(|error| {
+        ProviderRequestError::BodyUnreadable(io::Error::new(io::ErrorKind::InvalidData, error))
+    })?;
     Ok(ProviderPromptHttpSuccess { status, body })
+}
+
+fn provider_http_agent() -> ureq::Agent {
+    // Provider destinations are explicitly previewed. Following a redirect
+    // would make the real destination differ from that preview and, for
+    // non-standard auth headers such as x-api-key, could disclose a credential
+    // to another host.
+    ureq::builder().redirects(0).build()
+}
+
+fn send_json_without_redirect(
+    request: ureq::Request,
+    body: Value,
+) -> Result<ureq::Response, ProviderRequestError> {
+    match request.send_json(body) {
+        Ok(response) => Ok(response),
+        Err(UreqError::Status(_, response)) => Ok(response),
+        Err(error) => Err(ProviderRequestError::Transport(Box::new(error))),
+    }
 }
 
 fn extract_output_text(provider_type: ProviderType, body: &str) -> Option<String> {
@@ -1521,13 +1574,13 @@ fn stage_and_commit_secret(
 ) -> Result<CredentialCommit, ProviderError> {
     let previous_secret = load_optional_secret(target)?.filter(|value| !value.is_empty());
     let staging = staging_keychain_reference(target);
-    store_and_verify_secret(&staging, secret)?;
+    stage_and_verify_secret(&staging, secret)?;
     if let Err(error) = store_and_verify_secret(target, secret) {
         let target_restored = match previous_secret.as_deref() {
             Some(previous) => store_and_verify_secret(target, previous).is_ok(),
-            None => delete_secret(target).is_ok(),
+            None => delete_and_verify_secret_absent(target).is_ok(),
         };
-        let staging_removed = delete_secret(&staging).is_ok();
+        let staging_removed = delete_and_verify_secret_absent(&staging).is_ok();
         if !target_restored || !staging_removed {
             return Err(ProviderError::CredentialMutationPartial(
                 "target restoration or staging cleanup failed after the credential update could not be verified"
@@ -1541,6 +1594,40 @@ fn stage_and_commit_secret(
         staging,
         previous_secret,
     })
+}
+
+fn stage_and_verify_secret(
+    staging: &ProviderCredentialReference,
+    secret: &str,
+) -> Result<(), ProviderError> {
+    // The staging account is fixed per provider and is protected by the
+    // provider-action lock. Remove any crash residue before placing the new
+    // candidate secret there.
+    delete_and_verify_secret_absent(staging)?;
+    let verification = store_secret(staging, secret).and_then(|()| {
+        let stored = load_secret(staging).map_err(|error| {
+            ProviderError::CredentialStorageUnavailable(format!(
+                "staged API key could not be read back from the OS credential store: {error}"
+            ))
+        })?;
+        if constant_time_secret_eq(stored.as_bytes(), secret.as_bytes()) && !stored.is_empty() {
+            Ok(())
+        } else {
+            Err(ProviderError::CredentialStorageUnavailable(
+                "staged API key did not match after OS credential-store read-back".to_string(),
+            ))
+        }
+    });
+    if let Err(error) = verification {
+        return match delete_and_verify_secret_absent(staging) {
+            Ok(_) => Err(error),
+            Err(_) => Err(ProviderError::CredentialMutationPartial(
+                "staged API key could not be verified and its cleanup could not be semantically confirmed"
+                    .to_string(),
+            )),
+        };
+    }
+    Ok(())
 }
 
 fn store_secret(
@@ -1599,6 +1686,32 @@ fn load_optional_secret(
     reference: &ProviderCredentialReference,
 ) -> Result<Option<String>, ProviderError> {
     #[cfg(test)]
+    {
+        let credential_is_present = TEST_PROVIDER_KEYCHAIN
+            .lock()
+            .expect("lock provider test keychain")
+            .get(&reference.account)
+            .is_some_and(Option::is_some);
+        if credential_is_present
+            && take_test_credential_fault(
+                &reference.account,
+                TestProviderCredentialFault::StagingReadback,
+            )
+        {
+            return Err(ProviderError::CredentialStorageUnavailable(
+                "injected staging credential read-back failure".to_string(),
+            ));
+        }
+        if credential_is_present
+            && take_test_credential_fault(
+                &reference.account,
+                TestProviderCredentialFault::StagingReadbackMismatch,
+            )
+        {
+            return Ok(Some("injected-staging-mismatch".to_string()));
+        }
+    }
+    #[cfg(test)]
     if let Ok(secret) = std::env::var(test_secret_env_name(&reference.account)) {
         return Ok(Some(secret));
     }
@@ -1652,6 +1765,24 @@ fn delete_secret(
     }
     #[cfg(test)]
     {
+        let credential_is_present = TEST_PROVIDER_KEYCHAIN
+            .lock()
+            .expect("lock provider test keychain")
+            .get(&reference.account)
+            .is_some_and(Option::is_some);
+        if credential_is_present
+            && take_test_credential_fault(
+                &reference.account,
+                TestProviderCredentialFault::StagingDelete,
+            )
+        {
+            return Err(ProviderError::CredentialStorageUnavailable(
+                "injected staging credential delete failure".to_string(),
+            ));
+        }
+    }
+    #[cfg(test)]
+    {
         let mut keychain = TEST_PROVIDER_KEYCHAIN
             .lock()
             .expect("lock provider test keychain");
@@ -1682,6 +1813,18 @@ fn delete_secret(
     }
 }
 
+fn delete_and_verify_secret_absent(
+    reference: &ProviderCredentialReference,
+) -> Result<CredentialDeleteOutcome, ProviderError> {
+    let outcome = delete_secret(reference)?;
+    match load_optional_secret(reference)? {
+        None => Ok(outcome),
+        Some(_) => Err(ProviderError::CredentialStorageUnavailable(
+            "credential still exists after deletion".to_string(),
+        )),
+    }
+}
+
 fn available_credential_status(reason: &str) -> ProviderCredentialStatus {
     ProviderCredentialStatus {
         state: "available".to_string(),
@@ -1708,34 +1851,6 @@ fn existing_credential_status(reference: &ProviderCredentialReference) -> Provid
         Ok(_) => missing_credential_status("No API key is stored for this profile.".to_string()),
         Err(error) => missing_credential_status(error.to_string()),
     }
-}
-
-fn mark_profile_credential_status(
-    app_data_dir: &Path,
-    profile: &mut ProviderProfileRecord,
-    status: ProviderCredentialStatus,
-) {
-    profile.credential_reference.secret_persisted = status.secret_available;
-    profile.credential_status = status;
-    let _ = persist_profile_credential_status(app_data_dir, profile);
-}
-
-fn persist_profile_credential_status(
-    app_data_dir: &Path,
-    profile: &ProviderProfileRecord,
-) -> Result<(), ProviderError> {
-    let mut store = load_store(app_data_dir)?;
-    if let Some(stored_profile) = store
-        .profiles
-        .iter_mut()
-        .find(|stored_profile| stored_profile.id == profile.id)
-    {
-        stored_profile.credential_reference = profile.credential_reference.clone();
-        stored_profile.credential_status = profile.credential_status.clone();
-        stored_profile.updated_at = unix_timestamp_millis();
-        save_store(app_data_dir, &store)?;
-    }
-    Ok(())
 }
 
 fn budget_status(profile: &ProviderProfileRecord) -> ProviderBudgetStatus {
@@ -1917,10 +2032,17 @@ pub(crate) fn destination_host(base_url: &str) -> String {
     }
 }
 
-fn redact_error(error: &UreqError) -> String {
+fn redact_error(error: &ProviderRequestError) -> String {
     match error {
-        UreqError::Status(status, _) => format!("Provider returned HTTP status {status}."),
-        UreqError::Transport(transport) => transport.to_string(),
+        ProviderRequestError::Transport(_) => {
+            "Provider network transport failed after the request was attempted.".to_string()
+        }
+        ProviderRequestError::BodyUnreadable(_) => {
+            "Provider response body could not be read completely.".to_string()
+        }
+        ProviderRequestError::BodyTooLarge => {
+            "Provider response body exceeded the local safety limit.".to_string()
+        }
     }
 }
 

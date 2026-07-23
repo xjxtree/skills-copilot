@@ -361,11 +361,15 @@ single replay-state record, not action history: it contains only a monotonic
 generation, token digest, action id, source revision, phase, state, and
 timestamp. Atomic `0600` replacement changes `reservation/not_started` to one
 `outcome/not_started|verified|partial`, and the next action replaces the same
-record at a higher generation. Malformed, oversized, symlinked, or non-regular
-state fails closed. Every consumed token is rejected on replay. The native
-client clears the pending token after every confirmed attempt and requires a
-new preview for recovery. Stale or mismatched confirmations are rejected before
-the lock or replay-state file can create an app-data directory.
+record at a higher generation. Replacement uses one fixed controlled path under
+the provider lock, removes bounded legacy crash residue, and verifies the
+parent-directory sync after rename. A failed post-rename durability check is
+`applied_unverified`; malformed, oversized, symlinked, non-regular, or
+unbounded state storage fails closed. Every consumed token is rejected on
+replay. The native client clears the pending token after every confirmed
+attempt and requires a new preview for recovery. Stale or mismatched
+confirmations are rejected before the lock or replay-state file can create an
+app-data directory.
 
 Provider profile saves stage and verify credential replacement in Keychain
 before committing the profile. If the profile commit fails, the service
@@ -376,12 +380,14 @@ retry automatically.
 
 Connection tests and prompt sends classify all failures that occur after a
 request may have left the process as `partial` with
-`remote_effect=remote_unknown`. This includes failures while parsing or
-persisting post-request metadata. A verified provider apply returns typed
-`readback` observations for every domain declared in the action: provider
-profiles, provider credentials, provider activity, and/or prompt runs as
-applicable. Credential read-back is a semantic Keychain presence/value or
-absence verification, not secret exposure.
+`remote_effect=remote_unknown`. This includes response-body reads, response
+JSON/schema parsing, and post-request metadata persistence. Provider HTTP
+clients do not follow redirects, so credentials are sent only to the exact
+previewed destination and are never forwarded to another host. A verified
+provider apply returns typed `readback` observations for every domain declared
+in the action: provider profiles, provider credentials, provider activity,
+and/or prompt runs as applicable. Credential read-back is a semantic Keychain
+presence/value or absence verification, not secret exposure.
 
 ## Full-Access Local Lists
 

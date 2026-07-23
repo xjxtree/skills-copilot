@@ -906,6 +906,513 @@ fn provider_network_postprocessing_failure_returns_remote_unknown() {
     let _ = fs::remove_dir_all(app_data_dir);
 }
 
+#[test]
+fn provider_transport_failure_is_partial_remote_unknown_and_does_not_rewrite_profile() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-transport-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unavailable provider port");
+    let port = listener
+        .local_addr()
+        .expect("unavailable provider addr")
+        .port();
+    drop(listener);
+    let profile_id = "transport-partial-provider";
+    crate::provider::manage_test_provider_credential(profile_id, Some("transport-test-secret"));
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params(profile_id, &format!("http://127.0.0.1:{port}/v1")),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let profile_before =
+        fs::read(provider_profiles_path(&app_data_dir)).expect("profile bytes before transport");
+
+    let (_, response) = confirmed_action_request(
+        &host,
+        "llm.previewProviderConnectionTest",
+        "llm.testProviderConnection",
+        json!({"profile_id":profile_id,"timeout_ms":250}),
+    );
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("transport partial result");
+    assert_eq!(
+        result.pointer("/outcome/state").and_then(Value::as_str),
+        Some("partial")
+    );
+    assert_eq!(
+        result
+            .pointer("/outcome/remote_effect")
+            .and_then(Value::as_str),
+        Some("remote_unknown")
+    );
+    assert_eq!(
+        result.get("provider_request_sent").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(result.get("readback").is_some_and(Value::is_null));
+    assert_eq!(
+        fs::read(provider_profiles_path(&app_data_dir)).expect("profile bytes after transport"),
+        profile_before,
+        "connection tests must not persist credential-status observations into the profile store"
+    );
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("transport replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn prompt_body_read_and_schema_failures_are_partial_remote_unknown() {
+    for (label, response_body, declared_length, expected_error) in [
+        ("body-read", "{", 100_usize, "network_error"),
+        (
+            "invalid-json",
+            "not-json",
+            "not-json".len(),
+            "response_schema_invalid",
+        ),
+    ] {
+        let app_data_dir = env::temp_dir().join(format!(
+            "skills-copilot-provider-{label}-partial-{}-{}",
+            std::process::id(),
+            unique_suffix(),
+        ));
+        let (base_url, server) =
+            spawn_raw_provider_server(200, response_body.as_bytes().to_vec(), declared_length);
+        let profile_id = format!("{label}-provider");
+        crate::provider::manage_test_provider_credential(
+            &profile_id,
+            Some("prompt-failure-test-secret"),
+        );
+        let host = test_host(app_data_dir.clone());
+        let (_, save) = confirmed_action_request(
+            &host,
+            "llm.previewSaveProviderProfile",
+            "llm.saveProviderProfile",
+            provider_save_params(&profile_id, &base_url),
+        );
+        assert!(save.ok, "{:?}", save.error);
+        let profile_before =
+            fs::read(provider_profiles_path(&app_data_dir)).expect("profile before prompt");
+
+        let request = json!({
+            "action":"task_cockpit",
+            "request_kind":"task_cockpit",
+            "task_text":"verify remote failure classification",
+            "user_intent":"verify remote failure classification",
+            "agents":[],
+            "instance_ids":[]
+        });
+        let (_, response) = confirmed_llm_prompt_request(&host, request, 2_000);
+        assert!(response.ok, "{label}: {:?}", response.error);
+        let result = response.result.expect("prompt partial result");
+        assert_eq!(
+            result.get("status").and_then(Value::as_str),
+            Some("partial"),
+            "{label}"
+        );
+        assert_eq!(
+            result
+                .pointer("/partial_outcome/remote_effect")
+                .and_then(Value::as_str),
+            Some("remote_unknown"),
+            "{label}"
+        );
+        assert!(result.get("readback").is_some_and(Value::is_null));
+        assert_eq!(
+            result.pointer("/audit/error_code").and_then(Value::as_str),
+            Some(expected_error),
+            "{label}"
+        );
+        assert_eq!(
+            crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+                .expect("prompt replay state")
+                .2,
+            crate::service_provider_actions::ProviderActionState::Partial,
+            "{label}"
+        );
+        assert_eq!(
+            fs::read(provider_profiles_path(&app_data_dir)).expect("profile after prompt"),
+            profile_before,
+            "prompt requests must not persist credential-status observations"
+        );
+        let _request = server.join().expect("raw provider request");
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+}
+
+#[test]
+fn provider_redirects_are_not_followed_or_sent_credentials_on_either_auth_scheme() {
+    for (profile_id, provider_type, auth_header) in [
+        (
+            "redirect-openai-provider",
+            "openai-compatible",
+            "authorization:",
+        ),
+        (
+            "redirect-claude-provider",
+            "claude-compatible",
+            "x-api-key:",
+        ),
+    ] {
+        let secondary =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirect destination");
+        secondary
+            .set_nonblocking(true)
+            .expect("nonblocking redirect destination");
+        let secondary_url = format!(
+            "http://127.0.0.1:{}/credential-capture",
+            secondary
+                .local_addr()
+                .expect("redirect destination addr")
+                .port()
+        );
+        let (base_url, primary) = spawn_redirect_provider_server(secondary_url);
+        let app_data_dir = env::temp_dir().join(format!(
+            "skills-copilot-provider-{profile_id}-{}-{}",
+            std::process::id(),
+            unique_suffix(),
+        ));
+        crate::provider::manage_test_provider_credential(
+            profile_id,
+            Some("redirect-secret-sentinel"),
+        );
+        let host = test_host(app_data_dir.clone());
+        let mut save_params = provider_save_params(profile_id, &base_url);
+        save_params["provider_type"] = json!(provider_type);
+        if provider_type == "claude-compatible" {
+            save_params["api_version"] = json!("2023-06-01");
+        }
+        let (_, save) = confirmed_action_request(
+            &host,
+            "llm.previewSaveProviderProfile",
+            "llm.saveProviderProfile",
+            save_params,
+        );
+        assert!(save.ok, "{:?}", save.error);
+
+        let params = json!({"profile_id":profile_id,"timeout_ms":2_000});
+        let preview = host.handle(ServiceRequest {
+            id: Some(format!("{profile_id}-redirect-preview")),
+            method: "llm.previewProviderConnectionTest".to_string(),
+            params: params.clone(),
+        });
+        assert!(preview.ok, "{:?}", preview.error);
+        let preview = preview.result.expect("redirect preview");
+        let expected_destination =
+            crate::provider::destination_host(base_url.trim_end_matches("/v1"));
+        assert_eq!(
+            preview.get("destination_host").and_then(Value::as_str),
+            Some(expected_destination.as_str())
+        );
+        let mut apply = params;
+        apply["action_confirmation"] = action_confirmation_from_preview(&preview);
+        let response = host.handle(ServiceRequest {
+            id: Some(format!("{profile_id}-redirect-apply")),
+            method: "llm.testProviderConnection".to_string(),
+            params: apply,
+        });
+        assert!(response.ok, "{:?}", response.error);
+        let result = response.result.expect("redirect result");
+        assert_eq!(
+            result.get("destination_host").and_then(Value::as_str),
+            Some(expected_destination.as_str())
+        );
+        assert_eq!(
+            result.pointer("/outcome/state").and_then(Value::as_str),
+            Some("verified")
+        );
+        assert_eq!(result.get("status").and_then(Value::as_str), Some("failed"));
+        assert_eq!(
+            result.get("error_code").and_then(Value::as_str),
+            Some("http_302")
+        );
+        let request = primary.join().expect("primary redirect request");
+        assert!(
+            request.to_ascii_lowercase().contains(auth_header),
+            "primary request must use the configured authentication scheme"
+        );
+        assert!(
+            matches!(secondary.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "provider client must not follow the redirect to another host"
+        );
+
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+}
+
+#[test]
+fn staging_readback_failures_clean_up_or_report_credential_partial() {
+    for fault in [
+        crate::provider::TestProviderCredentialFault::StagingReadback,
+        crate::provider::TestProviderCredentialFault::StagingReadbackMismatch,
+    ] {
+        let app_data_dir = env::temp_dir().join(format!(
+            "skills-copilot-provider-staging-cleanup-{}-{}",
+            std::process::id(),
+            unique_suffix(),
+        ));
+        let profile_id = format!("staging-cleanup-{}", unique_suffix());
+        crate::provider::manage_test_provider_credential(&profile_id, None);
+        let host = test_host(app_data_dir.clone());
+        let mut params = provider_save_params(&profile_id, "https://example.invalid/v1");
+        params["api_key"] = json!("staging-secret-sentinel");
+        let preview = host.handle(ServiceRequest {
+            id: Some("staging-cleanup-preview".to_string()),
+            method: "llm.previewSaveProviderProfile".to_string(),
+            params: params.clone(),
+        });
+        assert!(preview.ok, "{:?}", preview.error);
+        crate::provider::install_test_provider_credential_fault(&profile_id, fault);
+        params["action_confirmation"] =
+            action_confirmation_from_preview(&preview.result.expect("staging preview"));
+        let response = host.handle(ServiceRequest {
+            id: Some("staging-cleanup-apply".to_string()),
+            method: "llm.saveProviderProfile".to_string(),
+            params,
+        });
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.expect("staging readback failure").code,
+            "action_not_started"
+        );
+        crate::provider::verify_provider_staging_credential_absent(&profile_id)
+            .expect("failed staging candidate must be deleted and verified absent");
+        crate::provider::verify_provider_credential_absent(&profile_id)
+            .expect("target credential must remain absent");
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-staging-partial-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let profile_id = format!("staging-partial-{}", unique_suffix());
+    crate::provider::manage_test_provider_credential(&profile_id, None);
+    let host = test_host(app_data_dir.clone());
+    let mut params = provider_save_params(&profile_id, "https://example.invalid/v1");
+    params["api_key"] = json!("staging-secret-sentinel");
+    let preview = host.handle(ServiceRequest {
+        id: Some("staging-partial-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    crate::provider::install_test_provider_credential_fault(
+        &profile_id,
+        crate::provider::TestProviderCredentialFault::StagingReadback,
+    );
+    crate::provider::install_test_provider_credential_fault(
+        &profile_id,
+        crate::provider::TestProviderCredentialFault::StagingDelete,
+    );
+    params["action_confirmation"] =
+        action_confirmation_from_preview(&preview.result.expect("staging partial preview"));
+    let response = host.handle(ServiceRequest {
+        id: Some("staging-partial-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params,
+    });
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("staging partial error").code,
+        "applied_unverified"
+    );
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("staging partial replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn replay_state_cleans_fixed_crash_residue_and_directory_sync_failure_is_partial() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-replay-crash-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let replacement =
+        crate::service_provider_actions::provider_action_state_replacement_file(&app_data_dir);
+    fs::create_dir_all(replacement.parent().expect("replacement parent"))
+        .expect("create replay parent");
+    fs::write(&replacement, b"crash-residue").expect("seed fixed replay replacement");
+    let legacy_replacement_one = replacement
+        .parent()
+        .expect("replacement parent")
+        .join(".provider-action-state.json.123.456.tmp");
+    let legacy_replacement_two = replacement
+        .parent()
+        .expect("replacement parent")
+        .join(".provider-action-state.json.789.012.tmp");
+    fs::write(&legacy_replacement_one, b"legacy-crash-residue")
+        .expect("seed first legacy replay replacement");
+    fs::write(&legacy_replacement_two, b"legacy-crash-residue")
+        .expect("seed second legacy replay replacement");
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("replay-crash-provider", "https://example.invalid/v1"),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    assert!(!replacement.exists(), "fixed crash residue must be removed");
+    assert!(
+        !legacy_replacement_one.exists() && !legacy_replacement_two.exists(),
+        "legacy crash residues must be removed"
+    );
+    let replay_files = fs::read_dir(replacement.parent().expect("replacement parent"))
+        .expect("list replay parent")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("provider-action-state")
+        })
+        .count();
+    assert_eq!(replay_files, 1, "only the bounded state record may remain");
+
+    let (port_url, server) =
+        spawn_raw_provider_server(200, b"not-json".to_vec(), b"not-json".len());
+    let profile_id = "replay-sync-provider";
+    crate::provider::manage_test_provider_credential(profile_id, Some("replay-sync-secret"));
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params(profile_id, &port_url),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let request = json!({
+        "action":"task_cockpit",
+        "request_kind":"task_cockpit",
+        "task_text":"directory sync failure",
+        "user_intent":"directory sync failure",
+        "agents":[],
+        "instance_ids":[]
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("replay-sync-preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("replay sync preview");
+    crate::service_provider_actions::install_test_provider_action_state_fault(
+        &app_data_dir,
+        crate::service_provider_actions::TestProviderActionStateFault::OutcomeDirectorySync,
+    );
+    let response = host.handle(ServiceRequest {
+        id: Some("replay-sync-apply".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: json!({
+            "action_confirmation": action_confirmation_from_preview(&preview),
+            "request": request,
+            "timeout_ms": 2_000
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let result = response.result.expect("replay sync result");
+    assert_eq!(
+        result.get("status").and_then(Value::as_str),
+        Some("partial")
+    );
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("replay state after directory sync failure")
+            .2,
+        crate::service_provider_actions::ProviderActionState::Partial
+    );
+    assert!(!replacement.exists());
+    let _request = server.join().expect("replay sync provider request");
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+fn spawn_raw_provider_server(
+    status: u16,
+    response_body: Vec<u8>,
+    declared_length: usize,
+) -> (String, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind raw provider");
+    let port = listener.local_addr().expect("raw provider addr").port();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept raw provider request");
+        let request = read_http_request(&mut stream);
+        let response = format!(
+            "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n"
+        );
+        std::io::Write::write_all(&mut stream, response.as_bytes())
+            .expect("write raw provider headers");
+        std::io::Write::write_all(&mut stream, &response_body).expect("write raw provider body");
+        request
+    });
+    (format!("http://127.0.0.1:{port}/v1"), handle)
+}
+
+fn spawn_redirect_provider_server(location: String) -> (String, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirect provider");
+    let port = listener
+        .local_addr()
+        .expect("redirect provider addr")
+        .port();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept redirect provider request");
+        let request = read_http_request(&mut stream);
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        std::io::Write::write_all(&mut stream, response.as_bytes())
+            .expect("write redirect provider response");
+        request
+    });
+    (format!("http://127.0.0.1:{port}/v1"), handle)
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let mut header_end = None;
+    while header_end.is_none() {
+        let read = std::io::Read::read(stream, &mut buffer).expect("read provider request headers");
+        assert!(read > 0, "provider request closed before headers");
+        bytes.extend_from_slice(&buffer[..read]);
+        header_end = find_header_end(&bytes);
+    }
+    let header_end = header_end.expect("provider header end");
+    let headers = String::from_utf8_lossy(&bytes[..header_end]).to_string();
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while bytes.len().saturating_sub(body_start) < content_length {
+        let read = std::io::Read::read(stream, &mut buffer).expect("read provider request body");
+        assert!(read > 0, "provider request closed before body");
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
 fn provider_save_params(profile_id: &str, base_url: &str) -> Value {
     json!({
         "id": profile_id,

@@ -535,6 +535,16 @@ struct ServiceClientRPCTests {
             agents: ["claude-code", "codex"],
             instanceIDs: ["alb-skill"]
         )
+        try expectEqual(preview.actionDescriptor?.kind, "provider_prompt", "Prompt preview kind must match the Rust action contract.")
+        try expectNil(preview.actionDescriptor?.target.scope, "Prompt provider actions are not agent-scoped.")
+        try expectEqual(preview.actionDescriptor?.impacts, ["app_local_data"], "Prompt sends only declare bounded app-local persistence.")
+        try expectEqual(preview.actionDescriptor?.network, "required", "Prompt sends must declare required network use.")
+        try expectEqual(preview.actionDescriptor?.readback, ["provider_activity", "prompt_runs"], "Prompt sends must declare activity and run read-back.")
+        try expectEqual(
+            preview.preconditions.map(\.targetID),
+            ["provider-profiles", "redacted-prompt", "provider-action-state"],
+            "Prompt sends must bind the provider store, redacted prompt, and replay state."
+        )
         _ = try await client.confirmPromptAndSendForTaskCockpit(
             preview: preview,
             taskText: "查看下阿里云 ALB 指标与错误情况",
@@ -566,19 +576,50 @@ struct ServiceClientRPCTests {
         draft.apiKey = "provider-action-secret"
 
         let savePreview = try await client.previewSaveAIProviderSettings(draft: draft)
+        try expectEqual(savePreview.action.kind, "provider_profile", "Save preview kind must match the Rust action contract.")
+        try expectEqual(savePreview.action.target.kind, "provider_profile", "Save preview target kind must match the Rust action contract.")
         try expectEqual(savePreview.action.target.id, "openai-compatible", "Save preview should bind the provider profile.")
-        try expectEqual(savePreview.action.impacts, ["credential_store", "app_local_data"], "Save preview should disclose credential and app-local impacts.")
+        try expectNil(savePreview.action.target.scope, "Provider actions are not agent-scoped.")
+        try expectNil(savePreview.action.projectID, "Provider actions are not project-scoped.")
+        try expectEqual(savePreview.action.impacts, ["app_local_data", "credential_store"], "Save preview should disclose credential and app-local impacts in protocol order.")
+        try expectEqual(savePreview.action.network, "none", "Provider save must not declare network access.")
+        try expectEqual(savePreview.action.readback, ["provider_profiles", "provider_credentials"], "Provider save must declare both profile and credential read-back.")
+        try expectEqual(
+            savePreview.preconditions.map(\.targetID),
+            ["provider-profiles", "provider-action-state"],
+            "Provider save must bind the provider store and replay state."
+        )
         let saved = try await client.saveAIProviderSettings(draft: draft, preview: savePreview)
         try expectEqual(saved.activeProfile?.model, "model-action", "Save apply should require verified read-back before returning refreshed state.")
 
         let testPreview = try await client.previewAIProviderConnectionTest(profileID: "openai-compatible")
-        try expectEqual(testPreview.action.network, "external", "Connection-test preview should disclose external network use.")
+        try expectEqual(testPreview.action.kind, "provider_connection_test", "Connection-test kind must match the Rust action contract.")
+        try expectNil(testPreview.action.target.scope, "Connection tests are not agent-scoped.")
+        try expectEqual(testPreview.action.impacts, ["app_local_data"], "Connection tests only persist bounded app-local activity.")
+        try expectEqual(testPreview.action.network, "required", "Connection-test preview should disclose required network use.")
+        try expectEqual(testPreview.action.readback, ["provider_profiles", "provider_activity"], "Connection test must declare profile and activity read-back.")
+        try expectEqual(
+            testPreview.preconditions.map(\.targetID),
+            ["provider-profiles", "provider-action-state"],
+            "Connection test must bind the provider store and replay state."
+        )
         let tested = try await client.testAIProviderConnection(preview: testPreview)
         try expectEqual(tested.readback?.verified, true, "Connection test should expose verified provider-activity read-back.")
+        try expectEqual(tested.readback?.domains, ["provider_profiles", "provider_activity"], "Connection-test apply must preserve the declared read-back domains.")
 
         let deletePreview = try await client.previewDeleteAIProviderSettings(
             profileID: "openai-compatible",
             deleteCredential: true
+        )
+        try expectEqual(deletePreview.action.kind, "provider_profile", "Delete preview kind must match the Rust action contract.")
+        try expectNil(deletePreview.action.target.scope, "Provider deletion is not agent-scoped.")
+        try expectEqual(deletePreview.action.impacts, ["app_local_data", "credential_store"], "Delete preview should disclose app-local and credential impacts in protocol order.")
+        try expectEqual(deletePreview.action.network, "none", "Provider deletion must not declare network access.")
+        try expectEqual(deletePreview.action.readback, ["provider_profiles", "provider_credentials"], "Provider deletion must declare profile and credential read-back.")
+        try expectEqual(
+            deletePreview.preconditions.map(\.targetID),
+            ["provider-profiles", "provider-action-state"],
+            "Provider deletion must bind the provider store and replay state."
         )
         let deleted = try await client.deleteAIProviderSettings(
             preview: deletePreview,
@@ -1178,7 +1219,7 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
     }
 
     private static let previewResponse = """
-    {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","request_kind":"task_cockpit","action":{"id":"prompt-preview-task","kind":"provider_prompt","intent":"send_provider_prompt","target":{"kind":"provider_profile","id":"openai-compatible","agent":null,"scope":"provider-global"},"project_id":null,"impacts":["external_network","app_local_data"],"preview_method":"llm.previewPrompt","apply_method":"llm.confirmPromptAndSend","source_revision":"sha256:prompt-preview","confirmation_required":true,"network":"external","readback":["provider_activity","prompt_runs"],"evidence_refs":["provider-profile:openai-compatible"]},"preconditions":[{"kind":"provider_profile","target_id":"openai-compatible","expected_revision":"sha256:profile"}],"preview_token":"action-preview:v1:hmac-sha256:fixture","scope":"agents","prompt_scope":"Task Preflight","enabled":true,"provider":"openai-compatible","model":"gpt-test","endpoint":"https://llm.example.com/v1","destination_host":"llm.example.com","included_fields":[],"excluded_fields":[],"redaction":{"status":"redacted","summary":"ok","redacted_fields":[],"placeholders":[]},"confirmation_required":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"draft_copy_only":true,"redacted_prompt_preview":"preview"}}
+    {"id":"test","ok":true,"result":{"preview_id":"prompt-preview-task","request_kind":"task_cockpit","action":{"id":"prompt-preview-task","kind":"provider_prompt","intent":"send_provider_prompt","target":{"kind":"provider_profile","id":"openai-compatible","agent":null,"scope":null},"project_id":null,"impacts":["app_local_data"],"preview_method":"llm.previewPrompt","apply_method":"llm.confirmPromptAndSend","source_revision":"sha256:prompt-preview","confirmation_required":true,"network":"required","readback":["provider_activity","prompt_runs"],"evidence_refs":["provider-profile:openai-compatible"]},"preconditions":[{"kind":"provider_profile","target_id":"provider-profiles","expected_revision":"sha256:profile"},{"kind":"prompt_context","target_id":"redacted-prompt","expected_revision":"sha256:redacted-prompt"},{"kind":"prompt_context","target_id":"provider-action-state","expected_revision":"sha256:provider-action-state-before"}],"preview_token":"action-preview:v1:hmac-sha256:fixture","scope":"agents","prompt_scope":"Task Preflight","enabled":true,"provider":"openai-compatible","model":"gpt-test","endpoint":"https://llm.example.com/v1","destination_host":"llm.example.com","included_fields":[],"excluded_fields":[],"redaction":{"status":"redacted","summary":"ok","redacted_fields":[],"placeholders":[]},"confirmation_required":true,"raw_prompt_persisted":false,"raw_response_persisted":false,"draft_copy_only":true,"redacted_prompt_preview":"preview"}}
     """
 
     private static let ruleSuppressionResponse = """
