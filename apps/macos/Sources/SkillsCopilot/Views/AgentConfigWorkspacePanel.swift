@@ -568,6 +568,7 @@ private struct AgentConfigSnapshotDetailPanel: View {
               let preview,
               preview.snapshot.id == snapshot.id,
               preview.rollbackSupported,
+              preview.changed,
               let confirmation = store.rollbackConfirmation,
               confirmation == RollbackConfirmation(preview: preview) else {
             return nil

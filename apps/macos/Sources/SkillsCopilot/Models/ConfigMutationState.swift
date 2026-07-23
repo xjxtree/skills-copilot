@@ -168,6 +168,7 @@ struct RollbackConfirmation: Identifiable, Hashable {
 
     init?(preview: SnapshotRollbackPreviewRecord) {
         guard preview.rollbackSupported,
+              preview.changed,
               !preview.previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }

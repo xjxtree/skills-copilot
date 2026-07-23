@@ -3219,6 +3219,14 @@ final class SkillStore: ObservableObject {
                   preview.action.target.scope == preview.snapshot.scope,
                   preview.action.network == "none",
                   preview.action.readback.contains("agent_config"),
+                  preview.changed,
+                  preview.preconditions.count == 2,
+                  preview.preconditions.contains(where: {
+                      $0.kind == "catalog_record"
+                          && $0.targetID == preview.snapshot.id
+                          && !$0.expectedRevision
+                            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  }),
                   preview.preconditions.contains(where: {
                       $0.kind == "agent_config"
                           && $0.targetID == preview.snapshot.target
@@ -3800,6 +3808,7 @@ final class SkillStore: ObservableObject {
                   preview.action.readback.contains("config_snapshots"),
                   !preview.candidateContentDigest
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  preview.preconditions.count == 1,
                   preview.preconditions.contains(where: {
                       $0.kind == "agent_config"
                           && $0.targetID == currentDocument.target
