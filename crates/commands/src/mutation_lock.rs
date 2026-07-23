@@ -8,6 +8,12 @@ use fs4::FileExt;
 
 use crate::CommandError;
 
+#[cfg(all(test, unix))]
+thread_local! {
+    static INJECT_NEXT_OWNER_DIRECTORY_SYNC_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 /// Cross-sidecar owner lock for every app-coordinated mutation.
 ///
 /// The owner directory must already exist. Acquiring this lock never creates a
@@ -226,6 +232,7 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
     })?;
     if created {
         fchmod(&owner, private_mode).map_err(io::Error::from)?;
+        sync_created_app_mutation_directory(&parent_file, &owner)?;
     }
     let file = owner;
     if !file.metadata()?.is_dir() {
@@ -263,10 +270,11 @@ fn open_app_mutation_directory_tree(
             Ok(next) => current = next,
             Err(error) if error == Errno::NOENT && create_missing => {
                 let mode = Mode::from_bits_truncate(0o700);
-                match mkdirat(&current, name, mode) {
-                    Ok(()) | Err(Errno::EXIST) => {}
+                let created = match mkdirat(&current, name, mode) {
+                    Ok(()) => true,
+                    Err(Errno::EXIST) => false,
                     Err(error) => return Err(io::Error::from(error).into()),
-                }
+                };
                 let next = openat(&current, name, flags, Mode::empty()).map_err(|error| {
                     let error = io::Error::from(error);
                     if is_unsafe_directory_error(&error) {
@@ -275,7 +283,10 @@ fn open_app_mutation_directory_tree(
                         error.into()
                     }
                 })?;
-                fchmod(&next, mode).map_err(io::Error::from)?;
+                if created {
+                    fchmod(&next, mode).map_err(io::Error::from)?;
+                    sync_created_app_mutation_directory(&current, &next)?;
+                }
                 current = next;
             }
             Err(error) if error == Errno::LOOP || error == Errno::NOTDIR => {
@@ -292,6 +303,36 @@ fn open_app_mutation_directory_tree(
         return Err(unsafe_owner());
     }
     Ok(file)
+}
+
+#[cfg(unix)]
+fn sync_created_app_mutation_directory(
+    parent: impl std::os::fd::AsFd,
+    directory: impl std::os::fd::AsFd,
+) -> Result<(), CommandError> {
+    use rustix::fs::fsync;
+
+    #[cfg(test)]
+    if INJECT_NEXT_OWNER_DIRECTORY_SYNC_FAILURE.with(|flag| flag.replace(false)) {
+        return Err(created_owner_durability_unknown(io::Error::other(
+            "injected app-data owner directory sync failure",
+        )));
+    }
+
+    fsync(directory)
+        .and_then(|()| fsync(parent))
+        .map_err(|error| created_owner_durability_unknown(io::Error::from(error)))
+}
+
+fn created_owner_durability_unknown(error: io::Error) -> CommandError {
+    CommandError::PartialEffect {
+        operation: "app-data owner initialization".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: false,
+        detail: format!(
+            "a private app-data directory was created, but its durability could not be verified: {error}"
+        ),
+    }
 }
 
 #[cfg(not(unix))]
@@ -317,6 +358,10 @@ fn open_app_mutation_directory_tree(
                     Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
                         fs::create_dir(&current)?;
+                        let directory = File::open(&current)?;
+                        directory.sync_all()?;
+                        let parent = current.parent().ok_or_else(unsafe_owner)?;
+                        File::open(parent)?.sync_all()?;
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -429,6 +474,9 @@ fn open_or_create_app_mutation_owner(path: &Path) -> Result<File, CommandError> 
     })?;
     validate_existing_owner(parent)?;
     fs::create_dir(path)?;
+    let directory = File::open(path)?;
+    directory.sync_all()?;
+    File::open(parent)?.sync_all()?;
     open_existing_app_mutation_owner(path)
 }
 
@@ -580,6 +628,49 @@ mod tests {
             !root.join("missing-parent").exists(),
             "missing parent rejection must remain zero-write"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn confirmed_owner_creation_reports_unknown_outcome_when_directory_sync_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-create-mutation-owner-sync-failure-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create parent");
+        let owner = root.join("app-data");
+
+        INJECT_NEXT_OWNER_DIRECTORY_SYNC_FAILURE.with(|flag| flag.set(true));
+        let error = match lock_or_create_app_mutations(&owner) {
+            Ok(_) => panic!("directory sync failure must be partial"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                operation,
+                state: "outcome_unknown",
+                cleanup_required: false,
+                ..
+            } if operation == "app-data owner initialization"
+        ));
+        let metadata =
+            std::fs::metadata(&owner).expect("created private owner remains inspectable");
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::read_dir(&owner).expect("read owner").count(),
+            0,
+            "durability failure must happen before any child state is created"
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 
