@@ -239,6 +239,9 @@ struct SkillStoreTests {
         try await runCase("setProjectStoresContextAndScans") {
             try await setProjectStoresContextAndScans()
         }
+        try await runCase("requestedProjectSelectionOutlivesTransientPicker") {
+            try await requestedProjectSelectionOutlivesTransientPicker()
+        }
         try await runCase("clearProjectClearsContextAndScans") {
             try await clearProjectClearsContextAndScans()
         }
@@ -2409,6 +2412,30 @@ struct SkillStoreTests {
         try expectContains(fake.calls(), "project.setContext", "Project set should call the service project method.")
         try expectContains(fake.calls(), "catalog.scanAll", "Project set should scan after a valid context is selected.")
         try expectEqual(store.lastMutationMessage, UIStrings.projectSelectedAndScanned("Fixture Project"), "Project set should expose a context refresh message.")
+    }
+
+    private func requestedProjectSelectionOutlivesTransientPicker() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "project-set")
+
+        let store = SkillStore(service: fake.serviceClient())
+        store.requestProjectSelection(
+            rootPath: "/tmp/project",
+            currentCWD: "/tmp/project",
+            name: "Fixture Project"
+        )
+
+        try expectEqual(
+            store.isProjectUpdating,
+            true,
+            "The persistent store should claim the project transition before the picker disappears."
+        )
+        try await waitUntil("A picker-owned request should finish after the picker view disappears.") {
+            store.activeProjectContext?.name == "Fixture Project" && !store.isProjectUpdating
+        }
+        try expectContains(fake.calls(), "project.setContext", "The retained request should apply the selected project.")
+        try expectContains(fake.calls(), "catalog.scanAll", "The retained request should refresh the selected project.")
     }
 
     private func clearProjectClearsContextAndScans() async throws {

@@ -569,14 +569,11 @@ private struct TitlebarProjectPickerControl: View {
                     ForEach(store.recentProjectContexts) { context in
                         HStack(spacing: 4) {
                             Button {
-                                isPopoverPresented = false
-                                Task {
-                                    await store.setProject(
-                                        rootPath: context.rootPath,
-                                        currentCWD: context.currentCWD,
-                                        name: context.name
-                                    )
-                                }
+                                selectProject(
+                                    rootPath: context.rootPath,
+                                    currentCWD: context.currentCWD,
+                                    name: context.name
+                                )
                             } label: {
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(context.name)
@@ -588,9 +585,20 @@ private struct TitlebarProjectPickerControl: View {
                                         .truncationMode(.middle)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                             .padding(.vertical, 6)
+                            .accessibilityIdentifier("project.recent.\(context.id)")
+                            .accessibilityAction(named: Text(UIStrings.chooseProject)) {
+                                selectProject(
+                                    rootPath: context.rootPath,
+                                    currentCWD: context.currentCWD,
+                                    name: context.name
+                                )
+                            }
 
                             Button(role: .destructive) {
                                 Task { await store.removeRecentProject(id: context.id) }
@@ -700,14 +708,21 @@ private struct TitlebarProjectPickerControl: View {
         panel.prompt = UIStrings.chooseProject
 
         if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                await store.setProject(
-                    rootPath: url.path,
-                    currentCWD: url.path,
-                    name: url.lastPathComponent
-                )
-            }
+            selectProject(
+                rootPath: url.path,
+                currentCWD: url.path,
+                name: url.lastPathComponent
+            )
         }
+    }
+
+    private func selectProject(rootPath: String, currentCWD: String?, name: String) {
+        store.requestProjectSelection(
+            rootPath: rootPath,
+            currentCWD: currentCWD,
+            name: name
+        )
+        isPopoverPresented = false
     }
 
     private func revealActiveProject() {

@@ -465,6 +465,7 @@ final class SkillStore: ObservableObject {
     private var taskCockpitOperationID: UUID?
     private var lastMutationMessageDismissTask: Task<Void, Never>?
     private var errorMessageDismissTask: Task<Void, Never>?
+    private var projectSelectionTask: Task<Void, Never>?
     private var agentFilterLoadTask: Task<Void, Never>?
     private var listCriteriaDetailTask: Task<Void, Never>?
     private var localSessionDetailTask: Task<Void, Never>?
@@ -673,6 +674,7 @@ final class SkillStore: ObservableObject {
         skillManagerLocalDeleteTask?.cancel()
         skillManagerLocalArchiveImportTask?.cancel()
         skillManagerLocalArchiveUpdateTask?.cancel()
+        projectSelectionTask?.cancel()
         localSessionDetailTask?.cancel()
         localSessionLoadAllTask?.cancel()
         let activityController = providerActivityController
@@ -1075,10 +1077,41 @@ final class SkillStore: ObservableObject {
     func setProject(rootPath: String, currentCWD: String? = nil, name: String? = nil) async {
         guard !isRefreshBusy else { return }
         let resolvedName = name ?? URL(fileURLWithPath: rootPath).lastPathComponent
+        beginProjectSelection(resolvedName: resolvedName)
+        await applyProjectSelection(
+            rootPath: rootPath,
+            currentCWD: currentCWD,
+            resolvedName: resolvedName
+        )
+    }
+
+    func requestProjectSelection(rootPath: String, currentCWD: String? = nil, name: String? = nil) {
+        guard projectSelectionTask == nil, !isRefreshBusy else { return }
+        let resolvedName = name ?? URL(fileURLWithPath: rootPath).lastPathComponent
+        beginProjectSelection(resolvedName: resolvedName)
+        projectSelectionTask = Task { [weak self] in
+            guard let self else { return }
+            await self.applyProjectSelection(
+                rootPath: rootPath,
+                currentCWD: currentCWD,
+                resolvedName: resolvedName
+            )
+            self.projectSelectionTask = nil
+        }
+    }
+
+    private func beginProjectSelection(resolvedName: String) {
         isProjectUpdating = true
         projectTransitionName = resolvedName.isEmpty ? UIStrings.projectSelectedSource : resolvedName
         errorMessage = nil
         lastMutationMessage = nil
+    }
+
+    private func applyProjectSelection(
+        rootPath: String,
+        currentCWD: String?,
+        resolvedName: String
+    ) async {
         defer {
             isProjectUpdating = false
             projectTransitionName = nil
