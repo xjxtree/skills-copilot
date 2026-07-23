@@ -850,4 +850,81 @@ mod tests {
         );
         std::fs::remove_dir_all(root).ok();
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn tree_snapshot_and_copy_reject_hard_linked_source_files_without_touching_victim() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-tree-hardlink-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let source = owner_path.join("source");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&source).expect("source");
+        std::fs::write(&victim, b"unchanged").expect("victim");
+        std::fs::hard_link(&victim, source.join("linked.txt")).expect("hard link");
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+
+        let snapshot =
+            owner.snapshot_regular_tree(Path::new("source"), 16, 1024, 1024, "source tree");
+        let copied = owner.copy_regular_tree(
+            Path::new("source"),
+            Path::new("copy"),
+            16,
+            1024,
+            1024,
+            "source tree",
+        );
+
+        assert!(matches!(snapshot, Err(CommandError::UnsafeConfigPath(_))));
+        assert!(matches!(copied, Err(CommandError::UnsafeConfigPath(_))));
+        assert!(!owner_path.join("copy").exists());
+        assert_eq!(std::fs::read(&victim).expect("victim"), b"unchanged");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn owner_rename_atomically_refuses_a_target_created_at_the_last_boundary() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-rename-race-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let source = owner_path.join("source");
+        let destination = owner_path.join("destination");
+        std::fs::create_dir_all(&source).expect("source");
+        std::fs::write(source.join("SKILL.md"), b"source").expect("source file");
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+        let raced_destination = destination.clone();
+        tree::install_owner_rename_test_hook(PathBuf::from("destination"), move || {
+            std::fs::create_dir(&raced_destination).expect("raced destination");
+            std::fs::write(raced_destination.join("sentinel"), b"unchanged")
+                .expect("destination sentinel");
+        });
+
+        let result = owner.rename(Path::new("source"), Path::new("destination"));
+
+        assert!(matches!(result, Err(CommandError::StaleActionReference)));
+        assert_eq!(
+            std::fs::read(source.join("SKILL.md")).expect("source preserved"),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("sentinel")).expect("destination preserved"),
+            b"unchanged"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
 }

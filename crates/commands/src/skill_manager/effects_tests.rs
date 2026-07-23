@@ -7,6 +7,9 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 static MANAGER_PRE_EXECUTE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(unix)]
+static MANAGER_POST_COMMIT_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn test_preview(operation: &str) -> SkillManagerCommandPreview {
     SkillManagerCommandPreview {
         action: None,
@@ -666,6 +669,72 @@ fn manager_rejects_a_lock_on_owner_b_when_catalog_is_anchored_to_owner_a() {
     );
     drop(catalog);
     fs::remove_dir_all(root).ok();
+}
+
+#[test]
+#[cfg(unix)]
+fn committed_manager_mutations_report_partial_when_owner_rebinds_before_return() {
+    use std::os::unix::fs::symlink;
+
+    let _serial = MANAGER_POST_COMMIT_TEST_SERIAL
+        .lock()
+        .expect("serialize manager post-commit hooks");
+    for operation in ["install", "update", "localCreate"] {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-{operation}-post-commit-owner-{}-{unique}",
+            std::process::id()
+        ));
+        let app_data = root.join("app-data");
+        let moved_owner = root.join("committed-owner");
+        let victim = root.join("victim");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&victim).expect("victim");
+        fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+        let lock = crate::mutation_lock::lock_app_mutations(&app_data).expect("owner lock");
+        let owner = lock.owner_fs();
+        let mut preview = test_preview(operation);
+        preview.requires_confirmation = true;
+        preview.confirmed = true;
+        let raced_app_data = app_data.clone();
+        let raced_moved_owner = moved_owner.clone();
+        let raced_victim = victim.clone();
+        install_manager_post_commit_test_hook(operation, move || {
+            fs::rename(&raced_app_data, &raced_moved_owner).expect("move committed owner");
+            symlink(&raced_victim, &raced_app_data).expect("replace owner path");
+        });
+
+        let error = validate_manager_owner_after_commit(
+            &AdapterContext {
+                user_home: root.join("home"),
+                project_root: None,
+                project_cwd: None,
+                extra_roots: Vec::new(),
+            },
+            &preview,
+            &owner,
+        )
+        .expect_err("post-commit owner rebind");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "applied_unverified",
+                cleanup_required: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(victim.join("sentinel")).expect("victim sentinel"),
+            b"unchanged"
+        );
+        assert_eq!(fs::read_dir(&victim).expect("victim entries").count(), 1);
+        fs::remove_file(&app_data).expect("remove raced link");
+        fs::remove_dir_all(root).ok();
+    }
 }
 
 #[test]

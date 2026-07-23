@@ -39,6 +39,16 @@ static ARCHIVE_POST_ACTIVATION_FAILURES: std::sync::Mutex<Vec<PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
+struct ArchivePostActivationTestHook {
+    path: PathBuf,
+    action: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+static ARCHIVE_POST_ACTIVATION_TEST_HOOKS: std::sync::Mutex<Vec<ArchivePostActivationTestHook>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
 fn install_archive_post_activation_failure(path: PathBuf) {
     ARCHIVE_POST_ACTIVATION_FAILURES
         .lock()
@@ -47,7 +57,33 @@ fn install_archive_post_activation_failure(path: PathBuf) {
 }
 
 #[cfg(test)]
+fn install_archive_post_activation_test_hook(
+    path: PathBuf,
+    action: impl FnOnce() + Send + 'static,
+) {
+    ARCHIVE_POST_ACTIVATION_TEST_HOOKS
+        .lock()
+        .expect("lock archive activation hooks")
+        .push(ArchivePostActivationTestHook {
+            path,
+            action: Box::new(action),
+        });
+}
+
+#[cfg(test)]
 fn run_archive_post_activation_test_hook(path: &Path) -> Result<(), CommandError> {
+    let action = {
+        let mut hooks = ARCHIVE_POST_ACTIVATION_TEST_HOOKS
+            .lock()
+            .expect("lock archive activation hooks");
+        hooks
+            .iter()
+            .position(|candidate| candidate.path == path)
+            .map(|position| hooks.remove(position).action)
+    };
+    if let Some(action) = action {
+        action();
+    }
     let mut failures = ARCHIVE_POST_ACTIVATION_FAILURES
         .lock()
         .expect("lock archive activation failures");
@@ -287,6 +323,17 @@ pub fn apply_local_archive_import(
         }
     }
     applied.commit();
+    super::run_manager_post_commit_test_hook("localArchiveImport");
+    owner.validate_owner_path_binding().map_err(|error| {
+        archive_partial(
+            "skillManager.applyLocalArchiveImport",
+            "applied_unverified",
+            true,
+            format!(
+                "app-data owner binding changed after catalog commit; the committed import was preserved for inspection: {error}"
+            ),
+        )
+    })?;
     Ok(record)
 }
 
@@ -719,6 +766,17 @@ pub fn apply_local_archive_update(
                     .to_string(),
         });
     }
+    super::run_manager_post_commit_test_hook("localArchiveUpdate");
+    owner.validate_owner_path_binding().map_err(|error| {
+        archive_partial(
+            "skillManager.applyLocalArchiveUpdate",
+            "applied_unverified",
+            true,
+            format!(
+                "app-data owner binding changed after catalog commit and private cleanup; the committed update is no longer bound to the active owner: {error}"
+            ),
+        )
+    })?;
     Ok(SkillManagerLocalArchiveUpdateRecord {
         follow_up,
         ..record
@@ -2526,6 +2584,241 @@ mod tests {
         );
 
         fs::remove_file(archive).ok();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn archive_import_owner_drift_after_activation_is_partial_and_never_touches_victim() {
+        use std::os::unix::fs::symlink;
+
+        let skill_name = "archive-owner-drift-import";
+        let archive = write_archive(
+            "owner-drift-import",
+            &[(
+                "archive-owner-drift-import/SKILL.md",
+                "---\nname: archive-owner-drift-import\ndescription: Candidate\n---\n# Candidate",
+            )],
+        );
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-archive-owner-drift-import-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let app_data = root.join("app-data");
+        let moved_owner = root.join("accepted-owner");
+        let victim = root.join("victim");
+        let home = root.join("home");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&victim).expect("victim");
+        fs::create_dir_all(&home).expect("home");
+        fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+        let catalog = Catalog::in_memory().expect("catalog");
+        catalog.init().expect("catalog schema");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+        let preview = preview_local_archive_import(
+            &catalog,
+            &app_data,
+            &ctx,
+            &SkillManagerLocalArchiveImportParams {
+                archive_path: archive.to_string_lossy().to_string(),
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect("preview");
+        let activation_path = app_data
+            .canonicalize()
+            .expect("canonical app data")
+            .join("tool-global/skills")
+            .join(skill_name)
+            .join("SKILL.md");
+        let raced_app_data = app_data.clone();
+        let raced_moved_owner = moved_owner.clone();
+        let raced_victim = victim.clone();
+        install_archive_post_activation_test_hook(activation_path, move || {
+            fs::rename(&raced_app_data, &raced_moved_owner).expect("move owner");
+            symlink(&raced_victim, &raced_app_data).expect("replace owner path");
+        });
+
+        let error = apply_local_archive_import(
+            &catalog,
+            &app_data,
+            &ctx,
+            &SkillManagerLocalArchiveImportParams {
+                archive_path: archive.to_string_lossy().to_string(),
+                confirmed: true,
+                preview_token: Some(preview.preview_token),
+                action_reference: Some(ActionReference::from(&preview.action)),
+            },
+        )
+        .expect_err("post-activation owner drift");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "applied_unverified",
+                cleanup_required: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(victim.join("sentinel")).expect("victim sentinel"),
+            b"unchanged"
+        );
+        assert_eq!(fs::read_dir(&victim).expect("victim entries").count(), 1);
+        assert!(
+            !moved_owner
+                .join("tool-global/skills")
+                .join(skill_name)
+                .exists(),
+            "the descriptor-anchored recovery must remove the activated candidate"
+        );
+
+        fs::remove_file(&app_data).expect("remove raced link");
+        fs::remove_file(archive).ok();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn app_owned_archive_update_owner_drift_restores_original_without_touching_victim() {
+        use std::os::unix::fs::symlink;
+
+        let skill_name = "archive-owner-drift-update";
+        let original_archive = write_archive(
+            "owner-drift-update-original",
+            &[(
+                "archive-owner-drift-update/SKILL.md",
+                "---\nname: archive-owner-drift-update\ndescription: Original\n---\n# Original",
+            )],
+        );
+        let candidate_archive = write_archive(
+            "owner-drift-update-candidate",
+            &[(
+                "archive-owner-drift-update/SKILL.md",
+                "---\nname: archive-owner-drift-update\ndescription: Candidate\n---\n# Candidate",
+            )],
+        );
+        let root = std::env::temp_dir().join(format!(
+            "skill-manager-archive-owner-drift-update-{}-{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let app_data = root.join("app-data");
+        let moved_owner = root.join("accepted-owner");
+        let victim = root.join("victim");
+        let home = root.join("home");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&victim).expect("victim");
+        fs::create_dir_all(&home).expect("home");
+        fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+        let catalog = Catalog::in_memory().expect("catalog");
+        catalog.init().expect("catalog schema");
+        let ctx = AdapterContext {
+            user_home: home,
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+        let import_preview = preview_local_archive_import(
+            &catalog,
+            &app_data,
+            &ctx,
+            &SkillManagerLocalArchiveImportParams {
+                archive_path: original_archive.to_string_lossy().to_string(),
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect("import preview");
+        let imported = apply_local_archive_import(
+            &catalog,
+            &app_data,
+            &ctx,
+            &SkillManagerLocalArchiveImportParams {
+                archive_path: original_archive.to_string_lossy().to_string(),
+                confirmed: true,
+                preview_token: Some(import_preview.preview_token),
+                action_reference: Some(ActionReference::from(&import_preview.action)),
+            },
+        )
+        .expect("import original");
+        let instance_id = imported.instance_id.expect("imported instance");
+        let update_preview = preview_local_archive_update(
+            &catalog,
+            &app_data,
+            &ctx,
+            &SkillManagerLocalArchiveUpdateParams {
+                instance_id: instance_id.clone(),
+                archive_path: candidate_archive.to_string_lossy().to_string(),
+                confirmed: false,
+                preview_token: None,
+                action_reference: None,
+            },
+        )
+        .expect("update preview");
+        let activation_path = imported
+            .imported_skill
+            .as_ref()
+            .expect("imported skill")
+            .path
+            .clone();
+        let raced_app_data = app_data.clone();
+        let raced_moved_owner = moved_owner.clone();
+        let raced_victim = victim.clone();
+        install_archive_post_activation_test_hook(activation_path, move || {
+            fs::rename(&raced_app_data, &raced_moved_owner).expect("move owner");
+            symlink(&raced_victim, &raced_app_data).expect("replace owner path");
+        });
+
+        let error = apply_local_archive_update(
+            &catalog,
+            &app_data,
+            &ctx,
+            &SkillManagerLocalArchiveUpdateParams {
+                instance_id,
+                archive_path: candidate_archive.to_string_lossy().to_string(),
+                confirmed: true,
+                preview_token: Some(update_preview.preview_token),
+                action_reference: Some(ActionReference::from(&update_preview.action)),
+            },
+        )
+        .expect_err("post-activation owner drift");
+
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "applied_unverified",
+                cleanup_required: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(victim.join("sentinel")).expect("victim sentinel"),
+            b"unchanged"
+        );
+        assert_eq!(fs::read_dir(&victim).expect("victim entries").count(), 1);
+        let restored = fs::read_to_string(
+            moved_owner
+                .join("tool-global/skills")
+                .join(skill_name)
+                .join("SKILL.md"),
+        )
+        .expect("restored original");
+        assert!(restored.contains("# Original"));
+        assert!(!restored.contains("# Candidate"));
+
+        fs::remove_file(&app_data).expect("remove raced link");
+        fs::remove_file(original_archive).ok();
+        fs::remove_file(candidate_archive).ok();
         fs::remove_dir_all(root).ok();
     }
 }

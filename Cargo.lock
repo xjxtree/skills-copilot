@@ -229,7 +229,7 @@ version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7e180ac76c23b45e767bd7ae9579bc0bb458618c4bc71835926e098e61d15f8"
 dependencies = [
- "rustix",
+ "rustix 0.38.44",
  "windows-sys 0.52.0",
 ]
 
@@ -444,6 +444,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
 name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -608,8 +614,21 @@ dependencies = [
  "bitflags",
  "errno",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.4.15",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rustix"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+dependencies = [
+ "bitflags",
+ "errno",
+ "libc",
+ "linux-raw-sys 0.12.1",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -792,7 +811,7 @@ name = "skills-copilot-catalog"
 version = "0.1.5"
 dependencies = [
  "rusqlite",
- "rustix",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
@@ -808,7 +827,7 @@ dependencies = [
  "fs4",
  "json5",
  "rusqlite",
- "rustix",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "serde_norway",
@@ -852,7 +871,7 @@ dependencies = [
  "json5",
  "keyring",
  "rusqlite",
- "rustix",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",

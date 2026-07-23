@@ -15,6 +15,51 @@ use super::{
 use super::{guarded_fallback_path, unsafe_relative_path};
 use crate::CommandError;
 
+#[cfg(test)]
+struct OwnerRenameTestHook {
+    target: PathBuf,
+    action: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+static OWNER_RENAME_TEST_HOOK: std::sync::Mutex<Option<OwnerRenameTestHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(super) fn install_owner_rename_test_hook(
+    target: PathBuf,
+    action: impl FnOnce() + Send + 'static,
+) {
+    let mut hook = OWNER_RENAME_TEST_HOOK
+        .lock()
+        .expect("lock owner rename hook");
+    assert!(hook.is_none(), "owner rename hook already set");
+    *hook = Some(OwnerRenameTestHook {
+        target,
+        action: Box::new(action),
+    });
+}
+
+#[cfg(test)]
+fn run_owner_rename_test_hook(target: &Path) {
+    let action = {
+        let mut hook = OWNER_RENAME_TEST_HOOK
+            .lock()
+            .expect("lock owner rename hook");
+        if hook.as_ref().is_some_and(|hook| hook.target == target) {
+            hook.take().map(|hook| hook.action)
+        } else {
+            None
+        }
+    };
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(not(test))]
+fn run_owner_rename_test_hook(_target: &Path) {}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct AppDataTreeSnapshot {
     pub(crate) present: bool,
@@ -109,16 +154,50 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(to)?;
         #[cfg(unix)]
         {
-            use rustix::fs::{fsync, renameat, statat, AtFlags};
+            use rustix::fs::fsync;
 
             let (from_parent, from_name) = self.open_parent(from, false)?;
             let (to_parent, to_name) = self.open_parent(to, false)?;
-            match statat(&to_parent, to_name, AtFlags::SYMLINK_NOFOLLOW) {
-                Err(rustix::io::Errno::NOENT) => {}
-                Ok(_) => return Err(CommandError::StaleActionReference),
-                Err(error) => return Err(io::Error::from(error).into()),
+            run_owner_rename_test_hook(to);
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "android",
+                target_os = "linux",
+                target_os = "redox"
+            ))]
+            {
+                use rustix::fs::{renameat_with, RenameFlags};
+
+                match renameat_with(
+                    &from_parent,
+                    from_name,
+                    &to_parent,
+                    to_name,
+                    RenameFlags::NOREPLACE,
+                ) {
+                    Ok(()) => {}
+                    Err(rustix::io::Errno::EXIST) => {
+                        return Err(CommandError::StaleActionReference)
+                    }
+                    Err(error) => return Err(io::Error::from(error).into()),
+                }
             }
-            renameat(&from_parent, from_name, &to_parent, to_name).map_err(io::Error::from)?;
+            #[cfg(not(any(
+                target_vendor = "apple",
+                target_os = "android",
+                target_os = "linux",
+                target_os = "redox"
+            )))]
+            {
+                use rustix::fs::{renameat, statat, AtFlags};
+
+                match statat(&to_parent, to_name, AtFlags::SYMLINK_NOFOLLOW) {
+                    Err(rustix::io::Errno::NOENT) => {}
+                    Ok(_) => return Err(CommandError::StaleActionReference),
+                    Err(error) => return Err(io::Error::from(error).into()),
+                }
+                renameat(&from_parent, from_name, &to_parent, to_name).map_err(io::Error::from)?;
+            }
             fsync(&from_parent).map_err(io::Error::from)?;
             fsync(&to_parent).map_err(io::Error::from)?;
             Ok(())
@@ -227,6 +306,8 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt;
+
             let root = match self.open_directory(relative) {
                 Ok(directory) => directory,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -241,6 +322,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             let mut rows = Vec::new();
             let mut entry_count = 0usize;
             let mut total_bytes = 0u64;
+            let owner_uid = self.lock.owner_directory().metadata()?.uid();
             while let Some((directory_relative, directory)) = pending.pop() {
                 let names = directory_entry_names(&directory)?;
                 for name in names {
@@ -260,6 +342,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                         &mut total_bytes,
                         max_total_bytes,
                         max_file_bytes,
+                        owner_uid,
                         label,
                     )?;
                 }
@@ -296,6 +379,8 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(to)?;
         #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt;
+
             use rustix::fs::{fchmod, fsync, mkdirat, openat, Mode};
 
             let source = self.open_directory(from)?;
@@ -314,6 +399,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             fchmod(&destination, directory_mode).map_err(io::Error::from)?;
             let mut entry_count = 0usize;
             let mut total_bytes = 0u64;
+            let owner_uid = self.lock.owner_directory().metadata()?.uid();
             if let Err(error) = copy_directory_contents(
                 &source,
                 &File::from(destination),
@@ -322,6 +408,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 max_entries,
                 max_total_bytes,
                 max_file_bytes,
+                owner_uid,
                 label,
             ) {
                 let _ = self.remove_tree_if_exists(to);
@@ -381,8 +468,11 @@ fn snapshot_child(
     total_bytes: &mut u64,
     max_total_bytes: u64,
     max_file_bytes: u64,
+    owner_uid: u32,
     label: &str,
 ) -> Result<(), CommandError> {
+    use std::os::unix::fs::MetadataExt;
+
     use rustix::fs::{openat, statat, AtFlags, FileType, Mode, OFlags};
 
     let metadata = statat(directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)?;
@@ -408,7 +498,13 @@ fn snapshot_child(
             .map_err(io::Error::from)?;
             let mut file = File::from(descriptor);
             let file_metadata = file.metadata()?;
-            if !file_metadata.is_file() || file_metadata.len() > max_file_bytes {
+            if !file_metadata.is_file()
+                || file_metadata.uid() != owner_uid
+                || file_metadata.nlink() != 1
+            {
+                return Err(unsafe_relative_file(label));
+            }
+            if file_metadata.len() > max_file_bytes {
                 return Err(CommandError::InvalidSkillManagerRequest(format!(
                     "{label} contains a file beyond its safety budget"
                 )));
@@ -486,8 +582,11 @@ fn copy_directory_contents(
     max_entries: usize,
     max_total_bytes: u64,
     max_file_bytes: u64,
+    owner_uid: u32,
     label: &str,
 ) -> Result<(), CommandError> {
+    use std::os::unix::fs::MetadataExt;
+
     use rustix::fs::{fchmod, fsync, mkdirat, openat, statat, AtFlags, FileType, Mode, OFlags};
 
     let directory_mode = Mode::from_bits_truncate(0o700);
@@ -518,6 +617,7 @@ fn copy_directory_contents(
                     max_entries,
                     max_total_bytes,
                     max_file_bytes,
+                    owner_uid,
                     label,
                 )?;
             }
@@ -535,7 +635,13 @@ fn copy_directory_contents(
                 .map_err(io::Error::from)?;
                 let mut source_file = File::from(source_descriptor);
                 let source_metadata = source_file.metadata()?;
-                if !source_metadata.is_file() || source_metadata.len() > max_file_bytes {
+                if !source_metadata.is_file()
+                    || source_metadata.uid() != owner_uid
+                    || source_metadata.nlink() != 1
+                {
+                    return Err(unsafe_relative_file(label));
+                }
+                if source_metadata.len() > max_file_bytes {
                     return Err(CommandError::InvalidSkillManagerRequest(format!(
                         "{label} contains a file beyond its safety budget"
                     )));

@@ -2047,6 +2047,152 @@ fn local_delete_rechecks_the_whole_tree_under_target_lock_before_rename() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
+#[cfg(unix)]
+fn exercise_local_delete_owner_replacement(after_commit: bool) {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let phase = if after_commit {
+        "post-commit"
+    } else {
+        "pre-effect"
+    };
+    let temp_root = temp_test_dir(&format!("local-delete-owner-replacement-{phase}"));
+    let app_data = temp_root.join("app-data");
+    let moved_owner = temp_root.join("locked-owner");
+    let victim = temp_root.join("victim");
+    let source_path = tool_global_staging_skills_root(&app_data)
+        .join(format!("delete-owner-{phase}"))
+        .join("SKILL.md");
+    std::fs::create_dir_all(source_path.parent().expect("source parent")).expect("create source");
+    std::fs::write(
+        &source_path,
+        format!("---\nname: delete-owner-{phase}\ndescription: original\n---\noriginal"),
+    )
+    .expect("write source");
+    std::fs::create_dir(&victim).expect("create victim");
+    std::fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o750)).expect("victim mode");
+    let victim_mode = std::fs::metadata(&victim)
+        .expect("victim metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    let catalog = Catalog::in_memory().expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let instance_id = format!("tool-global-delete-owner-{phase}");
+    let mut instance = install_tool_global_instance(
+        &instance_id,
+        source_path.clone(),
+        &format!("delete-owner-{phase}"),
+    );
+    instance.agent = AgentId::ToolGlobal;
+    catalog
+        .upsert_skill_instance(&instance)
+        .expect("upsert tool-global");
+    let preview = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance_id.clone(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("delete preview");
+    let raced_app_data = app_data.clone();
+    let raced_moved_owner = moved_owner.clone();
+    let raced_victim = victim.clone();
+    let race = move || {
+        std::fs::rename(&raced_app_data, &raced_moved_owner).expect("move locked owner");
+        symlink(&raced_victim, &raced_app_data).expect("replace owner path");
+    };
+    if after_commit {
+        skill_manager::install_manager_post_commit_test_hook("deleteLocal", race);
+    } else {
+        skill_manager::install_local_delete_pre_rename_test_hook(
+            source_path.canonicalize().expect("canonical source"),
+            race,
+        );
+    }
+
+    let error = delete_local_skill_with_manager(
+        &catalog,
+        &app_data,
+        &SkillManagerDeleteLocalParams {
+            instance_id: instance_id.clone(),
+            confirmed: true,
+            preview_token: preview.preview_token.clone(),
+            action_reference: preview.action.as_ref().map(ActionReference::from),
+        },
+    )
+    .expect_err("owner replacement must fail closed");
+
+    if after_commit {
+        assert!(matches!(
+            error,
+            CommandError::PartialEffect {
+                state: "applied_unverified",
+                cleanup_required: true,
+                ..
+            }
+        ));
+    } else {
+        assert!(matches!(error, CommandError::UnsafeConfigPath(_)));
+    }
+    assert_eq!(
+        std::fs::read(victim.join("sentinel")).expect("victim sentinel"),
+        b"unchanged"
+    );
+    assert_eq!(
+        std::fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        victim_mode
+    );
+    assert_eq!(
+        std::fs::read_dir(&victim).expect("victim entries").count(),
+        1,
+        "the victim must receive no delete or cleanup files"
+    );
+    assert_eq!(
+        catalog
+            .get_skill_record(&instance_id)
+            .expect("catalog lookup")
+            .is_some(),
+        !after_commit,
+        "the catalog may change only before the final post-commit binding check"
+    );
+    assert_eq!(
+        moved_owner
+            .join(
+                source_path
+                    .strip_prefix(&app_data)
+                    .expect("source relative to owner")
+            )
+            .exists(),
+        !after_commit,
+        "pre-effect rejection preserves the source; committed delete remains applied"
+    );
+
+    std::fs::remove_file(&app_data).expect("remove raced owner link");
+    std::fs::remove_dir_all(&temp_root).ok();
+}
+
+#[test]
+#[cfg(unix)]
+fn local_delete_rejects_owner_replacement_before_any_effect_without_touching_victim() {
+    exercise_local_delete_owner_replacement(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn local_delete_reports_partial_when_owner_rebinds_after_commit_without_touching_victim() {
+    exercise_local_delete_owner_replacement(true);
+}
+
 static LOCAL_DELETE_RECREATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn exercise_local_delete_recreation(rollback_failure: bool) {
