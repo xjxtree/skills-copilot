@@ -54,6 +54,10 @@ struct SkillWorkspaceStoreTests {
             ["aggregate-alpha", "aggregate-bravo"],
             "Needs Attention must consume typed aggregate state."
         )
+        try expectNil(
+            store.selectedAggregateID,
+            "Loading the Skills route must not manufacture a selected aggregate."
+        )
         store.selectAggregate(id: "aggregate-bravo")
         store.configure(
             view: .all,
@@ -69,8 +73,8 @@ struct SkillWorkspaceStoreTests {
         )
         try expectEqual(
             store.selectedAggregateID,
-            "aggregate-zulu",
-            "Criteria changes must retain or normalize selection."
+            nil,
+            "Criteria changes must clear a selection that is no longer visible."
         )
         try expectEqual(client.requests.count, 1, "Criteria changes must not issue an RPC.")
 
@@ -263,6 +267,7 @@ struct SkillWorkspaceStoreTests {
             projectID: "project-one",
             expectedProjectContextRevision: "sha256:context-one"
         )
+        store.selectAggregate(id: "aggregate-accepted")
         let cancelledRefresh = Task {
             await store.refresh(
                 projectID: "project-one",

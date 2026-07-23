@@ -311,7 +311,7 @@ final class SkillWorkspaceStore: ObservableObject {
         if let preferred, visible.contains(where: { $0.id == preferred }) {
             selectedAggregateID = preferred
         } else {
-            selectedAggregateID = visible.first?.id
+            selectedAggregateID = nil
         }
     }
 
