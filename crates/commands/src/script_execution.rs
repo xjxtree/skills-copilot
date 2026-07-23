@@ -1,14 +1,13 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::Write,
+    env,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 use skills_copilot_core::AdapterContext;
 
-use super::{current_time_ms, ensure_path_inside, CommandError};
+use super::CommandError;
 
 pub const SCRIPT_EXECUTION_DISABLED_REASON: &str =
     "Script execution is disabled by default; the service will not spawn a process.";
@@ -117,18 +116,6 @@ pub struct ScriptExecutionConfirmation {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ScriptExecutionAttemptRecord {
-    pub id: String,
-    pub created_at: i64,
-    pub status: String,
-    pub outcome: String,
-    pub reason: String,
-    pub spawned_process: bool,
-    pub audit_path: String,
-    pub preview: ScriptExecutionPreviewRecord,
-}
-
 pub fn preview_script_execution(
     ctx: &AdapterContext,
     request: &ScriptExecutionRequest,
@@ -217,78 +204,6 @@ pub fn preview_script_execution(
         execution_allowed: false,
         disabled_reason: disabled_reason.to_string(),
     })
-}
-
-pub fn record_blocked_script_execution(
-    ctx: &AdapterContext,
-    audit_root: &Path,
-    audit_path: &Path,
-    request: &ScriptExecutionRequest,
-) -> Result<ScriptExecutionAttemptRecord, CommandError> {
-    if request.command.is_empty() {
-        return Err(CommandError::InvalidScriptExecutionRequest(
-            "script execution requires a non-empty command argv".to_string(),
-        ));
-    }
-    let preview = preview_script_execution(ctx, request)?;
-    let created_at = current_time_ms();
-    let outcome = if request.initiated_by == ScriptExecutionInitiator::Llm {
-        "llm_initiator_not_allowed"
-    } else {
-        "execution_disabled"
-    };
-    let reason = if request.initiated_by == ScriptExecutionInitiator::Llm {
-        "LLM-initiated execution is not allowed; no process was spawned."
-    } else {
-        SCRIPT_EXECUTION_DISABLED_REASON
-    };
-    let record = ScriptExecutionAttemptRecord {
-        id: format!("script-exec-{created_at}"),
-        created_at,
-        status: "blocked".to_string(),
-        outcome: outcome.to_string(),
-        reason: reason.to_string(),
-        spawned_process: false,
-        audit_path: audit_path.to_string_lossy().to_string(),
-        preview,
-    };
-    validate_script_audit_path(audit_root, audit_path)?;
-    let mut audit_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(audit_path)?;
-    let line = serde_json::to_string(&record)?;
-    writeln!(audit_file, "{line}")?;
-    Ok(record)
-}
-
-fn validate_script_audit_path(audit_root: &Path, audit_path: &Path) -> Result<(), CommandError> {
-    if audit_path.file_name().is_none() {
-        return Err(CommandError::UnsafeConfigPath(format!(
-            "script execution audit path must include a file name: {}",
-            audit_path.display()
-        )));
-    }
-    ensure_path_inside(audit_path, audit_root, "script execution audit path")?;
-    fs::create_dir_all(audit_root)?;
-    let parent = audit_path.parent().ok_or_else(|| {
-        CommandError::UnsafeConfigPath(format!(
-            "script execution audit path has no parent: {}",
-            audit_path.display()
-        ))
-    })?;
-    ensure_path_inside(parent, audit_root, "script execution audit parent")?;
-    fs::create_dir_all(parent)?;
-    let canonical_root = audit_root.canonicalize()?;
-    let canonical_parent = parent.canonicalize()?;
-    if !canonical_parent.starts_with(&canonical_root) {
-        return Err(CommandError::UnsafeConfigPath(format!(
-            "script execution audit path {} resolves outside audit root {}",
-            audit_path.display(),
-            audit_root.display()
-        )));
-    }
-    Ok(())
 }
 
 fn effective_script_cwd(ctx: &AdapterContext, requested: Option<&Path>) -> (PathBuf, &'static str) {

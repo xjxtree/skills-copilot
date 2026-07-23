@@ -85,8 +85,7 @@ pub use product_projection::*;
 pub use script_execution::*;
 pub use skill_bundle::*;
 pub(crate) use skill_bundle::{
-    ensure_path_inside, import_audit_summary, parse_tool_global_skill, short_hash,
-    stable_tool_global_instance_id,
+    import_audit_summary, parse_tool_global_skill, short_hash, stable_tool_global_instance_id,
 };
 pub use skill_manager::*;
 
