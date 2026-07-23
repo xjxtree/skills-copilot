@@ -271,7 +271,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
 
             use rustix::fs::{fsync, statat, unlinkat, AtFlags, Dir, FileType};
 
-            let directory = self.lock.try_clone_owner_directory()?;
+            let directory = self.lock.open_owner_directory()?;
             let mut entries = Dir::read_from(&directory).map_err(io::Error::from)?;
             let mut matches = Vec::new();
             for entry in &mut entries {
@@ -471,7 +471,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             self.ensure_directory_all(parent)?;
         }
         let directory = if parent.as_os_str().is_empty() {
-            self.lock.try_clone_owner_directory()?
+            self.lock.open_owner_directory()?
         } else {
             self.open_directory(parent)?
         };

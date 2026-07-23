@@ -21,10 +21,24 @@ impl AppMutationLock {
     /// Clone the already-opened no-follow app-data owner descriptor.
     ///
     /// Callers use this capability for descriptor-relative child I/O. The
-    /// clone names the same directory inode even if its display path is later
-    /// renamed or replaced.
-    pub fn try_clone_owner_directory(&self) -> Result<File, CommandError> {
-        self.file.try_clone().map_err(Into::into)
+    /// returned descriptor names the same directory inode even if its display
+    /// path is later renamed or replaced. On Unix it uses a fresh open-file
+    /// description so retaining the descriptor does not retain this guard's
+    /// advisory lock after the guard is dropped.
+    pub fn open_owner_directory(&self) -> Result<File, CommandError> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{openat, Mode, OFlags};
+
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            openat(&self.file, ".", flags, Mode::empty())
+                .map(File::from)
+                .map_err(|error| io::Error::from(error).into())
+        }
+        #[cfg(not(unix))]
+        {
+            self.file.try_clone().map_err(Into::into)
+        }
     }
 
     pub fn owner_directory(&self) -> &File {
@@ -636,7 +650,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn cloned_owner_descriptor_remains_on_the_locked_inode_after_path_replacement() {
+    fn opened_owner_descriptor_remains_on_the_locked_inode_after_path_replacement() {
         use std::os::unix::fs::{symlink, MetadataExt};
 
         let unique = SystemTime::now()
@@ -653,9 +667,7 @@ mod tests {
         std::fs::create_dir_all(&owner).expect("create owner");
         std::fs::create_dir(&victim).expect("create victim");
         let guard = lock_app_mutations(&owner).expect("lock owner");
-        let capability = guard
-            .try_clone_owner_directory()
-            .expect("clone owner descriptor");
+        let capability = guard.open_owner_directory().expect("open owner descriptor");
         let accepted = capability.metadata().expect("accepted owner metadata");
 
         std::fs::rename(&owner, &moved_owner).expect("move accepted owner");
@@ -676,6 +688,41 @@ mod tests {
         drop(capability);
         drop(guard);
         let _ = std::fs::remove_file(owner);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn opened_owner_descriptor_does_not_extend_the_mutation_guard_lock() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-owner-capability-lock-{}-{unique}",
+            std::process::id()
+        ));
+        let owner = root.join("app-data");
+        std::fs::create_dir_all(&owner).expect("create owner");
+
+        let guard = lock_app_mutations(&owner).expect("lock owner");
+        let capability = guard
+            .open_owner_directory()
+            .expect("open independent owner descriptor");
+        let competing = open_existing_app_mutation_owner(&owner).expect("open competing owner");
+        assert!(
+            competing.try_lock_exclusive().is_err(),
+            "the mutation guard must exclude a separate owner descriptor"
+        );
+
+        drop(guard);
+        competing
+            .try_lock_exclusive()
+            .expect("the retained capability must not retain the mutation lock");
+        competing.unlock().expect("unlock competing owner");
+        assert!(capability.metadata().expect("capability metadata").is_dir());
+
+        drop(capability);
         let _ = std::fs::remove_dir_all(root);
     }
 }
