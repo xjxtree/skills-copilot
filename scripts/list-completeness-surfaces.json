@@ -157,6 +157,28 @@
       "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
     },
     {
+      "id": "sessions-workspace.project-groups",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SessionsWorkspaceListView.swift",
+      "owner": "SessionsWorkspaceListView",
+      "source": "presentation.projectGroups",
+      "policy": "complete",
+      "total_count_source": "stable logical project-group count derived from the accepted session rows",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "sessions-workspace.rows",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/SessionsWorkspaceListView.swift",
+      "owner": "SessionsWorkspaceListView",
+      "source": "group.rows",
+      "policy": "paged",
+      "control_scope": "body",
+      "control_anchor": "state: presentation.completeness",
+      "total_count_source": "accepted fixed-revision session snapshot total after the current project, agent, and lexical filters",
+      "status_id": "sessions-workspace.completeness",
+      "full_access_id": "sessions-workspace.load-all",
+      "allowed_limitations": ["safety_budget", "source_changed", "source_limited", "unreadable_source", "page_failed", "unsupported_protocol"]
+    },
+    {
       "id": "skill-aggregate-detail.state-counts",
       "file": "apps/macos/Sources/SkillsCopilot/Views/SkillAggregateDetailView.swift",
       "owner": "SkillAggregateDetailView",

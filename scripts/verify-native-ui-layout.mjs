@@ -34,6 +34,15 @@ const files = {
   skillsWorkspaceModel: await read(
     "apps/macos/Sources/SkillsCopilot/Models/SkillsWorkspaceListPresentation.swift",
   ),
+  sessionsWorkspaceList: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/SessionsWorkspaceListView.swift",
+  ),
+  sessionsWorkspaceModel: await read(
+    "apps/macos/Sources/SkillsCopilot/Models/SessionWorkspaceListPresentation.swift",
+  ),
+  sessionWorkspaceStore: await read(
+    "apps/macos/Sources/SkillsCopilot/Stores/SessionWorkspaceStore.swift",
+  ),
   skillManagerEntryContext: await read(
     "apps/macos/Sources/SkillsCopilot/Models/SkillManagerEntryContext.swift",
   ),
@@ -393,6 +402,25 @@ const checks = [
       && /case \.supported\(let command\):[\s\S]*?onCopyResumeCommand\(command\)/.test(files.sessionWorkspaceDetail)
       && /never launches a terminal, runs this command, or translates the session to another agent/.test(files.sessionWorkspaceDetail)
       && !/NSWorkspace|Process\(|Terminal|osascript/.test(files.sessionWorkspaceDetail),
+  },
+  {
+    label: "Sessions workspace list is project-first, cache-filtered, paged, and explicit-selection",
+    text: [
+      files.sessionsWorkspaceList,
+      files.sessionsWorkspaceModel,
+      files.sessionWorkspaceStore,
+      files.localSessionCache,
+    ].join("\n"),
+    passed: /struct SessionWorkspaceListPresentation:[\s\S]*?static let orderedAgents:[\s\S]*?\.claudeCode,[\s\S]*?\.codex,[\s\S]*?\.opencode,[\s\S]*?\.pi,[\s\S]*?\.hermes,[\s\S]*?\.openclaw/.test(files.sessionsWorkspaceModel)
+      && /struct SessionWorkspaceCriteria:[\s\S]*?scope:\s*LocalSessionScopeFilter = \.project/.test(files.sessionWorkspaceStore)
+      && /struct SessionsWorkspaceListView:[\s\S]*?List\(selection:\s*selectionBinding\)[\s\S]*?ForEach\(presentation\.projectGroups\)[\s\S]*?Section\(group\.title\)[\s\S]*?ForEach\(group\.rows\)/.test(files.sessionsWorkspaceList)
+      && /let onSetCriteria:\s*\(SessionWorkspaceCriteria\) -> Void[\s\S]*?let onSelectSession:\s*\(String\?\) -> Void[\s\S]*?let onLoadNext:\s*\(\) async -> Void[\s\S]*?let onRefresh:\s*\(\) async -> Void/.test(files.sessionsWorkspaceList)
+      && /ListCompletenessFooter\([\s\S]*?state:\s*presentation\.completeness[\s\S]*?onLoadMore:[\s\S]*?onLoadAll:[\s\S]*?accessibilityIdentifierPrefix:\s*"sessions-workspace"/.test(files.sessionsWorkspaceList)
+      && /private var selectionBinding:\s*Binding<String\?>[\s\S]*?get:\s*\{\s*workspace\.selectedSessionID\s*\}[\s\S]*?set:\s*onSelectSession/.test(files.sessionsWorkspaceList)
+      && !/onAppear[\s\S]*?onSelectSession/.test(files.sessionsWorkspaceList)
+      && /enum SessionWorkspaceProjectGroupKind:[\s\S]*?case selectedProject[\s\S]*?case otherProject[\s\S]*?case unmatched/.test(files.sessionsWorkspaceModel)
+      && /struct SessionWorkspaceRowPresentation:[\s\S]*?let title:[\s\S]*?let agentLabel:[\s\S]*?let projectLabel:[\s\S]*?let timeLabel:[\s\S]*?let intentExcerpt:/.test(files.sessionsWorkspaceModel)
+      && !/redactedPath|sourceKind|contentHash/.test(files.sessionsWorkspaceList),
   },
   {
     label: "secondary sidebar omits the agent profile row and switches session, skill, or config lists",

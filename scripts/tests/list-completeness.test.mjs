@@ -977,6 +977,8 @@ test("repository manifest inventories every planned formal list", () => {
     "project-overview.recent-sessions",
     "provider.activity",
     "session.top-skills",
+    "sessions-workspace.project-groups",
+    "sessions-workspace.rows",
     "sessions.detail-messages",
     "sessions.sidebar",
     "sessions.workspace-detail-messages",
