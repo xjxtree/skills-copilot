@@ -290,6 +290,7 @@ fn keyset_page_keeps_every_distinct_skill_even_when_session_limit_is_one() {
             })
             .expect("seed catalog skill");
     }
+    drop(catalog);
 
     let page = ordered_result(
         &fixture,

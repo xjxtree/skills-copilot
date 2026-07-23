@@ -150,6 +150,9 @@ fn config_and_event_pages_match_legacy_order() -> Result<(), ServiceError> {
     let adapter_ctx = host.effective_adapter_ctx()?;
     let legacy_snapshots =
         list_agent_config_snapshots(&catalog, &adapter_ctx, "claude-code", None)?;
+    let legacy_events = list_skill_events(&catalog, &instance_id, None)?;
+    drop(catalog);
+
     let paged_snapshots = collect_config_pages(&host, "claude-code", 2)?;
     assert_eq!(
         paged_snapshots
@@ -161,7 +164,6 @@ fn config_and_event_pages_match_legacy_order() -> Result<(), ServiceError> {
             .map(|row| &row.id)
             .collect::<Vec<_>>(),
     );
-    let legacy_events = list_skill_events(&catalog, &instance_id, None)?;
     let paged_events = collect_event_pages(&host, &instance_id, 2)?;
     assert_eq!(
         paged_events.iter().map(|row| &row.id).collect::<Vec<_>>(),
@@ -184,7 +186,6 @@ fn config_and_event_pages_match_legacy_order() -> Result<(), ServiceError> {
         6
     );
 
-    drop(catalog);
     let _ = fs::remove_dir_all(root);
     Ok(())
 }
@@ -195,6 +196,7 @@ fn changed_catalog_revision_rejects_continuation() -> Result<(), ServiceError> {
     for index in 0..3 {
         seed_agent_config_snapshot(&catalog, &format!("snapshot-{index}"), 1_800_000_000_000)?;
     }
+    drop(catalog);
 
     let first = host.dispatch_value(
         "snapshot.listAgentConfigPage",
@@ -202,7 +204,9 @@ fn changed_catalog_revision_rejects_continuation() -> Result<(), ServiceError> {
             "agent": "claude-code", "limit": 2
         }),
     )?;
+    let catalog = Catalog::open(&host.catalog_path())?;
     seed_agent_config_snapshot(&catalog, "inserted-after-first-page", 1_900_000_000_000)?;
+    drop(catalog);
     let error = host
         .dispatch_value(
             "snapshot.listAgentConfigPage",
@@ -214,7 +218,6 @@ fn changed_catalog_revision_rejects_continuation() -> Result<(), ServiceError> {
         .expect_err("changed source must reject continuation");
     assert_eq!(error.code(), "source_changed");
 
-    drop(catalog);
     let _ = fs::remove_dir_all(root);
     Ok(())
 }
@@ -222,13 +225,11 @@ fn changed_catalog_revision_rejects_continuation() -> Result<(), ServiceError> {
 #[test]
 fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), ServiceError> {
     let (root, host, catalog) = local_catalog_fixture("config-page-atomic")?;
-    rusqlite::Connection::open(host.catalog_path())
-        .map_err(CatalogError::from)?
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(CatalogError::from)?;
     for index in 0..3 {
         seed_agent_config_snapshot(&catalog, &format!("snapshot-{index}"), 1_800_000_000_000)?;
     }
+    drop(catalog);
+
     let first = host.dispatch_value(
         "snapshot.listAgentConfigPage",
         json!({"agent": "claude-code", "limit": 2}),
@@ -242,6 +243,10 @@ fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), Service
         .map(|row| row.id)
         .collect::<Vec<_>>();
 
+    rusqlite::Connection::open(host.catalog_path())
+        .map_err(CatalogError::from)?
+        .pragma_update(None, "journal_mode", "WAL")
+        .map_err(CatalogError::from)?;
     let reader = Catalog::open_read_only(&host.catalog_path())?;
     let writer_path = host.catalog_path();
     let (start_writer_tx, start_writer_rx) = mpsc::channel();
@@ -282,6 +287,11 @@ fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), Service
         },
     )?;
     writer.join().expect("join config writer");
+    drop(reader);
+    rusqlite::Connection::open(host.catalog_path())
+        .map_err(CatalogError::from)?
+        .pragma_update(None, "journal_mode", "DELETE")
+        .map_err(CatalogError::from)?;
     let atomic_ids = atomic
         .records
         .iter()
@@ -306,7 +316,6 @@ fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), Service
         .expect_err("continuation must reject the committed config revision");
     assert_eq!(error.code(), "source_changed");
 
-    drop(catalog);
     let _ = fs::remove_dir_all(root);
     Ok(())
 }
@@ -314,14 +323,12 @@ fn config_page_revision_and_rows_share_one_read_snapshot() -> Result<(), Service
 #[test]
 fn event_page_revision_and_rows_share_one_read_snapshot() -> Result<(), ServiceError> {
     let (root, host, catalog) = local_catalog_fixture("event-page-atomic")?;
-    rusqlite::Connection::open(host.catalog_path())
-        .map_err(CatalogError::from)?
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(CatalogError::from)?;
     let instance_id = "atomic-event-instance";
     for _ in 0..3 {
         seed_skill_event(&catalog, instance_id, 1_800_000_000_000)?;
     }
+    drop(catalog);
+
     let first = host.dispatch_value(
         "skill.listEventsPage",
         json!({"instance_id": instance_id, "limit": 2}),
@@ -335,6 +342,10 @@ fn event_page_revision_and_rows_share_one_read_snapshot() -> Result<(), ServiceE
         .map(|row| row.id)
         .collect::<Vec<_>>();
 
+    rusqlite::Connection::open(host.catalog_path())
+        .map_err(CatalogError::from)?
+        .pragma_update(None, "journal_mode", "WAL")
+        .map_err(CatalogError::from)?;
     let reader = Catalog::open_read_only(&host.catalog_path())?;
     let writer_path = host.catalog_path();
     let (start_writer_tx, start_writer_rx) = mpsc::channel();
@@ -364,6 +375,11 @@ fn event_page_revision_and_rows_share_one_read_snapshot() -> Result<(), ServiceE
         Ok(())
     })?;
     writer.join().expect("join event writer");
+    drop(reader);
+    rusqlite::Connection::open(host.catalog_path())
+        .map_err(CatalogError::from)?
+        .pragma_update(None, "journal_mode", "DELETE")
+        .map_err(CatalogError::from)?;
     let atomic_ids = atomic.records.iter().map(|row| row.id).collect::<Vec<_>>();
     assert_eq!(
         &atomic_ids[..expected_ids.len()],
@@ -388,7 +404,6 @@ fn event_page_revision_and_rows_share_one_read_snapshot() -> Result<(), ServiceE
         .expect_err("continuation must reject the committed event revision");
     assert_eq!(error.code(), "source_changed");
 
-    drop(catalog);
     let _ = fs::remove_dir_all(root);
     Ok(())
 }
@@ -399,6 +414,8 @@ fn local_history_cursor_binding_and_limit_clamps_are_stable() -> Result<(), Serv
     for index in 0..105 {
         seed_agent_config_snapshot(&catalog, &format!("snapshot-{index:03}"), index)?;
     }
+    drop(catalog);
+
     let one = host.dispatch_value(
         "snapshot.listAgentConfigPage",
         json!({"agent": "claude-code", "limit": 0}),
@@ -430,7 +447,6 @@ fn local_history_cursor_binding_and_limit_clamps_are_stable() -> Result<(), Serv
         assert_eq!(error.code(), "invalid_request");
     }
 
-    drop(catalog);
     let _ = fs::remove_dir_all(root);
     Ok(())
 }

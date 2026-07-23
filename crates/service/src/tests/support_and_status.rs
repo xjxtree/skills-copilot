@@ -479,6 +479,7 @@ fn list_agent_config_snapshots_returns_selected_agent_timeline_only() {
             })
             .expect("create snapshot");
     }
+    drop(catalog);
 
     let response = host.handle(ServiceRequest {
         id: Some("timeline".to_string()),
@@ -1416,6 +1417,7 @@ fn llm_prepare_action_does_not_create_credentials_config_or_catalog_writes() {
     let before_snapshots = before_catalog
         .list_all_config_snapshots(None)
         .expect("snapshots before");
+    drop(before_catalog);
 
     let response = host.handle(ServiceRequest {
         id: Some("llm-no-write".to_string()),
@@ -1450,6 +1452,7 @@ fn llm_prepare_action_does_not_create_credentials_config_or_catalog_writes() {
     let serialized = serde_json::to_string(&response.result).expect("serialize response");
     assert!(!serialized.contains("OPENAI_API_KEY=<redacted>"));
     assert!(!serialized.contains("Analyze local skill posture"));
+    drop(after_catalog);
 
     let _ = fs::remove_dir_all(app_data_dir);
     let _ = fs::remove_dir_all(user_home);
@@ -1514,6 +1517,7 @@ fn app_snapshot_projects_external_codex_skill_config_without_rescan() {
     catalog
         .upsert_skill_instance(&instance)
         .expect("seed loaded skill");
+    drop(catalog);
 
     let config_path = user_home.join(".codex/config.toml");
     fs::create_dir_all(config_path.parent().expect("config parent")).expect("create config dir");
@@ -1537,6 +1541,7 @@ fn app_snapshot_projects_external_codex_skill_config_without_rescan() {
     assert_eq!(snapshot.health.disabled_count, 1);
     assert_eq!(snapshot.health.enabled_count, 0);
 
+    let catalog = Catalog::open(&host.catalog_path()).expect("open persisted catalog");
     let persisted = catalog
         .list_skill_records()
         .expect("list persisted records")
@@ -1548,6 +1553,7 @@ fn app_snapshot_projects_external_codex_skill_config_without_rescan() {
         persisted.enabled,
         "read projection must not mutate the catalog"
     );
+    drop(catalog);
 
     let detail_response = host.handle(ServiceRequest {
         id: Some("codex-live-detail".to_string()),
@@ -1575,9 +1581,11 @@ fn app_snapshot_projects_external_codex_skill_config_without_rescan() {
     let mut stale_disabled = instance.clone();
     stale_disabled.state = SkillState::Disabled;
     stale_disabled.enabled = false;
+    let catalog = Catalog::open(&host.catalog_path()).expect("open stale-state catalog");
     catalog
         .upsert_skill_instance(&stale_disabled)
         .expect("seed stale disabled state");
+    drop(catalog);
     fs::write(&config_path, "# external enable removed the override\n")
         .expect("clear disabled config");
 

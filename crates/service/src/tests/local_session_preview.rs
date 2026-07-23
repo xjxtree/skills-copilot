@@ -1963,6 +1963,7 @@ fn preview_opencode_unknown_classification_fixture(
             last_seen: 1,
         })
         .expect("seed explicit-unknown skill");
+    drop(catalog);
 
     let response = host.handle(ServiceRequest {
         id: Some(format!("session-preview-{test_name}")),
@@ -2927,6 +2928,7 @@ fn malformed_opencode_message_and_part_field_matrix_fails_closed() {
             last_seen: 1,
         })
         .expect("seed malformed matrix skill");
+    drop(catalog);
 
     let response = host.handle(ServiceRequest {
         id: Some("session-preview-opencode-malformed-matrix".to_string()),
@@ -3141,6 +3143,7 @@ fn pending_and_escaped_opencode_message_and_part_classifications_fail_closed() {
             last_seen: 1,
         })
         .expect("seed final16 skill");
+    drop(catalog);
 
     let response = host.handle(ServiceRequest {
         id: Some("session-preview-opencode-final16".to_string()),
