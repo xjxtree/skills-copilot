@@ -568,6 +568,16 @@ unsafe extern "C" fn anchored_io_fetch(
     amount: c_int,
     output: *mut *mut c_void,
 ) -> c_int {
+    if output.is_null() {
+        return ffi::SQLITE_IOERR;
+    }
+    // xFetch is optional even for version-3 sqlite3_io_methods. Advertising
+    // this wrapper means SQLite will call it directly, so the no-mapping
+    // success path must initialize the out pointer just like SQLite's own
+    // no-op implementation.
+    unsafe {
+        *output = ptr::null_mut();
+    }
     with_file_cwd(file, ffi::SQLITE_IOERR, |methods| {
         let Some(callback) = (unsafe { methods.as_ref() }).and_then(|methods| methods.xFetch)
         else {
@@ -611,4 +621,19 @@ fn with_file_cwd(
     with_owner_cwd(state, failure, || {
         callback(entry.parent_methods as *const ffi::sqlite3_io_methods)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fetch_initializes_output_before_a_failed_lookup() {
+        let mut output = 1usize as *mut c_void;
+
+        let result = unsafe { anchored_io_fetch(ptr::null_mut(), 0, 1, &mut output) };
+
+        assert_eq!(result, ffi::SQLITE_IOERR);
+        assert!(output.is_null());
+    }
 }
