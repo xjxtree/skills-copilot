@@ -3,6 +3,7 @@ use super::dispatch_fixtures::*;
 use super::skill_manager_fixtures::assert_skill_manager_page_metadata;
 use super::*;
 use crate::privacy_cleanup::LegacyPrivateContentCleanupParams;
+use skills_copilot_core::{ProjectReadinessRecord, SessionContinuationRecord};
 
 #[test]
 pub(super) fn service_protocol_fixtures_decode() {
@@ -40,6 +41,36 @@ pub(super) fn service_protocol_fixtures_decode() {
                 assert!(!params.session_id.is_empty());
             }
             match request.method.as_str() {
+                "project.getReadiness" => {
+                    let params =
+                        serde_json::from_value::<ProductReadParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(!params.project_id.is_empty());
+                    assert!(!params.expected_project_context_revision.is_empty());
+                }
+                "catalog.listSkillAggregates" => {
+                    let params =
+                        serde_json::from_value::<SkillAggregateListParams>(request.params.clone())
+                            .unwrap_or_else(|error| {
+                                panic!("request fixture {} params failed: {error}", path.display())
+                            });
+                    assert!(!params.project_id.is_empty());
+                    assert!(!params.expected_project_context_revision.is_empty());
+                }
+                "session.previewResume" => {
+                    let params = serde_json::from_value::<SessionResumePreviewParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(!params.agent.is_empty());
+                    assert!(!params.session_id.is_empty());
+                    assert!(!params.expected_source_revision.is_empty());
+                    assert!(!params.expected_snapshot_revision.is_empty());
+                }
                 "catalog.scanClaude" | "catalog.scanAll" => {
                     let params =
                         serde_json::from_value::<CatalogScanParams>(request.params.clone())
@@ -708,6 +739,29 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                     && diagnostic.access.writable_status == "guarded-v2.97"
             }));
         }
+        "project.getReadiness" => {
+            let readiness: ProjectReadinessRecord = decode_fixture_result(method, result, path);
+            readiness
+                .validate()
+                .unwrap_or_else(|error| panic!("{method} fixture failed validation: {error}"));
+        }
+        "catalog.listSkillAggregates" => {
+            let aggregates: SkillAggregateListResult = decode_fixture_result(method, result, path);
+            aggregates
+                .coverage
+                .validate()
+                .unwrap_or_else(|error| panic!("{method} coverage failed validation: {error}"));
+            aggregates
+                .page
+                .validate(aggregates.aggregates.len())
+                .unwrap_or_else(|error| panic!("{method} page failed validation: {error}"));
+            for aggregate in &aggregates.aggregates {
+                aggregate.validate().unwrap_or_else(|error| {
+                    panic!("{method} aggregate fixture failed validation: {error}")
+                });
+                assert_eq!(aggregate.source_revision, aggregates.source_revision);
+            }
+        }
         "session.previewLocalSessions" => {
             let preview: WireLocalSessionPreviewResult =
                 decode_fixture_result(method, result, path);
@@ -776,6 +830,13 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 assert!(!row.content_included);
                 assert!(row.content_items.is_empty());
             }
+        }
+        "session.previewResume" => {
+            let continuation: SessionContinuationRecord =
+                decode_fixture_result(method, result, path);
+            continuation
+                .validate()
+                .unwrap_or_else(|error| panic!("{method} fixture failed validation: {error}"));
         }
         "session.listLocalSessionMessages" => {
             let page: WireLocalSessionMessagePageResult =

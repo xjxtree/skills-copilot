@@ -84,8 +84,8 @@ Core product records enforce these invariants before service exposure:
   reason; incomplete continuation coverage cannot carry supported resume. A
   continuation's evidence binds its native source revision, while actions bind
   its accepted product snapshot revision.
-- Project and skill aggregate records reject evidence or actions bound to their
-  source revision. Session continuation records enforce the native/snapshot
+- Project and skill aggregate records reject evidence or actions not bound to
+  their source revision. Session continuation records enforce the native/snapshot
   split above. Every record rejects actions that refer to unknown evidence.
 - Projection action ids are unique. Skill, agent, and session inputs may attach
   an action only when its target and every evidence reference belong to that

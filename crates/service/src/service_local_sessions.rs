@@ -15,10 +15,6 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 mod classification;
 mod message_paging;
 mod paging;
-// Task 4's protocol dispatch consumes these items after the product snapshot
-// and native wire branches are merged. Keep this isolated branch warning-free
-// while the callable integration point lives in a disjoint worktree.
-#[allow(dead_code)]
 mod resume;
 mod sqlite_sessions;
 
@@ -27,11 +23,9 @@ use classification::{
     is_unhelpful_local_session_title, local_session_metadata_is_internal,
     local_session_role_classification, local_session_type_name_classification,
 };
-#[allow(unused_imports)]
 pub(crate) use resume::{
-    native_resume_locator_from_file_content, preview_session_resume_from_snapshot,
-    project_session_continuation, SessionNativeResumeLocator, SessionResumeEvidence,
-    SessionResumePreviewError, SessionResumePreviewParams,
+    native_resume_locator_from_file_content, SessionNativeResumeLocator, SessionResumePreviewError,
+    SessionResumePreviewParams,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

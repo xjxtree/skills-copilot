@@ -75,6 +75,7 @@ fn status_request_returns_supported_methods() {
     assert!(methods.contains(&Value::String("adapter.listDiagnostics".to_string())));
     assert!(methods.contains(&Value::String("app.search".to_string())));
     assert!(methods.contains(&Value::String("session.previewLocalSessions".to_string())));
+    assert!(methods.contains(&Value::String("session.previewResume".to_string())));
     assert!(methods.contains(&Value::String("llm.status".to_string())));
     assert!(methods.contains(&Value::String("llm.listProviderProfiles".to_string())));
     assert!(methods.contains(&Value::String("llm.saveProviderProfile".to_string())));

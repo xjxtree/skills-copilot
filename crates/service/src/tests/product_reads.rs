@@ -344,3 +344,104 @@ fn accepted_product_snapshot_revalidation_rejects_later_config_changes() {
     ));
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn session_resume_dispatch_binds_native_inventory_to_current_product_snapshot() {
+    let (root, host, project_id, context_revision) = product_test_host("session-resume");
+    scan_all(&host, &context_revision);
+
+    let project = host
+        .adapter_ctx
+        .project_root
+        .clone()
+        .expect("active project root");
+    let sessions = root.join("authorized-sessions");
+    fs::create_dir_all(&sessions).expect("create session root");
+    fs::write(
+        sessions.join("session.jsonl"),
+        json!({
+            "type": "user",
+            "sessionId": "claude-native-fixture",
+            "cwd": project,
+            "message": {
+                "role": "user",
+                "content": "Continue the product read protocol"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write Claude session");
+
+    let list = host.handle(ServiceRequest {
+        id: Some("session-list".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "authorized_roots": [sessions],
+            "auto_discover": false,
+            "agent": "claude-code",
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 100,
+            "sort": "modified_at",
+            "direction": "desc",
+            "project_root": project,
+            "current_cwd": project
+        }),
+    });
+    assert!(list.ok, "{:?}", list.error);
+    let list = list.result.expect("session list result");
+    let session_id = list
+        .pointer("/session_rows/0/id")
+        .and_then(Value::as_str)
+        .expect("session row id");
+    let session_source_revision = list
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .expect("session source revision");
+
+    let readiness = host.handle(ServiceRequest {
+        id: Some("readiness".to_string()),
+        method: "project.getReadiness".to_string(),
+        params: json!({
+            "project_id": project_id,
+            "expected_project_context_revision": context_revision
+        }),
+    });
+    assert!(readiness.ok, "{:?}", readiness.error);
+    let product_source_revision = readiness
+        .result
+        .as_ref()
+        .and_then(|value| value.get("source_revision"))
+        .and_then(Value::as_str)
+        .expect("product source revision");
+
+    let resume = host.handle(ServiceRequest {
+        id: Some("resume".to_string()),
+        method: "session.previewResume".to_string(),
+        params: json!({
+            "authorized_roots": [sessions],
+            "auto_discover": false,
+            "agent": "claude-code",
+            "project_root": project,
+            "current_cwd": project,
+            "session_id": session_id,
+            "expected_source_revision": session_source_revision,
+            "expected_snapshot_revision": product_source_revision
+        }),
+    });
+    assert!(resume.ok, "{:?}", resume.error);
+    let record = resume.result.expect("resume result");
+    assert_eq!(record["project_id"], json!(project_id));
+    assert_eq!(
+        record.pointer("/resume/argv"),
+        Some(&json!(["claude", "--resume", "claude-native-fixture"]))
+    );
+    assert_eq!(record["source_revision"], json!(session_source_revision));
+    assert_eq!(record["snapshot_revision"], json!(product_source_revision));
+    assert_eq!(
+        record.pointer("/actions/0/impacts"),
+        Some(&json!(["read_only"]))
+    );
+    let _ = fs::remove_dir_all(root);
+}

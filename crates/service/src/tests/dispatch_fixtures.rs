@@ -178,12 +178,31 @@ fn dispatch_coverage_params(method: &str) -> Value {
             "direction": "desc",
             "max_excerpt_chars": 800
         }),
+        "session.previewResume" => json!({
+            "authorized_roots": [],
+            "auto_discover": true,
+            "agent": "codex",
+            "project_root": "/tmp/skills-copilot-missing-project",
+            "current_cwd": "/tmp/skills-copilot-missing-project",
+            "session_id": "missing-session",
+            "expected_source_revision": "sha256:missing-session-source",
+            "expected_snapshot_revision": "sha256:missing-product-snapshot"
+        }),
         "session.listLocalSessionMessages" => json!({
             "authorized_roots": ["/tmp/skills-copilot-fixture-sessions"],
             "auto_discover": false,
             "agent": "codex",
             "session_id": "missing-session",
             "limit": 4
+        }),
+        "project.getReadiness" => json!({
+            "project_id": "missing-project",
+            "expected_project_context_revision": "sha256:missing-project-context"
+        }),
+        "catalog.listSkillAggregates" => json!({
+            "project_id": "missing-project",
+            "expected_project_context_revision": "sha256:missing-project-context",
+            "limit": 10
         }),
         "script.previewExecution" => json!({
             "instance_id": "missing-skill",

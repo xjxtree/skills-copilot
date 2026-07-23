@@ -99,6 +99,7 @@ use provider::{
     TestProviderConnectionParams,
 };
 pub(crate) use service_llm_prompt_helpers::*;
+pub(crate) use service_local_sessions::SessionResumePreviewParams;
 pub(crate) use service_observability_helpers::*;
 pub(crate) use service_product_reads::*;
 pub use service_support_helpers::handle_request_json;
@@ -1632,6 +1633,8 @@ pub enum ServiceError {
     MutationDisabled(&'static str),
     #[error("list source changed during pagination")]
     SourceChanged,
+    #[error("selected session was not found in the accepted local session snapshot")]
+    SessionNotFound,
     #[error("an active project context is required")]
     ProjectContextRequired,
     #[error("requested project does not match the active project context")]
@@ -1696,6 +1699,7 @@ impl ServiceError {
             Self::ConfirmationRequired(_) => "confirmation_required",
             Self::MutationDisabled(_) => "mutation_disabled",
             Self::SourceChanged => "source_changed",
+            Self::SessionNotFound => "session_not_found",
             Self::ProjectContextRequired => "project_context_required",
             Self::ProjectContextMismatch => "project_context_mismatch",
             Self::StaleProjectContext => "stale_project_context",

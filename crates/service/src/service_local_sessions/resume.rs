@@ -92,6 +92,7 @@ pub(crate) enum SessionResumePreviewError {
 }
 
 impl SessionResumePreviewError {
+    #[cfg(test)]
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::InvalidRequest(_)
@@ -102,6 +103,16 @@ impl SessionResumePreviewError {
             | Self::SourceUnavailable => "invalid_request",
             Self::SessionNotFound => "session_not_found",
             Self::SourceChanged => "source_changed",
+        }
+    }
+}
+
+impl From<SessionResumePreviewError> for ServiceError {
+    fn from(error: SessionResumePreviewError) -> Self {
+        match error {
+            SessionResumePreviewError::SessionNotFound => Self::SessionNotFound,
+            SessionResumePreviewError::SourceChanged => Self::SourceChanged,
+            other => Self::InvalidRequest(other.to_string()),
         }
     }
 }
@@ -540,6 +551,7 @@ fn file_session_source_revision(candidates: &[FileResumeCandidate]) -> String {
 /// and both optional revisions against server-owned records before returning a
 /// copyable command. A caller must not substitute client-supplied records for
 /// `records`.
+#[cfg(test)]
 pub(crate) fn preview_session_resume_from_snapshot(
     records: &[SessionContinuationRecord],
     session_id: &str,
@@ -819,6 +831,7 @@ fn required_value(
     Ok(value)
 }
 
+#[cfg(test)]
 fn optional_expected_revision(
     value: Option<&str>,
 ) -> Result<Option<&str>, SessionResumePreviewError> {

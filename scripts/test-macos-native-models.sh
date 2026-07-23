@@ -123,9 +123,9 @@ import Foundation
 do {
     let summary = try await runAllNativeModelTestsAsync()
     try expectEqual(summary.serviceSuiteCount, 2, "Service suite count")
-    try expectEqual(summary.mainSuiteCount, 24, "Main suite count")
+    try expectEqual(summary.mainSuiteCount, 25, "Main suite count")
     try expectEqual(summary.skillStoreGroupCount, 64, "SkillStore group count")
-    try expectEqual(summary.namedExecutionCount, 90, "Named execution count")
+    try expectEqual(summary.namedExecutionCount, 91, "Named execution count")
 } catch {
     fputs("SkillsCopilotTests: \(error)\n", stderr)
     exit(1)

@@ -60,7 +60,7 @@ pub(crate) struct SkillAggregateListParams {
     pub source_revision: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SkillAggregateListResult {
     pub source_revision: String,
     pub coverage: SourceCoverage,
@@ -85,6 +85,29 @@ pub(crate) struct AcceptedProductSnapshot {
 }
 
 impl ServiceHost {
+    pub(crate) fn accept_active_product_snapshot(
+        &self,
+        expected_product_source_revision: Option<&str>,
+    ) -> Result<AcceptedProductSnapshot, ServiceError> {
+        let env_context = self.env_project_context();
+        let context_revision =
+            effective_project_context_revision(&self.app_data_dir, env_context.as_ref())?;
+        let active = match env_context {
+            Some(active) => active,
+            None => load_project_context_state(&self.app_data_dir)?
+                .active
+                .ok_or(ServiceError::ProjectContextRequired)?,
+        };
+        if active.validation_error.is_some() {
+            return Err(ServiceError::ProjectContextRequired);
+        }
+        self.accept_current_product_snapshot(
+            &active.id,
+            &context_revision,
+            expected_product_source_revision,
+        )
+    }
+
     /// Accepts one current project/catalog/config snapshot for additive product
     /// reads. Session resume integration uses this seam instead of duplicating
     /// active-project and revision checks. The optional revision is the product

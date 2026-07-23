@@ -130,6 +130,20 @@ impl ServiceHost {
                 };
                 serde_json::to_value(self.preview_local_sessions(params)?).map_err(Into::into)
             }
+            "session.previewResume" => {
+                let params: SessionResumePreviewParams =
+                    serde_json::from_value(request.params)?;
+                let snapshot = self.accept_active_product_snapshot(Some(
+                    params.expected_snapshot_revision.as_str(),
+                ))?;
+                let continuation = self.preview_session_resume(
+                    params,
+                    &snapshot.source_revision,
+                    Some(snapshot.project_id.clone()),
+                );
+                self.revalidate_current_product_snapshot(&snapshot)?;
+                serde_json::to_value(continuation?).map_err(Into::into)
+            }
             "session.listLocalSessionMessages" => {
                 let params: LocalSessionMessagePageParams = serde_json::from_value(request.params)?;
                 serde_json::to_value(self.list_local_session_messages(params)?).map_err(Into::into)
