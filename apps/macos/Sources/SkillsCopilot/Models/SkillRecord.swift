@@ -1159,16 +1159,12 @@ struct CatalogScanReadback: Codable, Hashable {
         case verified
     }
 
-    func validate(result: ScanResult) throws {
-        guard verified,
-              !acceptedContextRevision.isEmpty,
-              !catalogScanRevision.isEmpty,
-              acceptedContextRevision == result.acceptedContextRevision,
-              catalogScanRevision == result.catalogScanRevision else {
-            throw ServiceClient.ClientError.invalidOutput(
-                "Catalog scan read-back did not match the accepted context and scan revisions."
-            )
-        }
+    func matches(result: ScanResult) -> Bool {
+        verified
+            && !acceptedContextRevision.isEmpty
+            && !catalogScanRevision.isEmpty
+            && acceptedContextRevision == result.acceptedContextRevision
+            && catalogScanRevision == result.catalogScanRevision
     }
 }
 

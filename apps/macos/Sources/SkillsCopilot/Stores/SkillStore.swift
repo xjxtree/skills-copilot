@@ -859,7 +859,11 @@ final class SkillStore: ObservableObject {
                     ? acceptedContextRevision
                     : nil
             )
-            try result.readback.validate(result: result)
+            guard result.readback.matches(result: result) else {
+                throw ServiceClient.ClientError.invalidOutput(
+                    "Catalog scan read-back did not match the accepted context and scan revisions."
+                )
+            }
             guard generation == projectScanGeneration,
                   projectContextState?.revision == result.acceptedContextRevision else {
                 return false

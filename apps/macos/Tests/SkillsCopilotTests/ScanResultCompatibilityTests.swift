@@ -70,6 +70,22 @@ struct ScanResultCompatibilityTests {
 
         try expectEqual(result.scannedCount, 1, "Legacy ScanResult should decode its scan count.")
         try expectEqual(result.skills.count, 1, "Legacy ScanResult should decode its skill collection.")
+        try expectFalse(
+            !result.readback.matches(result: result),
+            "A verified read-back should match the exact accepted context and scan revisions."
+        )
+        let mismatchedResult = ScanResult(
+            scannedCount: result.scannedCount,
+            skills: result.skills,
+            activity: result.activity,
+            acceptedContextRevision: "sha256:different-project-context",
+            catalogScanRevision: result.catalogScanRevision,
+            readback: result.readback
+        )
+        try expectFalse(
+            result.readback.matches(result: mismatchedResult),
+            "A read-back must reject a result from a different accepted project context."
+        )
         try expectEqual(activity.status, "completed", "Legacy scan activity should remain a completed result.")
         try expectEqual(summary.status, "completed", "Legacy agent summary should remain completed.")
         try expectEqual(summary.rootsPartial, [], "Missing additive partial roots should default to an empty list.")
