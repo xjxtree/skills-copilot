@@ -85,6 +85,89 @@ fn local_create_preview_refuses_an_existing_staging_destination_without_modifyin
 }
 
 #[test]
+#[cfg(unix)]
+fn local_create_preview_rejects_an_app_owned_intermediate_symlink_without_reading_its_target() {
+    use std::os::unix::fs::symlink;
+
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
+    let temp_root = std::env::temp_dir().join(format!(
+        "skill-manager-local-create-linked-parent-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let app_data = temp_root.join("app-data");
+    let victim = temp_root.join("victim");
+    fs::create_dir_all(&app_data).expect("app-data");
+    fs::create_dir_all(&victim).expect("victim");
+    fs::write(victim.join("sentinel"), b"unchanged").expect("victim sentinel");
+    symlink(&victim, app_data.join("local-skill-library")).expect("linked parent");
+    let ctx = AdapterContext {
+        user_home: temp_root.join("home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+
+    let result = build_local_create_preview(
+        &app_data,
+        &ctx,
+        &SkillManagerLocalCreateParams {
+            name: "linked".to_string(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    );
+
+    assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
+    assert_eq!(
+        fs::read(victim.join("sentinel")).expect("victim remains"),
+        b"unchanged"
+    );
+    assert!(!victim.join("sources/linked").exists());
+    fs::remove_dir_all(temp_root).ok();
+}
+
+#[test]
+fn local_create_preview_keeps_a_missing_app_data_owner_absent() {
+    crate::initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
+    let temp_root = std::env::temp_dir().join(format!(
+        "skill-manager-local-create-zero-write-{}-{}",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let app_data = temp_root.join("app-data");
+    fs::create_dir_all(&temp_root).expect("existing owner parent");
+    let ctx = AdapterContext {
+        user_home: temp_root.join("home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+
+    let preview = build_local_create_preview(
+        &app_data,
+        &ctx,
+        &SkillManagerLocalCreateParams {
+            name: "new-skill".to_string(),
+            confirmed: false,
+            preview_token: None,
+            action_reference: None,
+        },
+    )
+    .expect("zero-write preview");
+
+    assert_eq!(preview.preconditions.len(), 2);
+    assert!(
+        !app_data.exists(),
+        "a local-create preview must not bootstrap app data"
+    );
+    fs::remove_dir_all(temp_root).ok();
+}
+
+#[test]
 fn machine_stdout_capture_is_private_and_removed_on_drop() {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;

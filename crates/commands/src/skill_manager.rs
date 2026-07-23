@@ -2163,20 +2163,13 @@ fn build_local_create_preview(
 ) -> Result<SkillManagerCommandPreview, CommandError> {
     let name = safe_skill_name(&params.name)?;
     let cwd = local_create_root(app_data_dir);
-    let staging_destination = local_create_staging_destination_path(app_data_dir, &name)?;
-    match fs::symlink_metadata(&staging_destination) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => {
-            return Err(CommandError::StaleActionReference);
-        }
-        Err(error) => return Err(error.into()),
-    }
     let args = vec![
         SKILLS_CLI_BINARY.to_string(),
         "init".to_string(),
         name.clone(),
     ];
-    command_preview(
+    local_create_command_preview(
+        app_data_dir,
         ctx,
         CommandPreviewDraft {
             operation: "localCreate",
@@ -2293,7 +2286,23 @@ impl SkillManagerCommandOutput {
 
 pub(super) fn command_preview(
     ctx: &AdapterContext,
+    draft: CommandPreviewDraft,
+) -> Result<SkillManagerCommandPreview, CommandError> {
+    command_preview_with_app_data_owner(ctx, draft, None)
+}
+
+fn local_create_command_preview(
+    app_data_dir: &Path,
+    ctx: &AdapterContext,
+    draft: CommandPreviewDraft,
+) -> Result<SkillManagerCommandPreview, CommandError> {
+    command_preview_with_app_data_owner(ctx, draft, Some(app_data_dir))
+}
+
+fn command_preview_with_app_data_owner(
+    ctx: &AdapterContext,
     mut draft: CommandPreviewDraft,
+    app_data_dir: Option<&Path>,
 ) -> Result<SkillManagerCommandPreview, CommandError> {
     let executable = npx_executable()?;
     let command = {
@@ -2307,9 +2316,12 @@ pub(super) fn command_preview(
         &command,
         &draft.cwd,
         draft.operation,
-        draft.network_required,
-        draft.network_allowed,
-        draft.accepted_revision.as_deref(),
+        ManagerActionBindingOptions {
+            network_required: draft.network_required,
+            network_allowed: draft.network_allowed,
+            accepted_revision: draft.accepted_revision.as_deref(),
+            app_data_dir,
+        },
     )?;
     let preview_token = action_binding
         .as_ref()
@@ -3094,6 +3106,14 @@ fn owner_manager_target_revision(
     relative: &Path,
     logical_path: &Path,
 ) -> Result<String, CommandError> {
+    owner_manager_target_state(owner, relative, logical_path).map(|(_, revision)| revision)
+}
+
+fn owner_manager_target_state(
+    owner: &crate::AppDataOwnerFs<'_>,
+    relative: &Path,
+    logical_path: &Path,
+) -> Result<(bool, String), CommandError> {
     let snapshot = owner.snapshot_regular_tree(
         relative,
         MAX_MANAGER_TARGET_ENTRIES,
@@ -3101,7 +3121,8 @@ fn owner_manager_target_revision(
         MAX_MANAGER_TARGET_BYTES,
         "manager target tree",
     )?;
-    let entries = if snapshot.present {
+    let present = snapshot.present;
+    let entries = if present {
         let mut entries = Vec::with_capacity(snapshot.rows.len().saturating_add(1));
         entries.push("directory:<root>".to_string());
         entries.extend(snapshot.rows.into_iter().map(|row| {
@@ -3113,6 +3134,15 @@ fn owner_manager_target_revision(
     } else {
         vec!["missing:<root>".to_string()]
     };
+    let revision = manager_target_revision_from_entries(logical_path, entries)?;
+    Ok((present, revision))
+}
+
+fn manager_target_revision_from_entries(
+    logical_path: &Path,
+    mut entries: Vec<String>,
+) -> Result<String, CommandError> {
+    entries.sort();
     let entries_json = serde_json::to_string(&entries)?;
     action_source_revision(
         "manager.target-tree",
@@ -3121,6 +3151,74 @@ fn owner_manager_target_revision(
             ("entries", &entries_json),
         ],
     )
+}
+
+fn local_create_preview_target_revisions(
+    app_data_dir: &Path,
+    command: &[String],
+    cwd: &Path,
+) -> Result<Vec<(PathBuf, String)>, CommandError> {
+    let name = command
+        .windows(2)
+        .find(|window| window[0] == "init")
+        .map(|window| safe_skill_name(&window[1]))
+        .transpose()?
+        .ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "localCreate command has no target skill name".to_string(),
+            )
+        })?;
+    if cwd != local_create_root(app_data_dir) {
+        return Err(CommandError::MismatchedActionReference(
+            "local create working directory does not belong to the app-data owner".to_string(),
+        ));
+    }
+    let targets = [
+        (cwd.join(&name), local_create_source_relative(&name)?),
+        (
+            local_create_staging_destination_path(app_data_dir, &name)?,
+            local_create_staging_destination_relative(app_data_dir, &name)?,
+        ),
+    ];
+
+    for _ in 0..2 {
+        match crate::lock_app_mutations(app_data_dir) {
+            Ok(owner_lock) => {
+                let owner = owner_lock.owner_fs();
+                let mut revisions = Vec::with_capacity(targets.len());
+                for (index, (logical, relative)) in targets.iter().enumerate() {
+                    let (present, revision) =
+                        owner_manager_target_state(&owner, relative, logical)?;
+                    if index == 1 && present {
+                        return Err(CommandError::StaleActionReference);
+                    }
+                    revisions.push((logical.clone(), revision));
+                }
+                owner_lock.validate_owner_path_binding()?;
+                return Ok(revisions);
+            }
+            Err(CommandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                match crate::mutation_lock::app_mutation_owner_is_missing(app_data_dir) {
+                    Ok(true) => {
+                        return targets
+                            .iter()
+                            .map(|(logical, _)| {
+                                manager_target_revision_from_entries(
+                                    logical,
+                                    vec!["missing:<root>".to_string()],
+                                )
+                                .map(|revision| (logical.clone(), revision))
+                            })
+                            .collect();
+                    }
+                    Ok(false) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(CommandError::StaleActionReference)
 }
 
 fn verify_local_create_target_transition(
@@ -3579,15 +3677,26 @@ fn validate_manager_preconditions_except(
     Ok(())
 }
 
+struct ManagerActionBindingOptions<'path> {
+    network_required: bool,
+    network_allowed: bool,
+    accepted_revision: Option<&'path str>,
+    app_data_dir: Option<&'path Path>,
+}
+
 fn manager_action_binding(
     ctx: &AdapterContext,
     command: &[String],
     cwd: &Path,
     operation: &str,
-    network_required: bool,
-    network_allowed: bool,
-    accepted_revision: Option<&str>,
+    options: ManagerActionBindingOptions<'_>,
 ) -> Result<Option<ActionPreviewBinding>, CommandError> {
+    let ManagerActionBindingOptions {
+        network_required,
+        network_allowed,
+        accepted_revision,
+        app_data_dir,
+    } = options;
     let (kind, intent, preview_method, apply_method) = match operation {
         "search" => (
             ActionKind::RefreshEvidence,
@@ -3738,11 +3847,25 @@ fn manager_action_binding(
             expected_revision: manager_inventory_revision(&snapshot.inventory_paths)?,
         });
     }
-    for target in snapshot.skill_paths {
+    let target_revisions = if local_create {
+        let app_data_dir = app_data_dir.ok_or_else(|| {
+            CommandError::MismatchedActionReference(
+                "local create preview is missing its app-data owner".to_string(),
+            )
+        })?;
+        local_create_preview_target_revisions(app_data_dir, command, cwd)?
+    } else {
+        snapshot
+            .skill_paths
+            .into_iter()
+            .map(|target| manager_target_revision(&target).map(|revision| (target, revision)))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (target, expected_revision) in target_revisions {
         preconditions.push(ActionPrecondition {
             kind: ActionPreconditionKind::TargetFile,
             target_id: target.to_string_lossy().to_string(),
-            expected_revision: manager_target_revision(&target)?,
+            expected_revision,
         });
     }
     if discovery {

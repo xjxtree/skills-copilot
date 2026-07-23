@@ -8,8 +8,8 @@ use std::{
 use sha2::Digest;
 
 use super::{
-    directory_flags, map_unsafe_relative_errno, unsafe_relative_file, validate_relative_path,
-    AppDataOwnerFs,
+    directory_flags, map_relative_io, map_unsafe_relative_errno, unsafe_relative_file,
+    validate_relative_path, AppDataOwnerFs,
 };
 #[cfg(not(unix))]
 use super::{guarded_fallback_path, unsafe_relative_path};
@@ -316,7 +316,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                         rows: Vec::new(),
                     })
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(map_relative_io(error, label)),
             };
             let mut pending = vec![(PathBuf::new(), root)];
             let mut rows = Vec::new();
