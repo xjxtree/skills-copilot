@@ -42,8 +42,9 @@ pub fn apply_search_skills_with_manager(
         params.preview_token.as_deref(),
         params.action_reference.as_ref(),
     )?;
+    validate_manager_preconditions(ctx, &preflight)?;
 
-    with_manager_mutation_lock(app_data_dir, "search", || {
+    with_search_mutation_lock(app_data_dir, || {
         let preview = build_search_preview(app_data_dir, ctx, &inputs, true)?;
         ensure_confirmed(
             &preview,

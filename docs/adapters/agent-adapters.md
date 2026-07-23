@@ -161,8 +161,14 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   execution needs a future scoped adapter.
 - Manager-backed search first creates a signed local-only preview; only
   `skillManager.applySearch` may start its scoped external network path after
-  explicit confirmation. Install/update likewise retain command preview and
-  explicit confirmation.
+  explicit confirmation. Preview and confirmation or full preflight rejection
+  are zero-write. If the confirmed, preflight-valid manager apply is the first
+  durable action on a fresh filesystem, it may create only the missing `0700`
+  app-data owner leaf beneath an existing non-symlink parent and lock the opened
+  no-follow directory; acquiring the lock creates no lock file. A later locked
+  stale result leaves that owner empty and starts no manager process, preserving
+  one coordination inode for concurrent waiters. Install/update likewise
+  retain command preview and explicit confirmation.
 - Commands must be executed as argv arrays after `env_clear()`, with only the
   previewed `HOME`, derived `PATH`, fixed locale, CI, telemetry-off, and npm
   audit/fund/update-notifier values. Parent credentials and action secrets are

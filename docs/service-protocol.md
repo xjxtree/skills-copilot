@@ -68,10 +68,14 @@ that clients may infer for arbitrary mutations.
   `skill.install`, provider profile actions, provider connection tests, and LLM
   prompt sends use `action_confirmation`; mutating `skillManager.*` methods use
   `action_reference`, `preview_token`, and `confirmed=true`.
-- Before the first side effect, apply reprojects the action, checks its method
-  and intent ownership, locks every target, and revalidates each accepted
-  revision. Success returns a typed `readback` covering every domain declared
-  by the action. Stable failures are `unknown_action_reference`,
+- Before the first product, target, process, catalog, snapshot, or audit
+  effect, apply reprojects the action, checks its method and intent ownership,
+  locks every target, and revalidates each accepted revision. The confirmed
+  fresh-filesystem manager owner bootstrap described under Skill Manager is
+  the only coordination exception; a post-bootstrap stale race may retain only
+  that empty private directory. Success returns a typed `readback` covering
+  every domain declared by the action. Stable failures are
+  `unknown_action_reference`,
   `stale_action_reference`, `action_target_mismatch`,
   `confirmation_required`, `action_token_unavailable`, and
   `verification_failed`. The last code means execution completed but the
@@ -579,7 +583,15 @@ presence/value or absence verification, not secret exposure.
   exact allowlisted environment, project/scope target, network posture, and
   the bounded one-time action state. `skillManager.applySearch` accepts only
   that exact explicit confirmation, revalidates under the app-data owner lock,
-  and then starts the network-backed manager process.
+  and then starts the network-backed manager process. On a fresh filesystem,
+  preview and any confirmation or full non-creating preflight rejection create
+  nothing. After those checks succeed, the first manager apply may create only
+  the single missing app-data leaf beneath an existing non-symlink parent, set
+  it to `0700`, and lock its opened no-follow directory handle; the lock never
+  creates a lock file. If state races stale after this bootstrap, locked
+  revalidation stops before replay reservation and process start. The empty
+  owner remains so existing waiters and future calls keep one coordination
+  inode; no discovery state, catalog, audit, target, or manager effect occurs.
 - Install and update may require external network access through the manager
   CLI. Their previews still show the destination command before any confirmed
   write.
@@ -645,16 +657,19 @@ presence/value or absence verification, not secret exposure.
   agent targets, using the same explicit confirmation flow as install/update.
 - Mutating manager actions, local archive import/update, and app-owned local
   deletion serialize through one cross-sidecar app-data owner lock that creates
-  no lock artifact. Batch toggles and `skill.install` use the same lock, acquire
-  it before the SQLite immediate transaction, and retain it through writes,
-  semantic read-back, and commit. Install/remove/update previews bind the
-  complete bounded target skill trees and manager inventory, including the
-  applicable manager lock file; local-create binds its exact destination tree;
-  archive actions bind the archive bytes and inspected archive tree from one
-  bounded no-follow file snapshot, the complete destination/source tree, and
-  relevant catalog identity/reference set. Apply revalidates these facts
-  after taking the lock and before creating a process or replacing a tree. The
-  lock remains held through catalog scan, semantic verification, and read-back.
+  no lock artifact. A confirmed first manager apply may create the private
+  app-data owner directory under the preceding fresh-filesystem rule; the lock
+  itself remains the opened directory handle. Batch toggles and `skill.install`
+  use the same lock, acquire it before the SQLite immediate transaction, and
+  retain it through writes, semantic read-back, and commit.
+  Install/remove/update previews bind the complete bounded target skill trees
+  and manager inventory, including the applicable manager lock file;
+  local-create binds its exact destination tree; archive actions bind the
+  archive bytes and inspected archive tree from one bounded no-follow file
+  snapshot, the complete destination/source tree, and relevant catalog
+  identity/reference set. Apply revalidates these facts after taking the lock
+  and before creating a process or replacing a tree. The lock remains held
+  through catalog scan, semantic verification, and read-back.
 - Catalog commit results after any config, skill-file, quarantine, archive, or
   manager effect are classified. A proven non-commit permits exact
   compensation only for wholly app-owned reversible state. An uncertain commit

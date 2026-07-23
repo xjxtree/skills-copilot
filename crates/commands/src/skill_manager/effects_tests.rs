@@ -442,6 +442,52 @@ fn confirmed_manager_apply_requires_the_exact_preview_token() {
 
 #[test]
 #[cfg(unix)]
+fn fresh_search_locked_stale_keeps_one_empty_coordination_owner() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-fresh-search-locked-stale-{}-{unique}",
+        std::process::id()
+    ));
+    let app_data = root.join("app-data");
+    let process_marker = root.join("manager-process-started");
+    fs::create_dir_all(&root).expect("create owner parent");
+
+    install_manager_pre_execute_test_hook("search", || {});
+    let result = with_search_mutation_lock(&app_data, || {
+        Err::<(), _>(CommandError::StaleActionReference)
+    });
+
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "locked revalidation must preserve the stale result"
+    );
+    assert!(
+        app_data.is_dir(),
+        "the confirmed bootstrap owner remains so every waiter locks the same inode"
+    );
+    assert_eq!(
+        fs::read_dir(&app_data)
+            .expect("read bootstrap owner")
+            .count(),
+        0,
+        "locked stale revalidation must not write replay state or any other app data"
+    );
+    assert!(
+        !app_data.join("skill-manager-discovery-state.json").exists(),
+        "locked stale revalidation must not reserve replay state"
+    );
+    assert!(
+        !process_marker.exists(),
+        "locked stale revalidation must not reach a manager process"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
 fn stale_manager_target_tree_is_rejected_before_the_process_starts() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

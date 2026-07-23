@@ -85,8 +85,11 @@ confirmation, and network posture.
 - Apply requires the exact confirmed action reference and token. The service
   reprojects the action, acquires every required target lock, and revalidates
   all preconditions before the first write. Unknown, mismatched, forged, or
-  stale references have zero write, process, catalog, snapshot, and audit side
-  effects.
+  already-stale references rejected by the non-creating preflight have zero
+  write, process, catalog, snapshot, and audit side effects. The sole
+  coordination bootstrap exception is the confirmed fresh-filesystem manager
+  apply described below: a race detected by locked revalidation may retain only
+  its empty private owner directory.
 - Catalog-sensitive apply paths acquire the shared app-data owner lock, then
   hold a SQLite immediate transaction while revalidating the accepted catalog
   record, writing targets, proving read-back, and committing. Batch targets are
@@ -103,13 +106,23 @@ confirmation, and network posture.
 - Batch toggles, project-context applies, catalog scans, `skill.install`,
   confirmed Skill Manager search, install/remove/update/local-create, local
   archive import/update, and app-owned local deletion share one
-  cross-sidecar mutation lock on the existing app-data owner directory; the
-  lock creates no persistent filesystem artifact. Under that lock, the service
-  rechecks the complete bounded target trees, archive bytes, relevant catalog
-  identity, and manager inventory accepted at preview. It holds the lock
-  through process execution or staged filesystem replacement, catalog refresh,
-  semantic verification, and read-back. A stale preview runs no manager
-  process and writes neither targets nor app data.
+  cross-sidecar mutation lock on the app-data owner directory; the lock creates
+  no persistent lock file. If a confirmed manager apply is the first durable
+  action on a fresh filesystem, only after its exact confirmation passes may
+  it create the single missing app-data leaf as a private `0700` directory
+  beneath an existing non-symlink parent and lock the opened no-follow
+  directory handle. Preview and any confirmation or full preflight rejection
+  remain zero-write. If state races stale only after that bootstrap, locked
+  revalidation stops before replay reservation or process start and leaves the
+  private owner empty; it never unlinks the coordination inode while another
+  sidecar may be waiting on it. Missing parent chains and symlink owners fail
+  closed. Under the lock, the service rechecks the complete bounded target
+  trees, archive bytes, relevant catalog identity, and manager inventory
+  accepted at preview. It holds the lock through process execution or staged
+  filesystem replacement, catalog refresh, semantic verification, and
+  read-back. A stale preview runs no manager process and writes neither targets
+  nor replay, catalog, or audit state; only the already-authorized empty owner
+  bootstrap may remain after a post-preflight race.
 - Every catalog commit after a config, skill-file, quarantine, archive, or
   external-manager effect classifies a proven non-commit separately from an
   uncertain commit outcome. Exact reverse compensation is allowed only after a

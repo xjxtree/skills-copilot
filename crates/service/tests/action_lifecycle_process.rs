@@ -295,6 +295,201 @@ fn missing_or_invalid_sidecar_secret_fails_closed_without_a_write() {
 
 #[test]
 #[cfg(unix)]
+fn confirmed_manager_search_initializes_only_fresh_private_app_data() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "agent-copilot-fresh-search-process-{}-{suffix}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let app_data = root.join("app-data");
+    let fake_npx = root.join("fake-npx");
+    let marker = root.join("manager-search-spawned");
+    fs::create_dir_all(&home).expect("create empty fresh home");
+    let manager_script = format!(
+        "#!/bin/sh\nprintf 'spawned\\n' >> '{}'\nprintf '[{{\"name\":\"fresh-result\",\"source\":\"fixture/fresh\",\"description\":\"Fresh filesystem result\"}}]\\n'\n",
+        marker.display()
+    );
+    fs::write(&fake_npx, &manager_script).expect("write fake manager");
+    fs::set_permissions(&fake_npx, fs::Permissions::from_mode(0o700))
+        .expect("make fake manager executable");
+    let fake_npx_text = fake_npx.to_string_lossy().to_string();
+    let manager_env = [("SKILLS_COPILOT_NPX_PATH", fake_npx_text.as_str())];
+
+    assert!(!app_data.exists(), "test must begin with missing app data");
+    let preview = invoke_with_extra_env(
+        &home,
+        &app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"fresh-search-preview",
+            "method":"skillManager.search",
+            "params":{
+                "query":"fresh",
+                "owner":"fixture-owner",
+                "network_allowed":true
+            }
+        }),
+    );
+    assert_success(&preview);
+    assert!(
+        !app_data.exists(),
+        "search preview must not create app data on a fresh filesystem"
+    );
+    assert!(
+        !marker.exists(),
+        "search preview must not start the external manager"
+    );
+
+    let action = preview
+        .pointer("/result/preview/action")
+        .expect("fresh search preview action");
+    let preview_token = preview
+        .pointer("/result/preview/preview_token")
+        .and_then(Value::as_str)
+        .expect("fresh search preview token");
+    let stale_apply = invoke_with_extra_env(
+        &home,
+        &app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"fresh-search-stale-apply",
+            "method":"skillManager.applySearch",
+            "params":{
+                "query":"different-query",
+                "owner":"fixture-owner",
+                "network_allowed":true,
+                "confirmed":true,
+                "preview_token":preview_token,
+                "action_reference":{
+                    "action_id":action["id"],
+                    "source_revision":action["source_revision"],
+                    "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                    "target":action["target"]
+                }
+            }
+        }),
+    );
+    assert_error_code(&stale_apply, "unknown_action_reference");
+    assert!(
+        !app_data.exists(),
+        "a stale confirmed apply must not initialize app data"
+    );
+    assert!(
+        !marker.exists(),
+        "a stale confirmed apply must not start the external manager"
+    );
+
+    fs::write(
+        &fake_npx,
+        "#!/bin/sh\nprintf 'changed executable must not run\\n'\n",
+    )
+    .expect("drift fake manager after preview");
+    let stale_source = invoke_with_extra_env(
+        &home,
+        &app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"fresh-search-stale-source",
+            "method":"skillManager.applySearch",
+            "params":{
+                "query":"fresh",
+                "owner":"fixture-owner",
+                "network_allowed":true,
+                "confirmed":true,
+                "preview_token":preview_token,
+                "action_reference":{
+                    "action_id":action["id"],
+                    "source_revision":action["source_revision"],
+                    "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                    "target":action["target"]
+                }
+            }
+        }),
+    );
+    assert_error_code(&stale_source, "stale_action_reference");
+    assert!(
+        !app_data.exists(),
+        "a stale manager executable revision must not initialize app data"
+    );
+    assert!(
+        !marker.exists(),
+        "a stale manager executable revision must not start the external manager"
+    );
+    fs::write(&fake_npx, &manager_script).expect("restore previewed fake manager");
+
+    let applied = invoke_with_extra_env(
+        &home,
+        &app_data,
+        Some(SECRET_A),
+        &manager_env,
+        json!({
+            "id":"fresh-search-apply",
+            "method":"skillManager.applySearch",
+            "params":{
+                "query":"fresh",
+                "owner":"fixture-owner",
+                "network_allowed":true,
+                "confirmed":true,
+                "preview_token":preview_token,
+                "action_reference":{
+                    "action_id":action["id"],
+                    "source_revision":action["source_revision"],
+                    "project_id":action.get("project_id").cloned().unwrap_or(Value::Null),
+                    "target":action["target"]
+                }
+            }
+        }),
+    );
+    assert_success(&applied);
+    assert_eq!(
+        fs::read_to_string(&marker).expect("manager process marker"),
+        "spawned\n",
+        "confirmed apply must reach the previewed manager process exactly once"
+    );
+    assert_eq!(
+        applied
+            .pointer("/result/results/0/name")
+            .and_then(Value::as_str),
+        Some("fresh-result"),
+        "apply must return the parsed manager result"
+    );
+    assert_eq!(
+        applied
+            .pointer("/result/readback/verified")
+            .and_then(Value::as_bool),
+        Some(true),
+        "fresh apply must return verified manager-inventory read-back"
+    );
+    assert!(
+        app_data
+            .join("skill-manager-discovery-state.json")
+            .is_file(),
+        "confirmed apply must persist its bounded one-time state"
+    );
+    assert_eq!(
+        fs::metadata(&app_data)
+            .expect("fresh app-data metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "confirmed apply must create a private owner directory"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
 fn manager_child_process_never_inherits_the_action_preview_secret() {
     use std::os::unix::fs::PermissionsExt;
 
