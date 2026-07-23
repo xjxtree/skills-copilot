@@ -16,6 +16,21 @@ pub struct AppMutationLock {
     file: File,
 }
 
+impl AppMutationLock {
+    /// Clone the already-opened no-follow app-data owner descriptor.
+    ///
+    /// Callers use this capability for descriptor-relative child I/O. The
+    /// clone names the same directory inode even if its display path is later
+    /// renamed or replaced.
+    pub fn try_clone_owner_directory(&self) -> Result<File, CommandError> {
+        self.file.try_clone().map_err(Into::into)
+    }
+
+    pub fn owner_directory(&self) -> &File {
+        &self.file
+    }
+}
+
 impl Drop for AppMutationLock {
     fn drop(&mut self) {
         let _ = self.file.unlock();
@@ -577,6 +592,51 @@ mod tests {
             "a final symlink target must remain untouched"
         );
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cloned_owner_descriptor_remains_on_the_locked_inode_after_path_replacement() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skills-copilot-owner-capability-{}-{unique}",
+            std::process::id()
+        ));
+        let owner = root.join("app-data");
+        let moved_owner = root.join("app-data-opened");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&owner).expect("create owner");
+        std::fs::create_dir(&victim).expect("create victim");
+        let guard = lock_app_mutations(&owner).expect("lock owner");
+        let capability = guard
+            .try_clone_owner_directory()
+            .expect("clone owner descriptor");
+        let accepted = capability.metadata().expect("accepted owner metadata");
+
+        std::fs::rename(&owner, &moved_owner).expect("move accepted owner");
+        symlink(&victim, &owner).expect("replace display path");
+
+        let retained = capability.metadata().expect("retained owner metadata");
+        let victim_metadata = std::fs::metadata(&victim).expect("victim metadata");
+        assert_eq!(
+            (retained.dev(), retained.ino()),
+            (accepted.dev(), accepted.ino())
+        );
+        assert_ne!(
+            (retained.dev(), retained.ino()),
+            (victim_metadata.dev(), victim_metadata.ino()),
+            "the descriptor capability must never retarget through the replaced path"
+        );
+
+        drop(capability);
+        drop(guard);
+        let _ = std::fs::remove_file(owner);
         let _ = std::fs::remove_dir_all(root);
     }
 }
