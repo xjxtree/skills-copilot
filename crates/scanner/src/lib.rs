@@ -362,15 +362,6 @@ where
         }
     }
     report.instances = dedup_instances(report.instances);
-    if matches!(
-        adapter.id(),
-        AgentId::ClaudeCode | AgentId::Pi | AgentId::Openclaw
-    ) {
-        let mut effective_names = HashSet::new();
-        report
-            .instances
-            .retain(|instance| effective_names.insert(instance.name.clone()));
-    }
     let mut alias_keys = HashSet::new();
     report
         .root_aliases
@@ -2238,6 +2229,194 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct RuntimeEvidenceAdapter {
+        agent: AgentId,
+        roots: Vec<AdapterRoot>,
+    }
+
+    impl AgentAdapter for RuntimeEvidenceAdapter {
+        fn id(&self) -> AgentId {
+            self.agent
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Runtime Evidence Test Adapter"
+        }
+
+        fn roots(&self, _ctx: &AdapterContext) -> Vec<AdapterRoot> {
+            self.roots.clone()
+        }
+
+        fn parse(&self, path: &Path) -> Result<SkillInstance, skills_copilot_core::AdapterError> {
+            let content = std::fs::read_to_string(path).map_err(|error| {
+                skills_copilot_core::AdapterError::new(format!(
+                    "failed to read test skill: {error}"
+                ))
+            })?;
+            self.parse_content(path, content)
+        }
+
+        fn parse_content(
+            &self,
+            path: &Path,
+            content: String,
+        ) -> Result<SkillInstance, skills_copilot_core::AdapterError> {
+            match self.agent {
+                AgentId::ClaudeCode => ClaudeCodeAdapter.parse_content(path, content),
+                AgentId::Pi => PiAdapter.parse_content(path, content),
+                AgentId::Openclaw => OpenclawAdapter.parse_content(path, content),
+                AgentId::Opencode => OpencodeAdapter.parse_content(path, content),
+                _ => unreachable!("runtime evidence fixture uses only supported test agents"),
+            }
+        }
+
+        fn is_enabled(&self, instance: &SkillInstance) -> bool {
+            instance.enabled
+        }
+
+        fn accepts_skill_path(&self, root: &AdapterRoot, relative_path: &Path) -> bool {
+            match self.agent {
+                AgentId::ClaudeCode => ClaudeCodeAdapter.accepts_skill_path(root, relative_path),
+                AgentId::Pi => PiAdapter.accepts_skill_path(root, relative_path),
+                AgentId::Openclaw => OpenclawAdapter.accepts_skill_path(root, relative_path),
+                AgentId::Opencode => OpencodeAdapter.accepts_skill_path(root, relative_path),
+                _ => unreachable!("runtime evidence fixture uses only supported test agents"),
+            }
+        }
+
+        fn is_skill_file(&self, path: &Path) -> bool {
+            match self.agent {
+                AgentId::ClaudeCode => ClaudeCodeAdapter.is_skill_file(path),
+                AgentId::Pi => PiAdapter.is_skill_file(path),
+                AgentId::Openclaw => OpenclawAdapter.is_skill_file(path),
+                AgentId::Opencode => OpencodeAdapter.is_skill_file(path),
+                _ => unreachable!("runtime evidence fixture uses only supported test agents"),
+            }
+        }
+
+        fn config_paths(&self, _ctx: &AdapterContext) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+
+    fn assert_same_name_runtime_evidence_is_preserved(agent: AgentId) {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-runtime-evidence-{}-{}-{}",
+            agent.as_str(),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let first_root = temp_root.join("first");
+        let second_root = temp_root.join("second");
+        let skill_name = "shared-capability";
+        let first_skill = first_root.join(skill_name).join("SKILL.md");
+        let second_skill = second_root.join(skill_name).join("SKILL.md");
+        std::fs::create_dir_all(first_skill.parent().expect("first skill parent"))
+            .expect("create first skill directory");
+        std::fs::create_dir_all(second_skill.parent().expect("second skill parent"))
+            .expect("create second skill directory");
+        std::fs::write(
+            &first_skill,
+            "---\nname: shared-capability\ndescription: first source\n---\nFirst body.\n",
+        )
+        .expect("write first skill");
+        std::fs::write(
+            &second_skill,
+            "---\nname: shared-capability\ndescription: second source\n---\nSecond body.\n",
+        )
+        .expect("write second skill");
+
+        let adapter = RuntimeEvidenceAdapter {
+            agent,
+            roots: vec![
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: first_root,
+                    source: RootSource::Extra,
+                },
+                AdapterRoot {
+                    scope: Scope::AgentGlobal,
+                    path: second_root,
+                    source: RootSource::Extra,
+                },
+            ],
+        };
+        let report = scan_agent(
+            &adapter,
+            &AdapterContext {
+                user_home: temp_root.join("home"),
+                project_root: None,
+                project_cwd: None,
+                extra_roots: Vec::new(),
+            },
+        )
+        .expect("scan succeeds");
+        let expected_paths = vec![
+            first_skill.canonicalize().expect("canonical first skill"),
+            second_skill.canonicalize().expect("canonical second skill"),
+        ];
+
+        assert_eq!(
+            report
+                .instances
+                .iter()
+                .map(|instance| instance.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![skill_name, skill_name],
+            "{agent:?} must retain every same-runtime-name instance so product projection can derive the winner and shadowed evidence"
+        );
+        assert_eq!(
+            report
+                .instances
+                .iter()
+                .map(|instance| instance.path.clone())
+                .collect::<Vec<_>>(),
+            expected_paths,
+            "{agent:?} evidence must retain deterministic root-precedence order"
+        );
+        assert_ne!(
+            report.instances[0].id, report.instances[1].id,
+            "{agent:?} evidence from distinct physical sources needs distinct identities"
+        );
+        assert_ne!(
+            report.instances[0].fingerprint, report.instances[1].fingerprint,
+            "{agent:?} evidence must preserve materially distinct definitions"
+        );
+        assert!(report
+            .instances
+            .iter()
+            .all(|instance| instance.agent == agent
+                && instance.scope == Scope::AgentGlobal
+                && instance.state == SkillState::Loaded
+                && instance.enabled));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn claude_scanner_preserves_same_name_runtime_evidence() {
+        assert_same_name_runtime_evidence_is_preserved(AgentId::ClaudeCode);
+    }
+
+    #[test]
+    fn pi_scanner_preserves_same_name_runtime_evidence() {
+        assert_same_name_runtime_evidence_is_preserved(AgentId::Pi);
+    }
+
+    #[test]
+    fn openclaw_scanner_preserves_same_name_runtime_evidence() {
+        assert_same_name_runtime_evidence_is_preserved(AgentId::Openclaw);
+    }
+
+    #[test]
+    fn opencode_scanner_continues_to_preserve_same_name_runtime_evidence() {
+        assert_same_name_runtime_evidence_is_preserved(AgentId::Opencode);
+    }
+
     fn test_scan_limits() -> ScanLimits {
         ScanLimits {
             max_depth: 8,
@@ -4035,7 +4214,8 @@ mod tests {
         ));
         let home = temp_root.join("home");
         let workspace = home.join(".openclaw/workspace");
-        write_openclaw_skill(&home.join(".openclaw/skills"), "managed-global");
+        let managed_global_path =
+            write_openclaw_skill(&home.join(".openclaw/skills"), "managed-global");
         let personal_global_path =
             write_openclaw_skill(&home.join(".agents/skills"), "managed-global");
         write_openclaw_skill(&home.join(".agents/skills"), "personal-shared");
@@ -4057,7 +4237,7 @@ mod tests {
             .map(|skill| (skill.name.as_str(), skill.scope))
             .collect();
 
-        assert_eq!(report.instances.len(), 4);
+        assert_eq!(report.instances.len(), 5);
         assert_eq!(by_name.get("managed-global"), Some(&Scope::AgentGlobal));
         assert_eq!(by_name.get("personal-shared"), Some(&Scope::AgentGlobal));
         assert_eq!(by_name.get("workspace-local"), Some(&Scope::AgentProject));
@@ -4066,11 +4246,11 @@ mod tests {
             report
                 .instances
                 .iter()
-                .find(|skill| skill.name == "managed-global")
-                .expect("managed global")
-                .path,
-            personal_global_path,
-            "OpenClaw personal .agents root wins over managed ~/.openclaw/skills"
+                .filter(|skill| skill.name == "managed-global")
+                .map(|skill| skill.path.clone())
+                .collect::<Vec<_>>(),
+            vec![personal_global_path, managed_global_path],
+            "OpenClaw retains both sources in runtime precedence order for later effectiveness projection"
         );
         assert_eq!(
             report
