@@ -281,21 +281,32 @@ fn exact_rescan_retires_removed_pi_root_and_clears_its_conflict() {
     };
 
     scan_all_to_catalog(&ctx, &catalog).expect("initial scan succeeds");
-    assert!(catalog
+    let initial_pi_conflicts = catalog
         .list_conflict_groups()
         .expect("initial conflicts")
         .iter()
-        .all(|conflict| !conflict.id.contains(":pi:")));
+        .filter(|conflict| conflict.id.contains(":pi:"))
+        .cloned()
+        .collect::<Vec<_>>();
     let initial_pi_records = catalog
         .list_skill_records()
         .expect("initial records")
         .into_iter()
         .filter(|record| record.agent == "pi" && record.name == "shared-review")
         .collect::<Vec<_>>();
-    assert_eq!(initial_pi_records.len(), 1);
-    assert!(initial_pi_records[0]
-        .path
-        .starts_with(native.canonicalize().expect("native root canonicalizes")));
+    assert_eq!(initial_pi_records.len(), 2);
+    assert_eq!(initial_pi_conflicts.len(), 1);
+    assert_eq!(initial_pi_conflicts[0].instance_ids.len(), 2);
+    let canonical_native = native.canonicalize().expect("native root canonicalizes");
+    let canonical_compatibility = compatibility
+        .canonicalize()
+        .expect("compatibility root canonicalizes");
+    assert!(initial_pi_records
+        .iter()
+        .any(|record| record.path.starts_with(&canonical_native)));
+    assert!(initial_pi_records
+        .iter()
+        .any(|record| record.path.starts_with(&canonical_compatibility)));
 
     std::fs::remove_dir_all(project.join(".pi/skills")).expect("remove retired Pi root");
     scan_all_to_catalog(&ctx, &catalog).expect("rescan succeeds");
