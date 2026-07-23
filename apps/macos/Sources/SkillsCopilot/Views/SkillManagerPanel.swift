@@ -52,11 +52,12 @@ private enum SkillManagerInventorySort: String, CaseIterable, Identifiable {
 
 struct SkillManagerPanel: View {
     @EnvironmentObject private var store: SkillStore
-    var showsHeader = true
+    let showsHeader: Bool
+    let entryContext: SkillManagerEntryContext
 
     @State private var selectedWorkflow: SkillManagerWorkflow = .searchInstall
     @State private var selectedSkill: SkillManagerSelection?
-    @State private var selectedAction: SkillManagerAction = .install
+    @State private var selectedAction: SkillManagerEntryAction = .install
     @State private var actionScope: SkillManagerScope = .project
     @State private var actionAgentIDs = Set(SkillManagerAgent.defaultTargets.map(\.rawValue))
     @State private var pendingConfirmation: SkillManagerWriteConfirmation?
@@ -66,7 +67,26 @@ struct SkillManagerPanel: View {
     @State private var inventorySourceFilter: SkillManagerInventorySourceFilter = .all
     @State private var inventoryAgentFilter = "all"
     @State private var inventorySort: SkillManagerInventorySort = .name
+    @State private var appliedEntryContext: SkillManagerEntryContext?
+    @State private var hasResolvedEntryTarget = false
+    @State private var isApplyingEntryContext = false
+    @FocusState private var focusedInput: SkillManagerEntryPresentation.FocusedInput?
     @AppStorage(DisplayText.screenshotPrivacyModeStorageKey) private var privacyModeEnabled = true
+
+    init(
+        showsHeader: Bool = true,
+        entryContext: SkillManagerEntryContext = .default
+    ) {
+        let presentation = entryContext.presentation
+        self.showsHeader = showsHeader
+        self.entryContext = entryContext
+        _selectedWorkflow = State(initialValue: presentation.workflow)
+        _selectedAction = State(initialValue: presentation.preferredAction ?? .install)
+        _actionScope = State(initialValue: presentation.scope)
+        _actionAgentIDs = State(initialValue: presentation.agentIDs
+            ?? Set(SkillManagerAgent.defaultTargets.map(\.rawValue)))
+        _inventoryQuery = State(initialValue: presentation.inventoryQuery)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -126,9 +146,21 @@ struct SkillManagerPanel: View {
         } message: {
             if let confirmation = pendingConfirmation { Text(confirmation.message) }
         }
+        .onAppear {
+            applyEntryContextIfNeeded()
+        }
+        .onChange(of: entryContext) { _ in
+            appliedEntryContext = nil
+            applyEntryContextIfNeeded()
+        }
         .onChange(of: selectedWorkflow) { _ in
             selectedSkill = nil
             store.clearSkillManagerWorkflowPreviews()
+            guard isApplyingEntryContext else { return }
+            hasResolvedEntryTarget = false
+            DispatchQueue.main.async {
+                resolveEntryTargetIfAvailable(in: store.skillManagerInventoryItems)
+            }
         }
         .onChange(of: selectedSkill) { selection in
             configureAction(for: selection)
@@ -137,11 +169,20 @@ struct SkillManagerPanel: View {
         .onChange(of: store.skillManagerScope) { _ in
             guard selectedWorkflow == .installedUpdates else { return }
             selectedSkill = nil
+            guard isApplyingEntryContext else { return }
+            hasResolvedEntryTarget = false
+            DispatchQueue.main.async {
+                resolveEntryTargetIfAvailable(in: store.skillManagerInventoryItems)
+            }
         }
         .onChange(of: store.skillManagerInventoryItems) { items in
-            guard selectedWorkflow == .installedUpdates,
-                  case .inventory(let selectedItem) = selectedSkill else { return }
-            selectedSkill = items.first(where: { $0.id == selectedItem.id }).map(SkillManagerSelection.inventory)
+            guard selectedWorkflow == .installedUpdates else { return }
+            if case .inventory(let selectedItem) = selectedSkill,
+               let refreshed = items.first(where: { $0.id == selectedItem.id }) {
+                selectedSkill = .inventory(refreshed)
+                return
+            }
+            resolveEntryTargetIfAvailable(in: items)
         }
     }
 
@@ -258,6 +299,7 @@ struct SkillManagerPanel: View {
                     text: $store.skillManagerSearchQuery
                 )
                 .textFieldStyle(.roundedBorder)
+                .focused($focusedInput, equals: .search)
                 .onSubmit { Task { await store.searchSkillManager() } }
                 Button(UIStrings.text("skillManager.search.preview", "Preview Search")) {
                     Task { await store.searchSkillManager() }
@@ -299,6 +341,10 @@ struct SkillManagerPanel: View {
 
             Divider()
 
+            localCreateSection
+
+            Divider()
+
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(
@@ -329,6 +375,38 @@ struct SkillManagerPanel: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativePanelSurface()
+    }
+
+    private var localCreateSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(
+                UIStrings.text(
+                    "skillManager.confirm.localCreate.title",
+                    "Create Local Skill"
+                ),
+                systemImage: "doc.badge.plus"
+            )
+            .font(.subheadline.bold())
+            HStack(spacing: 8) {
+                TextField(
+                    UIStrings.text(
+                        "skillManager.localCreate.required",
+                        "Enter a local skill name."
+                    ),
+                    text: $store.skillManagerLocalSkillName
+                )
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedInput, equals: .localCreate)
+                .onSubmit {
+                    guard canPreviewLocalCreate else { return }
+                    Task { await store.previewSkillManagerLocalCreate() }
+                }
+                Button(UIStrings.text("skillManager.previewCreate", "Preview Create")) {
+                    Task { await store.previewSkillManagerLocalCreate() }
+                }
+                .disabled(!canPreviewLocalCreate)
+            }
+        }
     }
 
     private func skillManagerSearchFooter(
@@ -726,6 +804,20 @@ struct SkillManagerPanel: View {
                 .disabled(store.isApplyingSkillManagerMutation)
             }
         }
+        if let confirmation = store.skillManagerLocalCreateConfirmation {
+            previewCard(title: confirmation.result.preview.localizedSummary) {
+                commandPreview(confirmation.result.preview)
+                if let output = confirmation.result.output { commandOutput(output) }
+                Button(UIStrings.text(
+                    "skillManager.confirm.localCreate.title",
+                    "Create Local Skill"
+                )) {
+                    pendingConfirmation = .localCreate(confirmation)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isApplyingSkillManagerMutation)
+            }
+        }
         if let confirmation = store.skillManagerLocalArchiveImportConfirmation {
             previewCard(title: confirmation.result.summary) {
                 MetadataLine(label: UIStrings.text("metadata.skill", "Skill"), value: confirmation.result.skillName)
@@ -826,14 +918,25 @@ struct SkillManagerPanel: View {
 
     private func configureAction(for selection: SkillManagerSelection?) {
         guard let selection else { return }
-        actionScope = selection.scope
-        actionAgentIDs = Set(selection.agents.isEmpty
+        let presentation = entryContext.presentation
+        let isEntryTarget = selection.matches(entryContext.target)
+        actionScope = isEntryTarget ? presentation.scope : selection.scope
+        let defaultAgents = selection.agents.isEmpty
             ? SkillManagerAgent.defaultTargets.map(\.rawValue)
-            : selection.agents)
-        selectedAction = availableActions(for: selection).first ?? .install
+            : selection.agents
+        let requestedAgents = isEntryTarget ? presentation.agentIDs : nil
+        let resolvedAction = (isEntryTarget
+            ? presentation.resolvedAction(available: availableActions(for: selection))
+            : availableActions(for: selection).first) ?? .install
+        selectedAction = resolvedAction
+        let eligibleAgents = resolvedAction == .remove
+            ? Set(selection.agents)
+            : Set(defaultAgents)
+        actionAgentIDs = requestedAgents.map { $0.intersection(eligibleAgents) }
+            ?? eligibleAgents
     }
 
-    private func availableActions(for selection: SkillManagerSelection) -> [SkillManagerAction] {
+    private func availableActions(for selection: SkillManagerSelection) -> [SkillManagerEntryAction] {
         switch selection {
         case .search:
             return [.install]
@@ -856,6 +959,63 @@ struct SkillManagerPanel: View {
         !store.skillManagerSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !store.isSearchingSkillManager
             && !externalMutationDisabled
+    }
+
+    private var canPreviewLocalCreate: Bool {
+        !store.skillManagerLocalSkillName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+            && !store.isPreviewingSkillManagerLocalCreate
+            && !externalMutationDisabled
+    }
+
+    private func applyEntryContextIfNeeded() {
+        guard appliedEntryContext != entryContext else { return }
+        let presentation = entryContext.presentation
+        appliedEntryContext = entryContext
+        isApplyingEntryContext = true
+        hasResolvedEntryTarget = false
+        selectedWorkflow = presentation.workflow
+        selectedSkill = nil
+        selectedAction = presentation.preferredAction ?? .install
+        actionScope = presentation.scope
+        if let agentIDs = presentation.agentIDs {
+            actionAgentIDs = agentIDs
+        }
+        inventoryQuery = presentation.inventoryQuery
+        if presentation.workflow == .installedUpdates {
+            store.skillManagerScope = presentation.scope
+            resolveEntryTargetIfAvailable(in: store.skillManagerInventoryItems)
+        }
+        if let searchQuery = presentation.searchQuery {
+            store.skillManagerSearchQuery = searchQuery
+        }
+        if let suggestedName = presentation.suggestedLocalSkillName {
+            store.skillManagerLocalSkillName = suggestedName
+        }
+        DispatchQueue.main.async {
+            guard appliedEntryContext == entryContext else { return }
+            focusedInput = presentation.focusedInput
+            if presentation.requestsImportArchive {
+                isChoosingImportArchive = true
+            }
+            if presentation.workflow == .installedUpdates {
+                resolveEntryTargetIfAvailable(in: store.skillManagerInventoryItems)
+            }
+            isApplyingEntryContext = false
+        }
+    }
+
+    private func resolveEntryTargetIfAvailable(
+        in items: [SkillManagerInventoryItem]
+    ) {
+        guard !hasResolvedEntryTarget,
+              let target = entryContext.target,
+              let item = target.uniqueBestMatch(in: items) else {
+            return
+        }
+        hasResolvedEntryTarget = true
+        selectedSkill = .inventory(item)
     }
 
     private func handleArchiveSelection(_ result: Result<[URL], Error>) {
@@ -917,6 +1077,8 @@ struct SkillManagerPanel: View {
             case .remove: await store.applySkillManagerRemove(confirmation: value)
             case .update: await store.applySkillManagerUpdate(confirmation: value)
             }
+        case .localCreate(let value):
+            await store.applySkillManagerLocalCreate(confirmation: value)
         case .localDelete(let value):
             await store.applySkillManagerLocalDelete(confirmation: value)
         case .localArchiveImport(let value):
@@ -930,6 +1092,7 @@ struct SkillManagerPanel: View {
         switch confirmation {
         case .search(let value): return store.skillManagerSearchConfirmation == value
         case .mutation(let value): return store.skillManagerMutationConfirmation == value
+        case .localCreate(let value): return store.skillManagerLocalCreateConfirmation == value
         case .localDelete(let value): return store.skillManagerLocalDeleteConfirmation == value
         case .localArchiveImport(let value): return store.skillManagerLocalArchiveImportConfirmation == value
         case .localArchiveUpdate(let value): return store.skillManagerLocalArchiveUpdateConfirmation == value
@@ -1016,15 +1179,17 @@ private enum SkillManagerSelection: Hashable {
         if case .inventory(let value) = self { return value.localOwnership }
         return nil
     }
+
+    func matches(_ target: SkillManagerPackageTarget?) -> Bool {
+        guard let target else { return false }
+        if case .inventory(let value) = self {
+            return target.matches(value)
+        }
+        return false
+    }
 }
 
-private enum SkillManagerAction: String, Identifiable {
-    case install
-    case update
-    case remove
-    case deleteSource
-
-    var id: String { rawValue }
+private extension SkillManagerEntryAction {
     var title: String {
         switch self {
         case .install: return UIStrings.text("skillManager.action.install", "Install")
@@ -1038,6 +1203,7 @@ private enum SkillManagerAction: String, Identifiable {
 private enum SkillManagerWriteConfirmation {
     case search(SkillManagerSearchConfirmation)
     case mutation(SkillManagerMutationConfirmation)
+    case localCreate(SkillManagerLocalCreateConfirmation)
     case localDelete(SkillManagerLocalDeleteConfirmation)
     case localArchiveImport(SkillManagerLocalArchiveImportConfirmation)
     case localArchiveUpdate(SkillManagerLocalArchiveUpdateConfirmation)
@@ -1052,6 +1218,8 @@ private enum SkillManagerWriteConfirmation {
             case .remove: return UIStrings.text("skillManager.confirm.remove.title", "Confirm Skill Removal")
             case .update: return UIStrings.text("skillManager.confirm.update.title", "Confirm Skill Update")
             }
+        case .localCreate:
+            return UIStrings.text("skillManager.confirm.localCreate.title", "Confirm Local Skill Creation")
         case .localDelete:
             return UIStrings.text("skillManager.confirm.localDelete.title", "Confirm Local Skill Delete")
         case .localArchiveImport:
@@ -1070,6 +1238,11 @@ private enum SkillManagerWriteConfirmation {
             case .remove: return UIStrings.text("skillManager.applyRemove", "Remove")
             case .update: return UIStrings.text("skillManager.applyUpdate", "Update")
             }
+        case .localCreate:
+            return UIStrings.text(
+                "skillManager.confirm.localCreate.title",
+                "Create Local Skill"
+            )
         case .localDelete: return UIStrings.text("action.delete", "Delete")
         case .localArchiveImport: return UIStrings.text("skillManager.localImport.apply", "Import Local Package")
         case .localArchiveUpdate: return UIStrings.text("skillManager.applyUpdate", "Update")
@@ -1119,6 +1292,16 @@ private enum SkillManagerWriteConfirmation {
                 sections.append(disclosure)
             }
             return sections.joined(separator: "\n\n")
+        case .localCreate(let value):
+            return [
+                value.result.preview.summary,
+                "\(UIStrings.text("metadata.skill", "Skill")): \(value.name)",
+                "\(UIStrings.text("skillManager.confirm.command", "Command")): \(value.result.preview.displayCommand)",
+                "CWD: \(value.result.preview.cwd)",
+                value.result.preview.action?.confirmationSummary.disclosureText
+            ]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
         case .localDelete(let value):
             return [
                 value.result.summary,
