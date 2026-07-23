@@ -648,7 +648,7 @@ fn rollback_reloaded_snapshot_target_or_content_changes_invalidate_token() {
 
         let result = rollback_snapshot_with_after_lock(
             &catalog,
-            &ctx.user_home,
+            &temp_root,
             &ctx,
             "reloaded-snapshot",
             &confirmed_action(&preview.action, &preview.preview_token),
@@ -910,6 +910,151 @@ fn save_rechecks_state_after_preflight_under_lock() {
                 .ends_with(".tmp")),
         "lock-time conflict must not prepare a temporary config file"
     );
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn save_rejects_catalog_bound_to_a_different_mutation_owner_before_effects() {
+    let temp_root = temp_test_dir("save-catalog-owner-mismatch");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let accepted_owner = temp_root.join("accepted-owner");
+    let replacement_owner = temp_root.join("replacement-owner");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    std::fs::write(&settings_path, "{}\n").expect("write initial settings");
+    let catalog = Catalog::open_anchored(
+        std::fs::File::open(&app_data_dir).expect("open accepted catalog owner"),
+    )
+    .expect("open anchored catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("read initial settings");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview = preview_claude_settings_save(&ctx, candidate, &current.revision)
+        .expect("preview config save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare config save");
+
+    std::fs::rename(&app_data_dir, &accepted_owner).expect("move accepted owner");
+    std::fs::create_dir(&replacement_owner).expect("create replacement owner");
+    std::fs::rename(&replacement_owner, &app_data_dir).expect("bind replacement owner");
+    std::fs::write(app_data_dir.join("sentinel"), b"unchanged").expect("seed replacement owner");
+
+    let result = commit_prepared_claude_settings_save(&catalog, &app_data_dir, prepared);
+
+    assert!(matches!(
+        result,
+        Err(CommandError::Catalog(
+            skills_copilot_catalog::CatalogError::MutationOwner(_)
+        ))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read unchanged settings"),
+        "{}\n"
+    );
+    assert_eq!(
+        std::fs::read(app_data_dir.join("sentinel")).expect("read replacement sentinel"),
+        b"unchanged"
+    );
+    assert!(
+        catalog
+            .list_all_config_snapshots(None)
+            .expect("list snapshots")
+            .is_empty(),
+        "owner mismatch must be rejected before the catalog transaction"
+    );
+
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn save_reports_partial_effect_if_owner_path_changes_after_file_write() {
+    use std::os::unix::fs::symlink;
+
+    let temp_root = temp_test_dir("save-owner-rebind-after-write");
+    let home = temp_root.join("home");
+    let app_data_dir = temp_root.join("app-data");
+    let accepted_owner = temp_root.join("accepted-owner");
+    let victim = temp_root.join("victim");
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::create_dir_all(&app_data_dir).expect("create app data");
+    std::fs::create_dir_all(&victim).expect("create victim");
+    std::fs::write(&settings_path, "{}\n").expect("write initial settings");
+    std::fs::write(victim.join("sentinel"), b"unchanged").expect("seed victim");
+    let catalog = Catalog::open_anchored(
+        std::fs::File::open(&app_data_dir).expect("open accepted catalog owner"),
+    )
+    .expect("open anchored catalog");
+    catalog.init().expect("initialize catalog");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: vec![],
+    };
+    let current = read_claude_settings(&ctx).expect("read initial settings");
+    let candidate = "{\n  \"requested\": true\n}\n";
+    let preview = preview_claude_settings_save(&ctx, candidate, &current.revision)
+        .expect("preview config save");
+    let prepared = prepare_claude_settings_save(
+        &ctx,
+        candidate,
+        &confirmed_action(&preview.action, &preview.preview_token),
+    )
+    .expect("prepare config save");
+    let hook_app_data = app_data_dir.clone();
+    let hook_accepted = accepted_owner.clone();
+    let hook_victim = victim.clone();
+
+    let result = commit_prepared_claude_settings_save_with_hooks(
+        &catalog,
+        &app_data_dir,
+        prepared,
+        || {},
+        move || {
+            std::fs::rename(&hook_app_data, &hook_accepted).expect("move accepted owner");
+            symlink(&hook_victim, &hook_app_data).expect("replace owner path");
+            Ok(())
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(CommandError::PartialEffect {
+            state: "outcome_unknown",
+            cleanup_required: false,
+            ..
+        })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).expect("read applied settings"),
+        candidate
+    );
+    assert_eq!(
+        std::fs::read(victim.join("sentinel")).expect("read victim sentinel"),
+        b"unchanged"
+    );
+    assert!(!victim.join("catalog.sqlite").exists());
+
+    drop(catalog);
+    let _ = std::fs::remove_file(&app_data_dir);
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 

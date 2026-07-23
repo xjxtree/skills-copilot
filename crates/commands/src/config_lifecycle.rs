@@ -242,8 +242,10 @@ pub(crate) fn commit_prepared_claude_settings_save_with_hooks(
         content,
         confirmation,
     } = prepared;
-    let _owner_lock = lock_app_mutations(app_data_dir)?;
+    let owner_lock = lock_app_mutations(app_data_dir)?;
     after_lock();
+    owner_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(owner_lock.owner_directory())?;
     let transaction = catalog.begin_immediate_transaction()?;
     let locked_state = (|| {
         validate_config_read_target(&ctx, AgentId::ClaudeCode, Scope::AgentGlobal, &target)?;
@@ -323,7 +325,9 @@ pub(crate) fn commit_prepared_claude_settings_save_with_hooks(
             return rollback_config_transaction_and_compensate(transaction, &compensation, error);
         }
     };
-    commit_config_transaction(transaction, &compensation, record)
+    let record = commit_config_transaction(transaction, &compensation, record)?;
+    verify_owner_binding_after_effect(&owner_lock, "config save")?;
+    Ok(record)
 }
 
 fn finish_claude_settings_save(
@@ -536,6 +540,22 @@ fn commit_config_transaction<T>(
             ),
         }),
     }
+}
+
+fn verify_owner_binding_after_effect(
+    owner_lock: &crate::AppMutationLock,
+    operation: &str,
+) -> Result<(), CommandError> {
+    owner_lock
+        .validate_owner_path_binding()
+        .map_err(|error| CommandError::PartialEffect {
+            operation: operation.to_string(),
+            state: "outcome_unknown",
+            cleanup_required: false,
+            detail: format!(
+                "the confirmed mutation was committed and verified on the accepted app-data owner, but that owner is no longer bound to the configured app-data path: {error}"
+            ),
+        })
 }
 
 fn compensate_config_failure<T>(
@@ -908,8 +928,10 @@ pub(crate) fn rollback_snapshot_with_hooks(
     let agent = agent_from_snapshot(&preflight.snapshot.agent)?;
     let scope = scope_from_snapshot(&preflight.snapshot.scope)?;
     let target = PathBuf::from(&preflight.snapshot.target);
-    let _owner_lock = lock_app_mutations(app_data_dir)?;
+    let owner_lock = lock_app_mutations(app_data_dir)?;
     after_lock();
+    owner_lock.validate_owner_path_binding()?;
+    catalog.ensure_mutation_owner(owner_lock.owner_directory())?;
     let transaction = catalog.begin_immediate_transaction()?;
     let locked_state = (|| {
         let locked_snapshot = catalog
@@ -1000,7 +1022,9 @@ pub(crate) fn rollback_snapshot_with_hooks(
             return rollback_config_transaction_and_compensate(transaction, &compensation, error);
         }
     };
-    commit_config_transaction(transaction, &compensation, record)
+    let record = commit_config_transaction(transaction, &compensation, record)?;
+    verify_owner_binding_after_effect(&owner_lock, "snapshot rollback")?;
+    Ok(record)
 }
 
 fn validate_rollback_reference_identity(
