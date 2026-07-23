@@ -13,7 +13,7 @@ use crate::{mutation_lock::AppMutationLock, CommandError};
 ///
 /// The lifetime deliberately borrows the mutation lock so descriptor-relative
 /// access cannot outlive the cross-process exclusion guard.
-pub(crate) struct AppDataOwnerFs<'lock> {
+pub struct AppDataOwnerFs<'lock> {
     lock: &'lock AppMutationLock,
     _guard: PhantomData<&'lock AppMutationLock>,
 }
@@ -26,7 +26,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
     }
 
-    pub(crate) fn read_bounded_regular_file(
+    pub fn read_bounded_regular_file(
         &self,
         relative: &Path,
         max_bytes: u64,
@@ -52,7 +52,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
         Ok(Some(bytes))
     }
 
-    pub(crate) fn atomic_replace_private_file(
+    pub fn atomic_replace_private_file(
         &self,
         relative: &Path,
         bytes: &[u8],
@@ -140,6 +140,123 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
     }
 
+    pub fn append_private_file(
+        &self,
+        relative: &Path,
+        bytes: &[u8],
+        max_result_bytes: u64,
+        label: &str,
+    ) -> Result<(), CommandError> {
+        validate_relative_path(relative)?;
+        let appended_len = u64::try_from(bytes.len()).map_err(|_| {
+            CommandError::UnsafeConfigPath(format!("{label} exceeds its append safety bound"))
+        })?;
+        if appended_len > max_result_bytes {
+            return Err(CommandError::UnsafeConfigPath(format!(
+                "{label} exceeds its append safety bound"
+            )));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            use rustix::fs::{fchmod, fsync, openat, Mode, OFlags};
+
+            let (parent, name) = self.open_parent(relative, false)?;
+            let mode = Mode::from_bits_truncate(0o600);
+            let (descriptor, created) = match openat(
+                &parent,
+                name,
+                OFlags::WRONLY | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(descriptor) => (descriptor, false),
+                Err(rustix::io::Errno::NOENT) => (
+                    openat(
+                        &parent,
+                        name,
+                        OFlags::WRONLY
+                            | OFlags::APPEND
+                            | OFlags::CREATE
+                            | OFlags::EXCL
+                            | OFlags::NOFOLLOW
+                            | OFlags::CLOEXEC,
+                        mode,
+                    )
+                    .map_err(io::Error::from)?,
+                    true,
+                ),
+                Err(error) => return Err(io::Error::from(error).into()),
+            };
+            let mut file = File::from(descriptor);
+            let metadata = file.metadata()?;
+            let owner_metadata = self.lock.owner_directory().metadata()?;
+            if !metadata.is_file()
+                || metadata.uid() != owner_metadata.uid()
+                || metadata.nlink() != 1
+                || metadata.mode() & 0o077 != 0
+            {
+                return Err(unsafe_relative_file(label));
+            }
+            if created {
+                fchmod(&file, mode).map_err(io::Error::from)?;
+            }
+            let expected_len = metadata
+                .len()
+                .checked_add(appended_len)
+                .filter(|len| *len <= max_result_bytes)
+                .ok_or_else(|| {
+                    CommandError::UnsafeConfigPath(format!(
+                        "{label} exceeds its append safety bound"
+                    ))
+                })?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            if file.metadata()?.len() != expected_len {
+                return Err(CommandError::StaleActionReference);
+            }
+            fsync(&parent).map_err(io::Error::from)?;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let target = guarded_fallback_path(self.lock.owner_path(), relative)?;
+            let existed = match std::fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                    return Err(unsafe_relative_file(label))
+                }
+                Ok(_) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error.into()),
+            };
+            let mut options = std::fs::OpenOptions::new();
+            options.append(true);
+            if existed {
+                options.write(true);
+            } else {
+                options.create_new(true);
+            }
+            let mut file = options.open(&target)?;
+            let metadata = file.metadata()?;
+            let expected_len = metadata
+                .len()
+                .checked_add(appended_len)
+                .filter(|len| *len <= max_result_bytes)
+                .ok_or_else(|| {
+                    CommandError::UnsafeConfigPath(format!(
+                        "{label} exceeds its append safety bound"
+                    ))
+                })?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            if file.metadata()?.len() != expected_len {
+                return Err(CommandError::StaleActionReference);
+            }
+            File::open(target.parent().ok_or_else(unsafe_relative_path)?)?.sync_all()?;
+            Ok(())
+        }
+    }
+
     pub(crate) fn remove_root_regular_files_matching(
         &self,
         prefix: &str,
@@ -222,14 +339,11 @@ impl<'lock> AppDataOwnerFs<'lock> {
         }
     }
 
-    pub(crate) fn ensure_directory_all(
-        &self,
-        relative: &Path,
-    ) -> Result<Vec<PathBuf>, CommandError> {
+    pub fn ensure_directory_all(&self, relative: &Path) -> Result<Vec<PathBuf>, CommandError> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
-            use rustix::fs::{fchmod, mkdirat, openat, Mode};
+            use rustix::fs::{fchmod, fsync, mkdirat, openat, Mode};
 
             let flags = directory_flags();
             let mode = Mode::from_bits_truncate(0o700);
@@ -246,7 +360,10 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     Ok(next) => current = next,
                     Err(rustix::io::Errno::NOENT) => {
                         match mkdirat(&current, name, mode) {
-                            Ok(()) => created.push(accumulated.clone()),
+                            Ok(()) => {
+                                fsync(&current).map_err(io::Error::from)?;
+                                created.push(accumulated.clone());
+                            }
                             Err(rustix::io::Errno::EXIST) => {}
                             Err(error) => return Err(io::Error::from(error).into()),
                         }
@@ -553,5 +670,70 @@ mod tests {
                 Err(CommandError::UnsafeConfigPath(_))
             ));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bounded_append_rejects_hard_links_without_changing_the_target() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-fs-append-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&owner_path).expect("owner");
+        std::fs::write(&victim, b"unchanged").expect("victim");
+        std::fs::hard_link(&victim, owner_path.join("activity.jsonl")).expect("hard link");
+
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+        let result =
+            owner.append_private_file(Path::new("activity.jsonl"), b"\nchanged", 1024, "activity");
+
+        assert!(matches!(result, Err(CommandError::UnsafeConfigPath(_))));
+        assert_eq!(std::fs::read(&victim).expect("victim"), b"unchanged");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bounded_append_creates_private_file_and_verifies_the_result_length() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agent-copilot-owner-fs-private-append-{}-{unique}",
+            std::process::id()
+        ));
+        let owner_path = root.join("app-data");
+        std::fs::create_dir_all(&owner_path).expect("owner");
+        let lock = crate::mutation_lock::lock_app_mutations(&owner_path).expect("lock owner");
+        let owner = lock.owner_fs();
+
+        owner
+            .append_private_file(Path::new("activity.jsonl"), b"one\n", 8, "activity")
+            .expect("first append");
+        owner
+            .append_private_file(Path::new("activity.jsonl"), b"two\n", 8, "activity")
+            .expect("second append");
+
+        let path = owner_path.join("activity.jsonl");
+        assert_eq!(std::fs::read(&path).expect("activity"), b"one\ntwo\n");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 }

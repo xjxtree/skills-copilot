@@ -36,11 +36,11 @@ impl AppMutationLock {
         &self.owner_path
     }
 
-    pub(crate) fn owner_fs(&self) -> crate::app_data_owner_fs::AppDataOwnerFs<'_> {
+    pub fn owner_fs(&self) -> crate::AppDataOwnerFs<'_> {
         crate::app_data_owner_fs::AppDataOwnerFs::new(self)
     }
 
-    pub(crate) fn validate_owner_path_binding(&self) -> Result<(), CommandError> {
+    pub fn validate_owner_path_binding(&self) -> Result<(), CommandError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;

@@ -54,6 +54,7 @@ use analysis::{
     validate_rule_scope, validate_rule_severity_override, validate_rule_suppression_reason,
     validate_rule_tuning_key,
 };
+pub use app_data_owner_fs::AppDataOwnerFs;
 use config_consistency::{
     canonical_snapshot_project_root, config_content_digest, config_revision,
     ensure_expected_revision, read_config_state, snapshot_binding_revision,
