@@ -1,0 +1,59 @@
+{
+  "id": "fixture-privacy-preview-cleanup-legacy-content",
+  "ok": true,
+  "result": {
+    "inspection": {
+      "generated_by": "local-v2.64",
+      "cleanup_required": true,
+      "cleanup_source_count": 1,
+      "existing_source_count": 1,
+      "sources": [
+        {
+          "id": "model-task-matches",
+          "source_file": "model-task-matches.json",
+          "item_type": "regular_file",
+          "state": "legacy_private_content",
+          "cleanup_operation": "delete_leaf",
+          "cleanup_required": true,
+          "malformed": false,
+          "generated_residue": false
+        }
+      ],
+      "read_only": true,
+      "provider_request_sent": false,
+      "raw_content_returned": false,
+      "write_performed": false
+    },
+    "action": {
+      "id": "action:clean_legacy_private_content:3333333333333333333333333333333333333333333333333333333333333333",
+      "kind": "privacy_cleanup",
+      "intent": "clean_legacy_private_content",
+      "target": {
+        "kind": "app_data",
+        "id": "legacy-ai-private-content"
+      },
+      "impacts": ["app_local_data"],
+      "preview_method": "privacy.previewCleanupLegacyContent",
+      "apply_method": "privacy.cleanupLegacyContent",
+      "source_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "confirmation_required": true,
+      "network": "none",
+      "readback": ["private_content"],
+      "evidence_refs": ["app-data:legacy-ai-private-content"]
+    },
+    "preconditions": [
+      {
+        "kind": "legacy_private_content",
+        "target_id": "model-task-matches",
+        "expected_revision": "action-preview:v1:hmac-sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      {
+        "kind": "prompt_context",
+        "target_id": "provider-action-state",
+        "expected_revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    ],
+    "preview_token": "action-preview:v1:hmac-sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "confirmation_required": true
+  }
+}

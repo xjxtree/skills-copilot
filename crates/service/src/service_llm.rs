@@ -28,11 +28,11 @@ fn llm_prompt_runs_revision_while_locked(owner: &AppMutationLock) -> Result<Stri
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn llm_remote_unknown(detail: impl Into<String>) -> ServiceError {
+fn llm_remote_unknown(detail: impl Into<String>, cleanup_required: bool) -> ServiceError {
     CommandError::PartialEffect {
         operation: "LLM provider prompt".to_string(),
         state: "remote_unknown",
-        cleanup_required: false,
+        cleanup_required,
         detail: detail.into(),
     }
     .into()
@@ -484,6 +484,7 @@ impl ServiceHost {
                 if send.provider_request_sent {
                     return Err(llm_remote_unknown(
                         "the provider request may have left the process, and its finalized metadata owner is no longer bound to the configured path",
+                        false,
                     ));
                 }
                 return Err(CommandError::PartialEffect {
@@ -505,19 +506,24 @@ impl ServiceHost {
                     crate::service_provider_actions::ProviderActionState::Partial,
                 );
             if send.provider_request_sent {
-                return Err(llm_remote_unknown(if !target_matches {
-                    "the provider response target did not match the confirmed prompt target"
-                } else if !remote_result_verified {
-                    "the provider request may have left the process, but its remote result could not be verified"
-                } else if !send.local_metadata_persisted {
-                    "the provider request completed, but app-local provider audit persistence failed"
-                } else if !prompt_record_persisted {
-                    "the provider request completed, but app-local prompt-run persistence failed"
-                } else if finalization.is_err() {
-                    "the provider request completed, but replay finalization could not be verified"
-                } else {
-                    "the provider request completed, but semantic read-back or app-data owner binding could not be verified"
-                }));
+                let local_cleanup_required =
+                    !send.local_metadata_persisted || !prompt_record_persisted;
+                return Err(llm_remote_unknown(
+                    if !target_matches {
+                        "the provider response target did not match the confirmed prompt target"
+                    } else if !remote_result_verified {
+                        "the provider request may have left the process, but its remote result could not be verified"
+                    } else if !send.local_metadata_persisted {
+                        "the provider request completed, but app-local provider audit persistence failed"
+                    } else if !prompt_record_persisted {
+                        "the provider request completed, but app-local prompt-run persistence failed"
+                    } else if finalization.is_err() {
+                        "the provider request completed, but replay finalization could not be verified"
+                    } else {
+                        "the provider request completed, but semantic read-back or app-data owner binding could not be verified"
+                    },
+                    local_cleanup_required,
+                ));
             }
             finalization?;
             owner.validate_owner_path_binding().map_err(|_| {
@@ -2041,6 +2047,7 @@ fn parse_provider_activity_prompt_runs(
     }
     let mut rows = serde_json::from_slice::<Vec<LlmPromptRunRecord>>(&source.bytes)
         .map_err(|_| ServiceError::ProviderActivitySourceInvalid("prompt-runs"))?;
+    crate::service_host::strip_llm_prompt_run_bodies(&mut rows);
     rows.sort_by(llm_prompt_run_record_sort);
     Ok(rows)
 }
@@ -2250,7 +2257,7 @@ fn redacted_model_task_record(
     ModelTaskMatchRecord {
         id: observability_redact(&record.id, redaction_roots, 160),
         title: observability_redact(&record.title, redaction_roots, 180),
-        task: observability_redact(&record.task, redaction_roots, 600),
+        task: String::new(),
         task_kind: observability_redact(&record.task_kind, redaction_roots, 120),
         agent: record
             .agent
@@ -2311,7 +2318,7 @@ fn model_task_record_evidence_row(record: &ModelTaskMatchRecord) -> ModelTaskMat
         source: "model-task-matches.json".to_string(),
         source_kind: record.source_kind.clone(),
         title: record.title.clone(),
-        task: Some(record.task.clone()),
+        task: None,
         task_kind: record.task_kind.clone(),
         agent: record.agent.clone(),
         provider: record.provider.clone(),
@@ -2375,10 +2382,7 @@ fn prompt_run_model_task_evidence_row(
             observability_redact(&run.request_kind, redaction_roots, 120),
             observability_redact(&run.model, redaction_roots, 160)
         ),
-        task: run
-            .task
-            .as_deref()
-            .map(|value| observability_redact(value, redaction_roots, 600)),
+        task: None,
         task_kind: observability_redact(&run.request_kind, redaction_roots, 120),
         agent: run
             .agent
@@ -2399,11 +2403,10 @@ fn prompt_run_model_task_evidence_row(
         latency_ms: Some(run.duration_ms),
         estimated_total_tokens: run.estimated_total_tokens,
         estimated_cost_usd: run.estimated_cost_usd,
-        gap_notes: if run.task.is_none() {
-            vec!["Prompt-run metadata has no task text, so only request kind and model fit can be displayed.".to_string()]
-        } else {
-            Vec::new()
-        },
+        gap_notes: vec![
+            "Prompt-run metadata does not retain task text, so only request kind and model fit can be displayed."
+                .to_string(),
+        ],
         blocker_notes: Vec::new(),
         outcome_notes,
         evidence_refs,

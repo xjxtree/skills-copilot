@@ -428,10 +428,7 @@ pub(crate) fn provider_observability_history_row(
             .agent
             .as_deref()
             .map(|value| observability_redact(value, redaction_roots, 120)),
-        task: run
-            .task
-            .as_deref()
-            .map(|value| observability_redact(value, redaction_roots, 400)),
+        task: None,
         profile_id: observability_redact(&run.profile_id, redaction_roots, 160),
         provider: observability_redact(&run.provider, redaction_roots, 120),
         model: observability_redact(&run.model, redaction_roots, 160),
@@ -450,7 +447,7 @@ pub(crate) fn provider_observability_history_row(
         estimated_output_tokens: run.estimated_output_tokens,
         estimated_total_tokens: run.estimated_total_tokens,
         estimated_cost_usd: run.estimated_cost_usd,
-        draft_output_available: run.draft_output.is_some(),
+        draft_output_available: false,
         draft_requires_user_copy: run.draft_requires_user_copy,
         recorded_provider_request_sent: run.provider_request_sent,
         recorded_credential_accessed: run.credential_accessed,
@@ -520,7 +517,7 @@ pub(crate) fn provider_activity_prompt_run_id(
     canonical.field_strings("instance_ids", &run.instance_ids);
     canonical.field_optional_str("definition_id", run.definition_id.as_deref());
     canonical.field_optional_str("agent", run.agent.as_deref());
-    canonical.field_optional_str("task", run.task.as_deref());
+    canonical.field_optional_str("task", None);
     canonical.field_str("profile_id", &run.profile_id);
     canonical.field_str("provider", &run.provider);
     canonical.field_str("model", &run.model);

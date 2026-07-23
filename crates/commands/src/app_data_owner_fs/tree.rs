@@ -8,8 +8,8 @@ use std::{
 use sha2::Digest;
 
 use super::{
-    directory_flags, map_relative_io, map_unsafe_relative_errno, unsafe_relative_file,
-    validate_relative_path, AppDataOwnerFs,
+    directory_flags, map_unsafe_relative_errno, unsafe_relative_file, validate_relative_path,
+    AppDataOwnerFs,
 };
 #[cfg(not(unix))]
 use super::{guarded_fallback_path, unsafe_relative_path};
@@ -106,7 +106,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
         validate_relative_path(relative)?;
         #[cfg(unix)]
         {
-            self.open_directory(relative).map_err(Into::into)
+            self.open_directory(relative)
         }
         #[cfg(not(unix))]
         {
@@ -460,13 +460,13 @@ impl<'lock> AppDataOwnerFs<'lock> {
 
             let root = match self.open_directory(relative) {
                 Ok(directory) => directory,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                     return Ok(AppDataTreeSnapshot {
                         present: false,
                         rows: Vec::new(),
                     })
                 }
-                Err(error) => return Err(map_relative_io(error, label)),
+                Err(error) => return Err(error),
             };
             let mut pending = vec![(PathBuf::new(), root)];
             let mut rows = Vec::new();

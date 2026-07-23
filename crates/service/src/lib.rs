@@ -36,15 +36,16 @@ use skills_copilot_commands::{
     validate_skill_install_confirmation, validate_skill_manager_confirmation,
     validate_skill_toggle_confirmation, validate_snapshot_rollback_confirmation,
     ActionConfirmation, ActionPreviewBinding, ActionReadbackRecord, AdapterCapabilityRecord,
-    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport, AppMutationLock,
-    BatchToggleApplyRecord, BatchTogglePreviewRecord, CommandError, ConfigDocumentRecord,
-    ConfigSaveApplyRecord, ConfigSavePreviewRecord, CrossAgentAnalysisRecord,
-    ScriptExecutionPreviewRecord, ScriptExecutionRequest, SkillHealthSummary,
-    SkillInstallPreviewRecord, SkillManagerDeleteLocalParams, SkillManagerInstallParams,
-    SkillManagerListInstalledParams, SkillManagerLocalArchiveImportParams,
-    SkillManagerLocalArchiveUpdateParams, SkillManagerLocalCreateParams, SkillManagerRemoveParams,
-    SkillManagerSearchApplyParams, SkillManagerSearchParams, SkillManagerUpdateParams,
-    SnapshotRollbackApplyRecord, SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
+    AdapterDiagnosticsRecord, AgentCatalogScanPathAlias, AgentCatalogScanReport,
+    AppDataPrivateLeafSnapshot, AppMutationLock, BatchToggleApplyRecord, BatchTogglePreviewRecord,
+    CommandError, ConfigDocumentRecord, ConfigSaveApplyRecord, ConfigSavePreviewRecord,
+    CrossAgentAnalysisRecord, ScriptExecutionPreviewRecord, ScriptExecutionRequest,
+    SkillHealthSummary, SkillInstallPreviewRecord, SkillManagerDeleteLocalParams,
+    SkillManagerInstallParams, SkillManagerListInstalledParams,
+    SkillManagerLocalArchiveImportParams, SkillManagerLocalArchiveUpdateParams,
+    SkillManagerLocalCreateParams, SkillManagerRemoveParams, SkillManagerSearchApplyParams,
+    SkillManagerSearchParams, SkillManagerUpdateParams, SnapshotRollbackApplyRecord,
+    SnapshotRollbackPreviewRecord, SCRIPT_EXECUTION_DISABLED_REASON,
 };
 use skills_copilot_commands::{
     apply_search_skills_with_manager, preview_search_skills_with_manager,
@@ -57,6 +58,7 @@ use skills_copilot_core::{AdapterRoot, RootSource};
 use thiserror::Error;
 
 mod app_data_migration;
+mod privacy_cleanup;
 mod project_context;
 mod protocol;
 mod provider;
@@ -769,6 +771,8 @@ pub struct LlmPromptRunRecord {
     pub instance_ids: Vec<String>,
     pub definition_id: Option<String>,
     pub agent: Option<String>,
+    /// Deprecated compatibility field. Prompt-run metadata always returns and
+    /// persists this as `None`; user intent remains transient.
     pub task: Option<String>,
     pub profile_id: String,
     pub provider: String,
@@ -782,6 +786,8 @@ pub struct LlmPromptRunRecord {
     pub estimated_output_tokens: u32,
     pub estimated_total_tokens: u32,
     pub estimated_cost_usd: f64,
+    /// Deprecated compatibility field. Provider output is available only in
+    /// the immediate confirmed-send result and is never prompt-run history.
     pub draft_output: Option<String>,
     pub draft_requires_user_copy: bool,
     pub provider_request_sent: bool,

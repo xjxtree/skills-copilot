@@ -176,6 +176,91 @@ fn provider_apply_requires_confirmation_before_creating_app_data() {
 }
 
 #[test]
+fn provider_owner_bootstrap_preserves_post_effect_partial_classification() {
+    let error = crate::service_provider_actions::classify_provider_action_owner_lock_error(
+        skills_copilot_commands::CommandError::PartialEffect {
+            operation: "app-data owner creation".to_string(),
+            state: "applied_unverified",
+            cleanup_required: false,
+            detail: "owner directory was created but parent durability is unknown".to_string(),
+        },
+    );
+
+    assert!(matches!(
+        error,
+        ServiceError::Command(skills_copilot_commands::CommandError::PartialEffect {
+            state: "applied_unverified",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn provider_reservation_post_replace_sync_failure_is_partial_and_starts_no_provider_effect() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-reservation-sync-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let mut params =
+        provider_save_params("reservation-sync-provider", "https://example.invalid/v1");
+    let preview = host.handle(ServiceRequest {
+        id: Some("reservation-sync-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    params["action_confirmation"] =
+        action_confirmation_from_preview(&preview.result.expect("reservation preview"));
+    crate::service_provider_actions::install_test_provider_action_state_fault(
+        &app_data_dir,
+        crate::service_provider_actions::TestProviderActionStateFault::ReservationDirectorySync,
+    );
+
+    let response = host.handle(ServiceRequest {
+        id: Some("reservation-sync-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+
+    assert!(!response.ok);
+    let error = response.error.expect("reservation partial effect");
+    assert_eq!(error.code, "partial_effect");
+    assert_eq!(
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("applied_unverified")
+    );
+    assert!(
+        !provider_profiles_path(&app_data_dir).exists(),
+        "provider profile writes must not start after an unverified replay reservation"
+    );
+    let snapshot = crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+        .expect("reservation replay state");
+    assert_eq!(
+        snapshot.1,
+        crate::service_provider_actions::ProviderActionStatePhase::Reservation
+    );
+    assert_eq!(
+        snapshot.2,
+        crate::service_provider_actions::ProviderActionState::NotStarted
+    );
+
+    let replay = host.handle(ServiceRequest {
+        id: Some("reservation-sync-replay".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params,
+    });
+    assert!(!replay.ok);
+    assert_eq!(
+        replay.error.expect("reservation replay rejection").code,
+        "stale_action_reference"
+    );
+    assert!(!provider_profiles_path(&app_data_dir).exists());
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn provider_apply_does_not_create_missing_app_data_ancestors() {
     let root = env::temp_dir().join(format!(
         "skills-copilot-provider-missing-parent-{}-{}",
@@ -344,7 +429,142 @@ fn provider_replay_state_stays_bounded_and_keeps_only_the_latest_action() {
 }
 
 #[test]
+#[cfg(unix)]
+fn provider_reads_reject_broad_file_and_nested_directory_permissions_without_mutation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-private-read-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let (_, save) = confirmed_action_request(
+        &host,
+        "llm.previewSaveProviderProfile",
+        "llm.saveProviderProfile",
+        provider_save_params("private-read-provider", "https://example.invalid/v1"),
+    );
+    assert!(save.ok, "{:?}", save.error);
+    let path = provider_profiles_path(&app_data_dir);
+    let bytes = fs::read(&path).expect("provider profile bytes");
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640))
+        .expect("broad provider profile mode");
+    let broad_file = host.handle(ServiceRequest {
+        id: Some("provider-broad-file".to_string()),
+        method: "llm.listProviderProfiles".to_string(),
+        params: Value::Null,
+    });
+    assert!(!broad_file.ok);
+    assert_eq!(
+        broad_file.error.expect("broad file rejection").code,
+        "command_error"
+    );
+    assert_eq!(fs::read(&path).expect("unchanged broad file"), bytes);
+    assert_eq!(
+        fs::metadata(&path)
+            .expect("broad file metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640,
+        "a read rejection must not silently chmod private storage"
+    );
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .expect("private provider profile mode");
+    let directory = path.parent().expect("provider directory");
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o750))
+        .expect("broad provider directory mode");
+    let broad_directory = host.handle(ServiceRequest {
+        id: Some("provider-broad-directory".to_string()),
+        method: "llm.listProviderProfiles".to_string(),
+        params: Value::Null,
+    });
+    assert!(!broad_directory.ok);
+    assert_eq!(
+        broad_directory
+            .error
+            .expect("broad directory rejection")
+            .code,
+        "command_error"
+    );
+    assert_eq!(fs::read(&path).expect("unchanged directory bytes"), bytes);
+    assert_eq!(
+        fs::metadata(directory)
+            .expect("broad directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o750
+    );
+
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+        .expect("private provider directory mode");
+    let private = host.handle(ServiceRequest {
+        id: Some("provider-private-read".to_string()),
+        method: "llm.listProviderProfiles".to_string(),
+        params: Value::Null,
+    });
+    assert!(private.ok, "{:?}", private.error);
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn provider_store_size_is_checked_before_credential_staging_or_profile_write() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-provider-store-bound-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let profile_id = format!("store-bound-{}", unique_suffix());
+    crate::provider::manage_test_provider_credential(&profile_id, Some("original-secret"));
+    let mut params = provider_save_params(&profile_id, "https://example.invalid/v1");
+    params["display_name"] =
+        json!("x".repeat(crate::provider::PROVIDER_PROFILE_STORE_MAX_BYTES as usize));
+    params["api_key"] = json!("replacement-secret");
+    let preview = host.handle(ServiceRequest {
+        id: Some("provider-store-bound-preview".to_string()),
+        method: "llm.previewSaveProviderProfile".to_string(),
+        params: params.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    params["action_confirmation"] =
+        action_confirmation_from_preview(&preview.result.expect("store-bound preview"));
+
+    let response = host.handle(ServiceRequest {
+        id: Some("provider-store-bound-apply".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params,
+    });
+
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.expect("bounded store rejection").code,
+        "action_not_started"
+    );
+    assert!(
+        !provider_profiles_path(&app_data_dir).exists(),
+        "oversized provider metadata must not replace the store"
+    );
+    crate::provider::verify_provider_credential_matches(&profile_id, "original-secret")
+        .expect("credential must remain unchanged");
+    assert_eq!(
+        crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
+            .expect("bounded store replay state")
+            .2,
+        crate::service_provider_actions::ProviderActionState::NotStarted
+    );
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn corrupt_or_oversized_provider_replay_state_fails_closed_without_replacement() {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-action-corrupt-state-{}-{}",
         std::process::id(),
@@ -355,6 +575,16 @@ fn corrupt_or_oversized_provider_replay_state_fails_closed_without_replacement()
         .expect("create replay-state parent");
     let corrupt = b"{\"version\":1".to_vec();
     fs::write(&state_path, &corrupt).expect("seed corrupt replay state");
+    #[cfg(unix)]
+    {
+        fs::set_permissions(
+            state_path.parent().expect("replay-state parent"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("private replay-state parent");
+        fs::set_permissions(&state_path, fs::Permissions::from_mode(0o600))
+            .expect("private replay-state file");
+    }
     let host = test_host(app_data_dir.clone());
 
     let response = host.handle(ServiceRequest {
@@ -642,6 +872,8 @@ fn provider_save_reports_applied_unverified_after_post_rename_sync_error() {
     );
     crate::provider::verify_provider_credential_matches(profile_id, "post-rename-sync-secret")
         .expect("credential must not be compensated after an unverified durable replacement");
+    crate::provider::verify_provider_staging_credential_absent(profile_id)
+        .expect("verified target credential must not leave staging residue");
     assert!(crate::provider::list_provider_profiles(&app_data_dir)
         .expect("provider profiles")
         .profiles
@@ -689,6 +921,8 @@ fn provider_save_does_not_compensate_credential_when_store_readback_is_unknown()
     );
     crate::provider::verify_provider_credential_matches(profile_id, "post-rename-secret")
         .expect("credential must not be compensated after an unknown file outcome");
+    crate::provider::verify_provider_staging_credential_absent(profile_id)
+        .expect("unknown profile outcome must not leave a duplicate staging credential");
     assert!(crate::provider::list_provider_profiles(&app_data_dir)
         .expect("provider profiles")
         .profiles
@@ -1337,6 +1571,13 @@ fn llm_remote_success_with_prompt_record_failure_returns_remote_unknown() {
         Some("remote_unknown")
     );
     assert_eq!(
+        error
+            .details
+            .as_ref()
+            .map(|details| details.cleanup_required),
+        Some(true)
+    );
+    assert_eq!(
         crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
             .expect("prompt replay state")
             .2,
@@ -1395,6 +1636,13 @@ fn provider_network_postprocessing_failure_returns_remote_unknown() {
     assert_eq!(
         error.details.as_ref().map(|details| details.state.as_str()),
         Some("remote_unknown")
+    );
+    assert_eq!(
+        error
+            .details
+            .as_ref()
+            .map(|details| details.cleanup_required),
+        Some(true)
     );
     assert_eq!(
         crate::service_provider_actions::provider_action_state_snapshot(&app_data_dir)
@@ -1725,6 +1973,9 @@ fn staging_readback_failures_clean_up_or_report_credential_partial() {
 
 #[test]
 fn replay_state_cleans_fixed_crash_residue_and_directory_sync_failure_is_partial() {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-provider-replay-crash-{}-{}",
         std::process::id(),
@@ -1747,6 +1998,22 @@ fn replay_state_cleans_fixed_crash_residue_and_directory_sync_failure_is_partial
         .expect("seed first legacy replay replacement");
     fs::write(&legacy_replacement_two, b"legacy-crash-residue")
         .expect("seed second legacy replay replacement");
+    #[cfg(unix)]
+    {
+        fs::set_permissions(
+            replacement.parent().expect("replacement parent"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("private replay parent");
+        for path in [
+            &replacement,
+            &legacy_replacement_one,
+            &legacy_replacement_two,
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("private replay residue");
+        }
+    }
     let host = test_host(app_data_dir.clone());
     let (_, save) = confirmed_action_request(
         &host,

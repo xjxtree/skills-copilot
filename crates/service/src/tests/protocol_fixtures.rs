@@ -2,6 +2,7 @@ use super::app_wire_fixtures::*;
 use super::dispatch_fixtures::*;
 use super::skill_manager_fixtures::assert_skill_manager_page_metadata;
 use super::*;
+use crate::privacy_cleanup::LegacyPrivateContentCleanupParams;
 
 #[test]
 pub(super) fn service_protocol_fixtures_decode() {
@@ -188,6 +189,15 @@ pub(super) fn service_protocol_fixtures_decode() {
                     });
                     assert!(params.action_confirmation.confirmed);
                 }
+                "privacy.cleanupLegacyContent" => {
+                    let params = serde_json::from_value::<LegacyPrivateContentCleanupParams>(
+                        request.params.clone(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("request fixture {} params failed: {error}", path.display())
+                    });
+                    assert!(params.action_confirmation.confirmed);
+                }
                 "project.previewSetContext" => {
                     let params = serde_json::from_value::<ProjectContextSetPreviewParams>(
                         request.params.clone(),
@@ -356,6 +366,58 @@ struct WireLocalSessionMessagePageParams {
     limit: Option<usize>,
     cursor: Option<String>,
     source_revision: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLegacyPrivateContentSource {
+    id: String,
+    source_file: String,
+    item_type: String,
+    state: String,
+    cleanup_operation: String,
+    cleanup_required: bool,
+    malformed: bool,
+    generated_residue: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLegacyPrivateContentInspection {
+    generated_by: String,
+    cleanup_required: bool,
+    cleanup_source_count: usize,
+    existing_source_count: usize,
+    sources: Vec<WireLegacyPrivateContentSource>,
+    read_only: bool,
+    provider_request_sent: bool,
+    raw_content_returned: bool,
+    write_performed: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLegacyPrivateContentCleanupPreview {
+    inspection: WireLegacyPrivateContentInspection,
+    action: Option<WireActionDescriptor>,
+    preconditions: Vec<WireActionPrecondition>,
+    preview_token: Option<String>,
+    confirmation_required: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLegacyPrivateContentCleanupResult {
+    inspection: WireLegacyPrivateContentInspection,
+    cleaned_source_count: usize,
+    state: String,
+    effect: String,
+    retry_allowed: bool,
+    readback: WireActionReadbackRecord,
 }
 
 #[allow(dead_code)]
@@ -1547,6 +1609,63 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(applied.readback.verified);
             assert_eq!(applied.readback.action_id, applied.action.id);
             assert!(!applied.snapshot_id.is_empty());
+        }
+        "privacy.inspectLegacyContent" => {
+            let inspection: WireLegacyPrivateContentInspection =
+                decode_fixture_result(method, result, path);
+            assert!(inspection.cleanup_required);
+            assert!(inspection.read_only);
+            assert!(!inspection.write_performed);
+            assert!(!inspection.provider_request_sent);
+            assert!(!inspection.raw_content_returned);
+            assert_eq!(
+                inspection.cleanup_source_count,
+                inspection
+                    .sources
+                    .iter()
+                    .filter(|source| source.cleanup_required)
+                    .count()
+            );
+        }
+        "privacy.previewCleanupLegacyContent" => {
+            let preview: WireLegacyPrivateContentCleanupPreview =
+                decode_fixture_result(method, result, path);
+            assert!(preview.inspection.read_only);
+            assert!(!preview.inspection.write_performed);
+            assert!(preview.confirmation_required);
+            assert_eq!(
+                preview
+                    .action
+                    .as_ref()
+                    .map(|action| action.preview_method.as_str()),
+                Some(method)
+            );
+            assert_eq!(
+                preview
+                    .action
+                    .as_ref()
+                    .and_then(|action| action.apply_method.as_deref()),
+                Some("privacy.cleanupLegacyContent")
+            );
+            assert!(!preview.preconditions.is_empty());
+            assert!(preview
+                .preview_token
+                .as_deref()
+                .is_some_and(|token| token.starts_with("action-preview:v1:hmac-sha256:")));
+        }
+        "privacy.cleanupLegacyContent" => {
+            let applied: WireLegacyPrivateContentCleanupResult =
+                decode_fixture_result(method, result, path);
+            assert!(!applied.inspection.cleanup_required);
+            assert!(applied.inspection.read_only);
+            assert!(!applied.inspection.write_performed);
+            assert_eq!(applied.state, "verified");
+            assert!(!applied.retry_allowed);
+            assert!(applied.readback.verified);
+            assert_eq!(
+                applied.readback.domains,
+                vec!["private_content".to_string()]
+            );
         }
         "snapshot.list" | "snapshot.listAgentConfig" => {
             let _: Vec<WireConfigSnapshotRecord> = decode_fixture_result(method, result, path);

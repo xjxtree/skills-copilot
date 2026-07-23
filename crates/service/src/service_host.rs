@@ -3,8 +3,31 @@ use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 
 pub(crate) const LLM_PROMPT_RUNS_RELATIVE_PATH: &str = "prompt-runs.json";
 pub(crate) const LLM_PROMPT_RUNS_MAX_BYTES: u64 = 8 * 1_024 * 1_024;
+pub(crate) const LLM_PROMPT_RUNS_BOUND_QUARANTINE_PREFIX: &str = ".prompt-runs.json.bound-replace-";
 pub(crate) const MODEL_TASK_MATCHES_RELATIVE_PATH: &str = "model-task-matches.json";
 pub(crate) const MODEL_TASK_MATCHES_MAX_BYTES: u64 = 8 * 1_024 * 1_024;
+
+pub(crate) fn strip_llm_prompt_run_bodies(runs: &mut [LlmPromptRunRecord]) {
+    for run in runs {
+        // These fields remain wire-compatible for older clients, but prompt
+        // metadata never exposes legacy user intent or provider output.
+        run.task = None;
+        run.draft_output = None;
+        run.draft_requires_user_copy = false;
+    }
+}
+
+pub(crate) fn canonicalize_llm_prompt_runs_for_storage(runs: &mut [LlmPromptRunRecord]) {
+    strip_llm_prompt_run_bodies(runs);
+    for run in runs {
+        run.raw_prompt_persisted = false;
+        run.raw_response_persisted = false;
+        run.redaction_summary.raw_prompt_persisted = false;
+        run.redaction_summary.raw_response_persisted = false;
+        run.safety_flags.raw_prompt_persisted = false;
+        run.safety_flags.raw_response_persisted = false;
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -199,6 +222,19 @@ impl ServiceHost {
             "llm.prepareAction" => {
                 let params: LlmPrepareActionParams = serde_json::from_value(request.params)?;
                 serde_json::to_value(self.prepare_llm_action(params)?).map_err(Into::into)
+            }
+            "privacy.inspectLegacyContent" => {
+                serde_json::to_value(self.inspect_legacy_private_content()?).map_err(Into::into)
+            }
+            "privacy.previewCleanupLegacyContent" => {
+                serde_json::to_value(self.preview_cleanup_legacy_private_content()?)
+                    .map_err(Into::into)
+            }
+            "privacy.cleanupLegacyContent" => {
+                let params: crate::privacy_cleanup::LegacyPrivateContentCleanupParams =
+                    serde_json::from_value(request.params)?;
+                serde_json::to_value(self.cleanup_legacy_private_content(params)?)
+                    .map_err(Into::into)
             }
             "rules.listTuning" => {
                 let catalog = self.open_catalog_for_read()?;
@@ -1234,17 +1270,29 @@ impl ServiceHost {
         &self,
         owner: &AppMutationLock,
     ) -> Result<Vec<LlmPromptRunRecord>, ServiceError> {
-        let Some(content) = owner.owner_fs().read_bounded_regular_file(
+        self.load_llm_prompt_runs_snapshot_while_locked(owner)
+            .map(|(runs, _)| runs)
+    }
+
+    fn load_llm_prompt_runs_snapshot_while_locked(
+        &self,
+        owner: &AppMutationLock,
+    ) -> Result<(Vec<LlmPromptRunRecord>, Option<AppDataPrivateLeafSnapshot>), ServiceError> {
+        let Some(snapshot) = owner.owner_fs().read_bounded_regular_file_snapshot(
             Path::new(LLM_PROMPT_RUNS_RELATIVE_PATH),
             LLM_PROMPT_RUNS_MAX_BYTES,
             "LLM prompt run history",
         )?
         else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
-        let mut runs: Vec<LlmPromptRunRecord> = serde_json::from_slice(&content)?;
+        let content = snapshot
+            .regular_file_bytes()
+            .expect("bounded prompt-run snapshot is regular");
+        let mut runs: Vec<LlmPromptRunRecord> = serde_json::from_slice(content)?;
+        strip_llm_prompt_run_bodies(&mut runs);
         runs.sort_by(llm_prompt_run_record_sort);
-        Ok(runs)
+        Ok((runs, Some(snapshot)))
     }
 
     pub(crate) fn load_model_task_matches_while_locked(
@@ -1260,6 +1308,9 @@ impl ServiceHost {
             return Ok(Vec::new());
         };
         let mut records: Vec<ModelTaskMatchRecord> = serde_json::from_slice(&content)?;
+        for record in &mut records {
+            record.task.clear();
+        }
         records.sort_by(model_task_match_record_sort);
         Ok(records)
     }
@@ -1352,6 +1403,7 @@ impl ServiceHost {
         };
         match serde_json::from_slice::<Vec<LlmPromptRunRecord>>(&content) {
             Ok(mut runs) => {
+                strip_llm_prompt_run_bodies(&mut runs);
                 runs.sort_by(llm_prompt_run_record_sort);
                 let count = runs.len();
                 (
@@ -1613,18 +1665,41 @@ impl ServiceHost {
         self.save_llm_prompt_runs_while_locked(&owner, runs)
     }
 
+    #[cfg(test)]
     pub(crate) fn save_llm_prompt_runs_while_locked(
         &self,
         owner: &AppMutationLock,
         runs: &[LlmPromptRunRecord],
     ) -> Result<(), ServiceError> {
+        let expected = owner.owner_fs().read_bounded_regular_file_snapshot(
+            Path::new(LLM_PROMPT_RUNS_RELATIVE_PATH),
+            LLM_PROMPT_RUNS_MAX_BYTES,
+            "LLM prompt run history",
+        )?;
+        self.save_llm_prompt_runs_if_current_while_locked(owner, runs, expected.as_ref())
+    }
+
+    fn save_llm_prompt_runs_if_current_while_locked(
+        &self,
+        owner: &AppMutationLock,
+        runs: &[LlmPromptRunRecord],
+        expected: Option<&AppDataPrivateLeafSnapshot>,
+    ) -> Result<(), ServiceError> {
         let mut sorted = runs.to_vec();
+        canonicalize_llm_prompt_runs_for_storage(&mut sorted);
         sorted.sort_by(llm_prompt_run_record_sort);
         let content = serde_json::to_vec_pretty(&sorted)?;
-        owner.owner_fs().atomic_replace_private_file(
+        if content.len() as u64 > LLM_PROMPT_RUNS_MAX_BYTES {
+            return Err(ServiceError::InvalidRequest(
+                "LLM prompt-run metadata exceeds its private storage safety bound".to_string(),
+            ));
+        }
+        owner.owner_fs().replace_private_file_if_current(
             Path::new(LLM_PROMPT_RUNS_RELATIVE_PATH),
+            expected,
             &content,
             "prompt-runs",
+            LLM_PROMPT_RUNS_BOUND_QUARANTINE_PREFIX,
         )?;
         Ok(())
     }
@@ -1639,21 +1714,10 @@ impl ServiceHost {
         let adapter_ctx = self.effective_adapter_ctx_while_mutation_owner_held(owner)?;
         let roots = self.trace_redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&roots);
-        let task = params
-            .request
-            .user_intent
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 500));
         let error_message = send
             .error_message
             .as_deref()
             .map(|value| truncate_chars(&redactor.redact(value), 500));
-        let draft_output = send
-            .output_text
-            .as_deref()
-            .map(|value| truncate_chars(&redactor.redact(value), 12_000));
         let request_redaction = redactor.summary();
         let completed_at = unix_timestamp_millis();
         let estimated_total_tokens = preview
@@ -1689,7 +1753,7 @@ impl ServiceHost {
             instance_ids,
             definition_id: None,
             agent: None,
-            task,
+            task: None,
             profile_id: send.profile_id.clone(),
             provider: send.provider_type.as_str().to_string(),
             model: send.model.clone(),
@@ -1702,7 +1766,7 @@ impl ServiceHost {
             estimated_output_tokens: preview.estimated_output_tokens,
             estimated_total_tokens,
             estimated_cost_usd: preview.estimated_cost_usd,
-            draft_output,
+            draft_output: None,
             draft_requires_user_copy: true,
             provider_request_sent: send.provider_request_sent,
             credential_accessed: send.credential_accessed,
@@ -1721,9 +1785,9 @@ impl ServiceHost {
             ),
         };
 
-        let mut runs = self.load_llm_prompt_runs_while_locked(owner)?;
+        let (mut runs, expected) = self.load_llm_prompt_runs_snapshot_while_locked(owner)?;
         runs.push(record);
-        self.save_llm_prompt_runs_while_locked(owner, &runs)?;
+        self.save_llm_prompt_runs_if_current_while_locked(owner, &runs, expected.as_ref())?;
         Ok(())
     }
 

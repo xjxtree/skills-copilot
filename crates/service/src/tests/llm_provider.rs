@@ -473,10 +473,10 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
         runs.pointer("/runs/0/status").and_then(Value::as_str),
         Some("succeeded")
     );
-    assert_eq!(
-        runs.pointer("/runs/0/draft_output").and_then(Value::as_str),
-        Some("Draft-only review from mock provider.")
-    );
+    assert!(runs
+        .pointer("/runs/0/draft_output")
+        .is_some_and(Value::is_null));
+    assert!(runs.pointer("/runs/0/task").is_some_and(Value::is_null));
     assert_eq!(
         runs.pointer("/runs/0/raw_prompt_persisted")
             .and_then(Value::as_bool),
@@ -495,8 +495,11 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
 
     let prompt_runs_path = host.llm_prompt_runs_path();
     let prompt_run_content = fs::read_to_string(&prompt_runs_path).expect("prompt run content");
-    assert!(prompt_run_content.contains("Draft-only review from mock provider."));
+    assert!(!prompt_run_content.contains("Draft-only review from mock provider."));
+    assert!(!prompt_run_content.contains("summarize risk without exposing"));
     assert!(prompt_run_content.contains("\"request_kind\": \"analyze\""));
+    assert!(prompt_run_content.contains("\"task\": null"));
+    assert!(prompt_run_content.contains("\"draft_output\": null"));
     assert!(!prompt_run_content.contains("test-secret-key"));
     assert!(!prompt_run_content.contains("fixture-redacted-value"));
     assert!(!prompt_run_content.contains(&skill_path.to_string_lossy().to_string()));
@@ -508,7 +511,7 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
 }
 
 #[test]
-fn llm_confirm_prompt_redacts_persisted_draft_output() {
+fn llm_confirm_prompt_keeps_user_intent_and_provider_output_out_of_prompt_history() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-llm-draft-redaction-test-{}-{}",
         std::process::id(),
@@ -571,22 +574,93 @@ fn llm_confirm_prompt_redacts_persisted_draft_output() {
     });
     assert!(list_runs.ok, "{:?}", list_runs.error);
     let runs = list_runs.result.expect("prompt runs");
-    let persisted_draft = runs
+    assert!(runs
         .pointer("/runs/0/draft_output")
-        .and_then(Value::as_str)
-        .expect("persisted draft");
-    assert!(!persisted_draft.contains(&local_path));
-    assert!(!persisted_draft.contains(high_entropy_secret));
-    assert!(persisted_draft.contains("<app-data-dir>"));
-    assert!(persisted_draft.contains("<redacted-secret>"));
+        .is_some_and(Value::is_null));
+    assert!(runs.pointer("/runs/0/task").is_some_and(Value::is_null));
 
     let prompt_run_content =
         fs::read_to_string(host.llm_prompt_runs_path()).expect("prompt run content");
+    assert!(!prompt_run_content.contains(&provider_draft));
+    assert!(!prompt_run_content.contains("summarize draft redaction posture"));
     assert!(!prompt_run_content.contains(&local_path));
     assert!(!prompt_run_content.contains(high_entropy_secret));
-    assert!(prompt_run_content.contains("<app-data-dir>"));
-    assert!(prompt_run_content.contains("<redacted-secret>"));
+    assert!(prompt_run_content.contains("\"task\": null"));
+    assert!(prompt_run_content.contains("\"draft_output\": null"));
 
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+#[cfg(unix)]
+fn llm_prompt_history_reads_hide_legacy_bodies_without_rewriting_the_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-legacy-body-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+    let host = test_host(app_data_dir.clone());
+    let mut legacy = provider_activity_id_fixture_prompt("legacy-run", "analyze", "safe-id", 2_000);
+    let legacy_task = "legacy-user-intent-must-not-return";
+    let legacy_output = "legacy-provider-output-must-not-return";
+    legacy.task = Some(legacy_task.to_string());
+    legacy.draft_output = Some(legacy_output.to_string());
+    let raw = serde_json::to_vec_pretty(&vec![legacy]).expect("legacy prompt history");
+    fs::write(host.llm_prompt_runs_path(), &raw).expect("write legacy prompt history");
+    fs::set_permissions(
+        host.llm_prompt_runs_path(),
+        fs::Permissions::from_mode(0o600),
+    )
+    .expect("private prompt history");
+
+    let list = host.handle(ServiceRequest {
+        id: Some("legacy-prompt-runs".to_string()),
+        method: "llm.listPromptRuns".to_string(),
+        params: Value::Null,
+    });
+
+    assert!(list.ok, "{:?}", list.error);
+    let result = list.result.expect("legacy list result");
+    assert!(result.pointer("/runs/0/task").is_some_and(Value::is_null));
+    assert!(result
+        .pointer("/runs/0/draft_output")
+        .is_some_and(Value::is_null));
+    let serialized = serde_json::to_string(&result).expect("serialize legacy list");
+    assert!(!serialized.contains(legacy_task));
+    assert!(!serialized.contains(legacy_output));
+    assert_eq!(
+        fs::read(host.llm_prompt_runs_path()).expect("legacy bytes after read"),
+        raw,
+        "read-only compatibility filtering must not become a hidden write path"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn llm_prompt_history_refuses_metadata_larger_than_its_read_bound() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-prompt-history-bound-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    fs::create_dir_all(&app_data_dir).expect("create app data");
+    let host = test_host(app_data_dir.clone());
+    let mut run = provider_activity_id_fixture_prompt("oversized-run", "analyze", "safe-id", 2_000);
+    run.error_message = Some("x".repeat(crate::service_host::LLM_PROMPT_RUNS_MAX_BYTES as usize));
+
+    let error = host
+        .save_llm_prompt_runs(&[run])
+        .expect_err("oversized prompt metadata must fail closed");
+
+    assert!(matches!(error, ServiceError::InvalidRequest(_)));
+    assert!(
+        !host.llm_prompt_runs_path().exists(),
+        "an oversized candidate must not replace prompt-run storage"
+    );
     let _ = fs::remove_dir_all(app_data_dir);
 }
 
@@ -793,14 +867,13 @@ fn llm_provider_observability_aggregates_seeded_metadata_and_preserves_privacy_b
         raw_response_persisted: false,
     };
     let metadata_line = serde_json::to_string(&metadata).expect("serialize metadata");
-    fs::write(
-        provider_call_metadata_path(&app_data_dir),
+    write_private_app_data_fixture(
+        &provider_call_metadata_path(&app_data_dir),
         format!("{metadata_line}\n"),
-    )
-    .expect("write provider metadata");
+    );
 
-    fs::write(
-        provider_profiles_path(&app_data_dir),
+    write_private_app_data_fixture(
+        &provider_profiles_path(&app_data_dir),
         serde_json::to_string_pretty(&json!({
             "version": 1,
             "default_profile_id": "fixture-openai",
@@ -834,8 +907,7 @@ fn llm_provider_observability_aggregates_seeded_metadata_and_preserves_privacy_b
             ]
         }))
         .expect("serialize provider profiles"),
-    )
-    .expect("write provider profiles");
+    );
 
     let response = host.handle(ServiceRequest {
         id: Some("provider-observability".to_string()),
@@ -879,8 +951,11 @@ fn llm_provider_observability_aggregates_seeded_metadata_and_preserves_privacy_b
         result
             .pointer("/history_rows/0/draft_output_available")
             .and_then(Value::as_bool),
-        Some(true)
+        Some(false)
     );
+    assert!(result
+        .pointer("/history_rows/0/task")
+        .is_some_and(Value::is_null));
     assert!(
         result.pointer("/history_rows/0/draft_output").is_none(),
         "observability must not return provider draft text"
@@ -1151,11 +1226,10 @@ fn llm_provider_observability_aggregates_full_date_range_before_row_limit() {
     .map(|row| serde_json::to_string(&row).expect("serialize metadata"))
     .collect::<Vec<_>>()
     .join("\n");
-    fs::write(
-        provider_call_metadata_path(&app_data_dir),
+    write_private_app_data_fixture(
+        &provider_call_metadata_path(&app_data_dir),
         format!("{metadata_lines}\n"),
-    )
-    .expect("write provider metadata");
+    );
 
     let response = host.handle(ServiceRequest {
         id: Some("provider-observability-range".to_string()),
@@ -1332,11 +1406,10 @@ fn provider_activity_pages_unified_redacted_metadata_in_stable_order() {
         .map(|row| serde_json::to_string(&row).expect("serialize activity metadata"))
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(
-        provider_call_metadata_path(&app_data_dir),
+    write_private_app_data_fixture(
+        &provider_call_metadata_path(&app_data_dir),
         format!("{provider_calls}\n"),
-    )
-    .expect("write activity metadata");
+    );
 
     let mut rows = Vec::new();
     let mut cursor = None;
@@ -1461,7 +1534,7 @@ fn provider_activity_cursor_binds_filters_and_rejects_source_mutation() {
         .collect::<Vec<_>>()
         .join("\n");
     let metadata_path = provider_call_metadata_path(&app_data_dir);
-    fs::write(&metadata_path, format!("{initial_lines}\n")).expect("write metadata");
+    write_private_app_data_fixture(&metadata_path, format!("{initial_lines}\n"));
 
     let first = host.handle(ServiceRequest {
         id: Some("provider-activity-first".to_string()),
@@ -1498,7 +1571,7 @@ fn provider_activity_cursor_binds_filters_and_rejects_source_mutation() {
 
     let mut content = fs::read_to_string(&metadata_path).expect("read metadata");
     content = content.replacen("confirm-0", "confirm-mutated", 1);
-    fs::write(&metadata_path, content).expect("mutate non-visible metadata");
+    write_private_app_data_fixture(&metadata_path, content);
 
     let changed = host.handle(ServiceRequest {
         id: Some("provider-activity-source-changed".to_string()),
@@ -1719,7 +1792,7 @@ fn provider_activity_revision_hashes_complete_raw_source_bytes() {
         .collect::<Vec<_>>()
         .join("\n");
     let metadata_path = provider_call_metadata_path(&app_data_dir);
-    fs::write(&metadata_path, format!("{rows}\n")).expect("write provider metadata");
+    write_private_app_data_fixture(&metadata_path, format!("{rows}\n"));
 
     let first = host.handle(ServiceRequest {
         id: Some("provider-activity-raw-first".to_string()),
@@ -1735,7 +1808,7 @@ fn provider_activity_revision_hashes_complete_raw_source_bytes() {
 
     let mut raw = fs::read(&metadata_path).expect("read provider metadata bytes");
     raw.extend_from_slice(b" \n");
-    fs::write(&metadata_path, raw).expect("change only raw whitespace bytes");
+    write_private_app_data_fixture(&metadata_path, raw);
 
     let continuation = host.handle(ServiceRequest {
         id: Some("provider-activity-raw-continuation".to_string()),
@@ -1849,11 +1922,10 @@ fn provider_activity_ids_are_stable_across_filters_windows_and_front_inserts() {
             .map(|row| serde_json::to_string(row).expect("serialize call row"))
             .collect::<Vec<_>>()
             .join("\n");
-        fs::write(
-            provider_call_metadata_path(&app_data_dir),
+        write_private_app_data_fixture(
+            &provider_call_metadata_path(&app_data_dir),
             format!("{content}\n"),
-        )
-        .expect("write call rows");
+        );
     };
     write_calls(&[front_call.clone(), target_call.clone()]);
 
@@ -2008,11 +2080,10 @@ fn write_provider_activity_id_fixture_calls(app_data_dir: &Path, rows: &[Provide
         .map(|row| serde_json::to_string(row).expect("serialize provider call fixture"))
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(
-        provider_call_metadata_path(app_data_dir),
+    write_private_app_data_fixture(
+        &provider_call_metadata_path(app_data_dir),
         format!("{content}\n"),
-    )
-    .expect("write provider call fixtures");
+    );
 }
 
 fn assert_provider_activity_duplicate_error(response: ServiceResponse, forbidden: &str) {
@@ -2209,11 +2280,10 @@ fn provider_activity_rolling_window_is_fixed_across_continuation_clock_changes()
     .map(|row| serde_json::to_string(&row).expect("serialize fixed-window metadata"))
     .collect::<Vec<_>>()
     .join("\n");
-    fs::write(
-        provider_call_metadata_path(&app_data_dir),
+    write_private_app_data_fixture(
+        &provider_call_metadata_path(&app_data_dir),
         format!("{raw}\n"),
-    )
-    .expect("write fixed-window metadata");
+    );
 
     let first_params = ListProviderActivityParams {
         window_days: Some(1),

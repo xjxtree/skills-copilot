@@ -1,0 +1,18 @@
+{
+  "id": "fixture-privacy-cleanup-legacy-content",
+  "method": "privacy.cleanupLegacyContent",
+  "params": {
+    "action_confirmation": {
+      "reference": {
+        "action_id": "action:clean_legacy_private_content:3333333333333333333333333333333333333333333333333333333333333333",
+        "source_revision": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "target": {
+          "kind": "app_data",
+          "id": "legacy-ai-private-content"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "confirmed": true
+    }
+  }
+}

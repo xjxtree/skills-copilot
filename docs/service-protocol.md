@@ -101,6 +101,9 @@ that clients may infer for arbitrary mutations.
   local-archive-update, eligible app-owned local deletion, explicit Claude
   settings saves, config snapshot rollback, provider profile save/delete,
   provider connection tests, and confirmed LLM prompt sends.
+  It also covers explicit cleanup of legacy AI/private-content files through
+  `privacy.previewCleanupLegacyContent` and
+  `privacy.cleanupLegacyContent`.
   Other callable mutations retain their documented
   method-specific consistency contracts until they explicitly adopt these
   fields.
@@ -221,6 +224,9 @@ the client.
 | `llm.recordModelTaskMatch` | None | Never | Never | None |
 | `llm.deleteModelTaskMatch` | None | Never | Never | None |
 | `llm.prepareAction` | None | Never | Never | None |
+| `privacy.inspectLegacyContent` | None | Never | Never | None |
+| `privacy.previewCleanupLegacyContent` | None | Never | Never | None |
+| `privacy.cleanupLegacyContent` | App-local data | Never | Never | Required |
 | `rules.listTuning` | None | Never | Never | None |
 | `rules.setSeverityOverride` | None | Never | Never | None |
 | `rules.clearSeverityOverride` | None | Never | Never | None |
@@ -383,8 +389,12 @@ the provider lock, opens or creates its private parent component-wise with
 no-follow semantics, removes bounded legacy crash residue, and verifies the
 parent-directory sync after rename. A symlinked owner or intermediate component
 is rejected before any provider effect and cannot chmod or populate its target.
-A failed post-rename durability check is `applied_unverified`; malformed,
-oversized, symlinked, non-regular, or unbounded state storage fails closed.
+A failed post-rename durability check is `applied_unverified`; an atomic-write
+error followed by candidate read-back remains `applied_unverified` because
+read-back cannot prove directory durability. An unchanged reservation is
+`action_not_started`, while an unchanged terminal record after a provider
+effect is partial. Malformed, oversized, symlinked, non-regular, broadly
+permissioned, or unbounded state storage fails closed.
 Every consumed token is rejected on replay. The native client clears the
 pending token after every confirmed attempt and requires a new preview for
 recovery. Stale or mismatched confirmations are rejected before the lock or
@@ -395,7 +405,9 @@ before committing the profile. If the profile commit fails, the service
 restores the previous credential and verifies the restoration. Delete and save
 responses classify unverified local or credential effects as `partial` with
 `effect=applied_unverified`; callers must reload provider state and must not
-retry automatically.
+retry automatically. The bounded profile-store candidate is checked before
+credential staging. An unverified store outcome keeps the verified target
+credential and removes its duplicate staging copy.
 
 Connection tests and prompt sends classify all failures that occur after a
 request may have left the process as `partial` with
@@ -407,6 +419,19 @@ provider apply returns typed `readback` observations for every domain declared
 in the action: provider profiles, provider credentials, provider activity,
 and/or prompt runs as applicable. Credential read-back is a semantic Keychain
 presence/value or absence verification, not secret exposure.
+
+App-owned provider files are read only through the locked owner descriptor.
+On Unix every file must be regular, owned by the app-data owner UID, have one
+link, fit its byte bound, and grant no group/other permission bits; `0600` and
+owner-only read modes such as `0400` are accepted. Every traversed nested
+directory must have the same owner and no group/other permission bits. Reads
+fail closed without chmod. Bounded residue cleanup atomically moves each name
+to an unpredictable same-directory no-replace quarantine, verifies the moved
+device/inode identity, and only then unlinks it. If a raced replacement was
+moved, it is restored only by an atomic no-replace rename while the original
+name remains absent; otherwise both names are retained. Any failure after a
+removal or uncertain move, including directory sync failure, is
+`partial_effect` with `state=applied_unverified` and `cleanup_required=true`.
 
 ## Full-Access Local Lists
 
@@ -433,6 +458,47 @@ presence/value or absence verification, not secret exposure.
   `total_count`, `has_more`, `next_cursor`, `source_completeness`, and optional
   `incomplete_reason`. Clients should accumulate by stable record ID and retain
   accepted rows if loading is cancelled or a later page fails.
+
+## Legacy Private-Content Cleanup
+
+`privacy.inspectLegacyContent` is the startup-safe, read-only projection for
+legacy Agent Copilot AI content. It opens only an existing app-data owner and
+does not create directories, replay state, locks on disk, or cleanup residue.
+It returns source names, file kinds, cleanup operations, and counts, but never
+returns raw file bytes, task text, prompt text, provider output, or paths.
+
+The cleanup inventory is limited to three historical sources:
+
+- valid `prompt-runs.json` is preserved as metadata after `task`,
+  `draft_output`, and all raw prompt/response persistence flags are cleared;
+  `draft_requires_user_copy` is normalized to `false`;
+- malformed `prompt-runs.json` is eligible for confirmed deletion;
+- `model-task-matches.json` and `task-preflight-history.json` are eligible for
+  confirmed deletion.
+
+Generated quarantine residue for those sources is included in the same
+inventory. Directories, special files, foreign-owner files, and hard links
+fail closed. A symlink is treated as the leaf itself; confirmed cleanup can
+remove the bound link but never follows or changes its target.
+
+`privacy.previewCleanupLegacyContent` is zero-write. It returns a typed action,
+opaque token, and one HMAC-bound precondition for every present cleanup leaf,
+including its complete bounded content/type/identity revision, plus the
+provider-action replay-state revision. The native client must show the
+persistent cleanup-required state and obtain an explicit confirmation from
+this preview.
+
+`privacy.cleanupLegacyContent` reprojects under the single app-data owner lock,
+reserves the one-time action token, and applies only the confirmed plan.
+Every replacement or deletion first moves the accepted leaf to an unpredictable
+same-directory no-replace quarantine and verifies its identity. Candidate
+activation also uses no-replace semantics. If another state appears at the
+original name, it is preserved together with the quarantine and the method
+returns non-retryable `partial_effect`. Delete success requires the original
+name to remain absent through parent-directory durability verification.
+Verified success performs a semantic inspection read-back over
+`private_content`; an uncertain effect or read-back failure is partial and
+requires another inspection and preview.
 
 ## Catalog Skill Provenance
 
@@ -1057,6 +1123,14 @@ presence/value or absence verification, not secret exposure.
   local metadata record cannot be verified, the result is `status=partial`
   with a typed `partial_outcome`, `remote_effect=remote_unknown`, no verified
   read-back, and recovery guidance requiring inspection and a new preview.
+- Provider output is returned only by the immediate confirmed-send response and
+  remains copy-only. `prompt-runs.json` is bounded metadata history; it never
+  stores task text, `user_intent`, `task_text`, rendered prompt text, provider
+  output, or response bodies. The backward-compatible `task` and
+  `draft_output` fields decode but are always returned and persisted as
+  `null`. Reads suppress legacy body values in memory without rewriting the
+  file; the next explicit confirmed metadata write serializes body-free
+  records. Observability therefore reports `draft_output_available=false`.
 
 ## Environment Overrides
 

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 
-private enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
+enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
     case appearance
     case provider
     case providerObservability
@@ -59,7 +59,8 @@ struct SettingsView: View {
     @State private var providerDraft = AIProviderSettingsDraft(status: .unavailable())
     @State private var hasEditedProviderDraft = false
     @State private var showsServiceDiagnostics = false
-    @State private var selectedSettingsTab: SettingsTab = .appearance
+    @AppStorage(SettingsNavigation.selectionStorageKey)
+    private var selectedSettingsTab: SettingsTab = .appearance
 
     private var providerValidationMessage: String? {
         providerDraft.validationMessage
@@ -128,6 +129,13 @@ struct SettingsView: View {
         }
         .onChange(of: providerDraft) { _ in
             handleProviderDraftChange()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: SettingsNavigation.providerObservabilityRequested
+            )
+        ) { _ in
+            selectedSettingsTab = .providerObservability
         }
         .transaction { transaction in
             if reduceMotion {

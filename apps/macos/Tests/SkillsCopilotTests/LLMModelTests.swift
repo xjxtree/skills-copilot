@@ -11,7 +11,7 @@ struct LLMModelTests {
         try promptSendResultDecodesCopyOnlyAuditPayload()
         try promptSendResultDecodesServiceDraftOutput()
         try promptSendResultUsesAuditErrorMessage()
-        try promptRunListDecodesPersistedCopyOnlyResult()
+        try promptRunListIgnoresDeprecatedBodyFields()
         try longTextReviewBlockDefaultsToMarkdown()
         try markdownRenderDocumentParsesModelOutputBlocks()
         try markdownRenderDocumentUnwrapsWholeMarkdownFence()
@@ -327,7 +327,7 @@ struct LLMModelTests {
         try expectFalse(result.rawResponsePersisted, "Prompt send must not persist raw responses.")
     }
 
-    private func promptRunListDecodesPersistedCopyOnlyResult() throws {
+    private func promptRunListIgnoresDeprecatedBodyFields() throws {
         let data = Data(
             """
             {
@@ -408,8 +408,12 @@ struct LLMModelTests {
         try expectEqual(list.limit, 1, "Prompt run list should decode applied limit.")
         try expectEqual(list.truncated, true, "Prompt run list should decode truncation.")
         try expectEqual(run.requestKind, "task_cockpit", "Prompt run should decode request kind.")
-        try expectEqual(run.task, "Review release readiness", "Prompt run should decode redacted task text.")
-        try expectEqual(sendResult.outputText, "Copy-only persisted explanation.", "Prompt run should hydrate copy-only output.")
+        try expectEqual(run.task, nil, "Prompt-run metadata must ignore deprecated task text.")
+        try expectEqual(sendResult.outputText, nil, "Prompt-run metadata must not rehydrate provider output.")
+        try expectFalse(
+            run.draftRequiresUserCopy,
+            "Prompt-run metadata must normalize deprecated copy-only state to false."
+        )
         try expectFalse(sendResult.rawPromptPersisted, "Prompt run must not persist raw prompts.")
         try expectFalse(sendResult.rawResponsePersisted, "Prompt run must not persist raw responses.")
         try expectFalse(run.rawSecretReturned, "Prompt run must not return raw secrets.")

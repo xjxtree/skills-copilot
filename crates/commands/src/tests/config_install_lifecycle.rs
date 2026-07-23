@@ -2766,7 +2766,9 @@ fn local_delete_rechecks_catalog_references_under_the_shared_lock() {
 }
 
 #[test]
-fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
+fn direct_install_preview_and_apply_share_source_binding_stamp() {
+    initialize_action_preview_secret_for_test([0xA5; 32])
+        .expect("initialize action preview test secret");
     let temp_root = std::env::temp_dir().join(format!(
         "skills-copilot-install-confirmed-{}",
         std::process::id()
@@ -2791,15 +2793,28 @@ fn confirmed_install_writes_target_verified_path_without_config_snapshot() {
         extra_roots: vec![],
     };
 
-    let result = confirmed_install_skill_from_tool_global(
+    let preview = install_skill_from_tool_global(
         &catalog,
         &ctx,
         "tool-global-beta",
         AgentId::ClaudeCode,
         Scope::AgentGlobal,
         None,
+        None,
     )
-    .expect("confirmed install");
+    .expect("install preview");
+    let confirmation =
+        ActionConfirmation::confirmed(&preview.action, preview.preview_token.clone());
+    let result = install_skill_from_tool_global(
+        &catalog,
+        &ctx,
+        "tool-global-beta",
+        AgentId::ClaudeCode,
+        Scope::AgentGlobal,
+        None,
+        Some(&confirmation),
+    )
+    .expect("the owner-locked apply stamp must match the preview binding");
 
     let target = home
         .join(".claude")

@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skills_copilot_commands::{
-    lock_app_mutations, ActionConfirmation, AppMutationLock, CommandError,
+    lock_app_mutations, ActionConfirmation, AppDataPrivateLeafSnapshot, AppMutationLock,
+    CommandError,
 };
 use thiserror::Error;
 use ureq::Error as UreqError;
@@ -26,6 +27,8 @@ pub(crate) const PROVIDER_PROFILE_STORE_RELATIVE_PATH: &str = "llm/provider-prof
 pub(crate) const PROVIDER_CALL_METADATA_RELATIVE_PATH: &str = "llm/provider-call-metadata.jsonl";
 pub(crate) const PROVIDER_PROFILE_STORE_MAX_BYTES: u64 = 1024 * 1024;
 pub(crate) const PROVIDER_CALL_METADATA_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const PROVIDER_PROFILE_STORE_BOUND_QUARANTINE_PREFIX: &str =
+    ".provider-profiles.json.bound-replace-";
 const DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT: u32 = 8_000;
 const DEFAULT_MONTHLY_BUDGET_USD: f64 = 5.0;
 const TEST_INPUT_TOKEN_ESTIMATE: u32 = 12;
@@ -511,7 +514,7 @@ pub(crate) fn save_provider_profile_while_locked(
     params: SaveProviderProfileParams,
 ) -> Result<SaveProviderProfileResult, ProviderError> {
     let now = unix_timestamp_millis();
-    let mut store = load_store_while_locked(owner)?;
+    let (mut store, expected_store) = load_store_snapshot_while_locked(owner)?;
     let normalized = normalize_save_provider_profile_params(&params)?;
     let profile_id = normalized.id.clone();
     let replaces_credential = normalized.replaces_credential;
@@ -528,18 +531,13 @@ pub(crate) fn save_provider_profile_while_locked(
             .map(|profile| profile.credential_reference.clone())
             .unwrap_or_else(|| keychain_reference(&profile_id))
     };
-    let credential_commit = match params.api_key.as_deref().map(str::trim) {
-        Some(secret) if !secret.is_empty() => {
-            Some(stage_and_commit_secret(&credential_reference, secret)?)
-        }
-        _ => None,
-    };
-    let credential_status = match credential_commit.as_ref() {
-        Some(_) => available_credential_status("API key stored in the OS credential store."),
-        None => previous_profile
+    let credential_status = if replaces_credential {
+        available_credential_status("API key stored in the OS credential store.")
+    } else {
+        previous_profile
             .as_ref()
             .map(|profile| profile.credential_status.clone())
-            .unwrap_or_else(|| existing_credential_status(&credential_reference)),
+            .unwrap_or_else(|| existing_credential_status(&credential_reference))
     };
     credential_reference.secret_persisted = credential_status.secret_available;
     let previous_created_at = previous_profile
@@ -571,11 +569,28 @@ pub(crate) fn save_provider_profile_while_locked(
     } else if store.default_profile_id.is_none() {
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
-    if let Err(error) = save_store(app_data_dir, owner, &store) {
-        if matches!(
-            &error,
-            ProviderError::Command(CommandError::PartialEffect { .. })
-        ) {
+    validate_provider_profile_store_size(&store)?;
+    let credential_commit = match params.api_key.as_deref().map(str::trim) {
+        Some(secret) if !secret.is_empty() => Some(stage_and_commit_secret(
+            &profile.credential_reference,
+            secret,
+        )?),
+        _ => None,
+    };
+    if let Err(error) = save_store(app_data_dir, owner, &store, expected_store.as_ref()) {
+        if let ProviderError::Command(CommandError::PartialEffect { state, .. }) = &error {
+            let state = *state;
+            if let Some(commit) = credential_commit {
+                if commit.finish().is_err() {
+                    return Err(CommandError::PartialEffect {
+                        operation: "provider profile and credential".to_string(),
+                        state,
+                        cleanup_required: true,
+                        detail: "provider profile persistence is unverified and the verified target credential remains active, but staging credential cleanup could not be verified".to_string(),
+                    }
+                    .into());
+                }
+            }
             return Err(error);
         }
         if let Some(commit) = credential_commit.as_ref() {
@@ -693,7 +708,7 @@ pub(crate) fn delete_provider_profile_while_locked(
     owner: &AppMutationLock,
     params: DeleteProviderProfileParams,
 ) -> Result<DeleteProviderProfileResult, ProviderError> {
-    let mut store = load_store_while_locked(owner)?;
+    let (mut store, expected_store) = load_store_snapshot_while_locked(owner)?;
     let Some(profile) = store
         .profiles
         .iter()
@@ -715,7 +730,7 @@ pub(crate) fn delete_provider_profile_while_locked(
     if store.default_profile_id.as_deref() == Some(profile.id.as_str()) {
         store.default_profile_id = store.profiles.first().map(|profile| profile.id.clone());
     }
-    save_store(app_data_dir, owner, &store)?;
+    save_store(app_data_dir, owner, &store, expected_store.as_ref())?;
     let (credential_deleted, credential_effect, error_code, error_message, operation_state) =
         if params.delete_credential {
             match delete_secret(&profile.credential_reference) {
@@ -1397,39 +1412,55 @@ fn load_store(app_data_dir: &Path) -> Result<ProviderProfileStore, ProviderError
 }
 
 fn load_store_while_locked(owner: &AppMutationLock) -> Result<ProviderProfileStore, ProviderError> {
-    let Some(content) = owner.owner_fs().read_bounded_regular_file(
+    load_store_snapshot_while_locked(owner).map(|(store, _)| store)
+}
+
+fn load_store_snapshot_while_locked(
+    owner: &AppMutationLock,
+) -> Result<(ProviderProfileStore, Option<AppDataPrivateLeafSnapshot>), ProviderError> {
+    let Some(snapshot) = owner.owner_fs().read_bounded_regular_file_snapshot(
         Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
         PROVIDER_PROFILE_STORE_MAX_BYTES,
         "provider profile store",
     )?
     else {
-        return Ok(ProviderProfileStore::default());
+        return Ok((ProviderProfileStore::default(), None));
     };
-    let mut store: ProviderProfileStore = serde_json::from_slice(&content)?;
+    let content = snapshot
+        .regular_file_bytes()
+        .expect("bounded provider profile snapshot is regular");
+    let mut store: ProviderProfileStore = serde_json::from_slice(content)?;
     for profile in &mut store.profiles {
         profile.created_at = normalize_epoch_millis(profile.created_at);
         profile.updated_at = normalize_epoch_millis(profile.updated_at);
     }
-    Ok(store)
+    Ok((store, Some(snapshot)))
 }
 
 fn save_store(
     _app_data_dir: &Path,
     owner: &AppMutationLock,
     store: &ProviderProfileStore,
+    expected: Option<&AppDataPrivateLeafSnapshot>,
 ) -> Result<(), ProviderError> {
     #[cfg(test)]
     if take_test_provider_io_fault(_app_data_dir, TestProviderIoFault::SaveStore) {
         return Err(io::Error::other("injected provider profile write failure").into());
     }
-    let mut content = serde_json::to_vec_pretty(store)?;
-    content.push(b'\n');
-    let original = read_profile_store_bytes_while_locked(owner)?;
+    let content = provider_profile_store_bytes(store)?;
+    let original = expected.map(|snapshot| {
+        snapshot
+            .regular_file_bytes()
+            .expect("provider profile snapshot is regular")
+            .to_vec()
+    });
     owner.owner_fs().ensure_directory_all(Path::new("llm"))?;
-    let write_result = owner.owner_fs().atomic_replace_private_file(
+    let write_result = owner.owner_fs().replace_private_file_if_current(
         Path::new(PROVIDER_PROFILE_STORE_RELATIVE_PATH),
+        expected,
         &content,
         "provider-profiles",
+        PROVIDER_PROFILE_STORE_BOUND_QUARANTINE_PREFIX,
     );
     #[cfg(test)]
     let write_result =
@@ -1478,6 +1509,21 @@ fn save_store(
         }
         .into()),
     }
+}
+
+fn validate_provider_profile_store_size(store: &ProviderProfileStore) -> Result<(), ProviderError> {
+    provider_profile_store_bytes(store).map(|_| ())
+}
+
+fn provider_profile_store_bytes(store: &ProviderProfileStore) -> Result<Vec<u8>, ProviderError> {
+    let mut content = serde_json::to_vec_pretty(store)?;
+    content.push(b'\n');
+    if content.len() as u64 > PROVIDER_PROFILE_STORE_MAX_BYTES {
+        return Err(ProviderError::InvalidProfile(
+            "provider profile store exceeds its private storage safety bound".to_string(),
+        ));
+    }
+    Ok(content)
 }
 
 fn read_profile_store_bytes_while_locked(

@@ -99,6 +99,7 @@ pub enum ActionTargetKind {
     Config,
     Package,
     ProviderProfile,
+    AppData,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -155,6 +156,7 @@ pub enum ActionKind {
     ProviderProfile,
     ProviderConnectionTest,
     ProviderPrompt,
+    PrivacyCleanup,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -186,6 +188,7 @@ pub enum ActionIntent {
     DeleteProviderProfile,
     TestProviderConnection,
     SendProviderPrompt,
+    CleanLegacyPrivateContent,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -205,6 +208,7 @@ pub enum ActionReadbackDomain {
     ProviderCredentials,
     ProviderActivity,
     PromptRuns,
+    PrivateContent,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]

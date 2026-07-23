@@ -37,6 +37,7 @@ enum UIStrings {
     static var save: String { text("action.save", "Save") }
     static var done: String { text("action.done", "Done") }
     static var cancel: String { text("action.cancel", "Cancel") }
+    static var retry: String { text("action.retry", "Retry") }
     static var enable: String { text("action.enable", "Enable") }
     static var disable: String { text("action.disable", "Disable") }
     static var preview: String { text("action.preview", "Preview") }
@@ -424,6 +425,38 @@ enum UIStrings {
     static var privacyRevealPath: String { text("privacy.path.reveal", "Reveal") }
     static var privacyHidePath: String { text("privacy.path.hide", "Hide") }
     static var privacyScreenshotSafe: String { text("privacy.path.screenshotSafe", "Screenshot safe") }
+    static var legacyPrivateContentTitle: String { text("privacy.legacy.title", "Legacy private content needs review") }
+    static var legacyPrivateContentLocalOnly: String { text("privacy.legacy.localOnly", "Local only") }
+    static var legacyPrivateContentInspecting: String { text("privacy.legacy.inspecting", "Checking app-local legacy content…") }
+    static var legacyPrivateContentUnavailable: String { text("privacy.legacy.unavailable", "This service build cannot inspect legacy private content.") }
+    static var legacyPrivateContentInspectionFailed: String { text("privacy.legacy.inspectionFailed", "Legacy private content could not be inspected safely. No cleanup was performed.") }
+    static var legacyPrivateContentPreviewFailed: String { text("privacy.legacy.previewFailed", "The cleanup preview could not be created. No cleanup was performed.") }
+    static var legacyPrivateContentCleanupFailed: String { text("privacy.legacy.cleanupFailed", "Cleanup could not be verified. Inspect the current local state before reviewing another cleanup.") }
+    static var legacyPrivateContentPreviewBoundary: String { text("privacy.legacy.previewBoundary", "Reviewing is read-only. Cleanup requires a separate confirmation.") }
+    static var legacyPrivateContentReview: String { text("privacy.legacy.review", "Review Cleanup") }
+    static var legacyPrivateContentConfirmation: String { text("privacy.legacy.confirmation", "Remove the listed legacy files and sanitize valid prompt-run metadata? This affects only Agent Copilot app data and cannot be undone.") }
+    static var legacyPrivateContentCleanNow: String { text("privacy.legacy.cleanNow", "Clean Now") }
+    static var legacyPrivateContentSanitize: String { text("privacy.legacy.operation.sanitize", "Sanitize metadata") }
+    static var legacyPrivateContentDelete: String { text("privacy.legacy.operation.delete", "Delete") }
+    static var legacyPrivateContentTaskPreflightWarning: String { text("privacy.legacy.taskPreflightWarning", "Prior local Task Preflight content needs explicit review in Settings › Provider Activity.") }
+    static var legacyPrivateContentGlobalTitle: String { text("privacy.legacy.global.title", "Privacy cleanup needs attention") }
+    static var legacyPrivateContentOpenSettings: String { text("privacy.legacy.global.openSettings", "Review in Settings") }
+
+    static func legacyPrivateContentSummary(_ count: Int) -> String {
+        format(
+            "privacy.legacy.summary",
+            "%d app-local source(s) contain legacy private content. Raw contents are never shown.",
+            count
+        )
+    }
+
+    static func legacyPrivateContentGlobalSummary(_ count: Int) -> String {
+        format(
+            "privacy.legacy.global.summary",
+            "%d legacy app-local source(s) remain unchanged until you review and confirm cleanup.",
+            count
+        )
+    }
     static var version: String { text("settings.version", "Version") }
     static var protocolLabel: String { text("settings.protocol", "Protocol") }
     static var catalog: String { text("settings.catalog", "Catalog") }
@@ -690,8 +723,7 @@ enum UIStrings {
     static var taskCockpitHistorySummary: String { text("taskCockpit.history.summary", "Completed Preflights stay in memory for this app session. Task text and provider results are not saved to disk and disappear when the app quits.") }
     static var taskCockpitHistoryClear: String { text("taskCockpit.history.clear", "Clear session history") }
     static var taskCockpitHistoryClearConfirmationTitle: String { text("taskCockpit.history.clearConfirmation.title", "Clear session history?") }
-    static var taskCockpitHistoryClearConfirmationMessage: String { text("taskCockpit.history.clearConfirmation.message", "This clears completed Preflights from this app session and retries removal of prior local history. This cannot be undone.") }
-    static var taskCockpitHistoryCleanupFailed: String { text("taskCockpit.history.cleanupFailed", "Prior local Task Preflight history could not be removed. Clear session history to retry.") }
+    static var taskCockpitHistoryClearConfirmationMessage: String { text("taskCockpit.history.clearConfirmation.message", "This clears completed Preflights from this app session. This cannot be undone.") }
     static var taskCockpitProgressTitle: String { text("taskCockpit.progress.title", "Progressive feedback") }
     static var taskCockpitProgressActionReview: String { text("taskCockpit.progress.actionReview", "Action review") }
     static var taskCockpitProgressBatchChecks: String { text("taskCockpit.progress.batchChecks", "Batch checks") }
@@ -778,7 +810,7 @@ enum UIStrings {
     static var llmPromptViewDetails: String { text("llm.promptPreview.viewDetails", "View Details") }
     static var llmPromptCopyFullText: String { text("llm.promptPreview.copyFullText", "Copy Full Text") }
     static var llmPromptCloseDetails: String { text("llm.promptPreview.closeDetails", "Close") }
-    static var llmPromptHistoryNote: String { text("llm.promptPreview.historyNote", "Latest provider output is shown here and saved in local prompt run history.") }
+    static var llmPromptHistoryNote: String { text("llm.promptPreview.historyNote", "Provider output is available only in this confirmed response. Local prompt history stores metadata, not task or response text.") }
     static var llmPromptHistoricalResponse: String { text("llm.promptPreview.historicalResponse", "Previous provider response") }
     static var llmPromptNoOutput: String { text("llm.promptPreview.noOutput", "Provider response did not include copy-only output text.") }
     static func localizedServiceMessage(_ value: String) -> String {

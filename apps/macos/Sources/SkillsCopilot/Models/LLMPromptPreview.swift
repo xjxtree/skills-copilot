@@ -719,7 +719,9 @@ struct LLMPromptRunRecord: Decodable, Identifiable, Hashable {
         scope = try container.decodeIfPresent(String.self, forKey: .scope)
         instanceID = try container.decodeIfPresent(String.self, forKey: .instanceID)
         instanceIDs = try container.decodeIfPresent([String].self, forKey: .instanceIDs) ?? []
-        task = try container.decodeIfPresent(String.self, forKey: .task)
+        // Compatibility keys remain decodable, but prompt-run history is
+        // metadata-only and must never hydrate user intent into UI state.
+        task = nil
         profileID = try container.decodeIfPresent(String.self, forKey: .profileID) ?? ""
         provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? UIStrings.unknown
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? UIStrings.unknown
@@ -728,8 +730,10 @@ struct LLMPromptRunRecord: Decodable, Identifiable, Hashable {
         errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
         durationMS = try container.decodeIfPresent(Int.self, forKey: .durationMS) ?? 0
-        draftOutput = try container.decodeIfPresent(String.self, forKey: .draftOutput)
-        draftRequiresUserCopy = try container.decodeIfPresent(Bool.self, forKey: .draftRequiresUserCopy) ?? true
+        // Provider output is transient on the immediate confirmed response.
+        // Historical payloads cannot rehydrate it from prompt-run metadata.
+        draftOutput = nil
+        draftRequiresUserCopy = false
         providerRequestSent = try container.decodeIfPresent(Bool.self, forKey: .providerRequestSent) ?? false
         credentialAccessed = try container.decodeIfPresent(Bool.self, forKey: .credentialAccessed) ?? false
         rawPromptPersisted = try container.decodeIfPresent(Bool.self, forKey: .rawPromptPersisted) ?? false

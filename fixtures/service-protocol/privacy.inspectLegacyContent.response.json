@@ -1,0 +1,36 @@
+{
+  "id": "fixture-privacy-inspect-legacy-content",
+  "ok": true,
+  "result": {
+    "generated_by": "local-v2.64",
+    "cleanup_required": true,
+    "cleanup_source_count": 2,
+    "existing_source_count": 2,
+    "sources": [
+      {
+        "id": "prompt-runs",
+        "source_file": "prompt-runs.json",
+        "item_type": "regular_file",
+        "state": "legacy_private_content",
+        "cleanup_operation": "sanitize_metadata",
+        "cleanup_required": true,
+        "malformed": false,
+        "generated_residue": false
+      },
+      {
+        "id": "task-preflight-history",
+        "source_file": "task-preflight-history.json",
+        "item_type": "symbolic_link",
+        "state": "legacy_private_content",
+        "cleanup_operation": "delete_leaf",
+        "cleanup_required": true,
+        "malformed": false,
+        "generated_residue": false
+      }
+    ],
+    "read_only": true,
+    "provider_request_sent": false,
+    "raw_content_returned": false,
+    "write_performed": false
+  }
+}

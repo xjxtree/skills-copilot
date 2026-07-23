@@ -393,29 +393,6 @@ extension SkillStore {
             && !preview.rawResponsePersisted
     }
 
-    func runMatchesCurrentCatalog(
-        _ run: LLMPromptRunRecord,
-        currentSkillIDs: Set<SkillRecord.ID>
-    ) -> Bool {
-        if currentSkillIDs.isEmpty { return true }
-        if let instanceID = run.instanceID, currentSkillIDs.contains(instanceID) {
-            return true
-        }
-        return run.instanceIDs.contains { currentSkillIDs.contains($0) }
-    }
-
-    func llmPromptKey(for run: LLMPromptRunRecord) -> String? {
-        let skillID = run.instanceID ?? run.instanceIDs.first
-        switch run.requestKind {
-        case "action":
-            guard let skillID, let action = LLMAction(rawValue: run.action) else { return nil }
-            return llmPromptActionKey(action: action, skillID: skillID)
-        default:
-            guard let skillID, let action = LLMAction(rawValue: run.action) else { return nil }
-            return llmPromptActionKey(action: action, skillID: skillID)
-        }
-    }
-
     func canStartScan(allowDuringProjectUpdate: Bool) -> Bool {
         if isLoading || isScanning || isWriting || isSavingSettings || isApplyingBatchToggle {
             return false

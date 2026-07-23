@@ -172,6 +172,26 @@ pub(super) fn assert_private_path_mode(path: &Path, expected: u32) {
 #[cfg(not(unix))]
 pub(super) fn assert_private_path_mode(_path: &Path, _expected: u32) {}
 
+pub(super) fn write_private_app_data_fixture(path: &Path, content: impl AsRef<[u8]>) {
+    let parent = path.parent().expect("private fixture parent");
+    fs::create_dir_all(parent).expect("create private fixture parent");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .expect("private fixture parent mode");
+    }
+    fs::write(path, content).expect("write private app-data fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .expect("private fixture file mode");
+    }
+}
+
 pub(super) fn provider_test_secret_env_name(profile_id: &str) -> String {
     let account = format!("provider:{profile_id}");
     let suffix = account

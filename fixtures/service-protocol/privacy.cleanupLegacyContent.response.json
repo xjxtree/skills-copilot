@@ -1,0 +1,46 @@
+{
+  "id": "fixture-privacy-cleanup-legacy-content",
+  "ok": true,
+  "result": {
+    "inspection": {
+      "generated_by": "local-v2.64",
+      "cleanup_required": false,
+      "cleanup_source_count": 0,
+      "existing_source_count": 1,
+      "sources": [
+        {
+          "id": "prompt-runs",
+          "source_file": "prompt-runs.json",
+          "item_type": "regular_file",
+          "state": "current_metadata_only",
+          "cleanup_operation": "sanitize_metadata",
+          "cleanup_required": false,
+          "malformed": false,
+          "generated_residue": false
+        }
+      ],
+      "read_only": true,
+      "provider_request_sent": false,
+      "raw_content_returned": false,
+      "write_performed": false
+    },
+    "cleaned_source_count": 3,
+    "state": "verified",
+    "effect": "legacy_private_content_removed_or_sanitized",
+    "retry_allowed": false,
+    "readback": {
+      "action_id": "action:clean_legacy_private_content:3333333333333333333333333333333333333333333333333333333333333333",
+      "source_revision": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "domains": ["private_content"],
+      "target_ids": ["legacy-ai-private-content"],
+      "observations": [
+        {
+          "domain": "private_content",
+          "target_id": "legacy-ai-private-content",
+          "revision": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      ],
+      "verified": true
+    }
+  }
+}

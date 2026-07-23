@@ -7,6 +7,7 @@ final class SkillStore: ObservableObject {
     private static let localSessionPrewarmLimit = 800
     private static let globalSearchLimitPerKind = 6
     private static let providerObservabilityRowLimit = 100
+    private static let taskCockpitHistoryLimit = 12
 
     @Published private(set) var skills: [SkillRecord] = [] {
         didSet {
@@ -76,6 +77,12 @@ final class SkillStore: ObservableObject {
     @Published private(set) var isLoadingLLMPromptRuns = false
     @Published private(set) var providerObservabilityResult: ProviderObservabilityResult?
     @Published private(set) var isLoadingProviderObservability = false
+    @Published var legacyPrivateContentInspection: LegacyPrivateContentInspection?
+    @Published var legacyPrivateContentCleanupPreview: LegacyPrivateContentCleanupPreview?
+    @Published var legacyPrivateContentCleanupError: String?
+    @Published var isInspectingLegacyPrivateContent = false
+    @Published var isPreviewingLegacyPrivateContentCleanup = false
+    @Published var isCleaningLegacyPrivateContent = false
     @Published var providerObservabilityDateRange: ProviderObservabilityDateRangePreset = .last30Days {
         didSet {
             guard oldValue != providerObservabilityDateRange else { return }
@@ -100,7 +107,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var taskCockpitFailedProviderOutput: String?
     @Published private(set) var taskCockpitHistory: [TaskCockpitHistoryRecord] = []
     @Published private(set) var selectedTaskCockpitHistoryID: TaskCockpitHistoryRecord.ID?
-    @Published private(set) var taskCockpitHistoryCleanupMessage: String?
     @Published private(set) var taskCockpitSelectedAgentIDs: Set<String> = [SkillAgentFilter.claudeCode.rawValue]
     @Published private(set) var taskCockpitPromptConfirmation: TaskCockpitPromptConfirmation?
     @Published private(set) var isPreviewingTaskCockpitPrompt = false
@@ -469,28 +475,20 @@ final class SkillStore: ObservableObject {
     var activeLocalSessionSnapshotKey: LocalSessionSnapshotKey?
     private var activeLocalSessionRefreshGeneration: UInt64?
     private let taskCockpitTimeoutSeconds: TimeInterval
-    private let taskCockpitHistoryStore: TaskCockpitHistoryStore
     private let autosaveDelayNanoseconds: UInt64
     private let autosaveMutationLane = AutosaveMutationLane()
     init(
         service: ServiceClient,
         taskCockpitTimeoutSeconds: TimeInterval = 300,
-        taskCockpitHistoryStore: TaskCockpitHistoryStore = TaskCockpitHistoryStore(),
         autosaveDelayNanoseconds: UInt64 = 900_000_000
     ) {
         self.service = service
         providerActivityController = ProviderActivityController(service: service)
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
-        self.taskCockpitHistoryStore = taskCockpitHistoryStore
         self.autosaveDelayNanoseconds = autosaveDelayNanoseconds
         taskCockpitHistory = []
         providerActivityController.setChangeHandler { [weak self] in
             self?.objectWillChange.send()
-        }
-        do {
-            _ = try taskCockpitHistoryStore.purgeLegacyHistoryIfPresent()
-        } catch {
-            taskCockpitHistoryCleanupMessage = UIStrings.taskCockpitHistoryCleanupFailed
         }
     }
 
@@ -611,6 +609,8 @@ final class SkillStore: ObservableObject {
         postRefreshSupplementalLoadTask?.cancel()
         postRefreshSupplementalLoadTask = Task { @MainActor [weak self, requestedAgentFilter] in
             guard let self, !Task.isCancelled else { return }
+            await self.inspectLegacyPrivateContent()
+            guard !Task.isCancelled else { return }
             await self.loadSkillManagerTools()
             guard !Task.isCancelled else { return }
             if forceAIProviderStatus {
@@ -3179,7 +3179,6 @@ final class SkillStore: ObservableObject {
         defer { isLoadingLLMPromptRuns = false }
 
         llmPromptRunList = await fetchLLMPromptRuns()
-        hydratePromptSendResultsFromRuns(currentSkillIDs: Set(skills.map(\.id)))
     }
 
     func loadProviderObservabilityIfNeeded() async {
@@ -3855,10 +3854,6 @@ final class SkillStore: ObservableObject {
                 loadedAgentConfigSnapshotRequestKey = nil
             }
         }
-        if fetchedLLMPromptRuns != nil {
-            let currentSkillIDs = Set(snapshot.skills.map(\.id))
-            hydratePromptSendResultsFromRuns(currentSkillIDs: currentSkillIDs)
-        }
     }
 
     private func refreshCatalogProjectionAfterWrite() async throws {
@@ -4102,8 +4097,8 @@ final class SkillStore: ObservableObject {
         )
         taskCockpitHistory.insert(record, at: 0)
         selectedTaskCockpitHistoryID = record.id
-        if taskCockpitHistory.count > TaskCockpitHistoryStore.maxRecords {
-            taskCockpitHistory.removeLast(taskCockpitHistory.count - TaskCockpitHistoryStore.maxRecords)
+        if taskCockpitHistory.count > Self.taskCockpitHistoryLimit {
+            taskCockpitHistory.removeLast(taskCockpitHistory.count - Self.taskCockpitHistoryLimit)
         }
     }
 
@@ -4179,23 +4174,6 @@ final class SkillStore: ObservableObject {
     private func normalizedOptional(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func hydratePromptSendResultsFromRuns(currentSkillIDs: Set<SkillRecord.ID>) {
-        var hydrated = llmPromptSendResults
-        for run in llmPromptRunList.runs {
-            guard runMatchesCurrentCatalog(run, currentSkillIDs: currentSkillIDs),
-                  let key = llmPromptKey(for: run),
-                  !sendingLLMPromptKeys.contains(key),
-                  !previewingLLMPromptKeys.contains(key)
-            else {
-                continue
-            }
-            if hydrated[key] == nil {
-                hydrated[key] = run.sendResult
-            }
-        }
-        llmPromptSendResults = hydrated
     }
 
     private func runBelongsTo(_ run: LLMPromptRunRecord, skillID: SkillRecord.ID) -> Bool {

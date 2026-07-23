@@ -261,15 +261,23 @@ confirmation, and network posture.
   controlled path under the provider lock, removes bounded legacy crash
   residue, and verifies the parent-directory sync after rename. A consumed
   action is never automatically retried; recovery starts from a fresh preview.
-  Malformed, oversized, symlinked, non-regular, or unbounded replay storage
-  fails closed.
+  A replacement error with candidate read-back is still
+  `applied_unverified`, because read-back does not prove parent-directory
+  durability. An unchanged reservation is `not_started`; an unchanged
+  terminal record after an external or credential effect is partial.
+  Malformed, oversized, symlinked, non-regular, broadly permissioned, or
+  unbounded replay storage fails closed.
 - Provider mutations use an existing canonical parent-directory lock, so a
   rejected stale or mismatched confirmation creates no lock or replay-state
   artifact. Provider replay and metadata parents are opened or created
   component-wise with no-follow semantics before file replacement; a
   symlinked app-data owner or intermediate component is rejected before any
   provider effect and without changing the link target. Credential replacement
-  is staged in Keychain, verified, and compensated if the profile write fails.
+  is staged in Keychain only after the bounded profile candidate passes its
+  storage-size check, verified, and compensated if the profile write provably
+  fails. An unverified profile-store outcome keeps the verified target
+  credential and removes its duplicate staging copy; a staging cleanup failure
+  is partial with cleanup required.
   A credential or local metadata effect that cannot be semantically verified is
   `partial` and `applied_unverified`.
 - After a provider request may have left the process, post-request transport,
@@ -280,6 +288,34 @@ confirmation, and network posture.
   destination. The client must not retry automatically. A verified apply
   returns read-back observations for every domain declared in its action
   descriptor, including credential semantics when Keychain is in scope.
+- Unix app-owned private reads accept only bounded regular files with the
+  app-data owner UID, one link, and no group/other permission bits. Traversed
+  nested directories must have that UID and owner-only permissions. Reads
+  reject unsafe modes without silently repairing them. Residue cleanup moves
+  each candidate through an unpredictable same-directory no-replace quarantine
+  before verifying its device/inode identity and unlinking it. A raced
+  replacement is restored only by an atomic no-replace rename while its
+  original name remains absent; otherwise both entries are retained and the
+  result is typed partial. Any error after an earlier removal, including parent
+  directory sync failure, is `applied_unverified` with cleanup required.
+- Prompt-run history is metadata-only. User intent, task text, rendered
+  prompts, provider output, and response bodies are transient and are never
+  written to `prompt-runs.json`. Compatibility `task` and `draft_output`
+  fields remain `null`; legacy body values are suppressed on read without a
+  hidden cleanup write. Startup calls only the read-only
+  `privacy.inspectLegacyContent` projection. Legacy prompt bodies/raw flags,
+  `model-task-matches.json`, and `task-preflight-history.json` are changed only
+  through a zero-write cleanup preview followed by explicit confirmation.
+  Valid prompt-run metadata is retained with all body/raw fields cleared;
+  malformed prompt history and the other two sources are deleted.
+- Legacy private-content cleanup binds the complete bounded bytes, kind, and
+  identity of every accepted leaf. It rejects directories, special files,
+  hard links, and foreign ownership. Symlink cleanup removes only the bound
+  link. Apply runs under one app-data owner lock and uses unpredictable
+  same-directory no-replace quarantine plus no-replace candidate activation.
+  A raced third state is never overwritten or removed; uncertain activation,
+  deletion, or directory durability returns non-retryable `partial_effect`
+  with cleanup required.
 
 - Skill scripts are untrusted. Script execution is default-denied and must not
   be triggered by imports, LLM output, analyzer recommendations, previews, or

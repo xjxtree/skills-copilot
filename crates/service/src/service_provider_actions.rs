@@ -22,10 +22,14 @@ const PROVIDER_ACTION_STATE_FIXED_REPLACEMENT: &str = ".provider-action-state.re
 const PROVIDER_ACTION_STATE_REPLACEMENT_PREFIX: &str = ".provider-action-state.";
 const PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_PREFIX: &str = ".provider-action-state.json.";
 const PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX: &str = ".tmp";
+const PROVIDER_ACTION_STATE_BOUND_QUARANTINE_PREFIX: &str =
+    ".provider-action-state.json.bound-replace-";
+const PROVIDER_ACTION_STATE_BOUND_QUARANTINE_SUFFIX: &str = ".quarantine";
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum TestProviderActionStateFault {
+    ReservationDirectorySync,
     OutcomeDirectorySync,
 }
 
@@ -852,6 +856,7 @@ impl ServiceHost {
                 result.error_message.clone().unwrap_or_else(|| {
                     "the provider request may have left the process, but its audit, read-back, or replay finalization could not be verified".to_string()
                 }),
+                !result.local_metadata_persisted,
             ));
         }
         finalization?;
@@ -930,14 +935,19 @@ fn ensure_provider_owner_binding_after_remote_effect(
     Err(provider_remote_unknown(
         operation,
         "the provider request may have left the process, and the accepted app-data owner is no longer bound to the configured path",
+        false,
     ))
 }
 
-fn provider_remote_unknown(operation: &str, detail: impl Into<String>) -> ServiceError {
+fn provider_remote_unknown(
+    operation: &str,
+    detail: impl Into<String>,
+    cleanup_required: bool,
+) -> ServiceError {
     CommandError::PartialEffect {
         operation: operation.to_string(),
         state: "remote_unknown",
-        cleanup_required: false,
+        cleanup_required,
         detail: detail.into(),
     }
     .into()
@@ -1264,18 +1274,27 @@ pub(crate) fn provider_action_state_revision_while_locked(
 ) -> Result<String, ServiceError> {
     let state = read_provider_action_state_while_locked(owner)?;
     Ok(provider_action_state_revision_for_bytes(
-        state.as_ref().map(|(bytes, _)| bytes.as_slice()),
+        state.as_ref().map(|(snapshot, _)| {
+            snapshot
+                .regular_file_bytes()
+                .expect("provider action state snapshot is regular")
+        }),
     ))
 }
 
 pub(crate) fn lock_provider_action_owner_for_apply(
     app_data_dir: &Path,
 ) -> Result<AppMutationLock, ServiceError> {
-    lock_or_create_app_mutations(app_data_dir).map_err(|_| {
-        ServiceError::ActionNotStarted(
+    lock_or_create_app_mutations(app_data_dir).map_err(classify_provider_action_owner_lock_error)
+}
+
+pub(crate) fn classify_provider_action_owner_lock_error(error: CommandError) -> ServiceError {
+    match error {
+        error @ CommandError::PartialEffect { .. } => error.into(),
+        _ => ServiceError::ActionNotStarted(
             "provider replay state could not be replaced before the action started".to_string(),
-        )
-    })
+        ),
+    }
 }
 
 pub(crate) fn classify_provider_action_preflight_error(error: ServiceError) -> ServiceError {
@@ -1299,9 +1318,12 @@ pub(crate) fn reserve_provider_action_while_locked(
 ) -> Result<(), ServiceError> {
     let token_digest = action_token_digest(&confirmation.preview_token);
     let current = read_provider_action_state_while_locked(owner)?;
-    let current_revision = provider_action_state_revision_for_bytes(
-        current.as_ref().map(|(bytes, _)| bytes.as_slice()),
-    );
+    let current_revision =
+        provider_action_state_revision_for_bytes(current.as_ref().map(|(snapshot, _)| {
+            snapshot
+                .regular_file_bytes()
+                .expect("provider action state snapshot is regular")
+        }));
     let expected_revision = binding
         .preconditions
         .iter()
@@ -1401,49 +1423,87 @@ fn write_provider_action_state_atomic(
     let owner_fs = owner.owner_fs();
     owner_fs.ensure_directory_all(Path::new(PROVIDER_ACTION_STATE_DIRECTORY))?;
     cleanup_provider_action_state_replacements(owner)?;
+    let original = read_provider_action_state_while_locked(owner)?.map(|(snapshot, _)| snapshot);
 
-    if let Err(write_error) = owner_fs.atomic_replace_private_file(
+    if let Err(write_error) = owner_fs.replace_private_file_if_current(
         Path::new(PROVIDER_ACTION_STATE_RELATIVE_PATH),
+        original.as_ref(),
         bytes,
         "provider-action-state",
+        PROVIDER_ACTION_STATE_BOUND_QUARANTINE_PREFIX,
     ) {
-        return match read_provider_action_state_while_locked(owner) {
-            Ok(Some((persisted, _))) if persisted == bytes => Ok(()),
-            Ok(_) => Err(ServiceError::ActionNotStarted(format!(
-                "provider replay state could not be replaced before the action started: {write_error}"
-            ))),
-            Err(_) => Err(CommandError::PartialEffect {
-                operation: "provider replay state".to_string(),
-                state: "outcome_unknown",
-                cleanup_required: false,
-                detail:
-                    "provider replay-state persistence failed after its outcome became unverifiable"
-                        .to_string(),
+        let readback = read_provider_action_state_while_locked(owner).map(|state| {
+            state.map(|(snapshot, _)| {
+                snapshot
+                    .regular_file_bytes()
+                    .expect("provider action state snapshot is regular")
+                    .to_vec()
+            })
+        });
+        let original_bytes = original.as_ref().map(|snapshot| {
+            snapshot
+                .regular_file_bytes()
+                .expect("provider action state snapshot is regular")
+                .to_vec()
+        });
+        return match readback {
+            Ok(Some(persisted)) if persisted == bytes => {
+                Err(provider_replay_state_applied_unverified(
+                    "provider replay-state bytes match the candidate, but replacement durability could not be verified",
+                ))
             }
-            .into()),
+            Ok(persisted) if persisted == original_bytes => {
+                if record.phase == ProviderActionStatePhase::Reservation {
+                    Err(ServiceError::ActionNotStarted(format!(
+                        "provider replay state could not be replaced before the action started: {write_error}"
+                    )))
+                } else {
+                    Err(provider_replay_state_applied_unverified(
+                        "the provider effect completed, but its terminal replay outcome was not durably recorded",
+                    ))
+                }
+            }
+            _ => Err(provider_replay_state_outcome_unknown()),
         };
     }
     if should_fail_provider_action_state_directory_sync(app_data_dir, record.phase) {
-        return Err(CommandError::PartialEffect {
-            operation: "provider replay state".to_string(),
-            state: "applied_unverified",
-            cleanup_required: false,
-            detail:
-                "provider replay state was replaced, but its durable update could not be verified"
-                    .to_string(),
-        }
-        .into());
+        return Err(provider_replay_state_applied_unverified(
+            "provider replay state was replaced, but its durable update could not be verified",
+        ));
     }
     match read_provider_action_state_while_locked(owner) {
-        Ok(Some((persisted, _))) if persisted == bytes => Ok(()),
-        _ => Err(CommandError::PartialEffect {
-            operation: "provider replay state".to_string(),
-            state: "applied_unverified",
-            cleanup_required: false,
-            detail: "provider replay state was replaced, but semantic read-back failed".to_string(),
+        Ok(Some((persisted, _)))
+            if persisted
+                .regular_file_bytes()
+                .is_some_and(|persisted| persisted == bytes) =>
+        {
+            Ok(())
         }
-        .into()),
+        _ => Err(provider_replay_state_applied_unverified(
+            "provider replay state was replaced, but semantic read-back failed",
+        )),
     }
+}
+
+fn provider_replay_state_applied_unverified(detail: &str) -> ServiceError {
+    CommandError::PartialEffect {
+        operation: "provider replay state".to_string(),
+        state: "applied_unverified",
+        cleanup_required: false,
+        detail: detail.to_string(),
+    }
+    .into()
+}
+
+fn provider_replay_state_outcome_unknown() -> ServiceError {
+    CommandError::PartialEffect {
+        operation: "provider replay state".to_string(),
+        state: "outcome_unknown",
+        cleanup_required: false,
+        detail: "provider replay-state persistence failed after its outcome became unverifiable"
+            .to_string(),
+    }
+    .into()
 }
 
 fn cleanup_provider_action_state_replacements(owner: &AppMutationLock) -> Result<(), ServiceError> {
@@ -1467,6 +1527,12 @@ fn cleanup_provider_action_state_replacements(owner: &AppMutationLock) -> Result
         PROVIDER_ACTION_STATE_LEGACY_REPLACEMENT_SUFFIX,
         PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES,
     )?;
+    owner_fs.remove_regular_files_matching(
+        directory,
+        PROVIDER_ACTION_STATE_BOUND_QUARANTINE_PREFIX,
+        PROVIDER_ACTION_STATE_BOUND_QUARANTINE_SUFFIX,
+        PROVIDER_ACTION_STATE_MAX_DIRECTORY_ENTRIES,
+    )?;
     Ok(())
 }
 
@@ -1475,11 +1541,13 @@ fn should_fail_provider_action_state_directory_sync(
     app_data_dir: &Path,
     phase: ProviderActionStatePhase,
 ) -> bool {
-    phase == ProviderActionStatePhase::Outcome
-        && take_test_provider_action_state_fault(
-            app_data_dir,
-            TestProviderActionStateFault::OutcomeDirectorySync,
-        )
+    let fault = match phase {
+        ProviderActionStatePhase::Reservation => {
+            TestProviderActionStateFault::ReservationDirectorySync
+        }
+        ProviderActionStatePhase::Outcome => TestProviderActionStateFault::OutcomeDirectorySync,
+    };
+    take_test_provider_action_state_fault(app_data_dir, fault)
 }
 
 #[cfg(not(test))]
@@ -1492,10 +1560,10 @@ fn should_fail_provider_action_state_directory_sync(
 
 fn read_provider_action_state_while_locked(
     owner: &AppMutationLock,
-) -> Result<Option<(Vec<u8>, ProviderActionStateRecord)>, ServiceError> {
-    let Some(bytes) = owner
+) -> Result<Option<(AppDataPrivateLeafSnapshot, ProviderActionStateRecord)>, ServiceError> {
+    let Some(snapshot) = owner
         .owner_fs()
-        .read_bounded_regular_file(
+        .read_bounded_regular_file_snapshot(
             Path::new(PROVIDER_ACTION_STATE_RELATIVE_PATH),
             PROVIDER_ACTION_STATE_MAX_BYTES as u64,
             "provider action replay state",
@@ -1504,10 +1572,13 @@ fn read_provider_action_state_while_locked(
     else {
         return Ok(None);
     };
-    let record = serde_json::from_slice::<ProviderActionStateRecord>(&bytes)
+    let bytes = snapshot
+        .regular_file_bytes()
+        .expect("bounded provider action state snapshot is regular");
+    let record = serde_json::from_slice::<ProviderActionStateRecord>(bytes)
         .map_err(|_| invalid_provider_action_state())?;
     validate_provider_action_state(&record)?;
-    Ok(Some((bytes, record)))
+    Ok(Some((snapshot, record)))
 }
 
 fn validate_provider_action_state(record: &ProviderActionStateRecord) -> Result<(), ServiceError> {
@@ -1545,10 +1616,18 @@ pub(crate) fn provider_action_state_snapshot(
     app_data_dir: &Path,
 ) -> Result<(u64, ProviderActionStatePhase, ProviderActionState, usize), ServiceError> {
     let owner = lock_app_mutations(app_data_dir)?;
-    let (bytes, record) = read_provider_action_state_while_locked(&owner)?.ok_or_else(|| {
+    let (snapshot, record) = read_provider_action_state_while_locked(&owner)?.ok_or_else(|| {
         ServiceError::InvalidRequest("provider action state is missing".to_string())
     })?;
-    Ok((record.generation, record.phase, record.state, bytes.len()))
+    Ok((
+        record.generation,
+        record.phase,
+        record.state,
+        snapshot
+            .regular_file_bytes()
+            .expect("provider action state snapshot is regular")
+            .len(),
+    ))
 }
 
 #[cfg(test)]

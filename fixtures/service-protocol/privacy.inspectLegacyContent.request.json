@@ -1,0 +1,5 @@
+{
+  "id": "fixture-privacy-inspect-legacy-content",
+  "method": "privacy.inspectLegacyContent",
+  "params": null
+}

@@ -120,6 +120,7 @@ pub enum ActionPreconditionKind {
     Archive,
     ProviderProfile,
     PromptContext,
+    LegacyPrivateContent,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -672,6 +673,10 @@ pub fn validate_action_method_ownership(
             preview_method == "llm.previewPrompt"
                 && apply_method == Some("llm.confirmPromptAndSend")
         }
+        ActionKind::PrivacyCleanup => {
+            preview_method == "privacy.previewCleanupLegacyContent"
+                && apply_method == Some("privacy.cleanupLegacyContent")
+        }
         _ => false,
     };
     if valid {
@@ -732,6 +737,10 @@ pub fn validate_action_intent(kind: ActionKind, intent: ActionIntent) -> Result<
                 ActionIntent::TestProviderConnection
             )
             | (ActionKind::ProviderPrompt, ActionIntent::SendProviderPrompt)
+            | (
+                ActionKind::PrivacyCleanup,
+                ActionIntent::CleanLegacyPrivateContent
+            )
     );
     if valid {
         Ok(())
@@ -763,6 +772,7 @@ fn action_kind_wire_value(kind: ActionKind) -> &'static str {
         ActionKind::ProviderProfile => "provider_profile",
         ActionKind::ProviderConnectionTest => "provider_connection_test",
         ActionKind::ProviderPrompt => "provider_prompt",
+        ActionKind::PrivacyCleanup => "privacy_cleanup",
         _ => "unknown",
     }
 }
@@ -794,6 +804,7 @@ fn action_intent_wire_value(intent: ActionIntent) -> &'static str {
         ActionIntent::DeleteProviderProfile => "delete_provider_profile",
         ActionIntent::TestProviderConnection => "test_provider_connection",
         ActionIntent::SendProviderPrompt => "send_provider_prompt",
+        ActionIntent::CleanLegacyPrivateContent => "clean_legacy_private_content",
         _ => "unknown",
     }
 }
@@ -822,6 +833,7 @@ fn action_readback_wire_value(domain: ActionReadbackDomain) -> &'static str {
         ActionReadbackDomain::ProviderCredentials => "provider_credentials",
         ActionReadbackDomain::ProviderActivity => "provider_activity",
         ActionReadbackDomain::PromptRuns => "prompt_runs",
+        ActionReadbackDomain::PrivateContent => "private_content",
         _ => "unknown",
     }
 }
@@ -837,6 +849,7 @@ fn precondition_kind_wire_value(kind: ActionPreconditionKind) -> &'static str {
         ActionPreconditionKind::Archive => "archive",
         ActionPreconditionKind::ProviderProfile => "provider_profile",
         ActionPreconditionKind::PromptContext => "prompt_context",
+        ActionPreconditionKind::LegacyPrivateContent => "legacy_private_content",
     }
 }
 

@@ -61,7 +61,10 @@ struct ContentView: View {
     }
 
     private var appShell: some View {
-        navigationShell
+        VStack(spacing: 0) {
+            LegacyPrivateContentGlobalBanner()
+            navigationShell
+        }
     }
 
     private var pinnedWindowChromeControls: some View {

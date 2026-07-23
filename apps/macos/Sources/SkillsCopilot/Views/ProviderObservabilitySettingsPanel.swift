@@ -14,6 +14,7 @@ struct ProviderObservabilitySettingsPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    LegacyPrivateContentCleanupCard()
                     ProviderObservabilityDateRangeControls(
                         selectedRange: $store.providerObservabilityDateRange,
                         customStartDate: $store.providerObservabilityCustomStartDate,

@@ -1,0 +1,5 @@
+{
+  "id": "fixture-privacy-preview-cleanup-legacy-content",
+  "method": "privacy.previewCleanupLegacyContent",
+  "params": null
+}

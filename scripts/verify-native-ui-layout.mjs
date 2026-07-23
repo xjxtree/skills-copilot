@@ -19,6 +19,9 @@ const files = {
   detailOverview: await read("apps/macos/Sources/SkillsCopilot/Views/DetailOverviewSection.swift"),
   detailPrimitives: await read("apps/macos/Sources/SkillsCopilot/Views/DetailPresentationPrimitives.swift"),
   providerObservabilitySettings: await read("apps/macos/Sources/SkillsCopilot/Views/ProviderObservabilitySettingsPanel.swift"),
+  legacyPrivateContentCard: await read("apps/macos/Sources/SkillsCopilot/Views/LegacyPrivateContentCleanupCard.swift"),
+  legacyPrivateContentBanner: await read("apps/macos/Sources/SkillsCopilot/Views/LegacyPrivateContentGlobalBanner.swift"),
+  settingsNavigation: await read("apps/macos/Sources/SkillsCopilot/Views/SettingsNavigation.swift"),
   skillManager: await read("apps/macos/Sources/SkillsCopilot/Views/SkillManagerPanel.swift"),
   workflowSheet: await read("apps/macos/Sources/SkillsCopilot/Views/WorkflowSheetChrome.swift"),
   skillManagerModel: await read("apps/macos/Sources/SkillsCopilot/Models/SkillManager.swift"),
@@ -44,6 +47,7 @@ const files = {
   listCompletenessControls: await read("apps/macos/Sources/SkillsCopilot/Views/ListCompletenessControls.swift"),
   store: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift"),
   storeProjectionHelpers: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore+ProjectionHelpers.swift"),
+  storeLegacyPrivacy: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore+LegacyPrivacyCleanup.swift"),
   storeLocalSessionDetail: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStore+LocalSessionDetail.swift"),
   storePresentationModels: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillStorePresentationModels.swift"),
   storeList: await read("apps/macos/Sources/SkillsCopilot/Stores/SkillListModel.swift"),
@@ -63,6 +67,9 @@ const files = {
   serviceLLMPromptHelpers: await read("crates/service/src/service_llm_prompt_helpers.rs"),
   serviceRustProtocol: await read("crates/service/src/protocol.rs"),
 };
+const hasTaskCockpitHistoryStore = await exists(
+  "apps/macos/Sources/SkillsCopilot/Stores/TaskCockpitHistoryStore.swift",
+);
 files.detailSurface = [
   files.detail,
   files.agentSessionDetail,
@@ -83,6 +90,7 @@ files.serviceIPC = [
 files.storeSurface = [
   files.store,
   files.storeProjectionHelpers,
+  files.storeLegacyPrivacy,
   files.storeDerivedState,
   files.storeWorkflow,
 ].join("\n");
@@ -729,10 +737,12 @@ const checks = [
   {
     label: "settings window uses sidebar navigation and close-only window controls",
     text: files.settings + "\n" + files.uiOptimization + "\n" + files.localizable + "\n" + files.localizableZh,
-    passed: /private enum SettingsTab:[\s\S]*?CaseIterable[\s\S]*?case appearance[\s\S]*?case provider[\s\S]*?case providerObservability[\s\S]*?case service/.test(files.settings)
+    passed: /enum SettingsTab:[\s\S]*?CaseIterable[\s\S]*?case appearance[\s\S]*?case provider[\s\S]*?case providerObservability[\s\S]*?case service/.test(files.settings)
       && /HStack\(spacing:\s*0\)[\s\S]*?settingsSidebar[\s\S]*?Divider\(\)[\s\S]*?selectedSettingsPane/.test(files.settings)
       && /private var settingsSidebar:[\s\S]*?ForEach\(SettingsTab\.allCases\)[\s\S]*?SettingsSidebarItem/.test(files.settings)
       && /private var selectedSettingsPane:[\s\S]*?switch selectedSettingsTab[\s\S]*?case \.providerObservability:[\s\S]*?ProviderObservabilitySettingsPanel\(\)/.test(files.settings)
+      && /@AppStorage\(SettingsNavigation\.selectionStorageKey\)[\s\S]*?selectedSettingsTab:\s*SettingsTab/.test(files.settings)
+      && /SettingsNavigation\.providerObservabilityRequested[\s\S]*?selectedSettingsTab = \.providerObservability/.test(files.settings)
       && /private struct SettingsWindowConfigurator:[\s\S]*?window\.title = UIStrings\.settingsWindowTitle[\s\S]*?window\.styleMask\.remove\(\.miniaturizable\)[\s\S]*?standardWindowButton\(\.miniaturizeButton\)\?\.isHidden = true[\s\S]*?standardWindowButton\(\.zoomButton\)\?\.isHidden = true/.test(files.settings)
       && /navigationStyle = SettingsNavigationStyle\.sidebar[\s\S]*?usesDedicatedSettingsScene = true[\s\S]*?windowControlPolicy = SettingsWindowControlPolicy\.closeOnly[\s\S]*?primarySaveButtonsVisible = false[\s\S]*?sidebarWidth = 190/.test(files.uiOptimization)
       && /"settings\.window\.title"/.test(files.localizable)
@@ -1093,21 +1103,44 @@ const customChecks = [
       && !/Text\(UIStrings\.text\("taskCockpit\.history\.empty"/.test(files.taskCockpit),
   },
   {
-    label: "task preflight history is session-only with redacted cleanup retry",
+    label: "task preflight history is session-only and legacy cleanup stays explicit",
     passed: /TaskPreflightHistoryPanel\([\s\S]*?cleanupMessage:\s*store\.taskCockpitHistoryCleanupMessage[\s\S]*?onClear:\s*\{[\s\S]*?store\.clearTaskCockpitHistory\(\)/.test(files.taskCockpit)
       && /private struct TaskPreflightHistoryPanel:[\s\S]*?@State private var isConfirmingClear = false[\s\S]*?Text\(UIStrings\.taskCockpitHistorySummary\)/.test(files.taskCockpit)
       && /if let cleanupMessage[\s\S]*?WorkflowSheetInlineBanner\(message:\s*cleanupMessage,\s*style:\s*\.warning\)/.test(files.taskCockpit)
       && /Label\(UIStrings\.taskCockpitHistoryClear,\s*systemImage:\s*"trash"\)[\s\S]*?\.disabled\(records\.isEmpty && cleanupMessage == nil\)/.test(files.taskCockpit)
       && /\.confirmationDialog\([\s\S]*?UIStrings\.taskCockpitHistoryClearConfirmationTitle[\s\S]*?Button\(UIStrings\.taskCockpitHistoryClear,\s*role:\s*\.destructive\)[\s\S]*?onClear\(\)[\s\S]*?UIStrings\.taskCockpitHistoryClearConfirmationMessage/.test(files.taskCockpit)
-      && /@Published private\(set\) var taskCockpitHistoryCleanupMessage:\s*String\?/.test(files.store)
+      && /var taskCockpitHistoryCleanupMessage:\s*String\?[\s\S]*?legacyPrivateContentInspection\?\.taskPreflightCleanupRequired/.test(files.storeLegacyPrivacy)
+      && !hasTaskCockpitHistoryStore
+      && !/TaskCockpitHistoryStore|taskCockpitHistoryStore/.test(files.storeSurface)
       && /"taskCockpit\.history\.summary" = "Completed Preflights stay in memory for this app session\. Task text and provider results are not saved to disk and disappear when the app quits\."/.test(files.localizable)
       && /"taskCockpit\.history\.summary" = ".*本次应用会话.*不会保存到磁盘.*退出应用.*"/.test(files.localizableZh)
       && [
         "taskCockpit.history.clear",
         "taskCockpit.history.clearConfirmation.title",
         "taskCockpit.history.clearConfirmation.message",
-        "taskCockpit.history.cleanupFailed",
+        "privacy.legacy.taskPreflightWarning",
       ].every((key) => files.localizable.includes(`"${key}" =`) && files.localizableZh.includes(`"${key}" =`)),
+  },
+  {
+    label: "legacy private-content cleanup is persistent, reviewable, and explicitly confirmed",
+    text: [
+      files.content,
+      files.legacyPrivateContentBanner,
+      files.legacyPrivateContentCard,
+      files.providerObservabilitySettings,
+      files.settingsNavigation,
+      files.settings,
+      files.storeLegacyPrivacy,
+    ].join("\n"),
+    passed: /LegacyPrivateContentGlobalBanner\(\)[\s\S]*?navigationShell/.test(files.content)
+      && /legacyPrivateContentInspection\?\.cleanupRequired == true[\s\S]*?legacyPrivateContentCleanupError != nil/.test(files.legacyPrivateContentBanner)
+      && /Button\(UIStrings\.legacyPrivateContentOpenSettings\)[\s\S]*?SettingsNavigation\.openProviderObservability\(\)/.test(files.legacyPrivateContentBanner)
+      && /UserDefaults\.standard\.set\([\s\S]*?SettingsTab\.providerObservability\.rawValue[\s\S]*?showSettingsWindow:/.test(files.settingsNavigation)
+      && /LegacyPrivateContentCleanupCard\(\)/.test(files.providerObservabilitySettings)
+      && /previewLegacyPrivateContentCleanup\(\)[\s\S]*?confirmLegacyPrivateContentCleanup\(\)/.test(files.legacyPrivateContentCard)
+      && /cleanupLegacyPrivateContent\(preview:\s*preview\)/.test(files.storeLegacyPrivacy)
+      && /inspectLegacyPrivateContent\(\)[\s\S]*?previewLegacyPrivateContentCleanup\(\)[\s\S]*?confirmLegacyPrivateContentCleanup\(\)/.test(files.storeLegacyPrivacy)
+      && !/privacy\.cleanupLegacyContent/.test(files.content),
   },
   {
     label: "settings provider status copy uses precise disabled and audit-state labels",
@@ -1300,6 +1333,16 @@ console.log(`native-ui-layout-check: ${checks.length + customChecks.length} chec
 
 async function read(path) {
   return readFile(join(repoRoot, path), "utf8");
+}
+
+async function exists(path) {
+  try {
+    await readFile(join(repoRoot, path));
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function extractStructBody(text, structName) {
