@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -32,6 +33,7 @@ const processName = appName;
 const appPath = resolve(process.env.SKILLS_COPILOT_APP ?? "dist/AgentCopilot.app");
 const appBinary = join(appPath, "Contents", "MacOS", appName);
 const serviceBinary = join(appPath, "Contents", "Resources", "skills-copilot-service");
+const smokeActionPreviewSecret = randomBytes(32).toString("hex");
 const screenshotPath = resolve(
   process.env.SKILLS_COPILOT_SMOKE_SCREENSHOT ??
     join(tmpdir(), "agent-copilot-smoke-completed.png"),
@@ -764,7 +766,11 @@ function callServiceEnvelope(method, params, env) {
   });
   const result = tryRun(serviceBinary, [], {
     input: request,
-    env: { ...process.env, ...env },
+    env: {
+      ...process.env,
+      ...env,
+      SKILLS_COPILOT_ACTION_PREVIEW_SECRET: smokeActionPreviewSecret,
+    },
   });
   if (!result.ok) {
     fail(result.stderr || `service failed for ${method}`);
@@ -778,6 +784,224 @@ function callServiceEnvelope(method, params, env) {
   return envelope;
 }
 
+function actionConfirmationFromPreview(preview, label) {
+  const action = preview?.action;
+  if (
+    !action ||
+    typeof action.id !== "string" ||
+    action.id.length === 0 ||
+    typeof action.source_revision !== "string" ||
+    action.source_revision.length === 0 ||
+    !action.target ||
+    typeof preview.preview_token !== "string" ||
+    preview.preview_token.length === 0
+  ) {
+    fail(`${label} did not return a complete typed action confirmation`);
+  }
+  const reference = {
+    action_id: action.id,
+    source_revision: action.source_revision,
+    target: action.target,
+  };
+  if (typeof action.project_id === "string" && action.project_id.length > 0) {
+    reference.project_id = action.project_id;
+  }
+  return {
+    reference,
+    preview_token: preview.preview_token,
+    confirmed: true,
+  };
+}
+
+function assertVerifiedActionReadback(result, preview, label) {
+  if (result?.action?.id !== preview?.action?.id) {
+    fail(`${label} returned an action different from the reviewed preview`);
+  }
+  if (
+    result.action.source_revision !== preview.action.source_revision ||
+    JSON.stringify(result.action.target) !== JSON.stringify(preview.action.target)
+  ) {
+    fail(`${label} returned a mismatched action binding`);
+  }
+  if (
+    !result.readback ||
+    result.readback.verified !== true ||
+    result.readback.action_id !== preview.action.id ||
+    !Array.isArray(result.readback.observations) ||
+    result.readback.observations.length === 0
+  ) {
+    fail(`${label} did not return verified semantic read-back`);
+  }
+}
+
+function refreshCatalog(method, env, expectedContextRevision = undefined) {
+  const contextRevision =
+    expectedContextRevision === undefined
+      ? callService("project.getContext", {}, env).revision
+      : expectedContextRevision;
+  const params = { explicit_refresh: true };
+  if (typeof contextRevision === "string" && contextRevision.length > 0) {
+    params.expected_context_revision = contextRevision;
+  }
+  const scan = callService(method, params, env);
+  if (
+    typeof scan.accepted_context_revision !== "string" ||
+    scan.accepted_context_revision.length === 0 ||
+    typeof scan.catalog_scan_revision !== "string" ||
+    scan.catalog_scan_revision.length === 0 ||
+    scan.readback?.verified !== true ||
+    scan.readback.accepted_context_revision !== scan.accepted_context_revision ||
+    scan.readback.catalog_scan_revision !== scan.catalog_scan_revision
+  ) {
+    fail(`${method} did not return a verified revision-bound catalog read-back`);
+  }
+  if (
+    typeof contextRevision === "string" &&
+    scan.accepted_context_revision !== contextRevision
+  ) {
+    fail(`${method} accepted a project context revision other than the requested revision`);
+  }
+  return scan;
+}
+
+function applySkillToggle(instanceID, targetEnabled, env, label) {
+  const preview = callService(
+    "batch.previewSkillToggles",
+    {
+      instance_ids: [instanceID],
+      target_enabled: targetEnabled,
+    },
+    env,
+  );
+  if (
+    preview.writes_allowed !== true ||
+    preview.writable_count !== 1 ||
+    preview.requested_count !== 1
+  ) {
+    fail(`${label} did not return one writable toggle preview`);
+  }
+  const result = callService(
+    "batch.applySkillToggles",
+    {
+      instance_ids: [instanceID],
+      target_enabled: targetEnabled,
+      confirmation: actionConfirmationFromPreview(preview, `${label} preview`),
+    },
+    env,
+  );
+  assertVerifiedActionReadback(result, preview, `${label} apply`);
+  const updated = result.updated_records?.find((record) => record.id === instanceID);
+  if (!updated || updated.enabled !== targetEnabled) {
+    fail(`${label} did not return the requested skill state`);
+  }
+  return updated;
+}
+
+function applyProjectSetContext(env, state, context) {
+  const preview = callService(
+    "project.previewSetContext",
+    {
+      ...context,
+      expected_revision: state.revision,
+    },
+    env,
+  );
+  const candidateLastUsedAt = preview.candidate?.active?.last_used_at;
+  if (!Number.isSafeInteger(candidateLastUsedAt)) {
+    fail("set project context preview did not return a candidate timestamp");
+  }
+  const result = callService(
+    "project.setContext",
+    {
+      ...context,
+      candidate_last_used_at: candidateLastUsedAt,
+      action_confirmation: actionConfirmationFromPreview(
+        preview,
+        "set project context preview",
+      ),
+    },
+    env,
+  );
+  assertVerifiedActionReadback(result, preview, "set project context apply");
+  if (result.state?.revision !== preview.candidate?.revision) {
+    fail("set project context read-back did not match the reviewed candidate");
+  }
+  return result.state;
+}
+
+function applyProjectRemoveRecentContext(env, state, id) {
+  const preview = callService(
+    "project.previewRemoveRecentContext",
+    {
+      id,
+      expected_revision: state.revision,
+    },
+    env,
+  );
+  const result = callService(
+    "project.removeRecentContext",
+    {
+      id,
+      action_confirmation: actionConfirmationFromPreview(
+        preview,
+        "remove recent project preview",
+      ),
+    },
+    env,
+  );
+  assertVerifiedActionReadback(result, preview, "remove recent project apply");
+  if (result.state?.revision !== preview.candidate?.revision) {
+    fail("remove recent project read-back did not match the reviewed candidate");
+  }
+  return result.state;
+}
+
+function applyProjectClearRecentContexts(env, state) {
+  const preview = callService(
+    "project.previewClearRecentContexts",
+    { expected_revision: state.revision },
+    env,
+  );
+  const result = callService(
+    "project.clearRecentContexts",
+    {
+      action_confirmation: actionConfirmationFromPreview(
+        preview,
+        "clear recent projects preview",
+      ),
+    },
+    env,
+  );
+  assertVerifiedActionReadback(result, preview, "clear recent projects apply");
+  if (result.state?.revision !== preview.candidate?.revision) {
+    fail("clear recent projects read-back did not match the reviewed candidate");
+  }
+  return result.state;
+}
+
+function applyProjectClearContext(env, state) {
+  const preview = callService(
+    "project.previewClearContext",
+    { expected_revision: state.revision },
+    env,
+  );
+  const result = callService(
+    "project.clearContext",
+    {
+      action_confirmation: actionConfirmationFromPreview(
+        preview,
+        "clear project context preview",
+      ),
+    },
+    env,
+  );
+  assertVerifiedActionReadback(result, preview, "clear project context apply");
+  if (result.state?.revision !== preview.candidate?.revision) {
+    fail("clear project context read-back did not match the reviewed candidate");
+  }
+  return result.state;
+}
+
 function runFixtureServiceSmoke(env) {
   const status = callService("service.status", {}, env);
   const expectedProtocolVersion = expectedServiceProtocolVersion();
@@ -786,7 +1010,7 @@ function runFixtureServiceSmoke(env) {
       `unexpected protocol version ${status.protocol_version}; expected ${expectedProtocolVersion}`,
     );
   }
-  const scan = callService("catalog.scanClaude", {}, env);
+  const scan = refreshCatalog("catalog.scanClaude", env);
   if (scan.scanned_count !== 3) {
     fail(`expected 3 scanned skills, got ${scan.scanned_count}`);
   }
@@ -795,19 +1019,11 @@ function runFixtureServiceSmoke(env) {
   if (!alpha) {
     fail("alpha-review fixture missing after scan");
   }
-  const disabled = callService(
-    "config.toggleSkill",
-    { instance_id: alpha.id, on: false },
-    env,
-  );
+  const disabled = applySkillToggle(alpha.id, false, env, "alpha-review disable");
   if (disabled.enabled !== false) {
     fail("toggle off did not disable alpha-review");
   }
-  const enabled = callService(
-    "config.toggleSkill",
-    { instance_id: alpha.id, on: true },
-    env,
-  );
+  const enabled = applySkillToggle(alpha.id, true, env, "alpha-review enable");
   if (enabled.enabled !== true) {
     fail("toggle on did not re-enable alpha-review");
   }
@@ -815,22 +1031,59 @@ function runFixtureServiceSmoke(env) {
   if (typeof settings.revision !== "string" || settings.revision.length === 0) {
     fail("settings read did not return a config revision");
   }
-  const saved = callService(
-    "config.saveClaudeSettings",
+  let parsedSettings;
+  try {
+    parsedSettings = JSON.parse(settings.content);
+  } catch {
+    fail("settings read returned invalid JSON");
+  }
+  const candidateContent =
+    `${JSON.stringify(
+      {
+        ...parsedSettings,
+        smokeLifecycleFixture: { verified: true },
+      },
+      null,
+      2,
+    )}\n`;
+  const savePreview = callService(
+    "config.previewSaveClaudeSettings",
     {
-      content: `${settings.content.trim() || "{}"}\n`,
+      content: candidateContent,
       expected_revision: settings.revision,
     },
     env,
   );
-  if (!saved.exists) {
-    fail("settings save did not return an existing document");
+  if (savePreview.changed !== true) {
+    fail("settings save preview did not describe an actual fixture write");
+  }
+  const saved = callService(
+    "config.saveClaudeSettings",
+    {
+      content: candidateContent,
+      confirmation: actionConfirmationFromPreview(
+        savePreview,
+        "settings save preview",
+      ),
+    },
+    env,
+  );
+  assertVerifiedActionReadback(saved, savePreview, "settings save apply");
+  if (
+    saved.document?.exists !== true ||
+    saved.document.content !== candidateContent ||
+    readFileSync(settings.target, "utf8") !== candidateContent
+  ) {
+    fail("settings save read-back did not match the reviewed candidate");
   }
   const snapshots = callService("snapshot.list", {}, env);
   if (!Array.isArray(snapshots) || snapshots.length === 0) {
     fail("expected snapshots after toggle/settings write flow");
   }
-  const snapshot = snapshots[0];
+  const snapshot = snapshots.find((record) => record.id === saved.snapshot_id);
+  if (!snapshot) {
+    fail("settings save snapshot was not present in snapshot.list");
+  }
   const preview = callService(
     "snapshot.previewRollback",
     { snapshot_id: snapshot.id },
@@ -843,24 +1096,35 @@ function runFixtureServiceSmoke(env) {
     typeof preview.current_revision !== "string" ||
     preview.current_revision.length === 0 ||
     typeof preview.preview_token !== "string" ||
-    preview.preview_token.length === 0
+    preview.preview_token.length === 0 ||
+    preview.changed !== true
   ) {
     fail("snapshot preview did not return a complete protocol-v2 rollback binding");
   }
-  callService(
+  const rolledBack = callService(
     "snapshot.rollback",
     {
       snapshot_id: preview.snapshot.id,
-      preview_token: preview.preview_token,
+      confirmation: actionConfirmationFromPreview(preview, "snapshot rollback preview"),
     },
     env,
   );
-  note("fixture service smoke passed: scan, toggle, settings save, preview, rollback");
+  assertVerifiedActionReadback(rolledBack, preview, "snapshot rollback apply");
+  if (
+    rolledBack.document?.content !== settings.content ||
+    readFileSync(settings.target, "utf8") !== settings.content
+  ) {
+    fail("snapshot rollback did not restore the exact pre-save settings bytes");
+  }
+  note(
+    "fixture service smoke passed: explicit scan, confirmed toggles, " +
+      "confirmed settings save, snapshot preview, confirmed rollback",
+  );
   return status;
 }
 
 function runFixtureProjectContextSmoke(env, fixture, status) {
-  const baseScan = callService("catalog.scanAll", {}, env);
+  const baseScan = refreshCatalog("catalog.scanAll", env);
   assertSkillPresent(
     baseScan.skills,
     "codex",
@@ -878,9 +1142,13 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
   const methods = new Set(status.supported_methods ?? []);
   const hasProjectContextApi =
     methods.has("project.getContext") &&
+    methods.has("project.previewSetContext") &&
     methods.has("project.setContext") &&
+    methods.has("project.previewClearContext") &&
     methods.has("project.clearContext") &&
+    methods.has("project.previewRemoveRecentContext") &&
     methods.has("project.removeRecentContext") &&
+    methods.has("project.previewClearRecentContexts") &&
     methods.has("project.clearRecentContexts");
 
   if (!hasProjectContextApi) {
@@ -889,7 +1157,7 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
       SKILLS_COPILOT_PROJECT_CWD: fixture.projectCwd,
       SKILLS_COPILOT_PROJECT_ROOT: fixture.projectRoot,
     };
-    const projectScan = callService("catalog.scanAll", {}, projectEnv);
+    const projectScan = refreshCatalog("catalog.scanAll", projectEnv, null);
     assertSkillPresent(
       projectScan.skills,
       "codex",
@@ -909,46 +1177,43 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
   const initialContext = callService("project.getContext", {}, env);
   assertProjectContextState(initialContext, false, "initial project context");
 
-  const setContext = callService(
-    "project.setContext",
-    {
-      current_cwd: fixture.projectCwd,
-      name: "Smoke Fixture Project",
-      root_path: fixture.projectRoot,
-    },
-    env,
-  );
+  const fixtureContext = {
+    current_cwd: fixture.projectCwd,
+    name: "Smoke Fixture Project",
+    root_path: fixture.projectRoot,
+  };
+  const setContext = applyProjectSetContext(env, initialContext, fixtureContext);
   assertProjectContextState(setContext, true, "set project context");
 
   const activeContext = callService("project.getContext", {}, env);
   assertProjectContextState(activeContext, true, "active project context");
 
-  const removeRecentContext = callService(
-    "project.removeRecentContext",
-    { id: activeContext.active.id },
+  const removeRecentContext = applyProjectRemoveRecentContext(
     env,
+    activeContext,
+    activeContext.active.id,
   );
   assertProjectContextState(removeRecentContext, true, "remove recent project context");
   if (removeRecentContext.recent.length !== 0) {
     fail("removing the active project from recents should preserve active and empty recents");
   }
 
-  callService(
-    "project.setContext",
-    {
-      current_cwd: fixture.projectCwd,
-      name: "Smoke Fixture Project",
-      root_path: fixture.projectRoot,
-    },
+  const restoredRecentContext = applyProjectSetContext(
     env,
+    removeRecentContext,
+    fixtureContext,
   );
-  const clearRecentContexts = callService("project.clearRecentContexts", {}, env);
+  const clearRecentContexts = applyProjectClearRecentContexts(env, restoredRecentContext);
   assertProjectContextState(clearRecentContexts, true, "clear recent project contexts");
   if (clearRecentContexts.recent.length !== 0) {
     fail("clearing recent projects should preserve active and empty recents");
   }
 
-  const projectScan = callService("catalog.scanAll", {}, env);
+  const projectScan = refreshCatalog(
+    "catalog.scanAll",
+    env,
+    clearRecentContexts.revision,
+  );
   assertSkillPresent(
     projectScan.skills,
     "codex",
@@ -959,13 +1224,13 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
   runFixturePiCompatibilitySmoke(projectScan.skills, env, fixture);
   runFixtureCodexConfigHardeningSmoke(env, fixture, projectScan.skills);
 
-  const clearContext = callService("project.clearContext", {}, env);
+  const clearContext = applyProjectClearContext(env, clearRecentContexts);
   assertProjectContextState(clearContext, false, "clear project context");
 
   const clearedContext = callService("project.getContext", {}, env);
   assertProjectContextState(clearedContext, false, "cleared project context");
 
-  const clearedScan = callService("catalog.scanAll", {}, env);
+  const clearedScan = refreshCatalog("catalog.scanAll", env, clearedContext.revision);
   assertSkillPresent(
     clearedScan.skills,
     "codex",
@@ -1047,10 +1312,11 @@ function runFixturePiCompatibilitySmoke(skills, env, fixture) {
     "project Pi compatibility fixture missing after project context scanAll",
   );
 
-  const disabled = callService(
-    "config.toggleSkill",
-    { instance_id: compatSkill.id, on: false },
+  const disabled = applySkillToggle(
+    compatSkill.id,
+    false,
     env,
+    "Pi compatibility disable",
   );
   if (disabled.agent !== "pi" || disabled.enabled !== false) {
     fail("Pi compatibility toggle did not return a disabled Pi skill");
@@ -1060,7 +1326,7 @@ function runFixturePiCompatibilitySmoke(skills, env, fixture) {
   if (!skillOverrides.some((entry) => String(entry).startsWith("-") && String(entry).includes("pi-agent-project-smoke"))) {
     fail("Pi project settings missing disabled compatibility skill entry");
   }
-  const rescanned = callService("catalog.scanAll", {}, env);
+  const rescanned = refreshCatalog("catalog.scanAll", env);
   const rescannedSkill = assertSkillPresent(
     rescanned.skills,
     "pi",
@@ -1084,10 +1350,11 @@ function runFixtureOpencodeWritableSmoke(skills, env, fixture) {
   if (existsSync(fixture.projectOpencodeConfig)) {
     fail(`project opencode config should not exist before toggle: ${fixture.projectOpencodeConfig}`);
   }
-  const toggled = callService(
-    "config.toggleSkill",
-    { instance_id: projectSkill.id, on: false },
+  const toggled = applySkillToggle(
+    projectSkill.id,
+    false,
     env,
+    "opencode project disable",
   );
   if (toggled.agent !== "opencode" || toggled.enabled !== false) {
     fail("opencode toggle did not return a disabled opencode skill");
@@ -1096,7 +1363,7 @@ function runFixtureOpencodeWritableSmoke(skills, env, fixture) {
   if (config?.permission?.skill?.["opencode-project-smoke"] !== "deny") {
     fail("opencode project config missing managed permission.skill deny");
   }
-  const rescanned = callService("catalog.scanAll", {}, env);
+  const rescanned = refreshCatalog("catalog.scanAll", env);
   const disabled = assertSkillPresent(
     rescanned.skills,
     "opencode",
@@ -1137,10 +1404,11 @@ function runFixtureCodexConfigHardeningSmoke(env, fixture, skills) {
     "seeded non-target duplicate entries",
   );
 
-  const disabled = callService(
-    "config.toggleSkill",
-    { instance_id: projectSkill.id, on: false },
+  const disabled = applySkillToggle(
+    projectSkill.id,
+    false,
     env,
+    "Codex project disable",
   );
   if (disabled.enabled !== false) {
     fail("Codex project toggle off did not disable codex-project-smoke");
@@ -1169,10 +1437,11 @@ function runFixtureCodexConfigHardeningSmoke(env, fixture, skills) {
     "disabled target block",
   );
 
-  const enabled = callService(
-    "config.toggleSkill",
-    { instance_id: projectSkill.id, on: true },
+  const enabled = applySkillToggle(
+    projectSkill.id,
+    true,
     env,
+    "Codex project enable",
   );
   if (enabled.enabled !== true) {
     fail("Codex project toggle on did not re-enable codex-project-smoke");
