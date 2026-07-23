@@ -198,6 +198,7 @@ fn llm_skill_prompt_uses_the_same_visible_issue_policy_as_the_app() {
             2,
         )
         .expect("suppress prompt finding");
+    drop(catalog);
 
     let response = host.handle(ServiceRequest {
         id: Some("preview-visible-findings".to_string()),
