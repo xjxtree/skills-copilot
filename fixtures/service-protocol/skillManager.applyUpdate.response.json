@@ -159,7 +159,6 @@
       "network_required": true,
       "network_allowed": true,
       "will_run": true,
-      "preview_token": "action-preview:v1:hmac-sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "summary": "Update the selected managed skill source for every linked agent.",
       "risks": [
         "Update may contact remote source repositories or indexes through the external CLI.",

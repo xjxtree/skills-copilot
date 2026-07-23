@@ -666,6 +666,14 @@ function validateFixtureBinding(action, requestParams, lifecycle, method) {
       errors.push(`${method} preview fixture requires a project binding`);
     }
     break;
+  case "optional":
+    if (
+      projectID !== null
+      && (typeof projectID !== "string" || projectID.length === 0)
+    ) {
+      errors.push(`${method} preview fixture has an invalid optional project binding`);
+    }
+    break;
   case "matches_target":
     requireEqual(projectID, action?.target?.id ?? null, "project");
     break;

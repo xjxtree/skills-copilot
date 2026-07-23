@@ -19,7 +19,6 @@
       "readback": ["agent_config", "skill_aggregates", "config_snapshots"],
       "evidence_refs": ["skill:claude-global-fixture", "skill:pi-global-fixture"]
     },
-    "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "target_enabled": false,
     "requested_count": 2,
     "writable_count": 2,
@@ -95,11 +94,12 @@
     "readback": {
       "action_id": "action:disable_skill:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "source_revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "domains": ["agent_config", "skill_aggregates"],
+      "domains": ["agent_config", "skill_aggregates", "config_snapshots"],
       "target_ids": [
         "/tmp/skills-copilot-home/.claude/settings.json",
         "/tmp/skills-copilot-home/.pi/agent/settings.json",
-        "skill-aggregates"
+        "skill-aggregates",
+        "config-snapshots"
       ],
       "observations": [
         {
@@ -116,6 +116,11 @@
           "domain": "skill_aggregates",
           "target_id": "skill-aggregates",
           "revision": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        {
+          "domain": "config_snapshots",
+          "target_id": "config-snapshots",
+          "revision": "sha256:5656565656565656565656565656565656565656565656565656565656565656"
         }
       ],
       "verified": true

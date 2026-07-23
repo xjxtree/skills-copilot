@@ -19,20 +19,6 @@
     "risks": [
       "Will write into the confirmed codex agent-global skill root."
     ],
-    "confirmation": {
-      "required": true,
-      "confirmed": true,
-      "fields": [
-        "source_instance_id",
-        "source_path",
-        "target_agent",
-        "target_scope",
-        "target_path",
-        "files",
-        "risks"
-      ],
-      "message": "Confirmed install."
-    },
     "wrote": true,
     "snapshot_id": "snapshot-install-fixture",
     "readback": {

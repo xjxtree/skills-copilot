@@ -156,7 +156,6 @@
       "network_required": true,
       "network_allowed": true,
       "will_run": true,
-      "preview_token": "action-preview:v1:hmac-sha256:4343434343434343434343434343434343434343434343434343434343434343",
       "summary": "Create a local skill template named local-review-helper.",
       "risks": [
         "Launching npx may resolve or download the external skills package before creating the local template.",
