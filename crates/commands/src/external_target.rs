@@ -1,17 +1,25 @@
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
-    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Write},
     marker::PhantomData,
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Read,
+};
+
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
 
-use crate::{
-    app_data_owner_fs::unix_timestamp_nanoseconds, mutation_lock::AppMutationLock, CommandError,
-};
+#[cfg(unix)]
+use crate::app_data_owner_fs::{unix_device_id, unix_file_mode, unix_timestamp_nanoseconds};
+use crate::{mutation_lock::AppMutationLock, CommandError};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct ExternalFileState {
@@ -43,7 +51,7 @@ impl EntryIdentity {
     fn from_stat(stat: &rustix::fs::Stat) -> Result<Self, CommandError> {
         ensure_current_user_owner(stat.st_uid)?;
         Ok(Self {
-            device: stat.st_dev as u64,
+            device: unix_device_id(stat.st_dev),
             inode: stat.st_ino,
             owner: stat.st_uid,
         })
@@ -88,10 +96,10 @@ impl RegularFileStamp {
     fn from_stat(stat: &rustix::fs::Stat) -> Result<Self, CommandError> {
         ensure_current_user_owner(stat.st_uid)?;
         Ok(Self {
-            device: stat.st_dev as u64,
+            device: unix_device_id(stat.st_dev),
             inode: stat.st_ino,
             owner: stat.st_uid,
-            mode: stat.st_mode as u32,
+            mode: unix_file_mode(stat.st_mode),
             links: stat.st_nlink as u64,
             length: u64::try_from(stat.st_size)
                 .map_err(|_| unsafe_external_target("regular file has a negative size"))?,
@@ -201,13 +209,15 @@ impl<'lock> ExternalTargetCapability<'lock> {
         allowed_root: &Path,
         target: &Path,
     ) -> Result<Self, CommandError> {
-        let relative = guarded_relative_target(allowed_root, target)?;
         #[cfg(unix)]
         {
+            let relative = guarded_relative_target(allowed_root, target)?;
             Self::prepare_unix(lock, allowed_root, target, &relative)
         }
         #[cfg(not(unix))]
         {
+            let _ = lock;
+            guarded_relative_target(allowed_root, target)?;
             prepare_fallback_root(allowed_root)?;
             let capability = Self {
                 _lock: PhantomData,
@@ -2883,16 +2893,23 @@ fn snapshot_directory(
                                 "{label} exceeds its byte safety budget"
                             ))
                         })?;
-                    if let Some(target) = read_hook_pending.take() {
-                        run_test_hook(target, ExternalTargetHookPoint::DuringTreeRead);
-                    }
                     let mut bytes = Vec::with_capacity(before_read.length as usize);
                     Read::by_ref(&mut file)
                         .take(max_file_bytes.saturating_add(1))
                         .read_to_end(&mut bytes)?;
+                    if let Some(target) = read_hook_pending.take() {
+                        run_test_hook(target, ExternalTargetHookPoint::DuringTreeRead);
+                    }
+                    use std::io::{Seek, SeekFrom};
+                    file.seek(SeekFrom::Start(0))?;
+                    let mut verified_bytes = Vec::with_capacity(before_read.length as usize);
+                    Read::by_ref(&mut file)
+                        .take(max_file_bytes.saturating_add(1))
+                        .read_to_end(&mut verified_bytes)?;
                     let after_read = RegularFileStamp::from_metadata(&file.metadata()?)?;
                     if bytes.len() as u64 != before_read.length
                         || bytes.len() as u64 > max_file_bytes
+                        || verified_bytes != bytes
                         || after_read != before_read
                     {
                         return Err(CommandError::StaleActionReference);

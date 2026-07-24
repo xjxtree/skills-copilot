@@ -1,3 +1,5 @@
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
     fs,
     io::Write,

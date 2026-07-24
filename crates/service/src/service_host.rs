@@ -1,3 +1,5 @@
+#![cfg_attr(all(test, not(unix)), allow(dead_code))]
+
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 
@@ -1281,11 +1283,11 @@ impl ServiceHost {
 
     pub(crate) fn open_existing_catalog_read_only_while_locked(
         &self,
-        owner: &AppMutationLock,
+        _owner: &AppMutationLock,
     ) -> Result<Option<Catalog>, ServiceError> {
         #[cfg(unix)]
         {
-            Catalog::open_read_only_current_anchored_if_exists(owner.open_owner_directory()?)
+            Catalog::open_read_only_current_anchored_if_exists(_owner.open_owner_directory()?)
                 .map_err(ServiceError::from)
         }
         #[cfg(not(unix))]

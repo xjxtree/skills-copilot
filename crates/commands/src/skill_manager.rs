@@ -1,3 +1,5 @@
+#![cfg_attr(all(test, not(unix)), allow(dead_code))]
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -63,7 +65,7 @@ use install_source::{
     looks_like_scp_git_source, normalized_remote_manager_install_source, resolve_manager_source,
     ManagerSourceResolution,
 };
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use machine_capture::{
     inject_machine_capture_sync_failure_for_test, install_machine_capture_post_create_test_hook,
     install_machine_capture_pre_restore_test_hook, install_machine_capture_pre_unlink_test_hook,

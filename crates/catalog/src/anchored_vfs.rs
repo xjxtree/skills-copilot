@@ -1438,7 +1438,7 @@ mod tests {
         };
         let mut vfs: ffi::sqlite3_vfs = unsafe { std::mem::zeroed() };
         vfs.pAppData = (&mut state as *mut AnchoredVfsState).cast::<c_void>();
-        let mut output = [0i8; 128];
+        let mut output = [0 as c_char; 128];
         let parent = CString::new("../outside.sqlite").expect("parent path");
         let absolute = CString::new("/outside.sqlite").expect("absolute path");
 
@@ -1482,7 +1482,7 @@ mod tests {
         let mut vfs: ffi::sqlite3_vfs = unsafe { std::mem::zeroed() };
         vfs.pAppData = (&mut state as *mut AnchoredVfsState).cast::<c_void>();
         let name = CString::new("catalog.sqlite").expect("name");
-        let mut output = [0i8; 128];
+        let mut output = [0 as c_char; 128];
 
         let result = unsafe {
             anchored_full_pathname(

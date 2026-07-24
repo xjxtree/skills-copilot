@@ -1,3 +1,5 @@
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
     fs::{self, File},
     io,
@@ -159,7 +161,7 @@ pub fn lock_or_create_app_mutations(app_data_dir: &Path) -> Result<AppMutationLo
 pub fn lock_or_create_app_mutations_with_parents(
     app_data_dir: &Path,
 ) -> Result<AppMutationLock, CommandError> {
-    let file = open_app_mutation_directory_tree(app_data_dir, true)?;
+    let file = open_app_mutation_directory_tree(app_data_dir, true, true)?;
     file.lock_exclusive()?;
     Ok(AppMutationLock {
         file,
@@ -204,7 +206,7 @@ fn validate_existing_owner(path: &Path) -> Result<(), CommandError> {
 
 #[cfg(unix)]
 fn open_existing_app_mutation_owner(path: &Path) -> Result<File, CommandError> {
-    open_app_mutation_directory_tree(path, false)
+    open_app_mutation_directory_tree(path, false, true)
 }
 
 /// Open an existing trusted directory with the same component-wise no-follow
@@ -215,7 +217,7 @@ fn open_existing_app_mutation_owner(path: &Path) -> Result<File, CommandError> {
 /// returned descriptor is the root capability for all later target-relative
 /// I/O; callers never reopen the external target by pathname on Unix.
 pub(crate) fn open_existing_directory_nofollow(path: &Path) -> Result<File, CommandError> {
-    open_app_mutation_directory_tree(path, false)
+    open_app_mutation_directory_tree(path, false, true)
 }
 
 #[cfg(not(unix))]
@@ -307,22 +309,30 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
             error.into()
         }
     })?;
-    if created {
-        use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::MetadataExt;
 
-        let metadata = owner.metadata().map_err(|error| {
+    let owner_metadata = owner.metadata().map_err(|error| {
+        if created {
             created_owner_effect_unknown(format!(
                 "the created app-data owner descriptor identity could not be read: {error}"
             ))
-        })?;
-        if created_identity != Some((metadata.dev(), metadata.ino())) {
+        } else {
+            CommandError::from(error)
+        }
+    })?;
+    if owner_metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(if created {
+            created_owner_effect_unknown(
+                "the created app-data owner is not owned by the current effective user".to_string(),
+            )
+        } else {
+            unsafe_owner()
+        });
+    }
+    if created {
+        if created_identity != Some((owner_metadata.dev(), owner_metadata.ino())) {
             return Err(created_owner_effect_unknown(
                 "the created app-data owner changed before descriptor binding".to_string(),
-            ));
-        }
-        if metadata.uid() != rustix::process::geteuid().as_raw() {
-            return Err(created_owner_effect_unknown(
-                "the created app-data owner is not owned by the current effective user".to_string(),
             ));
         }
         run_owner_creation_fault(OwnerCreationFaultPoint::Chmod)
@@ -348,6 +358,7 @@ fn open_or_create_app_mutation_owner_with_parent_open_hook(
 fn open_app_mutation_directory_tree(
     path: &Path,
     create_missing: bool,
+    require_effective_user_owner: bool,
 ) -> Result<File, CommandError> {
     use rustix::fs::{fchmod, mkdirat, open, openat, statat, AtFlags, FileType, Mode, OFlags};
     use rustix::io::Errno;
@@ -490,7 +501,9 @@ fn open_app_mutation_directory_tree(
             error.into()
         }
     })?;
-    if !metadata.is_dir() || metadata.uid() != rustix::process::geteuid().as_raw() {
+    if !metadata.is_dir()
+        || (require_effective_user_owner && metadata.uid() != rustix::process::geteuid().as_raw())
+    {
         return Err(if created_any {
             created_owner_effect_unknown(
                 "the created app-data owner is no longer a directory".to_string(),
@@ -547,6 +560,7 @@ fn created_owner_effect_unknown(detail: String) -> CommandError {
 fn open_app_mutation_directory_tree(
     path: &Path,
     create_missing: bool,
+    _require_effective_user_owner: bool,
 ) -> Result<File, CommandError> {
     let mut current = PathBuf::new();
     let mut saw_name = false;
@@ -592,7 +606,10 @@ fn open_app_mutation_directory_tree(
 fn open_app_mutation_parent(path: &Path) -> Result<(File, &std::ffi::OsStr), CommandError> {
     let parent = path.parent().ok_or_else(unsafe_owner)?;
     let name = path.file_name().ok_or_else(unsafe_owner)?;
-    let file = open_app_mutation_directory_tree(parent, false)?;
+    // The parent is only a descriptor-relative creation capability. It may be
+    // a trusted system-owned sticky directory such as `/tmp`; the new owner
+    // leaf itself is still identity-bound and must be owned by this process.
+    let file = open_app_mutation_directory_tree(parent, false, false)?;
     Ok((file, name))
 }
 
@@ -837,6 +854,31 @@ mod tests {
             "missing parent rejection must remain zero-write"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn confirmed_owner_creation_accepts_a_system_owned_existing_parent() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let owner = std::env::temp_dir().join(format!(
+            "skills-copilot-system-parent-owner-{}-{unique}",
+            std::process::id()
+        ));
+
+        let lock = lock_or_create_app_mutations(&owner)
+            .expect("create an owned leaf below the platform temporary directory");
+        let metadata = std::fs::metadata(&owner).expect("created owner metadata");
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+
+        drop(lock);
+        let _ = std::fs::remove_dir(owner);
     }
 
     #[test]

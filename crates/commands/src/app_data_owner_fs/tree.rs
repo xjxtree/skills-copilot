@@ -1,19 +1,33 @@
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
-    ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
+    io::{self, Write},
+    path::Path,
 };
 
+#[cfg(any(test, unix))]
+use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::{
+    ffi::{OsStr, OsString},
+    io::Read,
+};
+
+#[cfg(unix)]
 use sha2::Digest;
 
+#[cfg(unix)]
 use super::{
-    directory_flags, map_unsafe_relative_errno, private_owner_uid, unix_timestamp_nanoseconds,
-    unsafe_relative_file, validate_private_directory, validate_relative_path,
-    AppDataCreatedDirectory, AppDataOwnerFs,
+    directory_flags, map_unsafe_relative_errno, private_owner_uid, unix_device_id, unix_file_mode,
+    unix_timestamp_nanoseconds, validate_private_directory,
 };
 #[cfg(not(unix))]
 use super::{guarded_fallback_path, unsafe_relative_path};
+use super::{
+    unsafe_relative_file, validate_relative_path, AppDataCreatedDirectory, AppDataOwnerFs,
+};
 use crate::CommandError;
 
 #[cfg(test)]
@@ -599,6 +613,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
         &self,
         created_directories: &[AppDataCreatedDirectory],
     ) -> Result<(), CommandError> {
+        #[cfg(unix)]
         let mut removed_any = false;
         for created in created_directories.iter().rev() {
             let relative = &created.relative;
@@ -1033,10 +1048,10 @@ fn removal_binding_from_stat(stat: &rustix::fs::Stat) -> Result<RemovalBinding, 
     };
     Ok(RemovalBinding {
         kind,
-        device: stat.st_dev as u64,
+        device: unix_device_id(stat.st_dev),
         inode: stat.st_ino,
         uid: stat.st_uid,
-        mode: stat.st_mode as u32,
+        mode: unix_file_mode(stat.st_mode),
         links: stat.st_nlink as u64,
         length: u64::try_from(stat.st_size)
             .map_err(|_| unsafe_relative_file("app-data removal"))?,
@@ -1616,7 +1631,7 @@ fn snapshot_fallback_tree(
                 rows.push(format!(
                     "file:{relative}:{}:{:x}",
                     metadata.len(),
-                    sha2::Sha256::digest(std::fs::read(path)?)
+                    sha2::Sha256::digest(std::fs::read(&path)?)
                 ));
             } else {
                 return Err(CommandError::UnsafeConfigPath(format!(

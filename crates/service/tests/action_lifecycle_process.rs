@@ -1,3 +1,5 @@
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
     fs,
     io::Write,
@@ -9,6 +11,7 @@ use std::{
 };
 
 use fs4::FileExt;
+
 use serde_json::{json, Value};
 
 const ACTION_SECRET_ENV: &str = "SKILLS_COPILOT_ACTION_PREVIEW_SECRET";

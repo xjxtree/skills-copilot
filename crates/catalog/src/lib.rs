@@ -634,13 +634,13 @@ impl Catalog {
     /// Descriptor-anchored catalogs require an exact owner inode match.
     /// Legacy path-backed catalogs compare the parent identity captured at
     /// open time; production service code must use descriptor-anchored opens.
-    pub fn ensure_mutation_owner(&self, owner: &std::fs::File) -> Result<(), CatalogError> {
+    pub fn ensure_mutation_owner(&self, _owner: &std::fs::File) -> Result<(), CatalogError> {
         match self.storage {
             CatalogStorageKind::InMemory => Ok(()),
             #[cfg(unix)]
             CatalogStorageKind::Anchored(expected)
             | CatalogStorageKind::LegacyPathBacked(expected) => {
-                let actual = unix_owner_identity(owner)?;
+                let actual = unix_owner_identity(_owner)?;
                 if actual == expected {
                     Ok(())
                 } else {

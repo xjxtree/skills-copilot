@@ -1,3 +1,5 @@
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -20,6 +22,44 @@ const MIGRATION_DEPTH_LIMIT: usize = 128;
 const STAGING_ATTEMPT_LIMIT: u32 = 64;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(unix)]
+trait MigrationDeviceIdValue {
+    fn into_device_id(self) -> u64;
+}
+
+#[cfg(unix)]
+impl MigrationDeviceIdValue for i32 {
+    fn into_device_id(self) -> u64 {
+        self as u64
+    }
+}
+
+#[cfg(unix)]
+impl MigrationDeviceIdValue for u32 {
+    fn into_device_id(self) -> u64 {
+        u64::from(self)
+    }
+}
+
+#[cfg(unix)]
+impl MigrationDeviceIdValue for i64 {
+    fn into_device_id(self) -> u64 {
+        self as u64
+    }
+}
+
+#[cfg(unix)]
+impl MigrationDeviceIdValue for u64 {
+    fn into_device_id(self) -> u64 {
+        self
+    }
+}
+
+#[cfg(unix)]
+fn migration_device_id(value: impl MigrationDeviceIdValue) -> u64 {
+    value.into_device_id()
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct FileIdentity {
@@ -763,7 +803,7 @@ fn open_verified_directory(
     if !metadata.is_dir()
         || metadata.uid() != owner_uid
         || metadata.dev() != expected_device
-        || metadata.dev() != stat.st_dev as u64
+        || metadata.dev() != migration_device_id(stat.st_dev)
         || metadata.ino() != stat.st_ino
     {
         return Err(invalid_migration(
@@ -796,7 +836,7 @@ fn open_verified_regular_file(
     if !metadata.is_file()
         || metadata.uid() != owner_uid
         || metadata.nlink() != 1
-        || metadata.dev() != stat.st_dev as u64
+        || metadata.dev() != migration_device_id(stat.st_dev)
         || metadata.ino() != stat.st_ino
     {
         return Err(invalid_migration(

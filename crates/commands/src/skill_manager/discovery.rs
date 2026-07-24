@@ -1,3 +1,5 @@
+#![cfg_attr(all(test, not(unix)), allow(dead_code))]
+
 use super::*;
 use std::io::Read;
 

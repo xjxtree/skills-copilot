@@ -1,10 +1,15 @@
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     marker::PhantomData,
     path::{Component, Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::io::{Seek, SeekFrom};
 
 use sha2::{Digest, Sha256};
 
@@ -17,6 +22,57 @@ const PRIVATE_CLEANUP_LEAF_REVISION_DOMAIN: &str = "agent-copilot/app-data-priva
 #[cfg(unix)]
 pub(crate) fn unix_timestamp_nanoseconds(value: impl TryInto<i64>) -> i64 {
     value.try_into().unwrap_or(i64::MAX)
+}
+
+#[cfg(unix)]
+pub(crate) trait UnixDeviceIdValue {
+    fn into_device_id(self) -> u64;
+}
+
+#[cfg(unix)]
+impl UnixDeviceIdValue for i32 {
+    fn into_device_id(self) -> u64 {
+        self as u64
+    }
+}
+
+#[cfg(unix)]
+impl UnixDeviceIdValue for u32 {
+    fn into_device_id(self) -> u64 {
+        u64::from(self)
+    }
+}
+
+#[cfg(unix)]
+impl UnixDeviceIdValue for i64 {
+    fn into_device_id(self) -> u64 {
+        self as u64
+    }
+}
+
+#[cfg(unix)]
+impl UnixDeviceIdValue for u64 {
+    fn into_device_id(self) -> u64 {
+        self
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn unix_device_id(value: impl UnixDeviceIdValue) -> u64 {
+    value.into_device_id()
+}
+
+#[cfg(unix)]
+pub(crate) fn unix_file_mode(value: impl Into<u32>) -> u32 {
+    value.into()
+}
+
+#[cfg(not(unix))]
+fn owner_fs_timestamp_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -439,6 +495,14 @@ impl<'lock> AppDataOwnerFs<'lock> {
         run_private_read_before_final_stamp_hook();
         #[cfg(unix)]
         {
+            file.seek(SeekFrom::Start(0))?;
+            let mut verified_bytes = Vec::with_capacity(metadata.len() as usize);
+            Read::by_ref(&mut file)
+                .take(max_bytes.saturating_add(1))
+                .read_to_end(&mut verified_bytes)?;
+            if verified_bytes != bytes {
+                return Err(CommandError::StaleActionReference);
+            }
             let after = private_regular_file_stamp_from_metadata(&file.metadata()?, label)?;
             if after != before {
                 return Err(CommandError::StaleActionReference);
@@ -1900,11 +1964,11 @@ fn private_regular_file_stamp_from_stat(
     label: &str,
 ) -> Result<PrivateRegularFileStamp, CommandError> {
     Ok(PrivateRegularFileStamp {
-        device: u64::try_from(metadata.st_dev).map_err(|_| unsafe_relative_file(label))?,
+        device: unix_device_id(metadata.st_dev),
         inode: metadata.st_ino,
         uid: metadata.st_uid,
         link_count: u64::from(metadata.st_nlink),
-        mode: u32::from(metadata.st_mode),
+        mode: unix_file_mode(metadata.st_mode),
         size: u64::try_from(metadata.st_size).map_err(|_| unsafe_relative_file(label))?,
         modified_seconds: metadata.st_mtime,
         modified_nanoseconds: unix_timestamp_nanoseconds(metadata.st_mtime_nsec),
@@ -1947,11 +2011,11 @@ fn inspect_private_cleanup_leaf_at(
         None
     };
     let identity = AppDataPrivateLeafIdentity {
-        device: u64::try_from(metadata.st_dev).map_err(|_| unsafe_relative_file(label))?,
+        device: unix_device_id(metadata.st_dev),
         inode: metadata.st_ino,
         uid: metadata.st_uid,
         link_count: u64::from(metadata.st_nlink),
-        mode: u32::from(metadata.st_mode),
+        mode: unix_file_mode(metadata.st_mode),
         size,
         modified_seconds: metadata.st_mtime,
         modified_nanoseconds: unix_timestamp_nanoseconds(metadata.st_mtime_nsec),
@@ -2741,6 +2805,7 @@ fn run_owner_read_test_hook(_relative: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

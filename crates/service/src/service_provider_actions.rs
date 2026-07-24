@@ -1,3 +1,5 @@
+#![cfg_attr(all(test, not(unix)), allow(dead_code))]
+
 use super::*;
 use skills_copilot_commands::{
     action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,

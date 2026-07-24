@@ -1,3 +1,5 @@
+#![cfg_attr(all(test, not(unix)), allow(dead_code))]
+
 #[cfg(any(test, not(unix)))]
 use std::fs::OpenOptions;
 use std::{
@@ -1225,7 +1227,7 @@ fn inspect_archive(path: &Path) -> Result<ArchiveInspection, CommandError> {
 }
 
 #[cfg(not(unix))]
-struct PathArchiveUpdateRecovery {
+struct PathArchiveUpdateRecovery<'lock> {
     target_directory: PathBuf,
     backup_directory: PathBuf,
     staging_directory: PathBuf,
@@ -1233,10 +1235,11 @@ struct PathArchiveUpdateRecovery {
     original_tree_revision: String,
     candidate_tree_revision: String,
     active: bool,
+    _lock: std::marker::PhantomData<&'lock crate::mutation_lock::AppMutationLock>,
 }
 
 #[cfg(not(unix))]
-impl PathArchiveUpdateRecovery {
+impl PathArchiveUpdateRecovery<'_> {
     fn restore(&mut self) -> Result<(), CommandError> {
         if !self.active {
             return Ok(());
@@ -1353,7 +1356,7 @@ enum ArchiveUpdateRecovery<'lock> {
     #[cfg(unix)]
     Path(Box<ExternalTreeCapability<'lock>>),
     #[cfg(not(unix))]
-    Path(PathArchiveUpdateRecovery),
+    Path(PathArchiveUpdateRecovery<'lock>),
 }
 
 impl ArchiveUpdateRecovery<'_> {
@@ -1762,12 +1765,12 @@ fn extract_skill_root_to_external(
 }
 
 #[cfg(not(unix))]
-fn apply_archive_replacement_guarded(
+fn apply_archive_replacement_guarded<'lock>(
     catalog: &Catalog,
     ctx: &AdapterContext,
     plan: &LocalArchiveUpdatePlan,
-    recovery: &mut Option<ArchiveUpdateRecovery>,
-) -> Result<AppliedArchiveUpdate, CommandError> {
+    recovery: &mut Option<ArchiveUpdateRecovery<'lock>>,
+) -> Result<AppliedArchiveUpdate<'lock>, CommandError> {
     let existing_skill_path = &plan.target.skill_path;
     let canonical_root = &plan.target.canonical_root;
     let temp_dir = canonical_root.join(secure_archive_name("archive-update")?);
@@ -1874,6 +1877,7 @@ fn apply_archive_replacement_guarded(
         original_tree_revision: plan.target_tree_revision.clone(),
         candidate_tree_revision: candidate_tree_revision.clone(),
         active: true,
+        _lock: std::marker::PhantomData,
     }));
     if let Err(error) = fs::rename(&temp_dir, target_dir) {
         return Err(error.into());

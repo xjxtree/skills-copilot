@@ -1,3 +1,5 @@
+#![cfg_attr(all(test, not(unix)), allow(dead_code))]
+
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
