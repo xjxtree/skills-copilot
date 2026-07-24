@@ -1209,14 +1209,14 @@ requires another inspection and preview.
   provider traffic.
 - `llm.previewPrompt` action `task_cockpit` accepts `agents: string[]` plus
   `instance_ids: string[]` and `user_intent`/`task_text`. The service renders a
-  redacted task preflight prompt from selected agent names, adapter capability
+  redacted task-readiness prompt from selected agent names, adapter capability
   summaries, and current effective skill names/descriptions only. Raw skill
   bodies, frontmatter, config contents, paths, credentials, raw prompts, raw
   responses, traces, writes, scripts, snapshots, and rollback commands are
   excluded.
-- Native UI may present `task_cockpit` as inline Task Readiness, but it must not
+- Native UI presents `task_cockpit` as inline Task Readiness, but it must not
   change the wire action or imply universal readiness without a task.
-- Task Preflight first ranks cached effective skills against the task, includes
+- The task-readiness action first ranks cached effective skills against the task, includes
   at most 24 candidates, and blocks confirmation when the estimated request
   exceeds the 12,000-token safety budget (in addition to the provider profile
   limit).

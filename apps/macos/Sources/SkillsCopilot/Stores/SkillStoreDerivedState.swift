@@ -96,16 +96,6 @@ extension SkillStore {
         return ordered.filter { selected.contains($0) }
     }
 
-    var selectedSkillDetail: SkillDetailRecord? {
-        guard let id = selectedSkill?.id else { return nil }
-        return detailsByID[id]
-    }
-
-    func adoptingAgentSummary(for skill: SkillRecord) -> String {
-        ensureAdoptingAgentSummaryCache()
-        return adoptingAgentSummaryBySkillID[skill.id] ?? DisplayText.agent(skill.agent)
-    }
-
     var enabledCount: Int {
         skills.filter { DisplayText.statusKind($0.state, enabled: $0.enabled) == .enabled }.count
     }
@@ -372,20 +362,4 @@ extension SkillStore {
         SkillListModel.currentSkills(skills).count
     }
 
-    var selectedSkillEvents: [SkillEventRecord] {
-        guard let id = selectedSkill?.id else { return [] }
-        return (skillEventsByID[id] ?? []).filter(\.isToggleActivity)
-    }
-
-    var isLoadingSelectedSkillEvents: Bool {
-        guard let id = selectedSkill?.id else { return false }
-        return loadingSkillEventIDs.contains(id)
-    }
-
-    var selectedSkillEventCompleteness: ListCompletenessState {
-        guard let id = selectedSkill?.id else {
-            return ListPageAccumulator<SkillEventRecord>().state
-        }
-        return skillEventCompletenessByID[id] ?? ListPageAccumulator<SkillEventRecord>().state
-    }
 }

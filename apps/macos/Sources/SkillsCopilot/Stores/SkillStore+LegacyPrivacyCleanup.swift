@@ -2,13 +2,6 @@ import Foundation
 
 @MainActor
 extension SkillStore {
-    var taskCockpitHistoryCleanupMessage: String? {
-        guard legacyPrivateContentInspection?.taskPreflightCleanupRequired == true else {
-            return nil
-        }
-        return UIStrings.legacyPrivateContentTaskPreflightWarning
-    }
-
     func inspectLegacyPrivateContent() async {
         guard !isInspectingLegacyPrivateContent else { return }
         isInspectingLegacyPrivateContent = true

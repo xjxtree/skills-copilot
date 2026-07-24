@@ -461,17 +461,17 @@ struct LLMModelTests {
         try expectEqual(
             result.summary.recommendedAgent,
             "codex",
-            "Task Preflight should retain structured envelope routing."
+            "Task readiness should retain structured envelope routing."
         )
         try expectEqual(
             result.summary.readinessScore,
             92,
-            "Task Preflight should retain structured envelope scores."
+            "Task readiness should retain structured envelope scores."
         )
         try expectEqual(
             result.readinessSignals.count,
             1,
-            "Task Preflight should retain structured envelope evidence rows."
+            "Task readiness should retain structured envelope evidence rows."
         )
     }
 

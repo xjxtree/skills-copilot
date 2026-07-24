@@ -88,7 +88,6 @@ struct LegacyPrivacyCleanupTests {
         try expectContains(calls, "\"method\":\"privacy.inspectLegacyContent\"", "Startup should inspect legacy content.")
         try expectFalse(calls.contains("\"method\":\"privacy.previewCleanupLegacyContent\""), "Startup must not create a cleanup preview.")
         try expectFalse(calls.contains("\"method\":\"privacy.cleanupLegacyContent\""), "Startup must not perform cleanup.")
-        try expectEqual(store.taskCockpitHistoryCleanupMessage, UIStrings.legacyPrivateContentTaskPreflightWarning, "Task Preflight should surface the unified persistent warning.")
     }
 
     private func previewCancellationDoesNotApply() async throws {

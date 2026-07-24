@@ -315,7 +315,7 @@ struct ProjectOverviewView: View {
         if !status.configured || status.activeProfile == nil {
             return UIStrings.text(
                 "taskCockpit.providerRequired",
-                "Configure an AI provider before generating Task Preflight."
+                "Configure an AI provider before reviewing task readiness."
             )
         }
         if !status.enabled {

@@ -154,8 +154,8 @@ contains four sections in this order:
 1. Project status: evidence coverage, last refresh, and per-agent environment
    health.
 2. Task readiness: an inline task field and task-specific interpretation. The
-   existing `task_cockpit` wire action remains compatible, but Task Preflight is
-   not a separate product destination.
+   existing `task_cockpit` wire action remains compatible and is not a separate
+   product destination.
 3. Needs attention: a deterministic action queue ordered by severity and user
    impact.
 4. Continue work: recent project sessions and verified continuation actions.

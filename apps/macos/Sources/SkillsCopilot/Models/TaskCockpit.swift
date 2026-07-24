@@ -243,46 +243,7 @@ struct TaskCockpitOperationState: Hashable {
     }
 }
 
-struct TaskCockpitHistoryRecord: Identifiable, Hashable {
-    let id: UUID
-    let createdAt: Date
-    let taskText: String
-    let agentIDs: [String]
-    let result: TaskCockpitResult
-    let operationState: TaskCockpitOperationState
-
-    init(
-        id: UUID = UUID(),
-        taskText: String,
-        agentIDs: [String] = [],
-        result: TaskCockpitResult,
-        operationState: TaskCockpitOperationState,
-        createdAt: Date = Date()
-    ) {
-        self.id = id
-        self.createdAt = createdAt
-        self.taskText = taskText
-        self.agentIDs = Self.normalizedAgentIDs(agentIDs.isEmpty ? result.agentScopeIDs : agentIDs)
-        self.result = result
-        self.operationState = operationState
-    }
-
-    var displayTask: String {
-        let values = [
-            taskText,
-            result.filters.taskText,
-            result.summary.taskText,
-            result.summary.summaryText
-        ]
-        return values
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-            ?? UIStrings.unknown
-    }
-
-    var agentScopeSummary: String {
-        Self.agentScopeSummary(agentIDs.isEmpty ? result.agentScopeIDs : agentIDs)
-    }
+enum TaskCockpitAgentScope {
 
     static func agentScopeSummary(_ agentIDs: [String]) -> String {
         let normalized = normalizedAgentIDs(agentIDs)
@@ -899,7 +860,7 @@ struct TaskCockpitResult: Decodable, Hashable {
     }
 
     var agentScopeIDs: [String] {
-        TaskCockpitHistoryRecord.normalizedAgentIDs(filters.agents.isEmpty ? filters.agent.map { [$0] } ?? [] : filters.agents)
+        TaskCockpitAgentScope.normalizedAgentIDs(filters.agents.isEmpty ? filters.agent.map { [$0] } ?? [] : filters.agents)
     }
 
     private var hasNoReturnedRows: Bool {
@@ -1068,18 +1029,18 @@ enum TaskCockpitProviderOutputParser {
         return looseResult(
             from: data,
             taskText: taskText.trimmingCharacters(in: .whitespacesAndNewlines),
-            agentIDs: TaskCockpitHistoryRecord.normalizedAgentIDs(agentIDs)
+            agentIDs: TaskCockpitAgentScope.normalizedAgentIDs(agentIDs)
         ) ?? result(from: output, taskText: taskText, agentIDs: agentIDs)
     }
 
     static func result(from outputText: String?, taskText: String, agentIDs: [String]) -> TaskCockpitResult {
         let normalizedTask = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedAgents = TaskCockpitHistoryRecord.normalizedAgentIDs(agentIDs)
+        let normalizedAgents = TaskCockpitAgentScope.normalizedAgentIDs(agentIDs)
         guard let outputText, !outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return fallbackResult(
                 taskText: normalizedTask,
                 agentIDs: normalizedAgents,
-                reason: UIStrings.text("taskCockpit.provider.empty", "The provider returned an empty preflight response.")
+                reason: UIStrings.text("taskCockpit.provider.empty", "The provider returned an empty task-readiness response.")
             )
         }
 

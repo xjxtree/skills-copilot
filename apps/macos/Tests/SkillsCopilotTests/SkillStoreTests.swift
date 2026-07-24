@@ -95,11 +95,11 @@ struct SkillStoreTests {
         try await runCase("startupLoadPrewarmsLaunchDataWithoutScanningOrWriting") {
             try await startupLoadPrewarmsLaunchDataWithoutScanningOrWriting()
         }
-        try await runCase("stateSnapshotRefreshesDoNotReuseStaleFindingsOrPermissions") {
-            try await stateSnapshotRefreshesDoNotReuseStaleFindingsOrPermissions()
+        try await runCase("stateSnapshotRefreshesDoNotReuseStaleFindings") {
+            try await stateSnapshotRefreshesDoNotReuseStaleFindings()
         }
-        try await runCase("selectedDetailDataIsScopedToCurrentAgentAndSkill") {
-            try await selectedDetailDataIsScopedToCurrentAgentAndSkill()
+        try await runCase("selectedSkillEvidenceIsScopedToCurrentAgentAndSkill") {
+            try await selectedSkillEvidenceIsScopedToCurrentAgentAndSkill()
         }
         try await runCase("scanAllUsesGenericCatalogMethod") {
             try await scanAllUsesGenericCatalogMethod()
@@ -110,11 +110,11 @@ struct SkillStoreTests {
         try await runCase("partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle") {
             try await partialScanWarningFollowsCompleteLegacyAndActivitylessLifecycle()
         }
-        try await runCase("searchAndFilterChangesNormalizeSelectionAndDetail") {
-            try await searchAndFilterChangesNormalizeSelectionAndDetail()
+        try await runCase("searchAndFilterChangesNormalizeSelection") {
+            try await searchAndFilterChangesNormalizeSelection()
         }
-        try await runCase("appSearchSkillSelectionSynchronizesListAndDetail") {
-            try await appSearchSkillSelectionSynchronizesListAndDetail()
+        try await runCase("appSearchSkillSelectionSynchronizesWorkspace") {
+            try await appSearchSkillSelectionSynchronizesWorkspace()
         }
         try await runCase("appSearchViewAllRoutesCanonicallyWithoutRPC") {
             try await appSearchViewAllRoutesCanonicallyWithoutRPC()
@@ -125,23 +125,11 @@ struct SkillStoreTests {
         try await runCase("agentConfigTimelineFollowsSelectedAgentFilterOnly") {
             try await agentConfigTimelineFollowsSelectedAgentFilterOnly()
         }
-        try await runCase("localHistoriesAutoLoadEveryPage") {
-            try await localHistoriesAutoLoadEveryPage()
+        try await runCase("agentConfigHistoryAutoLoadsEveryPage") {
+            try await agentConfigHistoryAutoLoadsEveryPage()
         }
-        try await runCase("localHistoryFailureRetryPreservesRows") {
-            try await localHistoryFailureRetryPreservesRows()
-        }
-        try await runCase("initialEventPageFailureRetriesFromNilCursor") {
-            try await initialEventPageFailureRetriesFromNilCursor()
-        }
-        try await runCase("selectedCachedPartialEventHistoryRetriesOnRevisit") {
-            try await selectedCachedPartialEventHistoryRetriesOnRevisit()
-        }
-        try await runCase("invalidatedEventGenerationCannotABAIntoReplacement") {
-            try await invalidatedEventGenerationCannotABAIntoReplacement()
-        }
-        try await runCase("cancellingLocalHistoryLoadAllPreservesAcceptedRows") {
-            try await cancellingLocalHistoryLoadAllPreservesAcceptedRows()
+        try await runCase("cancellingAgentConfigHistoryLoadAllPreservesAcceptedRows") {
+            try await cancellingAgentConfigHistoryLoadAllPreservesAcceptedRows()
         }
         try await runCase("catalogScanCompletenessTracksExplicitScan") {
             try await catalogScanCompletenessTracksExplicitScan()
@@ -284,21 +272,6 @@ struct SkillStoreTests {
         try await runCase("taskCockpitUsesGlobalScopeOutsideSkillDetail") {
             try await taskCockpitUsesGlobalScopeOutsideSkillDetail()
         }
-        try await runCase("taskCockpitHistoryStaysInCurrentSessionOnly") {
-            try await taskCockpitHistoryStaysInCurrentSessionOnly()
-        }
-        try await runCase("taskCockpitHistoryKeepsNewestTwelveRecords") {
-            try await taskCockpitHistoryKeepsNewestTwelveRecords()
-        }
-        try await runCase("newStoreDoesNotRestoreTaskCockpitHistory") {
-            try await newStoreDoesNotRestoreTaskCockpitHistory()
-        }
-        try await runCase("successfulTaskCockpitKeepsSessionHistoryInMemory") {
-            try await successfulTaskCockpitKeepsSessionHistoryInMemory()
-        }
-        try await runCase("clearTaskCockpitHistoryClearsMemory") {
-            try await clearTaskCockpitHistoryClearsMemory()
-        }
         try await runCase("taskCockpitPreservesExactUserInputInServiceContract") {
             try await taskCockpitPreservesExactUserInputInServiceContract()
         }
@@ -371,7 +344,6 @@ struct SkillStoreTests {
         try expectNil(store.selectedSidebarSelection, "Agent Copilot should not expose a default detail selection.")
         try expectEqual(store.appRoute, .overview, "The project-first route should start at Overview.")
         try expectEqual(store.sidebarContentMode, .skills, "Agent Copilot should start from the Skills primary navigation.")
-        try expectEqual(store.selectedDetailSection, .overview, "Default detail section should stay neutral until a session, skill, report, or Preflight is selected.")
     }
 
     private func workspaceRoutesDoNotManufactureSkillSelection() throws {
@@ -843,7 +815,6 @@ struct SkillStoreTests {
 
         try expectEqual(store.selectedSkillID, "beta", "Reload should keep an existing selected skill ID.")
         try expectEqual(store.selectedSkill?.id, "beta", "Reload should keep the selected skill model stable.")
-        try expectEqual(store.selectedSkillDetail?.id, "beta", "Reload should load detail for the stable selection.")
         try expectFalse(store.isLoading, "Reload should reset loading state.")
         try expectNil(store.errorMessage, "Reload should not set an error on success.")
     }
@@ -859,10 +830,9 @@ struct SkillStoreTests {
 
         try expectEqual(store.selectedSkillID, "alpha", "Reload should select the first skill when the previous selection disappears.")
         try expectEqual(store.selectedSkill?.id, "alpha", "Fallback selection should expose the first skill model.")
-        try expectEqual(store.selectedSkillDetail?.id, "alpha", "Fallback selection should load matching detail.")
     }
 
-    private func appSearchSkillSelectionSynchronizesListAndDetail() async throws {
+    private func appSearchSkillSelectionSynchronizesWorkspace() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "normal")
@@ -901,8 +871,7 @@ struct SkillStoreTests {
         try expectEqual(store.sidebarContentMode, .skills, "Selecting a skill search result should switch to the skill list.")
         try expectEqual(store.selectedSkillID, "beta", "Selecting a skill search result should update the selected skill ID.")
         try expectEqual(store.selectedSidebarSelection, .skill("beta"), "Selecting a skill search result should select the matching sidebar row.")
-        try expectEqual(store.selectedSkill?.id, "beta", "Selecting a skill search result should expose matching detail model state.")
-        try expectEqual(store.selectedDetailSection, .overview, "Selecting a skill search result should reset the detail to overview.")
+        try expectEqual(store.selectedSkill?.id, "beta", "Selecting a skill search result should expose the matching skill state.")
         try expectEqual(store.skillListScrollRequest?.skillID, "beta", "Selecting a skill search result should request the matching row be scrolled into view.")
     }
 
@@ -920,7 +889,6 @@ struct SkillStoreTests {
         try expectEqual(store.enabledCount, 0, "Empty catalog should expose zero enabled skills.")
         try expectNil(store.selectedSkillID, "Empty catalog should clear a stale selection.")
         try expectNil(store.selectedSkill, "Empty catalog should not synthesize a selected skill.")
-        try expectNil(store.selectedSkillDetail, "Empty catalog should not synthesize detail.")
         try expectNil(store.errorMessage, "Empty catalog should not be treated as an error.")
         try expectFalse(store.isLoading, "Empty catalog reload should reset loading state.")
     }
@@ -978,12 +946,11 @@ struct SkillStoreTests {
         try expectNil(store.startupLoadingState, "Startup should clear the progress overlay when prewarm completes.")
         try expectFalse(store.isLoading, "Startup should reset the global loading state.")
         try expectNil(store.errorMessage, "Startup should not surface a background error on success.")
-        try expectEqual(store.selectedSkillDetail?.id, "alpha", "Startup should prewarm the first selected skill detail.")
         try expectEqual(countOccurrences("app.stateSnapshot", in: calls), 1, "Startup should use the combined state snapshot once.")
         try expectEqual(countMethodCalls("snapshot.listAgentConfigPage", in: calls), 0, "Startup should not block the progress overlay on selected-agent config history.")
         try expectFalse(calls.contains("session.previewLocalSessions"), "Startup should not block the progress overlay on selected-agent local sessions.")
         try expectFalse(calls.contains("config.readAgentConfig"), "Startup should not block the progress overlay on selected-agent current config documents.")
-        try expectContains(calls, "catalog.getSkill", "Startup should prewarm the selected skill detail.")
+        try expectFalse(calls.contains("catalog.getSkill"), "Startup should not prewarm the retired raw skill-detail surface.")
         try expectEqual(countMethodCalls("llm.listProviderProfiles", in: calls), 0, "Startup should not block the progress overlay on AI provider status.")
         try expectFalse(calls.contains("\"method\":\"catalog.scanAll\""), "Startup should not scan roots automatically.")
         try expectFalse(calls.contains("\"method\":\"skillManager.listInstalled\""), "Startup should not invoke external manager inventory.")
@@ -1009,7 +976,7 @@ struct SkillStoreTests {
         try expectEqual(countOccurrences("app.stateSnapshot", in: fake.calls()), 1, "Startup prewarm should be idempotent after completion.")
     }
 
-    private func stateSnapshotRefreshesDoNotReuseStaleFindingsOrPermissions() async throws {
+    private func stateSnapshotRefreshesDoNotReuseStaleFindings() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "stale-before")
@@ -1019,7 +986,6 @@ struct SkillStoreTests {
         await store.reload()
 
         try expectEqual(store.selectedFindings.map(\.id), ["finding-stale-before"], "Initial reload should expose the stale-before finding fixture.")
-        try expectEqual(permissionMarker(store.selectedSkillDetail), "before", "Initial reload should load the before permissions fixture.")
 
         store.searchText = "alpha"
         try await waitUntil("Search filter should move selection away from beta.") {
@@ -1034,21 +1000,18 @@ struct SkillStoreTests {
 
         try expectEqual(store.findings.map(\.id), ["finding-fresh-scan", "finding-fresh-codex"], "Scan refresh should replace stale findings from the prior snapshot.")
         try expectEqual(store.selectedFindings.map(\.id), ["finding-fresh-scan"], "Scan refresh should expose findings for the current selection only.")
-        try expectEqual(permissionMarker(store.selectedSkillDetail), "scan", "Scan refresh should reload selected detail permissions.")
 
         store.agentFilter = .codex
         try await waitUntil("Agent filter should move selection to the Codex fixture.") {
-            store.selectedSkillID == "gamma" && store.selectedSkillDetail?.id == "gamma"
+            store.selectedSkillID == "gamma"
         }
         try expectEqual(store.selectedFindings.map(\.id), ["finding-fresh-codex"], "Agent filter should not show findings from a previously selected adapter.")
-        try expectEqual(permissionMarker(store.selectedSkillDetail), "codex-scan", "Agent filter should load detail permissions for the newly selected adapter.")
 
         fake.setScenario("stale-after-project")
         await store.setProject(rootPath: "/tmp/project", currentCWD: "/tmp/project", name: "Fixture Project")
 
         try expectEqual(store.findings.map(\.id), ["finding-project"], "Project context scan should replace findings from the previous adapter state.")
         try expectEqual(store.selectedFindings.map(\.id), ["finding-project"], "Project context scan should expose the fresh selected finding.")
-        try expectEqual(permissionMarker(store.selectedSkillDetail), "project", "Project context scan should reload selected detail permissions.")
 
         store.agentFilter = .all
         store.selectedSkillID = "beta"
@@ -1057,10 +1020,9 @@ struct SkillStoreTests {
 
         try expectEqual(store.findings.map(\.id), ["finding-toggle"], "Adapter state changes should replace stale findings.")
         try expectEqual(store.selectedFindings.map(\.id), ["finding-toggle"], "Adapter state changes should keep selected findings fresh.")
-        try expectEqual(permissionMarker(store.selectedSkillDetail), "toggle", "Adapter state changes should reload selected detail permissions.")
     }
 
-    private func selectedDetailDataIsScopedToCurrentAgentAndSkill() async throws {
+    private func selectedSkillEvidenceIsScopedToCurrentAgentAndSkill() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "detail-scope")
@@ -1072,18 +1034,16 @@ struct SkillStoreTests {
         try expectEqual(store.selectedSkill?.id, "beta", "Fixture should select the Claude beta skill.")
         try expectEqual(store.selectedFindings.map(\.id), ["finding-beta-instance"], "Selected findings must use the selected instance, not a shared definition or another agent.")
         try expectEqual(store.selectedConflicts.map(\.id), ["conflict-beta-alpha"], "Selected conflicts should include only same-agent runtime conflicts for the selected skill.")
-        try expectEqual(store.selectedSkillEvents.map(\.id), [1001], "Selected history should show only toggle activity for the current skill.")
 
         store.agentFilter = .codex
-        try await waitUntil("Agent filter should move detail selection to the Codex skill and load its events.") {
-            store.selectedSkillID == "gamma" && store.selectedSkillEvents.map(\.id) == [2001]
+        try await waitUntil("Agent filter should move selection to the Codex skill.") {
+            store.selectedSkillID == "gamma"
         }
 
         try expectEqual(store.selectedSkill?.agent, "codex", "Selection should now be scoped to the Codex agent.")
         try expectEqual(store.selectedFindings.map(\.id), ["finding-gamma-instance"], "Changing agents must not keep Claude findings on the detail page.")
         try expectEqual(store.selectedConflicts.map(\.id), [], "Cross-agent duplicate/source overlap must not appear as a detail conflict.")
-        try expectContains(fake.calls(), "\"instance_id\":\"beta\"", "Skill event fetch should request the selected beta instance.")
-        try expectContains(fake.calls(), "\"instance_id\":\"gamma\"", "Skill event fetch should request the selected gamma instance after agent change.")
+        try expectFalse(fake.calls().contains("skill.listEventsPage"), "Retired raw detail history should not fetch per-skill events.")
     }
 
     private func scanAllUsesGenericCatalogMethod() async throws {
@@ -1175,7 +1135,7 @@ struct SkillStoreTests {
         try expectNil(store.partialScanWarningMessage, "A legacy ScanResult without activity should exercise the nil-activity clear branch.")
     }
 
-    private func searchAndFilterChangesNormalizeSelectionAndDetail() async throws {
+    private func searchAndFilterChangesNormalizeSelection() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "toggle-disabled")
@@ -1186,17 +1146,17 @@ struct SkillStoreTests {
 
         store.searchText = "beta"
         try await waitUntil("Search should move selection to the visible matching skill.") {
-            store.selectedSkillID == "beta" && store.selectedSkillDetail?.id == "beta"
+            store.selectedSkillID == "beta"
         }
 
         store.searchText = ""
-        try await waitUntil("Clearing search should keep the normalized visible selection and matching detail.") {
-            store.selectedSkillID == "beta" && store.selectedSkillDetail?.id == "beta"
+        try await waitUntil("Clearing search should keep the normalized visible selection.") {
+            store.selectedSkillID == "beta"
         }
 
         store.stateFilter = .enabled
-        try await waitUntil("State filter should move selection to a visible enabled skill and load matching detail.") {
-            store.selectedSkillID == "alpha" && store.selectedSkillDetail?.id == "alpha"
+        try await waitUntil("State filter should move selection to a visible enabled skill.") {
+            store.selectedSkillID == "alpha"
         }
     }
 
@@ -1243,9 +1203,8 @@ struct SkillStoreTests {
 
         let callsAfterReload = countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls())
         store.selectedSkillID = "alpha"
-        await store.loadSelectedDetail()
         try expectEqual(store.agentConfigSnapshots.map(\.id), ["snap-claude-new", "snap-claude-old"], "Changing skill selection within an agent must not turn config snapshots into per-skill history.")
-        try expectEqual(countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()), callsAfterReload, "Skill detail changes should not reload agent config history.")
+        try expectEqual(countMethodCalls("snapshot.listAgentConfigPage", in: fake.calls()), callsAfterReload, "Skill selection changes should not reload agent config history.")
 
         store.agentFilter = .codex
         try await waitUntil("Codex filter should load only Codex config snapshots.") {
@@ -1261,109 +1220,20 @@ struct SkillStoreTests {
         try expectEqual(store.agentConfigSnapshots.map(\.id), ["snap-codex"], "All filter should preserve the current cached timeline without fetching or merging agent histories.")
     }
 
-    private func localHistoriesAutoLoadEveryPage() async throws {
+    private func agentConfigHistoryAutoLoadsEveryPage() async throws {
         let runner = LocalHistoryPageRunner()
         let store = SkillStore(service: runner.serviceClient())
 
         await store.loadMoreAgentConfigSnapshots(loadAll: true)
-        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
 
         try expectEqual(store.agentConfigSnapshots.count, 205, "Config history should auto-load every local page")
         try expectEqual(store.agentConfigSnapshotCompleteness.loadedCount, 205, "Loaded count")
         try expectEqual(store.agentConfigSnapshotCompleteness.completeness, .complete, "Config completeness")
         try expectEqual(store.agentConfigTimeline.items.count, 205, "Timeline must not cap at five")
-        let events = store.skillEventsByID["skill-1"] ?? []
-        try expectEqual(events.count, 201, "Skill events should auto-load every local page.")
-        try expectEqual(Set(events.map(\.id)).count, 201, "Every event stable ID should be retained exactly once.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "Event completeness")
         try expectEqual(runner.cursors(for: "snapshot.listAgentConfigPage"), [nil, "config-100", "config-200"], "Config pages must be serial keyset continuations.")
-        try expectEqual(runner.cursors(for: "skill.listEventsPage"), [nil, "event-100", "event-200"], "Event pages must be serial keyset continuations.")
     }
 
-    private func localHistoryFailureRetryPreservesRows() async throws {
-        let runner = LocalHistoryPageRunner(failSecondMethods: ["skill.listEventsPage"])
-        let store = SkillStore(service: runner.serviceClient())
-
-        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
-
-        try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "A second-page failure must retain the first accepted page.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .incomplete, "A retryable page failure should remain visibly incomplete.")
-
-        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
-
-        try expectEqual(store.skillEventsByID["skill-1"]?.count, 201, "Retry should continue from the accepted cursor and finish.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "Retry completeness")
-        try expectEqual(runner.cursors(for: "skill.listEventsPage"), [nil, "event-100", "event-100", "event-200"], "Retry must reuse the last accepted cursor.")
-
-        let changedRunner = LocalHistoryPageRunner(sourceChangedSecondMethods: ["snapshot.listAgentConfigPage"])
-        let changedStore = SkillStore(service: changedRunner.serviceClient())
-        await changedStore.loadMoreAgentConfigSnapshots(loadAll: true)
-        try expectEqual(changedStore.agentConfigSnapshots.count, 100, "Source change must retain the accepted first page.")
-        try expectEqual(changedStore.agentConfigSnapshotCompleteness.completeness, .incomplete, "Source change should be terminal incomplete.")
-        try expectEqual(changedStore.agentConfigSnapshotCompleteness.incompleteReason, .sourceChanged, "Source change reason")
-    }
-
-    private func initialEventPageFailureRetriesFromNilCursor() async throws {
-        let runner = LocalHistoryPageRunner(failFirstMethods: ["skill.listEventsPage"])
-        let store = SkillStore(service: runner.serviceClient())
-
-        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
-
-        try expectEqual(store.skillEventsByID["skill-1"]?.count, 0, "An initial page failure should cache a visible empty history.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .incomplete, "Initial failure completeness")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.incompleteReason, .pageFailed, "Initial failure reason")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.canLoadAll, true, "The footer should offer retry-all after an initial failure.")
-
-        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
-
-        let events = store.skillEventsByID["skill-1"] ?? []
-        try expectEqual(events.count, 201, "Retry from the nil cursor should enumerate every event.")
-        try expectEqual(Set(events.map(\.id)).count, 201, "Initial retry must not duplicate stable IDs.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "Initial retry completeness")
-        try expectEqual(runner.cursors(for: "skill.listEventsPage"), [nil, nil, "event-100", "event-200"], "Initial retry must restart at the nil cursor before continuing.")
-    }
-
-    private func selectedCachedPartialEventHistoryRetriesOnRevisit() async throws {
-        let runner = LocalHistoryPageRunner(
-            failSecondMethods: ["skill.listEventsPage"],
-            includesSelectedSkillFixture: true
-        )
-        let store = SkillStore(service: runner.serviceClient())
-
-        await store.reload()
-        try await waitUntil("Initial selected history should accept the first page before exposing the partial retry state.") {
-            store.skillEventsByID["skill-1"]?.count == 100
-        }
-        try expectEqual(store.skillEventsByID["skill-1"]?.count, 100, "Initial selected history should preserve the first page.")
-        try expectEqual(store.selectedSkillEventCompleteness.completeness, .incomplete, "The selected cached failure must be visibly incomplete.")
-
-        await store.loadSelectedDetail()
-
-        try expectEqual(store.skillEventsByID["skill-1"]?.count, 201, "Revisiting a cached partial history should retry its accepted cursor.")
-        try expectEqual(store.selectedSkillEventCompleteness.completeness, .complete, "A successful revisit should finish selected event history.")
-    }
-
-    private func invalidatedEventGenerationCannotABAIntoReplacement() async throws {
-        let runner = EventHistoryABARunner()
-        let store = SkillStore(service: runner.serviceClient())
-
-        let oldTask = Task { await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true) }
-        try await waitUntil("The old event request should be suspended.") {
-            runner.syncCallCount == 1
-        }
-        store.invalidateDetailCaches(for: ["skill-1"])
-
-        await store.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true)
-        try expectEqual(store.skillEventsByID["skill-1"]?.map(\.id), [2], "The replacement generation should publish only its current response.")
-
-        runner.releaseOldResponse()
-        await oldTask.value
-
-        try expectEqual(store.skillEventsByID["skill-1"]?.map(\.id), [2], "A late pre-invalidation response must never enter the replacement accumulator.")
-        try expectEqual(store.skillEventCompletenessByID["skill-1"]?.completeness, .complete, "The stale response must not degrade replacement completeness.")
-    }
-
-    private func cancellingLocalHistoryLoadAllPreservesAcceptedRows() async throws {
+    private func cancellingAgentConfigHistoryLoadAllPreservesAcceptedRows() async throws {
         let configRunner = LocalHistoryPageRunner(delayedThirdMethods: ["snapshot.listAgentConfigPage"])
         let configStore = SkillStore(service: configRunner.serviceClient())
         let configTask = Task { await configStore.loadMoreAgentConfigSnapshots(loadAll: true) }
@@ -1375,18 +1245,6 @@ struct SkillStoreTests {
         await configTask.value
         try expectEqual(configStore.agentConfigSnapshots.count, 200, "Config cancellation must retain accepted rows and reject the delayed page.")
         try expectEqual(configStore.agentConfigSnapshotCompleteness.completeness, .partial, "Cancelled config Load All should remain partial.")
-
-        let eventRunner = LocalHistoryPageRunner(delayedThirdMethods: ["skill.listEventsPage"])
-        let eventStore = SkillStore(service: eventRunner.serviceClient())
-        let eventTask = Task { await eventStore.loadMoreSkillEvents(instanceID: "skill-1", loadAll: true) }
-        try await waitUntil("Event Load All should reach the delayed third page.") {
-            eventRunner.syncCallCount(for: "skill.listEventsPage") == 3
-        }
-        eventStore.cancelSkillEventLoadAll(instanceID: "skill-1")
-        eventRunner.release(method: "skill.listEventsPage")
-        await eventTask.value
-        try expectEqual(eventStore.skillEventsByID["skill-1"]?.count, 200, "Event cancellation must retain accepted rows and reject the delayed page.")
-        try expectEqual(eventStore.skillEventCompletenessByID["skill-1"]?.completeness, .partial, "Cancelled event Load All should remain partial.")
     }
 
     private func previewRollbackShowsDiffWithoutCallingRollback() async throws {
@@ -2136,7 +1994,7 @@ struct SkillStoreTests {
         guard let skill = store.selectedSkill else {
             throw NativeModelTestFailure(description: "Toggle fixture should select a skill.")
         }
-        await store.prepareSingleSkillTogglePreview(skill: skill, on: false)
+        await store.prepareSkillTogglePreview(instanceIDs: [skill.id], on: false)
         guard let previewID = store.batchTogglePreview?.id else {
             throw NativeModelTestFailure(description: "Single-skill toggle should produce a confirmation preview.")
         }
@@ -2153,7 +2011,6 @@ struct SkillStoreTests {
         try expectNil(store.errorMessage, "Toggle should not set an error on success.")
         try expectEqual(store.selectedSkillID, "beta", "Toggle refresh should keep the selected skill stable.")
         try expectEqual(store.selectedSkill?.enabled, false, "Toggle refresh should expose the updated enabled state.")
-        try expectEqual(store.selectedSkillDetail?.enabled, false, "Toggle refresh should reload detail for the updated skill.")
         try expectEqual(
             store.lastMutationMessage,
             UIStrings.batchToggleApplied(action: BatchToggleAction.disable.title, count: 1),
@@ -2174,7 +2031,7 @@ struct SkillStoreTests {
         guard let skill = store.selectedSkill else {
             throw NativeModelTestFailure(description: "Toggle fixture should select a skill.")
         }
-        await store.prepareSingleSkillTogglePreview(skill: skill, on: false)
+        await store.prepareSkillTogglePreview(instanceIDs: [skill.id], on: false)
         guard let previewID = store.batchTogglePreview?.id else {
             throw NativeModelTestFailure(description: "Single-skill toggle should produce a confirmation preview.")
         }
@@ -2185,7 +2042,7 @@ struct SkillStoreTests {
         try await waitUntil("Toggle should expose writing state while the service request is in flight.") {
             store.isWriting
         }
-        await store.prepareSingleSkillTogglePreview(skill: skill, on: true)
+        await store.prepareSkillTogglePreview(instanceIDs: [skill.id], on: true)
         await task.value
 
         try expectEqual(countMethodCalls("batch.previewSkillToggles", in: fake.calls()), 1, "Busy write should ignore reentrant preview attempts.")
@@ -2210,7 +2067,6 @@ struct SkillStoreTests {
         try expectNil(store.errorMessage, "Codex toggle should not set an error on success.")
         try expectEqual(store.selectedSkillID, "gamma", "Codex toggle refresh should keep the selected skill stable.")
         try expectEqual(store.selectedSkill?.enabled, false, "Codex toggle refresh should expose the updated enabled state.")
-        try expectEqual(store.selectedSkillDetail?.enabled, false, "Codex toggle refresh should reload detail for the updated skill.")
         try expectEqual(
             store.lastMutationMessage,
             "\(UIStrings.batchToggleApplied(action: BatchToggleAction.disable.title, count: 1)) \(UIStrings.codexRestartRequired)",
@@ -2246,7 +2102,6 @@ struct SkillStoreTests {
         try expectContains(fake.calls(), "batch.applySkillToggles", "opencode toggle should apply the confirmed typed action.")
         try expectFalse(fake.calls().contains("config.toggleSkill"), "opencode UI toggles should not bypass the typed lifecycle.")
         try expectEqual(store.selectedSkill?.enabled, false, "opencode toggle refresh should expose the updated enabled state.")
-        try expectEqual(store.selectedSkillDetail?.enabled, false, "opencode toggle refresh should reload detail for the updated skill.")
     }
 
     private func toolGlobalToggleIsPreviewOnlyAndDoesNotCallService() async throws {
@@ -2626,7 +2481,7 @@ struct SkillStoreTests {
             throw NativeModelTestFailure(description: "Task cockpit should prepare a prompt preview before provider send.")
         }
         try expectNil(store.taskCockpitResult, "Task cockpit should not expose a provider result before explicit confirmation.")
-        try expectFalse(fake.calls().contains("llm.confirmPromptAndSend"), "Previewing Task Preflight must not send a provider request.")
+        try expectFalse(fake.calls().contains("llm.confirmPromptAndSend"), "Previewing task readiness must not send a provider request.")
         await store.confirmTaskCockpitPromptAndBuild()
 
         let result = store.taskCockpitResult
@@ -2699,118 +2554,6 @@ struct SkillStoreTests {
         try expectFalse(previewCall?.contains("\"selected_skill_id\"") ?? false, "Global Preflight should not inherit a retained selected skill id.")
     }
 
-    private func taskCockpitHistoryStaysInCurrentSessionOnly() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "prompt-ready")
-
-        let task = "阿里云 ECS 磁盘负载情况分析"
-        let store = SkillStore(service: fake.serviceClient())
-        store.taskCockpitText = task
-        await store.reload()
-        try await previewAndConfirmTaskCockpit(store)
-
-        try expectEqual(store.taskCockpitHistory.count, 1, "Successful Preflight should add one current-session history record.")
-        try expectEqual(store.taskCockpitHistory.first?.displayTask, task, "Session history should preserve the visible task text.")
-        try expectEqual(store.taskCockpitHistory.first?.agentIDs, ["claude-code"], "Session history should preserve the full agent scope.")
-        try expectEqual(store.taskCockpitHistory.first?.result.summary.recommendedSkillName, "Beta", "Session history should retain the full recommendation result.")
-        try expectEqual(store.taskCockpitHistory.first?.operationState.phase, .completed, "Session history should retain the completed operation state.")
-        try expectEqual(store.selectedTaskCockpitHistoryID, store.taskCockpitHistory.first?.id, "The latest session record should remain selected.")
-    }
-
-    private func taskCockpitHistoryKeepsNewestTwelveRecords() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "prompt-ready")
-
-        let store = SkillStore(service: fake.serviceClient())
-        await store.reload()
-
-        let submittedTasks = (1...13).map { "Session-only Preflight \($0)" }
-        for task in submittedTasks {
-            store.taskCockpitText = task
-            try await previewAndConfirmTaskCockpit(store)
-        }
-
-        let expectedTasks = Array(submittedTasks.dropFirst().reversed())
-        try expectEqual(
-            store.taskCockpitHistory.count,
-            12,
-            "Session history should retain exactly twelve successful results."
-        )
-        try expectEqual(
-            store.taskCockpitHistory.map(\.displayTask),
-            expectedTasks,
-            "Session history should remain newest-first after evicting the oldest result."
-        )
-        try expectFalse(
-            store.taskCockpitHistory.contains { $0.displayTask == submittedTasks[0] },
-            "The thirteenth result should evict the oldest session record."
-        )
-        try expectEqual(
-            store.selectedTaskCockpitHistoryID,
-            store.taskCockpitHistory.first?.id,
-            "The newest retained session record should remain selected."
-        )
-    }
-
-    private func newStoreDoesNotRestoreTaskCockpitHistory() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "prompt-ready")
-
-        let firstStore = SkillStore(service: fake.serviceClient())
-        firstStore.taskCockpitText = "Keep this Preflight in memory only."
-        await firstStore.reload()
-        try await previewAndConfirmTaskCockpit(firstStore)
-        try expectEqual(firstStore.taskCockpitHistory.count, 1, "The first store should retain its completed session result.")
-        try expectEqual(firstStore.taskCockpitHistory.first?.displayTask, "Keep this Preflight in memory only.", "The current session should retain the complete task text.")
-        try expectEqual(firstStore.taskCockpitHistory.first?.agentIDs, ["claude-code"], "The current session should retain the complete agent scope.")
-        try expectEqual(firstStore.taskCockpitHistory.first?.result.summary.recommendedSkillName, "Beta", "The current session should retain the complete provider result.")
-
-        let secondStore = SkillStore(service: fake.serviceClient())
-        try expectEqual(
-            secondStore.taskCockpitHistory.count,
-            0,
-            "A new store must start with fresh in-memory Task Preflight history."
-        )
-    }
-
-    private func successfulTaskCockpitKeepsSessionHistoryInMemory() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "prompt-ready")
-
-        let store = SkillStore(service: fake.serviceClient())
-        store.taskCockpitText = "Do not persist this provider-confirmed result."
-        await store.reload()
-        try await previewAndConfirmTaskCockpit(store)
-
-        try expectEqual(store.taskCockpitHistory.count, 1, "The successful result should remain available in memory.")
-        try expectEqual(
-            store.taskCockpitHistory.first?.displayTask,
-            "Do not persist this provider-confirmed result.",
-            "The in-memory session record should preserve its display task."
-        )
-    }
-
-    private func clearTaskCockpitHistoryClearsMemory() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "prompt-ready")
-
-        let store = SkillStore(service: fake.serviceClient())
-        store.taskCockpitText = "Clear this in-memory result."
-        await store.reload()
-        try await previewAndConfirmTaskCockpit(store)
-
-        store.clearTaskCockpitHistory()
-
-        try expectEqual(store.taskCockpitHistory.count, 0, "Clear should remove every in-memory Task Preflight record.")
-        try expectNil(store.selectedTaskCockpitHistoryID, "Clear should reset the selected history record.")
-        try expectNil(store.taskCockpitHistoryCleanupMessage, "A normal in-memory clear should not manufacture a cleanup warning.")
-    }
-
     private func taskCockpitPreservesExactUserInputInServiceContract() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -2826,7 +2569,7 @@ struct SkillStoreTests {
         try expectEqual(store.selectedTaskCockpitInput, exactTask, "Non-blank cockpit input should preserve the exact user text.")
 
         let calls = fake.calls()
-        try expectContains(calls, "llm.previewPrompt", "Exact-input test should prepare the provider-backed Task Preflight prompt.")
+        try expectContains(calls, "llm.previewPrompt", "Exact-input test should prepare the provider-backed task-readiness prompt.")
         try expectContains(calls, "llm.confirmPromptAndSend", "Exact-input cockpit flow should send through provider confirmation.")
         try expectContains(calls, "\"task_text\":\"[REDACTED]\"", "Captured fake-service evidence must redact exact task input.")
         try expectFalse(calls.contains(exactTask), "Captured fake-service evidence must not retain the raw task input.")
@@ -2901,7 +2644,7 @@ struct SkillStoreTests {
         await slowBuild.value
         try expectEqual(store.taskCockpitResult?.summary.recommendedSkillName, "Beta", "Late slow response must not overwrite the retry result.")
         let calls = fake.calls()
-        try expectContains(calls, "llm.previewPrompt", "Timeout path should prepare task preflight prompt previews.")
+        try expectContains(calls, "llm.previewPrompt", "Timeout path should prepare task-readiness prompt previews.")
         try expectContains(calls, "llm.confirmPromptAndSend", "Timeout path should use the provider confirmation method.")
         try expectFalse(calls.contains("config.toggleSkill"), "Timeout recovery must not call config write paths.")
         try expectFalse(calls.contains("script.execute"), "Timeout recovery must not call execution paths.")
@@ -3076,7 +2819,7 @@ struct SkillStoreTests {
         guard let skill = store.selectedSkill else {
             throw NativeModelTestFailure(description: "Single-skill toggle requires a selected skill.")
         }
-        await store.prepareSingleSkillTogglePreview(skill: skill, on: on)
+        await store.prepareSkillTogglePreview(instanceIDs: [skill.id], on: on)
         guard let previewID = store.batchTogglePreview?.id else {
             throw NativeModelTestFailure(description: "Single-skill toggle must produce a preview before apply.")
         }
@@ -3090,15 +2833,6 @@ struct SkillStoreTests {
         )
     }
 
-    private func permissionMarker(_ detail: SkillDetailRecord?) -> String? {
-        guard
-            case .object(let permissions)? = detail?.permissions,
-            case .string(let marker)? = permissions["marker"]
-        else {
-            return nil
-        }
-        return marker
-    }
 }
 
 private struct UnexpectedServiceProcessRunner: ServiceProcessRunning {

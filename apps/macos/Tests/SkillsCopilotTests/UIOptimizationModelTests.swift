@@ -15,7 +15,7 @@ struct UIOptimizationModelTests {
         try settingsWindowUsesSidebarAndCloseOnlyControls()
         try settingsProviderObservabilityUsesBoundedScopedRendering()
         try modalWorkflowsUseSharedSheetChromeAndColumns()
-        try settingsPreflightAndManagerSurfacesHaveStablePresentation()
+        try settingsAndManagerSurfacesHaveStablePresentation()
         try skillManagerPreviewMetadataIsCompactAndActionSafe()
     }
 
@@ -385,18 +385,13 @@ struct UIOptimizationModelTests {
             "Workflow sheets should keep input/options visually separate from history, lists, and previews."
         )
         try expectEqual(
-            UIOptimizationPresentation.taskPreflight.sheetContentLayout,
-            .editorWithHistory,
-            "Task Preflight should render the editor on the left and history on the right."
-        )
-        try expectEqual(
             UIOptimizationPresentation.skillManager.sheetContentLayout,
             .controlsWithResults,
             "Skill Manager should render controls on the left and search/installed/local results on the right."
         )
     }
 
-    private func settingsPreflightAndManagerSurfacesHaveStablePresentation() throws {
+    private func settingsAndManagerSurfacesHaveStablePresentation() throws {
         try expectEqual(
             UIOptimizationPresentation.settings.minimumWidth,
             760,
@@ -406,26 +401,6 @@ struct UIOptimizationModelTests {
             UIOptimizationPresentation.settings.usesUnifiedSectionHeaders,
             true,
             "Settings pages should share compact header and section presentation."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.taskPreflight.sheetMinimumWidth,
-            950,
-            "Task Preflight should retain the optimized two-column sheet width."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.taskPreflight.historyColumnWidth,
-            270,
-            "Task Preflight history should remain a stable right-side column."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.taskPreflight.fixedAgentChipWidth,
-            0,
-            "Task Preflight agent chips should use adaptive width instead of the old 96pt fixed width."
-        )
-        try expectEqual(
-            UIOptimizationPresentation.taskPreflight.showsProviderUnavailableGate,
-            true,
-            "Task Preflight should explicitly gate provider-unavailable states before build actions."
         )
         try expectEqual(
             UIOptimizationPresentation.skillManager.usesSegmentedWorkflows,

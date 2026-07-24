@@ -540,34 +540,6 @@ enum SkillListModel {
             .issueCount(for: skill.id)
     }
 
-    static func adoptingAgentSummaryBySkillID(for skills: [SkillRecord]) -> [SkillRecord.ID: String] {
-        var agentsByIdentity: [String: Set<String>] = [:]
-        var identityKeysBySkillID: [SkillRecord.ID: Set<String>] = [:]
-
-        for skill in skills {
-            let keys = identityKeys(for: skill)
-            identityKeysBySkillID[skill.id] = keys
-
-            for key in keys {
-                agentsByIdentity[key, default: []].insert(DisplayText.agent(skill.agent))
-            }
-        }
-
-        return skills.reduce(into: [SkillRecord.ID: String]()) { partialResult, skill in
-            let keys = identityKeysBySkillID[skill.id] ?? []
-            let agents = keys
-                .flatMap { agentsByIdentity[$0] ?? [] }
-                .reduce(into: Set<String>()) { partialAgents, agent in
-                    partialAgents.insert(agent)
-                }
-                .sorted { lhs, rhs in
-                    lhs.localizedStandardCompare(rhs) == .orderedAscending
-                }
-            let displayAgents = agents.isEmpty ? [DisplayText.agent(skill.agent)] : agents
-            partialResult[skill.id] = displayAgents.joined(separator: ", ")
-        }
-    }
-
     private static func compare(_ lhs: String, _ rhs: String) -> Bool {
         lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
     }

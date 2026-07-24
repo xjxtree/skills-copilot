@@ -33,8 +33,9 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   typed capability preview and route to the owning workspace; the preview
   never applies an action. Session continuation is copy-only, never launches a
   terminal, and appears only when the service provides supported ordered argv.
-- Skill Package Manager actions are integrated into Skills. Task Preflight is
-  presented as inline task readiness rather than a separate destination.
+- Skill Package Manager actions are integrated into Skills. The compatibility
+  action `task_cockpit` is presented as inline task readiness rather than a
+  separate destination.
 - Overview attention targets open the smallest owning surface: config opens
   Advanced configuration, provider profiles open Provider Settings, and
   app-local provider history opens Provider Activity.

@@ -2,33 +2,6 @@
   "schema_version": 1,
   "surfaces": [
     {
-      "id": "catalog.skills",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
-      "owner": "SkillSidebarPanel",
-      "source": "visibleSkills",
-      "policy": "complete",
-      "total_count_source": "active-agent catalog snapshot skills count",
-      "allowed_limitations": ["safety_budget", "source_limited", "unreadable_source"]
-    },
-    {
-      "id": "catalog.findings",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailFindingsHistorySection.swift",
-      "owner": "FindingsSection",
-      "source": "visibleGroups",
-      "policy": "complete",
-      "total_count_source": "filtered catalog finding count",
-      "allowed_limitations": ["safety_budget", "source_limited", "unreadable_source"]
-    },
-    {
-      "id": "catalog.conflicts",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailFindingsHistorySection.swift",
-      "owner": "SameAgentConflictIssuesView",
-      "source": "conflicts",
-      "policy": "complete",
-      "total_count_source": "filtered catalog conflict count",
-      "allowed_limitations": ["safety_budget", "source_limited", "unreadable_source"]
-    },
-    {
       "id": "catalog.rules",
       "file": "apps/macos/Sources/SkillsCopilot/Stores/SkillStore.swift",
       "owner": "SkillStore",
@@ -36,45 +9,6 @@
       "policy": "complete",
       "total_count_source": "rule tuning record count",
       "allowed_limitations": ["unreadable_source"]
-    },
-    {
-      "id": "skill-events.history",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailHeaderOverviewSection.swift",
-      "owner": "HistorySection",
-      "source": "events",
-      "policy": "paged",
-      "control_scope": "body",
-      "control_anchor": "state: completeness",
-      "total_count_source": "event page metadata total_count",
-      "status_id": "skill-events.completeness",
-      "full_access_id": "skill-events.load-all",
-      "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
-    },
-    {
-      "id": "sessions.sidebar",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
-      "owner": "SessionSidebarPanel",
-      "source": "preview.sessionRows",
-      "policy": "paged",
-      "control_scope": "body",
-      "control_anchor": "state: store.localSessionCompleteness",
-      "total_count_source": "local-session page metadata total_count",
-      "status_id": "sessions.completeness",
-      "full_access_id": "sessions.load-all",
-      "allowed_limitations": ["safety_budget", "source_changed", "page_failed"]
-    },
-    {
-      "id": "sessions.detail-messages",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/AgentSessionDetailPanel.swift",
-      "owner": "AgentSessionContentPanel",
-      "source": "visibleItems",
-      "policy": "paged",
-      "control_scope": "body",
-      "control_anchor": "state: messageCompleteness",
-      "total_count_source": "local-session message page metadata total_count",
-      "status_id": "session-messages.completeness",
-      "full_access_id": "session-messages.load-all",
-      "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
     },
     {
       "id": "sessions.workspace-detail-messages",
@@ -283,17 +217,6 @@
       "allowed_limitations": []
     },
     {
-      "id": "session.top-skills",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/SidebarView.swift",
-      "owner": "SessionSidebarPanel",
-      "source": "preview.skillUsageRows",
-      "policy": "summary_with_expand",
-      "control_scope": "body",
-      "total_count_source": "session skill usage row count",
-      "full_access_id": "session-top-skills.show-all",
-      "allowed_limitations": []
-    },
-    {
       "id": "batch-toggle.snapshot-targets",
       "file": "apps/macos/Sources/SkillsCopilot/Views/BatchSkillOperationSheet.swift",
       "owner": "BatchTogglePreviewSummary",
@@ -324,17 +247,6 @@
       "control_scope": "body",
       "total_count_source": "skipped item count",
       "full_access_id": "batch-toggle-skipped-items.show-all",
-      "allowed_limitations": []
-    },
-    {
-      "id": "permission.summary",
-      "file": "apps/macos/Sources/SkillsCopilot/Views/DetailOverviewSection.swift",
-      "owner": "OverviewRiskPanel",
-      "source": "permissionSummary.rows",
-      "policy": "summary_with_expand",
-      "control_scope": "body",
-      "total_count_source": "permission summary row count",
-      "full_access_id": "permission-summary.show-all",
       "allowed_limitations": []
     },
     {

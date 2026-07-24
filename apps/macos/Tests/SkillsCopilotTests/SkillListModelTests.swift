@@ -2,7 +2,6 @@
 
 struct SkillListModelTests {
     func run() throws {
-        try detailWorkbenchSectionsExposeDiagnostics()
         try findingIssueGroupsPreserveRemediationAndImpactCounts()
         try searchMatchesNameDefinitionAndDisplayPathCaseInsensitively()
         try agentFiltersLimitResultsAndGroupsUseStableAdapterOrder()
@@ -20,25 +19,6 @@ struct SkillListModelTests {
         try skillIdentitySummaryAndDedupeExplanationAreStable()
         try privacyPathDisplayRedactsAndCollapsesLocalPaths()
         try privacyPathDisplayRedactsEmbeddedEvidencePaths()
-    }
-
-    private func detailWorkbenchSectionsExposeDiagnostics() throws {
-        try expectEqual(
-            DetailSection.visibleCases.map(\.rawValue),
-            ["overview", "findings", "conflicts", "history", "metadata"],
-            "Skill detail switcher should expose skill issues and same-agent conflicts as independent sections."
-        )
-        try expectEqual(DetailSection.primaryWorkCases, [], "Sidebar Work surfaces should remain retired; Provider Observability lives in Settings.")
-        try expectEqual(DetailSection.findings.title, "Skill Issues", "The single-skill issue tab should name its scope explicitly.")
-        try expectEqual(
-            DetailSection(rawValue: "conflicts")?.title,
-            "Same-Agent Conflicts",
-            "Same-agent conflicts should have a distinct detail destination."
-        )
-        try expectEqual(DetailSection.history.title, "History", "History section title")
-        try expectEqual(DetailSection.metadata.title, "Metadata", "Metadata section title")
-        try expectEqual(DetailSection.overview.systemImage, "chart.pie", "Overview tab should use a unified icon.")
-        try expectEqual(DetailSection.metadata.systemImage, "info.circle", "Metadata tab should use a unified icon.")
     }
 
     private func findingIssueGroupsPreserveRemediationAndImpactCounts() throws {

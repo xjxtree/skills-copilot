@@ -14,7 +14,6 @@ enum UIOptimizationPresentation {
     static let configEditor = ConfigEditorPresentation()
     static let settings = SettingsPresentation()
     static let workflowSheet = WorkflowSheetPresentation()
-    static let taskPreflight = TaskPreflightPresentation()
     static let skillManager = SkillManagerPresentation()
 }
 
@@ -56,10 +55,6 @@ enum WorkflowSheetFeedbackStyle: Equatable {
 
 enum WorkflowSheetColumnLayout: Equatable {
     case twoColumn
-}
-
-enum TaskPreflightSheetContentLayout: Equatable {
-    case editorWithHistory
 }
 
 enum SkillManagerSheetContentLayout: Equatable {
@@ -205,16 +200,6 @@ struct WorkflowSheetPresentation: Equatable {
     let titlebarHeight = 58
     let columnSpacing = 14
     let secondaryColumnWidth = 320
-}
-
-struct TaskPreflightPresentation: Equatable {
-    let sheetContentLayout = TaskPreflightSheetContentLayout.editorWithHistory
-    let sheetMinimumWidth = 950
-    let sheetIdealWidth = 1_020
-    let sheetMinimumHeight = 620
-    let historyColumnWidth = 270
-    let fixedAgentChipWidth = 0
-    let showsProviderUnavailableGate = true
 }
 
 struct SkillManagerPresentation: Equatable {

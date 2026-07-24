@@ -136,10 +136,6 @@ struct ContentView: View {
         } detail: {
             routeContent
         }
-        .onChange(of: store.selectedSkillID) { _ in
-            guard store.hasCompletedStartupLoad, store.appRoute == .advanced else { return }
-            Task { await store.loadSelectedDetail() }
-        }
     }
 
     @ViewBuilder

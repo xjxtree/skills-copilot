@@ -289,7 +289,7 @@ failure; an inventory source-revision change invalidates them before reuse.
 - Skill detail preserves the same boundary through independent `Skill Issues`
   and `Same-Agent Conflicts` sections; neither section renders the other's
   projection, and each header metric routes to its matching section.
-- Sidebar totals, default filters, row/header badges, detail cards, refresh
+- Workspace totals, default filters, row/header badges, detail cards, refresh
   feedback, health summaries, and LLM related-finding context must use these
   current-skill projections instead of raw catalog counts. The explicit Deleted
   filter is the only skill-list filter that shows general historical missing
@@ -297,8 +297,8 @@ failure; an inventory source-revision change invalidates them before reuse.
 
 Skill Manager follows a skill-first cache model. Its explicit Load Data action
 loads project/global package inventories; startup, app reload, opening the
-panel, and changing display scope or action targets do not invoke the external
-manager. Rust parses full bounded
+integrated Skills sheet, and changing display scope or action targets do not
+invoke the external manager. Rust parses full bounded
 manager JSON into compact skill rows and owns local archive validation and
 replacement. Swift renders cached rows and sends typed, confirmation-bound
 actions only after a skill is selected. Manager CLI rows are the primary

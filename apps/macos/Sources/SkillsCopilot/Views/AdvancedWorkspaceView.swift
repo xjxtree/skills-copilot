@@ -24,7 +24,6 @@ struct AdvancedWorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task {
-            guard store.sidebarContentMode != .config else { return }
             store.openAdvancedConfiguration()
         }
         .accessibilityIdentifier("workspace.advanced")

@@ -15,6 +15,7 @@ struct SkillsWorkspaceView: View {
     @EnvironmentObject private var store: SkillStore
     @State private var managerSelection: SkillManagerSheetSelection?
     @State private var intelligenceSelection: SkillIntelligenceSheetSelection?
+    @State private var isConfigOperationPresented = false
 
     var body: some View {
         HSplitView {
@@ -42,6 +43,10 @@ struct SkillsWorkspaceView: View {
             SkillContextualIntelligenceSheet(aggregate: selection.aggregate)
                 .environmentObject(store)
         }
+        .sheet(isPresented: $isConfigOperationPresented) {
+            BatchSkillOperationSheet()
+                .environmentObject(store)
+        }
         .accessibilityIdentifier("skills.workspace")
     }
 
@@ -51,11 +56,13 @@ struct SkillsWorkspaceView: View {
             SkillAggregateDetailView(
                 aggregate: aggregate,
                 availablePackageActions: availablePackageActions(for: aggregate),
-                availableConfigActions: [],
+                availableConfigActions: availableConfigActions(for: aggregate),
                 onPackageAction: { action in
                     openPackageFlow(action, aggregate: aggregate)
                 },
-                onConfigAction: nil,
+                onConfigAction: { action in
+                    openConfigFlow(action, aggregate: aggregate)
+                },
                 onContextualIntelligence: {
                     intelligenceSelection = SkillIntelligenceSheetSelection(
                         aggregate: aggregate
@@ -138,6 +145,37 @@ struct SkillsWorkspaceView: View {
         return result
     }
 
+    private func availableConfigActions(
+        for aggregate: SkillAggregateRecord
+    ) -> Set<SkillAggregateConfigAction> {
+        let instanceIDs = Set(aggregate.instanceIDs)
+        let mutableInstances = store.filteredSkills.filter {
+            instanceIDs.contains($0.id) && store.toggleDisabledReason(for: $0) == nil
+        }
+        var actions = Set<SkillAggregateConfigAction>()
+        if mutableInstances.contains(where: { !$0.enabled }) {
+            actions.insert(.enable)
+        }
+        if mutableInstances.contains(where: \.enabled) {
+            actions.insert(.disable)
+        }
+        return actions
+    }
+
+    private func openConfigFlow(
+        _ action: SkillAggregateConfigAction,
+        aggregate: SkillAggregateRecord
+    ) {
+        Task {
+            await store.prepareSkillTogglePreview(
+                instanceIDs: aggregate.instanceIDs,
+                on: action == .enable
+            )
+            guard !store.batchToggleSelectedSkills.isEmpty else { return }
+            isConfigOperationPresented = true
+        }
+    }
+
     private func uniqueInventoryMatch(
         for aggregate: SkillAggregateRecord
     ) -> SkillManagerInventoryItem? {
@@ -188,6 +226,34 @@ struct SkillsWorkspaceView: View {
 
     private func refreshWorkspace() {
         Task { await store.refreshProductWorkspaces() }
+    }
+}
+
+private struct SkillPackageManagerSheet: View {
+    @EnvironmentObject private var store: SkillStore
+    let entryContext: SkillManagerEntryContext
+
+    var body: some View {
+        WorkflowSheetShell(
+            title: UIStrings.text("skillManager.title", "Skill Package Manager"),
+            systemImage: "shippingbox.and.arrow.backward",
+            subtitle: UIStrings.text("skillManager.workflow.label", "Workflow"),
+            content: {
+                SkillManagerPanel(
+                    showsHeader: false,
+                    entryContext: entryContext
+                )
+            }
+        )
+        .frame(
+            minWidth: CGFloat(UIOptimizationPresentation.skillManager.sheetMinimumWidth),
+            idealWidth: CGFloat(UIOptimizationPresentation.skillManager.sheetIdealWidth),
+            minHeight: CGFloat(UIOptimizationPresentation.skillManager.sheetMinimumHeight),
+            idealHeight: CGFloat(UIOptimizationPresentation.skillManager.sheetIdealHeight)
+        )
+        .onDisappear {
+            store.clearSkillManagerWorkflowPreviews()
+        }
     }
 }
 

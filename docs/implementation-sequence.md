@@ -328,8 +328,7 @@ entry point.
 - Render per-agent environment health, coverage, incomplete reasons, and last
   successful refresh from product projections.
 - Route attention items to their evidence and typed action preview.
-- Re-express Task Preflight as inline task readiness while retaining the
-  existing `task_cockpit` wire identifier.
+- Present the existing `task_cockpit` wire action as inline task readiness.
 - Route recent sessions into the Sessions workspace or continuation preview.
 - Add empty, loading, stale, partial, blocked, provider-disabled, and error
   presentations.
@@ -430,7 +429,7 @@ Turn local session inventory into a trustworthy project continuity workflow.
 
 ### Primary Areas
 
-- `apps/macos/Sources/SkillsCopilot/Views/AgentSessionDetailPanel.swift`
+- `apps/macos/Sources/SkillsCopilot/Views/SessionWorkspaceDetailView.swift`
 - session models, stores, and service client RPC
 - service local-session fixtures
 - `docs/service-protocol.md`
@@ -600,8 +599,8 @@ without breaking required compatibility identifiers or wire consumers.
 
 ### Work
 
-- Remove standalone Task Preflight and Skill Manager navigation/panels only
-  after overview and Skills contain complete replacements.
+- Remove standalone task-readiness and Skill Manager navigation/panels only
+  after Overview and Skills contain complete replacements.
 - Remove Config from primary navigation only after Advanced routing is complete.
 - Remove generic duplicate LLM entry points after contextual intelligence is
   available.

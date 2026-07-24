@@ -54,9 +54,6 @@ extension SkillStore {
                     archivePath: confirmation.archivePath
                 )
                 retireSkillManagerLocalArchiveImportConfirmation(confirmation)
-                if let importedSkill = result.importedSkill {
-                    invalidateDetailCaches(for: [importedSkill.id])
-                }
                 try await refreshCollections()
                 await loadSkillManagerInventory()
                 skillManagerMessage = UIStrings.text(
@@ -169,9 +166,6 @@ extension SkillStore {
                     archivePath: confirmation.archivePath
                 )
                 retireSkillManagerLocalArchiveUpdateConfirmation(confirmation)
-                if let updatedSkill = result.updatedSkill {
-                    invalidateDetailCaches(for: [updatedSkill.id])
-                }
                 try await refreshCollections()
                 await loadSkillManagerInventory()
                 skillManagerMessage = UIStrings.text(
@@ -182,7 +176,6 @@ extension SkillStore {
                     setSkillManagerWarning(followUp.message)
                 }
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-                await loadSelectedDetail()
             } catch {
                 if skillManagerApplyMustRetirePreview(error) {
                     retireSkillManagerLocalArchiveUpdateConfirmation(confirmation)

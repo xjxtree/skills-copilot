@@ -8,12 +8,10 @@ final class SkillStore: ObservableObject {
     private static let localSessionPrewarmLimit = 800
     private static let globalSearchLimitPerKind = 6
     private static let providerObservabilityRowLimit = 100
-    private static let taskCockpitHistoryLimit = 12
 
     @Published private(set) var skills: [SkillRecord] = [] {
         didSet {
             invalidateFilteredSkillListCache()
-            invalidateAdoptingAgentSummaryCache()
         }
     }
     @Published private(set) var findings: [RuleFindingRecord] = [] {
@@ -27,12 +25,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var agentConfigSnapshots: [ConfigSnapshotRecord] = []
     @Published private(set) var isLoadingAgentConfigSnapshots = false
     @Published private(set) var agentConfigSnapshotCompleteness = ListPageAccumulator<ConfigSnapshotRecord>().state
-    @Published private(set) var detailsByID: [SkillRecord.ID: SkillDetailRecord] = [:]
-    @Published private(set) var skillEventsByID: [SkillRecord.ID: [SkillEventRecord]] = [:]
-    @Published private(set) var skillEventCompletenessByID: [SkillRecord.ID: ListCompletenessState] = [:]
-    private var skillEventLoadGenerationValue = 0
-    private(set) var adoptingAgentSummaryBySkillID: [SkillRecord.ID: String] = [:]
-    @Published private(set) var loadingSkillEventIDs: Set<SkillRecord.ID> = []
     @Published private(set) var status: ServiceStatus?
     @Published private(set) var llmStatus = LLMStatus.disabledFallback()
     @Published private(set) var aiProviderStatus = AIProviderStatus.unavailable()
@@ -108,8 +100,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var taskCockpitResponseEnvelope: AIResponseEnvelopeWire?
     @Published private(set) var taskCockpitResponseContract: AIResponseContractWire?
     @Published private(set) var taskCockpitFailedProviderOutput: String?
-    @Published private(set) var taskCockpitHistory: [TaskCockpitHistoryRecord] = []
-    @Published private(set) var selectedTaskCockpitHistoryID: TaskCockpitHistoryRecord.ID?
     @Published private(set) var taskCockpitSelectedAgentIDs: Set<String> = [SkillAgentFilter.claudeCode.rawValue]
     @Published private(set) var taskCockpitPromptConfirmation: TaskCockpitPromptConfirmation?
     @Published private(set) var isPreviewingTaskCockpitPrompt = false
@@ -232,7 +222,6 @@ final class SkillStore: ObservableObject {
     @Published private(set) var hasCompletedStartupLoad = false
     @Published private(set) var isRunningStartupLoad = false
     @Published private(set) var isLoading = false
-    @Published private(set) var isLoadingDetail = false
     @Published private(set) var isScanning = false
     @Published private(set) var isWriting = false
     @Published private(set) var isProjectUpdating = false
@@ -286,7 +275,6 @@ final class SkillStore: ObservableObject {
             synchronizeSidebarSelectionWithSelectedSkill()
         }
     }
-    @Published var selectedDetailSection: DetailSection = .overview
     @Published var sidebarContentMode: SidebarContentMode = .skills {
         didSet {
             guard oldValue != sidebarContentMode else { return }
@@ -424,14 +412,11 @@ final class SkillStore: ObservableObject {
     private var llmPreparedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
     private var agentConfigSnapshotAccumulator = ListPageAccumulator<ConfigSnapshotRecord>()
-    private var skillEventAccumulatorsByID: [SkillRecord.ID: ListPageAccumulator<SkillEventRecord>] = [:]
-    private var skillEventLoadGenerations: [SkillRecord.ID: Int] = [:]
     private var rollbackPreviewGeneration = 0
     private var configSavePreviewGeneration: UInt64 = 0
     private var activeConfigSaveConfirmation: ConfigSaveConfirmation?
     private var agentConfigDocumentLoadGeneration = 0
     private var claudeSettingsLoadGeneration = 0
-    private var selectedDetailLoadGeneration = 0
     private var projectScanGeneration: UInt64 = 0
     private var loadedAgentConfigSnapshotRequestKey: String?
     private var activeAgentConfigSnapshotRequest: (key: String, id: UUID)?
@@ -470,7 +455,6 @@ final class SkillStore: ObservableObject {
     private var errorMessageDismissTask: Task<Void, Never>?
     private var projectSelectionTask: Task<Void, Never>?
     private var agentFilterLoadTask: Task<Void, Never>?
-    private var listCriteriaDetailTask: Task<Void, Never>?
     private var localSessionDetailTask: Task<Void, Never>?
     private var localSessionLoadAllTask: Task<Void, Never>?
     private var localSessionLoadAllID: UUID?
@@ -484,7 +468,6 @@ final class SkillStore: ObservableObject {
     private var isSynchronizingSidebarSelection = false
     var filteredSkillListDataRevision = 0
     var filteredSkillListCache: FilteredSkillListCache?
-    var isAdoptingAgentSummaryCacheValid = false
     var scopedLocalSessionSummaryRevision = 0
     var scopedLocalSessionSummaryCache: ScopedLocalSessionSummaryCache?
     let localSessionCache = LocalSessionCache()
@@ -506,7 +489,6 @@ final class SkillStore: ObservableObject {
         providerActivityController = ProviderActivityController(service: service)
         contextualIntelligenceStore = ContextualIntelligenceStore(service: service)
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
-        taskCockpitHistory = []
         bindWorkspaceStores()
         synchronizeWorkspaceAgentFilter()
         synchronizeSessionWorkspaceBinding()
@@ -528,27 +510,23 @@ final class SkillStore: ObservableObject {
         case .overview:
             setSelectedSkillID(nil, syncSidebar: false)
             setSidebarSelection(nil)
-            selectedDetailSection = .overview
         case .skills:
             if sidebarContentMode != .skills {
                 sidebarContentMode = .skills
             }
             setSelectedSkillID(nil, syncSidebar: false)
             setSidebarSelection(nil)
-            selectedDetailSection = .overview
         case .sessions:
             if sidebarContentMode != .sessions {
                 sidebarContentMode = .sessions
             }
             setSelectedSkillID(nil, syncSidebar: false)
             setSidebarSelection(nil)
-            selectedDetailSection = .overview
         case .advanced:
             if sidebarContentMode != .config {
                 sidebarContentMode = .config
             }
             setSelectedSkillID(nil, syncSidebar: false)
-            selectedDetailSection = .overview
         }
         appContextStore.selectRoute(route)
     }
@@ -842,38 +820,6 @@ final class SkillStore: ObservableObject {
         filteredSkillListCache = nil
     }
 
-    func invalidateAdoptingAgentSummaryCache() {
-        isAdoptingAgentSummaryCacheValid = false
-        adoptingAgentSummaryBySkillID = [:]
-    }
-
-    func ensureAdoptingAgentSummaryCache() {
-        guard !isAdoptingAgentSummaryCacheValid else { return }
-        adoptingAgentSummaryBySkillID = SkillListModel.adoptingAgentSummaryBySkillID(for: skills)
-        isAdoptingAgentSummaryCacheValid = true
-    }
-
-    func invalidateDetailCaches(for instanceIDs: some Sequence<SkillRecord.ID>) {
-        for instanceID in instanceIDs {
-            skillEventLoadGenerationValue &+= 1
-            skillEventLoadGenerations[instanceID] = skillEventLoadGenerationValue
-            detailsByID.removeValue(forKey: instanceID)
-            skillEventsByID.removeValue(forKey: instanceID)
-            skillEventAccumulatorsByID.removeValue(forKey: instanceID)
-            skillEventCompletenessByID.removeValue(forKey: instanceID)
-            loadingSkillEventIDs.remove(instanceID)
-        }
-    }
-
-    func pruneDetailCaches(to currentSkillIDs: Set<SkillRecord.ID>) {
-        detailsByID = detailsByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventAccumulatorsByID = skillEventAccumulatorsByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventCompletenessByID = skillEventCompletenessByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventLoadGenerations = skillEventLoadGenerations.filter { currentSkillIDs.contains($0.key) }
-        loadingSkillEventIDs = loadingSkillEventIDs.filter { currentSkillIDs.contains($0) }
-    }
-
     func invalidateScopedLocalSessionSummaryCache() {
         scopedLocalSessionSummaryRevision &+= 1
         scopedLocalSessionSummaryCache = nil
@@ -885,7 +831,6 @@ final class SkillStore: ObservableObject {
     ) {
         selectedLocalSessionID = session.id
         setSidebarSelection(.session(session.id))
-        selectedDetailSection = .overview
         synchronizeSelectedLocalSessionDetailState()
         guard origin == .user || origin == .navigation else { return }
         localSessionDetailTask?.cancel()
@@ -907,21 +852,6 @@ final class SkillStore: ObservableObject {
     func selectConfigSnapshot(_ snapshot: ConfigSnapshotRecord) {
         guard selectedSidebarSelection != .configSnapshot(snapshot.id) else { return }
         selectedSidebarSelection = .configSnapshot(snapshot.id)
-    }
-
-    func selectTaskCockpitHistoryRecord(_ record: TaskCockpitHistoryRecord) {
-        taskCockpitText = record.taskText
-        setTaskCockpitAgentSelection(record.agentIDs, clearResult: false)
-        taskCockpitResult = record.result
-        taskCockpitResponseEnvelope = nil
-        taskCockpitResponseContract = nil
-        taskCockpitOperationState = record.operationState
-        selectedTaskCockpitHistoryID = record.id
-    }
-
-    func clearTaskCockpitHistory() {
-        taskCockpitHistory = []
-        selectedTaskCockpitHistoryID = nil
     }
 
     func ensureTaskCockpitAgentSelection() {
@@ -976,9 +906,6 @@ final class SkillStore: ObservableObject {
             let shouldLoadClaudeSettings = startupAgentFilter == .claudeCode
                 && status?.supportedMethods.contains("config.readClaudeSettings") == true
 
-            setStartupLoading(UIStrings.startupDetailLoading, progress: 0.90)
-            await loadSelectedDetail()
-
             setStartupLoading(UIStrings.startupReadyLoading, progress: 1.0)
             refreshStatusMessage = UIStrings.refreshReloaded(currentSkillCount, visibleIssueCount, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
@@ -1010,7 +937,6 @@ final class SkillStore: ObservableObject {
             refreshStatusMessage = UIStrings.refreshReloaded(currentSkillCount, visibleIssueCount, sameAgentRuntimeConflictCount)
             appendRefreshLog(level: "info", message: refreshStatusMessage)
             canRetryLastRefresh = false
-            await loadSelectedDetail()
             scheduleReloadSupplementalLoads(agentFilter: agentFilter)
         } catch {
             handleRefreshFailure(error, action: .reload)
@@ -1064,10 +990,6 @@ final class SkillStore: ObservableObject {
                   projectContextState?.revision == result.acceptedContextRevision else {
                 return false
             }
-            pruneDetailCaches(to: Set(result.skills.map(\.id)))
-            if let selectedSkillID {
-                invalidateDetailCaches(for: [selectedSkillID])
-            }
             do {
                 let snapshot = try await service.appStateSnapshot()
                 guard generation == projectScanGeneration,
@@ -1087,7 +1009,6 @@ final class SkillStore: ObservableObject {
             catalogListCompleteness = catalogCompleteness(after: result)
             catalogListCompletenessByAgent = catalogCompletenessByAgent(after: result)
             await loadProductWorkspaceProjections(force: true)
-            await loadSelectedDetail()
             return true
         } catch {
             handleRefreshFailure(error, action: .scan)
@@ -1326,8 +1247,6 @@ final class SkillStore: ObservableObject {
         skills = []
         findings = []
         conflicts = []
-        detailsByID.removeAll()
-        skillEventsByID.removeAll()
         selectedSkillID = nil
         selectedSidebarSelection = nil
         currentAgentConfigDocuments = []
@@ -1373,11 +1292,16 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    func prepareSingleSkillTogglePreview(skill: SkillRecord, on: Bool) async {
-        guard selectedSkill?.id == skill.id else { return }
+    func prepareSkillTogglePreview(instanceIDs: [SkillRecord.ID], on: Bool) async {
+        let visibleIDs = Set(filteredSkills.map(\.id))
+        let requestedIDs = Set(instanceIDs).intersection(visibleIDs)
+        guard !requestedIDs.isEmpty else {
+            batchTogglePreview = nil
+            return
+        }
         batchToggleAction = on ? .enable : .disable
         isBatchToggleSelectionExplicit = true
-        batchToggleSelectedSkillIDs = [skill.id]
+        batchToggleSelectedSkillIDs = requestedIDs
         await previewVisibleBatchToggle()
     }
 
@@ -1440,7 +1364,6 @@ final class SkillStore: ObservableObject {
 
         do {
             let result = try await service.applyBatchSkillToggles(preview: preview)
-            invalidateDetailCaches(for: preview.affectedSkills.map(\.instanceID))
             let appliedMessage = UIStrings.batchToggleApplied(
                 action: preview.action.title,
                 count: result.updatedCount == 0 ? preview.writableCount : result.updatedCount
@@ -1452,7 +1375,6 @@ final class SkillStore: ObservableObject {
             do {
                 try await refreshCatalogProjectionAfterWrite()
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-                await loadSelectedDetail()
             } catch {
                 refreshStatusMessage = UIStrings.text(
                     "actionLifecycle.appliedRefreshFailed",
@@ -1871,12 +1793,10 @@ final class SkillStore: ObservableObject {
 
         do {
             let result = try await service.confirmToolInstall(skill: skill, preview: preview)
-            invalidateDetailCaches(for: [skill.id])
             lastMutationMessage = UIStrings.toolGlobalInstalled(skill.name, preview.target.title)
             do {
                 try await refreshCatalogProjectionAfterWrite()
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-                await loadSelectedDetail()
             } catch {
                 refreshStatusMessage = UIStrings.text(
                     "actionLifecycle.appliedRefreshFailed",
@@ -2046,7 +1966,6 @@ final class SkillStore: ObservableObject {
                     )
                 }
                 retireSkillManagerMutationConfirmation(confirmation)
-                invalidateDetailCaches(for: result.updatedSkills.map(\.id))
                 skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
                 if result.followUp?.cleanupRequired == true {
                     let followUpWarning = UIStrings.text(
@@ -2059,9 +1978,7 @@ final class SkillStore: ObservableObject {
                 }
                 do {
                     try await refreshCatalogProjectionAfterWrite()
-                    pruneDetailCaches(to: Set(skills.map(\.id)))
                     recordLocalRefresh(message: UIStrings.refreshAfterWrite)
-                    await loadSelectedDetail()
                 } catch {
                     appendVerifiedWriteRefreshWarning(error)
                 }
@@ -2451,7 +2368,6 @@ final class SkillStore: ObservableObject {
                     message: UIStrings.taskCockpitLoaded
                 )
             }
-            recordTaskCockpitHistory(result: result, taskText: taskText, agentIDs: selectedAgents)
         } catch {
             guard isCurrentTaskCockpitOperation(operationID) else { return }
             let message = UIStrings.localizedServiceMessage(error.localizedDescription)
@@ -3040,7 +2956,6 @@ final class SkillStore: ObservableObject {
             searchText = ""
             stateFilter = .all
             skillScopeFilter = .all
-            selectedDetailSection = .overview
             setSelectedSkillID(skill.id, syncSidebar: false)
             setSidebarSelection(.skill(skill.id))
             skillListScrollRequest = SkillListScrollRequest(skillID: skill.id)
@@ -3084,7 +2999,6 @@ final class SkillStore: ObservableObject {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
 
-        selectedDetailSection = .overview
         switch kind {
         case .skill:
             selectAppRoute(.skills)
@@ -3918,35 +3832,6 @@ final class SkillStore: ObservableObject {
         publishAgentConfigSnapshotPaging()
     }
 
-    func loadSelectedDetail() async {
-        normalizeSelectionToVisibleSkills()
-        guard let id = selectedSkill?.id else { return }
-        if detailsByID[id] != nil {
-            await loadSkillEventsIfNeeded(instanceID: id)
-            return
-        }
-
-        selectedDetailLoadGeneration += 1
-        let generation = selectedDetailLoadGeneration
-        isLoadingDetail = true
-        errorMessage = nil
-        defer {
-            if generation == selectedDetailLoadGeneration {
-                isLoadingDetail = false
-            }
-        }
-
-        do {
-            let detail = try await service.getSkill(instanceID: id)
-            guard generation == selectedDetailLoadGeneration, selectedSkill?.id == id else { return }
-            detailsByID[id] = detail
-            await loadSkillEventsIfNeeded(instanceID: id)
-        } catch {
-            guard generation == selectedDetailLoadGeneration, selectedSkill?.id == id else { return }
-            errorMessage = error.localizedDescription
-        }
-    }
-
     func loadAgentConfigSnapshotsIfNeeded(agent: String? = nil) async {
         await loadAgentConfigSnapshots(agent: agent, force: false)
     }
@@ -4131,11 +4016,6 @@ final class SkillStore: ObservableObject {
 
         let currentSkillIDs = Set(snapshot.skills.map(\.id))
         scriptExecutionPreviews = scriptExecutionPreviews.filter { currentSkillIDs.contains($0.key) }
-        skillEventsByID = skillEventsByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventAccumulatorsByID = skillEventAccumulatorsByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventCompletenessByID = skillEventCompletenessByID.filter { currentSkillIDs.contains($0.key) }
-        skillEventLoadGenerations = skillEventLoadGenerations.filter { currentSkillIDs.contains($0.key) }
-        loadingSkillEventIDs = loadingSkillEventIDs.filter { currentSkillIDs.contains($0) }
         batchTogglePreview = nil
         refreshWatcherMessage(from: status)
         normalizeSelectionToVisibleSkills()
@@ -4200,98 +4080,6 @@ final class SkillStore: ObservableObject {
         }
     }
 
-    private func loadSkillEventsIfNeeded(instanceID: SkillRecord.ID, force: Bool = false) async {
-        if !force, skillEventsByID[instanceID] != nil {
-            if skillEventCompletenessByID[instanceID]?.canLoadAll == true {
-                await loadMoreSkillEvents(instanceID: instanceID, loadAll: true)
-            }
-            return
-        }
-        if force || skillEventAccumulatorsByID[instanceID] == nil {
-            cancelSkillEventLoadAll(instanceID: instanceID)
-            skillEventAccumulatorsByID[instanceID] = ListPageAccumulator()
-            skillEventsByID[instanceID] = []
-            publishSkillEventPaging(instanceID: instanceID)
-        }
-        await loadMoreSkillEvents(instanceID: instanceID, loadAll: true)
-    }
-
-    func loadMoreSkillEvents(instanceID: SkillRecord.ID, loadAll: Bool) async {
-        guard !loadingSkillEventIDs.contains(instanceID) else { return }
-        var accumulator = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
-        skillEventLoadGenerationValue &+= 1
-        let generation = skillEventLoadGenerationValue
-        skillEventLoadGenerations[instanceID] = generation
-        accumulator.begin(accumulator.items.isEmpty ? .initial : (loadAll ? .all : .more))
-        skillEventAccumulatorsByID[instanceID] = accumulator
-        loadingSkillEventIDs.insert(instanceID)
-        publishSkillEventPaging(instanceID: instanceID)
-        defer {
-            if skillEventLoadGenerations[instanceID] == generation {
-                skillEventAccumulatorsByID[instanceID]?.cancel()
-                loadingSkillEventIDs.remove(instanceID)
-                publishSkillEventPaging(instanceID: instanceID)
-            }
-        }
-
-        while true {
-            guard let current = skillEventAccumulatorsByID[instanceID] else { return }
-            do {
-                let result = try await service.listSkillEventPage(
-                    instanceID: instanceID,
-                    limit: 100,
-                    cursor: current.nextCursor,
-                    sourceRevision: current.sourceRevision
-                )
-                guard skillEventLoadGenerations[instanceID] == generation,
-                      !Task.isCancelled else { return }
-                var accepted = skillEventAccumulatorsByID[instanceID] ?? ListPageAccumulator()
-                try accepted.append(result.page)
-                skillEventAccumulatorsByID[instanceID] = accepted
-                publishSkillEventPaging(instanceID: instanceID)
-            } catch {
-                failSkillEventPaging(error, instanceID: instanceID, generation: generation)
-                return
-            }
-
-            guard loadAll,
-                  skillEventAccumulatorsByID[instanceID]?.state.hasMore == true,
-                  skillEventAccumulatorsByID[instanceID]?.nextCursor != nil else { return }
-            skillEventAccumulatorsByID[instanceID]?.begin(.all)
-            publishSkillEventPaging(instanceID: instanceID)
-        }
-    }
-
-    func cancelSkillEventLoadAll(instanceID: SkillRecord.ID) {
-        skillEventLoadGenerationValue &+= 1
-        skillEventLoadGenerations[instanceID] = skillEventLoadGenerationValue
-        skillEventAccumulatorsByID[instanceID]?.cancel()
-        loadingSkillEventIDs.remove(instanceID)
-        publishSkillEventPaging(instanceID: instanceID)
-    }
-
-    private func publishSkillEventPaging(instanceID: SkillRecord.ID) {
-        guard let accumulator = skillEventAccumulatorsByID[instanceID] else {
-            skillEventCompletenessByID.removeValue(forKey: instanceID)
-            return
-        }
-        skillEventsByID[instanceID] = accumulator.items
-        skillEventCompletenessByID[instanceID] = accumulator.state
-    }
-
-    private func failSkillEventPaging(
-        _ error: Error,
-        instanceID: SkillRecord.ID,
-        generation: Int
-    ) {
-        guard skillEventLoadGenerations[instanceID] == generation else { return }
-        skillEventAccumulatorsByID[instanceID]?.fail(reason: listFailureReason(for: error))
-        publishSkillEventPaging(instanceID: instanceID)
-        if errorMessage == nil {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     private var normalizedTaskCockpitText: String {
         taskCockpitText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -4303,27 +4091,10 @@ final class SkillStore: ObservableObject {
         taskCockpitFailedProviderOutput = nil
         taskCockpitPromptConfirmation = nil
         isPreviewingTaskCockpitPrompt = false
-        selectedTaskCockpitHistoryID = nil
         if isBuildingTaskCockpit {
             cancelTaskCockpitBuild(publishFallbackResult: false)
         } else {
             taskCockpitOperationState = .idle
-        }
-    }
-
-    private func recordTaskCockpitHistory(result: TaskCockpitResult, taskText: String, agentIDs: [String]) {
-        let normalizedTask = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedTask.isEmpty, !result.isUnavailable else { return }
-        let record = TaskCockpitHistoryRecord(
-            taskText: normalizedTask,
-            agentIDs: agentIDs,
-            result: result,
-            operationState: taskCockpitOperationState
-        )
-        taskCockpitHistory.insert(record, at: 0)
-        selectedTaskCockpitHistoryID = record.id
-        if taskCockpitHistory.count > Self.taskCockpitHistoryLimit {
-            taskCockpitHistory.removeLast(taskCockpitHistory.count - Self.taskCockpitHistoryLimit)
         }
     }
 
@@ -4463,16 +4234,9 @@ final class SkillStore: ObservableObject {
     }
 
     private func handleListCriteriaChanged() {
-        let previousID = selectedSkillID
         batchTogglePreview = nil
         pruneBatchToggleSelectionToVisibleSkills()
         normalizeSelectionToVisibleSkills()
-        guard previousID != selectedSkillID else { return }
-        listCriteriaDetailTask?.cancel()
-        listCriteriaDetailTask = Task { @MainActor [weak self] in
-            guard !Task.isCancelled else { return }
-            await self?.loadSelectedDetail()
-        }
     }
 
     private func normalizeSelectedLocalSession() {
@@ -4482,7 +4246,6 @@ final class SkillStore: ObservableObject {
             selectedLocalSessionDetailState = nil
             if selectedSidebarSelection?.isSession == true {
                 setSidebarSelection(nil)
-                selectedDetailSection = .overview
             }
             return
         }
@@ -4530,7 +4293,6 @@ final class SkillStore: ObservableObject {
         guard !isSynchronizingSidebarSelection else { return }
 
         guard let selectedSidebarSelection else {
-            selectedDetailSection = .overview
             return
         }
         appContextStore.adoptSidebarSelection(
@@ -4543,27 +4305,19 @@ final class SkillStore: ObservableObject {
             if selectedLocalSessionID != id {
                 selectedLocalSessionID = id
             }
-            selectedDetailSection = .overview
         case .skill(let id):
             setSelectedSkillID(id, syncSidebar: false)
-            if selectedDetailSection.isAgentWorkspaceSurface {
-                selectedDetailSection = .overview
-            }
         case .configOverview:
-            selectedDetailSection = .overview
+            break
         case .configDocument(let target):
             if currentAgentConfigDocuments.contains(where: { $0.target == target }) {
-                selectedDetailSection = .overview
             } else {
                 setSidebarSelection(.configOverview)
-                selectedDetailSection = .overview
             }
         case .configSnapshot(let id):
             if agentConfigSnapshots.contains(where: { $0.id == id }) {
-                selectedDetailSection = .overview
             } else {
                 setSidebarSelection(.configOverview)
-                selectedDetailSection = .overview
             }
         }
     }
@@ -4583,7 +4337,6 @@ final class SkillStore: ObservableObject {
             setSidebarSelection(.skill(selectedSkillID))
         } else if selectedSidebarSelection?.isSkill == true {
             setSidebarSelection(nil)
-            selectedDetailSection = .overview
         }
     }
 
@@ -4601,14 +4354,12 @@ final class SkillStore: ObservableObject {
                     setSidebarSelection(.skill(skill.id))
                 } else {
                     setSidebarSelection(nil)
-                    selectedDetailSection = .overview
                 }
             } else if selectedSidebarSelection?.isConfig == true {
                 if let skill = selectedSkill {
                     setSidebarSelection(.skill(skill.id))
                 } else {
                     setSidebarSelection(nil)
-                    selectedDetailSection = .overview
                 }
             }
         case .config:
@@ -4644,7 +4395,6 @@ final class SkillStore: ObservableObject {
     private func selectDefaultConfigDocumentOrOverview() {
         if !selectDefaultConfigDocumentIfVisible() {
             setSidebarSelection(.configOverview)
-            selectedDetailSection = .overview
         }
     }
 
@@ -4656,7 +4406,6 @@ final class SkillStore: ObservableObject {
             return false
         }
         setSidebarSelection(.configDocument(firstDocument.target))
-        selectedDetailSection = .overview
         return true
     }
 

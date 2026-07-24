@@ -181,7 +181,7 @@ impl ServiceHost {
             Some(_) if task_cockpit_budget_exceeded => (
                 false,
                 format!(
-                    "Task Preflight prompt estimate exceeds the {} token safety budget; narrow the selected agents or skills.",
+                    "Task readiness prompt estimate exceeds the {} token safety budget; narrow the selected agents or skills.",
                     TASK_COCKPIT_MAX_PROMPT_TOKENS
                 ),
             ),
@@ -1308,7 +1308,7 @@ impl ServiceHost {
                     )
                 })?;
                 prompt_scope.extend([
-                    "redacted task preflight prompt".to_string(),
+                    "redacted task readiness prompt".to_string(),
                     "selected agent catalog summaries".to_string(),
                     "effective enabled skill names and descriptions".to_string(),
                     "adapter capability and diagnostic status summaries".to_string(),
@@ -1320,7 +1320,7 @@ impl ServiceHost {
                     "adapter support statuses without raw config contents".to_string(),
                     "effective skill ids, names, agents, enabled states, and descriptions"
                         .to_string(),
-                    "task preflight feature description, evaluation rules, and output schema"
+                    "task readiness feature description, evaluation rules, and output schema"
                         .to_string(),
                 ]);
                 excluded_fields.extend([
@@ -1854,7 +1854,7 @@ impl ServiceHost {
 
         let payload = serde_json::json!({
             "feature": {
-                "name": "Task Preflight",
+                "name": "Task Readiness",
                 "description": "Read-only preflight that decides whether a user task is ready for agent handoff, which selected agent and effective skill fit best, what needs human confirmation, and what information is missing.",
                 "requirements": [
                     "Compare the task with selected agents and effective skills by product/resource, action intent, required permissions, and likely execution risk.",

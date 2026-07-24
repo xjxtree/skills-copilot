@@ -71,16 +71,17 @@ do not need to be renamed for Agent Copilot.
 - **Sessions:** browse local session previews for supported adapters, search
   within bounded history, and inspect redacted user/final-agent messages,
   timing, source coverage, and skill-usage summaries.
-- **Global search:** search from the app toolbar and jump directly to matching
-  skills, sessions, configuration entries, or detail pages.
+- **Global search:** search from the app toolbar and jump directly to the
+  matching Skills, Sessions, or Advanced configuration evidence.
 - **Readiness:** deterministic local evidence reports environment coverage;
-  task-specific preflight can rank matching effective skills without claiming
+  inline task readiness can rank matching effective skills without claiming
   universal readiness when no task is supplied.
 - **Configuration and evidence:** review supported agent config snapshots,
   inspect current files and diagnostics, preview rollback changes, and apply
-  guarded config actions where the app supports them.
-- **Skill Package Manager:** search, preview, install, update, remove, and
-  create local skill packages through the local `npx skills` manager.
+  guarded config actions from Settings › Advanced.
+- **Skill Package Manager:** use the integrated Skills actions to search,
+  preview, install, update, remove, and create local skill packages through the
+  local `npx skills` manager.
 - **Provider Observability:** view read-only usage summaries for AI requests
   made by Agent Copilot's own optional AI features, including model activity,
   latency, token estimates, and cost estimates over selectable date ranges. It
@@ -105,8 +106,8 @@ Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
 2. Unzip it and move `AgentCopilot.app` to `/Applications` or another local
    folder you control.
 3. Open `AgentCopilot.app`.
-4. Select a project and review its local skills, sessions, configuration
-   evidence, Agent Copilot AI provider activity, and settings.
+4. Select a project and use Project Overview, Skills, and Sessions. Open
+   configuration and recovery from Settings › Advanced.
 
 If macOS blocks the first launch, open the app from Finder's context menu or
 approve it in **System Settings > Privacy & Security**.
