@@ -222,6 +222,7 @@ impl<'a> PromptRedactor<'a> {
             self.redacted_fields.insert("local paths".to_string(), ());
         }
         let mut token_count = 0usize;
+        let mut generic_path_count = 0usize;
         let mut redact_next_token = false;
         let redacted = path_redacted
             .split_whitespace()
@@ -234,6 +235,9 @@ impl<'a> PromptRedactor<'a> {
                     redact_next_token = lower == "bearer";
                     token_count += 1;
                     "<redacted>"
+                } else if trimmed.starts_with('/') {
+                    generic_path_count += 1;
+                    "<redacted-path>"
                 } else if lower.contains("key")
                     || lower.contains("token")
                     || lower.contains("secret")
@@ -257,6 +261,10 @@ impl<'a> PromptRedactor<'a> {
             })
             .collect::<Vec<_>>()
             .join(" ");
+        if generic_path_count > 0 {
+            self.redacted_value_count += generic_path_count;
+            self.redacted_fields.insert("local paths".to_string(), ());
+        }
         if token_count > 0 {
             self.redacted_value_count += token_count;
             self.redacted_fields

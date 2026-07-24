@@ -1051,6 +1051,27 @@ struct TaskCockpitResult: Decodable, Hashable {
 }
 
 enum TaskCockpitProviderOutputParser {
+    static func result(
+        from envelope: AIResponseEnvelopeWire?,
+        taskText: String,
+        agentIDs: [String]
+    ) -> TaskCockpitResult {
+        guard let envelope,
+              let data = try? JSONEncoder().encode(envelope.result),
+              let output = String(data: data, encoding: .utf8) else {
+            return result(
+                from: Optional<String>.none,
+                taskText: taskText,
+                agentIDs: agentIDs
+            )
+        }
+        return looseResult(
+            from: data,
+            taskText: taskText.trimmingCharacters(in: .whitespacesAndNewlines),
+            agentIDs: TaskCockpitHistoryRecord.normalizedAgentIDs(agentIDs)
+        ) ?? result(from: output, taskText: taskText, agentIDs: agentIDs)
+    }
+
     static func result(from outputText: String?, taskText: String, agentIDs: [String]) -> TaskCockpitResult {
         let normalizedTask = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedAgents = TaskCockpitHistoryRecord.normalizedAgentIDs(agentIDs)
@@ -1197,7 +1218,7 @@ enum TaskCockpitProviderOutputParser {
             || !readinessRows.isEmpty
             || !gapRows.isEmpty
             || !blockerRows.isEmpty
-        guard hasCandidateOrContext else { return nil }
+        guard hasCandidateOrContext || summaryObject != nil else { return nil }
 
         let topSkill = skillCandidates.first ?? routeCandidates.first
         let topAgent = topSkill?.agent ?? agentCandidates.first?.agent

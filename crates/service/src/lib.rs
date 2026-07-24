@@ -547,6 +547,17 @@ pub struct LlmPreviewPromptParams {
     pub source_revision: Option<String>,
     #[serde(default)]
     pub session: Option<LlmSessionEvidenceParams>,
+    #[serde(default)]
+    pub search_candidates: Vec<LlmSearchCandidateParams>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LlmSearchCandidateParams {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -593,6 +604,8 @@ pub enum LlmPromptActionKind {
     TaskCockpit,
     SessionDigest,
     SkillChangeReview,
+    ProjectHealth,
+    SemanticSearch,
 }
 
 impl LlmPromptActionKind {
@@ -605,6 +618,8 @@ impl LlmPromptActionKind {
             Self::TaskCockpit => "task_cockpit",
             Self::SessionDigest => "session_digest",
             Self::SkillChangeReview => "skill_change_review",
+            Self::ProjectHealth => "project_health",
+            Self::SemanticSearch => "semantic_search",
         }
     }
 }

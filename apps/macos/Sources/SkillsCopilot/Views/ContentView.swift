@@ -1,6 +1,18 @@
 import AppKit
 import SwiftUI
 
+private struct SemanticSearchSheetSelection: Identifiable {
+    let query: String
+    let candidates: [AppSearchItem]
+
+    var id: String {
+        ContextualIntelligenceStore.semanticSearchKey(
+            query: query,
+            candidates: candidates
+        )
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var store: SkillStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -11,6 +23,7 @@ struct ContentView: View {
     @State private var overviewEvidenceSelection: ProjectOverviewEvidenceSelection?
     @State private var overviewActionSelection: ProjectOverviewActionSelection?
     @State private var overviewResumeSelection: ProjectOverviewResumeSelection?
+    @State private var semanticSearchSelection: SemanticSearchSheetSelection?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -72,6 +85,18 @@ struct ContentView: View {
         }
         .sheet(item: $overviewResumeSelection) { selection in
             ProjectOverviewResumePreviewSheet(selection: selection)
+        }
+        .sheet(item: $semanticSearchSelection) { selection in
+            SemanticSearchRerankSheet(
+                selection: selection,
+                store: store,
+                currentSourceRevision: currentProductSourceRevision,
+                providerGateMessage: contextualProviderGateMessage,
+                onSelect: { item in
+                    semanticSearchSelection = nil
+                    selectGlobalSearchResult(item)
+                }
+            )
         }
         .accessibilityIdentifier(AppAccessibilityID.mainContent)
         .accessibilityLabel(UIStrings.appWindowTitle)
@@ -167,6 +192,16 @@ struct ContentView: View {
             kindCounts: store.appSearchResult.kindCounts,
             isLoading: store.isSearchingApp,
             fallbackReason: store.appSearchResult.fallbackReason,
+            isSemanticallyRanked: semanticSearchFlow?.phase == .complete
+                && semanticSearchFlow?.isStale(
+                    currentSourceRevision: currentProductSourceRevision
+                ) == false,
+            onSemanticRerank: {
+                semanticSearchSelection = SemanticSearchSheetSelection(
+                    query: trimmedGlobalSearchText,
+                    candidates: lexicalGlobalSearchResults
+                )
+            },
             onViewAll: showAllGlobalSearchResults
         ) { result in
             showsGlobalSearchResults = false
@@ -179,10 +214,59 @@ struct ContentView: View {
     }
 
     private var globalSearchResults: [AppSearchItem] {
+        store.contextualIntelligenceStore.rankedSearchItems(
+            query: trimmedGlobalSearchText,
+            candidates: lexicalGlobalSearchResults,
+            currentSourceRevision: currentProductSourceRevision
+        )
+    }
+
+    private var lexicalGlobalSearchResults: [AppSearchItem] {
         guard !trimmedGlobalSearchText.isEmpty,
               store.appSearchResult.query == trimmedGlobalSearchText
         else { return [] }
         return store.appSearchResult.items
+    }
+
+    private var semanticSearchFlow: ContextualIntelligenceFlow? {
+        store.contextualIntelligenceStore.flow(
+            for: ContextualIntelligenceStore.semanticSearchKey(
+                query: trimmedGlobalSearchText,
+                candidates: lexicalGlobalSearchResults
+            )
+        )
+    }
+
+    private var currentProductSourceRevision: String? {
+        store.appContextStore.visibleProjectReadiness?.sourceRevision
+    }
+
+    private var contextualProviderGateMessage: String? {
+        guard currentProductSourceRevision != nil else {
+            return UIStrings.text(
+                "intelligence.snapshotRequired",
+                "Refresh the project before requesting interpretation."
+            )
+        }
+        let status = store.aiProviderStatus
+        if !status.serviceAvailable {
+            return UIStrings.localizedServiceMessage(
+                status.disabledReason ?? UIStrings.aiProviderUnavailable
+            )
+        }
+        if !status.configured || status.activeProfile == nil {
+            return UIStrings.text(
+                "intelligence.providerRequired",
+                "Configure an AI provider to request optional interpretation."
+            )
+        }
+        return status.enabled
+            ? nil
+            : status.disabledReason.map(UIStrings.localizedServiceMessage)
+                ?? UIStrings.text(
+                    "intelligence.providerDisabled",
+                    "The configured AI provider is disabled."
+                )
     }
 
     private func selectFirstGlobalSearchResult() {
@@ -1150,21 +1234,159 @@ private struct WindowChromeHelpButton: View {
     }
 }
 
+private struct SemanticSearchRerankSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let selection: SemanticSearchSheetSelection
+    @ObservedObject var store: SkillStore
+    let currentSourceRevision: String?
+    let providerGateMessage: String?
+    let onSelect: (AppSearchItem) -> Void
+
+    private var flowKey: String { selection.id }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.title2)
+                    .foregroundStyle(.purple)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(
+                        UIStrings.text(
+                            "intelligence.search.title",
+                            "Semantic rerank"
+                        )
+                    )
+                    .font(.title2.bold())
+                    Text(selection.query)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button(UIStrings.done) { dismiss() }
+            }
+            .padding(18)
+            Divider()
+            ScrollView {
+                ContextualIntelligenceView(
+                    kind: .semanticSearch,
+                    deterministicTitle: UIStrings.text(
+                        "intelligence.search.facts",
+                        "The local lexical result set remains the source of truth."
+                    ),
+                    deterministicFacts: [
+                        ContextualIntelligenceFact(
+                            label: UIStrings.text(
+                                "intelligence.search.query",
+                                "Query"
+                            ),
+                            value: selection.query
+                        ),
+                        ContextualIntelligenceFact(
+                            label: UIStrings.text(
+                                "intelligence.search.candidates",
+                                "Bounded candidates"
+                            ),
+                            value: String(selection.candidates.count)
+                        ),
+                        ContextualIntelligenceFact(
+                            label: UIStrings.text(
+                                "intelligence.search.scope",
+                                "Search scope"
+                            ),
+                            value: UIStrings.text(
+                                "intelligence.search.scope.value",
+                                "Already-returned local results only"
+                            )
+                        ),
+                    ],
+                    flow: store.contextualIntelligenceStore.flow(for: flowKey),
+                    currentSourceRevision: currentSourceRevision,
+                    providerGateMessage: providerGateMessage,
+                    onPreview: preview,
+                    onConfirm: send,
+                    onDismissPreview: {
+                        store.contextualIntelligenceStore.clear(flowKey)
+                    },
+                    onOpenEvidence: openCandidate
+                )
+                .padding(18)
+            }
+        }
+        .frame(minWidth: 660, idealWidth: 720, minHeight: 480)
+        .accessibilityIdentifier("global-search.semantic-rerank.sheet")
+    }
+
+    private func preview() {
+        guard let revision = currentSourceRevision else { return }
+        Task {
+            await store.contextualIntelligenceStore.previewSemanticSearch(
+                query: selection.query,
+                candidates: selection.candidates,
+                sourceRevision: revision
+            )
+        }
+    }
+
+    private func send() {
+        guard let revision = currentSourceRevision else { return }
+        Task {
+            await store.contextualIntelligenceStore.sendSemanticSearch(
+                query: selection.query,
+                candidates: selection.candidates,
+                sourceRevision: revision
+            )
+        }
+    }
+
+    private func openCandidate(_ evidence: EvidenceRef) {
+        guard let targetID = evidence.targetID,
+              let item = selection.candidates.first(where: { $0.id == targetID }) else {
+            return
+        }
+        onSelect(item)
+    }
+}
+
 private struct GlobalSearchResultsOverlay: View {
     let query: String
     let results: [AppSearchItem]
     let kindCounts: [AppSearchKindCount]
     let isLoading: Bool
     let fallbackReason: String?
+    let isSemanticallyRanked: Bool
+    let onSemanticRerank: () -> Void
     let onViewAll: (AppSearchItemKind) -> Void
     let onSelect: (AppSearchItem) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(UIStrings.text("toolbar.globalSearch.results", "Global results"))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
+            HStack {
+                Text(UIStrings.text("toolbar.globalSearch.results", "Global results"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if isSemanticallyRanked {
+                    Text(UIStrings.text("intelligence.search.ranked", "AI reranked"))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.purple)
+                }
+                Spacer()
+                if !results.isEmpty {
+                    Button(action: onSemanticRerank) {
+                        Label(
+                            UIStrings.text(
+                                "intelligence.search.action",
+                                "Rerank"
+                            ),
+                            systemImage: "sparkles"
+                        )
+                    }
+                    .buttonStyle(.link)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("global-search.semantic-rerank")
+                }
+            }
+            .padding(.horizontal, 4)
 
             if isLoading && results.isEmpty {
                 HStack(spacing: 8) {
@@ -1185,7 +1407,22 @@ private struct GlobalSearchResultsOverlay: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(AppSearchItemKind.allCases, id: \.self) { kind in
+                        if isSemanticallyRanked {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(results) { result in
+                                    Button {
+                                        onSelect(result)
+                                    } label: {
+                                        GlobalSearchSuggestionRow(result: result)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 6)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        } else {
+                            ForEach(AppSearchItemKind.allCases, id: \.self) { kind in
                             let kindResults = results.filter { $0.kind == kind }
                             if !kindResults.isEmpty {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -1223,6 +1460,7 @@ private struct GlobalSearchResultsOverlay: View {
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }

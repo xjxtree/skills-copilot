@@ -1229,12 +1229,23 @@ requires another inspection and preview.
   The service reuses `session.previewResume` validation to bind the exact
   session identity and both revisions, but excludes resume argv and raw
   transcript content from the provider prompt.
+- Action `project_health` accepts the optional product `source_revision`,
+  returns `copy_only_markdown`, and includes only the accepted readiness
+  coverage, per-agent, blocker, and attention evidence.
+- Action `semantic_search` requires `user_intent` plus
+  `search_candidates: [{id, kind, title, subtitle}]`. It accepts 1–18 unique
+  candidates whose kinds are `skill`, `session`, or `config_history`.
+  Candidate evidence has an opaque ID and a local-only `target_id`; the
+  rendered provider contract omits `target_id`, redacts candidate display
+  fields, performs no additional read or scan, and returns
+  `semantic_rerank`. Ranked IDs and rationale IDs must be unique, known
+  evidence references from that exact candidate set.
 - `llm.previewPrompt` returns `response_contract` with schema version 1,
   `request_kind`, `project_id`, accepted product `source_revision`,
   `result_schema`, typed `evidence`, optional deterministic `actions`, and
   exact `required_safety_flags`. The supported result schemas are
-  `copy_only_markdown`, `task_readiness`, `session_digest`, and
-  `skill_change_review`.
+  `copy_only_markdown`, `task_readiness`, `session_digest`,
+  `skill_change_review`, and `semantic_rerank`.
 - A successful HTTP transport is not sufficient for any prompt action. The
   provider must return only a JSON `response_envelope` whose identity,
   revision, schema, safety flags, and referenced evidence/actions match the

@@ -105,6 +105,8 @@ final class SkillStore: ObservableObject {
         }
     }
     @Published private(set) var taskCockpitResult: TaskCockpitResult?
+    @Published private(set) var taskCockpitResponseEnvelope: AIResponseEnvelopeWire?
+    @Published private(set) var taskCockpitResponseContract: AIResponseContractWire?
     @Published private(set) var taskCockpitFailedProviderOutput: String?
     @Published private(set) var taskCockpitHistory: [TaskCockpitHistoryRecord] = []
     @Published private(set) var selectedTaskCockpitHistoryID: TaskCockpitHistoryRecord.ID?
@@ -416,6 +418,7 @@ final class SkillStore: ObservableObject {
     let skillWorkspaceStore: SkillWorkspaceStore
     let sessionWorkspaceStore: SessionWorkspaceStore
     let providerActivityController: ProviderActivityController
+    let contextualIntelligenceStore: ContextualIntelligenceStore
     private var workspaceStoreCancellables = Set<AnyCancellable>()
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
@@ -476,7 +479,8 @@ final class SkillStore: ObservableObject {
     private var postRefreshSupplementalLoadTask: Task<Void, Never>?
     private var appSearchQuery = ""
     private var taskCockpitTimeoutTask: Task<Void, Never>?
-    private var taskCockpitServiceTask: Task<(TaskCockpitResult, String?), Error>?
+    private var taskCockpitServiceTask:
+        Task<(TaskCockpitResult, String?, AIResponseEnvelopeWire?), Error>?
     private var isSynchronizingSidebarSelection = false
     var filteredSkillListDataRevision = 0
     var filteredSkillListCache: FilteredSkillListCache?
@@ -500,6 +504,7 @@ final class SkillStore: ObservableObject {
         skillWorkspaceStore = SkillWorkspaceStore(service: service)
         sessionWorkspaceStore = SessionWorkspaceStore(serviceClient: service)
         providerActivityController = ProviderActivityController(service: service)
+        contextualIntelligenceStore = ContextualIntelligenceStore(service: service)
         self.taskCockpitTimeoutSeconds = max(0.05, taskCockpitTimeoutSeconds)
         taskCockpitHistory = []
         bindWorkspaceStores()
@@ -612,6 +617,9 @@ final class SkillStore: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &workspaceStoreCancellables)
         sessionWorkspaceStore.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &workspaceStoreCancellables)
+        contextualIntelligenceStore.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &workspaceStoreCancellables)
     }
@@ -905,6 +913,8 @@ final class SkillStore: ObservableObject {
         taskCockpitText = record.taskText
         setTaskCockpitAgentSelection(record.agentIDs, clearResult: false)
         taskCockpitResult = record.result
+        taskCockpitResponseEnvelope = nil
+        taskCockpitResponseContract = nil
         taskCockpitOperationState = record.operationState
         selectedTaskCockpitHistoryID = record.id
     }
@@ -2281,6 +2291,8 @@ final class SkillStore: ObservableObject {
         }
 
         taskCockpitResult = nil
+        taskCockpitResponseEnvelope = nil
+        taskCockpitResponseContract = nil
         taskCockpitFailedProviderOutput = nil
         taskCockpitPromptConfirmation = nil
         isPreviewingTaskCockpitPrompt = true
@@ -2295,7 +2307,8 @@ final class SkillStore: ObservableObject {
             let preview = try await service.previewPromptForTaskCockpit(
                 taskText: taskText,
                 agents: selectedAgents,
-                instanceIDs: candidateSkillIDs
+                instanceIDs: candidateSkillIDs,
+                sourceRevision: appContextStore.visibleProjectReadiness?.sourceRevision
             )
             guard canSendLLMPrompt(preview) else {
                 let reason = UIStrings.localizedServiceMessage(preview.disabledReason ?? UIStrings.llmPromptUnavailable)
@@ -2331,6 +2344,20 @@ final class SkillStore: ObservableObject {
             await buildTaskCockpit()
             return
         }
+        if let currentSourceRevision = appContextStore.visibleProjectReadiness?.sourceRevision,
+           pending.preview.responseContract?.sourceRevision != currentSourceRevision {
+            let reason = UIStrings.text(
+                "intelligence.stale.preview",
+                "The evidence changed. Preview the provider request again."
+            )
+            taskCockpitPromptConfirmation = nil
+            taskCockpitResult = .unavailable(taskText: pending.taskText, reason: reason)
+            taskCockpitOperationState = TaskCockpitOperationState.idle.finished(
+                phase: .failed,
+                message: reason
+            )
+            return
+        }
         guard canSendLLMPrompt(pending.preview) else {
             let reason = aiProviderStatus.configured ? UIStrings.llmPromptPreviewRequired : UIStrings.llmPromptProviderRequired
             taskCockpitResult = .unavailable(taskText: pending.taskText, reason: reason)
@@ -2361,6 +2388,8 @@ final class SkillStore: ObservableObject {
         isBuildingTaskCockpit = true
         taskCockpitPromptConfirmation = nil
         taskCockpitResult = nil
+        taskCockpitResponseEnvelope = nil
+        taskCockpitResponseContract = nil
         taskCockpitFailedProviderOutput = nil
         taskCockpitOperationState = .preparing(
             taskText: taskText,
@@ -2368,7 +2397,8 @@ final class SkillStore: ObservableObject {
         )
         scheduleTaskCockpitTimeout(operationID: operationID, taskText: taskText)
 
-        let serviceTask = Task {
+        let serviceTask:
+            Task<(TaskCockpitResult, String?, AIResponseEnvelopeWire?), Error> = Task {
             let sendResult = try await service.confirmPromptAndSendForTaskCockpit(
                 preview: pending.preview,
                 taskText: taskText,
@@ -2382,16 +2412,18 @@ final class SkillStore: ObservableObject {
                         taskText: taskText,
                         reason: UIStrings.localizedServiceMessage(sendResult.message)
                     ),
-                    output?.isEmpty == false ? sendResult.outputText : nil
+                    output?.isEmpty == false ? sendResult.outputText : nil,
+                    nil as AIResponseEnvelopeWire?
                 )
             }
             return (
                 TaskCockpitProviderOutputParser.result(
-                    from: sendResult.outputText,
+                    from: sendResult.responseEnvelope,
                     taskText: taskText,
                     agentIDs: selectedAgents
                 ),
-                nil
+                nil,
+                sendResult.responseEnvelope
             )
         }
         taskCockpitServiceTask = serviceTask
@@ -2402,6 +2434,10 @@ final class SkillStore: ObservableObject {
             let result = outcome.0
             taskCockpitResult = result
             taskCockpitFailedProviderOutput = outcome.1
+            taskCockpitResponseEnvelope = outcome.2
+            taskCockpitResponseContract = outcome.2 == nil
+                ? nil
+                : pending.preview.responseContract
             if let diagnosticReason = result.recoveryDiagnosticReason {
                 finishTaskCockpitOperation(
                     operationID,
@@ -2421,6 +2457,8 @@ final class SkillStore: ObservableObject {
             let message = UIStrings.localizedServiceMessage(error.localizedDescription)
             taskCockpitResult = .unavailable(taskText: taskText, reason: message)
             taskCockpitFailedProviderOutput = nil
+            taskCockpitResponseEnvelope = nil
+            taskCockpitResponseContract = nil
             finishTaskCockpitOperation(
                 operationID,
                 phase: .failed,
@@ -2453,6 +2491,8 @@ final class SkillStore: ObservableObject {
         isBuildingTaskCockpit = false
         taskCockpitPromptConfirmation = nil
         taskCockpitFailedProviderOutput = nil
+        taskCockpitResponseEnvelope = nil
+        taskCockpitResponseContract = nil
         if publishFallbackResult {
             taskCockpitResult = .unavailable(taskText: taskText, reason: message)
         }
@@ -4258,6 +4298,8 @@ final class SkillStore: ObservableObject {
 
     private func clearTaskCockpitTransientState() {
         taskCockpitResult = nil
+        taskCockpitResponseEnvelope = nil
+        taskCockpitResponseContract = nil
         taskCockpitFailedProviderOutput = nil
         taskCockpitPromptConfirmation = nil
         isPreviewingTaskCockpitPrompt = false

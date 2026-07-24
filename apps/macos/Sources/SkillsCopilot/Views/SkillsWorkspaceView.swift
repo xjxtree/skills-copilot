@@ -40,6 +40,7 @@ struct SkillsWorkspaceView: View {
         }
         .sheet(item: $intelligenceSelection) { selection in
             SkillContextualIntelligenceSheet(aggregate: selection.aggregate)
+                .environmentObject(store)
         }
         .accessibilityIdentifier("skills.workspace")
     }
@@ -250,9 +251,13 @@ private struct SkillsWorkspaceEmptyDetailView: View {
 
 private struct SkillContextualIntelligenceSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: SkillStore
     private let presentation: SkillAggregateDetailPresentation
+    private let aggregate: SkillAggregateRecord
+    @State private var evidenceSelection: ContextualEvidenceSelection?
 
     init(aggregate: SkillAggregateRecord) {
+        self.aggregate = aggregate
         presentation = SkillAggregateDetailPresentation(aggregate: aggregate)
     }
 
@@ -282,49 +287,103 @@ private struct SkillContextualIntelligenceSheet: View {
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    reviewCard(
-                        title: UIStrings.text(
-                            "skillAggregate.intelligence.localAnswer",
-                            "Evidence-bound context"
+                ContextualIntelligenceView(
+                    kind: .skillChangeReview,
+                    deterministicTitle: presentation.purpose,
+                    deterministicFacts: [
+                        ContextualIntelligenceFact(
+                            label: UIStrings.text(
+                                "skillAggregate.intelligence.currentState",
+                                "Current verified state"
+                            ),
+                            value: presentation.attentionExplanation
                         ),
-                        text: presentation.purpose
-                    )
-                    reviewCard(
-                        title: UIStrings.text(
-                            "skillAggregate.intelligence.currentState",
-                            "Current verified state"
+                        ContextualIntelligenceFact(
+                            label: UIStrings.text(
+                                "skillAggregate.instances.effective",
+                                "Effective"
+                            ),
+                            value: "\(aggregate.effectiveInstanceCount)/\(aggregate.installedInstanceCount)"
                         ),
-                        text: presentation.attentionExplanation
-                    )
-                    reviewCard(
-                        title: UIStrings.text(
-                            "skillAggregate.intelligence.providerBoundary",
-                            "Provider boundary"
+                        ContextualIntelligenceFact(
+                            label: UIStrings.text(
+                                "skillAggregate.answer.attention",
+                                "Attention"
+                            ),
+                            value: "\(aggregate.findingCount + aggregate.conflictCount)"
                         ),
-                        text: UIStrings.text(
-                            "skillAggregate.intelligence.providerBoundaryMessage",
-                            "No model request has been made. A future provider flow must preview the prompt, redact sensitive content, show the destination, and require explicit confirmation."
-                        )
-                    )
-                }
+                    ],
+                    flow: store.contextualIntelligenceStore.flow(for: flowKey),
+                    currentSourceRevision: productSourceRevision,
+                    providerGateMessage: providerGateMessage,
+                    onPreview: {
+                        guard let revision = productSourceRevision else { return }
+                        Task {
+                            await store.contextualIntelligenceStore.previewSkillReview(
+                                aggregate: aggregate,
+                                productSourceRevision: revision
+                            )
+                        }
+                    },
+                    onConfirm: {
+                        guard let revision = productSourceRevision else { return }
+                        Task {
+                            await store.contextualIntelligenceStore.sendSkillReview(
+                                aggregate: aggregate,
+                                productSourceRevision: revision
+                            )
+                        }
+                    },
+                    onDismissPreview: {
+                        store.contextualIntelligenceStore.clear(flowKey)
+                    },
+                    onOpenEvidence: {
+                        evidenceSelection = ContextualEvidenceSelection(reference: $0)
+                    }
+                )
                 .padding(18)
             }
         }
         .frame(minWidth: 620, idealWidth: 700, minHeight: 440)
+        .sheet(item: $evidenceSelection) { selection in
+            ContextualEvidenceSheet(selection: selection)
+        }
         .accessibilityIdentifier("skills.workspace.contextual-intelligence")
     }
 
-    private func reviewCard(title: String, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-            Text(text)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+    private var flowKey: String {
+        ContextualIntelligenceStore.skillKey(aggregate.id)
+    }
+
+    private var productSourceRevision: String? {
+        store.appContextStore.visibleProjectReadiness?.sourceRevision
+    }
+
+    private var providerGateMessage: String? {
+        guard productSourceRevision != nil else {
+            return UIStrings.text(
+                "intelligence.snapshotRequired",
+                "Refresh the project before requesting interpretation."
+            )
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .nativePanelSurface()
+        let status = store.aiProviderStatus
+        if !status.serviceAvailable {
+            return UIStrings.localizedServiceMessage(
+                status.disabledReason ?? UIStrings.aiProviderUnavailable
+            )
+        }
+        if !status.configured || status.activeProfile == nil {
+            return UIStrings.text(
+                "intelligence.providerRequired",
+                "Configure an AI provider to request optional interpretation."
+            )
+        }
+        return status.enabled
+            ? nil
+            : status.disabledReason.map(UIStrings.localizedServiceMessage)
+                ?? UIStrings.text(
+                    "intelligence.providerDisabled",
+                    "The configured AI provider is disabled."
+                )
     }
 }

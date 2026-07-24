@@ -8,6 +8,7 @@ struct ProjectOverviewView: View {
     let onPreviewAttentionAction: (AttentionItem, ActionDescriptorWire) -> Void
     let onOpenSession: (SessionContinuationRecord) -> Void
     let onPreviewSessionResume: (SessionContinuationRecord) -> Void
+    @State private var contextualEvidenceSelection: ContextualEvidenceSelection?
 
     init(
         appContextStore: AppContextStore,
@@ -49,6 +50,9 @@ struct ProjectOverviewView: View {
         }
         .onAppear {
             skillStore.ensureTaskCockpitAgentSelection()
+        }
+        .sheet(item: $contextualEvidenceSelection) { selection in
+            ContextualEvidenceSheet(selection: selection)
         }
     }
 
@@ -124,7 +128,10 @@ struct ProjectOverviewView: View {
             ProjectStatusSection(
                 presentation: presentation,
                 record: record,
-                onRefresh: refreshReadiness
+                onRefresh: refreshReadiness,
+                intelligence: {
+                    projectIntelligenceView(record)
+                }
             )
 
             taskReadinessSection
@@ -141,6 +148,56 @@ struct ProjectOverviewView: View {
                 onPreviewResume: onPreviewSessionResume
             )
         }
+    }
+
+    private func projectIntelligenceView(
+        _ record: ProjectReadinessRecord
+    ) -> some View {
+        let key = ContextualIntelligenceStore.projectKey(record.projectID)
+        return ContextualIntelligenceView(
+                kind: .projectHealth,
+                deterministicTitle: UIStrings.text(
+                    "overview.intelligence.facts",
+                    "Current project readiness snapshot"
+                ),
+                deterministicFacts: [
+                    ContextualIntelligenceFact(
+                        label: UIStrings.text("overview.status.health", "Environment"),
+                        value: healthTitle(record.health)
+                    ),
+                    ContextualIntelligenceFact(
+                        label: UIStrings.text("overview.status.coverage", "Coverage"),
+                        value: ProjectOverviewPresentation.coverageText(record.coverage)
+                    ),
+                    ContextualIntelligenceFact(
+                        label: UIStrings.text("overview.attention.title", "Needs attention"),
+                        value: String(record.attention.count)
+                    ),
+                ],
+                flow: skillStore.contextualIntelligenceStore.flow(for: key),
+                currentSourceRevision: record.sourceRevision,
+                providerGateMessage: taskProviderGateMessage,
+                onPreview: {
+                    Task {
+                        await skillStore.contextualIntelligenceStore
+                            .previewProjectHealth(record)
+                    }
+                },
+                onConfirm: {
+                    Task {
+                        await skillStore.contextualIntelligenceStore
+                            .sendProjectHealth(record)
+                    }
+                },
+                onDismissPreview: {
+                    skillStore.contextualIntelligenceStore.clear(key)
+                },
+                onOpenEvidence: {
+                    contextualEvidenceSelection = ContextualEvidenceSelection(
+                        reference: $0
+                    )
+                }
+            )
     }
 
     private var taskReadinessSection: some View {
@@ -178,6 +235,73 @@ struct ProjectOverviewView: View {
                 onDismissPrompt: skillStore.clearTaskCockpitPromptConfirmation,
                 onCancel: skillStore.cancelTaskCockpitBuild
             )
+            taskReadinessEvidenceBinding
+        }
+    }
+
+    @ViewBuilder
+    private var taskReadinessEvidenceBinding: some View {
+        let currentRevision = presentation.record?.sourceRevision
+        if let pendingRevision = skillStore.taskCockpitPromptConfirmation?
+            .preview.responseContract?.sourceRevision,
+           pendingRevision != currentRevision {
+            Label(
+                UIStrings.text(
+                    "intelligence.stale.preview",
+                    "The evidence changed. Preview the provider request again."
+                ),
+                systemImage: "clock.arrow.circlepath"
+            )
+            .font(.callout)
+            .foregroundStyle(.orange)
+        }
+        if let envelope = skillStore.taskCockpitResponseEnvelope,
+           let contract = skillStore.taskCockpitResponseContract {
+            let stale = envelope.sourceRevision != currentRevision
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(
+                        UIStrings.text(
+                            "intelligence.citations",
+                            "Evidence citations"
+                        ),
+                        systemImage: "link"
+                    )
+                    .font(.subheadline.bold())
+                    if stale {
+                        Text(UIStrings.text("intelligence.stale", "Stale"))
+                            .font(.caption.bold())
+                            .foregroundStyle(.orange)
+                    }
+                }
+                if stale {
+                    Text(
+                        UIStrings.text(
+                            "intelligence.stale.output",
+                            "This interpretation belongs to an older evidence revision. It remains visible for comparison but cannot drive any action."
+                        )
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                }
+                ForEach(
+                    contract.evidence.filter {
+                        Set(envelope.evidenceRefs).contains($0.id)
+                    }
+                ) { evidence in
+                    Button {
+                        contextualEvidenceSelection = ContextualEvidenceSelection(
+                            reference: evidence
+                        )
+                    } label: {
+                        Label(evidence.summary, systemImage: "arrow.up.right.square")
+                            .lineLimit(2)
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+            .padding(12)
+            .nativePanelSurface()
         }
     }
 
@@ -211,10 +335,11 @@ struct ProjectOverviewView: View {
     }
 }
 
-private struct ProjectStatusSection: View {
+private struct ProjectStatusSection<Intelligence: View>: View {
     let presentation: ProjectOverviewPresentation
     let record: ProjectReadinessRecord
     let onRefresh: () -> Void
+    @ViewBuilder let intelligence: () -> Intelligence
 
     var body: some View {
         ProjectOverviewSection(
@@ -308,6 +433,25 @@ private struct ProjectStatusSection: View {
                         }
                     }
                 }
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(
+                        UIStrings.text(
+                            "overview.intelligence.title",
+                            "Project explanation"
+                        )
+                    )
+                    .font(.headline)
+                    Text(
+                        UIStrings.text(
+                            "overview.intelligence.subtitle",
+                            "Verified facts stay primary; an optional model can explain and prioritize only the accepted evidence."
+                        )
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                intelligence()
             }
         }
     }

@@ -110,10 +110,14 @@ struct AppContextStoreTests {
             readinessEnvelope(projectID: "project-a", sourceRevision: "source-late"),
             delayNanoseconds: 100_000_000
         )
+        let readinessRequestCount = runner.requestCount(for: "project.getReadiness")
         let refresh = Task { @MainActor in
             await store.refreshProjectReadiness()
         }
-        await Task.yield()
+        try await runner.waitForRequest(
+            "project.getReadiness",
+            count: readinessRequestCount + 1
+        )
         store.cancelProjectReadinessRefresh()
         await refresh.value
 
@@ -144,7 +148,7 @@ struct AppContextStoreTests {
         let staleRefresh = Task { @MainActor in
             await store.refreshProjectReadiness()
         }
-        await Task.yield()
+        try await runner.waitForRequest("project.getReadiness", count: 1)
         store.acceptProjectContextState(projectState(id: "project-b", revision: "context-b"))
         await store.refreshProjectReadiness()
         await staleRefresh.value
@@ -230,6 +234,24 @@ private final class AppContextServiceRunner: ServiceProcessRunning {
         lock.withLock {
             requests.compactMap { $0["method"] as? String }
         }
+    }
+
+    func requestCount(for method: String) -> Int {
+        lock.withLock {
+            requests.count { $0["method"] as? String == method }
+        }
+    }
+
+    func waitForRequest(_ method: String, count: Int) async throws {
+        for _ in 0 ..< 1_000 {
+            if requestCount(for: method) >= count {
+                return
+            }
+            await Task.yield()
+        }
+        throw NativeModelTestFailure(
+            description: "Timed out waiting for AppContextStore request \(method)."
+        )
     }
 
     func serviceClient() -> ServiceClient {

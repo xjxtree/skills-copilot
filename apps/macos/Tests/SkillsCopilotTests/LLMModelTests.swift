@@ -12,6 +12,8 @@ struct LLMModelTests {
         try promptSendResultDecodesServiceDraftOutput()
         try evidenceBoundResponseEnvelopeValidatesKnownReferences()
         try evidenceBoundResponseEnvelopeRejectsUnknownReferences()
+        try semanticRerankRejectsUnknownCandidateReferences()
+        try taskCockpitParsesStructuredEnvelopeInsteadOfVisibleSummary()
         try promptSendResultUsesAuditErrorMessage()
         try promptRunListIgnoresDeprecatedBodyFields()
         try longTextReviewBlockDefaultsToMarkdown()
@@ -371,6 +373,105 @@ struct LLMModelTests {
             rejected,
             true,
             "Unknown evidence references must not cross the native AI response boundary."
+        )
+    }
+
+    private func semanticRerankRejectsUnknownCandidateReferences() throws {
+        let contract = try JSONDecoder().decode(
+            AIResponseContractWire.self,
+            from: Data(
+                Self.responseContractJSON
+                    .replacingOccurrences(of: #""request_kind": "analyze""#, with: #""request_kind": "semantic_search""#)
+                    .replacingOccurrences(of: #""result_schema": "copy_only_markdown""#, with: #""result_schema": "semantic_rerank""#)
+                    .utf8
+            )
+        )
+        let envelopeJSON = Self.responseEnvelopeJSON
+            .replacingOccurrences(of: #""request_kind": "analyze""#, with: #""request_kind": "semantic_search""#)
+            .replacingOccurrences(of: #""result_schema": "copy_only_markdown""#, with: #""result_schema": "semantic_rerank""#)
+            .replacingOccurrences(
+                of: #"{"markdown": "Evidence-bound copy-only review."}"#,
+                with: #"{"summary":"Reranked","ranked_evidence_ids":["evidence:project:fixture"],"rationales":[{"evidence_id":"evidence:project:unknown","rationale":"Unknown"}],"unsupported_claims":[]}"#
+            )
+        let envelope = try JSONDecoder().decode(
+            AIResponseEnvelopeWire.self,
+            from: Data(envelopeJSON.utf8)
+        )
+        var rejected = false
+        do {
+            try envelope.validated(against: contract)
+        } catch {
+            rejected = true
+        }
+        try expectEqual(
+            rejected,
+            true,
+            "Semantic rerank rationales must cite a ranked, accepted candidate."
+        )
+    }
+
+    private func taskCockpitParsesStructuredEnvelopeInsteadOfVisibleSummary() throws {
+        let envelopeJSON = """
+        {
+          "schema_version": 1,
+          "request_kind": "task_cockpit",
+          "project_id": "project-fixture",
+          "source_revision": "sha256:product-fixture",
+          "result_schema": "task_readiness",
+          "evidence_refs": ["evidence:project:fixture"],
+          "action_refs": [],
+          "result": {
+            "summary": {
+              "summary": "Use Codex with the audit skill.",
+              "recommended_agent": "codex",
+              "recommended_skill_name": "audit",
+              "readiness_score": 92,
+              "routing_score": 88,
+              "gap_count": 0,
+              "blocker_count": 0
+            },
+            "agent_candidates": [],
+            "skill_candidates": [],
+            "readiness_signals": [{"id":"signal-1","title":"Evidence ready","detail":"Accepted","status":"ready"}],
+            "gap_rows": [],
+            "blocker_rows": []
+          },
+          "safety_flags": {
+            "copy_only": true,
+            "write_back_allowed": false,
+            "command_execution_allowed": false,
+            "script_execution_allowed": false,
+            "mutation_allowed": false,
+            "hidden_task_state_created": false,
+            "raw_prompt_persisted": false,
+            "raw_response_persisted": false,
+            "raw_trace_persisted": false
+          }
+        }
+        """
+        let envelope = try JSONDecoder().decode(
+            AIResponseEnvelopeWire.self,
+            from: Data(envelopeJSON.utf8)
+        )
+        let result = TaskCockpitProviderOutputParser.result(
+            from: envelope,
+            taskText: "Audit the project",
+            agentIDs: ["codex"]
+        )
+        try expectEqual(
+            result.summary.recommendedAgent,
+            "codex",
+            "Task Preflight should retain structured envelope routing."
+        )
+        try expectEqual(
+            result.summary.readinessScore,
+            92,
+            "Task Preflight should retain structured envelope scores."
+        )
+        try expectEqual(
+            result.readinessSignals.count,
+            1,
+            "Task Preflight should retain structured envelope evidence rows."
         )
     }
 

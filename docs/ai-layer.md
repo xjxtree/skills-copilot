@@ -65,9 +65,13 @@ copy-only authoring aid.
 - `skill_change_review` binds one selected skill aggregate from the accepted
   project projection. It describes only observed current evidence and must not
   invent a prior version when comparison evidence is unavailable.
-- Semantic search is a separate explicit provider action over bounded local
-  candidates. `app.search` remains local and lexical and must never trigger a
-  provider call.
+- `project_health` binds the accepted project readiness revision and may
+  explain or prioritize only its deterministic coverage, per-agent health,
+  blocker, and attention evidence.
+- `semantic_search` accepts the current query and 1–18 candidates already
+  returned by `app.search`. Candidate evidence IDs are opaque; the provider
+  never receives local navigation target IDs. It may reorder only those
+  candidates and cannot discover or introduce another result.
 
 Every new product-intelligence response must bind:
 
@@ -94,7 +98,11 @@ The supported result schemas are:
 - `copy_only_markdown` for bounded explanations and advanced frontmatter help;
 - `task_readiness` for the wire-compatible `task_cockpit` action;
 - `session_digest` for one selected session;
-- `skill_change_review` for one selected skill aggregate.
+- `skill_change_review` for one selected skill aggregate;
+- `semantic_rerank` for the explicit `semantic_search` action. It returns
+  `ranked_evidence_ids`, per-candidate rationales, and explicit unsupported
+  claims. Every returned candidate ID must be a unique member of the
+  envelope's accepted evidence set.
 
 The provider must return only the matching JSON response envelope. Transport
 success without a valid envelope is `parse_failed` /
@@ -102,6 +110,13 @@ success without a valid envelope is `parse_failed` /
 response contract or current product revision cannot be verified is
 `remote_unknown`. Native clients validate the same contract again before
 publishing a successful result.
+
+Contextual results are transient. A changed product source revision leaves the
+old interpretation visible with a stale label, disables its confirmation or
+action use, and requires a new preview. Evidence citations open the exact local
+evidence record or already-returned search candidate. The structured
+`task_readiness` result is parsed from the validated response envelope rather
+than its one-line display summary.
 
 ## Output Handling
 

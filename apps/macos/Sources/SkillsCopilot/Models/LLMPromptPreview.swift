@@ -100,6 +100,7 @@ enum AIResponseResultSchema: String, Codable, Hashable {
     case taskReadiness = "task_readiness"
     case sessionDigest = "session_digest"
     case skillChangeReview = "skill_change_review"
+    case semanticRerank = "semantic_rerank"
 }
 
 struct AIResponseSafetyFlagsWire: Codable, Hashable {
@@ -287,7 +288,11 @@ struct AIResponseEnvelopeWire: Decodable, Hashable {
               Set(actionRefs).count == actionRefs.count,
               Set(evidenceRefs).isSubset(of: Set(contract.evidence.map(\.id))),
               Set(actionRefs).isSubset(of: Set(contract.actions.map(\.id))),
-              result.hasValidAIResponseShape(for: resultSchema) else {
+              result.hasValidAIResponseShape(for: resultSchema),
+              result.hasValidSemanticRerankReferences(
+                  for: resultSchema,
+                  evidenceRefs: evidenceRefs
+              ) else {
             throw ProductProjectionValidationError.invalid(
                 "AI response envelope drifted from its confirmed evidence contract"
             )
@@ -321,7 +326,46 @@ private extension JSONValue {
                 && object["changes"]?.isArray == true
                 && object["risks"]?.isArray == true
                 && object["recommendations"]?.isArray == true
+        case .semanticRerank:
+            return object["summary"]?.isNonemptyString == true
+                && object["ranked_evidence_ids"]?.isArray == true
+                && object["rationales"]?.isArray == true
+                && object["unsupported_claims"]?.isArray == true
         }
+    }
+
+    func hasValidSemanticRerankReferences(
+        for schema: AIResponseResultSchema,
+        evidenceRefs: [String]
+    ) -> Bool {
+        guard schema == .semanticRerank else { return true }
+        guard case .object(let object) = self,
+              case .array(let rankedValues) = object["ranked_evidence_ids"],
+              !rankedValues.isEmpty,
+              case .array(let rationaleValues) = object["rationales"],
+              case .array(let unsupportedValues) = object["unsupported_claims"] else {
+            return false
+        }
+        let allowed = Set(evidenceRefs)
+        let ranked = rankedValues.compactMap(\.stringValue)
+        guard ranked.count == rankedValues.count,
+              Set(ranked).count == ranked.count,
+              Set(ranked).isSubset(of: allowed),
+              unsupportedValues.allSatisfy({ $0.nonemptyStringValue != nil }) else {
+            return false
+        }
+        let rationaleIDs = rationaleValues.compactMap { value -> String? in
+            guard case .object(let row) = value,
+                  let evidenceID = row["evidence_id"]?.nonemptyStringValue,
+                  ranked.contains(evidenceID),
+                  row["rationale"]?.nonemptyStringValue != nil else {
+                return nil
+            }
+            return evidenceID
+        }
+        return rationaleIDs.count == rationaleValues.count
+            && Set(rationaleIDs).count == rationaleIDs.count
+            && Set(rationaleIDs) == Set(ranked)
     }
 
     var containsForbiddenAIResponseField: Bool {
@@ -348,6 +392,17 @@ private extension JSONValue {
             return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return false
+    }
+
+    var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var nonemptyStringValue: String? {
+        stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? stringValue
+            : nil
     }
 
     var isObject: Bool {
@@ -388,6 +443,93 @@ private extension JSONValue {
     var isNonnegativeInteger: Bool {
         guard case .number(let value) = self else { return false }
         return value >= 0 && value.rounded() == value
+    }
+}
+
+struct ContextualIntelligenceSection: Identifiable, Hashable {
+    let title: String
+    let rows: [String]
+
+    var id: String { "\(title):\(rows.joined(separator: "\u{1f}"))" }
+}
+
+struct ContextualIntelligenceOutput: Hashable {
+    let summary: String
+    let sections: [ContextualIntelligenceSection]
+    let suggestedNextPrompt: String?
+    let rankedEvidenceIDs: [String]
+    let unsupportedClaims: [String]
+
+    static func parse(_ envelope: AIResponseEnvelopeWire) -> ContextualIntelligenceOutput? {
+        guard case .object(let object) = envelope.result else { return nil }
+        let summary: String?
+        if envelope.resultSchema == .copyOnlyMarkdown {
+            summary = object["markdown"]?.nonemptyStringValue
+        } else if case .object(let nested) = object["summary"] {
+            summary = nested["summary"]?.nonemptyStringValue
+        } else {
+            summary = object["summary"]?.nonemptyStringValue
+        }
+        guard let summary else { return nil }
+
+        var sections: [ContextualIntelligenceSection] = []
+        let sectionFields: [(String, String)] = [
+            ("changes", UIStrings.text("intelligence.output.changes", "Observed changes")),
+            ("risks", UIStrings.text("intelligence.output.risks", "Risks")),
+            ("recommendations", UIStrings.text("intelligence.output.recommendations", "Recommendations")),
+            ("evidence_notes", UIStrings.text("intelligence.output.evidenceNotes", "Evidence notes")),
+            ("uncertainties", UIStrings.text("intelligence.output.uncertainties", "Uncertainty")),
+            ("rationales", UIStrings.text("intelligence.output.rationales", "Why this order")),
+        ]
+        for (field, title) in sectionFields {
+            let rows = object[field]?.displayLines ?? []
+            if !rows.isEmpty {
+                sections.append(ContextualIntelligenceSection(title: title, rows: rows))
+            }
+        }
+        let ranked = object["ranked_evidence_ids"]?.stringArray ?? []
+        let unsupported = object["unsupported_claims"]?.displayLines ?? []
+        return ContextualIntelligenceOutput(
+            summary: summary,
+            sections: sections,
+            suggestedNextPrompt: object["suggested_next_prompt"]?.nonemptyStringValue,
+            rankedEvidenceIDs: ranked,
+            unsupportedClaims: unsupported
+        )
+    }
+}
+
+extension JSONValue {
+    fileprivate var stringArray: [String] {
+        guard case .array(let values) = self else { return [] }
+        return values.compactMap(\.nonemptyStringValue)
+    }
+
+    fileprivate var displayLines: [String] {
+        switch self {
+        case .array(let values):
+            return values.compactMap(\.displayLine)
+        default:
+            return []
+        }
+    }
+
+    fileprivate var displayLine: String? {
+        switch self {
+        case .string(let value):
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil
+                : value
+        case .object(let object):
+            for key in ["rationale", "summary", "detail", "message", "text", "title"] {
+                if let value = object[key]?.nonemptyStringValue {
+                    return value
+                }
+            }
+            return nil
+        case .number, .bool, .array, .null:
+            return nil
+        }
     }
 }
 

@@ -10,11 +10,18 @@ struct SessionWorkspaceDetailView: View {
     let resumeError: String?
     let isLoadingResume: Bool
     let gapNotes: [String]
+    let contextualFlow: ContextualIntelligenceFlow?
+    let contextualSourceRevision: String?
+    let providerGateMessage: String?
     let onLoadTimelineMore: () -> Void
     let onLoadTimelineAll: () -> Void
     let onCancelTimelineLoad: () -> Void
     let onPreviewResume: () -> Void
     let onCopyResumeCommand: (String) -> Void
+    let onPreviewDigest: () -> Void
+    let onConfirmDigest: () -> Void
+    let onDismissDigestPreview: () -> Void
+    let onOpenDigestEvidence: (EvidenceRef) -> Void
 
     @State private var selectedLayer: SessionWorkspaceDetailLayer = .summary
     @State private var didCopyCommand = false
@@ -29,11 +36,18 @@ struct SessionWorkspaceDetailView: View {
         resumeError: String?,
         isLoadingResume: Bool,
         gapNotes: [String] = [],
+        contextualFlow: ContextualIntelligenceFlow? = nil,
+        contextualSourceRevision: String? = nil,
+        providerGateMessage: String? = nil,
         onLoadTimelineMore: @escaping () -> Void,
         onLoadTimelineAll: @escaping () -> Void,
         onCancelTimelineLoad: @escaping () -> Void,
         onPreviewResume: @escaping () -> Void,
-        onCopyResumeCommand: @escaping (String) -> Void
+        onCopyResumeCommand: @escaping (String) -> Void,
+        onPreviewDigest: @escaping () -> Void = {},
+        onConfirmDigest: @escaping () -> Void = {},
+        onDismissDigestPreview: @escaping () -> Void = {},
+        onOpenDigestEvidence: @escaping (EvidenceRef) -> Void = { _ in }
     ) {
         self.session = session
         self.detailState = detailState
@@ -44,11 +58,18 @@ struct SessionWorkspaceDetailView: View {
         self.resumeError = resumeError
         self.isLoadingResume = isLoadingResume
         self.gapNotes = gapNotes
+        self.contextualFlow = contextualFlow
+        self.contextualSourceRevision = contextualSourceRevision
+        self.providerGateMessage = providerGateMessage
         self.onLoadTimelineMore = onLoadTimelineMore
         self.onLoadTimelineAll = onLoadTimelineAll
         self.onCancelTimelineLoad = onCancelTimelineLoad
         self.onPreviewResume = onPreviewResume
         self.onCopyResumeCommand = onCopyResumeCommand
+        self.onPreviewDigest = onPreviewDigest
+        self.onConfirmDigest = onConfirmDigest
+        self.onDismissDigestPreview = onDismissDigestPreview
+        self.onOpenDigestEvidence = onOpenDigestEvidence
     }
 
     var body: some View {
@@ -199,6 +220,35 @@ struct SessionWorkspaceDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .sessionDetailCard()
+
+            ContextualIntelligenceView(
+                kind: .sessionDigest,
+                deterministicTitle: UIStrings.text(
+                    "sessions.detail.digest.facts",
+                    "Recorded session facts remain available without AI."
+                ),
+                deterministicFacts: [
+                    ContextualIntelligenceFact(
+                        label: UIStrings.text("sessions.detail.intent", "Intent"),
+                        value: presentation.intent
+                    ),
+                    ContextualIntelligenceFact(
+                        label: UIStrings.text("sessions.detail.outcome", "Latest recorded outcome"),
+                        value: presentation.outcome
+                    ),
+                    ContextualIntelligenceFact(
+                        label: UIStrings.text("sessions.detail.coverage", "Coverage"),
+                        value: presentation.coverage
+                    ),
+                ],
+                flow: contextualFlow,
+                currentSourceRevision: contextualSourceRevision,
+                providerGateMessage: providerGateMessage,
+                onPreview: onPreviewDigest,
+                onConfirm: onConfirmDigest,
+                onDismissPreview: onDismissDigestPreview,
+                onOpenEvidence: onOpenDigestEvidence
+            )
 
             continuationCard(presentation)
         }

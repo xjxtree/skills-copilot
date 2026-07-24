@@ -17,6 +17,7 @@ const TASK_COCKPIT_MAX_EFFECTIVE_SKILLS: usize = 24;
 const TASK_COCKPIT_MAX_PROMPT_TOKENS: u32 = 12_000;
 const LLM_MAX_CONTEXT_ACTIONS: usize = 64;
 const LLM_MAX_CONTEXT_EVIDENCE: usize = 128;
+const LLM_MAX_SEARCH_CANDIDATES: usize = 18;
 
 struct LlmResponseEvidenceContext {
     contract: AiResponseContract,
@@ -1368,6 +1369,51 @@ impl ServiceHost {
                 ]);
                 sections.push(render_session_digest_prompt_section(session, &mut redactor));
             }
+            LlmPromptActionKind::ProjectHealth => {
+                prompt_scope.extend([
+                    "accepted deterministic project readiness".to_string(),
+                    "per-agent health and coverage".to_string(),
+                    "bounded blockers and attention evidence".to_string(),
+                    "required evidence-bound response schema".to_string(),
+                ]);
+                included_fields.extend([
+                    "project health and source coverage".to_string(),
+                    "per-agent effective skill, issue, and conflict counts".to_string(),
+                    "bounded blocker and attention summaries".to_string(),
+                    "typed evidence references".to_string(),
+                ]);
+                excluded_fields.extend([
+                    "raw source paths".to_string(),
+                    "raw configuration contents".to_string(),
+                    "write/apply instructions".to_string(),
+                ]);
+                sections.push(render_project_health_prompt_section(
+                    &response_context.contract,
+                    &mut redactor,
+                ));
+            }
+            LlmPromptActionKind::SemanticSearch => {
+                prompt_scope.extend([
+                    "current lexical search query".to_string(),
+                    "already-returned bounded local candidates".to_string(),
+                    "required evidence-bound rerank schema".to_string(),
+                ]);
+                included_fields.extend([
+                    "redacted search query".to_string(),
+                    "candidate evidence ids, kinds, titles, and subtitles".to_string(),
+                ]);
+                excluded_fields.extend([
+                    "new filesystem scans".to_string(),
+                    "additional catalog or session reads".to_string(),
+                    "raw source paths".to_string(),
+                    "write/apply instructions".to_string(),
+                ]);
+                sections.push(render_semantic_search_prompt_section(
+                    params,
+                    &response_context.contract,
+                    &mut redactor,
+                )?);
+            }
         }
 
         sections.push(render_ai_response_contract(&response_context.contract)?);
@@ -1380,6 +1426,8 @@ impl ServiceHost {
             LlmPromptActionKind::TaskCockpit => 1400,
             LlmPromptActionKind::SessionDigest => 800,
             LlmPromptActionKind::SkillChangeReview => 900,
+            LlmPromptActionKind::ProjectHealth => 700,
+            LlmPromptActionKind::SemanticSearch => 650,
         };
         let prompt_preview = sections.join("\n\n");
         let current_response_context = self.llm_response_evidence_context_for(params, owner)?;
@@ -1569,6 +1617,52 @@ impl ServiceHost {
                     append_known_actions(&mut actions, &readiness.actions, &attention.action_ids)?;
                 }
                 AiResultSchema::CopyOnlyMarkdown
+            }
+            LlmPromptActionKind::ProjectHealth => {
+                evidence.extend(
+                    readiness
+                        .evidence
+                        .iter()
+                        .filter(|reference| reference.kind == EvidenceKind::ScanCoverage)
+                        .cloned(),
+                );
+                for agent in &readiness.agents {
+                    append_known_evidence(
+                        &mut evidence,
+                        &readiness.evidence,
+                        &agent.evidence_refs,
+                    )?;
+                }
+                for attention in readiness.attention.iter().take(24) {
+                    append_known_evidence(
+                        &mut evidence,
+                        &readiness.evidence,
+                        &attention.evidence_refs,
+                    )?;
+                }
+                AiResultSchema::CopyOnlyMarkdown
+            }
+            LlmPromptActionKind::SemanticSearch => {
+                let query = params
+                    .user_intent
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|query| !query.is_empty())
+                    .ok_or_else(|| {
+                        ServiceError::InvalidRequest(
+                            "llm.previewPrompt semantic_search requires user_intent/query"
+                                .to_string(),
+                        )
+                    })?;
+                validate_semantic_search_candidates(query, &params.search_candidates)?;
+                for (index, candidate) in params.search_candidates.iter().enumerate() {
+                    evidence.push(semantic_search_candidate_evidence(
+                        index,
+                        candidate,
+                        &snapshot.source_revision,
+                    ));
+                }
+                AiResultSchema::SemanticRerank
             }
         };
 
@@ -2561,6 +2655,133 @@ fn task_cockpit_aggregate_relevance(task: &str, aggregate: &SkillAggregateRecord
     score
 }
 
+fn validate_semantic_search_candidates(
+    query: &str,
+    candidates: &[LlmSearchCandidateParams],
+) -> Result<(), ServiceError> {
+    if query.chars().count() > 500 {
+        return Err(ServiceError::InvalidRequest(
+            "semantic search query exceeds 500 characters".to_string(),
+        ));
+    }
+    if candidates.is_empty() || candidates.len() > LLM_MAX_SEARCH_CANDIDATES {
+        return Err(ServiceError::InvalidRequest(format!(
+            "semantic search requires 1 to {LLM_MAX_SEARCH_CANDIDATES} bounded candidates"
+        )));
+    }
+    let mut ids = BTreeSet::new();
+    for candidate in candidates {
+        let id = candidate.id.trim();
+        let title = candidate.title.trim();
+        if id.is_empty()
+            || id.chars().count() > 320
+            || title.is_empty()
+            || title.chars().count() > 320
+            || candidate.subtitle.chars().count() > 640
+            || !matches!(
+                candidate.kind.as_str(),
+                "skill" | "session" | "config_history"
+            )
+            || !ids.insert(id)
+        {
+            return Err(ServiceError::InvalidRequest(
+                "semantic search candidates are invalid, duplicated, or outside the local search contract"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn semantic_search_candidate_evidence(
+    index: usize,
+    candidate: &LlmSearchCandidateParams,
+    source_revision: &str,
+) -> EvidenceRef {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-copilot/semantic-search-candidate/v1");
+    hasher.update(candidate.id.as_bytes());
+    hasher.update(candidate.kind.as_bytes());
+    hasher.update(candidate.title.as_bytes());
+    hasher.update(candidate.subtitle.as_bytes());
+    let kind = match candidate.kind.as_str() {
+        "skill" => EvidenceKind::SkillDefinition,
+        "session" => EvidenceKind::Session,
+        "config_history" => EvidenceKind::Config,
+        _ => EvidenceKind::ProjectContext,
+    };
+    EvidenceRef {
+        id: format!("search-candidate:{}", hex_prefix(&hasher.finalize(), 32)),
+        kind,
+        source_revision: source_revision.to_string(),
+        summary: format!(
+            "Lexical search candidate {} ({})",
+            index + 1,
+            candidate.kind
+        ),
+        agent: None,
+        target_id: Some(candidate.id.clone()),
+    }
+}
+
+fn render_project_health_prompt_section(
+    contract: &AiResponseContract,
+    redactor: &mut PromptRedactor<'_>,
+) -> String {
+    let evidence = contract
+        .evidence
+        .iter()
+        .map(|reference| {
+            format!(
+                "- evidence_id={} kind={:?} agent={} summary={}",
+                reference.id,
+                reference.kind,
+                reference
+                    .agent
+                    .map(|agent| agent.as_str())
+                    .unwrap_or("project"),
+                redactor.redact(&reference.summary)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Explain the current project health and prioritize attention using only these accepted deterministic evidence rows. Distinguish facts from interpretation and explicitly list uncertainty when evidence is incomplete.\n{evidence}"
+    )
+}
+
+fn render_semantic_search_prompt_section(
+    params: &LlmPreviewPromptParams,
+    contract: &AiResponseContract,
+    redactor: &mut PromptRedactor<'_>,
+) -> Result<String, ServiceError> {
+    validate_semantic_search_candidates(
+        params.user_intent.as_deref().unwrap_or_default(),
+        &params.search_candidates,
+    )?;
+    let rows = params
+        .search_candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let evidence =
+                semantic_search_candidate_evidence(index, candidate, &contract.source_revision);
+            format!(
+                "- evidence_id={} kind={} title={} subtitle={}",
+                evidence.id,
+                candidate.kind,
+                redactor.redact(&candidate.title),
+                redactor.redact(&candidate.subtitle)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(format!(
+        "Rerank only the candidates below for query `{}`. Return every useful candidate at most once by evidence id. Do not add, discover, or describe any candidate outside this list.\n{rows}",
+        redactor.redact(params.user_intent.as_deref().unwrap_or_default())
+    ))
+}
+
 fn append_known_evidence(
     target: &mut Vec<EvidenceRef>,
     available: &[EvidenceRef],
@@ -2674,6 +2895,15 @@ fn render_ai_response_contract(contract: &AiResponseContract) -> Result<String, 
             "changes": [],
             "risks": [],
             "recommendations": []
+        }),
+        AiResultSchema::SemanticRerank => serde_json::json!({
+            "summary": "<concise explanation of the rerank>",
+            "ranked_evidence_ids": ["<candidate id from allowed_evidence>"],
+            "rationales": [{
+                "evidence_id": "<ranked candidate id>",
+                "rationale": "<query-specific rationale grounded only in that candidate>"
+            }],
+            "unsupported_claims": []
         }),
     };
     let allowed_evidence = contract

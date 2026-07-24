@@ -287,6 +287,7 @@ struct PreviewLLMPromptParams: Encodable {
     let candidateInstanceIDs: [String]?
     let sourceRevision: String?
     let session: LLMSessionEvidenceParams?
+    let searchCandidates: [LLMSearchCandidateParams]?
     let appLanguage: String
 
     init(
@@ -303,6 +304,7 @@ struct PreviewLLMPromptParams: Encodable {
         candidateInstanceIDs: [String]?,
         sourceRevision: String? = nil,
         session: LLMSessionEvidenceParams? = nil,
+        searchCandidates: [LLMSearchCandidateParams]? = nil,
         appLanguage: String = UIStrings.currentLanguage.rawValue
     ) {
         self.action = action
@@ -318,6 +320,7 @@ struct PreviewLLMPromptParams: Encodable {
         self.candidateInstanceIDs = candidateInstanceIDs
         self.sourceRevision = sourceRevision
         self.session = session
+        self.searchCandidates = searchCandidates
         self.appLanguage = appLanguage
     }
 
@@ -335,8 +338,16 @@ struct PreviewLLMPromptParams: Encodable {
         case candidateInstanceIDs = "candidate_instance_ids"
         case sourceRevision = "source_revision"
         case session
+        case searchCandidates = "search_candidates"
         case appLanguage = "app_language"
     }
+}
+
+struct LLMSearchCandidateParams: Encodable, Hashable {
+    let id: String
+    let kind: String
+    let title: String
+    let subtitle: String
 }
 
 struct LLMSessionEvidenceParams: Encodable {

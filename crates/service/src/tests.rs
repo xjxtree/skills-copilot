@@ -10,6 +10,7 @@ use std::{
 
 mod app_wire_fixtures;
 mod config_consistency;
+mod contextual_intelligence;
 mod dispatch_fixtures;
 mod list_page_local_catalog;
 mod llm_provider;

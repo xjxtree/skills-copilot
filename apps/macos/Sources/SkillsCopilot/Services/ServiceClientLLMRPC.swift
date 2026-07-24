@@ -283,7 +283,8 @@ extension ServiceClient {
     func previewPromptForTaskCockpit(
         taskText: String,
         agents: [String],
-        instanceIDs: [String]
+        instanceIDs: [String],
+        sourceRevision: String? = nil
     ) async throws -> LLMPromptPreview {
         let params = PreviewLLMPromptParams(
             action: "task_cockpit",
@@ -296,7 +297,8 @@ extension ServiceClient {
             agents: agents,
             taskText: taskText,
             userIntent: taskText,
-            candidateInstanceIDs: instanceIDs
+            candidateInstanceIDs: instanceIDs,
+            sourceRevision: sourceRevision
         )
         let preview: LLMPromptPreview = try await call(
             method: "llm.previewPrompt",
@@ -324,7 +326,8 @@ extension ServiceClient {
             agents: agents,
             taskText: taskText,
             userIntent: taskText,
-            candidateInstanceIDs: instanceIDs
+            candidateInstanceIDs: instanceIDs,
+            sourceRevision: preview.responseContract?.sourceRevision
         )
         return try await confirmPromptAndSend(
             preview: preview,
@@ -367,6 +370,92 @@ extension ServiceClient {
                 project: project,
                 session: session,
                 productSourceRevision: productSourceRevision
+            )
+        )
+    }
+
+    func previewPromptForProjectHealth(
+        sourceRevision: String
+    ) async throws -> LLMPromptPreview {
+        let request = projectHealthPromptRequest(sourceRevision: sourceRevision)
+        let preview: LLMPromptPreview = try await call(
+            method: "llm.previewPrompt",
+            params: request
+        )
+        try validatePromptPreview(preview, request: request)
+        return preview
+    }
+
+    func confirmPromptAndSendForProjectHealth(
+        preview: LLMPromptPreview,
+        sourceRevision: String
+    ) async throws -> LLMPromptSendResult {
+        try await confirmPromptAndSend(
+            preview: preview,
+            request: projectHealthPromptRequest(sourceRevision: sourceRevision)
+        )
+    }
+
+    func previewPromptForSkillChangeReview(
+        aggregate: SkillAggregateRecord,
+        sourceRevision: String
+    ) async throws -> LLMPromptPreview {
+        let request = skillChangeReviewPromptRequest(
+            aggregate: aggregate,
+            sourceRevision: sourceRevision
+        )
+        let preview: LLMPromptPreview = try await call(
+            method: "llm.previewPrompt",
+            params: request
+        )
+        try validatePromptPreview(preview, request: request)
+        return preview
+    }
+
+    func confirmPromptAndSendForSkillChangeReview(
+        preview: LLMPromptPreview,
+        aggregate: SkillAggregateRecord,
+        sourceRevision: String
+    ) async throws -> LLMPromptSendResult {
+        try await confirmPromptAndSend(
+            preview: preview,
+            request: skillChangeReviewPromptRequest(
+                aggregate: aggregate,
+                sourceRevision: sourceRevision
+            )
+        )
+    }
+
+    func previewPromptForSemanticSearch(
+        query: String,
+        candidates: [AppSearchItem],
+        sourceRevision: String
+    ) async throws -> LLMPromptPreview {
+        let request = semanticSearchPromptRequest(
+            query: query,
+            candidates: candidates,
+            sourceRevision: sourceRevision
+        )
+        let preview: LLMPromptPreview = try await call(
+            method: "llm.previewPrompt",
+            params: request
+        )
+        try validatePromptPreview(preview, request: request)
+        return preview
+    }
+
+    func confirmPromptAndSendForSemanticSearch(
+        preview: LLMPromptPreview,
+        query: String,
+        candidates: [AppSearchItem],
+        sourceRevision: String
+    ) async throws -> LLMPromptSendResult {
+        try await confirmPromptAndSend(
+            preview: preview,
+            request: semanticSearchPromptRequest(
+                query: query,
+                candidates: candidates,
+                sourceRevision: sourceRevision
             )
         )
     }
@@ -514,6 +603,74 @@ extension ServiceClient {
                 sourceRevision: session.sourceRevision,
                 snapshotRevision: session.snapshotRevision
             )
+        )
+    }
+
+    private func projectHealthPromptRequest(
+        sourceRevision: String
+    ) -> PreviewLLMPromptParams {
+        PreviewLLMPromptParams(
+            action: "project_health",
+            requestKind: "project_health",
+            scope: "active_project",
+            instanceIDs: nil,
+            instanceId: nil,
+            definitionId: nil,
+            agent: nil,
+            agents: nil,
+            taskText: nil,
+            userIntent: nil,
+            candidateInstanceIDs: nil,
+            sourceRevision: sourceRevision
+        )
+    }
+
+    private func skillChangeReviewPromptRequest(
+        aggregate: SkillAggregateRecord,
+        sourceRevision: String
+    ) -> PreviewLLMPromptParams {
+        PreviewLLMPromptParams(
+            action: "skill_change_review",
+            requestKind: "skill_change_review",
+            scope: "selected_skill",
+            instanceIDs: aggregate.instanceIDs,
+            instanceId: aggregate.instanceIDs.first,
+            definitionId: aggregate.definitionID,
+            agent: aggregate.agents.first?.rawValue,
+            agents: aggregate.agents.map(\.rawValue),
+            taskText: nil,
+            userIntent: nil,
+            candidateInstanceIDs: nil,
+            sourceRevision: sourceRevision
+        )
+    }
+
+    private func semanticSearchPromptRequest(
+        query: String,
+        candidates: [AppSearchItem],
+        sourceRevision: String
+    ) -> PreviewLLMPromptParams {
+        PreviewLLMPromptParams(
+            action: "semantic_search",
+            requestKind: "semantic_search",
+            scope: "returned_candidates",
+            instanceIDs: nil,
+            instanceId: nil,
+            definitionId: nil,
+            agent: nil,
+            agents: nil,
+            taskText: query,
+            userIntent: query,
+            candidateInstanceIDs: nil,
+            sourceRevision: sourceRevision,
+            searchCandidates: Array(candidates.prefix(18)).map {
+                LLMSearchCandidateParams(
+                    id: $0.id,
+                    kind: $0.kind.rawValue,
+                    title: $0.title,
+                    subtitle: $0.subtitle
+                )
+            }
         )
     }
 

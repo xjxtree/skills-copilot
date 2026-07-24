@@ -15,6 +15,7 @@ pub enum AiResultSchema {
     TaskReadiness,
     SessionDigest,
     SkillChangeReview,
+    SemanticRerank,
 }
 
 impl AiResultSchema {
@@ -24,6 +25,7 @@ impl AiResultSchema {
             Self::TaskReadiness => "task_readiness",
             Self::SessionDigest => "session_digest",
             Self::SkillChangeReview => "skill_change_review",
+            Self::SemanticRerank => "semantic_rerank",
         }
     }
 }
@@ -208,7 +210,11 @@ impl AiResponseContract {
             AiResponseValidationError::DuplicateActionReference,
             AiResponseValidationError::UnknownActionReference,
         )?;
-        validate_structured_result(self.result_schema, &envelope.result)
+        validate_structured_result(self.result_schema, &envelope.result)?;
+        if self.result_schema == AiResultSchema::SemanticRerank {
+            validate_semantic_rerank_references(&envelope.result, &envelope.evidence_refs)?;
+        }
+        Ok(())
     }
 
     pub fn parse_and_validate(
@@ -405,7 +411,98 @@ fn validate_structured_result(
             require_array(object.get("risks"), "risks")?;
             require_array(object.get("recommendations"), "recommendations")
         }
+        AiResultSchema::SemanticRerank => {
+            require_nonempty_string(object.get("summary"), "summary")?;
+            require_array(object.get("ranked_evidence_ids"), "ranked_evidence_ids")?;
+            require_array(object.get("rationales"), "rationales")?;
+            require_array(object.get("unsupported_claims"), "unsupported_claims")
+        }
     }
+}
+
+fn validate_semantic_rerank_references(
+    result: &Value,
+    allowed_evidence: &[String],
+) -> Result<(), AiResponseValidationError> {
+    let object = result
+        .as_object()
+        .ok_or(AiResponseValidationError::InvalidResult(
+            "top-level result must be an object",
+        ))?;
+    let allowed = allowed_evidence
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let ranked = object
+        .get("ranked_evidence_ids")
+        .and_then(Value::as_array)
+        .ok_or(AiResponseValidationError::InvalidResult(
+            "ranked_evidence_ids",
+        ))?;
+    if ranked.is_empty() {
+        return Err(AiResponseValidationError::InvalidResult(
+            "ranked_evidence_ids",
+        ));
+    }
+    let mut seen = HashSet::new();
+    for value in ranked {
+        let id = value.as_str().filter(|id| !id.trim().is_empty()).ok_or(
+            AiResponseValidationError::InvalidResult("ranked_evidence_ids"),
+        )?;
+        if !allowed.contains(id) || !seen.insert(id) {
+            return Err(AiResponseValidationError::InvalidResult(
+                "ranked_evidence_ids",
+            ));
+        }
+    }
+    let rationales = object
+        .get("rationales")
+        .and_then(Value::as_array)
+        .ok_or(AiResponseValidationError::InvalidResult("rationales"))?;
+    let mut rationale_ids = HashSet::new();
+    for rationale in rationales {
+        let row = rationale
+            .as_object()
+            .ok_or(AiResponseValidationError::InvalidResult("rationales"))?;
+        let id = row
+            .get("evidence_id")
+            .and_then(Value::as_str)
+            .filter(|id| allowed.contains(*id))
+            .ok_or(AiResponseValidationError::InvalidResult(
+                "rationales.evidence_id",
+            ))?;
+        require_nonempty_string(row.get("rationale"), "rationales.rationale")?;
+        if !seen.contains(id) {
+            return Err(AiResponseValidationError::InvalidResult(
+                "rationales.evidence_id",
+            ));
+        }
+        if !rationale_ids.insert(id) {
+            return Err(AiResponseValidationError::InvalidResult(
+                "rationales.evidence_id",
+            ));
+        }
+    }
+    if rationale_ids != seen {
+        return Err(AiResponseValidationError::InvalidResult(
+            "rationales.evidence_id",
+        ));
+    }
+    let unsupported = object
+        .get("unsupported_claims")
+        .and_then(Value::as_array)
+        .ok_or(AiResponseValidationError::InvalidResult(
+            "unsupported_claims",
+        ))?;
+    if unsupported
+        .iter()
+        .any(|value| value.as_str().is_none_or(|text| text.trim().is_empty()))
+    {
+        return Err(AiResponseValidationError::InvalidResult(
+            "unsupported_claims",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_task_readiness_summary(value: Option<&Value>) -> Result<(), AiResponseValidationError> {
@@ -1074,6 +1171,18 @@ mod tests {
                     "recommendations": []
                 }),
             ),
+            (
+                AiResultSchema::SemanticRerank,
+                serde_json::json!({
+                    "summary": "The selected candidate best matches the query.",
+                    "ranked_evidence_ids": ["evidence:skill"],
+                    "rationales": [{
+                        "evidence_id": "evidence:skill",
+                        "rationale": "Its bounded title and description match."
+                    }],
+                    "unsupported_claims": []
+                }),
+            ),
         ];
 
         for (schema, result) in cases {
@@ -1093,6 +1202,57 @@ mod tests {
                 .validate_envelope(&envelope)
                 .unwrap_or_else(|error| panic!("schema {} failed: {error}", schema.as_str()));
         }
+    }
+
+    #[test]
+    fn semantic_rerank_rejects_unknown_duplicate_and_unranked_references() {
+        let contract = response_contract(AiResultSchema::SemanticRerank, false);
+        let envelope = |ranked: Value, rationales: Value| AiResponseEnvelope {
+            schema_version: AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            request_kind: "task_cockpit".to_string(),
+            project_id: "project-test".to_string(),
+            source_revision: "source-1".to_string(),
+            result_schema: AiResultSchema::SemanticRerank,
+            evidence_refs: vec!["evidence:skill".to_string()],
+            action_refs: Vec::new(),
+            result: serde_json::json!({
+                "summary": "Bounded rerank",
+                "ranked_evidence_ids": ranked,
+                "rationales": rationales,
+                "unsupported_claims": []
+            }),
+            safety_flags: AiResponseSafetyFlags::required_copy_only(),
+        };
+        assert!(matches!(
+            contract.validate_envelope(&envelope(
+                serde_json::json!(["evidence:unknown"]),
+                serde_json::json!([])
+            )),
+            Err(AiResponseValidationError::InvalidResult(
+                "ranked_evidence_ids"
+            ))
+        ));
+        assert!(matches!(
+            contract.validate_envelope(&envelope(
+                serde_json::json!(["evidence:skill", "evidence:skill"]),
+                serde_json::json!([])
+            )),
+            Err(AiResponseValidationError::InvalidResult(
+                "ranked_evidence_ids"
+            ))
+        ));
+        assert!(matches!(
+            contract.validate_envelope(&envelope(
+                serde_json::json!(["evidence:skill"]),
+                serde_json::json!([{
+                    "evidence_id": "evidence:unknown",
+                    "rationale": "unsupported"
+                }])
+            )),
+            Err(AiResponseValidationError::InvalidResult(
+                "rationales.evidence_id"
+            ))
+        ));
     }
 
     fn response_contract(schema: AiResultSchema, include_action: bool) -> AiResponseContract {

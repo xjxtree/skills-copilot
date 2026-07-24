@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SessionsWorkspaceView: View {
     @EnvironmentObject private var store: SkillStore
+    @State private var evidenceSelection: ContextualEvidenceSelection?
 
     private var workspace: SessionWorkspaceStore {
         store.sessionWorkspaceStore
@@ -36,6 +37,9 @@ struct SessionsWorkspaceView: View {
                 resumeError: workspace.resumeError,
                 isLoadingResume: workspace.isPreviewingResume,
                 gapNotes: detailGapNotes,
+                contextualFlow: selectedDigestFlow,
+                contextualSourceRevision: productSourceRevision,
+                providerGateMessage: providerGateMessage,
                 onLoadTimelineMore: {
                     Task { await workspace.loadNextSelectedSessionTimelinePage() }
                 },
@@ -46,7 +50,17 @@ struct SessionsWorkspaceView: View {
                 onPreviewResume: {
                     Task { await workspace.previewSelectedSessionResume() }
                 },
-                onCopyResumeCommand: copyResumeCommand
+                onCopyResumeCommand: copyResumeCommand,
+                onPreviewDigest: {
+                    Task { await previewSelectedSessionDigest() }
+                },
+                onConfirmDigest: {
+                    Task { await sendSelectedSessionDigest() }
+                },
+                onDismissDigestPreview: clearSelectedSessionDigest,
+                onOpenDigestEvidence: {
+                    evidenceSelection = ContextualEvidenceSelection(reference: $0)
+                }
             )
             .id(workspace.selectedSessionID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -62,6 +76,9 @@ struct SessionsWorkspaceView: View {
             workspace.cancelInventoryRequest()
             workspace.cancelMessageRequest()
             workspace.cancelResumeRequest()
+        }
+        .sheet(item: $evidenceSelection) { selection in
+            ContextualEvidenceSheet(selection: selection)
         }
         .accessibilityIdentifier("sessions.workspace")
     }
@@ -83,5 +100,79 @@ struct SessionsWorkspaceView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(command, forType: .string)
+    }
+
+    private var productSourceRevision: String? {
+        store.appContextStore.visibleProjectReadiness?.sourceRevision
+    }
+
+    private var selectedDigestFlow: ContextualIntelligenceFlow? {
+        guard let id = workspace.selectedSessionID else { return nil }
+        return store.contextualIntelligenceStore.flow(
+            for: ContextualIntelligenceStore.sessionKey(id)
+        )
+    }
+
+    private var providerGateMessage: String? {
+        guard store.appContextStore.activeProject != nil,
+              productSourceRevision != nil else {
+            return UIStrings.text(
+                "intelligence.snapshotRequired",
+                "Refresh the project before requesting interpretation."
+            )
+        }
+        let status = store.aiProviderStatus
+        if !status.serviceAvailable {
+            return UIStrings.localizedServiceMessage(
+                status.disabledReason ?? UIStrings.aiProviderUnavailable
+            )
+        }
+        if !status.configured || status.activeProfile == nil {
+            return UIStrings.text(
+                "intelligence.providerRequired",
+                "Configure an AI provider to request optional interpretation."
+            )
+        }
+        return status.enabled
+            ? nil
+            : status.disabledReason.map(UIStrings.localizedServiceMessage)
+                ?? UIStrings.text(
+                    "intelligence.providerDisabled",
+                    "The configured AI provider is disabled."
+                )
+    }
+
+    private func previewSelectedSessionDigest() async {
+        if workspace.resumePreview?.id != workspace.selectedSessionID {
+            await workspace.previewSelectedSessionResume()
+        }
+        guard let continuation = workspace.resumePreview,
+              let project = store.appContextStore.activeProject,
+              let revision = productSourceRevision else { return }
+        await store.contextualIntelligenceStore.previewSessionDigest(
+            authorizedRoots: workspace.authorizedRoots,
+            project: project,
+            session: continuation,
+            productSourceRevision: revision
+        )
+    }
+
+    private func sendSelectedSessionDigest() async {
+        guard let continuation = workspace.resumePreview,
+              let project = store.appContextStore.activeProject,
+              let revision = productSourceRevision else { return }
+        await store.contextualIntelligenceStore.sendSessionDigest(
+            authorizedRoots: workspace.authorizedRoots,
+            project: project,
+            session: continuation,
+            productSourceRevision: revision
+        )
+    }
+
+    private func clearSelectedSessionDigest() {
+        guard let id = workspace.selectedSessionID else { return }
+        store.contextualIntelligenceStore.clear(
+            ContextualIntelligenceStore.sessionKey(id)
+        )
     }
 }
