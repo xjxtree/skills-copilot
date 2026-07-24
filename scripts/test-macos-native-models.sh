@@ -87,6 +87,19 @@ rsync -a \
 find "${TARGET_DIR}/Tests" -name '*.swift' -print0 \
   | xargs -0 perl -0pi -e 's/^\@testable import SkillsCopilot\n//mg'
 
+# The disposable executable calls the model suites directly from main.swift.
+# Remove the XCTest-only bridge wrappers copied from the real SwiftPM test
+# target so this standalone runner does not acquire an Xcode-toolchain runtime
+# dependency such as libXCTestSwiftSupport.dylib.
+find "${TARGET_DIR}/Tests" -name '*.swift' -print0 \
+  | xargs -0 perl -0pi -e 's/^#if canImport\(XCTest\)\R.*?^#endif\R?//gms'
+
+if grep -R -n -E '^(import XCTest|#if canImport\(XCTest\))' "${TARGET_DIR}/Tests" >/dev/null; then
+  grep -R -n -E '^(import XCTest|#if canImport\(XCTest\))' "${TARGET_DIR}/Tests"
+  echo "Standalone native model tests must not link XCTest." >&2
+  exit 1
+fi
+
 if grep -R -n -E '^import (AppKit|SwiftUI)$' "${TARGET_DIR}" >/dev/null; then
   grep -R -n -E '^import (AppKit|SwiftUI)$' "${TARGET_DIR}"
   echo "Native model tests must not link AppKit or SwiftUI." >&2
@@ -143,6 +156,13 @@ BINARY_DIR="$(swift build \
   --package-path "${PACKAGE_DIR}" \
   --scratch-path "${BUILD_ROOT}/swiftpm" \
   --show-bin-path)"
+
+if otool -L "${BINARY_DIR}/SkillsCopilotNativeModelTests" \
+  | grep -F 'libXCTestSwiftSupport.dylib' >/dev/null; then
+  otool -L "${BINARY_DIR}/SkillsCopilotNativeModelTests"
+  echo "Standalone native model tests unexpectedly link the XCTest Swift runtime." >&2
+  exit 1
+fi
 
 # Keep a disposable inherited value in the shell environment. Every runner must
 # override it through run_native_model_suite or this sentinel will be purged.
