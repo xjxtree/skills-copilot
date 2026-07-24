@@ -934,14 +934,25 @@ mod tests {
             "invalid_request"
         );
 
-        let filesystem_root = AdapterContext {
-            user_home: PathBuf::from("/"),
-            project_root: Some(PathBuf::from("/")),
-            project_cwd: Some(PathBuf::from("/")),
+        let filesystem_root = std::env::current_dir()
+            .expect("current directory")
+            .ancestors()
+            .last()
+            .expect("filesystem root")
+            .to_path_buf();
+        let filesystem_root_text = filesystem_root.to_string_lossy().to_string();
+        let filesystem_root_context = AdapterContext {
+            user_home: filesystem_root.clone(),
+            project_root: Some(filesystem_root.clone()),
+            project_cwd: Some(filesystem_root),
             extra_roots: Vec::new(),
         };
-        validate_active_project_context(&filesystem_root, "/", "/")
-            .expect("filesystem root remains a valid project boundary");
+        validate_active_project_context(
+            &filesystem_root_context,
+            &filesystem_root_text,
+            &filesystem_root_text,
+        )
+        .expect("filesystem root remains a valid project boundary");
 
         for error in [
             SessionResumePreviewError::InvalidProjectContext,
@@ -1193,6 +1204,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn bounded_file_resolver_matches_keyset_revision_and_projects_claude_resume() {
         let fixture = session_fixture("claude-resume");
@@ -1257,6 +1269,7 @@ mod tests {
         let _ = fs::remove_dir_all(fixture);
     }
 
+    #[cfg(unix)]
     #[test]
     fn bounded_file_resolver_rejects_stale_or_unknown_selection() {
         let fixture = session_fixture("stale-resume");
@@ -1587,6 +1600,7 @@ mod tests {
         ))
     }
 
+    #[cfg(unix)]
     fn session_host(root: &Path, project_root: Option<PathBuf>) -> ServiceHost {
         ServiceHost {
             app_data_dir: root.join("app-data"),

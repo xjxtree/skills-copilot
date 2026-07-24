@@ -660,12 +660,19 @@ fn open_app_mutation_directory_tree(
                     }
                     Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
-                        fs::create_dir(&current)?;
-                        let directory = open_nonunix_directory(&current)?;
-                        sync_nonunix_directory(&directory)?;
-                        let parent = current.parent().ok_or_else(unsafe_owner)?;
-                        let parent = open_nonunix_directory(parent)?;
-                        sync_nonunix_directory(&parent)?;
+                        let created = match fs::create_dir(&current) {
+                            Ok(()) => true,
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+                            Err(error) => return Err(error.into()),
+                        };
+                        validate_existing_owner(&current)?;
+                        if created {
+                            let directory = open_nonunix_directory(&current)?;
+                            sync_nonunix_directory(&directory)?;
+                            let parent = current.parent().ok_or_else(unsafe_owner)?;
+                            let parent = open_nonunix_directory(parent)?;
+                            sync_nonunix_directory(&parent)?;
+                        }
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -811,11 +818,18 @@ fn open_or_create_app_mutation_owner(path: &Path) -> Result<File, CommandError> 
         )
     })?;
     validate_existing_owner(parent)?;
-    fs::create_dir(path)?;
-    let directory = open_nonunix_directory(path)?;
-    sync_nonunix_directory(&directory)?;
-    let parent = open_nonunix_directory(parent)?;
-    sync_nonunix_directory(&parent)?;
+    let created = match fs::create_dir(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error.into()),
+    };
+    validate_existing_owner(path)?;
+    if created {
+        let directory = open_nonunix_directory(path)?;
+        sync_nonunix_directory(&directory)?;
+        let parent = open_nonunix_directory(parent)?;
+        sync_nonunix_directory(&parent)?;
+    }
     open_existing_app_mutation_owner(path)
 }
 

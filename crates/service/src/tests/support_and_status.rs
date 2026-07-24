@@ -271,6 +271,7 @@ fn default_app_data_dir_uses_agent_copilot_bundle_id() {
     assert_ne!(preferred, legacy);
 }
 
+#[cfg(unix)]
 #[test]
 fn resolve_default_app_data_dir_copies_legacy_data_once() {
     let home = env::temp_dir().join(format!(

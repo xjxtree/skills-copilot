@@ -425,6 +425,7 @@ fn accepted_product_snapshot_revalidation_rejects_later_config_changes() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
 fn session_resume_dispatch_binds_native_inventory_to_current_product_snapshot() {
     let (root, host, project_id, context_revision) = product_test_host("session-resume");
@@ -526,6 +527,7 @@ fn session_resume_dispatch_binds_native_inventory_to_current_product_snapshot() 
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
 fn llm_session_digest_binds_native_session_and_product_revisions_without_resume_command() {
     let (root, host, project_id, context_revision) = product_test_host("llm-session-digest");
