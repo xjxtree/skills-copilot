@@ -1574,7 +1574,16 @@ fn snapshot_fallback_tree(
 ) -> Result<AppDataTreeSnapshot, CommandError> {
     use sha2::Digest;
 
-    let root = guarded_fallback_path(owner_path, relative)?;
+    let root = match guarded_fallback_path(owner_path, relative) {
+        Ok(root) => root,
+        Err(CommandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(AppDataTreeSnapshot {
+                present: false,
+                rows: Vec::new(),
+            })
+        }
+        Err(error) => return Err(error),
+    };
     let metadata = match std::fs::symlink_metadata(&root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
