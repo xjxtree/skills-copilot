@@ -10,9 +10,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use fs4::FileExt;
-
 use serde_json::{json, Value};
+use skills_copilot_commands::lock_app_mutations;
 
 const ACTION_SECRET_ENV: &str = "SKILLS_COPILOT_ACTION_PREVIEW_SECRET";
 const SECRET_A: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -1249,14 +1248,7 @@ fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
             .expect("mark catalog migration pending");
     }
 
-    let lock_file = fs::File::open(
-        fixture
-            .app_data
-            .canonicalize()
-            .expect("canonical app-data owner"),
-    )
-    .expect("open app-data owner");
-    lock_file.lock_exclusive().expect("hold app mutation owner");
+    let owner_lock = lock_app_mutations(&fixture.app_data).expect("hold app mutation owner");
     let mut child = spawn_sidecar(
         &fixture.home,
         &fixture.app_data,
@@ -1283,7 +1275,7 @@ fn config_save_waits_for_the_cross_process_app_mutation_owner_lock() {
     );
     drop(catalog);
 
-    FileExt::unlock(&lock_file).expect("release app mutation owner");
+    drop(owner_lock);
     let output = child.wait_with_output().expect("wait for config save");
     assert!(
         output.status.success(),
@@ -1314,14 +1306,7 @@ fn project_context_apply_waits_for_the_cross_process_app_mutation_owner_lock() {
     let preview = fixture.project_set_preview();
     assert_success(&preview);
     let request = fixture.project_set_request(&preview);
-    let lock_file = fs::File::open(
-        fixture
-            .app_data
-            .canonicalize()
-            .expect("canonical app-data owner"),
-    )
-    .expect("open app-data owner");
-    lock_file.lock_exclusive().expect("hold app mutation owner");
+    let owner_lock = lock_app_mutations(&fixture.app_data).expect("hold app mutation owner");
     let mut child = spawn_sidecar(
         &fixture.home,
         &fixture.app_data,
@@ -1338,7 +1323,7 @@ fn project_context_apply_waits_for_the_cross_process_app_mutation_owner_lock() {
         "project context apply must wait while another process owns the app mutation lock"
     );
 
-    FileExt::unlock(&lock_file).expect("release app mutation owner");
+    drop(owner_lock);
     let output = child.wait_with_output().expect("wait for project apply");
     assert!(output.status.success());
     let response: Value =
@@ -1355,14 +1340,7 @@ fn project_context_apply_waits_for_the_cross_process_app_mutation_owner_lock() {
 #[test]
 fn catalog_scan_waits_for_the_cross_process_app_mutation_owner_lock() {
     let fixture = Fixture::new("scan-owner-lock");
-    let lock_file = fs::File::open(
-        fixture
-            .app_data
-            .canonicalize()
-            .expect("canonical app-data owner"),
-    )
-    .expect("open app-data owner");
-    lock_file.lock_exclusive().expect("hold app mutation owner");
+    let owner_lock = lock_app_mutations(&fixture.app_data).expect("hold app mutation owner");
     let mut child = spawn_sidecar(
         &fixture.home,
         &fixture.app_data,
@@ -1380,7 +1358,7 @@ fn catalog_scan_waits_for_the_cross_process_app_mutation_owner_lock() {
         "catalog scan must wait while another process owns the app mutation lock"
     );
 
-    FileExt::unlock(&lock_file).expect("release app mutation owner");
+    drop(owner_lock);
     let output = child.wait_with_output().expect("wait for scan");
     assert!(output.status.success());
     let response: Value = serde_json::from_slice(&output.stdout).expect("decode scan response");

@@ -18,7 +18,9 @@ use std::{
 use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
-use crate::app_data_owner_fs::{unix_device_id, unix_file_mode, unix_timestamp_nanoseconds};
+use crate::app_data_owner_fs::{
+    unix_device_id, unix_file_mode, unix_link_count, unix_timestamp_nanoseconds,
+};
 use crate::{mutation_lock::AppMutationLock, CommandError};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -100,7 +102,7 @@ impl RegularFileStamp {
             inode: stat.st_ino,
             owner: stat.st_uid,
             mode: unix_file_mode(stat.st_mode),
-            links: stat.st_nlink as u64,
+            links: unix_link_count(stat.st_nlink),
             length: u64::try_from(stat.st_size)
                 .map_err(|_| unsafe_external_target("regular file has a negative size"))?,
             modified_seconds: stat.st_mtime,

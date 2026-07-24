@@ -6,6 +6,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(not(windows))]
 use fs4::FileExt;
 
 use crate::CommandError;
@@ -61,6 +62,8 @@ fn run_owner_creation_fault(_point: OwnerCreationFaultPoint) -> Result<(), io::E
 pub struct AppMutationLock {
     file: File,
     owner_path: PathBuf,
+    #[cfg(windows)]
+    mutex: WindowsMutationMutex,
 }
 
 impl AppMutationLock {
@@ -123,17 +126,16 @@ impl AppMutationLock {
 
 impl Drop for AppMutationLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        #[cfg(not(windows))]
+        {
+            let _ = self.file.unlock();
+        }
     }
 }
 
 pub fn lock_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, CommandError> {
     let file = open_existing_app_mutation_owner(app_data_dir)?;
-    file.lock_exclusive()?;
-    Ok(AppMutationLock {
-        file,
-        owner_path: app_data_dir.to_path_buf(),
-    })
+    lock_open_owner(file, app_data_dir)
 }
 
 /// Create and lock the private app-data owner for an already-confirmed action.
@@ -144,11 +146,7 @@ pub fn lock_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, Comman
 /// known before coordination bootstrap remains zero-write.
 pub fn lock_or_create_app_mutations(app_data_dir: &Path) -> Result<AppMutationLock, CommandError> {
     let file = open_or_create_app_mutation_owner(app_data_dir)?;
-    file.lock_exclusive()?;
-    Ok(AppMutationLock {
-        file,
-        owner_path: app_data_dir.to_path_buf(),
-    })
+    lock_open_owner(file, app_data_dir)
 }
 
 /// Create missing app-data ancestors and lock the owner for a confirmed write.
@@ -162,11 +160,94 @@ pub fn lock_or_create_app_mutations_with_parents(
     app_data_dir: &Path,
 ) -> Result<AppMutationLock, CommandError> {
     let file = open_app_mutation_directory_tree(app_data_dir, true, true)?;
-    file.lock_exclusive()?;
-    Ok(AppMutationLock {
-        file,
-        owner_path: app_data_dir.to_path_buf(),
-    })
+    lock_open_owner(file, app_data_dir)
+}
+
+fn lock_open_owner(file: File, owner_path: &Path) -> Result<AppMutationLock, CommandError> {
+    #[cfg(not(windows))]
+    {
+        file.lock_exclusive()?;
+        Ok(AppMutationLock {
+            file,
+            owner_path: owner_path.to_path_buf(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        let mutex = WindowsMutationMutex::acquire(&file)?;
+        Ok(AppMutationLock {
+            file,
+            owner_path: owner_path.to_path_buf(),
+            mutex,
+        })
+    }
+}
+
+#[cfg(windows)]
+struct WindowsMutationMutex {
+    handle: usize,
+}
+
+#[cfg(windows)]
+impl WindowsMutationMutex {
+    fn acquire(owner: &File) -> Result<Self, CommandError> {
+        use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_FAILED, WAIT_OBJECT_0},
+            Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
+            System::Threading::{CreateMutexW, WaitForSingleObject, INFINITE},
+        };
+
+        let raw_owner = owner.as_raw_handle().cast();
+        let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        if unsafe { GetFileInformationByHandle(raw_owner, information.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let information = unsafe { information.assume_init() };
+        let name = format!(
+            "Local\\AgentCopilotMutation-{:08x}-{:08x}{:08x}",
+            information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow
+        );
+        let wide_name = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error().into());
+        }
+        match unsafe { WaitForSingleObject(handle, INFINITE) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self {
+                handle: handle as usize,
+            }),
+            WAIT_FAILED => {
+                let error = io::Error::last_os_error();
+                unsafe {
+                    CloseHandle(handle);
+                }
+                Err(error.into())
+            }
+            result => {
+                unsafe {
+                    CloseHandle(handle);
+                }
+                Err(io::Error::other(format!(
+                    "unexpected Windows mutation mutex wait result: {result}"
+                ))
+                .into())
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsMutationMutex {
+    fn drop(&mut self) {
+        use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
+
+        let handle = self.handle as windows_sys::Win32::Foundation::HANDLE;
+        unsafe {
+            ReleaseMutex(handle);
+            CloseHandle(handle);
+        }
+    }
 }
 
 pub(crate) fn app_mutation_owner_is_missing(app_data_dir: &Path) -> Result<bool, CommandError> {
@@ -224,7 +305,7 @@ pub(crate) fn open_existing_directory_nofollow(path: &Path) -> Result<File, Comm
 fn open_existing_app_mutation_owner(path: &Path) -> Result<File, CommandError> {
     validate_existing_owner(path)?;
     let canonical_owner = path.canonicalize()?;
-    let file = File::open(canonical_owner)?;
+    let file = open_nonunix_directory(&canonical_owner)?;
     if !file.metadata()?.is_dir() {
         return Err(CommandError::UnsafeConfigPath(
             "mutation lock owner is not the app data directory".to_string(),
@@ -580,10 +661,11 @@ fn open_app_mutation_directory_tree(
                     Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound && create_missing => {
                         fs::create_dir(&current)?;
-                        let directory = File::open(&current)?;
-                        directory.sync_all()?;
+                        let directory = open_nonunix_directory(&current)?;
+                        sync_nonunix_directory(&directory)?;
                         let parent = current.parent().ok_or_else(unsafe_owner)?;
-                        File::open(parent)?.sync_all()?;
+                        let parent = open_nonunix_directory(parent)?;
+                        sync_nonunix_directory(&parent)?;
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -595,11 +677,42 @@ fn open_app_mutation_directory_tree(
     }
     validate_existing_owner(path)?;
     let canonical_owner = path.canonicalize()?;
-    let file = File::open(canonical_owner)?;
+    let file = open_nonunix_directory(&canonical_owner)?;
     if !file.metadata()?.is_dir() {
         return Err(unsafe_owner());
     }
     Ok(file)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_nonunix_directory(path: &Path) -> Result<File, io::Error> {
+    File::open(path)
+}
+
+#[cfg(windows)]
+fn open_nonunix_directory(path: &Path) -> Result<File, io::Error> {
+    use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn sync_nonunix_directory(directory: &File) -> Result<(), io::Error> {
+    directory.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_nonunix_directory(_directory: &File) -> Result<(), io::Error> {
+    // Windows does not support FlushFileBuffers for directory handles. The
+    // directory creation call is already ordered before reopening the owner.
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -699,9 +812,10 @@ fn open_or_create_app_mutation_owner(path: &Path) -> Result<File, CommandError> 
     })?;
     validate_existing_owner(parent)?;
     fs::create_dir(path)?;
-    let directory = File::open(path)?;
-    directory.sync_all()?;
-    File::open(parent)?.sync_all()?;
+    let directory = open_nonunix_directory(path)?;
+    sync_nonunix_directory(&directory)?;
+    let parent = open_nonunix_directory(parent)?;
+    sync_nonunix_directory(&parent)?;
     open_existing_app_mutation_owner(path)
 }
 

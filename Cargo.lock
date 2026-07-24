@@ -842,6 +842,7 @@ dependencies = [
  "skills-copilot-scanner",
  "thiserror",
  "url",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

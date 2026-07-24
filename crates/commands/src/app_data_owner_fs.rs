@@ -67,6 +67,11 @@ pub(crate) fn unix_file_mode(value: impl Into<u32>) -> u32 {
     value.into()
 }
 
+#[cfg(unix)]
+pub(crate) fn unix_link_count(value: impl TryInto<u64>) -> u64 {
+    value.try_into().unwrap_or(u64::MAX)
+}
+
 #[cfg(not(unix))]
 fn owner_fs_timestamp_millis() -> u128 {
     std::time::SystemTime::now()
@@ -1967,7 +1972,7 @@ fn private_regular_file_stamp_from_stat(
         device: unix_device_id(metadata.st_dev),
         inode: metadata.st_ino,
         uid: metadata.st_uid,
-        link_count: u64::from(metadata.st_nlink),
+        link_count: unix_link_count(metadata.st_nlink),
         mode: unix_file_mode(metadata.st_mode),
         size: u64::try_from(metadata.st_size).map_err(|_| unsafe_relative_file(label))?,
         modified_seconds: metadata.st_mtime,
@@ -2014,7 +2019,7 @@ fn inspect_private_cleanup_leaf_at(
         device: unix_device_id(metadata.st_dev),
         inode: metadata.st_ino,
         uid: metadata.st_uid,
-        link_count: u64::from(metadata.st_nlink),
+        link_count: unix_link_count(metadata.st_nlink),
         mode: unix_file_mode(metadata.st_mode),
         size,
         modified_seconds: metadata.st_mtime,
