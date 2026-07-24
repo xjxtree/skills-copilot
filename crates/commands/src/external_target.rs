@@ -2,7 +2,6 @@
 
 use std::{
     ffi::{OsStr, OsString},
-    fs::File,
     io::{self, Write},
     marker::PhantomData,
     path::{Component, Path, PathBuf},
@@ -11,6 +10,7 @@ use std::{
 #[cfg(unix)]
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::File,
     io::Read,
 };
 
@@ -369,18 +369,16 @@ impl<'lock> ExternalTargetCapability<'lock> {
                 Err(error) => return Err(error.into()),
             }
             if let Some(parent) = self.display_path.parent() {
-                File::open(parent)
-                    .and_then(|directory| directory.sync_all())
-                    .map_err(|error| {
-                        CommandError::PartialEffect {
-                            operation: "external target compensation".to_string(),
-                            state: "outcome_unknown",
-                            cleanup_required: true,
-                            detail: format!(
-                                "the target was removed during compensation, but parent-directory durability could not be verified: {error}"
-                            ),
-                        }
-                    })?;
+                crate::sync_directory_path(parent).map_err(|error| {
+                    CommandError::PartialEffect {
+                        operation: "external target compensation".to_string(),
+                        state: "outcome_unknown",
+                        cleanup_required: true,
+                        detail: format!(
+                            "the target was removed during compensation, but parent-directory durability could not be verified: {error}"
+                        ),
+                    }
+                })?;
             }
             for directory in self.created_directories.iter().rev() {
                 match std::fs::remove_dir(directory) {
@@ -1474,13 +1472,12 @@ impl<'lock> ExternalTargetCapability<'lock> {
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     std::fs::create_dir(&current)?;
-                    File::open(&current)?.sync_all()?;
-                    File::open(
+                    crate::sync_directory_path(&current)?;
+                    crate::sync_directory_path(
                         current
                             .parent()
                             .ok_or_else(|| unsafe_external_target("target parent is missing"))?,
-                    )?
-                    .sync_all()?;
+                    )?;
                     self.created_directories.push(current.clone());
                 }
                 Err(error) => return Err(error.into()),
@@ -1505,8 +1502,8 @@ impl<'lock> ExternalTargetCapability<'lock> {
             crate::run_atomic_pre_rename_failure_test_hook(&self.display_path)?;
             run_test_hook(&self.display_path, ExternalTargetHookPoint::BeforeRename);
             self.validate_fallback_path(true)?;
-            std::fs::rename(&temp, &self.display_path)?;
-            File::open(parent)?.sync_all()?;
+            crate::replace_file_atomically(&temp, &self.display_path)?;
+            crate::sync_directory_path(parent)?;
             crate::run_atomic_post_rename_test_hook(&self.display_path)?;
             run_test_hook(&self.display_path, ExternalTargetHookPoint::AfterRename);
             self.validate_fallback_path(true)
@@ -1515,7 +1512,7 @@ impl<'lock> ExternalTargetCapability<'lock> {
             Ok(()) => Ok(()),
             Err(original) => match std::fs::remove_file(&temp) {
                 Ok(()) => {
-                    File::open(parent)?.sync_all()?;
+                    crate::sync_directory_path(parent)?;
                     Err(original)
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Err(original),

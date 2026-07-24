@@ -178,7 +178,7 @@ pub(super) fn tool_global_source_relative(
         app_data_dir,
     )?);
     #[cfg(not(unix))]
-    let app_data = normalize_path_lexically(app_data_dir);
+    let app_data = normalize_path_lexically(&app_data_dir.canonicalize()?);
     #[cfg(unix)]
     let source =
         normalize_path_lexically(&crate::mutation_lock::normalize_trusted_root_alias(source)?);

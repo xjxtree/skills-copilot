@@ -867,7 +867,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             if file.metadata()?.len() != expected_len {
                 return Err(CommandError::StaleActionReference);
             }
-            File::open(target.parent().ok_or_else(unsafe_relative_path)?)?.sync_all()?;
+            crate::sync_directory_path(target.parent().ok_or_else(unsafe_relative_path)?)?;
             Ok(())
         }
     }
@@ -1053,7 +1053,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     .into());
                 }
                 std::fs::rename(&temp, &target)?;
-                File::open(parent)?.sync_all()?;
+                crate::sync_directory_path(parent)?;
                 Ok::<(), CommandError>(())
             })();
             if result.is_err() {
@@ -1282,7 +1282,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                 return Err(CommandError::StaleActionReference);
             }
             std::fs::remove_file(&target)?;
-            File::open(target.parent().ok_or_else(unsafe_relative_path)?)?.sync_all()?;
+            crate::sync_directory_path(target.parent().ok_or_else(unsafe_relative_path)?)?;
             Ok(())
         }
     }
@@ -1416,7 +1416,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     "the accepted private file was quarantined, but candidate activation failed: {error}"
                 ))
             })?;
-            File::open(parent)?.sync_all().map_err(|error| {
+            crate::sync_directory_path(parent).map_err(|error| {
                 app_data_private_write_partial_error(format!(
                     "private replacement directory durability failed: {error}"
                 ))
@@ -1426,7 +1426,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
                     "private replacement succeeded, but its original quarantine could not be removed: {error}"
                 ))
             })?;
-            File::open(parent)?.sync_all().map_err(|error| {
+            crate::sync_directory_path(parent).map_err(|error| {
                 app_data_private_write_partial_error(format!(
                     "private original cleanup durability failed: {error}"
                 ))
@@ -1634,7 +1634,7 @@ impl<'lock> AppDataOwnerFs<'lock> {
             for path in matches {
                 std::fs::remove_file(path)?;
             }
-            File::open(root)?.sync_all()?;
+            crate::sync_directory_path(&root)?;
             Ok(())
         }
     }

@@ -665,7 +665,7 @@ pub(super) fn open_existing_manager_working_directory(path: &Path) -> Result<Fil
                 "manager working directory must be an existing non-symlink directory".to_string(),
             ));
         }
-        File::open(path).map_err(Into::into)
+        crate::mutation_lock::open_existing_directory_nofollow(path)
     }
 }
 

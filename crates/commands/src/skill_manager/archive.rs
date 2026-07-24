@@ -497,7 +497,7 @@ fn secure_archive_name(stem: &str) -> Result<String, CommandError> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    Ok(format!(".{stem}-{encoded}"))
+    Ok(format!(".{stem}.{encoded}.tmp"))
 }
 
 fn cleanup_owner_staging_after_error(
@@ -1421,7 +1421,7 @@ fn apply_archive_replacement_owner<'lock>(
         .join(secure_archive_name("archive-update")?);
     let backup_relative = PathBuf::from("tool-global")
         .join("skills")
-        .join(secure_archive_name("archive-backup")?);
+        .join(secure_archive_name("archive-update-backup")?);
     owner.create_directory(&staging_relative)?;
     let prepared = (|| {
         extract_skill_root_to_owner(owner, &plan.inspection, &staging_relative)?;
@@ -1774,7 +1774,7 @@ fn apply_archive_replacement_guarded<'lock>(
     let existing_skill_path = &plan.target.skill_path;
     let canonical_root = &plan.target.canonical_root;
     let temp_dir = canonical_root.join(secure_archive_name("archive-update")?);
-    let backup_dir = canonical_root.join(secure_archive_name("archive-backup")?);
+    let backup_dir = canonical_root.join(secure_archive_name("archive-update-backup")?);
     ensure_child_path(canonical_root, &temp_dir)?;
     ensure_child_path(canonical_root, &backup_dir)?;
     fs::create_dir(&temp_dir)?;

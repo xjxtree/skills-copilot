@@ -3751,6 +3751,60 @@ pub(crate) fn normalize_path_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
+#[cfg_attr(unix, allow(dead_code))]
+pub(crate) fn sync_directory_path(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        // Windows does not support FlushFileBuffers on directory handles.
+        // File replacement uses MOVEFILE_WRITE_THROUGH below, and directory
+        // creation/removal is complete before its path is revalidated.
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)?.sync_all()
+    }
+}
+
+#[cfg_attr(unix, allow(dead_code))]
+pub(crate) fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+
+        let source = source
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let target = target
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, target)
+    }
+}
+
 fn scan_agent_id_to_catalog(
     agent: AgentId,
     ctx: &AdapterContext,
@@ -4449,11 +4503,11 @@ fn write_config_atomic(
 
         run_atomic_pre_rename_failure_test_hook(path)?;
         validate_config_write_target(ctx, agent, scope, path)?;
-        fs::rename(&tmp, path)?;
+        replace_file_atomically(&tmp, path)?;
         run_atomic_post_rename_test_hook(path)?;
         set_private_path_permissions(path)?;
         validate_config_write_target(ctx, agent, scope, path)?;
-        fs::File::open(parent)?.sync_all()?;
+        sync_directory_path(parent)?;
         Ok(())
     })();
     finish_atomic_write_with_temp_cleanup("config.write", write_result, &tmp)
