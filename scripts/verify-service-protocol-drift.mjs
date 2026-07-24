@@ -1159,6 +1159,71 @@ export function validateProductReadFixtureContracts({
   return uniqueSorted(errors);
 }
 
+function validateStaleReferenceFixtures(fixturesDir) {
+  const cases = [
+    {
+      caseName: "project.getReadiness.stale.error",
+      method: "project.getReadiness",
+      code: "source_changed",
+      revisionPath: ["params", "source_revision"],
+    },
+    {
+      caseName: "session.previewResume.stale.error",
+      method: "session.previewResume",
+      code: "source_changed",
+      revisionPath: ["params", "expected_source_revision"],
+    },
+    {
+      caseName: "llm.previewPrompt.stale.error",
+      method: "llm.previewPrompt",
+      code: "source_changed",
+      revisionPath: ["params", "source_revision"],
+    },
+    {
+      caseName: "batch.applySkillToggles.stale.error",
+      method: "batch.applySkillToggles",
+      code: "stale_action_reference",
+      revisionPath: [
+        "params",
+        "confirmation",
+        "reference",
+        "source_revision",
+      ],
+    },
+  ];
+  const errors = [];
+  for (const contract of cases) {
+    const request = JSON.parse(
+      readRequired(join(fixturesDir, `${contract.caseName}.request.json`)),
+    );
+    const response = JSON.parse(
+      readRequired(join(fixturesDir, `${contract.caseName}.response.json`)),
+    );
+    const revision = contract.revisionPath.reduce(
+      (value, field) => value?.[field],
+      request,
+    );
+    if (
+      request?.method !== contract.method ||
+      typeof revision !== "string" ||
+      !revision.includes("stale")
+    ) {
+      errors.push(`${contract.caseName} request does not carry an explicit stale revision`);
+    }
+    if (
+      response?.id !== request?.id ||
+      response?.ok !== false ||
+      response?.result != null ||
+      response?.error?.code !== contract.code ||
+      typeof response?.error?.message !== "string" ||
+      response.error.message.length === 0
+    ) {
+      errors.push(`${contract.caseName} response does not fail closed with ${contract.code}`);
+    }
+  }
+  return uniqueSorted(errors);
+}
+
 function validateLifecycleFixtures(fixturesDir, inventory, swiftRoot) {
   const errors = [];
   for (const [applyMethod, lifecycle] of inventory.lifecycle) {
@@ -1616,6 +1681,9 @@ function main() {
       readRequired(join(fixturesDir, "session.previewResume.response.json")),
     ),
   })) {
+    errors.push([error, []]);
+  }
+  for (const error of validateStaleReferenceFixtures(fixturesDir)) {
     errors.push([error, []]);
   }
 

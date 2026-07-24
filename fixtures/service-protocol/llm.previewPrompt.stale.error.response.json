@@ -1,0 +1,8 @@
+{
+  "id": "fixture-llm-preview-prompt-stale",
+  "ok": false,
+  "error": {
+    "code": "source_changed",
+    "message": "list source changed during pagination"
+  }
+}

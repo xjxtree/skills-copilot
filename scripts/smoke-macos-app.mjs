@@ -319,6 +319,7 @@ async function initializeFixtureEnvironment(root) {
   const codexSkillsRoot = join(home, ".agents", "skills");
   const opencodeSkillsRoot = join(home, ".config", "opencode", "skills");
   const opencodeConfiguredSkillsRoot = join(root, "opencode-configured-skills");
+  const opencodeUnavailableSkillsRoot = join(root, "opencode-unavailable-skills");
   const piSkillsRoot = join(home, ".pi", "agent", "skills");
   const projectRoot = join(root, "fixture-project");
   const projectCwd = join(projectRoot, "nested", "workspace");
@@ -327,6 +328,17 @@ async function initializeFixtureEnvironment(root) {
   const projectPiSkillsRoot = join(projectCwd, ".pi", "skills");
   const projectPiSettings = join(projectRoot, ".pi", "settings.json");
   const codexUserConfig = join(home, ".codex", "config.toml");
+  const codexPluginRoot = join(
+    home,
+    ".codex",
+    "plugins",
+    "cache",
+    "smoke-publisher",
+    "smoke-plugin",
+    "1.0.0",
+  );
+  const sessionRoot = join(root, "authorized-sessions");
+  const sessionPath = join(sessionRoot, "claude-session.jsonl");
   const projectCodexConfig = join(projectRoot, ".codex", "config.toml");
   const projectOpencodeConfig = join(projectRoot, "opencode.json");
   mkdirSync(claudeSkillsRoot, { recursive: true });
@@ -340,6 +352,8 @@ async function initializeFixtureEnvironment(root) {
   mkdirSync(join(projectRoot, ".pi"), { recursive: true });
   mkdirSync(join(projectRoot, ".git"), { recursive: true });
   mkdirSync(projectCwd, { recursive: true });
+  mkdirSync(join(codexPluginRoot, ".codex-plugin"), { recursive: true });
+  mkdirSync(sessionRoot, { recursive: true });
   mkdirSync(appData, { recursive: true });
   mkdirSync(join(home, ".claude"), { recursive: true });
   mkdirSync(join(home, ".codex"), { recursive: true });
@@ -364,6 +378,23 @@ async function initializeFixtureEnvironment(root) {
     codexSkillsRoot,
     "codex-user-smoke",
     "---\nname: codex-user-smoke\ndescription: User Codex fixture for native smoke.\n---\nUser Codex body.\n",
+  );
+  writeFileSync(
+    join(codexPluginRoot, ".codex-plugin", "plugin.json"),
+    JSON.stringify(
+      {
+        name: "smoke-plugin",
+        version: "1.0.0",
+        skills: "./skills/",
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  writeSkill(
+    join(codexPluginRoot, "skills"),
+    "codex-plugin-smoke",
+    "---\nname: codex-plugin-smoke\ndescription: Enabled Codex plugin fixture for native smoke.\n---\nPlugin body.\n",
   );
   writeSkill(
     piSkillsRoot,
@@ -409,7 +440,10 @@ async function initializeFixtureEnvironment(root) {
     JSON.stringify(
       {
         skills: {
-          paths: [opencodeConfiguredSkillsRoot],
+          paths: [
+            opencodeConfiguredSkillsRoot,
+            opencodeUnavailableSkillsRoot,
+          ],
           urls: ["https://example.invalid/skills/index.json"],
         },
       },
@@ -422,6 +456,31 @@ async function initializeFixtureEnvironment(root) {
     "opencode-project-smoke",
     "---\nname: opencode-project-smoke\ndescription: Project opencode fixture for native smoke.\n---\nProject opencode body.\n",
   );
+  writeFileSync(
+    sessionPath,
+    [
+      JSON.stringify({
+        type: "user",
+        isSidechain: false,
+        sessionId: "claude-native-smoke",
+        cwd: projectRoot,
+        timestamp: "2026-07-24T08:00:00.000Z",
+        message: {
+          role: "user",
+          content: "Continue the isolated product projection smoke.",
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "claude-native-smoke",
+        timestamp: "2026-07-24T08:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: "The isolated session is ready for a read-only continuation preview.",
+        },
+      }),
+    ].join("\n") + "\n",
+  );
   const codexTargetSkillPath = realpathSync(
     join(projectCodexSkillsRoot, "codex-project-smoke", "SKILL.md"),
   );
@@ -431,6 +490,9 @@ async function initializeFixtureEnvironment(root) {
     [
       "# fixture comment preserved by Codex config patch",
       'model = "fixture-model"',
+      "",
+      '[plugins."smoke-plugin@smoke-publisher"]',
+      "enabled = true",
       "",
       "[sandbox]",
       'mode = "read-only"',
@@ -466,6 +528,8 @@ async function initializeFixtureEnvironment(root) {
     projectRoot,
     realOpencodeConfigSnapshot,
     root,
+    sessionPath,
+    sessionRoot,
   };
 }
 
@@ -1027,6 +1091,14 @@ function runFixtureServiceSmoke(env) {
   if (enabled.enabled !== true) {
     fail("toggle on did not re-enable alpha-review");
   }
+  const staleTogglePreview = callService(
+    "batch.previewSkillToggles",
+    {
+      instance_ids: [alpha.id],
+      target_enabled: false,
+    },
+    env,
+  );
   const settings = callService("config.readClaudeSettings", {}, env);
   if (typeof settings.revision !== "string" || settings.revision.length === 0) {
     fail("settings read did not return a config revision");
@@ -1076,6 +1148,30 @@ function runFixtureServiceSmoke(env) {
   ) {
     fail("settings save read-back did not match the reviewed candidate");
   }
+  const contentBeforeStaleApply = readFileSync(settings.target, "utf8");
+  expectServiceError(
+    "batch.applySkillToggles",
+    {
+      instance_ids: [alpha.id],
+      target_enabled: false,
+      confirmation: actionConfirmationFromPreview(
+        staleTogglePreview,
+        "stale alpha-review preview",
+      ),
+    },
+    env,
+    /stale_action_reference|action reference is stale/i,
+    "stale skill action",
+  );
+  if (readFileSync(settings.target, "utf8") !== contentBeforeStaleApply) {
+    fail("rejected stale skill action mutated Claude settings");
+  }
+  const alphaAfterStaleApply = callService("catalog.listSkills", {}, env).find(
+    (skill) => skill.id === alpha.id,
+  );
+  if (!alphaAfterStaleApply || alphaAfterStaleApply.enabled !== true) {
+    fail("rejected stale skill action changed alpha-review state");
+  }
   const snapshots = callService("snapshot.list", {}, env);
   if (!Array.isArray(snapshots) || snapshots.length === 0) {
     fail("expected snapshots after toggle/settings write flow");
@@ -1118,7 +1214,7 @@ function runFixtureServiceSmoke(env) {
   }
   note(
     "fixture service smoke passed: explicit scan, confirmed toggles, " +
-      "confirmed settings save, snapshot preview, confirmed rollback",
+      "stale-action rejection, confirmed settings save, snapshot preview, confirmed rollback",
   );
   return status;
 }
@@ -1220,6 +1316,11 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
     "codex-project-smoke",
     "project Codex fixture missing after project.setContext -> scanAll",
   );
+  runFixtureProductSurfaceSmoke(
+    env,
+    fixture,
+    clearRecentContexts,
+  );
   runFixtureOpencodeWritableSmoke(projectScan.skills, env, fixture);
   runFixturePiCompatibilitySmoke(projectScan.skills, env, fixture);
   runFixtureCodexConfigHardeningSmoke(env, fixture, projectScan.skills);
@@ -1252,6 +1353,244 @@ function runFixtureProjectContextSmoke(env, fixture, status) {
     "fixture project context smoke passed: setContext, recent remove/clear, " +
       "scanAll project visibility, clearContext",
   );
+}
+
+function runFixtureProductSurfaceSmoke(env, fixture, contextState) {
+  const projectID = contextState.active?.id;
+  if (typeof projectID !== "string" || projectID.length === 0) {
+    fail("product surface smoke requires an accepted active project id");
+  }
+  const productParams = {
+    project_id: projectID,
+    expected_project_context_revision: contextState.revision,
+  };
+  const readiness = callService("project.getReadiness", productParams, env);
+  if (
+    readiness.project_id !== projectID ||
+    typeof readiness.source_revision !== "string" ||
+    readiness.source_revision.length === 0
+  ) {
+    fail("project readiness did not bind the active project and product revision");
+  }
+  const expectedAgents = [
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi",
+    "hermes",
+    "openclaw",
+  ];
+  const readinessAgents = new Map(
+    (readiness.agents ?? []).map((record) => [record.agent, record]),
+  );
+  for (const agent of expectedAgents) {
+    if (!readinessAgents.has(agent)) {
+      fail(`project readiness omitted ${agent}`);
+    }
+  }
+  const opencodeReadiness = readinessAgents.get("opencode");
+  if (
+    opencodeReadiness?.coverage?.completeness === "enumerable" ||
+    opencodeReadiness?.health === "healthy" ||
+    readiness.health === "healthy"
+  ) {
+    fail("deliberately unavailable opencode root was allowed to assert healthy coverage");
+  }
+  if (typeof opencodeReadiness?.coverage?.incomplete_reason !== "string") {
+    fail("incomplete opencode readiness omitted its typed reason");
+  }
+
+  const codexAggregates = callService(
+    "catalog.listSkillAggregates",
+    {
+      ...productParams,
+      agent: "codex",
+      limit: 100,
+    },
+    env,
+  );
+  assertTerminalProductAggregatePage(codexAggregates, "Codex");
+  const pluginAggregate = codexAggregates.aggregates.find((aggregate) =>
+    aggregate.canonical_name?.endsWith(":codex-plugin-smoke"),
+  );
+  if (!pluginAggregate) {
+    fail("enabled Codex plugin skill missing from product aggregates");
+  }
+  if (
+    typeof pluginAggregate.source_identity !== "string" ||
+    pluginAggregate.source_identity.includes("/") ||
+    pluginAggregate.source_identity.toLowerCase().includes("cache") ||
+    pluginAggregate.primary_effectiveness !== "effective"
+  ) {
+    fail("Codex plugin aggregate leaked cache infrastructure or lost effective state");
+  }
+
+  const opencodeAggregates = callService(
+    "catalog.listSkillAggregates",
+    {
+      ...productParams,
+      agent: "opencode",
+      limit: 100,
+    },
+    env,
+  );
+  assertTerminalProductAggregatePage(opencodeAggregates, "opencode");
+  if (
+    opencodeAggregates.coverage?.completeness === "enumerable" ||
+    typeof opencodeAggregates.coverage?.incomplete_reason !== "string" ||
+    opencodeAggregates.page?.total_count !== null
+  ) {
+    fail("incomplete opencode aggregate list asserted an exact total");
+  }
+  if (
+    !opencodeAggregates.aggregates.some((aggregate) =>
+      JSON.stringify(aggregate).toLowerCase().includes("compatibility"),
+    )
+  ) {
+    fail("opencode compatibility source missing from product aggregates");
+  }
+
+  const sessionInventory = callService(
+    "session.previewLocalSessions",
+    {
+      authorized_roots: [fixture.sessionRoot],
+      auto_discover: false,
+      agent: "claude-code",
+      scope: "all",
+      include_content_items: false,
+      paging_mode: "keyset",
+      limit: 20,
+      sort: "modified_at",
+      direction: "desc",
+      project_root: fixture.projectRoot,
+      current_cwd: fixture.projectCwd,
+    },
+    env,
+  );
+  if (
+    sessionInventory.count !== 1 ||
+    sessionInventory.session_rows?.length !== 1 ||
+    sessionInventory.source_completeness !== "enumerable" ||
+    typeof sessionInventory.source_revision !== "string"
+  ) {
+    fail("isolated Claude session inventory was not complete and deterministic");
+  }
+  const session = sessionInventory.session_rows[0];
+  const messages = callService(
+    "session.listLocalSessionMessages",
+    {
+      authorized_roots: [fixture.sessionRoot],
+      auto_discover: false,
+      agent: "claude-code",
+      project_root: fixture.projectRoot,
+      current_cwd: fixture.projectCwd,
+      session_id: session.id,
+      limit: 40,
+    },
+    env,
+  );
+  if (
+    messages.session_id !== session.id ||
+    messages.returned_count !== 2 ||
+    messages.source_completeness !== "enumerable" ||
+    messages.provider_request_sent === true
+  ) {
+    fail("session detail did not return the complete isolated read-only transcript");
+  }
+
+  const resumeParams = {
+    authorized_roots: [fixture.sessionRoot],
+    auto_discover: false,
+    agent: "claude-code",
+    project_root: fixture.projectRoot,
+    current_cwd: fixture.projectCwd,
+    session_id: session.id,
+    expected_source_revision: sessionInventory.source_revision,
+    expected_snapshot_revision: readiness.source_revision,
+  };
+  const continuation = callService("session.previewResume", resumeParams, env);
+  if (
+    continuation.resume?.state !== "supported" ||
+    continuation.resume?.copy_only !== true ||
+    JSON.stringify(continuation.resume?.argv) !==
+      JSON.stringify(["claude", "--resume", "claude-native-smoke"])
+  ) {
+    fail("session continuation preview was not the documented copy-only Claude argv");
+  }
+  const sessionBytesBeforeStalePreview = readFileSync(fixture.sessionPath, "utf8");
+  expectServiceError(
+    "session.previewResume",
+    {
+      ...resumeParams,
+      expected_source_revision: "sha256:stale-session",
+    },
+    env,
+    /source_changed|source changed/i,
+    "stale session continuation",
+  );
+  if (readFileSync(fixture.sessionPath, "utf8") !== sessionBytesBeforeStalePreview) {
+    fail("rejected stale session continuation mutated its source");
+  }
+
+  const llmStatus = callService("llm.status", {}, env);
+  if (llmStatus.enabled !== false || llmStatus.configured !== false) {
+    fail("fixture provider-off state was not preserved");
+  }
+  const promptPreview = callService(
+    "llm.previewPrompt",
+    {
+      action: "project_health",
+      user_intent: "Review only the accepted fixture evidence.",
+      source_revision: readiness.source_revision,
+    },
+    env,
+  );
+  if (
+    promptPreview.allowed !== false ||
+    promptPreview.provider_request_sent !== false ||
+    promptPreview.response_contract?.source_revision !== readiness.source_revision ||
+    promptPreview.response_contract?.project_id !== projectID
+  ) {
+    fail("provider-off prompt preview lost its evidence binding or attempted a request");
+  }
+  expectServiceError(
+    "llm.previewPrompt",
+    {
+      action: "project_health",
+      user_intent: "Reject stale fixture evidence.",
+      source_revision: "sha256:stale-product",
+    },
+    env,
+    /source_changed|source changed/i,
+    "stale AI evidence",
+  );
+  expectServiceError(
+    "project.getReadiness",
+    {
+      ...productParams,
+      source_revision: "sha256:stale-product",
+    },
+    env,
+    /source_changed|source changed/i,
+    "stale overview evidence",
+  );
+
+  note(
+    "fixture product surface smoke passed: readiness, aggregate provenance, " +
+      "incomplete coverage, session detail, copy-only continuation, provider-off AI, stale rejection",
+  );
+}
+
+function assertTerminalProductAggregatePage(result, label) {
+  if (
+    typeof result?.source_revision !== "string" ||
+    !Array.isArray(result?.aggregates) ||
+    result.page?.returned_count !== result.aggregates.length ||
+    result.page?.has_more !== false ||
+    result.page?.next_cursor != null
+  ) {
+    fail(`${label} aggregate projection did not return one terminal bounded page`);
+  }
 }
 
 function assertFixturePiGlobalSmoke(skills) {

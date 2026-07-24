@@ -1,0 +1,14 @@
+{
+  "id": "fixture-session-resume-stale",
+  "method": "session.previewResume",
+  "params": {
+    "authorized_roots": [],
+    "auto_discover": true,
+    "agent": "codex",
+    "project_root": "<project-root>",
+    "current_cwd": "<project-root>",
+    "session_id": "session:codex:fixture",
+    "expected_source_revision": "sha256:stale-session-source",
+    "expected_snapshot_revision": "sha256:project-readiness-1"
+  }
+}

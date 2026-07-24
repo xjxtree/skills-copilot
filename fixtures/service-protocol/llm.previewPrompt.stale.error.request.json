@@ -1,0 +1,9 @@
+{
+  "id": "fixture-llm-preview-prompt-stale",
+  "method": "llm.previewPrompt",
+  "params": {
+    "action": "project_health",
+    "user_intent": "Reject stale project evidence.",
+    "source_revision": "sha256:stale-product-evidence"
+  }
+}

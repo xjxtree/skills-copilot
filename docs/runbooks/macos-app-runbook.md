@@ -109,8 +109,13 @@ Smoke must:
 - avoid real Claude, Codex, opencode, Pi, Hermes, and OpenClaw config mutation;
 - validate the existing app bundle;
 - capture only the app window;
-- cover scan, toggle, settings save, snapshot preview, rollback, project
-  context, and configured fixture roots when supported by the smoke script;
+- cover project overview readiness, skill aggregates and provenance, complete
+  and deliberately incomplete scan coverage, session summary/detail,
+  copy-only native continuation preview, provider-off AI preview, advanced
+  config save/rollback, project context, recent-project actions, plugin and
+  compatibility roots, and configured fixture roots;
+- reject stale product, AI, session, and confirmed-action revisions without
+  mutating fixture config or session sources;
 - avoid script execution through scan, import, export, install, LLM prepare,
   state snapshot, or detail loading.
 

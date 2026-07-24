@@ -11,6 +11,7 @@ fn local_session_preview_excludes_agent_specific_internal_sessions() {
 
     for (agent, visible_title) in [
         ("claude-code", "Visible Claude task"),
+        ("codex", "Visible Codex task"),
         ("opencode", "Visible OpenCode task"),
         ("pi", "Visible Pi task"),
         ("hermes", "Visible Hermes task"),
@@ -30,6 +31,32 @@ fn local_session_preview_excludes_agent_specific_internal_sessions() {
                     json!({"type":"user","isSidechain":true,"sessionId":"claude-child","message":{"role":"user","content":"Hidden Claude sidechain"}}).to_string(),
                 )
                 .expect("write Claude sidechain");
+            }
+            "codex" => {
+                fs::write(
+                    root.join("rollout-main.jsonl"),
+                    [
+                        json!({"type":"session_meta","payload":{"id":"codex-main","source":"vscode","thread_source":"user"}}),
+                        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":visible_title}]}}),
+                    ]
+                    .into_iter()
+                    .map(|row| row.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                )
+                .expect("write main Codex session");
+                fs::write(
+                    root.join("rollout-exec.jsonl"),
+                    [
+                        json!({"type":"session_meta","payload":{"id":"codex-exec","source":"exec","thread_source":"user"}}),
+                        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hidden Codex exec carrier"}]}}),
+                    ]
+                    .into_iter()
+                    .map(|row| row.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                )
+                .expect("write Codex exec carrier");
             }
             "opencode" => {
                 fs::write(

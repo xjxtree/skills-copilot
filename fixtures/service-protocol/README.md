@@ -38,6 +38,9 @@ truth, and `docs/service-protocol.md` describes the current semantics.
 - Product read fixtures cover revision-bound project readiness, complete
   aggregate paging metadata, and adapter-native copy-only session continuation.
   These methods remain local, read-only, process-free, and network-free.
+- Stale product, AI, session, and confirmed-action fixtures require typed
+  `source_changed` or `stale_action_reference` failures; stale inputs never
+  degrade into best-effort reads or writes.
 - Analysis and finding fixtures are read-only and must not imply config writes,
   CLI calls, execution, or unsupported-root inference.
 

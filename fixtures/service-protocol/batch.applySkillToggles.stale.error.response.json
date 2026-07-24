@@ -1,0 +1,8 @@
+{
+  "id": "fixture-batch-apply-skill-toggles-stale",
+  "ok": false,
+  "error": {
+    "code": "stale_action_reference",
+    "message": "command error: action reference is stale; preview again before confirming"
+  }
+}

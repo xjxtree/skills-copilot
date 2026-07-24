@@ -1,0 +1,23 @@
+{
+  "id": "fixture-batch-apply-skill-toggles-stale",
+  "method": "batch.applySkillToggles",
+  "params": {
+    "instance_ids": [
+      "claude-global-fixture"
+    ],
+    "target_enabled": false,
+    "confirmation": {
+      "reference": {
+        "action_id": "action:disable_skill:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_revision": "sha256:stale-action-source",
+        "target": {
+          "kind": "skill",
+          "id": "selection:claude-global-fixture",
+          "scope": "agent-global"
+        }
+      },
+      "preview_token": "action-preview:v1:hmac-sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "confirmed": true
+    }
+  }
+}
