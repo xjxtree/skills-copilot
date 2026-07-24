@@ -17,7 +17,7 @@
         "agent": null,
         "scope": null
       },
-      "project_id": null,
+      "project_id": "project-fixture",
       "impacts": ["app_local_data"],
       "preview_method": "llm.previewPrompt",
       "apply_method": "llm.confirmPromptAndSend",
@@ -46,6 +46,11 @@
         "kind": "prompt_context",
         "target_id": "provider-action-state",
         "expected_revision": "sha256:provider-action-state-before"
+      },
+      {
+        "kind": "prompt_context",
+        "target_id": "product-evidence",
+        "expected_revision": "sha256:product-evidence-fixture"
       }
     ],
     "preview_token": "action-preview:v1:hmac-sha256:fixture-prompt",
@@ -90,7 +95,36 @@
       "raw_response_persisted": false,
       "raw_secret_returned": false
     },
-    "prompt_preview": "You are assisting with AI agent skill governance.\n\nAction: recommend\n\nReturn draft-only analysis. Do not write files, mutate agent config, execute scripts, change triage, create snapshots, call tools, or request secrets.\n\nUser intent: fixture\n\nRecommendation constraints: use current catalog evidence only when available; ask for clarification instead of inventing unavailable skills.\n\nRequired output: concise draft guidance with evidence notes, uncertainty, and safe next steps. Mark all suggestions copy-only.",
+    "prompt_preview": "You are assisting with AI agent skill governance.\n\nAction: recommend\n\nReturn draft-only analysis. Do not write files, mutate agent config, execute scripts, change triage, create snapshots, call tools, or request secrets.\n\nUser intent: fixture\n\nRecommendation constraints: use current catalog evidence only when available; ask for clarification instead of inventing unavailable skills.\n\nEvidence-bound response contract: fixture contract shown below.\n\nRequired output: return only the exact JSON response envelope described above.",
+    "response_contract": {
+      "schema_version": 1,
+      "request_kind": "recommend",
+      "project_id": "project-fixture",
+      "source_revision": "sha256:product-evidence-fixture",
+      "result_schema": "copy_only_markdown",
+      "evidence": [
+        {
+          "id": "evidence:project:fixture",
+          "kind": "project_context",
+          "source_revision": "sha256:product-evidence-fixture",
+          "summary": "The selected project context was accepted for this response.",
+          "agent": null,
+          "target_id": "project-fixture"
+        }
+      ],
+      "actions": [],
+      "required_safety_flags": {
+        "copy_only": true,
+        "write_back_allowed": false,
+        "command_execution_allowed": false,
+        "script_execution_allowed": false,
+        "mutation_allowed": false,
+        "hidden_task_state_created": false,
+        "raw_prompt_persisted": false,
+        "raw_response_persisted": false,
+        "raw_trace_persisted": false
+      }
+    },
     "estimated_input_tokens": 235,
     "estimated_output_tokens": 500,
     "estimated_total_tokens": 735,
@@ -110,6 +144,7 @@
         "included_fields",
         "excluded_fields",
         "redaction",
+        "response_contract",
         "estimated_total_tokens",
         "estimated_cost_usd"
       ]

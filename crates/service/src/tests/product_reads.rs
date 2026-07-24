@@ -457,3 +457,135 @@ fn session_resume_dispatch_binds_native_inventory_to_current_product_snapshot() 
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn llm_session_digest_binds_native_session_and_product_revisions_without_resume_command() {
+    let (root, host, project_id, context_revision) = product_test_host("llm-session-digest");
+    scan_all(&host, &context_revision);
+
+    let project = host
+        .adapter_ctx
+        .project_root
+        .clone()
+        .expect("active project root");
+    let sessions = root.join("authorized-sessions");
+    fs::create_dir_all(&sessions).expect("create session root");
+    fs::write(
+        sessions.join("session.jsonl"),
+        json!({
+            "type": "user",
+            "sessionId": "claude-native-digest",
+            "cwd": project,
+            "message": {
+                "role": "user",
+                "content": "Summarize the accepted session safely"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write Claude session");
+
+    let list = host.handle(ServiceRequest {
+        id: Some("digest-session-list".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "authorized_roots": [sessions],
+            "auto_discover": false,
+            "agent": "claude-code",
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 100,
+            "project_root": project,
+            "current_cwd": project
+        }),
+    });
+    assert!(list.ok, "{:?}", list.error);
+    let list = list.result.expect("session inventory");
+    let session_id = list["session_rows"][0]["id"].as_str().expect("session id");
+    let session_source_revision = list["source_revision"]
+        .as_str()
+        .expect("session source revision");
+
+    let readiness = host.handle(ServiceRequest {
+        id: Some("digest-readiness".to_string()),
+        method: "project.getReadiness".to_string(),
+        params: json!({
+            "project_id": project_id,
+            "expected_project_context_revision": context_revision
+        }),
+    });
+    assert!(readiness.ok, "{:?}", readiness.error);
+    let product_source_revision = readiness
+        .result
+        .as_ref()
+        .and_then(|value| value.get("source_revision"))
+        .and_then(Value::as_str)
+        .expect("product source revision");
+
+    let request = json!({
+        "action": "session_digest",
+        "source_revision": product_source_revision,
+        "session": {
+            "authorized_roots": [sessions],
+            "auto_discover": false,
+            "agent": "claude-code",
+            "project_root": project,
+            "current_cwd": project,
+            "session_id": session_id,
+            "source_revision": session_source_revision,
+            "snapshot_revision": product_source_revision
+        }
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("digest-preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("session digest preview");
+    assert_eq!(
+        preview.pointer("/response_contract/result_schema"),
+        Some(&json!("session_digest"))
+    );
+    assert_eq!(
+        preview.pointer("/response_contract/source_revision"),
+        Some(&json!(product_source_revision))
+    );
+    assert!(preview
+        .pointer("/response_contract/evidence")
+        .and_then(Value::as_array)
+        .is_some_and(|evidence| evidence.iter().any(|reference| {
+            reference.get("kind") == Some(&json!("session"))
+                && reference.get("source_revision") == Some(&json!(session_source_revision))
+        })));
+    assert!(preview
+        .pointer("/response_contract/actions")
+        .and_then(Value::as_array)
+        .is_some_and(|actions| actions
+            .iter()
+            .any(|action| action.get("kind") == Some(&json!("resume_session")))));
+    let prompt = preview["prompt_preview"]
+        .as_str()
+        .expect("session digest prompt");
+    assert!(!prompt.contains("\"argv\""));
+    assert!(!prompt.contains("--resume"));
+    assert!(!prompt.contains("\"target_id\""));
+    assert!(!prompt.contains("\"target\""));
+    assert!(!prompt.contains(&project.to_string_lossy().to_string()));
+
+    let mut stale_request = request;
+    stale_request["session"]["source_revision"] = json!("sha256:stale-session");
+    let stale = host.handle(ServiceRequest {
+        id: Some("digest-stale".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: stale_request,
+    });
+    assert!(!stale.ok);
+    assert_eq!(
+        stale.error.as_ref().map(|error| error.code.as_str()),
+        Some("source_changed")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}

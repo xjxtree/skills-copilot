@@ -13,6 +13,7 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use skills_copilot_ai_core::{AiResponseContract, AiResponseEnvelope};
 use skills_copilot_commands::{
     lock_app_mutations, ActionConfirmation, AppDataPrivateLeafSnapshot, AppMutationLock,
     CommandError,
@@ -169,6 +170,7 @@ pub struct SendProviderPromptParams {
     pub estimated_cost_usd: f64,
     pub redaction_status: String,
     pub timeout_ms: Option<u64>,
+    pub response_contract: AiResponseContract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +241,7 @@ pub struct SendProviderPromptResult {
     pub error_code: Option<String>,
     pub error_message: Option<String>,
     pub output_text: Option<String>,
+    pub response_envelope: Option<AiResponseEnvelope>,
     pub audit: ProviderCallMetadata,
     pub local_metadata_persisted: bool,
     pub raw_prompt_persisted: bool,
@@ -306,6 +309,7 @@ struct ProviderPromptFinish {
     error_code: Option<String>,
     error_message: Option<String>,
     output_text: Option<String>,
+    response_envelope: Option<AiResponseEnvelope>,
 }
 
 struct ProviderPromptHttpSuccess {
@@ -960,6 +964,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                     "Provider profile is disabled; no request was sent.".to_string(),
                 ),
                 output_text: None,
+                response_envelope: None,
             },
         );
     }
@@ -981,6 +986,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                         .to_string(),
                 ),
                 output_text: None,
+                response_envelope: None,
             },
         );
     }
@@ -999,6 +1005,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                 error_code: Some("empty_prompt".to_string()),
                 error_message: Some("Redacted prompt is empty; no request was sent.".to_string()),
                 output_text: None,
+                response_envelope: None,
             },
         );
     }
@@ -1019,6 +1026,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                     "Single request token limit is lower than the prompt estimate.".to_string(),
                 ),
                 output_text: None,
+                response_envelope: None,
             },
         );
     }
@@ -1039,6 +1047,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                     "Monthly provider budget is 0; provider requests are disabled.".to_string(),
                 ),
                 output_text: None,
+                response_envelope: None,
             },
         );
     }
@@ -1060,6 +1069,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                     error_code: Some("credential_unavailable".to_string()),
                     error_message: Some(error.to_string()),
                     output_text: None,
+                    response_envelope: None,
                 },
             );
         }
@@ -1072,13 +1082,14 @@ pub(crate) fn send_provider_prompt_while_locked(
         Ok(success) if (200..300).contains(&success.status) => {
             let output_text = extract_output_text(profile.provider_type, &success.body);
             let response_validation =
-                validate_prompt_business_output(&params.action_type, output_text.as_deref());
-            let (status, error_code, error_message) = match response_validation {
-                Ok(()) => ("succeeded".to_string(), None, None),
+                validate_prompt_business_output(&params.response_contract, output_text.as_deref());
+            let (status, error_code, error_message, response_envelope) = match response_validation {
+                Ok(envelope) => ("succeeded".to_string(), None, None, Some(envelope)),
                 Err(message) => (
                     "parse_failed".to_string(),
                     Some("response_schema_invalid".to_string()),
                     Some(message),
+                    None,
                 ),
             };
             finish_prompt(
@@ -1095,6 +1106,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                     error_code,
                     error_message,
                     output_text,
+                    response_envelope,
                 },
             )
         }
@@ -1112,6 +1124,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                 error_code: Some(format!("http_{}", success.status)),
                 error_message: Some("Provider returned a non-success HTTP status.".to_string()),
                 output_text: None,
+                response_envelope: None,
             },
         ),
         Err(error) => finish_prompt(
@@ -1128,6 +1141,7 @@ pub(crate) fn send_provider_prompt_while_locked(
                 error_code: Some("network_error".to_string()),
                 error_message: Some(redact_error(&error)),
                 output_text: None,
+                response_envelope: None,
             },
         ),
     }
@@ -1392,6 +1406,7 @@ fn finish_prompt(
         error_code: audit.error_code.clone(),
         error_message: audit.error_message.clone(),
         output_text: finish.output_text,
+        response_envelope: finish.response_envelope,
         audit,
         local_metadata_persisted,
         raw_prompt_persisted: false,
@@ -2263,45 +2278,16 @@ pub(crate) fn normalize_epoch_millis(value: i64) -> i64 {
 }
 
 pub(crate) fn validate_prompt_business_output(
-    action_type: &str,
+    contract: &AiResponseContract,
     output_text: Option<&str>,
-) -> Result<(), String> {
-    if action_type != "task_cockpit" {
-        return Ok(());
-    }
+) -> Result<AiResponseEnvelope, String> {
     let output = output_text
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Provider returned no Task Preflight output.".to_string())?;
-    let value: Value = serde_json::from_str(output).map_err(|_| {
-        "Provider returned Task Preflight output that is not valid JSON.".to_string()
-    })?;
-    let object = value.as_object().ok_or_else(|| {
-        "Provider returned Task Preflight JSON with an invalid top-level shape.".to_string()
-    })?;
-    for key in [
-        "summary",
-        "agent_candidates",
-        "skill_candidates",
-        "safety_flags",
-    ] {
-        if !object.contains_key(key) {
-            return Err(format!(
-                "Provider Task Preflight JSON is missing required field `{key}`."
-            ));
-        }
-    }
-    if !object.get("summary").is_some_and(Value::is_object)
-        || !object.get("agent_candidates").is_some_and(Value::is_array)
-        || !object.get("skill_candidates").is_some_and(Value::is_array)
-        || !object.get("safety_flags").is_some_and(Value::is_object)
-    {
-        return Err(
-            "Provider Task Preflight JSON contains fields with incompatible schema types."
-                .to_string(),
-        );
-    }
-    Ok(())
+        .ok_or_else(|| "Provider returned no AI response envelope.".to_string())?;
+    contract
+        .parse_and_validate(output)
+        .map_err(|error| error.to_string())
 }
 
 fn default_enabled() -> bool {

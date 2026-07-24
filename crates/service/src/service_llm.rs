@@ -1,16 +1,27 @@
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor_for_method, encode_cursor, KeysetCursor};
+use skills_copilot_ai_core::{
+    AiResponseContract, AiResultSchema, AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+};
 use skills_copilot_commands::{
     action_descriptor, action_preview_binding, action_source_revision, ensure_action_confirmed,
     ActionPrecondition, ActionPreconditionKind, ActionReadbackObservation,
 };
 use skills_copilot_core::{
-    ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture, ActionReadbackDomain,
-    ActionTargetKind, ActionTargetRef,
+    ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
+    ActionReadbackDomain, ActionTargetKind, ActionTargetRef, EvidenceKind, EvidenceRef,
+    SessionContinuationRecord, SkillAggregateRecord,
 };
 
 const TASK_COCKPIT_MAX_EFFECTIVE_SKILLS: usize = 24;
 const TASK_COCKPIT_MAX_PROMPT_TOKENS: u32 = 12_000;
+const LLM_MAX_CONTEXT_ACTIONS: usize = 64;
+const LLM_MAX_CONTEXT_EVIDENCE: usize = 128;
+
+struct LlmResponseEvidenceContext {
+    contract: AiResponseContract,
+    session: Option<SessionContinuationRecord>,
+}
 
 fn llm_prompt_runs_revision_while_locked(owner: &AppMutationLock) -> Result<String, ServiceError> {
     let bytes = owner
@@ -215,6 +226,9 @@ impl ServiceHost {
         };
         let project_id =
             skills_copilot_commands::canonical_project_id(adapter_ctx.project_root.as_deref());
+        if project_id.as_deref() != Some(built.response_contract.project_id.as_str()) {
+            return Err(ServiceError::SourceChanged);
+        }
         let target_id = profile_id
             .clone()
             .unwrap_or_else(|| "unconfigured-provider".to_string());
@@ -235,6 +249,7 @@ impl ServiceHost {
                 ("endpoint", &endpoint_binding),
                 ("model", &model_binding),
                 ("prompt", &prompt_revision),
+                ("product_source", &built.response_contract.source_revision),
                 ("estimated_input_tokens", &input_tokens_binding),
                 ("estimated_output_tokens", &output_tokens_binding),
                 ("estimated_cost_usd", &cost_binding),
@@ -262,6 +277,13 @@ impl ServiceHost {
         if let Some(project_id) = project_id.as_ref() {
             evidence_refs.push(format!("project:{project_id}"));
         }
+        evidence_refs.extend(
+            built
+                .response_contract
+                .evidence
+                .iter()
+                .map(|reference| reference.id.clone()),
+        );
         evidence_refs.sort();
         evidence_refs.dedup();
         let action = action_descriptor(
@@ -304,6 +326,11 @@ impl ServiceHost {
                     target_id: "provider-action-state".to_string(),
                     expected_revision: action_state_revision,
                 },
+                ActionPrecondition {
+                    kind: ActionPreconditionKind::PromptContext,
+                    target_id: "product-evidence".to_string(),
+                    expected_revision: built.response_contract.source_revision.clone(),
+                },
             ],
         )?;
 
@@ -324,6 +351,7 @@ impl ServiceHost {
             excluded_fields: built.excluded_fields,
             redaction: built.redaction,
             prompt_preview: built.prompt_preview,
+            response_contract: built.response_contract,
             estimated_input_tokens,
             estimated_output_tokens,
             estimated_total_tokens,
@@ -345,6 +373,7 @@ impl ServiceHost {
                     "included_fields",
                     "excluded_fields",
                     "redaction",
+                    "response_contract",
                     "estimated_total_tokens",
                     "estimated_cost_usd",
                 ],
@@ -404,6 +433,7 @@ impl ServiceHost {
                 estimated_cost_usd: preview.estimated_cost_usd,
                 redaction_status: preview.redaction.status.clone(),
                 timeout_ms: params.timeout_ms,
+                response_contract: preview.response_contract.clone(),
             },
         ) {
             Ok(send) => send,
@@ -424,8 +454,22 @@ impl ServiceHost {
         let target_matches = send.profile_id == profile_id
             && preview.model.as_deref() == Some(send.model.as_str())
             && preview.destination_host.as_deref() == Some(send.destination_host.as_str());
+        let response_envelope_verified = send.response_envelope.as_ref().is_some_and(|envelope| {
+            preview
+                .response_contract
+                .validate_envelope(envelope)
+                .is_ok()
+        });
+        let evidence_snapshot_current = self
+            .accept_active_product_snapshot_while_locked(
+                Some(&preview.response_contract.source_revision),
+                &owner,
+            )
+            .is_ok_and(|snapshot| snapshot.project_id == preview.response_contract.project_id);
         let remote_result_verified = !send.provider_request_sent
-            || send.status.eq_ignore_ascii_case("succeeded")
+            || (send.status.eq_ignore_ascii_case("succeeded")
+                && response_envelope_verified
+                && evidence_snapshot_current)
             || send
                 .audit
                 .error_code
@@ -512,7 +556,7 @@ impl ServiceHost {
                     if !target_matches {
                         "the provider response target did not match the confirmed prompt target"
                     } else if !remote_result_verified {
-                        "the provider request may have left the process, but its remote result could not be verified"
+                        "the provider request may have left the process, but its evidence-bound response or current source revision could not be verified"
                     } else if !send.local_metadata_persisted {
                         "the provider request completed, but app-local provider audit persistence failed"
                     } else if !prompt_record_persisted {
@@ -566,6 +610,7 @@ impl ServiceHost {
             provider_request_sent: send.provider_request_sent,
             credential_accessed: send.credential_accessed,
             draft_output: send.output_text,
+            response_envelope: send.response_envelope,
             draft_requires_user_copy: true,
             write_back_allowed: false,
             script_execution_allowed: false,
@@ -1147,6 +1192,11 @@ impl ServiceHost {
         };
         let roots = self.redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&roots);
+        let mut response_context = self.llm_response_evidence_context_for(params, owner)?;
+        let accepted_response_contract = response_context.contract.clone();
+        for reference in &mut response_context.contract.evidence {
+            reference.summary = truncate_chars(&redactor.redact(&reference.summary), 320);
+        }
         let mut prompt_scope = vec![
             "operation metadata".to_string(),
             "app output language preference".to_string(),
@@ -1181,7 +1231,9 @@ impl ServiceHost {
         }
 
         match params.action {
-            LlmPromptActionKind::Analyze | LlmPromptActionKind::DraftFrontmatter => {
+            LlmPromptActionKind::Analyze
+            | LlmPromptActionKind::DraftFrontmatter
+            | LlmPromptActionKind::SkillChangeReview => {
                 let instance_id = params.skill_instance_id.as_deref().ok_or_else(|| {
                     ServiceError::InvalidRequest(format!(
                         "llm.previewPrompt {} requires skill_instance_id",
@@ -1211,6 +1263,12 @@ impl ServiceHost {
                     &mut redactor,
                     owner,
                 )?);
+                if params.action == LlmPromptActionKind::SkillChangeReview {
+                    sections.push(
+                        "Review only the bounded current skill evidence and reported findings. Describe observed changes or uncertainty; do not invent a prior version when no comparison evidence exists."
+                            .to_string(),
+                    );
+                }
             }
             LlmPromptActionKind::Recommend => {
                 prompt_scope.extend([
@@ -1284,21 +1342,50 @@ impl ServiceHost {
                     owner,
                 )?);
             }
+            LlmPromptActionKind::SessionDigest => {
+                let session = response_context.session.as_ref().ok_or_else(|| {
+                    ServiceError::InvalidRequest(
+                        "llm.previewPrompt session_digest requires accepted session evidence"
+                            .to_string(),
+                    )
+                })?;
+                prompt_scope.extend([
+                    "selected session continuation evidence".to_string(),
+                    "bounded session intent metadata".to_string(),
+                    "required evidence-bound response schema".to_string(),
+                ]);
+                included_fields.extend([
+                    "session id, agent, title, and timing".to_string(),
+                    "accepted native and project revisions".to_string(),
+                    "redacted intent summary when available".to_string(),
+                    "typed session evidence references".to_string(),
+                ]);
+                excluded_fields.extend([
+                    "raw transcript files".to_string(),
+                    "raw source paths".to_string(),
+                    "resume argv or commands".to_string(),
+                    "write/apply instructions".to_string(),
+                ]);
+                sections.push(render_session_digest_prompt_section(session, &mut redactor));
+            }
         }
 
-        if params.action == LlmPromptActionKind::TaskCockpit {
-            sections.push("Required output: return only valid JSON. Do not wrap it in Markdown fences. Use the exact shape requested in the task preflight section. All prose values must use the requested output language. Keep agent ids and skill names unchanged. Treat all recommendations as copy-only and read-only; do not include commands to execute.".to_string());
-        } else {
-            sections.push("Required output: concise Markdown draft guidance in the requested output language, with evidence notes, uncertainty, and safe next steps. Use narrow, pane-friendly Markdown: prefer bullets and short subsections. Do not use Markdown tables. Do not wrap the answer in fenced code blocks. For score breakdowns, write one bullet per component in the form `component: score - issue - evidence`. Mark all suggestions copy-only.".to_string());
-        }
+        sections.push(render_ai_response_contract(&response_context.contract)?);
+        sections.push("Required output: return only the exact JSON response envelope described above, without Markdown fences or extra text. Cite only allowed evidence and action ids. The result is copy-only interpretation; it must not contain commands, argv, scripts, apply methods, preview tokens, action confirmations, mutation instructions, hidden task state, or persistence claims.".to_string());
         let estimated_output_tokens = match params.action {
             LlmPromptActionKind::Analyze => 700,
             LlmPromptActionKind::Recommend => 500,
             LlmPromptActionKind::ExplainConflict => 650,
             LlmPromptActionKind::DraftFrontmatter => 450,
             LlmPromptActionKind::TaskCockpit => 1400,
+            LlmPromptActionKind::SessionDigest => 800,
+            LlmPromptActionKind::SkillChangeReview => 900,
         };
         let prompt_preview = sections.join("\n\n");
+        let current_response_context = self.llm_response_evidence_context_for(params, owner)?;
+        if current_response_context.contract != accepted_response_contract {
+            return Err(ServiceError::SourceChanged);
+        }
         let redaction = redactor.summary();
 
         Ok(BuiltLlmPrompt {
@@ -1308,7 +1395,212 @@ impl ServiceHost {
             excluded_fields,
             redaction,
             estimated_output_tokens,
+            response_contract: response_context.contract,
         })
+    }
+
+    fn llm_response_evidence_context_for(
+        &self,
+        params: &LlmPreviewPromptParams,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<LlmResponseEvidenceContext, ServiceError> {
+        let snapshot = match owner {
+            Some(owner) => self.accept_active_product_snapshot_while_locked(
+                params.source_revision.as_deref(),
+                owner,
+            )?,
+            None => self.accept_active_product_snapshot(params.source_revision.as_deref())?,
+        };
+        let readiness = &snapshot.projection.readiness;
+        let mut evidence = Vec::new();
+        let mut actions = Vec::new();
+        let mut session = None;
+        let result_schema = match params.action {
+            LlmPromptActionKind::TaskCockpit => {
+                let requested_agents = params
+                    .agents
+                    .iter()
+                    .map(|agent| agent.trim())
+                    .filter(|agent| !agent.is_empty())
+                    .collect::<BTreeSet<_>>();
+                let requested_instances = params
+                    .instance_ids
+                    .iter()
+                    .map(|instance| instance.trim())
+                    .filter(|instance| !instance.is_empty())
+                    .collect::<BTreeSet<_>>();
+                let task = params.user_intent.as_deref().unwrap_or_default();
+                let mut aggregates = snapshot
+                    .projection
+                    .skill_aggregates
+                    .iter()
+                    .filter(|aggregate| {
+                        requested_agents.is_empty()
+                            || aggregate
+                                .agents
+                                .iter()
+                                .any(|agent| requested_agents.contains(agent.as_str()))
+                    })
+                    .filter(|aggregate| {
+                        requested_instances.is_empty()
+                            || aggregate
+                                .instance_ids
+                                .iter()
+                                .any(|id| requested_instances.contains(id.as_str()))
+                    })
+                    .collect::<Vec<_>>();
+                aggregates.sort_by(|left, right| {
+                    task_cockpit_aggregate_relevance(task, right)
+                        .cmp(&task_cockpit_aggregate_relevance(task, left))
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                aggregates.truncate(TASK_COCKPIT_MAX_EFFECTIVE_SKILLS);
+                for aggregate in aggregates {
+                    evidence.extend(aggregate.evidence.clone());
+                    actions.extend(aggregate.actions.clone());
+                }
+                evidence.extend(
+                    readiness
+                        .evidence
+                        .iter()
+                        .filter(|reference| {
+                            reference.kind == EvidenceKind::ScanCoverage
+                                && (requested_agents.is_empty()
+                                    || reference.agent.is_some_and(|agent| {
+                                        requested_agents.contains(agent.as_str())
+                                    }))
+                        })
+                        .cloned(),
+                );
+                for attention in readiness.attention.iter().take(24).filter(|item| {
+                    requested_agents.is_empty()
+                        || item
+                            .agent
+                            .is_some_and(|agent| requested_agents.contains(agent.as_str()))
+                }) {
+                    append_known_evidence(
+                        &mut evidence,
+                        &readiness.evidence,
+                        &attention.evidence_refs,
+                    )?;
+                    append_known_actions(&mut actions, &readiness.actions, &attention.action_ids)?;
+                }
+                AiResultSchema::TaskReadiness
+            }
+            LlmPromptActionKind::SessionDigest => {
+                let input = params.session.as_ref().ok_or_else(|| {
+                    ServiceError::InvalidRequest(
+                        "llm.previewPrompt session_digest requires session".to_string(),
+                    )
+                })?;
+                let resume_params = crate::service_local_sessions::SessionResumePreviewParams {
+                    authorized_roots: input.authorized_roots.clone(),
+                    auto_discover: input.auto_discover,
+                    agent: input.agent.clone(),
+                    project_root: input.project_root.clone(),
+                    current_cwd: input.current_cwd.clone(),
+                    session_id: input.session_id.clone(),
+                    expected_source_revision: input.source_revision.clone(),
+                    expected_snapshot_revision: input.snapshot_revision.clone(),
+                };
+                let accepted = match owner {
+                    Some(owner) => self.preview_session_resume_while_locked(
+                        resume_params,
+                        &snapshot.source_revision,
+                        Some(snapshot.project_id.clone()),
+                        owner,
+                    )?,
+                    None => self.preview_session_resume(
+                        resume_params,
+                        &snapshot.source_revision,
+                        Some(snapshot.project_id.clone()),
+                    )?,
+                };
+                evidence.extend(accepted.evidence.clone());
+                actions.extend(accepted.actions.clone());
+                session = Some(accepted);
+                AiResultSchema::SessionDigest
+            }
+            LlmPromptActionKind::Analyze
+            | LlmPromptActionKind::DraftFrontmatter
+            | LlmPromptActionKind::SkillChangeReview => {
+                let instance_id = params.skill_instance_id.as_deref().ok_or_else(|| {
+                    ServiceError::InvalidRequest(format!(
+                        "llm.previewPrompt {} requires skill_instance_id",
+                        params.action.as_str()
+                    ))
+                })?;
+                let aggregate = snapshot
+                    .projection
+                    .skill_aggregates
+                    .iter()
+                    .find(|aggregate| {
+                        aggregate.id == instance_id
+                            || aggregate.instance_ids.iter().any(|id| id == instance_id)
+                    })
+                    .ok_or_else(|| {
+                        ServiceError::InvalidRequest(
+                            "selected skill is not present in the accepted product snapshot"
+                                .to_string(),
+                        )
+                    })?;
+                evidence.extend(aggregate.evidence.clone());
+                actions.extend(aggregate.actions.clone());
+                if params.action == LlmPromptActionKind::SkillChangeReview {
+                    AiResultSchema::SkillChangeReview
+                } else {
+                    AiResultSchema::CopyOnlyMarkdown
+                }
+            }
+            LlmPromptActionKind::Recommend | LlmPromptActionKind::ExplainConflict => {
+                evidence.extend(
+                    readiness
+                        .evidence
+                        .iter()
+                        .filter(|reference| reference.kind == EvidenceKind::ScanCoverage)
+                        .cloned(),
+                );
+                for attention in readiness.attention.iter().take(24) {
+                    append_known_evidence(
+                        &mut evidence,
+                        &readiness.evidence,
+                        &attention.evidence_refs,
+                    )?;
+                    append_known_actions(&mut actions, &readiness.actions, &attention.action_ids)?;
+                }
+                AiResultSchema::CopyOnlyMarkdown
+            }
+        };
+
+        if evidence.is_empty() {
+            evidence.extend(readiness.evidence.iter().take(1).cloned());
+        }
+        normalize_response_contract_members(
+            &snapshot.project_id,
+            &readiness.evidence,
+            &mut evidence,
+            &mut actions,
+        )?;
+        if evidence.len() > LLM_MAX_CONTEXT_EVIDENCE {
+            return Err(ServiceError::InvalidRequest(
+                "AI evidence context exceeds the local safety bound".to_string(),
+            ));
+        }
+        if actions.len() > LLM_MAX_CONTEXT_ACTIONS {
+            return Err(ServiceError::InvalidRequest(
+                "AI action reference context exceeds the local safety bound".to_string(),
+            ));
+        }
+        let contract = AiResponseContract::new(
+            params.action.as_str(),
+            snapshot.project_id,
+            snapshot.source_revision,
+            result_schema,
+            evidence,
+            actions,
+        )
+        .map_err(|error| ServiceError::InvalidRequest(error.to_string()))?;
+        Ok(LlmResponseEvidenceContext { contract, session })
     }
 
     fn render_skill_prompt_section_for(
@@ -1490,7 +1782,7 @@ impl ServiceHost {
             },
             "agent_summaries": agent_summaries,
             "effective_skills": effective_skills,
-            "output_schema": {
+            "result_schema": {
                 "generated_by": "provider-task-cockpit",
                 "catalog_available": true,
                 "filters": {
@@ -1565,22 +1857,14 @@ impl ServiceHost {
                         "severity": "info|warning|critical",
                         "agent": "<agent id or null>"
                     }
-                ],
-                "safety_flags": {
-                    "provider_request_sent": true,
-                    "write_back_allowed": false,
-                    "script_execution_allowed": false,
-                    "raw_prompt_persisted": false,
-                    "raw_response_persisted": false,
-                    "notes": ["copy-only recommendation"]
-                }
+                ]
             }
         });
 
         let payload_text =
             serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
         Ok(format!(
-            "Task preflight provider input:\n{}\n\nReturn only JSON matching `output_schema`. The UI will display the top recommended path, the top three skill candidates, key reasons, and concise process notes.",
+            "Task preflight provider input:\n{}\n\nPlace a value matching `result_schema` inside the evidence-bound response envelope. The UI will display the top recommended path, the top three skill candidates, key reasons, and concise process notes.",
             payload_text
         ))
     }
@@ -1612,7 +1896,9 @@ impl ServiceHost {
         let action = params.kind;
         let mut prompt_scope = vec!["operation metadata".to_string()];
         let estimated_input_tokens = match action {
-            LlmActionKind::Analyze | LlmActionKind::DraftFrontmatter => {
+            LlmActionKind::Analyze
+            | LlmActionKind::DraftFrontmatter
+            | LlmActionKind::SkillChangeReview => {
                 let instance_id = params.skill_instance_id.as_deref().ok_or_else(|| {
                     ServiceError::InvalidRequest(format!(
                         "llm.prepareAction {} requires skill_instance_id",
@@ -1663,6 +1949,7 @@ impl ServiceHost {
             LlmActionKind::Recommend => 500,
             LlmActionKind::ExplainConflict => 650,
             LlmActionKind::DraftFrontmatter => 450,
+            LlmActionKind::SkillChangeReview => 900,
         };
         let estimated_total_tokens = estimated_input_tokens
             .saturating_add(estimated_output_tokens)
@@ -2248,6 +2535,223 @@ fn task_cockpit_skill_relevance(task: &str, skill: &SkillRecord) -> u32 {
         }
     }
     score
+}
+
+fn task_cockpit_aggregate_relevance(task: &str, aggregate: &SkillAggregateRecord) -> u32 {
+    let task = task.to_lowercase();
+    let name = aggregate.canonical_name.to_lowercase();
+    let display_name = aggregate.display_name.to_lowercase();
+    let description = aggregate.description.to_lowercase();
+    let mut score = 0u32;
+    if !name.trim().is_empty() && task.contains(name.trim()) {
+        score = score.saturating_add(100);
+    }
+    for term in task
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .collect::<BTreeSet<_>>()
+    {
+        if name.contains(term) || display_name.contains(term) {
+            score = score.saturating_add(12);
+        }
+        if description.contains(term) {
+            score = score.saturating_add(6);
+        }
+    }
+    score
+}
+
+fn append_known_evidence(
+    target: &mut Vec<EvidenceRef>,
+    available: &[EvidenceRef],
+    ids: &[String],
+) -> Result<(), ServiceError> {
+    for id in ids {
+        let reference = available
+            .iter()
+            .find(|reference| reference.id == *id)
+            .ok_or_else(|| {
+                ServiceError::InvalidRequest(format!(
+                    "AI context references unknown deterministic evidence `{id}`"
+                ))
+            })?;
+        target.push(reference.clone());
+    }
+    Ok(())
+}
+
+fn append_known_actions(
+    target: &mut Vec<ActionDescriptor>,
+    available: &[ActionDescriptor],
+    ids: &[String],
+) -> Result<(), ServiceError> {
+    for id in ids {
+        let action = available
+            .iter()
+            .find(|action| action.id == *id)
+            .ok_or_else(|| {
+                ServiceError::InvalidRequest(format!(
+                    "AI context references unknown deterministic action `{id}`"
+                ))
+            })?;
+        target.push(action.clone());
+    }
+    Ok(())
+}
+
+fn normalize_response_contract_members(
+    project_id: &str,
+    fallback_evidence: &[EvidenceRef],
+    evidence: &mut Vec<EvidenceRef>,
+    actions: &mut Vec<ActionDescriptor>,
+) -> Result<(), ServiceError> {
+    evidence.sort_by(|left, right| left.id.cmp(&right.id));
+    evidence.dedup_by(|left, right| left.id == right.id);
+    actions.sort_by(|left, right| left.id.cmp(&right.id));
+    actions.dedup_by(|left, right| left.id == right.id);
+
+    for action in actions.iter() {
+        if action.project_id.as_deref() != Some(project_id) {
+            return Err(ServiceError::InvalidRequest(format!(
+                "AI action `{}` is not bound to the accepted project",
+                action.id
+            )));
+        }
+        for evidence_id in &action.evidence_refs {
+            if evidence
+                .iter()
+                .any(|reference| reference.id == *evidence_id)
+            {
+                continue;
+            }
+            let reference = fallback_evidence
+                .iter()
+                .find(|reference| reference.id == *evidence_id)
+                .ok_or_else(|| {
+                    ServiceError::InvalidRequest(format!(
+                        "AI action `{}` references unavailable evidence `{evidence_id}`",
+                        action.id
+                    ))
+                })?;
+            evidence.push(reference.clone());
+        }
+    }
+    evidence.sort_by(|left, right| left.id.cmp(&right.id));
+    evidence.dedup_by(|left, right| left.id == right.id);
+    Ok(())
+}
+
+fn render_ai_response_contract(contract: &AiResponseContract) -> Result<String, ServiceError> {
+    let result = match contract.result_schema {
+        AiResultSchema::CopyOnlyMarkdown => serde_json::json!({
+            "markdown": "<concise evidence-cited copy-only explanation>"
+        }),
+        AiResultSchema::TaskReadiness => serde_json::json!({
+            "summary": {
+                "summary": "<one concise user-facing finding>",
+                "recommended_agent": null,
+                "recommended_skill_name": null,
+                "readiness_score": 0,
+                "routing_score": 0,
+                "gap_count": 0,
+                "blocker_count": 0
+            },
+            "agent_candidates": [],
+            "skill_candidates": [],
+            "readiness_signals": [],
+            "gap_rows": [],
+            "blocker_rows": []
+        }),
+        AiResultSchema::SessionDigest => serde_json::json!({
+            "summary": "<concise digest of the accepted session evidence>",
+            "intent": "<inferred intent or null>",
+            "suggested_next_prompt": "<copy-only prompt suggestion, never a command>",
+            "evidence_notes": [],
+            "uncertainties": []
+        }),
+        AiResultSchema::SkillChangeReview => serde_json::json!({
+            "summary": "<concise review of observed skill evidence>",
+            "changes": [],
+            "risks": [],
+            "recommendations": []
+        }),
+    };
+    let allowed_evidence = contract
+        .evidence
+        .iter()
+        .map(|reference| {
+            serde_json::json!({
+                "id": reference.id,
+                "kind": reference.kind,
+                "summary": reference.summary,
+                "agent": reference.agent,
+            })
+        })
+        .collect::<Vec<_>>();
+    let allowed_actions = contract
+        .actions
+        .iter()
+        .map(|action| {
+            serde_json::json!({
+                "id": action.id,
+                "target_kind": action.target.kind,
+                "agent": action.target.agent,
+                "scope": action.target.scope,
+                "confirmation_required": action.confirmation_required,
+                "network": action.network,
+                "evidence_refs": action.evidence_refs,
+            })
+        })
+        .collect::<Vec<_>>();
+    let envelope = serde_json::json!({
+        "schema_version": AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+        "request_kind": contract.request_kind,
+        "project_id": contract.project_id,
+        "source_revision": contract.source_revision,
+        "result_schema": contract.result_schema,
+        "evidence_refs": ["<one or more ids from allowed_evidence>"],
+        "action_refs": ["<zero or more ids from allowed_actions>"],
+        "result": result,
+        "safety_flags": contract.required_safety_flags,
+    });
+    let specification = serde_json::json!({
+        "response_envelope": envelope,
+        "allowed_evidence": allowed_evidence,
+        "allowed_actions": allowed_actions,
+        "reference_rules": [
+            "Every evidence_refs entry must resolve to allowed_evidence.",
+            "Every action_refs entry must resolve to allowed_actions.",
+            "Use action_refs only to recommend an existing deterministic action; never create or authorize an action.",
+            "Keep project_id, source_revision, request_kind, result_schema, schema_version, and safety_flags exactly unchanged."
+        ]
+    });
+    serde_json::to_string_pretty(&specification)
+        .map(|json| format!("Evidence-bound response contract:\n{json}"))
+        .map_err(ServiceError::from)
+}
+
+fn render_session_digest_prompt_section(
+    session: &SessionContinuationRecord,
+    redactor: &mut PromptRedactor<'_>,
+) -> String {
+    let payload = serde_json::json!({
+        "id": redactor.redact(&session.id),
+        "agent": session.agent,
+        "title": redactor.redact(&session.title),
+        "intent": session.intent.as_deref().map(|intent| redactor.redact(intent)),
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "modified_at": session.modified_at,
+        "source_kind": redactor.redact(&session.source_kind),
+        "source_revision": session.source_revision,
+        "snapshot_revision": session.snapshot_revision,
+        "coverage": session.coverage,
+        "resume_state": session.resume.state,
+        "evidence_refs": session.evidence.iter().map(|reference| reference.id.as_str()).collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&payload)
+        .map(|json| format!("Selected session continuation evidence:\n{json}"))
+        .unwrap_or_else(|_| "Selected session continuation evidence is unavailable.".to_string())
 }
 
 fn redacted_model_task_record(

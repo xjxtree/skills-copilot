@@ -243,7 +243,7 @@ extension ServiceClient {
     func previewPromptForLLMAction(action: LLMAction, skill: SkillRecord) async throws -> LLMPromptPreview {
         let params = PreviewLLMPromptParams(
             action: action.rawValue,
-            requestKind: "action",
+            requestKind: action.rawValue,
             scope: "selected",
             instanceIDs: nil,
             instanceId: skill.id,
@@ -266,7 +266,7 @@ extension ServiceClient {
     ) async throws -> LLMPromptSendResult {
         let request = PreviewLLMPromptParams(
             action: action.rawValue,
-            requestKind: "action",
+            requestKind: action.rawValue,
             scope: "selected",
             instanceIDs: nil,
             instanceId: skill.id,
@@ -330,6 +330,44 @@ extension ServiceClient {
             preview: preview,
             request: request,
             timeoutMS: LLMPromptRequestTimeouts.taskCockpitSendMS
+        )
+    }
+
+    func previewPromptForSessionDigest(
+        authorizedRoots: [String],
+        project: ProjectContext,
+        session: SessionContinuationRecord,
+        productSourceRevision: String
+    ) async throws -> LLMPromptPreview {
+        let request = sessionDigestPromptRequest(
+            authorizedRoots: authorizedRoots,
+            project: project,
+            session: session,
+            productSourceRevision: productSourceRevision
+        )
+        let preview: LLMPromptPreview = try await call(
+            method: "llm.previewPrompt",
+            params: request
+        )
+        try validatePromptPreview(preview, request: request)
+        return preview
+    }
+
+    func confirmPromptAndSendForSessionDigest(
+        preview: LLMPromptPreview,
+        authorizedRoots: [String],
+        project: ProjectContext,
+        session: SessionContinuationRecord,
+        productSourceRevision: String
+    ) async throws -> LLMPromptSendResult {
+        try await confirmPromptAndSend(
+            preview: preview,
+            request: sessionDigestPromptRequest(
+                authorizedRoots: authorizedRoots,
+                project: project,
+                session: session,
+                productSourceRevision: productSourceRevision
+            )
         )
     }
 
@@ -431,7 +469,52 @@ extension ServiceClient {
                 "Provider prompt partial outcome must use the explicit partial status."
             )
         }
+        if result.success {
+            guard let contract = preview.responseContract,
+                  let envelope = result.responseEnvelope else {
+                throw ClientError.invalidOutput(
+                    "Successful provider output omitted its evidence-bound response envelope."
+                )
+            }
+            do {
+                try envelope.validated(against: contract)
+            } catch {
+                throw ClientError.invalidOutput(error.localizedDescription)
+            }
+        }
         return result
+    }
+
+    private func sessionDigestPromptRequest(
+        authorizedRoots: [String],
+        project: ProjectContext,
+        session: SessionContinuationRecord,
+        productSourceRevision: String
+    ) -> PreviewLLMPromptParams {
+        PreviewLLMPromptParams(
+            action: "session_digest",
+            requestKind: "session_digest",
+            scope: "selected_session",
+            instanceIDs: nil,
+            instanceId: nil,
+            definitionId: nil,
+            agent: session.agent.rawValue,
+            agents: [session.agent.rawValue],
+            taskText: nil,
+            userIntent: nil,
+            candidateInstanceIDs: nil,
+            sourceRevision: productSourceRevision,
+            session: LLMSessionEvidenceParams(
+                authorizedRoots: authorizedRoots,
+                autoDiscover: authorizedRoots.isEmpty,
+                agent: session.agent.rawValue,
+                projectRoot: project.rootPath,
+                currentCWD: project.currentCWD ?? project.rootPath,
+                sessionID: session.id,
+                sourceRevision: session.sourceRevision,
+                snapshotRevision: session.snapshotRevision
+            )
+        )
     }
 
     private func validatePromptPreview(
@@ -441,6 +524,7 @@ extension ServiceClient {
         guard preview.enabled else { return }
         guard let action = preview.actionDescriptor,
               let previewToken = preview.previewToken,
+              let responseContract = preview.responseContract,
               !previewToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ClientError.invalidOutput(
                 "Enabled provider prompt preview omitted its service-owned action."
@@ -458,13 +542,17 @@ extension ServiceClient {
                     targetID: .present,
                     targetAgent: .absent,
                     targetScope: .absent,
-                    projectID: .absent,
+                    projectID: .present,
                     impacts: ["app_local_data"],
                     readback: ["provider_activity", "prompt_runs"]
                 )
             )
             try preview.preconditions.validated(
                 kinds: ["provider_profile", "prompt_context"]
+            )
+            try responseContract.validated(
+                requestKind: request.action,
+                projectID: action.projectID
             )
         } catch {
             throw ClientError.invalidOutput(error.localizedDescription)
@@ -473,8 +561,11 @@ extension ServiceClient {
               action.intent == "send_provider_prompt",
               action.target.kind == "provider_profile",
               preview.confirmationRequired,
-              preview.requestKind == request.requestKind,
-              preview.scope == request.scope,
+              preview.requestKind == request.action,
+              preview.preconditions.contains(where: {
+                  $0.targetID == "product-evidence"
+                      && $0.expectedRevision == responseContract.sourceRevision
+              }),
               preview.rawPromptPersisted == false,
               preview.rawResponsePersisted == false,
               preview.draftCopyOnly else {

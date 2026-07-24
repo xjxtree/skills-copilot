@@ -1203,6 +1203,10 @@ requires another inspection and preview.
 
 ## LLM Prompt Actions
 
+- Every `llm.previewPrompt` request requires an active selected project.
+  Optional top-level `source_revision` binds the request to a previously
+  accepted product projection; mismatch returns `source_changed` without
+  provider traffic.
 - `llm.previewPrompt` action `task_cockpit` accepts `agents: string[]` plus
   `instance_ids: string[]` and `user_intent`/`task_text`. The service renders a
   redacted task preflight prompt from selected agent names, adapter capability
@@ -1216,12 +1220,29 @@ requires another inspection and preview.
   at most 24 candidates, and blocks confirmation when the estimated request
   exceeds the 12,000-token safety budget (in addition to the provider profile
   limit).
-- A successful HTTP transport is not sufficient for a successful Task
-  Preflight. The provider output must be valid JSON with the required business
-  result sections; otherwise prompt-run and provider-call metadata use
-  `parse_failed` with `response_schema_invalid`. Provider metadata timestamps
-  are epoch milliseconds; plausible legacy epoch-second records are normalized
-  on read.
+- Action `skill_change_review` requires `skill_instance_id` and returns the
+  `skill_change_review` result schema over the selected skill aggregate and its
+  current evidence. It never invents comparison history.
+- Action `session_digest` requires a nested `session` object containing
+  `authorized_roots`, `auto_discover`, `agent`, `project_root`, `current_cwd`,
+  `session_id`, native `source_revision`, and product `snapshot_revision`.
+  The service reuses `session.previewResume` validation to bind the exact
+  session identity and both revisions, but excludes resume argv and raw
+  transcript content from the provider prompt.
+- `llm.previewPrompt` returns `response_contract` with schema version 1,
+  `request_kind`, `project_id`, accepted product `source_revision`,
+  `result_schema`, typed `evidence`, optional deterministic `actions`, and
+  exact `required_safety_flags`. The supported result schemas are
+  `copy_only_markdown`, `task_readiness`, `session_digest`, and
+  `skill_change_review`.
+- A successful HTTP transport is not sufficient for any prompt action. The
+  provider must return only a JSON `response_envelope` whose identity,
+  revision, schema, safety flags, and referenced evidence/actions match the
+  confirmed contract. Unknown or duplicate references, target drift, stale
+  source revision, unsafe flags, malformed schema, and command/mutation-shaped
+  results use `parse_failed` with `response_schema_invalid`. Provider metadata
+  timestamps are epoch milliseconds; plausible legacy epoch-second records are
+  normalized on read.
 - `llm.previewPrompt` returns the same signed action descriptor, preconditions,
   and opaque token used by the provider profile lifecycle.
   `llm.confirmPromptAndSend` accepts only the exact `action_confirmation`; a
@@ -1232,6 +1253,9 @@ requires another inspection and preview.
   local metadata record cannot be verified, the result is `status=partial`
   with a typed `partial_outcome`, `remote_effect=remote_unknown`, no verified
   read-back, and recovery guidance requiring inspection and a new preview.
+- A successful confirmed send includes the validated transient
+  `response_envelope`. Native clients validate it again against the previewed
+  `response_contract` before publishing the structured copy-only result.
 - Provider output is returned only by the immediate confirmed-send response and
   remains copy-only. `prompt-runs.json` is bounded metadata history; it never
   stores task text, `user_intent`, `task_text`, rendered prompt text, provider

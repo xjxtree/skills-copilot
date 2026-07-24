@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use skills_copilot_ai_core::{AiResponseContract, AiResponseEnvelope};
 use skills_copilot_catalog::{
     Catalog, CatalogCommitError, CatalogError, CatalogSkillProjectionDraft, ConfigSnapshotRecord,
     ConflictGroupRecord, FindingTriageRecord, RuleFindingRecord, RuleTuningRecord,
@@ -75,17 +76,17 @@ mod service_provider_actions;
 mod service_support_helpers;
 
 use project_context::{
-    clear_project_context, clear_recent_project_contexts, context_from_paths,
-    effective_project_context_revision, effective_project_context_revision_while_locked,
-    load_project_context_state, preview_clear_project_context,
-    preview_clear_recent_project_contexts, preview_remove_recent_project_context,
-    preview_set_project_context, project_context_summary, remove_recent_project_context,
-    set_project_context, stored_active_adapter_paths, stored_active_adapter_paths_while_locked,
-    validate_project_context_for_response, ProjectContext, ProjectContextActionPreview,
-    ProjectContextApplyResult, ProjectContextConfirmationParams, ProjectContextIDApplyParams,
-    ProjectContextIDPreviewParams, ProjectContextParams, ProjectContextRevisionParams,
-    ProjectContextSetApplyParams, ProjectContextSetPreviewParams, ProjectContextState,
-    ProjectContextSummary,
+    active_project_context_while_locked, clear_project_context, clear_recent_project_contexts,
+    context_from_paths, effective_project_context_revision,
+    effective_project_context_revision_while_locked, load_project_context_state,
+    preview_clear_project_context, preview_clear_recent_project_contexts,
+    preview_remove_recent_project_context, preview_set_project_context, project_context_summary,
+    remove_recent_project_context, set_project_context, stored_active_adapter_paths,
+    stored_active_adapter_paths_while_locked, validate_project_context_for_response,
+    ProjectContext, ProjectContextActionPreview, ProjectContextApplyResult,
+    ProjectContextConfirmationParams, ProjectContextIDApplyParams, ProjectContextIDPreviewParams,
+    ProjectContextParams, ProjectContextRevisionParams, ProjectContextSetApplyParams,
+    ProjectContextSetPreviewParams, ProjectContextState, ProjectContextSummary,
 };
 pub use protocol::{
     ServiceErrorDetails, ServiceErrorRecord, ServiceRequest, ServiceResponse, DEFAULT_BUNDLE_ID,
@@ -542,6 +543,24 @@ pub struct LlmPreviewPromptParams {
     pub agents: Vec<String>,
     #[serde(default)]
     pub user_intent: Option<String>,
+    #[serde(default)]
+    pub source_revision: Option<String>,
+    #[serde(default)]
+    pub session: Option<LlmSessionEvidenceParams>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LlmSessionEvidenceParams {
+    #[serde(default, alias = "authorized_dirs", alias = "authorized_paths")]
+    pub authorized_roots: Vec<String>,
+    #[serde(default)]
+    pub auto_discover: bool,
+    pub agent: String,
+    pub project_root: String,
+    pub current_cwd: String,
+    pub session_id: String,
+    pub source_revision: String,
+    pub snapshot_revision: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -572,6 +591,8 @@ pub enum LlmPromptActionKind {
     ExplainConflict,
     DraftFrontmatter,
     TaskCockpit,
+    SessionDigest,
+    SkillChangeReview,
 }
 
 impl LlmPromptActionKind {
@@ -582,6 +603,8 @@ impl LlmPromptActionKind {
             Self::ExplainConflict => "explain_conflict",
             Self::DraftFrontmatter => "draft_frontmatter",
             Self::TaskCockpit => "task_cockpit",
+            Self::SessionDigest => "session_digest",
+            Self::SkillChangeReview => "skill_change_review",
         }
     }
 }
@@ -609,6 +632,7 @@ pub enum LlmActionKind {
     Recommend,
     ExplainConflict,
     DraftFrontmatter,
+    SkillChangeReview,
 }
 
 impl LlmActionKind {
@@ -618,6 +642,7 @@ impl LlmActionKind {
             Self::Recommend => "recommend",
             Self::ExplainConflict => "explain_conflict",
             Self::DraftFrontmatter => "draft_frontmatter",
+            Self::SkillChangeReview => "skill_change_review",
         }
     }
 }
@@ -665,6 +690,7 @@ pub struct LlmPreviewPromptResult {
     pub excluded_fields: Vec<String>,
     pub redaction: LlmPromptRedactionSummary,
     pub prompt_preview: String,
+    pub response_contract: AiResponseContract,
     pub estimated_input_tokens: u32,
     pub estimated_output_tokens: u32,
     pub estimated_total_tokens: u32,
@@ -705,6 +731,7 @@ pub struct LlmConfirmPromptAndSendResult {
     pub provider_request_sent: bool,
     pub credential_accessed: bool,
     pub draft_output: Option<String>,
+    pub response_envelope: Option<AiResponseEnvelope>,
     pub draft_requires_user_copy: bool,
     pub write_back_allowed: bool,
     pub script_execution_allowed: bool,

@@ -12,14 +12,49 @@ pub(super) fn test_host(app_data_dir: PathBuf) -> ServiceHost {
     }
 }
 
+pub(super) fn test_host_with_project(app_data_dir: PathBuf) -> ServiceHost {
+    let project_root = app_data_dir
+        .parent()
+        .unwrap_or_else(|| Path::new("/tmp"))
+        .to_path_buf();
+    ServiceHost {
+        app_data_dir,
+        adapter_ctx: AdapterContext {
+            user_home: PathBuf::from("/tmp/home"),
+            project_root: Some(project_root.clone()),
+            project_cwd: Some(project_root),
+            extra_roots: Vec::new(),
+        },
+    }
+}
+
 pub(super) fn spawn_mock_openai_server() -> (String, std::thread::JoinHandle<String>) {
-    spawn_mock_openai_server_with_content("Draft-only review from mock provider.")
+    spawn_mock_openai_server_with_responder(|request_text| {
+        evidence_bound_mock_content(request_text, Some("Draft-only review from mock provider."))
+            .unwrap_or_else(|| "Draft-only review from mock provider.".to_string())
+    })
+}
+
+pub(super) fn spawn_mock_openai_server_with_markdown(
+    markdown: impl Into<String>,
+) -> (String, std::thread::JoinHandle<String>) {
+    let markdown = markdown.into();
+    spawn_mock_openai_server_with_responder(move |request_text| {
+        evidence_bound_mock_content(request_text, Some(&markdown))
+            .expect("mock LLM request must contain an evidence-bound response contract")
+    })
 }
 
 pub(super) fn spawn_mock_openai_server_with_content(
     content: impl Into<String>,
 ) -> (String, std::thread::JoinHandle<String>) {
     let content = content.into();
+    spawn_mock_openai_server_with_responder(move |_| content.clone())
+}
+
+fn spawn_mock_openai_server_with_responder(
+    responder: impl Fn(&str) -> String + Send + 'static,
+) -> (String, std::thread::JoinHandle<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock provider listener");
     let port = listener
         .local_addr()
@@ -58,6 +93,7 @@ pub(super) fn spawn_mock_openai_server_with_content(
             bytes.extend_from_slice(&buffer[..read]);
         }
         let request_text = String::from_utf8_lossy(&bytes).to_string();
+        let content = responder(&request_text);
         let body = serde_json::json!({
             "choices": [{
                 "message": {
@@ -81,6 +117,36 @@ pub(super) fn spawn_mock_openai_server_with_content(
         request_text
     });
     (format!("http://127.0.0.1:{port}/v1"), handle)
+}
+
+fn evidence_bound_mock_content(request_text: &str, markdown: Option<&str>) -> Option<String> {
+    let (_, request_body) = request_text.split_once("\r\n\r\n")?;
+    let request: Value = serde_json::from_str(request_body).ok()?;
+    let prompt = request
+        .get("messages")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|message| message.get("content").and_then(Value::as_str))?;
+    let contract_json = prompt
+        .split_once("Evidence-bound response contract:\n")?
+        .1
+        .split_once("\n\nRequired output:")?
+        .0;
+    let specification: Value = serde_json::from_str(contract_json).ok()?;
+    let mut envelope = specification.get("response_envelope")?.clone();
+    let evidence_id = specification
+        .pointer("/allowed_evidence/0/id")?
+        .as_str()?
+        .to_string();
+    envelope["evidence_refs"] = json!([evidence_id]);
+    envelope["action_refs"] = json!([]);
+    if let Some(markdown) = markdown {
+        if envelope.pointer("/result/markdown").is_some() {
+            envelope["result"]["markdown"] = Value::String(markdown.to_string());
+        }
+    }
+    serde_json::to_string(&envelope).ok()
 }
 
 pub(super) fn find_header_end(bytes: &[u8]) -> Option<usize> {

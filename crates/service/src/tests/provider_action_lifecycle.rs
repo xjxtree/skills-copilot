@@ -116,7 +116,7 @@ fn llm_prompt_preview_returns_confirmable_action_without_leaking_prompt_secret()
         std::process::id(),
         unique_suffix(),
     ));
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
 
     let response = host.handle(ServiceRequest {
         id: Some("prompt-preview".to_string()),
@@ -157,7 +157,7 @@ fn llm_prepare_and_provider_output_cannot_smuggle_typed_action_authorization() {
         std::process::id(),
         unique_suffix(),
     ));
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let prepared = host.handle(ServiceRequest {
         id: Some("prepare-no-authorization".to_string()),
         method: "llm.prepareAction".to_string(),
@@ -221,27 +221,15 @@ fn llm_prepare_and_provider_output_cannot_smuggle_typed_action_authorization() {
         }),
         2_000,
     );
-    assert!(send.ok, "{:?}", send.error);
-    let mut result = send.result.expect("provider result");
-    assert_eq!(
-        result.get("draft_output").and_then(Value::as_str),
-        Some(invented_authorization),
-        "untrusted provider text may be returned only as one opaque copy-only draft"
+    assert!(
+        !send.ok,
+        "malformed provider authorization must be rejected"
     );
-    result
-        .as_object_mut()
-        .expect("provider result object")
-        .remove("draft_output");
-    assert_no_typed_action_authorization(&result, "$.provider_result_without_draft");
+    let error = send.error.expect("rejected provider result");
+    assert_eq!(error.code, "partial_effect");
     assert_eq!(
-        result.get("write_back_allowed").and_then(Value::as_bool),
-        Some(false)
-    );
-    assert_eq!(
-        result
-            .get("script_execution_allowed")
-            .and_then(Value::as_bool),
-        Some(false)
+        error.details.as_ref().map(|details| details.state.as_str()),
+        Some("remote_unknown")
     );
     let stored_runs =
         fs::read_to_string(host.llm_prompt_runs_path()).expect("read prompt-run metadata");
@@ -1353,7 +1341,7 @@ fn llm_prompt_reports_remote_unknown_and_keeps_writes_on_locked_owner_after_rebi
     let victim = root.join("victim");
     fs::create_dir_all(&root).expect("create app-data parent");
     let (base_url, server) = spawn_mock_openai_server();
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let profile_id = "llm-owner-rebind-provider";
     let (_, save) = confirmed_action_request(
         &host,
@@ -1583,7 +1571,7 @@ fn llm_prompt_action_is_one_time_and_replay_has_no_second_network_effect() {
         unique_suffix(),
     ));
     let (base_url, server) = spawn_mock_openai_server();
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let (_, save) = confirmed_action_request(
         &host,
         "llm.previewSaveProviderProfile",
@@ -1647,7 +1635,7 @@ fn llm_remote_success_with_prompt_record_failure_returns_remote_unknown() {
         unique_suffix(),
     ));
     let (base_url, server) = spawn_mock_openai_server();
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let (_, save) = confirmed_action_request(
         &host,
         "llm.previewSaveProviderProfile",
@@ -1836,7 +1824,7 @@ fn prompt_body_read_and_schema_failures_are_partial_remote_unknown() {
             &profile_id,
             Some("prompt-failure-test-secret"),
         );
-        let host = test_host(app_data_dir.clone());
+        let host = test_host_with_project(app_data_dir.clone());
         let (_, save) = confirmed_action_request(
             &host,
             "llm.previewSaveProviderProfile",
@@ -1858,7 +1846,7 @@ fn prompt_body_read_and_schema_failures_are_partial_remote_unknown() {
         let (_, response) = confirmed_llm_prompt_request(&host, request, 2_000);
         assert!(!response.ok, "{label}");
         let error = response.error.expect("remote outcome error");
-        assert_eq!(error.code, "partial_effect", "{label}");
+        assert_eq!(error.code, "partial_effect", "{label}: {}", error.message);
         assert_eq!(
             error.details.as_ref().map(|details| details.state.as_str()),
             Some("remote_unknown"),
@@ -2117,7 +2105,7 @@ fn replay_state_cleans_fixed_crash_residue_and_directory_sync_failure_is_partial
                 .expect("private replay residue");
         }
     }
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let (_, save) = confirmed_action_request(
         &host,
         "llm.previewSaveProviderProfile",
@@ -2277,7 +2265,7 @@ fn provider_save_params(profile_id: &str, base_url: &str) -> Value {
         "base_url": base_url,
         "model": "fixture-model",
         "enabled": true,
-        "single_request_token_limit": 4096,
+        "single_request_token_limit": 12_000,
         "monthly_budget_usd": 10.0
     })
 }

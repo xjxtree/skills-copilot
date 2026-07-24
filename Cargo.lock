@@ -802,6 +802,8 @@ dependencies = [
 name = "skills-copilot-ai-core"
 version = "0.1.5"
 dependencies = [
+ "serde",
+ "serde_json",
  "serde_norway",
  "skills-copilot-core",
 ]
@@ -877,6 +879,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "skills-copilot-adapters",
+ "skills-copilot-ai-core",
  "skills-copilot-catalog",
  "skills-copilot-commands",
  "skills-copilot-core",

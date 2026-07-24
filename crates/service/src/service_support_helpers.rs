@@ -197,6 +197,7 @@ pub(crate) struct BuiltLlmPrompt {
     pub(crate) excluded_fields: Vec<String>,
     pub(crate) redaction: LlmPromptRedactionSummary,
     pub(crate) estimated_output_tokens: u32,
+    pub(crate) response_contract: AiResponseContract,
 }
 
 pub(crate) struct PromptRedactor<'a> {

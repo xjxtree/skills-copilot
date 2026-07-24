@@ -19,6 +19,7 @@ ureq.workspace = true
 url.workspace = true
 skills-copilot-catalog.workspace = true
 skills-copilot-adapters.workspace = true
+skills-copilot-ai-core.workspace = true
 skills-copilot-commands.workspace = true
 skills-copilot-core.workspace = true
 

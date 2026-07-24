@@ -134,6 +134,32 @@ impl ServiceHost {
         accepted_snapshot_revision: &str,
         project_id: Option<String>,
     ) -> Result<SessionContinuationRecord, SessionResumePreviewError> {
+        let adapter_ctx = self
+            .effective_adapter_ctx()
+            .map_err(map_session_source_error)?;
+        self.preview_session_resume_for(params, accepted_snapshot_revision, project_id, adapter_ctx)
+    }
+
+    pub(crate) fn preview_session_resume_while_locked(
+        &self,
+        params: SessionResumePreviewParams,
+        accepted_snapshot_revision: &str,
+        project_id: Option<String>,
+        owner: &skills_copilot_commands::AppMutationLock,
+    ) -> Result<SessionContinuationRecord, SessionResumePreviewError> {
+        let adapter_ctx = self
+            .effective_adapter_ctx_while_mutation_owner_held(owner)
+            .map_err(map_session_source_error)?;
+        self.preview_session_resume_for(params, accepted_snapshot_revision, project_id, adapter_ctx)
+    }
+
+    fn preview_session_resume_for(
+        &self,
+        params: SessionResumePreviewParams,
+        accepted_snapshot_revision: &str,
+        project_id: Option<String>,
+        adapter_ctx: skills_copilot_core::AdapterContext,
+    ) -> Result<SessionContinuationRecord, SessionResumePreviewError> {
         let session_id = required_value(
             &params.session_id,
             SessionResumePreviewError::MissingSessionId,
@@ -165,9 +191,6 @@ impl ServiceHost {
             SessionResumePreviewError::InvalidRequest("current_cwd is required".to_string()),
         )?;
 
-        let adapter_ctx = self
-            .effective_adapter_ctx()
-            .map_err(map_session_source_error)?;
         validate_active_project_context(&adapter_ctx, project_root, current_cwd)?;
         let project_filter_roots = local_session_project_filter_roots(&adapter_ctx, None, None);
         let requested_roots = normalize_string_list(params.authorized_roots.clone());

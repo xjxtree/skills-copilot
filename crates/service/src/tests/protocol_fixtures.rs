@@ -985,6 +985,15 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(!preview.redaction.raw_prompt_persisted);
             assert!(!preview.redaction.raw_response_persisted);
             assert!(!preview.redaction.raw_secret_returned);
+            assert_eq!(preview.response_contract.request_kind, preview.request_kind);
+            assert!(!preview.response_contract.evidence.is_empty());
+            assert!(preview.response_contract.required_safety_flags.copy_only);
+            assert!(
+                !preview
+                    .response_contract
+                    .required_safety_flags
+                    .write_back_allowed
+            );
         }
         "llm.confirmPromptAndSend" => {
             let confirmed: WireLlmConfirmPromptAndSendResult =
@@ -997,6 +1006,9 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert!(!confirmed.raw_secret_returned);
             assert!(!confirmed.raw_prompt_persisted);
             assert!(!confirmed.raw_response_persisted);
+            if confirmed.status == "succeeded" {
+                assert!(confirmed.response_envelope.is_some());
+            }
             if confirmed.status == "partial" {
                 assert!(confirmed.readback.is_none());
                 assert!(confirmed.partial_outcome.is_some());

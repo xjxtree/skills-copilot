@@ -285,7 +285,41 @@ struct PreviewLLMPromptParams: Encodable {
     let taskText: String?
     let userIntent: String?
     let candidateInstanceIDs: [String]?
-    let appLanguage: String = UIStrings.currentLanguage.rawValue
+    let sourceRevision: String?
+    let session: LLMSessionEvidenceParams?
+    let appLanguage: String
+
+    init(
+        action: String,
+        requestKind: String,
+        scope: String?,
+        instanceIDs: [String]?,
+        instanceId: String?,
+        definitionId: String?,
+        agent: String?,
+        agents: [String]?,
+        taskText: String?,
+        userIntent: String?,
+        candidateInstanceIDs: [String]?,
+        sourceRevision: String? = nil,
+        session: LLMSessionEvidenceParams? = nil,
+        appLanguage: String = UIStrings.currentLanguage.rawValue
+    ) {
+        self.action = action
+        self.requestKind = requestKind
+        self.scope = scope
+        self.instanceIDs = instanceIDs
+        self.instanceId = instanceId
+        self.definitionId = definitionId
+        self.agent = agent
+        self.agents = agents
+        self.taskText = taskText
+        self.userIntent = userIntent
+        self.candidateInstanceIDs = candidateInstanceIDs
+        self.sourceRevision = sourceRevision
+        self.session = session
+        self.appLanguage = appLanguage
+    }
 
     enum CodingKeys: String, CodingKey {
         case action
@@ -299,7 +333,31 @@ struct PreviewLLMPromptParams: Encodable {
         case taskText = "task_text"
         case userIntent = "user_intent"
         case candidateInstanceIDs = "candidate_instance_ids"
+        case sourceRevision = "source_revision"
+        case session
         case appLanguage = "app_language"
+    }
+}
+
+struct LLMSessionEvidenceParams: Encodable {
+    let authorizedRoots: [String]
+    let autoDiscover: Bool
+    let agent: String
+    let projectRoot: String
+    let currentCWD: String
+    let sessionID: String
+    let sourceRevision: String
+    let snapshotRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case authorizedRoots = "authorized_roots"
+        case autoDiscover = "auto_discover"
+        case agent
+        case projectRoot = "project_root"
+        case currentCWD = "current_cwd"
+        case sessionID = "session_id"
+        case sourceRevision = "source_revision"
+        case snapshotRevision = "snapshot_revision"
     }
 }
 

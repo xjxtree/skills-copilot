@@ -19,26 +19,80 @@ fn legacy_provider_epoch_seconds_are_normalized_without_changing_fixture_clocks(
 }
 
 #[test]
-fn task_cockpit_transport_success_requires_business_schema() {
+fn provider_transport_success_requires_evidence_bound_schema() {
+    let contract = provider_output_test_contract(
+        "task_cockpit",
+        skills_copilot_ai_core::AiResultSchema::TaskReadiness,
+    );
     let valid = json!({
-        "summary": {},
-        "agent_candidates": [],
-        "skill_candidates": [],
-        "safety_flags": {}
+        "schema_version": 1,
+        "request_kind": "task_cockpit",
+        "project_id": "project-test",
+        "source_revision": "source-test",
+        "result_schema": "task_readiness",
+        "evidence_refs": ["evidence:test"],
+        "action_refs": [],
+        "result": {
+            "summary": {
+                "summary": "Ready for bounded review.",
+                "recommended_agent": null,
+                "recommended_skill_name": null,
+                "readiness_score": 80,
+                "routing_score": 75,
+                "gap_count": 0,
+                "blocker_count": 0
+            },
+            "agent_candidates": [],
+            "skill_candidates": [],
+            "readiness_signals": [],
+            "gap_rows": [],
+            "blocker_rows": []
+        },
+        "safety_flags": {
+            "copy_only": true,
+            "write_back_allowed": false,
+            "command_execution_allowed": false,
+            "script_execution_allowed": false,
+            "mutation_allowed": false,
+            "hidden_task_state_created": false,
+            "raw_prompt_persisted": false,
+            "raw_response_persisted": false,
+            "raw_trace_persisted": false
+        }
     })
     .to_string();
-    assert!(crate::provider::validate_prompt_business_output("task_cockpit", Some(&valid)).is_ok());
-    assert!(
-        crate::provider::validate_prompt_business_output("task_cockpit", Some("not-json")).is_err()
-    );
+    assert!(crate::provider::validate_prompt_business_output(&contract, Some(&valid)).is_ok());
+    assert!(crate::provider::validate_prompt_business_output(&contract, Some("not-json")).is_err());
     assert!(crate::provider::validate_prompt_business_output(
-        "task_cockpit",
+        &contract,
         Some(r#"{"summary":{},"agent_candidates":[],"skill_candidates":[]}"#),
     )
     .is_err());
     assert!(
-        crate::provider::validate_prompt_business_output("analyze", Some("plain draft")).is_ok()
+        crate::provider::validate_prompt_business_output(&contract, Some("plain draft")).is_err()
     );
+}
+
+fn provider_output_test_contract(
+    request_kind: &str,
+    result_schema: skills_copilot_ai_core::AiResultSchema,
+) -> skills_copilot_ai_core::AiResponseContract {
+    skills_copilot_ai_core::AiResponseContract::new(
+        request_kind,
+        "project-test",
+        "source-test",
+        result_schema,
+        vec![skills_copilot_core::EvidenceRef {
+            id: "evidence:test".to_string(),
+            kind: skills_copilot_core::EvidenceKind::ProjectContext,
+            source_revision: "source-test".to_string(),
+            summary: "Accepted project evidence".to_string(),
+            agent: None,
+            target_id: Some("project-test".to_string()),
+        }],
+        Vec::new(),
+    )
+    .expect("provider output test contract")
 }
 
 #[test]
@@ -48,7 +102,7 @@ fn llm_preview_prompt_returns_redacted_confirmation_payload() {
         std::process::id(),
         unique_suffix(),
     ));
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let skill_path = app_data_dir.join("secret-project-path").join("SKILL.md");
     seed_catalog_with_llm_skill(&host, &skill_path);
     let (_, save) = confirmed_action_request(
@@ -138,7 +192,7 @@ fn llm_skill_prompt_uses_the_same_visible_issue_policy_as_the_app() {
         std::process::id(),
         unique_suffix(),
     ));
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     seed_catalog_with_llm_skill(&host, &app_data_dir.join("fixture-skill").join("SKILL.md"));
     let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
     let drafts = [
@@ -236,13 +290,66 @@ fn llm_skill_prompt_uses_the_same_visible_issue_policy_as_the_app() {
 }
 
 #[test]
+fn llm_skill_change_review_uses_structured_copy_only_contract_and_rejects_stale_source() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-llm-skill-change-review-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host_with_project(app_data_dir.clone());
+    seed_catalog_with_llm_skill(&host, &app_data_dir.join("fixture-skill").join("SKILL.md"));
+
+    let request = json!({
+        "action": "skill_change_review",
+        "skill_instance_id": "llm-skill-id"
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("skill-change-review".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview = preview.result.expect("skill change preview");
+    assert_eq!(
+        preview.get("request_kind"),
+        Some(&json!("skill_change_review"))
+    );
+    assert_eq!(
+        preview.pointer("/response_contract/result_schema"),
+        Some(&json!("skill_change_review"))
+    );
+    assert_eq!(
+        preview.pointer("/response_contract/required_safety_flags/copy_only"),
+        Some(&json!(true))
+    );
+    assert!(preview["prompt_preview"]
+        .as_str()
+        .is_some_and(|prompt| prompt.contains("do not invent a prior version")));
+
+    let mut stale = request;
+    stale["source_revision"] = json!("sha256:stale-product");
+    let rejected = host.handle(ServiceRequest {
+        id: Some("skill-change-review-stale".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: stale,
+    });
+    assert!(!rejected.ok);
+    assert_eq!(
+        rejected.error.as_ref().map(|error| error.code.as_str()),
+        Some("source_changed")
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn llm_confirm_prompt_rejects_mismatched_preview_without_metadata() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-llm-preview-mismatch-test-{}-{}",
         std::process::id(),
         unique_suffix(),
     ));
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     seed_catalog_with_llm_skill(&host, &app_data_dir.join("fixture-skill").join("SKILL.md"));
     let (_, save) = confirmed_action_request(
         &host,
@@ -296,7 +403,7 @@ fn llm_confirm_prompt_blocks_without_credential_and_writes_metadata_only() {
         std::process::id(),
         unique_suffix(),
     ));
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let (_, save) = confirmed_action_request(
         &host,
         "llm.previewSaveProviderProfile",
@@ -361,7 +468,7 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
         unique_suffix(),
     ));
     let (base_url, server) = spawn_mock_openai_server();
-    let host = test_host(app_data_dir.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
     seed_catalog_with_llm_skill(&host, &skill_path);
     let (_, save) = confirmed_action_request(
@@ -407,7 +514,22 @@ fn llm_confirm_prompt_sends_redacted_prompt_to_mock_provider_and_audits_metadata
         Some(true)
     );
     assert_eq!(
-        result.get("draft_output").and_then(Value::as_str),
+        result
+            .pointer("/response_envelope/result/markdown")
+            .and_then(Value::as_str),
+        Some("Draft-only review from mock provider.")
+    );
+    let draft_envelope: Value = serde_json::from_str(
+        result
+            .get("draft_output")
+            .and_then(Value::as_str)
+            .expect("evidence-bound draft envelope"),
+    )
+    .expect("parse evidence-bound draft envelope");
+    assert_eq!(
+        draft_envelope
+            .pointer("/result/markdown")
+            .and_then(Value::as_str),
         Some("Draft-only review from mock provider.")
     );
     assert_eq!(
@@ -526,8 +648,8 @@ fn llm_confirm_prompt_keeps_user_intent_and_provider_output_out_of_prompt_histor
     let high_entropy_secret = "AbCDefGhIjKlMnOpQrStUvWxYz1234567890__++";
     let provider_draft =
         format!("Draft cites {local_path} and opaque value {high_entropy_secret}.");
-    let (base_url, server) = spawn_mock_openai_server_with_content(provider_draft.clone());
-    let host = test_host(app_data_dir.clone());
+    let (base_url, server) = spawn_mock_openai_server_with_markdown(provider_draft.clone());
+    let host = test_host_with_project(app_data_dir.clone());
     let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
     seed_catalog_with_llm_skill(&host, &skill_path);
 
@@ -561,9 +683,24 @@ fn llm_confirm_prompt_keeps_user_intent_and_provider_output_out_of_prompt_histor
     assert!(confirm.ok, "{:?}", confirm.error);
     let result = confirm.result.expect("confirm result");
     assert_eq!(
-        result.get("draft_output").and_then(Value::as_str),
+        result
+            .pointer("/response_envelope/result/markdown")
+            .and_then(Value::as_str),
         Some(provider_draft.as_str()),
-        "copy-only provider output remains available in the immediate result"
+        "copy-only provider output remains available in the validated immediate envelope"
+    );
+    let draft_envelope: Value = serde_json::from_str(
+        result
+            .get("draft_output")
+            .and_then(Value::as_str)
+            .expect("evidence-bound provider draft"),
+    )
+    .expect("parse evidence-bound provider draft");
+    assert_eq!(
+        draft_envelope
+            .pointer("/result/markdown")
+            .and_then(Value::as_str),
+        Some(provider_draft.as_str())
     );
     let _request_text = server.join().expect("mock server thread");
 

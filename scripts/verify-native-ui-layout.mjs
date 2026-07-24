@@ -663,9 +663,11 @@ const checks = [
     pattern: /static func renderableText\(from text: String\)[\s\S]*?hasPrefix\("```"\)[\s\S]*?\["markdown", "md", "gfm"\]\.contains\(language\)[\s\S]*?return body/,
   },
   {
-    label: "LLM prompt instructions forbid model tables and whole-answer code fences",
-    text: `${files.serviceLLM}\n${files.serviceLLMPromptHelpers}`,
-    pattern: /Required output: return only valid JSON[\s\S]*?Do not wrap it in Markdown fences[\s\S]*?Required output: concise Markdown draft guidance[\s\S]*?Do not use Markdown tables[\s\S]*?Do not wrap the answer in fenced code blocks/,
+    label: "LLM prompt instructions require the evidence envelope and forbid tables and fences",
+    text: `${files.serviceLLM}\n${files.serviceRust}`,
+    passed: /llm_output_language_instruction\(params\.app_language\.as_deref\(\)\)/.test(files.serviceLLM)
+      && /Required output: return only the exact JSON response envelope[\s\S]*?without Markdown fences or extra text/.test(files.serviceLLM)
+      && /Do not use Markdown tables[\s\S]*?Do not wrap the answer in fenced code blocks/.test(files.serviceRust),
   },
   {
     label: "task cockpit panel lives in a dedicated module file",

@@ -95,6 +95,302 @@ struct LLMPromptRedactionSummary: Decodable, Hashable {
     }
 }
 
+enum AIResponseResultSchema: String, Codable, Hashable {
+    case copyOnlyMarkdown = "copy_only_markdown"
+    case taskReadiness = "task_readiness"
+    case sessionDigest = "session_digest"
+    case skillChangeReview = "skill_change_review"
+}
+
+struct AIResponseSafetyFlagsWire: Codable, Hashable {
+    let copyOnly: Bool
+    let writeBackAllowed: Bool
+    let commandExecutionAllowed: Bool
+    let scriptExecutionAllowed: Bool
+    let mutationAllowed: Bool
+    let hiddenTaskStateCreated: Bool
+    let rawPromptPersisted: Bool
+    let rawResponsePersisted: Bool
+    let rawTracePersisted: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case copyOnly = "copy_only"
+        case writeBackAllowed = "write_back_allowed"
+        case commandExecutionAllowed = "command_execution_allowed"
+        case scriptExecutionAllowed = "script_execution_allowed"
+        case mutationAllowed = "mutation_allowed"
+        case hiddenTaskStateCreated = "hidden_task_state_created"
+        case rawPromptPersisted = "raw_prompt_persisted"
+        case rawResponsePersisted = "raw_response_persisted"
+        case rawTracePersisted = "raw_trace_persisted"
+    }
+
+    var isRequiredCopyOnly: Bool {
+        copyOnly
+            && !writeBackAllowed
+            && !commandExecutionAllowed
+            && !scriptExecutionAllowed
+            && !mutationAllowed
+            && !hiddenTaskStateCreated
+            && !rawPromptPersisted
+            && !rawResponsePersisted
+            && !rawTracePersisted
+    }
+}
+
+struct AIResponseContractWire: Decodable, Hashable {
+    let schemaVersion: Int
+    let requestKind: String
+    let projectID: String
+    let sourceRevision: String
+    let resultSchema: AIResponseResultSchema
+    let evidence: [EvidenceRef]
+    let actions: [ActionDescriptorWire]
+    let requiredSafetyFlags: AIResponseSafetyFlagsWire
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case requestKind = "request_kind"
+        case projectID = "project_id"
+        case sourceRevision = "source_revision"
+        case resultSchema = "result_schema"
+        case evidence
+        case actions
+        case requiredSafetyFlags = "required_safety_flags"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        requestKind = try container.decode(String.self, forKey: .requestKind)
+        projectID = try container.decode(String.self, forKey: .projectID)
+        sourceRevision = try container.decode(String.self, forKey: .sourceRevision)
+        resultSchema = try container.decode(AIResponseResultSchema.self, forKey: .resultSchema)
+        evidence = try container.decode([EvidenceRef].self, forKey: .evidence)
+        actions = try container.decodeIfPresent([ActionDescriptorWire].self, forKey: .actions) ?? []
+        requiredSafetyFlags = try container.decode(
+            AIResponseSafetyFlagsWire.self,
+            forKey: .requiredSafetyFlags
+        )
+    }
+
+    @discardableResult
+    func validated(requestKind expectedRequestKind: String, projectID expectedProjectID: String?) throws
+        -> AIResponseContractWire
+    {
+        guard schemaVersion == 1,
+              requestKind == expectedRequestKind,
+              !projectID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              projectID == expectedProjectID,
+              !sourceRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !evidence.isEmpty,
+              requiredSafetyFlags.isRequiredCopyOnly else {
+            throw ProductProjectionValidationError.invalid(
+                "AI response contract is not bound to the current copy-only project evidence"
+            )
+        }
+        let evidenceIDs = Set(evidence.map(\.id))
+        guard evidenceIDs.count == evidence.count else {
+            throw ProductProjectionValidationError.invalid(
+                "AI response contract contains duplicate evidence"
+            )
+        }
+        for reference in evidence {
+            try reference.validated()
+        }
+        guard Set(actions.map(\.id)).count == actions.count else {
+            throw ProductProjectionValidationError.invalid(
+                "AI response contract contains duplicate actions"
+            )
+        }
+        for action in actions {
+            guard action.projectID == projectID,
+                  Set(action.evidenceRefs).isSubset(of: evidenceIDs) else {
+                throw ProductProjectionValidationError.invalid(
+                    "AI response action is not bound to the contract project and evidence"
+                )
+            }
+        }
+        return self
+    }
+}
+
+struct AIResponseEnvelopeWire: Decodable, Hashable {
+    let schemaVersion: Int
+    let requestKind: String
+    let projectID: String
+    let sourceRevision: String
+    let resultSchema: AIResponseResultSchema
+    let evidenceRefs: [String]
+    let actionRefs: [String]
+    let result: JSONValue
+    let safetyFlags: AIResponseSafetyFlagsWire
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case requestKind = "request_kind"
+        case projectID = "project_id"
+        case sourceRevision = "source_revision"
+        case resultSchema = "result_schema"
+        case evidenceRefs = "evidence_refs"
+        case actionRefs = "action_refs"
+        case result
+        case safetyFlags = "safety_flags"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        requestKind = try container.decode(String.self, forKey: .requestKind)
+        projectID = try container.decode(String.self, forKey: .projectID)
+        sourceRevision = try container.decode(String.self, forKey: .sourceRevision)
+        resultSchema = try container.decode(AIResponseResultSchema.self, forKey: .resultSchema)
+        evidenceRefs = try container.decode([String].self, forKey: .evidenceRefs)
+        actionRefs = try container.decodeIfPresent([String].self, forKey: .actionRefs) ?? []
+        result = try container.decode(JSONValue.self, forKey: .result)
+        safetyFlags = try container.decode(AIResponseSafetyFlagsWire.self, forKey: .safetyFlags)
+    }
+
+    var visibleCopyOnlyText: String? {
+        guard case .object(let object) = result else { return nil }
+        if let value = object["markdown"],
+           case .string(let markdown) = value,
+           !markdown.isEmpty {
+            return markdown
+        }
+        if let value = object["summary"],
+           case .string(let summary) = value,
+           !summary.isEmpty {
+            return summary
+        }
+        if let value = object["summary"],
+           case .object(let summary) = value,
+           let summaryValue = summary["summary"],
+           case .string(let text) = summaryValue,
+           !text.isEmpty {
+            return text
+        }
+        return nil
+    }
+
+    @discardableResult
+    func validated(against contract: AIResponseContractWire) throws -> AIResponseEnvelopeWire {
+        guard schemaVersion == contract.schemaVersion,
+              requestKind == contract.requestKind,
+              projectID == contract.projectID,
+              sourceRevision == contract.sourceRevision,
+              resultSchema == contract.resultSchema,
+              safetyFlags == contract.requiredSafetyFlags,
+              safetyFlags.isRequiredCopyOnly,
+              !evidenceRefs.isEmpty,
+              Set(evidenceRefs).count == evidenceRefs.count,
+              Set(actionRefs).count == actionRefs.count,
+              Set(evidenceRefs).isSubset(of: Set(contract.evidence.map(\.id))),
+              Set(actionRefs).isSubset(of: Set(contract.actions.map(\.id))),
+              result.hasValidAIResponseShape(for: resultSchema) else {
+            throw ProductProjectionValidationError.invalid(
+                "AI response envelope drifted from its confirmed evidence contract"
+            )
+        }
+        return self
+    }
+}
+
+private extension JSONValue {
+    func hasValidAIResponseShape(for schema: AIResponseResultSchema) -> Bool {
+        guard case .object(let object) = self, !containsForbiddenAIResponseField else {
+            return false
+        }
+        switch schema {
+        case .copyOnlyMarkdown:
+            return object["markdown"]?.isNonemptyString == true
+        case .taskReadiness:
+            return object["summary"]?.isValidTaskReadinessSummary == true
+                && object["agent_candidates"]?.isArray == true
+                && object["skill_candidates"]?.isArray == true
+                && object["readiness_signals"]?.isArray == true
+                && object["gap_rows"]?.isArray == true
+                && object["blocker_rows"]?.isArray == true
+        case .sessionDigest:
+            return object["summary"]?.isNonemptyString == true
+                && object["suggested_next_prompt"]?.isNonemptyString == true
+                && object["evidence_notes"]?.isArray == true
+                && object["uncertainties"]?.isArray == true
+        case .skillChangeReview:
+            return object["summary"]?.isNonemptyString == true
+                && object["changes"]?.isArray == true
+                && object["risks"]?.isArray == true
+                && object["recommendations"]?.isArray == true
+        }
+    }
+
+    var containsForbiddenAIResponseField: Bool {
+        let forbidden = Set([
+            "action_confirmation", "apply_method", "argv", "command", "commands",
+            "execute", "execution", "mutation", "preview_token", "script", "scripts",
+            "tool_call", "tool_calls", "write_back",
+        ])
+        switch self {
+        case .object(let object):
+            return object.contains {
+                forbidden.contains($0.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                    || $0.value.containsForbiddenAIResponseField
+            }
+        case .array(let values):
+            return values.contains(where: \.containsForbiddenAIResponseField)
+        case .string, .number, .bool, .null:
+            return false
+        }
+    }
+
+    var isNonemptyString: Bool {
+        if case .string(let value) = self {
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return false
+    }
+
+    var isObject: Bool {
+        if case .object = self { return true }
+        return false
+    }
+
+    var isArray: Bool {
+        if case .array = self { return true }
+        return false
+    }
+
+    var isValidTaskReadinessSummary: Bool {
+        guard case .object(let object) = self else { return false }
+        return object["summary"]?.isNonemptyString == true
+            && object["recommended_agent"]?.isStringOrNull == true
+            && object["recommended_skill_name"]?.isStringOrNull == true
+            && object["readiness_score"]?.isScore == true
+            && object["routing_score"]?.isScore == true
+            && object["gap_count"]?.isNonnegativeInteger == true
+            && object["blocker_count"]?.isNonnegativeInteger == true
+    }
+
+    var isStringOrNull: Bool {
+        switch self {
+        case .string, .null:
+            return true
+        case .number, .bool, .object, .array:
+            return false
+        }
+    }
+
+    var isScore: Bool {
+        guard case .number(let value) = self else { return false }
+        return value >= 0 && value <= 100 && value.rounded() == value
+    }
+
+    var isNonnegativeInteger: Bool {
+        guard case .number(let value) = self else { return false }
+        return value >= 0 && value.rounded() == value
+    }
+}
+
 struct LLMPromptPreview: Decodable, Identifiable, Hashable {
     let previewID: String
     let action: LLMAction?
@@ -120,6 +416,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
     let rawResponsePersisted: Bool
     let draftCopyOnly: Bool
     let promptPreview: String?
+    let responseContract: AIResponseContractWire?
     let audit: AIProviderCallAuditMetadata?
 
     var id: String { previewID }
@@ -171,6 +468,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         case redactedPromptPreview = "redacted_prompt_preview"
         case redactedPrompt = "redacted_prompt"
         case sanitizedPrompt = "sanitized_prompt"
+        case responseContract = "response_contract"
         case audit
         case auditMetadata = "audit_metadata"
         case metadata
@@ -197,6 +495,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         rawResponsePersisted: Bool,
         draftCopyOnly: Bool,
         promptPreview: String?,
+        responseContract: AIResponseContractWire? = nil,
         audit: AIProviderCallAuditMetadata?,
         actionDescriptor: ActionDescriptorWire? = nil,
         preconditions: [ActionPreconditionWire] = [],
@@ -227,6 +526,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
         self.rawResponsePersisted = rawResponsePersisted
         self.draftCopyOnly = draftCopyOnly
         self.promptPreview = promptPreview
+        self.responseContract = responseContract
         self.audit = audit
     }
 
@@ -297,6 +597,10 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
             ?? container.decodeIfPresent(String.self, forKey: .redactedPromptPreview)
             ?? container.decodeIfPresent(String.self, forKey: .redactedPrompt)
             ?? container.decodeIfPresent(String.self, forKey: .sanitizedPrompt)
+        responseContract = try container.decodeIfPresent(
+            AIResponseContractWire.self,
+            forKey: .responseContract
+        )
         audit = try container.decodeIfPresent(AIProviderCallAuditMetadata.self, forKey: .audit)
             ?? container.decodeIfPresent(AIProviderCallAuditMetadata.self, forKey: .auditMetadata)
             ?? container.decodeIfPresent(AIProviderCallAuditMetadata.self, forKey: .metadata)
@@ -324,6 +628,7 @@ struct LLMPromptPreview: Decodable, Identifiable, Hashable {
             rawResponsePersisted: false,
             draftCopyOnly: true,
             promptPreview: nil,
+            responseContract: nil,
             audit: nil
         )
     }
@@ -372,6 +677,7 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
     let status: String
     let message: String
     let outputText: String?
+    let responseEnvelope: AIResponseEnvelopeWire?
     let draftCopyOnly: Bool
     let rawPromptPersisted: Bool
     let rawResponsePersisted: Bool
@@ -398,6 +704,7 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         case draftText = "draft_text"
         case resultText = "result_text"
         case summaryDraft = "summary_draft"
+        case responseEnvelope = "response_envelope"
         case rawPromptPersisted = "raw_prompt_persisted"
         case promptStored = "prompt_stored"
         case rawResponsePersisted = "raw_response_persisted"
@@ -422,6 +729,7 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         status: String,
         message: String,
         outputText: String?,
+        responseEnvelope: AIResponseEnvelopeWire? = nil,
         draftCopyOnly: Bool,
         rawPromptPersisted: Bool,
         rawResponsePersisted: Bool,
@@ -436,6 +744,7 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         self.status = status
         self.message = message
         self.outputText = outputText
+        self.responseEnvelope = responseEnvelope
         self.draftCopyOnly = draftCopyOnly
         self.rawPromptPersisted = rawPromptPersisted
         self.rawResponsePersisted = rawResponsePersisted
@@ -470,8 +779,13 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
         let decodedDraftText = try container.decodeIfPresent(String.self, forKey: .draftText)
         let decodedResultText = try container.decodeIfPresent(String.self, forKey: .resultText)
         let decodedSummaryDraft = try container.decodeIfPresent(String.self, forKey: .summaryDraft)
+        responseEnvelope = try container.decodeIfPresent(
+            AIResponseEnvelopeWire.self,
+            forKey: .responseEnvelope
+        )
         outputText = Self.firstNonEmpty(
             decodedOutputText,
+            responseEnvelope?.visibleCopyOnlyText,
             decodedResponseText,
             decodedDraftOutput,
             decodedDraftText,
@@ -515,6 +829,7 @@ struct LLMPromptSendResult: Decodable, Identifiable, Hashable {
             status: "unavailable",
             message: reason,
             outputText: nil,
+            responseEnvelope: nil,
             draftCopyOnly: true,
             rawPromptPersisted: false,
             rawResponsePersisted: false,

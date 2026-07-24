@@ -10,6 +10,8 @@ struct LLMModelTests {
         try promptPreviewDecodesServiceArrayScopePayload()
         try promptSendResultDecodesCopyOnlyAuditPayload()
         try promptSendResultDecodesServiceDraftOutput()
+        try evidenceBoundResponseEnvelopeValidatesKnownReferences()
+        try evidenceBoundResponseEnvelopeRejectsUnknownReferences()
         try promptSendResultUsesAuditErrorMessage()
         try promptRunListIgnoresDeprecatedBodyFields()
         try longTextReviewBlockDefaultsToMarkdown()
@@ -35,7 +37,7 @@ struct LLMModelTests {
               "provider": "openai",
               "model": "gpt-5",
               "disabled_reason": null,
-              "supported_actions": ["analyze", "recommend", "explain_conflict", "draft_frontmatter"]
+              "supported_actions": ["analyze", "recommend", "explain_conflict", "draft_frontmatter", "skill_change_review"]
             }
             """.utf8
         )
@@ -326,6 +328,105 @@ struct LLMModelTests {
         try expectFalse(result.rawPromptPersisted, "Prompt send must not persist raw prompts.")
         try expectFalse(result.rawResponsePersisted, "Prompt send must not persist raw responses.")
     }
+
+    private func evidenceBoundResponseEnvelopeValidatesKnownReferences() throws {
+        let contract = try JSONDecoder().decode(
+            AIResponseContractWire.self,
+            from: Data(Self.responseContractJSON.utf8)
+        )
+        let envelope = try JSONDecoder().decode(
+            AIResponseEnvelopeWire.self,
+            from: Data(Self.responseEnvelopeJSON.utf8)
+        )
+
+        try contract.validated(requestKind: "analyze", projectID: "project-fixture")
+        try envelope.validated(against: contract)
+        try expectEqual(
+            envelope.visibleCopyOnlyText,
+            "Evidence-bound copy-only review.",
+            "Validated AI envelopes should expose only their structured copy-only result."
+        )
+    }
+
+    private func evidenceBoundResponseEnvelopeRejectsUnknownReferences() throws {
+        let contract = try JSONDecoder().decode(
+            AIResponseContractWire.self,
+            from: Data(Self.responseContractJSON.utf8)
+        )
+        let unknownEnvelope = Self.responseEnvelopeJSON.replacingOccurrences(
+            of: #""evidence:project:fixture""#,
+            with: #""evidence:project:unknown""#
+        )
+        let envelope = try JSONDecoder().decode(
+            AIResponseEnvelopeWire.self,
+            from: Data(unknownEnvelope.utf8)
+        )
+        var rejected = false
+        do {
+            try envelope.validated(against: contract)
+        } catch {
+            rejected = true
+        }
+        try expectEqual(
+            rejected,
+            true,
+            "Unknown evidence references must not cross the native AI response boundary."
+        )
+    }
+
+    private static let responseContractJSON = """
+    {
+      "schema_version": 1,
+      "request_kind": "analyze",
+      "project_id": "project-fixture",
+      "source_revision": "sha256:product-fixture",
+      "result_schema": "copy_only_markdown",
+      "evidence": [{
+        "id": "evidence:project:fixture",
+        "kind": "project_context",
+        "source_revision": "sha256:product-fixture",
+        "summary": "Accepted project evidence.",
+        "agent": null,
+        "target_id": "project-fixture"
+      }],
+      "actions": [],
+      "required_safety_flags": {
+        "copy_only": true,
+        "write_back_allowed": false,
+        "command_execution_allowed": false,
+        "script_execution_allowed": false,
+        "mutation_allowed": false,
+        "hidden_task_state_created": false,
+        "raw_prompt_persisted": false,
+        "raw_response_persisted": false,
+        "raw_trace_persisted": false
+      }
+    }
+    """
+
+    private static let responseEnvelopeJSON = """
+    {
+      "schema_version": 1,
+      "request_kind": "analyze",
+      "project_id": "project-fixture",
+      "source_revision": "sha256:product-fixture",
+      "result_schema": "copy_only_markdown",
+      "evidence_refs": ["evidence:project:fixture"],
+      "action_refs": [],
+      "result": {"markdown": "Evidence-bound copy-only review."},
+      "safety_flags": {
+        "copy_only": true,
+        "write_back_allowed": false,
+        "command_execution_allowed": false,
+        "script_execution_allowed": false,
+        "mutation_allowed": false,
+        "hidden_task_state_created": false,
+        "raw_prompt_persisted": false,
+        "raw_response_persisted": false,
+        "raw_trace_persisted": false
+      }
+    }
+    """
 
     private func promptRunListIgnoresDeprecatedBodyFields() throws {
         let data = Data(

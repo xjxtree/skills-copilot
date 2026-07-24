@@ -839,6 +839,23 @@ pub fn stored_active_adapter_paths_while_locked(
     )))
 }
 
+pub fn active_project_context_while_locked(
+    env_context: Option<ProjectContext>,
+    owner: &AppMutationLock,
+) -> Result<Option<ProjectContext>, ServiceError> {
+    if env_context.is_some() {
+        return Ok(env_context);
+    }
+    let Some(active) = load_store_snapshot_at(owner)?.store.active else {
+        return Ok(None);
+    };
+    let active = revalidate_stored_context(active);
+    if active.validation_error.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(active))
+}
+
 pub fn context_from_paths(root_path: &Path, current_cwd: &Path, is_active: bool) -> ProjectContext {
     let root_path = display_path(root_path);
     let current_cwd = display_path(current_cwd);

@@ -497,6 +497,7 @@ enum LLMAction: String, Codable, CaseIterable, Identifiable, Hashable {
     case recommend
     case explainConflict = "explain_conflict"
     case draftFrontmatter = "draft_frontmatter"
+    case skillChangeReview = "skill_change_review"
 
     var id: String { rawValue }
 }

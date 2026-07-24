@@ -10,8 +10,8 @@ use skills_copilot_catalog::{
 use skills_copilot_commands::{
     derive_product_projection, list_conflicts, list_findings,
     list_projected_skill_instances_with_config_revision, product_skill_config_revision,
-    AgentProjectionInput, ConflictProjectionInput, FindingProjectionInput, ProductProjection,
-    ProductProjectionInput, SkillProjectionInput,
+    AgentProjectionInput, AppMutationLock, ConflictProjectionInput, FindingProjectionInput,
+    ProductProjection, ProductProjectionInput, SkillProjectionInput,
 };
 use skills_copilot_core::{
     AgentId, ListIncompleteReason, ListPageMetadata, ProjectReadinessRecord, SkillAggregateRecord,
@@ -20,7 +20,9 @@ use skills_copilot_core::{
 
 use crate::service_keyset_cursor::{decode_cursor, encode_cursor, KeysetCursor};
 use crate::{
-    effective_project_context_revision, load_project_context_state, ServiceError, ServiceHost,
+    active_project_context_while_locked, effective_project_context_revision,
+    effective_project_context_revision_while_locked, load_project_context_state, ServiceError,
+    ServiceHost,
 };
 
 const MAX_PRODUCT_SKILLS: usize = 500;
@@ -106,6 +108,39 @@ impl ServiceHost {
             &context_revision,
             expected_product_source_revision,
         )
+    }
+
+    pub(crate) fn accept_active_product_snapshot_while_locked(
+        &self,
+        expected_product_source_revision: Option<&str>,
+        owner: &AppMutationLock,
+    ) -> Result<AcceptedProductSnapshot, ServiceError> {
+        validate_optional_revision(expected_product_source_revision)?;
+        let env_context = self.env_project_context();
+        let context_revision =
+            effective_project_context_revision_while_locked(env_context.as_ref(), owner)?;
+        let active = active_project_context_while_locked(env_context, owner)?
+            .ok_or(ServiceError::ProjectContextRequired)?;
+        if active.validation_error.is_some() {
+            return Err(ServiceError::ProjectContextRequired);
+        }
+        let accepted = AcceptedProject {
+            id: active.id,
+            display_name: active.name,
+            context_revision,
+        };
+        let projection = self.product_projection_snapshot_for(&accepted, Some(owner))?;
+        let source_revision = projection.readiness.source_revision.clone();
+        if expected_product_source_revision.is_some_and(|expected| expected != source_revision) {
+            return Err(ServiceError::SourceChanged);
+        }
+        Ok(AcceptedProductSnapshot {
+            project_id: accepted.id.clone(),
+            context_revision: accepted.context_revision.clone(),
+            source_revision,
+            projection,
+            accepted_project: accepted,
+        })
     }
 
     /// Accepts one current project/catalog/config snapshot for additive product
@@ -329,8 +364,29 @@ impl ServiceHost {
         &self,
         accepted: &AcceptedProject,
     ) -> Result<ProductProjection, ServiceError> {
-        let catalog = self.open_catalog_for_read()?;
-        let adapter_ctx = self.effective_adapter_ctx()?;
+        self.product_projection_snapshot_for(accepted, None)
+    }
+
+    fn product_projection_snapshot_for(
+        &self,
+        accepted: &AcceptedProject,
+        owner: Option<&AppMutationLock>,
+    ) -> Result<ProductProjection, ServiceError> {
+        let catalog = match owner {
+            Some(owner) => match self.open_existing_catalog_read_only_while_locked(owner)? {
+                Some(catalog) => catalog,
+                None => {
+                    let catalog = skills_copilot_catalog::Catalog::in_memory()?;
+                    catalog.init()?;
+                    catalog
+                }
+            },
+            None => self.open_catalog_for_read()?,
+        };
+        let adapter_ctx = match owner {
+            Some(owner) => self.effective_adapter_ctx_while_mutation_owner_held(owner)?,
+            None => self.effective_adapter_ctx()?,
+        };
         let (projection, accepted_config_revision) = catalog.with_read_snapshot(|catalog| {
             let scan_revision = catalog.catalog_scan_revision()?;
             let scan_coverages = catalog.list_catalog_scan_coverages(&accepted.context_revision)?;

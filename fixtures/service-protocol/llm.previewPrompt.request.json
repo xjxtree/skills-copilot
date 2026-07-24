@@ -3,6 +3,7 @@
   "method": "llm.previewPrompt",
   "params": {
     "action": "recommend",
-    "user_intent": "fixture"
+    "user_intent": "fixture",
+    "source_revision": "sha256:product-evidence-fixture"
   }
 }

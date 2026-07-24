@@ -6,7 +6,7 @@
       "reference": {
         "action_id": "provider-prompt-fixture",
         "source_revision": "sha256:provider-prompt-source-fixture",
-        "project_id": null,
+        "project_id": "project-fixture",
         "target": {
           "kind": "provider_profile",
           "id": "fixture-openai",
@@ -20,7 +20,8 @@
     "request": {
       "action": "recommend",
       "profile_id": "fixture-openai",
-      "user_intent": "fixture"
+      "user_intent": "fixture",
+      "source_revision": "sha256:product-evidence-fixture"
     },
     "timeout_ms": 4000
   }

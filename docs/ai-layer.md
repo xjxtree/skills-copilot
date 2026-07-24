@@ -58,9 +58,13 @@ copy-only authoring aid.
   state inspection and a fresh preview.
 - The wire action `task_cockpit` remains compatible while the UI presents it as
   inline task readiness.
-- New product actions such as `session_digest` and `skill_change_review` are not
-  callable until they appear in the service method/action inventory, fixtures,
-  and `docs/service-protocol.md`.
+- `session_digest` binds one revalidated native session inventory revision and
+  one accepted product snapshot revision. It may summarize bounded session
+  metadata and suggest copy-only next-prompt text, but it never receives or
+  returns resume argv.
+- `skill_change_review` binds one selected skill aggregate from the accepted
+  project projection. It describes only observed current evidence and must not
+  invent a prior version when comparison evidence is unavailable.
 - Semantic search is a separate explicit provider action over bounded local
   candidates. `app.search` remains local and lexical and must never trigger a
   provider call.
@@ -77,6 +81,28 @@ Unknown evidence/action references or a changed revision invalidate the
 response. The app must display deterministic facts and AI interpretation as
 different kinds of content.
 
+`llm.previewPrompt` returns the complete response contract that will be sent
+after confirmation. The contract contains schema version 1, request kind,
+selected project ID, accepted product source revision, one result schema,
+bounded typed evidence, optional deterministic actions, and exact copy-only
+safety flags. Evidence may retain its own native provenance revision, such as a
+session inventory revision, while the enclosing contract remains bound to the
+accepted product source revision.
+
+The supported result schemas are:
+
+- `copy_only_markdown` for bounded explanations and advanced frontmatter help;
+- `task_readiness` for the wire-compatible `task_cockpit` action;
+- `session_digest` for one selected session;
+- `skill_change_review` for one selected skill aggregate.
+
+The provider must return only the matching JSON response envelope. Transport
+success without a valid envelope is `parse_failed` /
+`response_schema_invalid`; a request that may have left the process but whose
+response contract or current product revision cannot be verified is
+`remote_unknown`. Native clients validate the same contract again before
+publishing a successful result.
+
 ## Output Handling
 
 - LLM output is untrusted and copy-only by default.
@@ -88,6 +114,9 @@ different kinds of content.
 - LLM output cannot synthesize a preview token, resume command, target path,
   manager command, config patch, or action authorization. It may reference only
   a currently valid typed action descriptor.
+- Result objects containing command, argv, script, tool-call, apply,
+  confirmation, preview-token, mutation, or write-back fields are rejected at
+  the provider boundary.
 
 ## Local Signals
 

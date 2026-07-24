@@ -50,6 +50,11 @@ This file describes security and privacy boundaries.
 - AI summaries, semantic reranks, readiness interpretations, and evidence
   envelopes remain transient. Persisted embeddings, transcript indexes, or raw
   prompt/response caches require a new scoped privacy review.
+- A provider response is accepted only when its schema version, request kind,
+  project, product source revision, result schema, evidence/action references,
+  and copy-only safety flags exactly match the confirmed local response
+  contract. Unknown references, target drift, stale revisions, unsafe flags,
+  and command- or mutation-shaped result fields fail closed.
 
 ## Credentials
 
@@ -336,6 +341,11 @@ confirmation, and network posture.
   through a zero-write cleanup preview followed by explicit confirmation.
   Valid prompt-run metadata is retained with all body/raw fields cleared;
   malformed prompt history and the other two sources are deleted.
+- The immediate provider response envelope is transient. It may cite only
+  bounded evidence and deterministic actions already present in the confirmed
+  contract; an action citation is never authorization. The native client
+  revalidates the envelope before presentation, and no envelope can invoke an
+  apply method, resume command, script, tool call, or config mutation.
 - Legacy private-content cleanup binds the complete bounded bytes, kind, and
   identity of every accepted leaf. It rejects directories, special files,
   hard links, and foreign ownership. Symlink cleanup removes only the bound

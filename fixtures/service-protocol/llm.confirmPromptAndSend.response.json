@@ -13,6 +13,7 @@
     "provider_request_sent": false,
     "credential_accessed": false,
     "draft_output": null,
+    "response_envelope": null,
     "draft_requires_user_copy": true,
     "write_back_allowed": false,
     "script_execution_allowed": false,
@@ -43,7 +44,7 @@
     "readback": {
       "action_id": "provider-prompt-fixture",
       "source_revision": "sha256:provider-prompt-readback",
-      "project_id": null,
+      "project_id": "project-fixture",
       "domains": ["provider_activity", "prompt_runs"],
       "target_ids": ["fixture-openai", "prompt-preview-fixture"],
       "observations": [

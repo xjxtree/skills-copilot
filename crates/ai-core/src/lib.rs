@@ -1,8 +1,504 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 
-use skills_copilot_core::{Scope, SkillInstance, SkillState};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use skills_copilot_core::{ActionDescriptor, EvidenceRef, Scope, SkillInstance, SkillState};
 
 pub const NATIVE_RUNTIME_NAMESPACE: &str = "native";
+pub const AI_RESPONSE_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiResultSchema {
+    CopyOnlyMarkdown,
+    TaskReadiness,
+    SessionDigest,
+    SkillChangeReview,
+}
+
+impl AiResultSchema {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CopyOnlyMarkdown => "copy_only_markdown",
+            Self::TaskReadiness => "task_readiness",
+            Self::SessionDigest => "session_digest",
+            Self::SkillChangeReview => "skill_change_review",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AiResponseSafetyFlags {
+    pub copy_only: bool,
+    pub write_back_allowed: bool,
+    pub command_execution_allowed: bool,
+    pub script_execution_allowed: bool,
+    pub mutation_allowed: bool,
+    pub hidden_task_state_created: bool,
+    pub raw_prompt_persisted: bool,
+    pub raw_response_persisted: bool,
+    pub raw_trace_persisted: bool,
+}
+
+impl AiResponseSafetyFlags {
+    pub const fn required_copy_only() -> Self {
+        Self {
+            copy_only: true,
+            write_back_allowed: false,
+            command_execution_allowed: false,
+            script_execution_allowed: false,
+            mutation_allowed: false,
+            hidden_task_state_created: false,
+            raw_prompt_persisted: false,
+            raw_response_persisted: false,
+            raw_trace_persisted: false,
+        }
+    }
+
+    pub fn is_required_copy_only(self) -> bool {
+        self == Self::required_copy_only()
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AiResponseContract {
+    pub schema_version: u32,
+    pub request_kind: String,
+    pub project_id: String,
+    pub source_revision: String,
+    pub result_schema: AiResultSchema,
+    pub evidence: Vec<EvidenceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionDescriptor>,
+    pub required_safety_flags: AiResponseSafetyFlags,
+}
+
+impl AiResponseContract {
+    pub fn new(
+        request_kind: impl Into<String>,
+        project_id: impl Into<String>,
+        source_revision: impl Into<String>,
+        result_schema: AiResultSchema,
+        evidence: Vec<EvidenceRef>,
+        actions: Vec<ActionDescriptor>,
+    ) -> Result<Self, AiResponseValidationError> {
+        let contract = Self {
+            schema_version: AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            request_kind: request_kind.into(),
+            project_id: project_id.into(),
+            source_revision: source_revision.into(),
+            result_schema,
+            evidence,
+            actions,
+            required_safety_flags: AiResponseSafetyFlags::required_copy_only(),
+        };
+        contract.validate()?;
+        Ok(contract)
+    }
+
+    pub fn evidence_ids(&self) -> BTreeSet<&str> {
+        self.evidence
+            .iter()
+            .map(|reference| reference.id.as_str())
+            .collect()
+    }
+
+    pub fn action_ids(&self) -> BTreeSet<&str> {
+        self.actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect()
+    }
+
+    pub fn validate(&self) -> Result<(), AiResponseValidationError> {
+        if self.schema_version != AI_RESPONSE_ENVELOPE_SCHEMA_VERSION {
+            return Err(AiResponseValidationError::UnsupportedSchemaVersion(
+                self.schema_version,
+            ));
+        }
+        require_contract_value(&self.request_kind, "request_kind")?;
+        require_contract_value(&self.project_id, "project_id")?;
+        require_contract_value(&self.source_revision, "source_revision")?;
+        if !self.required_safety_flags.is_required_copy_only() {
+            return Err(AiResponseValidationError::UnsafeSafetyFlags);
+        }
+        if self.evidence.is_empty() {
+            return Err(AiResponseValidationError::EvidenceRequired);
+        }
+
+        let mut evidence_ids = HashSet::new();
+        for reference in &self.evidence {
+            reference
+                .validate()
+                .map_err(AiResponseValidationError::InvalidEvidence)?;
+            if !evidence_ids.insert(reference.id.as_str()) {
+                return Err(AiResponseValidationError::DuplicateEvidenceReference(
+                    reference.id.clone(),
+                ));
+            }
+        }
+
+        let mut action_ids = HashSet::new();
+        for action in &self.actions {
+            action
+                .validate()
+                .map_err(AiResponseValidationError::InvalidAction)?;
+            if !action_ids.insert(action.id.as_str()) {
+                return Err(AiResponseValidationError::DuplicateActionReference(
+                    action.id.clone(),
+                ));
+            }
+            if action.project_id.as_deref() != Some(self.project_id.as_str()) {
+                return Err(AiResponseValidationError::ActionTargetDrift(
+                    action.id.clone(),
+                ));
+            }
+            for evidence_id in &action.evidence_refs {
+                if !evidence_ids.contains(evidence_id.as_str()) {
+                    return Err(AiResponseValidationError::ActionReferencesUnknownEvidence(
+                        evidence_id.clone(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_envelope(
+        &self,
+        envelope: &AiResponseEnvelope,
+    ) -> Result<(), AiResponseValidationError> {
+        self.validate()?;
+        if envelope.schema_version != self.schema_version {
+            return Err(AiResponseValidationError::UnsupportedSchemaVersion(
+                envelope.schema_version,
+            ));
+        }
+        if envelope.request_kind != self.request_kind {
+            return Err(AiResponseValidationError::RequestKindMismatch);
+        }
+        if envelope.project_id != self.project_id {
+            return Err(AiResponseValidationError::ProjectTargetDrift);
+        }
+        if envelope.source_revision != self.source_revision {
+            return Err(AiResponseValidationError::SourceRevisionStale);
+        }
+        if envelope.result_schema != self.result_schema {
+            return Err(AiResponseValidationError::ResultSchemaMismatch);
+        }
+        if envelope.safety_flags != self.required_safety_flags
+            || !envelope.safety_flags.is_required_copy_only()
+        {
+            return Err(AiResponseValidationError::UnsafeSafetyFlags);
+        }
+        if envelope.evidence_refs.is_empty() {
+            return Err(AiResponseValidationError::EvidenceRequired);
+        }
+
+        validate_reference_subset(
+            &envelope.evidence_refs,
+            &self.evidence_ids(),
+            AiResponseValidationError::DuplicateEvidenceReference,
+            AiResponseValidationError::UnknownEvidenceReference,
+        )?;
+        validate_reference_subset(
+            &envelope.action_refs,
+            &self.action_ids(),
+            AiResponseValidationError::DuplicateActionReference,
+            AiResponseValidationError::UnknownActionReference,
+        )?;
+        validate_structured_result(self.result_schema, &envelope.result)
+    }
+
+    pub fn parse_and_validate(
+        &self,
+        output: &str,
+    ) -> Result<AiResponseEnvelope, AiResponseValidationError> {
+        let output = output.trim();
+        if output.is_empty() {
+            return Err(AiResponseValidationError::EmptyResponse);
+        }
+        let envelope = serde_json::from_str::<AiResponseEnvelope>(output)
+            .map_err(|_| AiResponseValidationError::MalformedJson)?;
+        self.validate_envelope(&envelope)?;
+        Ok(envelope)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiResponseEnvelope {
+    pub schema_version: u32,
+    pub request_kind: String,
+    pub project_id: String,
+    pub source_revision: String,
+    pub result_schema: AiResultSchema,
+    pub evidence_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_refs: Vec<String>,
+    pub result: Value,
+    pub safety_flags: AiResponseSafetyFlags,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum AiResponseValidationError {
+    EmptyResponse,
+    MalformedJson,
+    UnsupportedSchemaVersion(u32),
+    MissingContractValue(&'static str),
+    EvidenceRequired,
+    InvalidEvidence(&'static str),
+    InvalidAction(&'static str),
+    DuplicateEvidenceReference(String),
+    DuplicateActionReference(String),
+    UnknownEvidenceReference(String),
+    UnknownActionReference(String),
+    ActionReferencesUnknownEvidence(String),
+    ActionTargetDrift(String),
+    RequestKindMismatch,
+    ProjectTargetDrift,
+    SourceRevisionStale,
+    ResultSchemaMismatch,
+    UnsafeSafetyFlags,
+    InvalidResult(&'static str),
+    ForbiddenResultKey(String),
+}
+
+impl fmt::Display for AiResponseValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyResponse => write!(formatter, "provider returned no AI response envelope"),
+            Self::MalformedJson => {
+                write!(
+                    formatter,
+                    "provider response is not a valid AI response envelope"
+                )
+            }
+            Self::UnsupportedSchemaVersion(version) => {
+                write!(
+                    formatter,
+                    "unsupported AI response schema version {version}"
+                )
+            }
+            Self::MissingContractValue(field) => {
+                write!(formatter, "AI response contract field `{field}` is empty")
+            }
+            Self::EvidenceRequired => {
+                write!(
+                    formatter,
+                    "AI response must reference at least one evidence item"
+                )
+            }
+            Self::InvalidEvidence(message) => {
+                write!(formatter, "invalid AI evidence contract: {message}")
+            }
+            Self::InvalidAction(message) => {
+                write!(formatter, "invalid AI action contract: {message}")
+            }
+            Self::DuplicateEvidenceReference(reference) => {
+                write!(formatter, "duplicate AI evidence reference `{reference}`")
+            }
+            Self::DuplicateActionReference(reference) => {
+                write!(formatter, "duplicate AI action reference `{reference}`")
+            }
+            Self::UnknownEvidenceReference(reference) => {
+                write!(formatter, "unknown AI evidence reference `{reference}`")
+            }
+            Self::UnknownActionReference(reference) => {
+                write!(formatter, "unknown AI action reference `{reference}`")
+            }
+            Self::ActionReferencesUnknownEvidence(reference) => {
+                write!(
+                    formatter,
+                    "AI action contract references unknown evidence `{reference}`"
+                )
+            }
+            Self::ActionTargetDrift(action) => {
+                write!(formatter, "AI action `{action}` targets another project")
+            }
+            Self::RequestKindMismatch => write!(formatter, "AI response request kind changed"),
+            Self::ProjectTargetDrift => write!(formatter, "AI response project target changed"),
+            Self::SourceRevisionStale => write!(formatter, "AI response source revision is stale"),
+            Self::ResultSchemaMismatch => write!(formatter, "AI response result schema changed"),
+            Self::UnsafeSafetyFlags => {
+                write!(formatter, "AI response safety flags are not copy-only")
+            }
+            Self::InvalidResult(message) => {
+                write!(formatter, "AI response result is invalid: {message}")
+            }
+            Self::ForbiddenResultKey(key) => {
+                write!(
+                    formatter,
+                    "AI response result contains forbidden field `{key}`"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for AiResponseValidationError {}
+
+fn require_contract_value(
+    value: &str,
+    field: &'static str,
+) -> Result<(), AiResponseValidationError> {
+    if value.trim().is_empty() {
+        Err(AiResponseValidationError::MissingContractValue(field))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_reference_subset<F, G>(
+    references: &[String],
+    allowed: &BTreeSet<&str>,
+    duplicate: F,
+    unknown: G,
+) -> Result<(), AiResponseValidationError>
+where
+    F: Fn(String) -> AiResponseValidationError,
+    G: Fn(String) -> AiResponseValidationError,
+{
+    let mut seen = HashSet::new();
+    for reference in references {
+        if reference.trim().is_empty() || !seen.insert(reference.as_str()) {
+            return Err(duplicate(reference.clone()));
+        }
+        if !allowed.contains(reference.as_str()) {
+            return Err(unknown(reference.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_structured_result(
+    schema: AiResultSchema,
+    result: &Value,
+) -> Result<(), AiResponseValidationError> {
+    reject_forbidden_result_keys(result)?;
+    let object = result
+        .as_object()
+        .ok_or(AiResponseValidationError::InvalidResult(
+            "top-level result must be an object",
+        ))?;
+    match schema {
+        AiResultSchema::CopyOnlyMarkdown => {
+            require_nonempty_string(object.get("markdown"), "markdown")
+        }
+        AiResultSchema::TaskReadiness => {
+            validate_task_readiness_summary(object.get("summary"))?;
+            require_array(object.get("agent_candidates"), "agent_candidates")?;
+            require_array(object.get("skill_candidates"), "skill_candidates")?;
+            require_array(object.get("readiness_signals"), "readiness_signals")?;
+            require_array(object.get("gap_rows"), "gap_rows")?;
+            require_array(object.get("blocker_rows"), "blocker_rows")
+        }
+        AiResultSchema::SessionDigest => {
+            require_nonempty_string(object.get("summary"), "summary")?;
+            require_nonempty_string(object.get("suggested_next_prompt"), "suggested_next_prompt")?;
+            require_array(object.get("evidence_notes"), "evidence_notes")?;
+            require_array(object.get("uncertainties"), "uncertainties")
+        }
+        AiResultSchema::SkillChangeReview => {
+            require_nonempty_string(object.get("summary"), "summary")?;
+            require_array(object.get("changes"), "changes")?;
+            require_array(object.get("risks"), "risks")?;
+            require_array(object.get("recommendations"), "recommendations")
+        }
+    }
+}
+
+fn validate_task_readiness_summary(value: Option<&Value>) -> Result<(), AiResponseValidationError> {
+    let summary = value
+        .and_then(Value::as_object)
+        .ok_or(AiResponseValidationError::InvalidResult("summary"))?;
+    require_nonempty_string(summary.get("summary"), "summary.summary")?;
+    for field in ["recommended_agent", "recommended_skill_name"] {
+        if !summary
+            .get(field)
+            .is_some_and(|value| value.is_null() || value.is_string())
+        {
+            return Err(AiResponseValidationError::InvalidResult(field));
+        }
+    }
+    for field in ["readiness_score", "routing_score"] {
+        if summary
+            .get(field)
+            .and_then(Value::as_u64)
+            .is_none_or(|value| value > 100)
+        {
+            return Err(AiResponseValidationError::InvalidResult(field));
+        }
+    }
+    for field in ["gap_count", "blocker_count"] {
+        if summary.get(field).and_then(Value::as_u64).is_none() {
+            return Err(AiResponseValidationError::InvalidResult(field));
+        }
+    }
+    Ok(())
+}
+
+fn require_nonempty_string(
+    value: Option<&Value>,
+    field: &'static str,
+) -> Result<(), AiResponseValidationError> {
+    if value
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        Ok(())
+    } else {
+        Err(AiResponseValidationError::InvalidResult(field))
+    }
+}
+
+fn require_array(
+    value: Option<&Value>,
+    field: &'static str,
+) -> Result<(), AiResponseValidationError> {
+    if value.is_some_and(Value::is_array) {
+        Ok(())
+    } else {
+        Err(AiResponseValidationError::InvalidResult(field))
+    }
+}
+
+fn reject_forbidden_result_keys(value: &Value) -> Result<(), AiResponseValidationError> {
+    const FORBIDDEN_KEYS: &[&str] = &[
+        "action_confirmation",
+        "apply_method",
+        "argv",
+        "command",
+        "commands",
+        "execute",
+        "execution",
+        "mutation",
+        "preview_token",
+        "script",
+        "scripts",
+        "tool_call",
+        "tool_calls",
+        "write_back",
+    ];
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object {
+                let normalized = key.trim().to_ascii_lowercase();
+                if FORBIDDEN_KEYS.contains(&normalized.as_str()) {
+                    return Err(AiResponseValidationError::ForbiddenResultKey(key.clone()));
+                }
+                reject_forbidden_result_keys(nested)?;
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                reject_forbidden_result_keys(nested)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Severity {
@@ -397,10 +893,279 @@ mod tests {
     use std::path::PathBuf;
 
     use skills_copilot_core::{
-        AgentId, NetworkAccess, PermissionRequest, Scope, SkillInstance, SkillState,
+        ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture, ActionReadbackDomain,
+        ActionTargetKind, ActionTargetRef, AgentId, EvidenceKind, NetworkAccess, PermissionRequest,
+        Scope, SkillInstance, SkillState,
     };
 
     use super::*;
+
+    #[test]
+    fn evidence_bound_response_accepts_known_copy_only_references() {
+        let contract = response_contract(AiResultSchema::TaskReadiness, true);
+        let envelope = AiResponseEnvelope {
+            schema_version: AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            request_kind: "task_cockpit".to_string(),
+            project_id: "project-test".to_string(),
+            source_revision: "source-1".to_string(),
+            result_schema: AiResultSchema::TaskReadiness,
+            evidence_refs: vec!["evidence:skill".to_string()],
+            action_refs: vec!["action:inspect".to_string()],
+            result: serde_json::json!({
+                "summary": {
+                    "summary": "Ready",
+                    "recommended_agent": null,
+                    "recommended_skill_name": null,
+                    "readiness_score": 80,
+                    "routing_score": 75,
+                    "gap_count": 0,
+                    "blocker_count": 0
+                },
+                "agent_candidates": [],
+                "skill_candidates": [],
+                "readiness_signals": [],
+                "gap_rows": [],
+                "blocker_rows": []
+            }),
+            safety_flags: AiResponseSafetyFlags::required_copy_only(),
+        };
+
+        contract
+            .validate_envelope(&envelope)
+            .expect("known evidence-bound result should validate");
+        let encoded = serde_json::to_string(&envelope).expect("encode envelope");
+        assert_eq!(
+            contract
+                .parse_and_validate(&encoded)
+                .expect("roundtrip envelope"),
+            envelope
+        );
+    }
+
+    #[test]
+    fn evidence_bound_response_rejects_stale_unknown_and_drifted_references() {
+        let contract = response_contract(AiResultSchema::TaskReadiness, true);
+        let mut envelope = valid_task_readiness_envelope();
+
+        let mut drifted_contract = contract.clone();
+        drifted_contract.actions[0].project_id = Some("project-other".to_string());
+        assert_eq!(
+            drifted_contract.validate(),
+            Err(AiResponseValidationError::ActionTargetDrift(
+                "action:inspect".to_string()
+            ))
+        );
+
+        envelope.source_revision = "source-stale".to_string();
+        assert_eq!(
+            contract.validate_envelope(&envelope),
+            Err(AiResponseValidationError::SourceRevisionStale)
+        );
+
+        envelope.source_revision = "source-1".to_string();
+        envelope.evidence_refs = vec!["evidence:unknown".to_string()];
+        assert_eq!(
+            contract.validate_envelope(&envelope),
+            Err(AiResponseValidationError::UnknownEvidenceReference(
+                "evidence:unknown".to_string()
+            ))
+        );
+
+        envelope.evidence_refs = vec!["evidence:skill".to_string()];
+        envelope.action_refs = vec!["action:unknown".to_string()];
+        assert_eq!(
+            contract.validate_envelope(&envelope),
+            Err(AiResponseValidationError::UnknownActionReference(
+                "action:unknown".to_string()
+            ))
+        );
+
+        envelope.action_refs = vec!["action:inspect".to_string()];
+        envelope.project_id = "project-other".to_string();
+        assert_eq!(
+            contract.validate_envelope(&envelope),
+            Err(AiResponseValidationError::ProjectTargetDrift)
+        );
+    }
+
+    #[test]
+    fn evidence_bound_response_rejects_unsafe_or_command_shaped_results() {
+        let contract = response_contract(AiResultSchema::SessionDigest, false);
+        let mut envelope = AiResponseEnvelope {
+            schema_version: AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            request_kind: "task_cockpit".to_string(),
+            project_id: "project-test".to_string(),
+            source_revision: "source-1".to_string(),
+            result_schema: AiResultSchema::SessionDigest,
+            evidence_refs: vec!["evidence:skill".to_string()],
+            action_refs: Vec::new(),
+            result: serde_json::json!({
+                "summary": "Current work summary",
+                "suggested_next_prompt": "Continue reviewing the current evidence.",
+                "evidence_notes": [],
+                "uncertainties": []
+            }),
+            safety_flags: AiResponseSafetyFlags::required_copy_only(),
+        };
+
+        envelope.safety_flags.command_execution_allowed = true;
+        assert_eq!(
+            contract.validate_envelope(&envelope),
+            Err(AiResponseValidationError::UnsafeSafetyFlags)
+        );
+
+        envelope.safety_flags = AiResponseSafetyFlags::required_copy_only();
+        envelope.result = serde_json::json!({
+            "summary": "Current work summary",
+            "suggested_next_prompt": "Continue reviewing the current evidence.",
+            "evidence_notes": [],
+            "uncertainties": [],
+            "argv": ["unsafe"]
+        });
+        assert_eq!(
+            contract.validate_envelope(&envelope),
+            Err(AiResponseValidationError::ForbiddenResultKey(
+                "argv".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn evidence_bound_response_enforces_each_structured_result_schema() {
+        let cases = [
+            (
+                AiResultSchema::CopyOnlyMarkdown,
+                serde_json::json!({"markdown": "Evidence-bound explanation."}),
+            ),
+            (
+                AiResultSchema::TaskReadiness,
+                serde_json::json!({
+                    "summary": {
+                        "summary": "Ready",
+                        "recommended_agent": null,
+                        "recommended_skill_name": null,
+                        "readiness_score": 80,
+                        "routing_score": 75,
+                        "gap_count": 0,
+                        "blocker_count": 0
+                    },
+                    "agent_candidates": [],
+                    "skill_candidates": [],
+                    "readiness_signals": [],
+                    "gap_rows": [],
+                    "blocker_rows": []
+                }),
+            ),
+            (
+                AiResultSchema::SessionDigest,
+                serde_json::json!({
+                    "summary": "Digest",
+                    "suggested_next_prompt": "Continue",
+                    "evidence_notes": [],
+                    "uncertainties": []
+                }),
+            ),
+            (
+                AiResultSchema::SkillChangeReview,
+                serde_json::json!({
+                    "summary": "Review",
+                    "changes": [],
+                    "risks": [],
+                    "recommendations": []
+                }),
+            ),
+        ];
+
+        for (schema, result) in cases {
+            let contract = response_contract(schema, false);
+            let envelope = AiResponseEnvelope {
+                schema_version: AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+                request_kind: "task_cockpit".to_string(),
+                project_id: "project-test".to_string(),
+                source_revision: "source-1".to_string(),
+                result_schema: schema,
+                evidence_refs: vec!["evidence:skill".to_string()],
+                action_refs: Vec::new(),
+                result,
+                safety_flags: AiResponseSafetyFlags::required_copy_only(),
+            };
+            contract
+                .validate_envelope(&envelope)
+                .unwrap_or_else(|error| panic!("schema {} failed: {error}", schema.as_str()));
+        }
+    }
+
+    fn response_contract(schema: AiResultSchema, include_action: bool) -> AiResponseContract {
+        let evidence = EvidenceRef {
+            id: "evidence:skill".to_string(),
+            kind: EvidenceKind::SkillInstance,
+            source_revision: "source-1".to_string(),
+            summary: "Selected skill evidence".to_string(),
+            agent: Some(AgentId::Codex),
+            target_id: Some("skill-1".to_string()),
+        };
+        let actions = include_action
+            .then(|| ActionDescriptor {
+                id: "action:inspect".to_string(),
+                kind: ActionKind::RefreshEvidence,
+                intent: ActionIntent::InspectEvidence,
+                target: ActionTargetRef {
+                    kind: ActionTargetKind::Skill,
+                    id: "skill-1".to_string(),
+                    agent: Some(AgentId::Codex),
+                    scope: Some(Scope::AgentProject),
+                },
+                project_id: Some("project-test".to_string()),
+                impacts: vec![ActionImpact::ReadOnly],
+                preview_method: "catalog.getSkill".to_string(),
+                apply_method: None,
+                source_revision: "source-1".to_string(),
+                confirmation_required: false,
+                network: ActionNetworkPosture::None,
+                readback: vec![ActionReadbackDomain::SkillAggregates],
+                evidence_refs: vec!["evidence:skill".to_string()],
+            })
+            .into_iter()
+            .collect();
+        AiResponseContract::new(
+            "task_cockpit",
+            "project-test",
+            "source-1",
+            schema,
+            vec![evidence],
+            actions,
+        )
+        .expect("valid response contract")
+    }
+
+    fn valid_task_readiness_envelope() -> AiResponseEnvelope {
+        AiResponseEnvelope {
+            schema_version: AI_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            request_kind: "task_cockpit".to_string(),
+            project_id: "project-test".to_string(),
+            source_revision: "source-1".to_string(),
+            result_schema: AiResultSchema::TaskReadiness,
+            evidence_refs: vec!["evidence:skill".to_string()],
+            action_refs: vec!["action:inspect".to_string()],
+            result: serde_json::json!({
+                "summary": {
+                    "summary": "Ready",
+                    "recommended_agent": null,
+                    "recommended_skill_name": null,
+                    "readiness_score": 80,
+                    "routing_score": 75,
+                    "gap_count": 0,
+                    "blocker_count": 0
+                },
+                "agent_candidates": [],
+                "skill_candidates": [],
+                "readiness_signals": [],
+                "gap_rows": [],
+                "blocker_rows": []
+            }),
+            safety_flags: AiResponseSafetyFlags::required_copy_only(),
+        }
+    }
 
     #[test]
     fn yaml_contract_frontmatter_required_fields_handles_nested_values_and_malformed_input() {

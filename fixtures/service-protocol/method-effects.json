@@ -142,7 +142,7 @@
       "precondition_kinds": ["provider_profile", "prompt_context"],
       "target_agent_binding": "absent",
       "target_scope_binding": "absent",
-      "project_binding": "absent",
+      "project_binding": "required",
       "network": "required",
       "impacts": ["app_local_data"],
       "readback": ["provider_activity", "prompt_runs"]
