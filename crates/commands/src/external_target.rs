@@ -9,7 +9,9 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{mutation_lock::AppMutationLock, CommandError};
+use crate::{
+    app_data_owner_fs::unix_timestamp_nanoseconds, mutation_lock::AppMutationLock, CommandError,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct ExternalFileState {
@@ -94,9 +96,9 @@ impl RegularFileStamp {
             length: u64::try_from(stat.st_size)
                 .map_err(|_| unsafe_external_target("regular file has a negative size"))?,
             modified_seconds: stat.st_mtime,
-            modified_nanoseconds: stat.st_mtime_nsec,
+            modified_nanoseconds: unix_timestamp_nanoseconds(stat.st_mtime_nsec),
             changed_seconds: stat.st_ctime,
-            changed_nanoseconds: stat.st_ctime_nsec,
+            changed_nanoseconds: unix_timestamp_nanoseconds(stat.st_ctime_nsec),
         })
     }
 }

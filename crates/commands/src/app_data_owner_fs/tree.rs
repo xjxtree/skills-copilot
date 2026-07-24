@@ -8,8 +8,9 @@ use std::{
 use sha2::Digest;
 
 use super::{
-    directory_flags, map_unsafe_relative_errno, private_owner_uid, unsafe_relative_file,
-    validate_private_directory, validate_relative_path, AppDataCreatedDirectory, AppDataOwnerFs,
+    directory_flags, map_unsafe_relative_errno, private_owner_uid, unix_timestamp_nanoseconds,
+    unsafe_relative_file, validate_private_directory, validate_relative_path,
+    AppDataCreatedDirectory, AppDataOwnerFs,
 };
 #[cfg(not(unix))]
 use super::{guarded_fallback_path, unsafe_relative_path};
@@ -1040,9 +1041,9 @@ fn removal_binding_from_stat(stat: &rustix::fs::Stat) -> Result<RemovalBinding, 
         length: u64::try_from(stat.st_size)
             .map_err(|_| unsafe_relative_file("app-data removal"))?,
         modified_seconds: stat.st_mtime,
-        modified_nanoseconds: stat.st_mtime_nsec,
+        modified_nanoseconds: unix_timestamp_nanoseconds(stat.st_mtime_nsec),
         changed_seconds: stat.st_ctime,
-        changed_nanoseconds: stat.st_ctime_nsec,
+        changed_nanoseconds: unix_timestamp_nanoseconds(stat.st_ctime_nsec),
     })
 }
 

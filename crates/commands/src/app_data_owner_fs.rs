@@ -14,6 +14,11 @@ mod tree;
 
 const PRIVATE_CLEANUP_LEAF_REVISION_DOMAIN: &str = "agent-copilot/app-data-private-cleanup-leaf/v1";
 
+#[cfg(unix)]
+pub(crate) fn unix_timestamp_nanoseconds(value: impl TryInto<i64>) -> i64 {
+    value.try_into().unwrap_or(i64::MAX)
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum AppDataPrivateLeafKind {
     RegularFile,
@@ -1902,9 +1907,9 @@ fn private_regular_file_stamp_from_stat(
         mode: u32::from(metadata.st_mode),
         size: u64::try_from(metadata.st_size).map_err(|_| unsafe_relative_file(label))?,
         modified_seconds: metadata.st_mtime,
-        modified_nanoseconds: metadata.st_mtime_nsec,
+        modified_nanoseconds: unix_timestamp_nanoseconds(metadata.st_mtime_nsec),
         changed_seconds: metadata.st_ctime,
-        changed_nanoseconds: metadata.st_ctime_nsec,
+        changed_nanoseconds: unix_timestamp_nanoseconds(metadata.st_ctime_nsec),
     })
 }
 
@@ -1949,9 +1954,9 @@ fn inspect_private_cleanup_leaf_at(
         mode: u32::from(metadata.st_mode),
         size,
         modified_seconds: metadata.st_mtime,
-        modified_nanoseconds: metadata.st_mtime_nsec,
+        modified_nanoseconds: unix_timestamp_nanoseconds(metadata.st_mtime_nsec),
         changed_seconds: metadata.st_ctime,
-        changed_nanoseconds: metadata.st_ctime_nsec,
+        changed_nanoseconds: unix_timestamp_nanoseconds(metadata.st_ctime_nsec),
     };
     let bytes = if kind == AppDataPrivateLeafKind::RegularFile {
         let descriptor = openat(
