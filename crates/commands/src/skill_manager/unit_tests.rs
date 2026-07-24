@@ -195,7 +195,10 @@ fn local_create_preview_refuses_an_existing_staging_destination_without_modifyin
         },
     );
 
-    assert!(matches!(result, Err(CommandError::StaleActionReference)));
+    assert!(
+        matches!(result, Err(CommandError::StaleActionReference)),
+        "unexpected existing-destination result: {result:?}"
+    );
     assert_eq!(
         fs::read(destination.join("sentinel")).expect("destination remains"),
         b"unchanged"
@@ -1015,10 +1018,10 @@ fn install_preview_rejects_local_sources_for_every_scope_and_supported_agent_wit
                     },
                 )
                 .expect_err("raw manager local install must fail before preview");
-                assert!(matches!(
-                    error,
-                    CommandError::LocalSkillManagerSourceUnsupported
-                ));
+                assert!(
+                    matches!(error, CommandError::LocalSkillManagerSourceUnsupported),
+                    "unexpected local-source classification for {scope}/{agent}: {error:?}"
+                );
                 assert!(!error
                     .to_string()
                     .contains(&local_source.to_string_lossy().to_string()));

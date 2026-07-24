@@ -1492,6 +1492,7 @@ impl<'lock> ExternalTargetCapability<'lock> {
             .parent()
             .ok_or_else(|| unsafe_external_target("guarded target has no parent"))?;
         let temp = parent.join(random_temp_name("agent-copilot-write")?);
+        let mut activated = false;
         let result = (|| {
             let mut file = std::fs::OpenOptions::new()
                 .create_new(true)
@@ -1503,6 +1504,7 @@ impl<'lock> ExternalTargetCapability<'lock> {
             run_test_hook(&self.display_path, ExternalTargetHookPoint::BeforeRename);
             self.validate_fallback_path(true)?;
             crate::replace_file_atomically(&temp, &self.display_path)?;
+            activated = true;
             crate::sync_directory_path(parent)?;
             crate::run_atomic_post_rename_test_hook(&self.display_path)?;
             run_test_hook(&self.display_path, ExternalTargetHookPoint::AfterRename);
@@ -1510,16 +1512,27 @@ impl<'lock> ExternalTargetCapability<'lock> {
         })();
         match result {
             Ok(()) => Ok(()),
-            Err(original) => match std::fs::remove_file(&temp) {
-                Ok(()) => {
-                    crate::sync_directory_path(parent)?;
-                    Err(original)
+            Err(original) => {
+                let original = if activated
+                    && !matches!(original, CommandError::PartialEffect { .. })
+                {
+                    file_effect_unknown(format!(
+                        "the target candidate was installed, but post-activation verification failed: {original}"
+                    ))
+                } else {
+                    original
+                };
+                match std::fs::remove_file(&temp) {
+                    Ok(()) => {
+                        crate::sync_directory_path(parent)?;
+                        Err(original)
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Err(original),
+                    Err(cleanup) => Err(file_effect_unknown(format!(
+                        "non-Unix guarded target write failed ({original}); temporary-file cleanup failed ({cleanup})"
+                    ))),
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Err(original),
-                Err(cleanup) => Err(file_effect_unknown(format!(
-                    "non-Unix guarded target write failed ({original}); temporary-file cleanup failed ({cleanup})"
-                ))),
-            },
+            }
         }
     }
 }

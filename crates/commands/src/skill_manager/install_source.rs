@@ -29,12 +29,8 @@ pub(super) fn resolve_manager_source(
         return Ok(ManagerSourceResolution::Network);
     }
 
-    if source.starts_with("git@") || looks_like_scp_git_source(source) {
-        validate_scp_git_source(source)?;
-        return Ok(ManagerSourceResolution::Network);
-    }
-
     let path = PathBuf::from(source);
+    let explicit_local = path.is_absolute() || source.starts_with('.') || source.starts_with('/');
     let candidate = if path.is_absolute() {
         path
     } else {
@@ -43,10 +39,14 @@ pub(super) fn resolve_manager_source(
     if candidate.exists() {
         return resolve_local_manager_source(candidate);
     }
-    if source.starts_with('.') || source.starts_with('/') {
+    if explicit_local {
         return Err(CommandError::InvalidSkillManagerRequest(
             "local skill manager source does not exist at the selected manager scope".to_string(),
         ));
+    }
+    if source.starts_with("git@") || looks_like_scp_git_source(source) {
+        validate_scp_git_source(source)?;
+        return Ok(ManagerSourceResolution::Network);
     }
     Ok(ManagerSourceResolution::Network)
 }

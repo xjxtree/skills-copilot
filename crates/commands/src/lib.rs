@@ -1282,6 +1282,9 @@ where
         let scan_ctx = install_scan_context(ctx, target_agent, target_scope, project_path)?;
         scan_agent_id_to_catalog(target_agent, &scan_ctx, catalog)?;
         run_install_catalog_scan_test_hook(&target);
+        #[cfg(windows)]
+        let anchored_target = target_capability.anchored_path().canonicalize()?;
+        #[cfg(not(windows))]
         let anchored_target = target_capability.anchored_path().to_path_buf();
         let expected_project_root = if target_scope == Scope::AgentProject {
             Some(
