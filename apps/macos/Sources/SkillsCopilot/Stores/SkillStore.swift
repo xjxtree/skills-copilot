@@ -548,6 +548,13 @@ final class SkillStore: ObservableObject {
         appContextStore.selectRoute(route)
     }
 
+    func openAdvancedConfiguration() {
+        configScopeFilter = .all
+        configSidebarSearchText = ""
+        selectAppRoute(.advanced)
+        selectDefaultConfigDocumentOrOverview()
+    }
+
     func openProjectAttentionTarget(_ item: AttentionItem) {
         if let agent = item.agent,
            let filter = agentFilter(for: agent.rawValue) {
@@ -564,8 +571,12 @@ final class SkillStore: ObservableObject {
             skillWorkspaceStore.selectAggregate(id: aggregate?.id)
         case "session":
             selectAppRoute(.sessions)
-        case "config", "package", "provider_profile", "app_data":
-            selectAppRoute(.advanced)
+        case "config":
+            openAdvancedConfiguration()
+        case "package":
+            selectAppRoute(.skills)
+        case "provider_profile", "app_data":
+            selectAppRoute(.overview)
         default:
             selectAppRoute(.overview)
         }
@@ -2985,7 +2996,7 @@ final class SkillStore: ObservableObject {
             if let filter = agentFilter(for: skill.agent) {
                 agentFilter = filter
             }
-            sidebarContentMode = .skills
+            selectAppRoute(.skills)
             searchText = ""
             stateFilter = .all
             skillScopeFilter = .all
@@ -3021,7 +3032,7 @@ final class SkillStore: ObservableObject {
             if let filter = agentFilter(for: snapshot.agent) {
                 agentFilter = filter
             }
-            sidebarContentMode = .config
+            selectAppRoute(.advanced)
             configScopeFilter = .all
             configSidebarSearchText = ""
             ensureConfigSnapshot(snapshot)
@@ -3036,10 +3047,10 @@ final class SkillStore: ObservableObject {
         selectedDetailSection = .overview
         switch kind {
         case .skill:
+            selectAppRoute(.skills)
             stateFilter = .all
             skillScopeFilter = .all
             searchText = query
-            sidebarContentMode = .skills
             normalizeSelectionToVisibleSkills()
 
         case .session:
@@ -3055,8 +3066,8 @@ final class SkillStore: ObservableObject {
             normalizeSelectedLocalSession()
 
         case .configHistory:
+            selectAppRoute(.advanced)
             configScopeFilter = .all
-            sidebarContentMode = .config
             configSidebarSearchText = query
             setSidebarSelection(.configOverview)
         }

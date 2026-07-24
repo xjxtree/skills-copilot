@@ -124,7 +124,7 @@ struct SecondarySidebarView: View {
                 }
                 .allowsHitTesting(false)
             }
-            .navigationTitle("")
+            .navigationTitle(UIStrings.appWindowTitle)
             .onChange(of: store.skillListScrollRequest) { request in
                 guard let request else { return }
                 DispatchQueue.main.async {

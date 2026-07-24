@@ -13,6 +13,9 @@ const files = {
   mainWindowCoordinator: await read("apps/macos/Sources/SkillsCopilot/App/MainWindowCoordinator.swift"),
   mainWindowModel: await read("apps/macos/Sources/SkillsCopilot/Models/MainWindowModel.swift"),
   content: await read("apps/macos/Sources/SkillsCopilot/Views/ContentView.swift"),
+  advancedWorkspace: await read(
+    "apps/macos/Sources/SkillsCopilot/Views/AdvancedWorkspaceView.swift",
+  ),
   projectOverview: await read(
     "apps/macos/Sources/SkillsCopilot/Views/ProjectOverviewView.swift",
   ),
@@ -250,7 +253,7 @@ const checks = [
   },
   {
     label: "list pages use a unified window toolbar with global search and sidebar-local selectors",
-    text: files.content + "\n" + files.uiOptimization,
+    text: files.content + "\n" + files.advancedWorkspace + "\n" + files.uiOptimization,
     passed: /static let unifiedToolbar = UnifiedToolbarPresentation\(\)[\s\S]*?static let listPage = ListPagePresentation\(\)[\s\S]*?static let sidebarShell = SidebarShellPresentation\(\)/.test(files.uiOptimization)
       && /struct UnifiedToolbarPresentation:[\s\S]*?spansEntireWindow = true[\s\S]*?searchPlacement = UnifiedToolbarSearchPlacement\.globalTrailing[\s\S]*?collapsesAtScrollEdge = true[\s\S]*?settingsActionUsesSystemSettingsLink = true/.test(files.uiOptimization)
       && /struct ListPagePresentation:[\s\S]*?filterStyle = ListPageFilterStyle\.capsule[\s\S]*?searchScope = ListPageSearchScope\.localList[\s\S]*?rowStyle = ListPageRowStyle\.whiteCard[\s\S]*?minimumCardRowHeight = 58[\s\S]*?cardRowSpacing = 8/.test(files.uiOptimization)
@@ -259,7 +262,7 @@ const checks = [
       && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?isSearchFocused:\s*\$isGlobalSearchFocused,[\s\S]*?showsSearchResults:\s*\$showsGlobalSearchResults,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.accessibilityHidden\(true\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
       && /@State private var isGlobalSearchFocused = false[\s\S]*?@State private var showsGlobalSearchResults = false/.test(files.content)
       && /private var globalSearchResultsOverlay:[\s\S]*?GlobalSearchResultsOverlay\([\s\S]*?query:\s*trimmedGlobalSearchText,[\s\S]*?results:\s*globalSearchResults,[\s\S]*?kindCounts:\s*store\.appSearchResult\.kindCounts[\s\S]*?onViewAll:\s*showAllGlobalSearchResults[\s\S]*?selectGlobalSearchResult\(result\)[\s\S]*?WindowChromeToolbarMetrics\.searchResultsTrailingPadding/.test(files.content)
-      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
+      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.advancedWorkspace)
       && !/WindowChromeAgentControl/.test(files.content)
       && !/WindowChromeProjectControl/.test(files.content)
       && /@State private var columnVisibility:\s*NavigationSplitViewVisibility = \.all[\s\S]*?NavigationSplitView\(columnVisibility:\s*\$columnVisibility\)/.test(files.content)
@@ -279,7 +282,7 @@ const checks = [
       && !/\.toolbar\s*\{[\s\S]*?ToolbarItem\(placement:\s*\.navigation\)[\s\S]*?TitlebarAgentSelectorControl\(\)/.test(files.content)
       && /private struct TitlebarAgentSelectorControl:\s*View[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?TitlebarAgentSelectorLabel\([\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?ForEach\(SkillAgentFilter\.managementCases\)[\s\S]*?store\.agentFilter = filter/.test(files.content)
       && /private struct TitlebarProjectPickerControl:\s*View[\s\S]*?Button\s*\{[\s\S]*?isPopoverPresented\.toggle\(\)[\s\S]*?\.popover\(isPresented:\s*\$isPopoverPresented[\s\S]*?Button\s*\{[\s\S]*?chooseProject\(\)[\s\S]*?await store\.previewClearRecentProjects\(\)[\s\S]*?ForEach\(store\.recentProjectContexts\)[\s\S]*?selectProject\([\s\S]*?recentProjectPath\(context\)[\s\S]*?await store\.removeRecentProject\([\s\S]*?revealActiveProject\(\)[\s\S]*?await store\.previewClearProject\(\)[\s\S]*?private func selectProject\([\s\S]*?store\.requestProjectSelection\(/.test(files.content)
-      && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(""\)/.test(files.sidebar)
+      && /struct SecondarySidebarView:[\s\S]*?let columnVisibility:\s*NavigationSplitViewVisibility[\s\S]*?List\(selection:\s*\$store\.selectedSidebarSelection\)[\s\S]*?\.padding\(\.top,\s*50\)[\s\S]*?\.ignoresSafeArea\(\.container,\s*edges:\s*\.top\)[\s\S]*?GeometryReader \{ proxy in[\s\S]*?SecondarySidebarHeaderWidthPreferenceKey\.self[\s\S]*?\.allowsHitTesting\(false\)[\s\S]*?\.navigationTitle\(UIStrings\.appWindowTitle\)/.test(files.sidebar)
       && !/\.overlay\(alignment:\s*\.topLeading\)[\s\S]*?SecondarySidebarHeaderChrome/.test(files.sidebar)
       && !/ToolbarItemGroup\(placement:\s*\.automatic\)[\s\S]*?Global/.test(files.content)
       && /private struct WindowChromeTrailingControls:[\s\S]*?private let searchWidth = WindowChromeToolbarMetrics\.searchWidth[\s\S]*?private var controls:[\s\S]*?HStack\(alignment:\s*\.center,\s*spacing:\s*6\)[\s\S]*?GlobalWindowSearchControl\([\s\S]*?WindowChromeSettingsControl\(\)[\s\S]*?\.frame\(height:\s*32,\s*alignment:\s*\.center\)/.test(files.content)
@@ -342,10 +345,11 @@ const checks = [
   },
   {
     label: "primary and secondary sidebar columns have bounded native widths",
-    text: files.content + "\n" + files.uiOptimization,
+    text: files.content + "\n" + files.advancedWorkspace + "\n" + files.uiOptimization,
     passed: /struct SidebarShellPresentation:[\s\S]*?let width = 260/.test(files.uiOptimization)
       && /minimumSecondaryColumnWidth = 360[\s\S]*?idealSecondaryColumnWidth = 400[\s\S]*?maximumSecondaryColumnWidth = 520/.test(files.uiOptimization)
-      && /SidebarView\(\)[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?SecondarySidebarView\(columnVisibility:\s*columnVisibility\)[\s\S]*?UIOptimizationPresentation\.skillList\.minimumSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.idealSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.maximumSecondaryColumnWidth/.test(files.content),
+      && /SidebarView\(\)[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width[\s\S]*?UIOptimizationPresentation\.sidebarShell\.width/.test(files.content)
+      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)[\s\S]*?UIOptimizationPresentation\.skillList\.minimumSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.idealSecondaryColumnWidth[\s\S]*?UIOptimizationPresentation\.skillList\.maximumSecondaryColumnWidth/.test(files.advancedWorkspace),
   },
   {
     label: "session data is prewarmed at startup without route-triggered root scans",
@@ -365,7 +369,8 @@ const checks = [
       && !extractStructBody(files.sidebar, "SidebarView").includes("SidebarFooterToolRow")
       && !extractStructBody(files.sidebar, "SidebarView").includes("TaskPreflightPreviewSheet")
       && !extractStructBody(files.sidebar, "SidebarView").includes("SkillPackageManagerSheet")
-      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills:[\s\S]*?SkillsWorkspaceView\(\)[\s\S]*?case \.sessions:[\s\S]*?SessionsWorkspaceView\(\)[\s\S]*?case \.advanced:[\s\S]*?HSplitView/.test(files.content)
+      && /case \.overview:[\s\S]*?ProjectOverviewView\([\s\S]*?case \.skills:[\s\S]*?SkillsWorkspaceView\(\)[\s\S]*?case \.sessions:[\s\S]*?SessionsWorkspaceView\(\)[\s\S]*?case \.advanced:[\s\S]*?AdvancedWorkspaceView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
+      && /struct AdvancedWorkspaceView:[\s\S]*?HSplitView[\s\S]*?SecondarySidebarView\(columnVisibility:\s*columnVisibility\)[\s\S]*?AdvancedConfigurationDetailView\(\)/.test(files.advancedWorkspace)
       && /CommandMenu\(UIStrings\.text\("menu\.navigate",\s*"Navigate"\)\)[\s\S]*?selectAppRoute\(\.overview\)[\s\S]*?selectAppRoute\(\.skills\)[\s\S]*?selectAppRoute\(\.sessions\)/.test(files.app),
   },
   {
@@ -717,7 +722,7 @@ const checks = [
       && !/WindowChromeAgentControl/.test(files.content)
       && !/WindowChromeProjectControl/.test(files.content)
       && !/WindowChromeTitlebarInstaller|WindowChromeChildWindow|WindowChromeTitlebarLayout/.test(files.content)
-      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
+      && /SecondarySidebarView\(columnVisibility:\s*columnVisibility\)/.test(files.advancedWorkspace)
       && !/secondarySidebarHeaderWidth/.test(files.content)
       && /ZStack\(alignment:\s*\.topTrailing\)[\s\S]*?globalSearchResultsOverlay[\s\S]*?pinnedWindowChromeControls/.test(files.content)
       && /private var pinnedWindowChromeControls:\s*some View\s*\{[\s\S]*?WindowChromeTitlebarAccessory\s*\{[\s\S]*?WindowChromeToolbarControls\([\s\S]*?text:\s*\$globalSearchText,[\s\S]*?isSearchFocused:\s*\$isGlobalSearchFocused,[\s\S]*?showsSearchResults:\s*\$showsGlobalSearchResults,[\s\S]*?onSubmit:\s*selectFirstGlobalSearchResult[\s\S]*?\.frame\(width:\s*0,\s*height:\s*0\)[\s\S]*?\.zIndex\(10\)/.test(files.content)
@@ -823,10 +828,10 @@ const checks = [
   {
     label: "settings window uses sidebar navigation and close-only window controls",
     text: files.settings + "\n" + files.uiOptimization + "\n" + files.localizable + "\n" + files.localizableZh,
-    passed: /enum SettingsTab:[\s\S]*?CaseIterable[\s\S]*?case appearance[\s\S]*?case provider[\s\S]*?case providerObservability[\s\S]*?case service/.test(files.settings)
+    passed: /enum SettingsTab:[\s\S]*?CaseIterable[\s\S]*?case appearance[\s\S]*?case provider[\s\S]*?case providerObservability[\s\S]*?case advanced/.test(files.settings)
       && /HStack\(spacing:\s*0\)[\s\S]*?settingsSidebar[\s\S]*?Divider\(\)[\s\S]*?selectedSettingsPane/.test(files.settings)
       && /private var settingsSidebar:[\s\S]*?ForEach\(SettingsTab\.allCases\)[\s\S]*?SettingsSidebarItem/.test(files.settings)
-      && /private var selectedSettingsPane:[\s\S]*?switch selectedSettingsTab[\s\S]*?case \.providerObservability:[\s\S]*?ProviderObservabilitySettingsPanel\(\)/.test(files.settings)
+      && /private var selectedSettingsPane:[\s\S]*?switch selectedSettingsTab[\s\S]*?case \.providerObservability:[\s\S]*?ProviderObservabilitySettingsPanel\(\)[\s\S]*?case \.advanced:[\s\S]*?advancedSection/.test(files.settings)
       && /@AppStorage\(SettingsNavigation\.selectionStorageKey\)[\s\S]*?selectedSettingsTab:\s*SettingsTab/.test(files.settings)
       && /SettingsNavigation\.providerObservabilityRequested[\s\S]*?selectedSettingsTab = \.providerObservability/.test(files.settings)
       && /private struct SettingsWindowConfigurator:[\s\S]*?window\.title = UIStrings\.settingsWindowTitle[\s\S]*?window\.styleMask\.remove\(\.miniaturizable\)[\s\S]*?standardWindowButton\(\.miniaturizeButton\)\?\.isHidden = true[\s\S]*?standardWindowButton\(\.zoomButton\)\?\.isHidden = true/.test(files.settings)
@@ -847,11 +852,35 @@ const checks = [
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.connection"/.test(files.settings)
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.limits"/.test(files.settings)
       && /SettingsSectionCard\(title:\s*UIStrings\.text\("settings\.aiProvider\.credentialSafety"/.test(files.settings)
-      && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.service/.test(files.settings)
+      && /SettingsPageHeader\([\s\S]*?title:\s*UIStrings\.text\("settings\.advanced",\s*"Advanced"\)/.test(files.settings)
       && /DetailMetricGrid\(maxColumns:\s*3/.test(files.settings)
       && /Picker\(UIStrings\.themeSelection,[\s\S]*?ForEach\(AppTheme\.allCases\)[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings)
       && /Picker\(UIStrings\.languageSelection,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings)
       && /Picker\(UIStrings\.llmProvider,[\s\S]*?\.pickerStyle\(\.segmented\)[\s\S]*?\.labelsHidden\(\)/.test(files.settings),
+  },
+  {
+    label: "advanced mechanisms are discoverable without becoming primary navigation",
+    text: [
+      files.content,
+      files.advancedWorkspace,
+      files.settings,
+      files.settingsNavigation,
+      files.store,
+      files.sidebar,
+      files.privacyPath,
+      files.agentConfigWorkspace,
+    ].join("\n"),
+    passed: !extractStructBody(files.sidebar, "SidebarView").includes(".tag(AppRoute.advanced)")
+      && /case \.advanced:[\s\S]*?AdvancedWorkspaceView\(columnVisibility:\s*columnVisibility\)/.test(files.content)
+      && /private func openProjectAttentionTarget\(_ item:\s*AttentionItem\)[\s\S]*?case "provider_profile":[\s\S]*?SettingsNavigation\.openProvider\(\)[\s\S]*?case "app_data":[\s\S]*?SettingsNavigation\.openProviderObservability\(\)/.test(files.content)
+      && /func openAdvancedConfiguration\(\)[\s\S]*?configScopeFilter = \.all[\s\S]*?selectAppRoute\(\.advanced\)[\s\S]*?selectDefaultConfigDocumentOrOverview\(\)/.test(files.store)
+      && /store\.openAdvancedConfiguration\(\)[\s\S]*?MainWindowCoordinator\.restoreMainWindow\(\)[\s\S]*?settings\.advanced\.open-configuration/.test(files.settings)
+      && /AdvancedConfigurationDetailView[\s\S]*?AgentConfigDetailPanel\(\)/.test(files.advancedWorkspace)
+      && /AdvancedConfigurationDetailView[\s\S]*?\.navigationTitle\(UIStrings\.appWindowTitle\)/.test(files.advancedWorkspace)
+      && /PrivacyPathText\(path:\s*path/.test(files.agentConfigWorkspace)
+      && /ConfigContentRedactor\.redactedForDisplay/.test(files.agentConfigWorkspace)
+      && /static func openProvider\(\)[\s\S]*?tab:\s*\.provider/.test(files.settingsNavigation)
+      && /static func openAdvanced\(\)[\s\S]*?tab:\s*\.advanced/.test(files.settingsNavigation),
   },
   {
     label: "settings AI provider uses signed previews and explicit confirmations without autosave",
@@ -1214,7 +1243,7 @@ const customChecks = [
     passed: /LegacyPrivateContentGlobalBanner\(\)[\s\S]*?navigationShell/.test(files.content)
       && /legacyPrivateContentInspection\?\.cleanupRequired == true[\s\S]*?legacyPrivateContentCleanupError != nil/.test(files.legacyPrivateContentBanner)
       && /Button\(UIStrings\.legacyPrivateContentOpenSettings\)[\s\S]*?SettingsNavigation\.openProviderObservability\(\)/.test(files.legacyPrivateContentBanner)
-      && /UserDefaults\.standard\.set\([\s\S]*?SettingsTab\.providerObservability\.rawValue[\s\S]*?showSettingsWindow:/.test(files.settingsNavigation)
+      && /static func openProviderObservability\(\)[\s\S]*?tab:\s*\.providerObservability[\s\S]*?notification:\s*providerObservabilityRequested[\s\S]*?private static func open\(tab:\s*SettingsTab[\s\S]*?UserDefaults\.standard\.set\([\s\S]*?tab\.rawValue[\s\S]*?showSettingsWindow:/.test(files.settingsNavigation)
       && /LegacyPrivateContentCleanupCard\(\)/.test(files.providerObservabilitySettings)
       && /previewLegacyPrivateContentCleanup\(\)[\s\S]*?confirmLegacyPrivateContentCleanup\(\)/.test(files.legacyPrivateContentCard)
       && /cleanupLegacyPrivateContent\(preview:\s*preview\)/.test(files.storeLegacyPrivacy)

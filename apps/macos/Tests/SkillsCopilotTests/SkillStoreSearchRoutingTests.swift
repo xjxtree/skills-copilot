@@ -13,18 +13,21 @@ extension SkillStoreTests {
 
         let callsBeforeRouting = fake.calls()
         await store.showAllAppSearchResults(kind: .skill, query: "match")
+        try expectEqual(store.appRoute, .skills, "View All Skills should select the Skills workspace.")
         try expectEqual(store.sidebarContentMode, .skills, "View All Skills should route to the canonical Skills list.")
         try expectEqual(store.searchText, "match", "View All Skills should transfer the query.")
         try expectEqual(store.skillScopeFilter, .all, "View All Skills should include every indexed skill scope.")
         try expectFalse(!(store.selectedSidebarSelection == nil || store.selectedSidebarSelection?.isSkill == true), "View All Skills should normalize selection to the canonical list.")
 
         await store.showAllAppSearchResults(kind: .session, query: "match")
+        try expectEqual(store.appRoute, .sessions, "View All Sessions should select the Sessions workspace.")
         try expectEqual(store.sidebarContentMode, .sessions, "View All Sessions should route to the canonical Sessions list.")
         try expectEqual(store.localSessionSearchText, "match", "View All Sessions should transfer the query.")
         try expectEqual(store.localSessionScopeFilter, .all, "View All Sessions should include every indexed session scope.")
         try expectFalse(!(store.selectedSidebarSelection == nil || store.selectedSidebarSelection?.isSession == true), "View All Sessions should normalize selection to the canonical list.")
 
         await store.showAllAppSearchResults(kind: .configHistory, query: "match")
+        try expectEqual(store.appRoute, .advanced, "Config-history search should route to Advanced.")
         try expectEqual(store.sidebarContentMode, .config, "View All Config History should route to the canonical Config list.")
         try expectEqual(store.configSidebarSearchText, "match", "View All Config History should transfer the query.")
         try expectEqual(store.configScopeFilter, .all, "View All Config History should include every indexed config scope.")
@@ -64,6 +67,27 @@ extension SkillStoreTests {
         )
         try expectEqual(reachable.map(\.id), ["snapshot-claude", "snapshot-codex"], "Config History View All under the All agent filter should keep every real-agent snapshot reachable.")
         try expectEqual(fake.calls(), allAgentCallsBeforeRouting, "All-agent Config History View All must remain a zero-RPC route.")
+    }
+
+    func advancedConfigurationRoutingUsesCacheWithoutRPC() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "agent-config")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        store.configScopeFilter = .project
+        store.configSidebarSearchText = "stale query"
+        let callsBeforeRouting = fake.calls()
+
+        store.openAdvancedConfiguration()
+
+        try expectEqual(store.appRoute, .advanced, "The expert configuration surface should use the Advanced route.")
+        try expectEqual(store.sidebarContentMode, .config, "Advanced configuration should own the Config sidebar.")
+        try expectEqual(store.configScopeFilter, .all, "Opening Advanced should expose all already-loaded config evidence.")
+        try expectEqual(store.configSidebarSearchText, "", "Opening Advanced should clear stale config search criteria.")
+        try expectFalse(store.selectedSidebarSelection?.isConfig != true, "Advanced should select a current config document or the config overview.")
+        try expectEqual(fake.calls(), callsBeforeRouting, "Opening Advanced must project the existing cache without issuing an RPC.")
     }
 
     func allAgentConfigHistoryPageTaskPreservesCachedRowsWithoutRPC() async throws {

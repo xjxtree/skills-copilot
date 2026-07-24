@@ -185,6 +185,14 @@ Evidence sheets, typed action-capability previews, and continuation previews
 are read-only. Continuation text is rendered only from a supported,
 service-owned, copy-only argv and never from a Swift fallback command.
 
+The Advanced route is a dedicated configuration and recovery workspace rather
+than a generic legacy detail router. It reuses accepted config documents and
+snapshot history, keeps content and physical paths redacted until explicit
+reveal, and retains the typed preview-confirm-apply-read-back lifecycle.
+Settings owns provider profiles, provider activity, the discoverable Advanced
+entry, and privacy-safe sidecar diagnostics; entering Advanced from Settings is
+a cache-only route change.
+
 Startup and manual refresh prewarm the typed project and aggregate reads when
 the service advertises them. Route, filter, search, sort, scope, and selection
 changes project accepted cache state locally and do not scan or issue unrelated

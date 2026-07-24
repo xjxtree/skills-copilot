@@ -6,7 +6,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
     case appearance
     case provider
     case providerObservability
-    case service
+    case advanced
 
     var id: String { rawValue }
 
@@ -18,8 +18,8 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
             return UIStrings.aiProviderSettings
         case .providerObservability:
             return UIStrings.providerObservabilityTitle
-        case .service:
-            return UIStrings.service
+        case .advanced:
+            return UIStrings.text("settings.advanced", "Advanced")
         }
     }
 
@@ -31,8 +31,11 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
             return UIStrings.settingsNavProviderSubtitle
         case .providerObservability:
             return UIStrings.settingsNavObservabilitySubtitle
-        case .service:
-            return UIStrings.settingsNavServiceSubtitle
+        case .advanced:
+            return UIStrings.text(
+                "settings.nav.advanced.subtitle",
+                "Configuration, recovery, and diagnostics"
+            )
         }
     }
 
@@ -44,7 +47,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
             return "key"
         case .providerObservability:
             return "waveform.path.ecg.rectangle"
-        case .service:
+        case .advanced:
             return "wrench.and.screwdriver"
         }
     }
@@ -113,7 +116,7 @@ struct SettingsView: View {
         .background(SettingsWindowConfigurator(theme: AppTheme.fromStorage(appThemeRawValue)))
         .task(id: selectedSettingsTab) {
             switch selectedSettingsTab {
-            case .appearance, .service:
+            case .appearance, .advanced:
                 break
             case .provider:
                 await store.loadAIProviderStatusIfNeeded()
@@ -136,6 +139,20 @@ struct SettingsView: View {
             )
         ) { _ in
             selectedSettingsTab = .providerObservability
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: SettingsNavigation.providerRequested
+            )
+        ) { _ in
+            selectedSettingsTab = .provider
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: SettingsNavigation.advancedRequested
+            )
+        ) { _ in
+            selectedSettingsTab = .advanced
         }
         .transaction { transaction in
             if reduceMotion {
@@ -188,8 +205,8 @@ struct SettingsView: View {
             providerSection
         case .providerObservability:
             ProviderObservabilitySettingsPanel()
-        case .service:
-            serviceSection
+        case .advanced:
+            advancedSection
         }
     }
 
@@ -633,19 +650,75 @@ struct SettingsView: View {
         .padding(.top, 4)
     }
 
-    private var serviceSection: some View {
+    private var advancedSection: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 SettingsPageHeader(
-                    title: UIStrings.service,
+                    title: UIStrings.text("settings.advanced", "Advanced"),
                     systemImage: "wrench.and.screwdriver",
                     boundary: UIStrings.text(
-                        "settings.service.boundary",
-                        "Review local sidecar health and privacy-safe diagnostics. This page does not write configuration or call providers."
+                        "settings.advanced.boundary",
+                        "Inspect configuration, recovery history, and privacy-safe diagnostics. Nothing is changed until you preview and explicitly confirm an available guarded action."
                     ),
                     badge: UIStrings.text("settings.advanced", "Advanced"),
                     badgeSystemImage: "gearshape"
                 )
+
+                SettingsSectionCard(
+                    title: UIStrings.text(
+                        "settings.advanced.configuration.title",
+                        "Agent Configuration & Recovery"
+                    ),
+                    systemImage: "slider.horizontal.3"
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(
+                            UIStrings.text(
+                                "settings.advanced.configuration.summary",
+                                "Open the expert workspace for the selected Agent. Current documents and snapshot history remain redacted until explicitly revealed; save and rollback require a fresh typed preview."
+                            )
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                            SettingsMetadataRow(
+                                label: UIStrings.agent,
+                                value: store.agentFilter.title
+                            )
+                            SettingsMetadataRow(
+                                label: UIStrings.projectSelectedSource,
+                                value: store.activeProjectContext?.name
+                                    ?? UIStrings.text(
+                                        "settings.advanced.noProject",
+                                        "No project selected"
+                                    )
+                            )
+                        }
+
+                        HStack {
+                            Spacer()
+                            Button {
+                                store.openAdvancedConfiguration()
+                                _ = MainWindowCoordinator.restoreMainWindow()
+                            } label: {
+                                Label(
+                                    UIStrings.text(
+                                        "settings.advanced.configuration.open",
+                                        "Open Configuration Workspace"
+                                    ),
+                                    systemImage: "arrow.up.forward.app"
+                                )
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("settings.advanced.open-configuration")
+                        }
+                    }
+                }
+
+                Text(UIStrings.text("settings.advanced.service.title", "Service Diagnostics"))
+                    .font(.headline)
 
                 DetailMetricGrid(maxColumns: 3, minColumnWidth: 150) {
                     SummaryChip(title: UIStrings.version, value: store.status?.version ?? UIStrings.unknown, systemImage: "number")
@@ -663,7 +736,13 @@ struct SettingsView: View {
                     }
                     .padding(.top, 8)
                 } label: {
-                    Label(UIStrings.text("settings.serviceDiagnostics", "Service Diagnostics"), systemImage: "wrench.and.screwdriver")
+                    Label(
+                        UIStrings.text(
+                            "settings.advanced.service.details",
+                            "Show Privacy-Safe Service Details"
+                        ),
+                        systemImage: "wrench.and.screwdriver"
+                    )
                         .font(.headline)
                 }
                 .padding(12)

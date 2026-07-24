@@ -66,7 +66,7 @@ struct ContentView: View {
             ProjectOverviewActionPreviewSheet(
                 selection: selection,
                 onOpenTarget: {
-                    store.openProjectAttentionTarget(selection.item)
+                    openProjectAttentionTarget(selection.item)
                 }
             )
         }
@@ -148,24 +148,7 @@ struct ContentView: View {
         case .sessions:
             SessionsWorkspaceView()
         case .advanced:
-            HSplitView {
-                SecondarySidebarView(columnVisibility: columnVisibility)
-                    .frame(
-                        minWidth: CGFloat(
-                            UIOptimizationPresentation.skillList.minimumSecondaryColumnWidth
-                        ),
-                        idealWidth: CGFloat(
-                            UIOptimizationPresentation.skillList.idealSecondaryColumnWidth
-                        ),
-                        maxWidth: CGFloat(
-                            UIOptimizationPresentation.skillList.maximumSecondaryColumnWidth
-                        ),
-                        maxHeight: .infinity
-                    )
-
-                DetailView(skill: store.selectedSkill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            AdvancedWorkspaceView(columnVisibility: columnVisibility)
         }
     }
 
@@ -222,6 +205,17 @@ struct ContentView: View {
             globalSearchText = ""
             showsGlobalSearchResults = false
             isGlobalSearchFocused = false
+        }
+    }
+
+    private func openProjectAttentionTarget(_ item: AttentionItem) {
+        switch item.target.kind {
+        case "provider_profile":
+            SettingsNavigation.openProvider()
+        case "app_data":
+            SettingsNavigation.openProviderObservability()
+        default:
+            store.openProjectAttentionTarget(item)
         }
     }
 }

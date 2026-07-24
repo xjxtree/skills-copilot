@@ -119,6 +119,9 @@ struct SkillStoreTests {
         try await runCase("appSearchViewAllRoutesCanonicallyWithoutRPC") {
             try await appSearchViewAllRoutesCanonicallyWithoutRPC()
         }
+        try await runCase("advancedConfigurationRoutingUsesCacheWithoutRPC") {
+            try await advancedConfigurationRoutingUsesCacheWithoutRPC()
+        }
         try await runCase("agentConfigTimelineFollowsSelectedAgentFilterOnly") {
             try await agentConfigTimelineFollowsSelectedAgentFilterOnly()
         }

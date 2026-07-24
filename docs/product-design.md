@@ -139,6 +139,13 @@ Config, diagnostics, raw metadata, Agent Copilot provider settings and
 activity, and expert repair tools are grouped under Advanced or Settings. They
 must not compete with the three primary user jobs.
 
+Settings exposes one Advanced entry for configuration, recovery, and
+privacy-safe service diagnostics. Opening configuration switches the main
+window to the non-primary Advanced route for the currently selected Agent.
+Project attention targets route to their owning surface: config targets open
+Advanced configuration, provider-profile targets open Provider Settings, and
+app-data/provider-history targets open Provider Activity.
+
 ### Project Overview
 
 Project Overview is the default destination after a project is selected. It

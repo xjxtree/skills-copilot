@@ -17,6 +17,10 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   `Clear` action in its header. Clearing history does not implicitly clear the
   active project.
 - Primary navigation contains exactly Project Overview, Skills, and Sessions.
+- Settings uses a dedicated macOS scene. Its Advanced page is the discoverable
+  entry for Agent configuration, recovery history, and privacy-safe service
+  diagnostics; opening configuration activates the non-primary Advanced
+  workspace in the main window without an implicit read or scan.
 - Project Overview renders, in order, project/agent environment health, inline
   task readiness, a needs-attention action queue, and continue-work sessions.
   It covers empty-project, empty-snapshot, loading, ready, stale, partial,
@@ -31,6 +35,9 @@ meaning and acceptance criteria are defined in `docs/product-design.md`.
   terminal, and appears only when the service provides supported ordered argv.
 - Skill Package Manager actions are integrated into Skills. Task Preflight is
   presented as inline task readiness rather than a separate destination.
+- Overview attention targets open the smallest owning surface: config opens
+  Advanced configuration, provider profiles open Provider Settings, and
+  app-local provider history opens Provider Activity.
 - Skills presents Needs Attention, Project, Global, and All in that order.
   The list reads `SkillAggregateRecord` rows, labels aggregate and instance
   counts separately, and keeps same-name definitions separate when their
