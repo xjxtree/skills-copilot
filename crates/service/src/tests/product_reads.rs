@@ -253,6 +253,74 @@ fn scan_backed_aggregates_keep_plugin_and_compatibility_sources_distinct() {
 }
 
 #[test]
+fn product_skill_budget_isolated_per_agent() {
+    let (root, host, project_id, context_revision) = product_test_host("per-agent-budget");
+    let home = &host.adapter_ctx.user_home;
+    for index in 0..=MAX_PRODUCT_SKILLS {
+        write_skill(
+            &home
+                .join(".codex/skills")
+                .join(format!("codex-{index:04}"))
+                .join("SKILL.md"),
+            &format!("codex-{index:04}"),
+        );
+    }
+    for index in 0..10 {
+        write_skill(
+            &home
+                .join(".claude/skills")
+                .join(format!("claude-{index:04}"))
+                .join("SKILL.md"),
+            &format!("claude-{index:04}"),
+        );
+    }
+    scan_all(&host, &context_revision);
+
+    let codex = host.handle(ServiceRequest {
+        id: Some("codex-budget".to_string()),
+        method: "catalog.listSkillAggregates".to_string(),
+        params: json!({
+            "project_id": project_id,
+            "expected_project_context_revision": context_revision,
+            "agent": "codex",
+            "limit": 100
+        }),
+    });
+    assert!(codex.ok, "{:?}", codex.error);
+    let codex = codex.result.expect("codex result");
+    assert_eq!(
+        codex.pointer("/coverage/incomplete_reason"),
+        Some(&json!("safety_budget"))
+    );
+    assert_eq!(codex.pointer("/page/total_count"), Some(&Value::Null));
+
+    let claude = host.handle(ServiceRequest {
+        id: Some("claude-complete".to_string()),
+        method: "catalog.listSkillAggregates".to_string(),
+        params: json!({
+            "project_id": project_id,
+            "expected_project_context_revision": context_revision,
+            "agent": "claude-code",
+            "limit": 100
+        }),
+    });
+    assert!(claude.ok, "{:?}", claude.error);
+    let claude = claude.result.expect("claude result");
+    assert_eq!(
+        claude.pointer("/coverage/completeness"),
+        Some(&json!("enumerable"))
+    );
+    assert_eq!(claude.pointer("/page/total_count"), Some(&json!(10)));
+    assert!(claude["aggregates"]
+        .as_array()
+        .expect("claude aggregates")
+        .iter()
+        .all(|aggregate| aggregate["primary_effectiveness"] == json!("effective")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn product_source_revision_rejects_stale_config_and_cursor_inputs() {
     let (root, host, project_id, context_revision) = product_test_host("stale");
     let home = &host.adapter_ctx.user_home;

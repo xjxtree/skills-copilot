@@ -150,14 +150,18 @@ Task Readiness.
   previously accepted projection. It returns one validated
   `ProjectReadinessRecord`. Projection input has fixed local safety bounds;
   reaching one returns typed limited coverage instead of an invented complete
-  total.
+  total. The skill-instance bound is applied independently to each Agent, so a
+  large complete inventory for one Agent cannot make another Agent's accepted
+  inventory incomplete.
 - `catalog.listSkillAggregates` requires the same project and context binding.
   Optional `agent` filters aggregates that include one of the six project
   agents while preserving each aggregate's complete cross-agent instances.
   `limit` is clamped to 1 through 100. Optional `cursor` and
   `source_revision` bind keyset paging to the same project, agent filter, and
   accepted projection. The response contains `source_revision`, `coverage`,
-  `page` metadata, and `aggregates`.
+  `page` metadata, and `aggregates`. A complete opencode file-root scan remains
+  `source_limited` because runtime-owned built-in skills have no authorized
+  local source path and the read method never executes an Agent command.
 - `session.previewResume` revalidates the same bounded local session inventory
   used by startup prewarm. The request requires `authorized_roots`, one
   supported `agent`, `auto_discover`, `project_root`, `current_cwd`,

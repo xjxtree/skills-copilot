@@ -25,7 +25,7 @@ use crate::{
     ServiceHost,
 };
 
-const MAX_PRODUCT_SKILLS: usize = 500;
+pub(crate) const MAX_PRODUCT_SKILLS: usize = 500;
 const MAX_PRODUCT_FINDINGS: usize = 1_000;
 const MAX_PRODUCT_CONFLICTS: usize = 500;
 const DEFAULT_AGGREGATE_LIMIT: usize = 100;
@@ -408,10 +408,26 @@ impl ServiceHost {
             instances.sort_by(|left, right| left.id.cmp(&right.id));
             findings.sort_by(|left, right| left.id.cmp(&right.id));
             conflicts.sort_by(|left, right| left.id.cmp(&right.id));
-            let budget_limited = instances.len() > MAX_PRODUCT_SKILLS
-                || findings.len() > MAX_PRODUCT_FINDINGS
-                || conflicts.len() > MAX_PRODUCT_CONFLICTS;
-            instances.truncate(MAX_PRODUCT_SKILLS);
+            let mut skill_counts = HashMap::<AgentId, usize>::new();
+            for instance in &instances {
+                *skill_counts.entry(instance.agent).or_default() += 1;
+            }
+            let skill_budget_limited_agents = skill_counts
+                .into_iter()
+                .filter(|(_, count)| *count > MAX_PRODUCT_SKILLS)
+                .map(|(agent, _)| agent.as_str().to_string())
+                .collect::<BTreeSet<_>>();
+            let mut retained_skill_counts = HashMap::<AgentId, usize>::new();
+            instances.retain(|instance| {
+                let retained = retained_skill_counts.entry(instance.agent).or_default();
+                if *retained >= MAX_PRODUCT_SKILLS {
+                    return false;
+                }
+                *retained += 1;
+                true
+            });
+            let support_budget_limited =
+                findings.len() > MAX_PRODUCT_FINDINGS || conflicts.len() > MAX_PRODUCT_CONFLICTS;
             findings.truncate(MAX_PRODUCT_FINDINGS);
             conflicts.truncate(MAX_PRODUCT_CONFLICTS);
 
@@ -441,13 +457,15 @@ impl ServiceHost {
                 &findings,
                 &conflicts,
                 &config_revision,
-                budget_limited,
+                &skill_budget_limited_agents,
+                support_budget_limited,
             )?;
             let agent_sources = product_agent_sources(
                 &source_revision,
                 &scan_revision,
                 scan_coverages,
-                budget_limited,
+                &skill_budget_limited_agents,
+                support_budget_limited,
             );
             let coverage_by_agent = agent_sources
                 .iter()
@@ -472,7 +490,9 @@ impl ServiceHost {
                             && !metadata.catalog_scan_revision.is_empty()
                     });
                     let persisted_coverage = metadata.map(|metadata| metadata.coverage.clone());
-                    let coverage = if budget_limited {
+                    let coverage = if support_budget_limited
+                        || skill_budget_limited_agents.contains(instance.agent.as_str())
+                    {
                         SourceCoverage::incomplete(
                             persisted_coverage
                                 .as_ref()
@@ -574,7 +594,8 @@ fn product_agent_sources(
     source_revision: &str,
     scan_revision: &CatalogScanRevisionRecord,
     coverages: Vec<CatalogScanCoverageRecord>,
-    budget_limited: bool,
+    skill_budget_limited_agents: &BTreeSet<String>,
+    support_budget_limited: bool,
 ) -> Vec<AgentProjectionInput> {
     let by_agent = coverages
         .into_iter()
@@ -595,7 +616,9 @@ fn product_agent_sources(
             AgentProjectionInput {
                 agent,
                 source_revision: source_revision.to_string(),
-                coverage: if budget_limited {
+                coverage: if support_budget_limited
+                    || skill_budget_limited_agents.contains(agent.as_str())
+                {
                     SourceCoverage::incomplete(
                         coverage.inspected_sources,
                         coverage.expected_sources,
@@ -624,7 +647,8 @@ fn product_source_revision(
     findings: &[RuleFindingRecord],
     conflicts: &[ConflictGroupRecord],
     config_revision: &str,
-    budget_limited: bool,
+    skill_budget_limited_agents: &BTreeSet<String>,
+    support_budget_limited: bool,
 ) -> Result<String, ServiceError> {
     let value = json!({
         "project_id": accepted.id,
@@ -632,7 +656,8 @@ fn product_source_revision(
         "catalog_scan_generation": scan_revision.generation,
         "catalog_scan_revision": scan_revision.revision,
         "skill_config_revision": config_revision,
-        "budget_limited": budget_limited,
+        "skill_budget_limited_agents": skill_budget_limited_agents,
+        "support_budget_limited": support_budget_limited,
         "coverages": coverages.iter().map(|record| json!({
             "agent": record.agent.as_str(),
             "context_revision": record.context_revision,

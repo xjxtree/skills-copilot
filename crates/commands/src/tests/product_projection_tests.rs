@@ -3,8 +3,8 @@ use skills_copilot_catalog::{ConflictGroupRecord, RuleFindingRecord};
 use skills_copilot_core::{
     ActionDescriptor, ActionImpact, ActionIntent, ActionKind, ActionNetworkPosture,
     ActionReadbackDomain, ActionTargetKind, ActionTargetRef, AttentionKind, EnvironmentHealthState,
-    ListIncompleteReason, ResumeCapability, ResumeUnsupportedReason, SkillEffectivenessState,
-    SourceCoverage,
+    ListIncompleteReason, ListSourceCompleteness, ResumeCapability, ResumeUnsupportedReason,
+    SkillEffectivenessState, SourceCoverage,
 };
 
 const REVISION: &str = "revision:v1";
@@ -375,6 +375,32 @@ fn optional_missing_roots_do_not_degrade_scan_coverage_but_missing_scan_evidence
         Some(ListIncompleteReason::NotInspected)
     );
     assert!(!openclaw.blocking_reasons.is_empty());
+}
+
+#[test]
+fn opencode_file_scan_does_not_claim_complete_runtime_inventory() {
+    let report = AgentCatalogScanReport {
+        agent: AgentId::Opencode,
+        display_name: "opencode",
+        scanned_count: 1,
+        roots_considered: vec![PathBuf::from("/observed")],
+        scanned_roots: vec![PathBuf::from("/observed")],
+        partial_roots: Vec::new(),
+        skipped_roots: Vec::new(),
+        issues: Vec::new(),
+        root_aliases: Vec::new(),
+        product_projections: Vec::new(),
+        budget_exhausted: false,
+    };
+
+    let coverage = source_coverage_from_scan_report(&report);
+    assert_eq!(coverage.completeness, ListSourceCompleteness::Limited);
+    assert_eq!(
+        coverage.incomplete_reason,
+        Some(ListIncompleteReason::SourceLimited)
+    );
+    assert_eq!(coverage.inspected_sources, 1);
+    assert_eq!(coverage.expected_sources, None);
 }
 
 #[test]

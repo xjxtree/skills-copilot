@@ -1050,10 +1050,10 @@ struct SkillStoreTests {
         let runner = CatalogRefreshServiceRunner()
 
         let store = SkillStore(service: runner.serviceClient())
-        await store.scanAll()
+        await store.refreshProductWorkspaces()
 
-        try expectFalse(store.isScanning, "Scan should reset scanning state.")
-        try expectNil(store.errorMessage, "Generic scan should not set an error on success.")
+        try expectFalse(store.isScanning, "Explicit product refresh should reset scanning state.")
+        try expectNil(store.errorMessage, "Explicit product refresh should not set an error on success.")
         try expectEqual(store.skills.count, 3, "Generic scan should refresh the catalog collections.")
         try expectEqual(store.skills.first { $0.id == "gamma" }?.agent, "codex", "Scan fixtures should exercise a Codex skill record.")
         try expectContains(store.refreshStatusMessage, "completed-partial", "A partial scan must remain visible in the primary refresh status.")

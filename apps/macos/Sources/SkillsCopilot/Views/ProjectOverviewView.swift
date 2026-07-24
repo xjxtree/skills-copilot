@@ -330,7 +330,7 @@ struct ProjectOverviewView: View {
 
     private func refreshReadiness() {
         Task {
-            await appContextStore.refreshProjectReadiness()
+            await skillStore.refreshProductWorkspaces()
         }
     }
 }

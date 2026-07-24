@@ -171,14 +171,17 @@ extension SkillStore {
     }
 
     var taskCockpitAgentOptions: [TaskCockpitAgentOption] {
-        SkillAgentFilter.managementCases.map { filter in
+        let verifiedCounts: [String: Int] = appContextStore.hasCurrentProjectReadiness
+            ? Dictionary(
+                uniqueKeysWithValues: (appContextStore.visibleProjectReadiness?.agents ?? [])
+                    .map { ($0.agent.rawValue, $0.effectiveSkillCount) }
+            )
+            : [:]
+        return SkillAgentFilter.managementCases.map { filter in
             TaskCockpitAgentOption(
                 id: filter.rawValue,
                 title: DisplayText.agent(filter.rawValue),
-                enabledSkillCount: skills.filter { skill in
-                    skill.agent == filter.rawValue
-                        && DisplayText.statusKind(skill.state, enabled: skill.enabled) == .enabled
-                }.count
+                effectiveSkillCount: verifiedCounts[filter.rawValue] ?? 0
             )
         }
     }

@@ -580,11 +580,11 @@ final class SkillStore: ObservableObject {
         selectLocalSession(session, origin: .navigation)
     }
 
-    /// Explicitly refreshes only the new product read domains. The legacy
-    /// catalog/config/session caches remain independently owned during
-    /// migration.
+    /// An explicit product refresh accepts a new catalog scan before deriving
+    /// readiness and aggregate projections. Cached route changes continue to
+    /// use `loadProductWorkspaceProjections` without scanning.
     func refreshProductWorkspaces() async {
-        await loadProductWorkspaceProjections(force: true)
+        await scanAll()
     }
 
     private func bindWorkspaceStores() {

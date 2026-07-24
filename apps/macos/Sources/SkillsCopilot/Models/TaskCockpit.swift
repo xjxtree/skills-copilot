@@ -267,12 +267,12 @@ enum TaskCockpitAgentScope {
 struct TaskCockpitAgentOption: Identifiable, Hashable {
     let id: String
     let title: String
-    let enabledSkillCount: Int
+    let effectiveSkillCount: Int
 
     var subtitle: String {
         String(
             format: UIStrings.text("taskCockpit.agentScope.skillCount", "%d active skills"),
-            enabledSkillCount
+            effectiveSkillCount
         )
     }
 }

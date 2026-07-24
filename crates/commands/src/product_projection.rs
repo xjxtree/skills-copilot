@@ -247,6 +247,13 @@ pub fn source_coverage_from_scan_report(report: &AgentCatalogScanReport) -> Sour
         };
         return SourceCoverage::incomplete(inspected, Some(expected), reason);
     }
+    // OpenCode can add runtime-owned built-in skills that have no authorized
+    // local source path. The app deliberately does not execute
+    // `opencode debug skill` as a product data source, so a complete file-root
+    // scan cannot claim an exact runtime total.
+    if report.agent == AgentId::Opencode {
+        return SourceCoverage::incomplete(inspected, None, ListIncompleteReason::SourceLimited);
+    }
     SourceCoverage::enumerable(inspected, Some(expected))
 }
 
