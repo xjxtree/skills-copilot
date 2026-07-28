@@ -96,6 +96,11 @@ struct UIOptimizationModelTests {
             260,
             "Compact layouts should not compress the primary navigation cards."
         )
+        try expectEqual(
+            UIOptimizationPresentation.sidebarShell.navigationCardHorizontalInset,
+            -8,
+            "Primary navigation cards should offset the source-list inset instead of leaving oversized outer margins."
+        )
     }
 
     private func secondarySidebarListsUseGlobalTreatment() throws {

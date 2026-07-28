@@ -20,6 +20,8 @@ This file captures the current native UI and runtime-validation contract.
 - At widths below the regular three-column breakpoint, keep primary navigation
   at its standard readable width and keep a usable selected-list width visible
   while presenting detail as a dismissible overlay.
+- Primary navigation cards keep compact outer horizontal insets while preserving
+  their internal icon and text spacing.
 - Long-form detail content uses a bounded readable width; zero-state metrics
   collapse instead of reserving full metric cards.
 - Retired surfaces should not reappear without an explicitly scoped change.

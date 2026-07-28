@@ -89,6 +89,7 @@ struct ListPagePresentation: Equatable {
 struct SidebarShellPresentation: Equatable {
     let width = 260
     let compactWidth = 260
+    let navigationCardHorizontalInset = -8
     let footerTopSpacing = 10
 }
 

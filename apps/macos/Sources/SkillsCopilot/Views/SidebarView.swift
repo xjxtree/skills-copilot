@@ -1076,7 +1076,14 @@ private struct SidebarNavigationCardButton: View {
             "Open this workspace."
         ))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+        .listRowInsets(
+            EdgeInsets(
+                top: 4,
+                leading: CGFloat(UIOptimizationPresentation.sidebarShell.navigationCardHorizontalInset),
+                bottom: 4,
+                trailing: CGFloat(UIOptimizationPresentation.sidebarShell.navigationCardHorizontalInset)
+            )
+        )
         .listRowSeparator(.hidden)
     }
 
