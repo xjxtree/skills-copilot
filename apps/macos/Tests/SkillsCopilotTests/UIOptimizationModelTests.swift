@@ -88,8 +88,13 @@ struct UIOptimizationModelTests {
         )
         try expectEqual(
             UIOptimizationPresentation.sidebarShell.width,
-            240,
-            "The primary sidebar should preserve navigation context without forcing a wide minimum window."
+            260,
+            "The primary sidebar should retain the spacious navigation width."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.sidebarShell.compactWidth,
+            260,
+            "Compact layouts should not compress the primary navigation cards."
         )
     }
 

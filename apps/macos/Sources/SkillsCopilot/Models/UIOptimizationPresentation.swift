@@ -87,8 +87,8 @@ struct ListPagePresentation: Equatable {
 }
 
 struct SidebarShellPresentation: Equatable {
-    let width = 240
-    let compactWidth = 220
+    let width = 260
+    let compactWidth = 260
     let footerTopSpacing = 10
 }
 
