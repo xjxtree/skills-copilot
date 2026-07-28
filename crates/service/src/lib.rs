@@ -1586,6 +1586,9 @@ impl ServiceError {
             Self::Command(skills_copilot_commands::CommandError::StalePreviewToken) => {
                 "stale_preview_token"
             }
+            Self::Command(
+                skills_copilot_commands::CommandError::SkillManagerRemovalIncomplete(_),
+            ) => "skill_manager_removal_incomplete",
             Self::Command(_) => "command_error",
             Self::Provider(_) => "provider_error",
             Self::Json(_) => "json_error",

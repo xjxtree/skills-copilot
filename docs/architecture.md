@@ -142,6 +142,14 @@ layouts. Plugin caches and other read-only discovery roots remain outside
 package operations. Skill Manager loading, search, inventory, and preview use
 surface-local busy state and do not block unrelated app actions; only a
 confirmed Skill Manager write participates in the app-wide mutation gate.
+For a shared `.agents/skills` source, the inventory combines the manager row
+with every currently enabled supported Agent consumer found by the catalog and
+retains exact active/disabled instance identities for verification. Removing a
+proper subset is a guarded per-Agent config detach, which preserves the shared
+source and manager lock for other consumers. Removing all linked Agents is an
+explicit complete uninstall: the external manager receives no `--agent`
+restriction, then catalog and manager inventory are both read back before the
+write is reported as successful.
 
 ## Extension Points
 

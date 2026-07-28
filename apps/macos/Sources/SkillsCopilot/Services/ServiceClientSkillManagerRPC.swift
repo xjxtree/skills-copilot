@@ -75,23 +75,40 @@ extension ServiceClient {
         )
     }
 
-    func previewSkillManagerRemove(skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
+    func previewSkillManagerRemove(
+        skill: String,
+        agents: [String],
+        instanceIDs: [String],
+        scope: SkillManagerScope,
+        fullUninstall: Bool
+    ) async throws -> SkillManagerMutationRecord {
         try await skillManagerRemove(
             method: "skillManager.previewRemove",
             skill: skill,
             agents: agents,
+            instanceIDs: instanceIDs,
             scope: scope,
+            fullUninstall: fullUninstall,
             confirmed: false,
             previewToken: nil
         )
     }
 
-    func applySkillManagerRemove(preview: SkillManagerMutationRecord, skill: String, agents: [String], scope: SkillManagerScope) async throws -> SkillManagerMutationRecord {
+    func applySkillManagerRemove(
+        preview: SkillManagerMutationRecord,
+        skill: String,
+        agents: [String],
+        instanceIDs: [String],
+        scope: SkillManagerScope,
+        fullUninstall: Bool
+    ) async throws -> SkillManagerMutationRecord {
         try await skillManagerRemove(
             method: "skillManager.applyRemove",
             skill: skill,
             agents: agents,
+            instanceIDs: instanceIDs,
             scope: scope,
+            fullUninstall: fullUninstall,
             confirmed: true,
             previewToken: preview.preview.previewToken
         )
@@ -257,7 +274,9 @@ extension ServiceClient {
         method: String,
         skill: String,
         agents: [String],
+        instanceIDs: [String],
         scope: SkillManagerScope,
+        fullUninstall: Bool,
         confirmed: Bool,
         previewToken: String?
     ) async throws -> SkillManagerMutationRecord {
@@ -266,7 +285,9 @@ extension ServiceClient {
             params: SkillManagerRemoveParams(
                 skill: skill,
                 agents: agents,
+                instanceIDs: instanceIDs,
                 scope: scope.rawValue,
+                fullUninstall: fullUninstall,
                 confirmed: confirmed,
                 previewToken: previewToken
             ),

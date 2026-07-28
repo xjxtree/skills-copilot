@@ -1455,8 +1455,10 @@ final class SkillStore: ObservableObject {
     func previewSkillManagerRemove(
         skillName: String? = nil,
         agents explicitAgents: [String]? = nil,
+        instanceIDs: [String] = [],
         scope explicitScope: SkillManagerScope? = nil,
-        cleanupLocalInstanceID: String? = nil
+        cleanupLocalInstanceID: String? = nil,
+        fullUninstall: Bool = false
     ) async {
         if let skillName {
             skillManagerRemoveSkillName = skillName
@@ -1481,13 +1483,17 @@ final class SkillStore: ObservableObject {
             scope: scope,
             distribution: nil,
             networkAllowed: false,
-            cleanupLocalInstanceID: cleanupLocalInstanceID
+            cleanupLocalInstanceID: cleanupLocalInstanceID,
+            removalInstanceIDs: instanceIDs,
+            fullUninstall: fullUninstall
         )
         await previewSkillManagerMutation(inputs: inputs) { [service] in
             try await service.previewSkillManagerRemove(
                 skill: inputs.skills.first ?? "",
                 agents: inputs.agents,
-                scope: inputs.scope
+                instanceIDs: inputs.removalInstanceIDs,
+                scope: inputs.scope,
+                fullUninstall: inputs.fullUninstall
             )
         }
     }
@@ -1810,7 +1816,9 @@ final class SkillStore: ObservableObject {
                         preview: confirmation.result,
                         skill: skill,
                         agents: confirmation.inputs.agents,
-                        scope: confirmation.inputs.scope
+                        instanceIDs: confirmation.inputs.removalInstanceIDs,
+                        scope: confirmation.inputs.scope,
+                        fullUninstall: confirmation.inputs.fullUninstall
                     )
                     if let instanceID = confirmation.inputs.cleanupLocalInstanceID {
                         let cleanupPreview = try await service.previewSkillManagerLocalDelete(instanceID: instanceID)
@@ -3999,6 +4007,9 @@ final class SkillStore: ObservableObject {
         batchTogglePreview = nil
         updateAuthorizedFileWatcher(with: snapshot.watchPlan)
         normalizeSelectionToVisibleSkills()
+        if !appSearchQuery.isEmpty {
+            await performAppSearch(query: appSearchQuery)
+        }
     }
 
     private func unknownCatalogCompleteness(loadedCount: Int) -> ListCompletenessState {

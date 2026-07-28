@@ -586,12 +586,29 @@ struct SkillManagerPanel: View {
         case .remove:
             if case .inventory(let item) = selection {
                 agentPicker(available: item.agents)
-                Text(UIStrings.text(
-                    "skillManager.remove.sourceRule",
-                    "Removing every linked agent lets the manager remove its unreferenced source package; a partial removal deletes only those links."
-                ))
+                Text(isCompleteUninstall(selection)
+                    ? UIStrings.text(
+                        "skillManager.remove.completeRule",
+                        "All linked agents are selected. Complete uninstall removes every target recognized by the external manager and deletes its canonical source."
+                    )
+                    : UIStrings.text(
+                        "skillManager.remove.partialRule",
+                        "Partial removal keeps the shared files for other agents and adds rollback-safe exclusions so only the selected agents stop loading this skill."
+                    ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                let missingTargets = selection.missingDetachTargets(for: selectedActionAgents)
+                if !isCompleteUninstall(selection), !missingTargets.isEmpty {
+                    Text(String(
+                        format: UIStrings.text(
+                            "skillManager.remove.partialBlocked",
+                            "Selected-Agent detach is unavailable for: %@. Refresh the inventory or use complete uninstall."
+                        ),
+                        missingTargets.map(DisplayText.agent).joined(separator: ", ")
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             }
         case .update:
             if case .inventory(let item) = selection {
@@ -684,21 +701,32 @@ struct SkillManagerPanel: View {
         case .remove:
             Button(role: .destructive) {
                 Task {
-                    let removesEveryAgent = Set(selectedActionAgents) == Set(selection.agents)
-                    let cleanupLocalInstanceID = selection.localOwnership == .appOwned && removesEveryAgent
+                    let fullUninstall = isCompleteUninstall(selection)
+                    let cleanupLocalInstanceID = selection.localOwnership == .appOwned && fullUninstall
                         ? selection.localInstanceID
                         : nil
+                    let instanceIDs = fullUninstall
+                        ? selection.allInstanceIDs
+                        : selection.instanceIDs(for: selectedActionAgents)
                     await store.previewSkillManagerRemove(
                         skillName: selection.name,
                         agents: selectedActionAgents,
+                        instanceIDs: instanceIDs,
                         scope: selection.scope,
-                        cleanupLocalInstanceID: cleanupLocalInstanceID
+                        cleanupLocalInstanceID: cleanupLocalInstanceID,
+                        fullUninstall: fullUninstall
                     )
                 }
             } label: {
                 Label(UIStrings.text("skillManager.previewRemove", "Preview Remove"), systemImage: "minus.circle")
             }
-            .disabled(selectedActionAgents.isEmpty || externalMutationDisabled || skillManagerStore.isPreviewingSkillManagerMutation)
+            .disabled(
+                selectedActionAgents.isEmpty
+                    || (isCompleteUninstall(selection) && externalMutationDisabled)
+                    || (!isCompleteUninstall(selection)
+                        && !selection.missingDetachTargets(for: selectedActionAgents).isEmpty)
+                    || skillManagerStore.isPreviewingSkillManagerMutation
+            )
         case .update:
             if selection.isLocal {
                 Button {
@@ -737,7 +765,21 @@ struct SkillManagerPanel: View {
     private var previewSection: some View {
         if let confirmation = skillManagerStore.skillManagerMutationConfirmation {
             previewCard(title: confirmation.result.preview.localizedSummary) {
-                commandPreview(confirmation.result.preview)
+                commandPreview(
+                    confirmation.result.preview,
+                    removalPlan: confirmation.result.removalPlan
+                )
+                if let plan = confirmation.result.removalPlan {
+                    MetadataLine(
+                        label: UIStrings.text("skillManager.remove.mode", "Removal mode"),
+                        value: plan.fullUninstall
+                            ? UIStrings.text("skillManager.remove.mode.complete", "Complete uninstall")
+                            : UIStrings.text("skillManager.remove.mode.partial", "Selected-agent detach")
+                    )
+                    Text(plan.localizedVerification)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let output = confirmation.result.output { commandOutput(output) }
                 Button(applyTitle(for: confirmation.inputs.kind)) {
                     pendingConfirmation = .mutation(confirmation)
@@ -813,8 +855,12 @@ struct SkillManagerPanel: View {
         .nativePanelSurface()
     }
 
-    private func commandPreview(_ preview: SkillManagerCommandPreview) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func commandPreview(
+        _ preview: SkillManagerCommandPreview,
+        removalPlan: SkillManagerRemovalPlan?
+    ) -> some View {
+        let risks = removalPlan.map { [$0.localizedRisk] } ?? preview.risks
+        return VStack(alignment: .leading, spacing: 8) {
             Text(preview.displayCommand)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
@@ -822,9 +868,9 @@ struct SkillManagerPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
             MetadataLine(label: "CWD", value: preview.cwd)
-            if !preview.risks.isEmpty {
+            if !risks.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(preview.risks, id: \.self) { risk in
+                    ForEach(risks, id: \.self) { risk in
                         Label(risk, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -870,6 +916,10 @@ struct SkillManagerPanel: View {
 
     private var selectedActionAgents: [String] {
         SkillManagerAgent.defaultTargets.map(\.rawValue).filter(actionAgentIDs.contains)
+    }
+
+    private func isCompleteUninstall(_ selection: SkillManagerSelection) -> Bool {
+        selection.isCompleteRemovalSelection(selectedActionAgents)
     }
 
     private var canSearch: Bool {
@@ -997,7 +1047,7 @@ struct SkillManagerPanel: View {
                 ? nil
                 : UIStrings.text(
                     "skillManager.toolUnavailable.message",
-                    "The external manager is unavailable. Install Node/npm or set SKILLS_COPILOT_NPX_PATH, then load data again."
+                    "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent detach remains available."
                 )
         }
         let status = tool.status.lowercased()
@@ -1006,7 +1056,7 @@ struct SkillManagerPanel: View {
         }
         return UIStrings.text(
             "skillManager.toolUnavailable.message",
-            "The external manager is unavailable. Install Node/npm or set SKILLS_COPILOT_NPX_PATH, then load data again."
+            "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent detach remains available."
         )
     }
 }
@@ -1063,6 +1113,26 @@ private enum SkillManagerSelection: Hashable {
     var localOwnership: SkillManagerInventoryItem.LocalOwnership? {
         if case .inventory(let value) = self { return value.localOwnership }
         return nil
+    }
+
+    var allInstanceIDs: [String] {
+        if case .inventory(let value) = self { return value.allInstanceIDs }
+        return []
+    }
+
+    func instanceIDs(for agents: [String]) -> [String] {
+        if case .inventory(let value) = self { return value.instanceIDs(for: agents) }
+        return []
+    }
+
+    func isCompleteRemovalSelection(_ agents: [String]) -> Bool {
+        if case .inventory(let value) = self { return value.isCompleteRemovalSelection(agents) }
+        return false
+    }
+
+    func missingDetachTargets(for agents: [String]) -> [String] {
+        if case .inventory(let value) = self { return value.missingDetachTargets(for: agents) }
+        return agents
     }
 }
 
@@ -1131,11 +1201,14 @@ private enum SkillManagerWriteConfirmation {
     var message: String {
         switch self {
         case .mutation(let value):
-            let targets = value.inputs.kind == .update
-                ? value.inputs.agents.map(DisplayText.agent).joined(separator: ", ")
+            let targets = value.result.removalPlan?.fullUninstall == true
+                ? UIStrings.text(
+                    "skillManager.confirm.targets.managerAll",
+                    "Every target recognized by the external manager"
+                )
                 : value.inputs.agents.map(DisplayText.agent).joined(separator: ", ")
             var sections = [
-                value.result.preview.summary,
+                value.result.preview.localizedSummary,
                 "\(UIStrings.text("metadata.skill", "Skill")): \(value.inputs.skills.joined(separator: ", "))",
                 "\(UIStrings.scope): \(value.inputs.scope.title)",
                 "\(UIStrings.text("skillManager.confirm.targets", "Affected agents")): \(targets)",
@@ -1146,6 +1219,18 @@ private enum SkillManagerWriteConfirmation {
                     "skillManager.confirm.fullUninstall",
                     "After every selected agent link is removed, the app-owned local source and its catalog record will also be deleted if the service confirms there are no remaining references."
                 ))
+            }
+            if let plan = value.result.removalPlan {
+                sections.append(plan.fullUninstall
+                    ? UIStrings.text(
+                        "skillManager.confirm.completeUninstall",
+                        "Complete uninstall also targets manager-recognized agents outside this app and deletes the canonical source."
+                    )
+                    : UIStrings.text(
+                        "skillManager.confirm.partialDetach",
+                        "The shared source is preserved. Only selected agents receive verified config exclusions, with snapshots available for rollback."
+                    ))
+                sections.append(plan.localizedVerification)
             }
             return sections.joined(separator: "\n\n")
         case .localDelete(let value):

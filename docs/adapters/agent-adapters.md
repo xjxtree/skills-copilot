@@ -137,9 +137,12 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   not label its count as complete or make a hidden follow-up network request.
   Installed JSON is read once per project/global scope and merged with the
   app-owned local library. The CLI row is authoritative for an installed
-  package; its redacted source path associates matching catalog instances and
-  consumes them, so the same `.agents/skills` source is never rendered once as
-  manager-owned and again as local. Catalog fallback is limited to guarded
+  package; its redacted source path associates matching catalog instances,
+  consumes them, and unions their current supported-Agent consumers into the
+  affected target list. This ensures removal includes Agents that load a
+  shared `.agents/skills` source directly even when the CLI list omits them,
+  while the same source is never rendered once as manager-owned and again as
+  local. Catalog fallback is limited to guarded
   skill sources beneath the selected `.agents/skills` root, including nested
   package layouts; plugin caches and other read-only discovery roots are not
   package-manager inventory. Machine JSON is parsed in
@@ -151,16 +154,23 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   so the Node CLI cannot drop bytes at the 64 KiB pipe-buffer boundary; the
   capture is bounded and removed on every return path.
   An installed local source outside the selected guarded `.agents/skills` root
-  remains visible as external local and may be unlinked, but cannot be replaced
-  from ZIP by the app.
+  remains visible as external local and may use selected-Agent detach or
+  complete uninstall, but cannot be replaced from ZIP by the app.
   Do not add page flags or alter the manager command shape without a parsed
   token fixture that proves the external manager contract.
 - Install uses the manager symlink flow; the native UI does not offer copy
   distribution.
-- Skill removal uses manager-backed agent link removal for the targets selected
-  after the skill is selected. Removing every linked target allows the manager
-  to remove an unreferenced canonical source; a partial removal removes only
-  those links. The panel does not expose agent-layer enable/disable controls.
+- Skill removal distinguishes selected-Agent detach from complete uninstall.
+  A proper subset is detached with the adapter's verified config exclusion
+  path, exact catalog instance IDs, snapshots, read-back verification, and
+  rollback support. This preserves the shared source, unselected Agents, and
+  manager lock metadata; it does not invoke the external CLI's unsafe partial
+  remove behavior.
+- Selecting every linked Agent requests complete uninstall. The external
+  manager command omits `--agent`, which targets every Agent recognized by that
+  manager rather than only the six adapters displayed by this app. The service
+  refreshes both catalog and manager inventory and reports an incomplete
+  removal instead of success if the package remains.
 - Manager update operates on the shared package source and does not accept
   per-agent targeting. The confirmation shows all currently linked supported
   agents affected by that source update.
@@ -174,9 +184,10 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 - Local ZIP import rejects a name already present in the app-owned library or
   an installed shared `.agents/skills` source. The existing package must use its
   update flow instead of creating an ambiguous second package row.
-- Agent enable/disable remains in `config.toggleSkill`,
-  `batch.previewSkillToggles`, and `batch.applySkillToggles` outside the Skill
-  Manager surface; package manager state and agent config state are separate.
+- Generic Agent enable/disable remains in `config.toggleSkill`,
+  `batch.previewSkillToggles`, and `batch.applySkillToggles`. Skill Manager
+  reuses the same guarded config transaction only for a selected-Agent detach,
+  because shared `.agents/skills` consumers have no separable package path.
 - ChatGPT's Plugin Directory is also separate from Skill Manager. Only enabled,
   installed, manifest-declared plugin skills participate in current projections;
   arbitrary plugin cache content and Deleted cache noise remain excluded;

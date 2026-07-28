@@ -69,6 +69,9 @@ struct SkillStoreTests {
         try await runCase("sessionCriteriaChangesAndGlobalSearchUseNoRPC") {
             try await sessionCriteriaChangesAndGlobalSearchUseNoRPC()
         }
+        try await runCase("collectionRefreshRebuildsActiveGlobalSearch") {
+            try await collectionRefreshRebuildsActiveGlobalSearch()
+        }
         try await runCase("failedSummaryAndDetailKeepSummaryStateIsolated") {
             try await failedSummaryAndDetailKeepSummaryStateIsolated()
         }
@@ -609,35 +612,6 @@ struct SkillStoreTests {
         try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), 2, "Re-selecting a cached detail should not issue another RPC.")
 
         try await staleDetailGenerationCannotMutatePublishedState()
-    }
-
-    private func sessionCriteriaChangesAndGlobalSearchUseNoRPC() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "sessions-mixed")
-
-        let store = SkillStore(service: fake.serviceClient())
-        store.sidebarContentMode = .sessions
-        await store.refreshSelectedAgentLocalSessionsIfNeeded()
-        let initialCalls = countMethodCalls("session.previewLocalSessions", in: fake.calls())
-        for index in 0..<20 {
-            store.localSessionScopeFilter = index.isMultiple(of: 2) ? .all : .project
-            store.localSessionSortOrder = index.isMultiple(of: 3) ? .title : .recent
-            store.localSessionSortDirection = index.isMultiple(of: 2) ? .ascending : .descending
-            store.localSessionSearchText = index.isMultiple(of: 4) ? "Analyze" : ""
-        }
-        store.searchText = "no-such-skill"
-        try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), initialCalls, "Twenty criteria and skill-filter changes should issue no session RPCs.")
-        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 3, "Skill criteria should not clear session summaries.")
-
-        store.updateAppSearch(query: "Analyze")
-        try await waitUntil("Global search should read the summary index.") {
-            store.appSearchResult.items.contains { $0.targetID == "session-alpha" }
-        }
-        let calls = fake.calls()
-        try expectEqual(countMethodCalls("session.previewLocalSessions", in: calls), initialCalls, "Global search should not request session data.")
-        try expectFalse(calls.contains("app.search"), "Global search should not call the service search method.")
-        try expectFalse(store.appSearchResult.items.contains { !($0.session?.contentItems.isEmpty ?? true) }, "Global search should expose summary-only session records.")
     }
 
     private func failedSummaryAndDetailKeepSummaryStateIsolated() async throws {
@@ -3996,7 +3970,7 @@ struct SkillStoreTests {
         haystack.components(separatedBy: needle).count - 1
     }
 
-    private func countMethodCalls(_ method: String, in calls: String) -> Int {
+    func countMethodCalls(_ method: String, in calls: String) -> Int {
         countOccurrences("\"method\":\"\(method)\"", in: calls)
     }
 

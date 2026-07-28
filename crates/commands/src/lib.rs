@@ -17,17 +17,16 @@ use skills_copilot_adapters::{
 };
 use skills_copilot_ai_core::{evaluate_mvp_rules, Finding, RuleContext, RuleReport, Severity};
 use skills_copilot_catalog::{
-    Catalog, CatalogError, ConfigSnapshotDraft, ConfigSnapshotRecord, ConflictGroupDraft,
-    ConflictGroupRecord, FindingTriageRecord, RuleFindingDraft, RuleFindingRecord,
-    RuleTuningRecord, SkillDefinitionDraft, SkillDetailRecord, SkillEventDraft, SkillEventRecord,
-    SkillInstanceMeta, SkillRecord,
+    Catalog, ConfigSnapshotDraft, ConfigSnapshotRecord, ConflictGroupDraft, ConflictGroupRecord,
+    FindingTriageRecord, RuleFindingDraft, RuleFindingRecord, RuleTuningRecord,
+    SkillDefinitionDraft, SkillDetailRecord, SkillEventDraft, SkillEventRecord, SkillInstanceMeta,
+    SkillRecord,
 };
 use skills_copilot_core::{
     AdapterContext, AgentAdapter, AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess,
     PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
-use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport, ScannerError};
-use thiserror::Error;
+use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport};
 
 #[cfg(test)]
 use skills_copilot_core::SkillScript;
@@ -35,6 +34,7 @@ use skills_copilot_core::SkillScript;
 mod analysis;
 mod config_consistency;
 mod config_support;
+mod error;
 mod history;
 mod local_skill_import;
 mod script_execution;
@@ -65,6 +65,7 @@ use snapshot_redaction::{REDACTED_SNAPSHOT_PREFIX, REDACTED_VALUE};
 
 pub use analysis::*;
 pub use config_support::read_agent_config;
+pub use error::CommandError;
 pub use history::*;
 pub(crate) use local_skill_import::{
     register_tool_global_staged_skill, tool_global_skill_name_from_content,
@@ -75,64 +76,6 @@ pub use watch_plan::*;
 
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-#[derive(Debug, Error)]
-pub enum CommandError {
-    #[error("scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-    #[error("catalog error: {0}")]
-    Catalog(#[from] CatalogError),
-    #[error("io error: {0}")]
-    Io(#[from] io::Error),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("adapter error: {0}")]
-    Adapter(String),
-    #[error("skill instance not found: {0}")]
-    InstanceNotFound(String),
-    #[error("finding not found for triage key: {0}")]
-    FindingNotFound(String),
-    #[error("config snapshot not found: {0}")]
-    SnapshotNotFound(String),
-    #[error("scope not supported for toggle: {0:?}")]
-    UnsupportedScope(Scope),
-    #[error("config write verification failed; rolled back")]
-    VerificationFailed,
-    #[error("config changed since it was read (expected {expected}, actual {actual})")]
-    ConfigConflict { expected: String, actual: String },
-    #[error("snapshot rollback preview is stale; preview again before confirming")]
-    StalePreviewToken,
-    #[error("invalid json config: {0}")]
-    InvalidJson(String),
-    #[error("unsafe config path: {0}")]
-    UnsafeConfigPath(String),
-    #[error("invalid skill bundle: {0}")]
-    InvalidSkillBundle(String),
-    #[error("invalid skill source: {0}")]
-    InvalidSkillSource(String),
-    #[error("invalid import source: {0}")]
-    InvalidImportSource(String),
-    #[error("unsupported import source: {0}")]
-    UnsupportedImportSource(String),
-    #[error("install is not supported: {0}")]
-    InstallUnsupported(String),
-    #[error("invalid script execution request: {0}")]
-    InvalidScriptExecutionRequest(String),
-    #[error("invalid finding triage status: {0}")]
-    InvalidFindingTriageStatus(String),
-    #[error("invalid rule severity override: {0}")]
-    InvalidRuleSeverityOverride(String),
-    #[error("invalid rule tuning request: {0}")]
-    InvalidRuleTuningRequest(String),
-    #[error("invalid batch action: {0}")]
-    InvalidBatchAction(String),
-    #[error("skill manager unavailable: {0}")]
-    SkillManagerUnavailable(String),
-    #[error("invalid skill manager request: {0}")]
-    InvalidSkillManagerRequest(String),
-    #[error("skill manager command failed: {0}")]
-    SkillManagerCommandFailed(String),
 }
 
 pub fn scan_claude_to_catalog(

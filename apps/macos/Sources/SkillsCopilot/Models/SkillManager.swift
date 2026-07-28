@@ -395,12 +395,62 @@ struct SkillManagerInventoryItem: Identifiable, Hashable {
     let localOwnership: LocalOwnership?
     let localInstanceID: String?
     let localPath: String?
+    let agentTargets: [SkillManagerInventoryAgentTarget]
+    let allInstanceIDs: [String]
+
+    init(
+        name: String,
+        source: String?,
+        scope: SkillManagerScope,
+        agents: [String],
+        origin: Origin,
+        localOwnership: LocalOwnership?,
+        localInstanceID: String?,
+        localPath: String?,
+        agentTargets: [SkillManagerInventoryAgentTarget] = [],
+        allInstanceIDs: [String] = []
+    ) {
+        self.name = name
+        self.source = source
+        self.scope = scope
+        self.agents = agents
+        self.origin = origin
+        self.localOwnership = localOwnership
+        self.localInstanceID = localInstanceID
+        self.localPath = localPath
+        self.agentTargets = agentTargets
+        self.allInstanceIDs = allInstanceIDs
+    }
 
     var id: String {
         [scope.rawValue, origin.rawValue, name, localInstanceID ?? source ?? ""].joined(separator: "|")
     }
 
     var isInstalled: Bool { !agents.isEmpty }
+
+    func instanceIDs(for selectedAgents: [String]) -> [String] {
+        let selected = Set(selectedAgents)
+        return agentTargets
+            .filter { selected.contains($0.agent) }
+            .flatMap(\.instanceIDs)
+            .sorted()
+    }
+
+    func isCompleteRemovalSelection(_ selectedAgents: [String]) -> Bool {
+        !agents.isEmpty && Set(selectedAgents) == Set(agents)
+    }
+
+    func missingDetachTargets(for selectedAgents: [String]) -> [String] {
+        let available = Set(agentTargets.filter { !$0.instanceIDs.isEmpty }.map(\.agent))
+        return SkillManagerAgent.defaultTargets
+            .map(\.rawValue)
+            .filter { selectedAgents.contains($0) && !available.contains($0) }
+    }
+}
+
+struct SkillManagerInventoryAgentTarget: Hashable {
+    let agent: String
+    let instanceIDs: [String]
 }
 
 enum SkillManagerInventoryBuilder {
@@ -409,6 +459,8 @@ enum SkillManagerInventoryBuilder {
         let nameKey: String
         let representative: SkillRecord
         let agents: [String]
+        let agentTargets: [SkillManagerInventoryAgentTarget]
+        let allInstanceIDs: [String]
     }
 
     static func build(
@@ -417,7 +469,9 @@ enum SkillManagerInventoryBuilder {
         localLibrarySkills: [SkillRecord],
         scope: SkillManagerScope
     ) -> [SkillManagerInventoryItem] {
-        let catalogSources = editableCatalogSources(from: catalogSkills, scope: scope)
+        let eligibleSkills = editableCatalogSkills(from: catalogSkills, scope: scope)
+        let eligibleSkillsByName = Dictionary(grouping: eligibleSkills, by: { normalizedName($0.name) })
+        let catalogSources = editableCatalogSources(from: eligibleSkills)
         let sourcesByName = Dictionary(grouping: catalogSources, by: \.nameKey)
         let libraryByName = Dictionary(grouping: localLibrarySkills, by: { normalizedName($0.name) })
         var consumedSourcePaths = Set<String>()
@@ -440,17 +494,29 @@ enum SkillManagerInventoryBuilder {
             if let appOwnedSource {
                 consumedLibraryIDs.insert(appOwnedSource.id)
             }
+            let matchingSkills = matchingCatalogSkills(
+                for: record,
+                source: catalogSource,
+                candidates: eligibleSkillsByName[nameKey] ?? []
+            )
+            let targets = activeAgentTargets(from: matchingSkills)
+            let affectedAgents = activeAgentIDs(
+                reportedAgents: record.agents,
+                matchingSkills: matchingSkills
+            )
             return SkillManagerInventoryItem(
                 name: record.name,
                 source: localSource?.path ?? appOwnedSource.map(sourceDirectory) ?? record.source,
                 scope: scope,
-                agents: canonicalAgentIDs(record.agents),
+                agents: affectedAgents,
                 origin: record.isLocalSource ? .local : .manager,
                 localOwnership: record.isLocalSource
                     ? (localSource != nil ? localOwnership(for: scope) : (appOwnedSource == nil ? .external : .appOwned))
                     : nil,
                 localInstanceID: localSource?.representative.id ?? appOwnedSource?.id,
-                localPath: localSource?.path ?? appOwnedSource.map(sourceDirectory)
+                localPath: localSource?.path ?? appOwnedSource.map(sourceDirectory),
+                agentTargets: targets,
+                allInstanceIDs: canonicalInstanceIDs(matchingSkills.map(\.id))
             )
         }
 
@@ -465,7 +531,9 @@ enum SkillManagerInventoryBuilder {
                 origin: .local,
                 localOwnership: localOwnership(for: scope),
                 localInstanceID: source.representative.id,
-                localPath: source.path
+                localPath: source.path,
+                agentTargets: source.agentTargets,
+                allInstanceIDs: source.allInstanceIDs
             )
         })
 
@@ -484,7 +552,9 @@ enum SkillManagerInventoryBuilder {
                 origin: .local,
                 localOwnership: .appOwned,
                 localInstanceID: skill.id,
-                localPath: path
+                localPath: path,
+                agentTargets: [],
+                allInstanceIDs: [skill.id]
             )
         })
 
@@ -495,18 +565,27 @@ enum SkillManagerInventoryBuilder {
         }
     }
 
-    private static func editableCatalogSources(
+    private static func editableCatalogSkills(
         from skills: [SkillRecord],
         scope: SkillManagerScope
-    ) -> [CatalogSource] {
-        let eligible = skills.compactMap { skill -> (String, SkillRecord)? in
+    ) -> [SkillRecord] {
+        skills.filter { skill in
             guard skill.state != "missing",
                   !DisplayText.isToolGlobal(skill),
+                  skill.readOnlyReason == nil,
                   scopeMatches(skill.scope, scope: scope),
-                  agentID(for: skill.agent) != nil,
-                  let path = sharedAgentsSourceDirectory(for: skill) else {
-                return nil
+                  agentID(for: skill.agent) != nil else {
+                return false
             }
+            return true
+        }
+    }
+
+    private static func editableCatalogSources(
+        from skills: [SkillRecord]
+    ) -> [CatalogSource] {
+        let eligible = skills.compactMap { skill -> (String, SkillRecord)? in
+            guard let path = sharedAgentsSourceDirectory(for: skill) else { return nil }
             return (path, skill)
         }
         return Dictionary(grouping: eligible, by: { $0.0 }).compactMap { path, rows in
@@ -516,9 +595,69 @@ enum SkillManagerInventoryBuilder {
                 path: path,
                 nameKey: normalizedName(representative.name),
                 representative: representative,
-                agents: canonicalAgentIDs(skills.map(\.agent))
+                agents: activeAgentTargets(from: skills).map(\.agent),
+                agentTargets: activeAgentTargets(from: skills),
+                allInstanceIDs: canonicalInstanceIDs(skills.map(\.id))
             )
         }
+    }
+
+    private static func matchingCatalogSkills(
+        for record: SkillManagerInstalledRecord,
+        source: CatalogSource?,
+        candidates: [SkillRecord]
+    ) -> [SkillRecord] {
+        guard !candidates.isEmpty else { return [] }
+        if let source {
+            let sameDefinition = candidates.filter {
+                $0.definitionId == source.representative.definitionId
+            }
+            if !sameDefinition.isEmpty { return sameDefinition }
+        }
+        if let pathSuffix = sharedAgentsPathSuffix(record.path ?? record.source) {
+            let exact = candidates.filter {
+                sharedAgentsPathSuffix(sourceDirectory(for: $0)) == pathSuffix
+            }
+            if !exact.isEmpty { return exact }
+        }
+        let definitionIDs = Set(candidates.map(\.definitionId))
+        return definitionIDs.count == 1 ? candidates : (source.map { [$0.representative] } ?? [])
+    }
+
+    private static func activeAgentIDs(
+        reportedAgents: [String],
+        matchingSkills: [SkillRecord]
+    ) -> [String] {
+        var active = Set(canonicalAgentIDs(reportedAgents))
+        let grouped = Dictionary(grouping: matchingSkills, by: { agentID(for: $0.agent) })
+        for (agent, skills) in grouped {
+            guard let agent else { continue }
+            if skills.contains(where: isActivelyLoaded) {
+                active.insert(agent)
+            } else {
+                active.remove(agent)
+            }
+        }
+        return SkillManagerAgent.defaultTargets.map(\.rawValue).filter(active.contains)
+    }
+
+    private static func activeAgentTargets(
+        from skills: [SkillRecord]
+    ) -> [SkillManagerInventoryAgentTarget] {
+        let grouped = Dictionary(grouping: skills.filter(isActivelyLoaded), by: { agentID(for: $0.agent) })
+        return SkillManagerAgent.defaultTargets.compactMap { agent in
+            let instanceIDs = canonicalInstanceIDs((grouped[agent.rawValue] ?? []).map(\.id))
+            guard !instanceIDs.isEmpty else { return nil }
+            return SkillManagerInventoryAgentTarget(agent: agent.rawValue, instanceIDs: instanceIDs)
+        }
+    }
+
+    private static func isActivelyLoaded(_ skill: SkillRecord) -> Bool {
+        skill.enabled && skill.state.caseInsensitiveCompare("disabled") != .orderedSame
+    }
+
+    private static func canonicalInstanceIDs(_ values: [String]) -> [String] {
+        Array(Set(values.filter { !$0.isEmpty })).sorted()
     }
 
     private static func matchingCatalogSource(
@@ -761,14 +900,18 @@ struct SkillManagerInstallParams: Encodable {
 struct SkillManagerRemoveParams: Encodable {
     let skill: String
     let agents: [String]
+    let instanceIDs: [String]
     let scope: String?
+    let fullUninstall: Bool
     let confirmed: Bool
     let previewToken: String?
 
     enum CodingKeys: String, CodingKey {
         case skill
         case agents
+        case instanceIDs = "instance_ids"
         case scope
+        case fullUninstall = "full_uninstall"
         case confirmed
         case previewToken = "preview_token"
     }
@@ -846,6 +989,7 @@ struct SkillManagerMutationRecord: Codable, Hashable {
     let applied: Bool
     let scannedCount: Int
     let updatedSkills: [SkillRecord]
+    let removalPlan: SkillManagerRemovalPlan?
 
     enum CodingKeys: String, CodingKey {
         case preview
@@ -853,6 +997,69 @@ struct SkillManagerMutationRecord: Codable, Hashable {
         case applied
         case scannedCount = "scanned_count"
         case updatedSkills = "updated_skills"
+        case removalPlan = "removal_plan"
+    }
+}
+
+struct SkillManagerRemovalPlan: Codable, Hashable {
+    let mode: String
+    let fullUninstall: Bool
+    let selectedAgents: [String]
+    let instanceIDs: [String]
+    let sourcePreserved: Bool
+    let actions: [SkillManagerRemovalAction]
+    let verification: String
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case fullUninstall = "full_uninstall"
+        case selectedAgents = "selected_agents"
+        case instanceIDs = "instance_ids"
+        case sourcePreserved = "source_preserved"
+        case actions
+        case verification
+    }
+
+    var localizedRisk: String {
+        fullUninstall
+            ? UIStrings.text(
+                "skillManager.remove.risk.complete",
+                "Complete uninstall removes the canonical source and every target recognized by the external manager, including agents outside this app."
+            )
+            : UIStrings.text(
+                "skillManager.remove.risk.partial",
+                "Shared skill files stay in place; selected agents receive verified config exclusions with snapshots and rollback support."
+            )
+    }
+
+    var localizedVerification: String {
+        fullUninstall
+            ? UIStrings.text(
+                "skillManager.remove.verification.complete",
+                "After refresh, the skill must no longer appear for any supported agent or in the external-manager inventory."
+            )
+            : UIStrings.text(
+                "skillManager.remove.verification.partial",
+                "After refresh, every selected instance must be disabled while unselected agents remain unchanged."
+            )
+    }
+}
+
+struct SkillManagerRemovalAction: Codable, Hashable {
+    let instanceID: String
+    let agent: String
+    let scope: String
+    let strategy: String
+    let target: String
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case instanceID = "instance_id"
+        case agent
+        case scope
+        case strategy
+        case target
+        case summary
     }
 }
 

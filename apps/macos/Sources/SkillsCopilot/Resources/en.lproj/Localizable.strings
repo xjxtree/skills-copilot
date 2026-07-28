@@ -186,7 +186,7 @@
 "skillManager.workflow.installedUpdates" = "Installed & Updates";
 "skillManager.workflow.localLibrary" = "Local Library";
 "skillManager.toolUnavailable.title" = "External manager unavailable";
-"skillManager.toolUnavailable.message" = "The external manager tool is unavailable. Install Node/npm or set SKILLS_COPILOT_NPX_PATH, then refresh.";
+"skillManager.toolUnavailable.message" = "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent detach remains available.";
 "skillManager.scope.project" = "Project";
 "skillManager.scope.global" = "Global";
 "skillManager.distribution" = "Distribution";
@@ -223,7 +223,16 @@
 "skillManager.action.deleteSource" = "Delete Source";
 "skillManager.select.title" = "Select a skill";
 "skillManager.select.help" = "Agent and scope options appear only after a skill is selected.";
-"skillManager.remove.sourceRule" = "Removing every linked agent lets the manager remove its unreferenced source package; a partial removal deletes only those links.";
+"skillManager.remove.completeRule" = "All linked agents are selected. Complete uninstall removes every target recognized by the external manager and deletes its canonical source.";
+"skillManager.remove.partialRule" = "Partial removal keeps the shared files for other agents and adds rollback-safe exclusions so only the selected agents stop loading this skill.";
+"skillManager.remove.mode" = "Removal mode";
+"skillManager.remove.mode.complete" = "Complete uninstall";
+"skillManager.remove.mode.partial" = "Selected-agent detach";
+"skillManager.remove.partialBlocked" = "Selected-Agent detach is unavailable for: %@. Refresh the inventory or use complete uninstall.";
+"skillManager.remove.risk.complete" = "Complete uninstall removes the canonical source and every target recognized by the external manager, including agents outside this app.";
+"skillManager.remove.risk.partial" = "Shared skill files stay in place; selected agents receive verified config exclusions with snapshots and rollback support.";
+"skillManager.remove.verification.complete" = "After refresh, the skill must no longer appear for any supported agent or in the external-manager inventory.";
+"skillManager.remove.verification.partial" = "After refresh, every selected instance must be disabled while unselected agents remain unchanged.";
 "skillManager.update.affected" = "The manager updates the shared source used by: %@";
 "skillManager.localUpdate.help" = "Choose a replacement ZIP for this local source. The package name must match; replacement is previewed with rollback and scripts are never executed.";
 "skillManager.localUpdate.target" = "Local source";
@@ -1260,3 +1269,6 @@
 "taskCockpit.handoff.title" = "Agent Copilot Task Handoff";
 "finding.action.copyRemediation" = "Copy Fix";
 "finding.action.copyRemediation.hint" = "Copy this remediation for use in your editor or agent.";
+"skillManager.confirm.completeUninstall" = "Complete uninstall also targets manager-recognized agents outside this app and deletes the canonical source.";
+"skillManager.confirm.partialDetach" = "The shared source is preserved. Only selected agents receive verified config exclusions, with snapshots available for rollback.";
+"skillManager.confirm.targets.managerAll" = "Every target recognized by the external manager";

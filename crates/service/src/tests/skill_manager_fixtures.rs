@@ -17,7 +17,14 @@ pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
             })
         }
         "skillManager.previewRemove" | "skillManager.applyRemove" => {
-            json!({ "skill": "frontend-design", "agents": ["claude-code", "codex"], "scope": "project", "confirmed": false })
+            json!({
+                "skill": "frontend-design",
+                "agents": ["claude-code", "codex"],
+                "instance_ids": [],
+                "scope": "project",
+                "full_uninstall": true,
+                "confirmed": false
+            })
         }
         "skillManager.previewUpdate" | "skillManager.applyUpdate" => {
             json!({

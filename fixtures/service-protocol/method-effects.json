@@ -38,7 +38,7 @@
     "skillManager.previewInstall": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "skillManager.applyInstall": { "writes": ["app_data", "external_manager_state"], "process": "always", "network": "conditional", "confirmation": "required" },
     "skillManager.previewRemove": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
-    "skillManager.applyRemove": { "writes": ["app_data", "external_manager_state"], "process": "always", "network": "never", "confirmation": "required" },
+    "skillManager.applyRemove": { "writes": ["agent_config", "app_data", "external_manager_state"], "process": "conditional", "network": "never", "confirmation": "required" },
     "skillManager.previewUpdate": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "skillManager.applyUpdate": { "writes": ["app_data", "external_manager_state"], "process": "always", "network": "conditional", "confirmation": "required" },
     "skillManager.previewLocalCreate": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },

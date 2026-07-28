@@ -326,3 +326,148 @@ fn prohibited_previewed_command_does_not_create_cwd() {
     assert!(!cwd.exists());
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn complete_uninstall_targets_every_external_manager_agent() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-complete-remove-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).expect("create complete-remove root");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["codex".to_string(), "opencode".to_string()],
+        instance_ids: Vec::new(),
+        scope: Some("global".to_string()),
+        full_uninstall: true,
+        confirmed: false,
+        preview_token: None,
+    };
+
+    let (preview, plan) =
+        build_remove_preview(&catalog, &ctx, &params).expect("complete uninstall preview");
+
+    assert_eq!(preview.operation, "remove");
+    assert_eq!(plan.mode, "complete-uninstall");
+    assert!(plan.full_uninstall);
+    assert!(!plan.source_preserved);
+    assert_eq!(
+        preview
+            .command
+            .iter()
+            .filter(|argument| argument.as_str() == "--agent")
+            .count(),
+        0,
+        "omitting --agent is the external CLI's all-target complete uninstall contract"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn complete_uninstall_postcheck_treats_a_dangling_link_as_a_remaining_entry() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-dangling-remove-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).expect("create dangling-remove root");
+    let link = root.join("shared-skill");
+    symlink(root.join("missing-source"), &link).expect("create dangling skill link");
+
+    assert!(!link.exists(), "standard exists follows the missing target");
+    assert!(
+        removal_path_entry_exists(&link),
+        "complete-uninstall verification must still detect the link entry"
+    );
+    let _ = fs::remove_file(link);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn partial_remove_detaches_only_selected_agent_and_preserves_shared_source() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-remove-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let skill_dir = home.join(".agents/skills/shared-skill");
+    fs::create_dir_all(&skill_dir).expect("create shared skill");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+    )
+    .expect("write shared skill");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let codex = initial
+        .iter()
+        .find(|record| record.agent == "codex" && record.name == "shared-skill")
+        .expect("Codex shared record");
+    let opencode = initial
+        .iter()
+        .find(|record| record.agent == "opencode" && record.name == "shared-skill")
+        .expect("opencode shared record");
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["codex".to_string()],
+        instance_ids: vec![codex.id.clone()],
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+    let preview =
+        preview_remove_with_manager(&catalog, &ctx, &params).expect("partial remove preview");
+    let plan = preview.removal_plan.as_ref().expect("removal plan");
+
+    assert_eq!(preview.preview.tool_id, "agent-copilot-native");
+    assert_eq!(plan.mode, "selected-agent-detach");
+    assert!(plan.source_preserved);
+    assert!(skill_dir.join("SKILL.md").is_file(), "preview is read-only");
+
+    let applied = apply_remove_with_manager(
+        &catalog,
+        &ctx,
+        &SkillManagerRemoveParams {
+            confirmed: true,
+            preview_token: Some(preview.preview.preview_token),
+            ..params
+        },
+    )
+    .expect("partial remove applies");
+    let updated = applied.updated_skills;
+    let updated_codex = updated
+        .iter()
+        .find(|record| record.id == codex.id)
+        .expect("updated Codex record");
+    let updated_opencode = updated
+        .iter()
+        .find(|record| record.id == opencode.id)
+        .expect("updated opencode record");
+
+    assert!(!updated_codex.enabled);
+    assert!(updated_opencode.enabled);
+    assert!(
+        skill_dir.join("SKILL.md").is_file(),
+        "partial detach must preserve the source for unselected agents"
+    );
+    let _ = fs::remove_dir_all(root);
+}

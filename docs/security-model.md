@@ -50,10 +50,14 @@ This file describes security and privacy boundaries.
   cleanup guidance.
 - Adapter writes stay limited to the documented guarded toggles and install
   roots in `AGENTS.md` and `docs/adapters/agent-adapters.md`.
-- Skill Manager writes must use the manager tool when the tool supports the
-  operation. The service may run `npx skills` with argv-only commands,
-  telemetry-off env, redacted logs, and read-back catalog refresh; enable/
-  disable still uses the existing guarded agent-config toggle APIs.
+- Skill Manager writes must use the manager tool when the tool safely supports
+  the operation. Complete uninstall runs `npx skills remove` with no
+  `--agent` restriction, argv-only commands, telemetry-off env, redacted logs,
+  and catalog plus manager-inventory read-back. Selected-Agent detach does not
+  call the manager's unsafe partial-remove path; it requires exact catalog
+  instance IDs and reuses the existing guarded agent-config toggle, snapshot,
+  verification, and rollback APIs so unselected consumers and manager lock
+  metadata remain unchanged.
   Large installed-inventory stdout is captured only in a private `0600`
   temporary regular file, size-checked before reading, and removed by scoped
   cleanup on success and failure; it is never cataloged or retained.
@@ -70,7 +74,8 @@ This file describes security and privacy boundaries.
   caches, configured read-only roots, and native roots outside the guarded
   selected `.agents/skills` roots are excluded from editable inventory.
   Installed local sources outside those roots remain visible but are
-  unlink-only; they never receive a ZIP replacement action.
+  limited to exact selected-Agent detach or complete external-manager
+  uninstall; they never receive a ZIP replacement action.
 - Developer ID signing, notarization, stapling, and optional post-staple ZIP
   creation are explicit maintainer-only release actions. They require an
   identity selected at release-build invocation and a named `notarytool`

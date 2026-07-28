@@ -17,8 +17,8 @@ use skills_copilot_core::{
 };
 
 use crate::{
-    import_local_skill_to_tool_global, scan_all_catalog_report, tool_global_staging_skills_root,
-    CommandError,
+    apply_skill_toggles, import_local_skill_to_tool_global, preview_skill_toggles,
+    scan_all_catalog_report, tool_global_staging_skills_root, CommandError,
 };
 
 mod archive;
@@ -172,7 +172,11 @@ pub struct SkillManagerRemoveParams {
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
+    pub instance_ids: Vec<String>,
+    #[serde(default)]
     pub scope: Option<String>,
+    #[serde(default)]
+    pub full_uninstall: bool,
     #[serde(default)]
     pub confirmed: bool,
     #[serde(default)]
@@ -218,6 +222,29 @@ pub struct SkillManagerMutationRecord {
     pub applied: bool,
     pub scanned_count: usize,
     pub updated_skills: Vec<SkillRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removal_plan: Option<SkillManagerRemovalPlan>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillManagerRemovalPlan {
+    pub mode: String,
+    pub full_uninstall: bool,
+    pub selected_agents: Vec<String>,
+    pub instance_ids: Vec<String>,
+    pub source_preserved: bool,
+    pub actions: Vec<SkillManagerRemovalAction>,
+    pub verification: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillManagerRemovalAction {
+    pub instance_id: String,
+    pub agent: String,
+    pub scope: String,
+    pub strategy: String,
+    pub target: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -369,16 +396,27 @@ pub fn list_installed_skills_with_manager(
     ctx: &AdapterContext,
     params: &SkillManagerListInstalledParams,
 ) -> Result<SkillManagerInstalledListRecord, CommandError> {
+    list_installed_skills_with_manager_targets(ctx, params, true)
+}
+
+fn list_installed_skills_with_manager_targets(
+    ctx: &AdapterContext,
+    params: &SkillManagerListInstalledParams,
+    restrict_to_supported_agents: bool,
+) -> Result<SkillManagerInstalledListRecord, CommandError> {
     let mut args = vec![
         SKILLS_CLI_BINARY.to_string(),
         "list".to_string(),
         "--json".to_string(),
     ];
-    // The CLI otherwise enumerates every agent it knows about. Its JSON writer
-    // currently clips stdout at 64 KiB, so unrelated agent metadata can turn a
-    // successful list into invalid JSON. Keep the UI skill-centric while
-    // constraining this internal read to the adapters the app actually supports.
-    append_agent_args(&mut args, &default_agent_targets());
+    // The UI inventory stays scoped to the adapters the app supports. Complete
+    // uninstall deliberately uses the unrestricted form as a fail-closed
+    // postcondition: a residual target known only to the external manager must
+    // still keep the operation from being reported as successful. Both forms
+    // use the bounded private regular-file capture below.
+    if restrict_to_supported_agents {
+        append_agent_args(&mut args, &default_agent_targets());
+    }
     append_scope_args(&mut args, params.scope.as_deref())?;
     let preview = command_preview(
         ctx,
@@ -451,6 +489,7 @@ pub fn preview_install_with_manager(
         applied: false,
         scanned_count: 0,
         updated_skills: Vec::new(),
+        removal_plan: None,
     })
 }
 
@@ -470,20 +509,23 @@ pub fn apply_install_with_manager(
         applied: true,
         scanned_count: scan.scanned_count,
         updated_skills,
+        removal_plan: None,
     })
 }
 
 pub fn preview_remove_with_manager(
+    catalog: &Catalog,
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
-    let preview = build_remove_preview(ctx, params)?;
+    let (preview, removal_plan) = build_remove_preview(catalog, ctx, params)?;
     Ok(SkillManagerMutationRecord {
         preview,
         output: None,
         applied: false,
         scanned_count: 0,
         updated_skills: Vec::new(),
+        removal_plan: Some(removal_plan),
     })
 }
 
@@ -492,17 +534,61 @@ pub fn apply_remove_with_manager(
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
-    let preview = build_remove_preview(ctx, params)?;
+    let (preview, removal_plan) = build_remove_preview(catalog, ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
-    let output = run_previewed_command(ctx, &preview)?.output;
+    let output = if params.full_uninstall {
+        run_previewed_command(ctx, &preview)?.output
+    } else {
+        let toggle_preview =
+            preview_skill_toggles(catalog, ctx, &removal_plan.instance_ids, false)?;
+        let applied = apply_skill_toggles(
+            catalog,
+            ctx,
+            &removal_plan.instance_ids,
+            false,
+            &toggle_preview.preview_token,
+        )?;
+        if applied.applied_count != removal_plan.instance_ids.len() {
+            return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+                "detached {} of {} selected skill instance(s)",
+                applied.applied_count,
+                removal_plan.instance_ids.len()
+            )));
+        }
+        SkillManagerCommandOutput {
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    };
     let scan = scan_all_catalog_report(ctx, catalog)?;
     let updated_skills = catalog.list_skill_records()?;
+    let installed_after = if params.full_uninstall {
+        Some(list_installed_skills_with_manager_targets(
+            ctx,
+            &SkillManagerListInstalledParams {
+                agents: Vec::new(),
+                scope: params.scope.clone(),
+            },
+            false,
+        )?)
+    } else {
+        None
+    };
+    verify_remove_postcondition(
+        params,
+        &removal_plan,
+        &updated_skills,
+        installed_after.as_ref(),
+    )?;
     Ok(SkillManagerMutationRecord {
         preview,
         output: Some(output),
         applied: true,
         scanned_count: scan.scanned_count,
         updated_skills,
+        removal_plan: Some(removal_plan),
     })
 }
 
@@ -517,6 +603,7 @@ pub fn preview_update_with_manager(
         applied: false,
         scanned_count: 0,
         updated_skills: Vec::new(),
+        removal_plan: None,
     })
 }
 
@@ -536,6 +623,7 @@ pub fn apply_update_with_manager(
         applied: true,
         scanned_count: scan.scanned_count,
         updated_skills,
+        removal_plan: None,
     })
 }
 
@@ -716,25 +804,29 @@ fn build_install_preview(
 }
 
 fn build_remove_preview(
+    catalog: &Catalog,
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
-) -> Result<SkillManagerCommandPreview, CommandError> {
+) -> Result<(SkillManagerCommandPreview, SkillManagerRemovalPlan), CommandError> {
     let skill = params.skill.trim();
     if skill.is_empty() {
         return Err(CommandError::InvalidSkillManagerRequest(
             "skillManager remove requires skill".to_string(),
         ));
     }
+    if !params.full_uninstall {
+        return build_agent_detach_preview(catalog, ctx, params, skill);
+    }
+
     let mut args = vec![
         SKILLS_CLI_BINARY.to_string(),
         "remove".to_string(),
         skill.to_string(),
     ];
-    let agents = required_manager_agents(&params.agents)?;
-    append_agent_args(&mut args, &agents);
+    let agents = normalize_manager_agents(&params.agents)?;
     append_scope_args(&mut args, params.scope.as_deref())?;
     args.push("-y".to_string());
-    command_preview(
+    let preview = command_preview(
         ctx,
         CommandPreviewDraft {
             operation: "remove",
@@ -744,17 +836,265 @@ fn build_remove_preview(
             network_allowed: true,
             confirmed: params.confirmed,
             summary: format!(
-                "Remove {skill} from {} supported agent target(s).",
-                agents.len()
+                "Completely uninstall {skill} from every agent target recognized by the external manager."
             ),
             risks: vec![
-                "The manager may delete its canonical copy when no selected or managed agent still references it."
-                    .to_string(),
+                "This complete uninstall intentionally removes the manager's canonical source and every agent target it recognizes, including targets outside the app's six catalog adapters.".to_string(),
             ],
             source: None,
             skills: vec![skill.to_string()],
         },
-    )
+    )?;
+    let mut instance_ids = params
+        .instance_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    instance_ids.sort();
+    instance_ids.dedup();
+    Ok((
+        preview,
+        SkillManagerRemovalPlan {
+            mode: "complete-uninstall".to_string(),
+            full_uninstall: true,
+            selected_agents: agents,
+            instance_ids,
+            source_preserved: false,
+            actions: vec![SkillManagerRemovalAction {
+                instance_id: String::new(),
+                agent: "all".to_string(),
+                scope: normalize_manager_scope(params.scope.as_deref())?
+                    .unwrap_or_else(|| "project".to_string()),
+                strategy: "external-manager-complete-uninstall".to_string(),
+                target: "all manager-recognized agent targets".to_string(),
+                summary: "Remove every manager-recognized target and delete the canonical source."
+                    .to_string(),
+            }],
+            verification: "Refresh the catalog and external-manager inventory; the skill must no longer be installed for any supported agent.".to_string(),
+        },
+    ))
+}
+
+fn build_agent_detach_preview(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    params: &SkillManagerRemoveParams,
+    skill: &str,
+) -> Result<(SkillManagerCommandPreview, SkillManagerRemovalPlan), CommandError> {
+    let agents = required_manager_agents(&params.agents)?;
+    let expected_scope =
+        normalize_manager_scope(params.scope.as_deref())?.unwrap_or_else(|| "project".to_string());
+    let mut instance_ids = params
+        .instance_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    instance_ids.sort();
+    instance_ids.dedup();
+    if instance_ids.is_empty() {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "partial agent removal requires exact catalog instance_ids; refresh the inventory and try again"
+                .to_string(),
+        ));
+    }
+
+    let selected = agents.iter().cloned().collect::<BTreeSet<_>>();
+    let mut covered_agents = BTreeSet::new();
+    for instance_id in &instance_ids {
+        let meta = catalog
+            .get_skill_instance_meta(instance_id)?
+            .ok_or_else(|| CommandError::InstanceNotFound(instance_id.clone()))?;
+        let manager_agent = manager_agent_for_catalog_agent(meta.agent);
+        if !selected.contains(manager_agent) {
+            return Err(CommandError::InvalidSkillManagerRequest(format!(
+                "instance {instance_id} belongs to unselected agent {manager_agent}"
+            )));
+        }
+        if !meta.name.trim().eq_ignore_ascii_case(skill) {
+            return Err(CommandError::InvalidSkillManagerRequest(format!(
+                "instance {instance_id} does not match selected skill {skill}"
+            )));
+        }
+        if manager_scope_for_catalog_scope(meta.scope) != expected_scope {
+            return Err(CommandError::InvalidSkillManagerRequest(format!(
+                "instance {instance_id} is outside the selected {expected_scope} scope"
+            )));
+        }
+        covered_agents.insert(manager_agent.to_string());
+    }
+    let uncovered = selected
+        .difference(&covered_agents)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !uncovered.is_empty() {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "partial removal has no writable catalog instance for: {}; refresh the inventory or use complete uninstall",
+            uncovered.join(", ")
+        )));
+    }
+
+    let toggle = preview_skill_toggles(catalog, ctx, &instance_ids, false)?;
+    if !toggle.writes_allowed
+        || toggle.writable_count != instance_ids.len()
+        || !toggle.skipped_items.is_empty()
+    {
+        let details = toggle
+            .skipped_items
+            .iter()
+            .map(|item| item.reason.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "partial removal cannot safely detach every selected instance{}{}",
+            if details.is_empty() { "" } else { ": " },
+            details
+        )));
+    }
+
+    let cwd = manager_cwd(ctx, params.scope.as_deref())?;
+    let mut command = vec![
+        "agent-copilot".to_string(),
+        "detach-skill".to_string(),
+        skill.to_string(),
+    ];
+    append_agent_args(&mut command, &agents);
+    append_scope_args(&mut command, params.scope.as_deref())?;
+    for instance_id in &instance_ids {
+        command.push("--instance-id".to_string());
+        command.push(instance_id.clone());
+    }
+    let token = preview_token(&command, &cwd, "remove", false, true);
+    let preview = SkillManagerCommandPreview {
+        tool_id: "agent-copilot-native".to_string(),
+        operation: "remove".to_string(),
+        command,
+        cwd: cwd.to_string_lossy().to_string(),
+        env: Vec::new(),
+        requires_confirmation: true,
+        confirmed: params.confirmed,
+        network_required: false,
+        network_allowed: true,
+        will_run: params.confirmed,
+        preview_token: token,
+        summary: format!(
+            "Detach {skill} from {} selected agent(s) while preserving the shared source for every other agent.",
+            agents.len()
+        ),
+        risks: vec![
+            "Shared skill files stay in place; selected agents receive verified config exclusions with snapshots and rollback support.".to_string(),
+        ],
+        source: None,
+        skills: vec![skill.to_string()],
+    };
+    let actions = toggle
+        .affected_items
+        .iter()
+        .map(|item| SkillManagerRemovalAction {
+            instance_id: item.instance_id.clone(),
+            agent: manager_agent_alias(&item.agent).unwrap_or_else(|_| item.agent.clone()),
+            scope: item.scope.clone(),
+            strategy: "config-detach".to_string(),
+            target: redact_command_output(ctx, &item.config_target),
+            summary: format!(
+                "Stop {} from loading {} without deleting the shared source.",
+                item.agent, item.name
+            ),
+        })
+        .collect();
+    Ok((
+        preview,
+        SkillManagerRemovalPlan {
+            mode: "selected-agent-detach".to_string(),
+            full_uninstall: false,
+            selected_agents: agents,
+            instance_ids,
+            source_preserved: true,
+            actions,
+            verification: "Refresh the catalog; every selected instance must be disabled while unselected agents remain unchanged.".to_string(),
+        },
+    ))
+}
+
+fn manager_agent_for_catalog_agent(agent: AgentId) -> &'static str {
+    match agent {
+        AgentId::Hermes => "hermes-agent",
+        other => other.as_str(),
+    }
+}
+
+fn manager_scope_for_catalog_scope(scope: Scope) -> &'static str {
+    match scope {
+        Scope::AgentGlobal => "global",
+        Scope::AgentProject => "project",
+        Scope::ToolGlobal => "tool-global",
+        _ => "unsupported",
+    }
+}
+
+fn verify_remove_postcondition(
+    params: &SkillManagerRemoveParams,
+    plan: &SkillManagerRemovalPlan,
+    updated_skills: &[SkillRecord],
+    installed_after: Option<&SkillManagerInstalledListRecord>,
+) -> Result<(), CommandError> {
+    if params.full_uninstall {
+        if installed_after.is_some_and(|inventory| {
+            inventory
+                .installed
+                .iter()
+                .any(|record| record.name.trim().eq_ignore_ascii_case(params.skill.trim()))
+        }) {
+            return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+                "{} is still present in the external-manager inventory after complete uninstall",
+                params.skill.trim()
+            )));
+        }
+        let remaining_paths = plan
+            .instance_ids
+            .iter()
+            .filter_map(|instance_id| {
+                updated_skills
+                    .iter()
+                    .find(|record| &record.id == instance_id)
+            })
+            .filter(|record| removal_path_entry_exists(&record.path))
+            .map(|record| record.display_path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        if !remaining_paths.is_empty() {
+            return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+                "verified catalog paths still exist after complete uninstall: {}",
+                remaining_paths.join(", ")
+            )));
+        }
+        return Ok(());
+    }
+
+    let still_enabled = plan
+        .instance_ids
+        .iter()
+        .filter_map(|instance_id| {
+            updated_skills
+                .iter()
+                .find(|record| &record.id == instance_id)
+        })
+        .filter(|record| record.state != "missing" && record.enabled)
+        .map(|record| format!("{}:{}", record.agent, record.name))
+        .collect::<Vec<_>>();
+    if !still_enabled.is_empty() {
+        return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "selected agent instances are still enabled after detach: {}",
+            still_enabled.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+fn removal_path_entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 fn build_update_preview(

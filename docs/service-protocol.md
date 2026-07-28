@@ -148,7 +148,7 @@ conditional on the exact local state that the client reviewed.
 | `skillManager.previewInstall` | None | Never | Never | None |
 | `skillManager.applyInstall` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewRemove` | None | Never | Never | None |
-| `skillManager.applyRemove` | App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.applyRemove` | Agent config, App-local data, External manager state may change when invoked | Conditional | Never | Required |
 | `skillManager.previewUpdate` | None | Never | Never | None |
 | `skillManager.applyUpdate` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewLocalCreate` | None | Never | Never | None |
@@ -414,25 +414,48 @@ or expose write controls.
   library remain fully accessible.
 - The native inventory emits one row per installed package source. A matching
   catalog row enriches the CLI row and is consumed rather than appended again.
+  Its currently enabled supported-Agent consumers are reconciled with the CLI
+  Agent list. A catalog-proven disabled consumer is not presented as still
+  installed for that Agent, while active and disabled instance IDs remain
+  attached to the package row for exact partial-detach and complete-uninstall
+  verification.
   Catalog-only fallback rows are limited to skill sources beneath the selected
   project/global `.agents/skills` root (including nested package layouts);
   plugin caches, configured read-only roots, and other catalog discovery paths
   never become editable local-package rows.
   Installed local rows outside those guarded roots remain visible as external
-  local sources, but do not expose ZIP replacement; only their manager-backed
-  agent unlink/removal action remains available.
+  local sources, but do not expose ZIP replacement; they may use exact
+  selected-Agent detach when writable catalog identities exist, or explicit
+  complete uninstall through the external manager.
 - Native clients validate method-specific metadata, not only generic page
   invariants. Search accepts only terminal unknown/source-limited metadata;
   installed accepts only terminal exact enumerable metadata. Invalid refresh
   metadata is rejected without replacing a current record for the same inputs.
   Empty and network-blocked searches still display zero loaded rows, unknown
   total, the typed source limitation and recovery guidance, with no load action.
-- The Skill Manager UI does not expose agent-layer enable/disable controls.
-  Skill removal is manager-backed unlink/removal from the currently selected
-  agent targets, using the same explicit confirmation flow as install/update.
-- Enable/disable remains in `config.toggleSkill`,
-  `batch.previewSkillToggles`, and `batch.applySkillToggles` because it is
-  agent config state, not manager package state.
+- Skill removal has two explicit modes. A proper subset of the linked Agents is
+  a selected-Agent detach: the service requires exact catalog instance IDs and
+  uses the existing guarded batch-toggle implementation to add per-Agent
+  exclusions, snapshots, verification, and rollback support. It does not call
+  `npx skills remove`, because current manager versions report success while
+  leaving direct `.agents/skills` consumers unchanged and remove package lock
+  metadata even for a partial request. The shared source and manager ownership
+  therefore remain intact for unselected Agents.
+- Selecting every linked Agent is a complete uninstall. The request sets
+  `full_uninstall=true`; the service intentionally omits all `--agent`
+  arguments so the external manager removes every target it recognizes,
+  including targets outside the app's six catalog adapters, and can delete the
+  canonical source. Apply then refreshes the catalog, re-lists external-manager
+  inventory without an Agent restriction, and fails with the stable
+  `skill_manager_removal_incomplete` error if the package or any exact catalog
+  path entry remains, including a dangling symbolic link. This verification
+  uses the same private 4 MiB bounded capture and fails closed if the
+  unrestricted inventory cannot be parsed. CLI exit status alone is never
+  treated as proof of removal.
+- Generic enable/disable controls remain in `config.toggleSkill`,
+  `batch.previewSkillToggles`, and `batch.applySkillToggles`. Skill Manager
+  reuses that verified implementation only for the explicit selected-Agent
+  detach plan described above.
 - The native client prewarms project and global skill inventories during app
   startup. Opening the Skill Manager performs no read; its Load Data button is
   the only page-local refresh trigger. Local app-owned skills are merged into
@@ -450,11 +473,11 @@ or expose write controls.
   `SKILL.md`, rejects path traversal, symlinks, special files, oversize entries,
   and files outside the skill root, and binds apply to the archive and current
   source digest through a preview token. Imported scripts are never executed.
-- When a removal selects every linked Agent target for an app-owned local
-  source, the native confirmation identifies it as a full uninstall. After the
-  confirmed manager unlink succeeds, the same guarded mutation flow previews
-  and deletes the app-owned source; the manager removes its matching lock
-  entry. Partial target removal keeps the shared source.
+- When complete uninstall targets an app-owned local source, the native
+  confirmation also identifies the guarded source cleanup. After the verified
+  external-manager removal succeeds, the same mutation flow previews and
+  deletes the app-owned source only if no supported-Agent references remain.
+  Selected-Agent detach never deletes that source.
 
 ## Session Preview
 
@@ -616,6 +639,9 @@ or expose write controls.
   app-loaded config snapshots, and local sessions. It accepts `query`, optional
   `agent`, optional `limit_per_kind`, local-session roots/discovery settings,
   and project context.
+- Skill results exclude historical `missing`/Deleted catalog rows; those rows
+  remain available only through the explicit Deleted filter and are never
+  returned as unlocatable global-search destinations.
 - Results are grouped by `kind` (`skill`, `session`, or `config_history`) and
   include `target_id` plus an embedded record when available. UI shells should
   use the embedded record to insert the result into the corresponding list page,

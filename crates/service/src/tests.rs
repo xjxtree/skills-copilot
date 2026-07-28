@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod app_search;
 mod app_wire_fixtures;
 mod config_consistency;
 mod dispatch_fixtures;

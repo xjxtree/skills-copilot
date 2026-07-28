@@ -288,9 +288,14 @@ impl ServiceHost {
             }
             "skillManager.previewRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog_for_read()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                serde_json::to_value(preview_remove_with_manager(&adapter_ctx, &params)?)
-                    .map_err(Into::into)
+                serde_json::to_value(preview_remove_with_manager(
+                    &catalog,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
             }
             "skillManager.applyRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
