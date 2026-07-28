@@ -1,6 +1,9 @@
+import Testing
 @testable import SkillsCopilot
 
+@Suite("SkillListModelTests")
 struct SkillListModelTests {
+    @Test("SkillListModelTests")
     func run() throws {
         try detailWorkbenchSectionsExposeDiagnostics()
         try findingIssueGroupsPreserveRemediationAndImpactCounts()
@@ -574,6 +577,22 @@ struct SkillListModelTests {
 
         let revealed = DisplayText.privacyPath(rawPath, privacyModeEnabled: true, revealFull: true)
         try expectEqual(revealed, rawPath, "Explicit reveal should show the original path without mutating the model value.")
+
+        let privacyDisabled = DisplayText.privacyPath(rawPath, privacyModeEnabled: false)
+        try expectFalse(
+            !privacyDisabled.contains("/" + "Users" + "/alice"),
+            "Disabling screenshot privacy should preserve the existing full-path display behavior."
+        )
+
+        let compactRedacted = DisplayText.privacyPath(rawPath, privacyModeEnabled: true, limit: 32)
+        try expectFalse(
+            compactRedacted.contains("/" + "Users" + "/alice"),
+            "Compact sidebar paths must stay redacted before shortening."
+        )
+        try expectFalse(
+            compactRedacted.count > 32,
+            "Compact sidebar paths should honor the requested display limit."
+        )
     }
 
     private func privacyPathDisplayRedactsEmbeddedEvidencePaths() throws {

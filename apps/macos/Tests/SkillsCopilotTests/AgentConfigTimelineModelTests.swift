@@ -1,6 +1,9 @@
+import Testing
 @testable import SkillsCopilot
 
+@Suite("AgentConfigTimelineModelTests")
 struct AgentConfigTimelineModelTests {
+    @Test("AgentConfigTimelineModelTests")
     func run() throws {
         try timelineShowsOnlySelectedAgentSnapshots()
         try equalTimestampSnapshotsKeepKeysetOrder()

@@ -57,7 +57,7 @@
       "source": "preview.sessionRows",
       "policy": "paged",
       "control_scope": "body",
-      "control_anchor": "state: store.localSessionCompleteness",
+      "control_anchor": "state: sessionStore.localSessionCompleteness",
       "total_count_source": "local-session page metadata total_count",
       "status_id": "sessions.completeness",
       "full_access_id": "sessions.load-all",

@@ -12,6 +12,8 @@ Agent Copilot 是一款面向多 Agent 工作流的原生 macOS App。它把本�
 - **最新版本：** 通过
   [GitHub Releases](https://github.com/xjxtree/agent-copilot/releases/latest)
   页面查看当前 App 下载、release notes 和校验文件。
+  仅有 tag、但没有对应 GitHub Release 的版本不属于受支持的 App 发布，
+  可能是已撤回版本或内部构建。
 - **支持的 Agent：** Claude Code、Codex、opencode、Pi、Hermes、OpenClaw。
 - **主要用途：** 技能目录检查、本地会话查看、配置检查、App 内 AI provider
   用量查看、项目上下文管理和技能包工作流。
@@ -23,7 +25,8 @@ Agent Copilot 按 local-first 的桌面产品方式组织：
 
 - macOS App 负责主导航、详情页、设置和工作流面板。
 - 本地处理层负责扫描、目录更新、会话预览、配置读取和技能包管理操作。
-- 本地缓存让列表和搜索保持流畅，同时保留显式刷新入口处理较重的扫描。
+- 本地缓存让列表和搜索保持流畅。受隐私边界约束的原生监听器只标记缓存已变化，
+  不会自行读取；“刷新”对账当前变化，“深度扫描”显式重新枚举受支持根目录。
 - 仓库内置 fixtures 和验证脚本，用于在发版前一起检查 App、服务和文档变更。
 
 这种拆分让桌面体验保持原生和快速，同时把不同 Agent 的解析规则和工作流逻辑
@@ -37,8 +40,8 @@ OpenAI 当前的桌面体验已将 Codex 集成到 ChatGPT App 中。Agent Copil
 Codex 插件中由 manifest 明确声明的技能目录；插件 store/cache 绝不会作为通用扫描
 源，物理 cache 路径也不会展示。Agent Copilot 不向 Codex runtime 查询技能清单。
 
-- **技能：** 扫描受支持的 Agent 根目录，按 Agent、范围和状态筛选，查看元数据、
-  问题项，并对受支持的本地技能执行启用或禁用。文件系统发现的技能会保留来源与
+- **技能：** 刷新或深度扫描受支持的 Agent 根目录，按 Agent、范围和状态筛选，
+  查看元数据、问题项，并对受支持的本地技能执行启用或禁用。文件系统发现的技能会保留来源与
   只读归属信息；已安装的 Codex 插件副本可见，但始终不可写。
 - **会话：** 浏览 Claude Code、Codex、opencode、Pi 的本地会话预览；在受支持
   的历史中搜索；打开选中会话查看消息摘要和技能调用摘要。

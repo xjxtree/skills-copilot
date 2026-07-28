@@ -2,6 +2,8 @@ import Foundation
 
 enum ConfigContentRedactor {
     static let redactedValue = "[REDACTED]"
+    static let redactedPathValue = "<local-path>"
+    static let redactedFileURLValue = "<local-file-url>"
 
     static func redactedForDisplay(_ content: String) -> String {
         guard !content.isEmpty else { return content }
@@ -10,7 +12,7 @@ enum ConfigContentRedactor {
         }
         return content
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { redactSimpleSecretLine(String($0)) }
+            .map { redactLocalPaths(in: redactSimpleSecretLine(String($0))) }
             .joined(separator: "\n")
     }
 
@@ -49,7 +51,7 @@ enum ConfigContentRedactor {
               JSONSerialization.isValidJSONObject(redacted),
               let renderedData = try? JSONSerialization.data(
                 withJSONObject: redacted,
-                options: [.prettyPrinted, .sortedKeys]
+                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
               ),
               let rendered = String(data: renderedData, encoding: .utf8) else {
             return changed ? content : nil
@@ -84,7 +86,52 @@ enum ConfigContentRedactor {
             }
             return (redacted, changed)
         }
+        if let string = value as? String {
+            let redacted = redactLocalPaths(in: string)
+            return (redacted, redacted != string)
+        }
         return (value, false)
+    }
+
+    private static func redactLocalPaths(in value: String) -> String {
+        var redacted = DisplayText.redactLocalPath(value)
+        redacted = replacingMatches(
+            in: redacted,
+            pattern: #"<temp>(?:/[^\s"',;\]\}\)]+)+"#,
+            template: "<temp>"
+        )
+        redacted = replacingMatches(
+            in: redacted,
+            pattern: #"file://[^\s"',;\]\}]+"#,
+            template: redactedFileURLValue
+        )
+        redacted = replacingMatches(
+            in: redacted,
+            pattern: #"(^|[\s=:\[\]\{\}\(\),;"'])(/(?!/)[^\s"',;\]\}\)]+)"#,
+            template: "$1\(redactedPathValue)"
+        )
+        redacted = replacingMatches(
+            in: redacted,
+            pattern: #"(^|[\s=:\[\]\{\}\(\),;"'])([A-Za-z]:[\\/][^\s"',;\]\}\)]+|\\\\[^\s"',;\]\}\)]+)"#,
+            template: "$1\(redactedPathValue)"
+        )
+        return redacted
+    }
+
+    private static func replacingMatches(
+        in value: String,
+        pattern: String,
+        template: String
+    ) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.stringByReplacingMatches(
+            in: value,
+            range: range,
+            withTemplate: template
+        )
     }
 
     private static func redactSimpleSecretLine(_ line: String) -> String {

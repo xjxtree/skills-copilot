@@ -1,5 +1,13 @@
 import Foundation
 
+enum SkillManagerArchiveDropModel {
+    static func acceptedArchive(in urls: [URL]) -> URL? {
+        guard urls.count == 1, let url = urls.first, url.isFileURL else { return nil }
+        guard url.pathExtension.caseInsensitiveCompare("zip") == .orderedSame else { return nil }
+        return url
+    }
+}
+
 enum SkillManagerAgent: String, CaseIterable, Identifiable, Hashable {
     case claudeCode = "claude-code"
     case pi

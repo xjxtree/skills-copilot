@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("LocalizationModelTests")
 struct LocalizationModelTests {
+    @Test("LocalizationModelTests")
     func run() throws {
         defer {
             UIStrings.use(.english)
@@ -31,11 +34,16 @@ struct LocalizationModelTests {
         try expectEqual(UIStrings.themeFollowSystem, "Follow System", "English system theme label should load")
         try expectEqual(UIStrings.themeDark, "Dark", "English dark theme label should load")
         try expectEqual(
+            UIStrings.configPreviewLine(3, "\"paths\": [\"<temp>\"]"),
+            "Line 3: \"paths\": [\"<temp>\"]",
+            "English config preview accessibility should expose the redacted line and its number."
+        )
+        try expectEqual(
             UIStrings.codexRestartRequired,
             "ChatGPT Codex or the Codex CLI may need to restart to read config.toml changes.",
             "English Codex restart guidance should name both current runtimes."
         )
-        try expectEqual(UIStrings.scannedSkills(2), "Scanned 2 skills across supported adapters.", "English formatted scan summary should preserve arguments")
+        try expectEqual(UIStrings.scannedSkills(2), "Deep scanned 2 skills across supported adapters.", "English formatted deep-scan summary should preserve arguments")
 
         UIStrings.use(.simplifiedChinese)
         let diagnostics = UIStrings.localizationResourceDiagnostics(for: .simplifiedChinese)
@@ -53,7 +61,12 @@ struct LocalizationModelTests {
         )
         try expectEqual(UIStrings.aiProviderSettings, "AI 提供方", "Chinese provider settings label should load")
         try expectEqual(UIStrings.service, "服务", "Chinese service label should load")
-        try expectEqual(UIStrings.scannedSkills(2), "已扫描受支持 adapter 中的 2 个技能。", "Chinese formatted scan summary should preserve arguments")
+        try expectEqual(
+            UIStrings.configPreviewLine(3, "\"paths\": [\"<temp>\"]"),
+            "第 3 行：\"paths\": [\"<temp>\"]",
+            "Chinese config preview accessibility should expose the redacted line and its number."
+        )
+        try expectEqual(UIStrings.scannedSkills(2), "已深度扫描受支持 adapter 中的 2 个技能。", "Chinese formatted deep-scan summary should preserve arguments")
         try expectEqual(
             UIStrings.localizedServiceMessage("Single request token limit is lower than the redacted prompt estimate."),
             "单次请求 token 限制低于脱敏提示词估算值。",

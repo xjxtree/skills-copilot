@@ -134,11 +134,8 @@ jobs:
       - name: Test native macOS models
         run: pnpm test:macos-native-models
 
-      - name: Verify native test registry
-        run: pnpm verify:macos-native-test-registry
-
       - name: Test SwiftPM package completely
-        run: swift test --package-path apps/macos --scratch-path "$RUNNER_TEMP/swift-tests"
+        run: SWIFTPM_SCRATCH_PATH="$RUNNER_TEMP/swift-tests" pnpm test:macos-swift
 
       - name: Build native macOS app bundle
         run: pnpm build:macos

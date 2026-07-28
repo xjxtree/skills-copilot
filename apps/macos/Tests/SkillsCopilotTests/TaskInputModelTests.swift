@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("TaskInputModelTests")
 struct TaskInputModelTests {
+    @Test("TaskInputModelTests")
     func run() throws {
         try preservesOriginalTextWhileClassifyingSubmittableInput()
         try rejectsBlankAndWhitespaceOnlyInput()

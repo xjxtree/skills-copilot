@@ -17,13 +17,9 @@ enum ServiceDiagnosticSanitizer {
         // Redact credential chains before the line-oriented config pass can insert a
         // placeholder between an assignment and its newline-delimited value.
         sanitized = redactingCredentialAssignments(in: sanitized)
-        sanitized = ConfigContentRedactor.redactedForDisplay(sanitized)
-        sanitized = normalizingConfigCredentialPlaceholders(in: sanitized)
-        sanitized = replacing(
-            pattern: #"(?i)\bsk-[A-Za-z0-9_-]{20,}"#,
-            in: sanitized,
-            with: "<redacted-token>"
-        )
+        // Diagnostics expose no useful filesystem context, so remove the full
+        // path before the config preview redactor converts known roots to
+        // reader-facing placeholders such as $HOME.
         for pathComponents in [
             ["Users"],
             ["home"],
@@ -36,6 +32,13 @@ enum ServiceDiagnosticSanitizer {
                 with: "<redacted-path>"
             )
         }
+        sanitized = ConfigContentRedactor.redactedForDisplay(sanitized)
+        sanitized = normalizingConfigCredentialPlaceholders(in: sanitized)
+        sanitized = replacing(
+            pattern: #"(?i)\bsk-[A-Za-z0-9_-]{20,}"#,
+            in: sanitized,
+            with: "<redacted-token>"
+        )
 
         let collapsed = sanitized
             .components(separatedBy: .whitespacesAndNewlines)

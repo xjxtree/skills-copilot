@@ -216,19 +216,24 @@ enum DisplayText {
         return snapshotDateFormatter.string(from: date)
     }
 
-    static func privacyPath(_ value: String, privacyModeEnabled: Bool, revealFull: Bool = false) -> String {
+    static func privacyPath(
+        _ value: String,
+        privacyModeEnabled: Bool,
+        revealFull: Bool = false,
+        limit: Int? = nil
+    ) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return value }
 
         if privacyModeEnabled && !revealFull {
-            return collapsePath(redactLocalPath(trimmed), limit: 84)
+            return collapsePath(redactLocalPath(trimmed), limit: limit ?? 84)
         }
 
         if revealFull {
             return trimmed
         }
 
-        return collapsePath(trimmed, limit: 96)
+        return collapsePath(trimmed, limit: limit ?? 96)
     }
 
     static func configPathSummary(_ value: String) -> String {

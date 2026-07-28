@@ -77,10 +77,18 @@ struct HeaderView: View {
                 }
                 SummaryChip(title: UIStrings.scope, value: DisplayText.scope(for: skill), systemImage: "folder")
                     .frame(width: 220)
-                issueBadge
-                    .frame(width: 220)
-                conflictBadge
-                    .frame(width: 220)
+                if hasIssues {
+                    issueBadge
+                        .frame(width: 220)
+                }
+                if hasConflicts {
+                    conflictBadge
+                        .frame(width: 220)
+                }
+                if !hasIssues && !hasConflicts {
+                    healthyStatus
+                        .frame(width: 220)
+                }
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -89,8 +97,15 @@ struct HeaderView: View {
                         sessionUsageChip(sessionUsage)
                     }
                     SummaryChip(title: UIStrings.scope, value: DisplayText.scope(for: skill), systemImage: "folder")
-                    issueBadge
-                    conflictBadge
+                    if hasIssues {
+                        issueBadge
+                    }
+                    if hasConflicts {
+                        conflictBadge
+                    }
+                    if !hasIssues && !hasConflicts {
+                        healthyStatus
+                    }
                 }
             }
         }
@@ -114,6 +129,27 @@ struct HeaderView: View {
             tint: .red,
             action: { onSelectSection(.conflicts) }
         )
+    }
+
+    private var healthyStatus: some View {
+        Label(
+            UIStrings.text("detail.health.clear", "No issues or same-agent conflicts"),
+            systemImage: "checkmark.circle.fill"
+        )
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.green)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+        .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel(UIStrings.text("detail.health.clear", "No issues or same-agent conflicts"))
+    }
+
+    private var hasIssues: Bool {
+        issueCount > 0
+    }
+
+    private var hasConflicts: Bool {
+        conflictCount > 0
     }
 
     private var headerMetadataRows: [CompactMetadataRow] {
@@ -344,7 +380,10 @@ struct CountBadge: View {
         }
         .buttonStyle(.plain)
         .help(UIStrings.text("detail.countBadge.help", "Show \(label)"))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(String(value))
+        .accessibilityHint(UIStrings.text("detail.countBadge.accessibilityHint", "Open this detail section."))
     }
 }
 
@@ -415,12 +454,6 @@ struct SkillDetailCard: View {
                 }
             }
 
-            Text(UIStrings.connectedProtocolNote)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .nativePanelSurface()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

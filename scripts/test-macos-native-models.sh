@@ -41,12 +41,15 @@ run_native_model_suite() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/lib/swift-testing.sh"
+configure_swift_testing_args
 BUILD_ROOT="${RUNTIME_ROOT}/build"
 PACKAGE_DIR="${BUILD_ROOT}/package"
-TARGET_DIR="${PACKAGE_DIR}/Sources/SkillsCopilotNativeModelTests"
+SOURCE_DIR="${PACKAGE_DIR}/Sources/SkillsCopilot"
+TEST_DIR="${PACKAGE_DIR}/Tests/SkillsCopilotTests"
 
 rm -rf "${PACKAGE_DIR}"
-mkdir -p "${TARGET_DIR}"
+mkdir -p "${SOURCE_DIR}" "${TEST_DIR}"
 
 rsync -a \
   --exclude='Views/**' \
@@ -56,83 +59,73 @@ rsync -a \
   --include='*.swift' \
   --exclude='*' \
   "${REPO_ROOT}/apps/macos/Sources/SkillsCopilot/" \
-  "${TARGET_DIR}/"
+  "${SOURCE_DIR}/"
 
-cp -R "${REPO_ROOT}/apps/macos/Sources/SkillsCopilot/Resources" "${TARGET_DIR}/Resources"
+cp -R "${REPO_ROOT}/apps/macos/Sources/SkillsCopilot/Resources" "${SOURCE_DIR}/Resources"
 
-mkdir -p "${TARGET_DIR}/Tests"
 rsync -a \
-  --exclude='FullNativeModelSuiteTests.swift' \
+  --exclude='NativeUILayoutTests.swift' \
   --include='*.swift' \
   --exclude='*' \
   "${REPO_ROOT}/apps/macos/Tests/SkillsCopilotTests/" \
-  "${TARGET_DIR}/Tests/"
+  "${TEST_DIR}/"
 
-find "${TARGET_DIR}/Tests" -name '*.swift' -print0 \
-  | xargs -0 perl -0pi -e 's/^\@testable import SkillsCopilot\n//mg'
-
-if grep -R -n -E '^import (AppKit|SwiftUI)$' "${TARGET_DIR}" >/dev/null; then
-  grep -R -n -E '^import (AppKit|SwiftUI)$' "${TARGET_DIR}"
+if grep -R -n -E '^import (AppKit|SwiftUI)$' "${SOURCE_DIR}" "${TEST_DIR}" >/dev/null; then
+  grep -R -n -E '^import (AppKit|SwiftUI)$' "${SOURCE_DIR}" "${TEST_DIR}"
   echo "Native model tests must not link AppKit or SwiftUI." >&2
   exit 1
 fi
 
 cat > "${PACKAGE_DIR}/Package.swift" <<'SWIFT'
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
     name: "SkillsCopilotNativeModelTests",
     defaultLocalization: "en",
     platforms: [.macOS(.v13)],
-    products: [
-        .executable(
-            name: "SkillsCopilotNativeModelTests",
-            targets: ["SkillsCopilotNativeModelTests"]
+    targets: [
+        .target(
+            name: "SkillsCopilot",
+            path: "Sources/SkillsCopilot",
+            resources: [.process("Resources")]
+        ),
+        .testTarget(
+            name: "SkillsCopilotTests",
+            dependencies: ["SkillsCopilot"],
+            path: "Tests/SkillsCopilotTests"
         )
     ],
-    targets: [
-        .executableTarget(
-            name: "SkillsCopilotNativeModelTests",
-            path: "Sources/SkillsCopilotNativeModelTests",
-            resources: [.process("Resources")]
-        )
-    ]
+    swiftLanguageModes: [.v5]
 )
-SWIFT
-
-cat > "${TARGET_DIR}/main.swift" <<'SWIFT'
-import Foundation
-
-do {
-    let summary = try await runAllNativeModelTestsAsync()
-    try expectEqual(summary.serviceSuiteCount, 2, "Service suite count")
-    try expectEqual(summary.mainSuiteCount, 24, "Main suite count")
-    try expectEqual(summary.skillStoreGroupCount, 64, "SkillStore group count")
-    try expectEqual(summary.namedExecutionCount, 90, "Named execution count")
-} catch {
-    fputs("SkillsCopilotTests: \(error)\n", stderr)
-    exit(1)
-}
 SWIFT
 
 cd "${REPO_ROOT}"
 export MallocNanoZone=0
 
-swift build \
-  --package-path "${PACKAGE_DIR}" \
-  --scratch-path "${BUILD_ROOT}/swiftpm"
-
-BINARY_DIR="$(swift build \
-  --package-path "${PACKAGE_DIR}" \
-  --scratch-path "${BUILD_ROOT}/swiftpm" \
-  --show-bin-path)"
-
 # Keep a disposable inherited value in the shell environment. Every runner must
 # override it through run_native_model_suite or this sentinel will be purged.
 export SKILLS_COPILOT_APP_DATA_DIR="${SIMULATED_INHERITED_APP_DATA_DIR}"
+export SKILLS_COPILOT_REPOSITORY_ROOT="${REPO_ROOT}"
 
-run_native_model_suite "${BINARY_DIR}/SkillsCopilotNativeModelTests"
+run_native_model_suite swift test \
+  --enable-swift-testing \
+  --package-path "${PACKAGE_DIR}" \
+  --scratch-path "${BUILD_ROOT}/swiftpm" \
+  --parallel \
+  --skip 'LocalizationModelTests|SkillManagerModelTests' \
+  "${SWIFT_TESTING_EXTRA_ARGS[@]}"
+
+# These two suites intentionally switch the process-wide UI language. Run them
+# in a second serialized pass while the remaining suites keep parallel execution.
+run_native_model_suite swift test \
+  --enable-swift-testing \
+  --package-path "${PACKAGE_DIR}" \
+  --scratch-path "${BUILD_ROOT}/swiftpm" \
+  --skip-build \
+  --no-parallel \
+  --filter 'LocalizationModelTests|SkillManagerModelTests' \
+  "${SWIFT_TESTING_EXTRA_ARGS[@]}"
 
 if [[ ! -f "${SIMULATED_INHERITED_SENTINEL}" ]] \
   || [[ "$(<"${SIMULATED_INHERITED_SENTINEL}")" != "${SIMULATED_INHERITED_SENTINEL_CONTENT}" ]]; then

@@ -85,3 +85,54 @@ pub(crate) fn env_flag(name: &str) -> bool {
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_path_values_reject_relative_inputs_and_normalize_parent_components() {
+        assert_eq!(absolute_path_value(Path::new("relative/path")), None);
+        assert_eq!(
+            absolute_path_value(Path::new("/tmp/adapter-root/../skills")),
+            Some(PathBuf::from("/tmp/skills"))
+        );
+    }
+
+    #[test]
+    fn local_path_expansion_is_lexically_normalized_against_its_declared_base() {
+        let home = Path::new("/tmp/home");
+        let base = Path::new("/tmp/project/.agent");
+
+        assert_eq!(
+            expand_local_path("~/skills/../shared", home, base),
+            Some(PathBuf::from("/tmp/home/shared"))
+        );
+        assert_eq!(
+            expand_local_path("./skills/../review", home, base),
+            Some(PathBuf::from("/tmp/project/.agent/review"))
+        );
+        assert_eq!(
+            expand_local_path("/tmp/global/../shared", home, base),
+            Some(PathBuf::from("/tmp/shared"))
+        );
+    }
+
+    #[test]
+    fn malformed_environment_tokens_never_become_local_paths() {
+        let home = Path::new("/tmp/home");
+        let base = Path::new("/tmp/project");
+
+        assert_eq!(expand_local_path("${UNCLOSED", home, base), None);
+        assert_eq!(expand_local_path("${BAD-NAME}", home, base), None);
+        assert_eq!(expand_local_path("${}", home, base), None);
+    }
+
+    #[test]
+    fn lexical_normalization_preserves_absolute_root_when_parent_components_overflow() {
+        assert_eq!(
+            normalize_path_lexically(Path::new("/../../tmp/skills")),
+            PathBuf::from("/tmp/skills")
+        );
+    }
+}

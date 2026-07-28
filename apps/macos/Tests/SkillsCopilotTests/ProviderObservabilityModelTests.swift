@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("ProviderObservabilityModelTests")
 struct ProviderObservabilityModelTests {
+    @Test("ProviderObservabilityModelTests")
     func run() throws {
         try decodesRealisticProviderObservabilityPayload()
         try decodesAliasAndStringForms()
@@ -565,6 +568,14 @@ struct ProviderObservabilityModelTests {
     }
 
     private func repositoryRoot() throws -> URL {
+        if let configuredRoot = ProcessInfo.processInfo.environment["SKILLS_COPILOT_REPOSITORY_ROOT"],
+           FileManager.default.fileExists(
+               atPath: URL(fileURLWithPath: configuredRoot)
+                   .appendingPathComponent("fixtures/service-protocol")
+                   .path
+           ) {
+            return URL(fileURLWithPath: configuredRoot)
+        }
         var url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         for _ in 0..<6 {
             if FileManager.default.fileExists(atPath: url.appendingPathComponent("fixtures/service-protocol").path) {

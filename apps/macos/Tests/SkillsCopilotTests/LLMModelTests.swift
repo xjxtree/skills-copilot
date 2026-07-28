@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("LLMModelTests")
 struct LLMModelTests {
+    @Test("LLMModelTests")
     func run() throws {
         try statusDecodesSnakeCasePayload()
         try statusDecodesRealServicePayload()

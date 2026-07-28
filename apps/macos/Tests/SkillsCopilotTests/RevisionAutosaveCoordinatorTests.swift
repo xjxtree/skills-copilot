@@ -1,8 +1,11 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("RevisionAutosaveCoordinatorTests")
 @MainActor
 struct RevisionAutosaveCoordinatorTests {
+    @Test("RevisionAutosaveCoordinatorTests")
     func run() async throws {
         try await rapidEditsSaveOnlyLatestRevision()
         try await editDuringSaveRunsAfterCurrentSave()

@@ -1,0 +1,197 @@
+import Foundation
+import Testing
+@testable import SkillsCopilot
+
+@Suite("AuthorizedFileWatcherTests", .serialized)
+@MainActor
+struct AuthorizedFileWatcherTests {
+    @Test("Sanitizer accepts only existing non-symlink directories")
+    func sanitizerRejectsUnsafeRoots() throws {
+        let tree = try TemporaryWatchTree(label: "sanitize")
+        defer { tree.cleanup() }
+        let accepted = try tree.createDirectory("home/.claude/skills")
+        let target = try tree.createDirectory("target")
+        let link = tree.root.appendingPathComponent("home/.agents/skills")
+        try FileManager.default.createDirectory(
+            at: link.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: link,
+            withDestinationURL: target
+        )
+
+        let sanitized = AuthorizedWatchRootSanitizer.sanitizedPaths(
+            from: [
+                accepted.path,
+                accepted.path,
+                link.path,
+                tree.root.appendingPathComponent("missing").path,
+                accepted.appendingPathComponent("../skills").path,
+                "/",
+                "relative/path",
+            ]
+        )
+
+        try expectEqual(sanitized, [accepted.path], "Only the bounded regular directory should remain")
+    }
+
+    @Test("Watcher events set pending state without exposing paths")
+    func watcherEventsSetPendingState() async throws {
+        let tree = try TemporaryWatchTree(label: "pending")
+        defer { tree.cleanup() }
+        let root = try tree.createDirectory("home/.claude/skills")
+        let watcher = RecordingFileSystemWatcher()
+        let store = SkillStore(
+            service: ServiceClient(),
+            fileSystemWatcher: watcher
+        )
+
+        store.updateAuthorizedFileWatcher(
+            with: AuthorizedFileWatchPlan(
+                roots: [root.path],
+                totalCount: 1,
+                truncated: false
+            )
+        )
+        try expectEqual(watcher.startedPaths, [root.path], "Store should pass only sanitized roots")
+        try expectFalse(store.hasPendingFileSystemChanges, "Starting a watcher must not dirty the catalog")
+
+        watcher.emit(FileSystemChangeSummary(eventCount: 3, requiresDeepScan: true))
+        await Task.yield()
+
+        try expectFalse(
+            !store.hasPendingFileSystemChanges,
+            "A watcher event should mark cached data stale"
+        )
+        try expectEqual(
+            store.watcherStatusMessage,
+            UIStrings.refreshWatcherPendingDeepScan,
+            "Dropped or coalesced events should request full reconciliation"
+        )
+        try expectFalse(
+            store.watcherStatusMessage.contains(root.path),
+            "Watcher status must not reveal a raw local path"
+        )
+
+        store.reconcileAuthorizedFileWatcherAfterDeepScan()
+        try expectFalse(store.hasPendingFileSystemChanges, "Deep Scan reconciliation should clear pending state")
+        try expectEqual(watcher.startCount, 2, "Deep Scan should restart the stream from the current event boundary")
+    }
+
+    @Test("FSEvents starts for a sanitized authorized directory")
+    func fseventsStartsForAuthorizedDirectory() throws {
+        let tree = try TemporaryWatchTree(label: "fsevents")
+        defer { tree.cleanup() }
+        let root = try tree.createDirectory("home/.claude/skills")
+        let watcher = FSEventsFileSystemWatcher()
+        defer { watcher.stop() }
+
+        let started = watcher.start(paths: [root.path]) { _ in }
+
+        try expectFalse(!started, "FSEvents should start for an existing non-symlink directory")
+    }
+
+    @Test("Primary Refresh deep-scans only after a watcher invalidation")
+    func primaryRefreshRoutesByPendingState() async throws {
+        let tree = try TemporaryWatchTree(label: "routing")
+        defer { tree.cleanup() }
+        let root = try tree.createDirectory("home/.claude/skills")
+
+        let cleanRunner = CatalogRefreshServiceRunner(scanFixtures: [.complete])
+        let cleanWatcher = RecordingFileSystemWatcher()
+        let cleanStore = SkillStore(
+            service: cleanRunner.serviceClient(),
+            fileSystemWatcher: cleanWatcher
+        )
+        cleanStore.updateAuthorizedFileWatcher(
+            with: AuthorizedFileWatchPlan(
+                roots: [root.path],
+                totalCount: 1,
+                truncated: false
+            )
+        )
+        await cleanStore.refresh()
+        try expectFalse(
+            (await cleanRunner.calls()).contains("\"method\":\"catalog.scanAll\""),
+            "Refresh without invalidation should reuse the cached catalog"
+        )
+
+        let changedRunner = CatalogRefreshServiceRunner(scanFixtures: [.complete])
+        let changedWatcher = RecordingFileSystemWatcher()
+        let changedStore = SkillStore(
+            service: changedRunner.serviceClient(),
+            fileSystemWatcher: changedWatcher
+        )
+        changedStore.updateAuthorizedFileWatcher(
+            with: AuthorizedFileWatchPlan(
+                roots: [root.path],
+                totalCount: 1,
+                truncated: false
+            )
+        )
+        changedWatcher.emit(FileSystemChangeSummary(eventCount: 1, requiresDeepScan: false))
+        await Task.yield()
+        await changedStore.refresh()
+
+        try expectFalse(
+            !(await changedRunner.calls()).contains("\"method\":\"catalog.scanAll\""),
+            "Refresh after invalidation should perform a complete adapter reconciliation"
+        )
+        try expectFalse(
+            changedStore.hasPendingFileSystemChanges,
+            "Successful reconciliation should clear pending state"
+        )
+    }
+}
+
+private final class RecordingFileSystemWatcher: FileSystemWatching {
+    private var onChange: (@Sendable (FileSystemChangeSummary) -> Void)?
+    private(set) var startedPaths: [String] = []
+    private(set) var startCount = 0
+
+    func start(
+        paths: [String],
+        onChange: @escaping @Sendable (FileSystemChangeSummary) -> Void
+    ) -> Bool {
+        startedPaths = paths
+        startCount += 1
+        self.onChange = onChange
+        return true
+    }
+
+    func stop() {
+        onChange = nil
+    }
+
+    func emit(_ summary: FileSystemChangeSummary) {
+        onChange?(summary)
+    }
+}
+
+private struct TemporaryWatchTree {
+    let root: URL
+
+    init(label: String) throws {
+        let requested = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("agent-copilot-watch-\(label)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: requested,
+            withIntermediateDirectories: true
+        )
+        root = requested
+    }
+
+    func createDirectory(_ relativePath: String) throws -> URL {
+        let directory = root.appendingPathComponent(relativePath, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        return directory
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}

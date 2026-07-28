@@ -1,3 +1,5 @@
+import CoreGraphics
+
 enum AppAccessibilityID {
     static let mainWindow = "skills-copilot.main-window"
     static let mainContent = "skills-copilot.main-content"
@@ -15,8 +17,14 @@ enum AppAccessibilityID {
 enum MainWindowModel {
     static let windowIdentifierRawValue = AppAccessibilityID.mainWindow
     static let autosaveName = "SkillsCopilot.MainWindow"
-    static let minimumWidth = 1349
+    static let minimumWidth = 1024
     static let minimumHeight = 600
+    static let compactLayoutBreakpoint = 1180
+    static let maximumReadableDetailWidth = 680
+
+    static func usesCompactLayout(width: CGFloat) -> Bool {
+        width < CGFloat(compactLayoutBreakpoint)
+    }
 
     static func mainWindowScore(identifierRawValue: String?, title: String, canBecomeMain: Bool) -> Int {
         var score = 0

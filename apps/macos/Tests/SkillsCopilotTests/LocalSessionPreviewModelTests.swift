@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("LocalSessionPreviewModelTests")
 struct LocalSessionPreviewModelTests {
+    @Test("LocalSessionPreviewModelTests")
     func run() throws {
         try previewDecodesRedactedRowsAndSafety()
         try previewDecodesCandidateAndContentCompatibility()
@@ -11,6 +14,7 @@ struct LocalSessionPreviewModelTests {
         try defaultDetailFiltersShowOnlyConversationMessages()
         try unavailableKeepsAuthorizationRequired()
         try filteredEmptyCopyExplainsHiddenLocalSessionCount()
+        try skillCallNamesDriveFollowUpActions()
     }
 
     private func messagePageDecodesExactFinalMessages() throws {
@@ -32,6 +36,28 @@ struct LocalSessionPreviewModelTests {
         try expectFalse(LocalSessionContentKind.defaultDetailKinds.contains(.thinking), "Thinking should be hidden by default.")
         try expectFalse(LocalSessionContentKind.defaultDetailKinds.contains(.toolCall), "Tool calls should be hidden by default.")
         try expectFalse(LocalSessionContentKind.defaultDetailKinds.contains(.skillCall), "Skill calls should be hidden by default.")
+    }
+
+    private func skillCallNamesDriveFollowUpActions() throws {
+        let payload = """
+        {
+          "id":"skill-call",
+          "kind":"skill_call",
+          "title":"Skill: release-audit",
+          "text":"release-audit (2 calls)",
+          "char_count":23,
+          "evidence_refs":[]
+        }
+        """
+        let item = try JSONDecoder().decode(
+            LocalSessionContentItem.self,
+            from: Data(payload.utf8)
+        )
+        try expectEqual(
+            item.referencedSkillName,
+            "release-audit",
+            "Skill-call rows should expose a stable name for open/install follow-up actions."
+        )
     }
 
     private func previewDecodesRedactedRowsAndSafety() throws {

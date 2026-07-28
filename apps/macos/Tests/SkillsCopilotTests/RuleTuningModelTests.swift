@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("RuleTuningModelTests")
 struct RuleTuningModelTests {
+    @Test("RuleTuningModelTests")
     func run() throws {
         try decodesFlexibleRuleTuningPayload()
         try groupSuppressionTakesPrecedenceOverRuleState()

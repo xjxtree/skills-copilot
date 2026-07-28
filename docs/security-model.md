@@ -28,6 +28,10 @@ This file describes security and privacy boundaries.
   reports must not persist secrets.
 - Session preview data is redacted and bounded before it crosses the service
   boundary.
+- Native file watching is limited to the Rust-provided bounded authorization
+  plan. Broad roots and symbolic-link components fail closed. FSEvents paths
+  are ignored and never logged, rendered, or persisted; events only invalidate
+  local cache state until the user explicitly chooses Refresh or Deep Scan.
 
 ## Credentials
 
@@ -67,9 +71,15 @@ This file describes security and privacy boundaries.
   selected `.agents/skills` roots are excluded from editable inventory.
   Installed local sources outside those roots remain visible but are
   unlink-only; they never receive a ZIP replacement action.
+- Developer ID signing, notarization, stapling, and optional post-staple ZIP
+  creation are explicit maintainer-only release actions. They require an
+  identity selected at release-build invocation and a named `notarytool`
+  Keychain profile; raw notarization credentials are not accepted. The scripts
+  never run from normal builds, never publish an artifact, and refuse to
+  overwrite an existing output ZIP.
 - Hidden apply/write paths, hidden task state, raw prompt/response/trace
-  persistence, public distribution automation, signing, notarization, DMG, and
-  other ZIP creation/distribution work require explicit new scope.
+  persistence, public distribution automation, DMG creation, updater feeds,
+  and other ZIP creation/distribution work require explicit new scope.
 
 ## Screen Capture
 

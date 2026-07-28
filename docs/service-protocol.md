@@ -46,6 +46,30 @@ verification.
 - Service method changes must update fixtures and pass
   `pnpm verify:service-protocol-drift`.
 
+## Authorized File Watch Plan
+
+`app.stateSnapshot` includes `watch_plan` with `roots`, `total_count`, and
+`truncated`. The Rust command layer derives this bounded capability list from
+existing documented adapter roots, existing same-scope link targets, parent
+directories of documented config paths, and the app-owned
+`tool-global/skills` library.
+
+- The plan contains at most 256 absolute existing directories.
+- `/`, shallow volume-wide directories, the entire user home, the selected
+  project root, the app-data root, relative paths, and paths with `.` / `..` or
+  any symbolic-link component are rejected.
+- Raw plan paths are internal capability data. Native clients must not render,
+  log, persist, or attach them to diagnostics.
+- Native FSEvents callbacks discard event paths and return only a count plus a
+  typed “full reconciliation required” flag. Events invalidate cached state;
+  they do not call the service or trigger a scan automatically.
+- Refresh is explicit: it reloads current catalog state when clean and calls
+  `catalog.scanAll` when invalidated. Deep Scan always calls
+  `catalog.scanAll`, covers roots that did not exist when the plan was built,
+  and restarts the stream from the current event boundary.
+- An empty, truncated, rejected, or unstartable plan degrades to explicit
+  Refresh / Deep Scan with a path-free status message.
+
 ## Config Consistency
 
 Protocol version 2 makes direct config saves and snapshot rollback confirmations

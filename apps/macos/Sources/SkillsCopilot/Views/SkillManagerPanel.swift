@@ -52,6 +52,7 @@ private enum SkillManagerInventorySort: String, CaseIterable, Identifiable {
 
 struct SkillManagerPanel: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var skillManagerStore: SkillManagerStore
     var showsHeader = true
 
     @State private var selectedWorkflow: SkillManagerWorkflow = .searchInstall
@@ -62,6 +63,7 @@ struct SkillManagerPanel: View {
     @State private var pendingConfirmation: SkillManagerWriteConfirmation?
     @State private var isChoosingArchive = false
     @State private var isChoosingImportArchive = false
+    @State private var isArchiveDropTarget = false
     @State private var inventoryQuery = ""
     @State private var inventorySourceFilter: SkillManagerInventorySourceFilter = .all
     @State private var inventoryAgentFilter = "all"
@@ -134,7 +136,7 @@ struct SkillManagerPanel: View {
             configureAction(for: selection)
             store.clearSkillManagerWorkflowPreviews()
         }
-        .onChange(of: store.skillManagerScope) { _ in
+        .onChange(of: skillManagerStore.skillManagerScope) { _ in
             guard selectedWorkflow == .installedUpdates else { return }
             selectedSkill = nil
         }
@@ -209,7 +211,7 @@ struct SkillManagerPanel: View {
     }
 
     private var startupSnapshotSummary: String {
-        let count = store.skillManagerInstalledByScope.values.reduce(0) { $0 + $1.installed.count }
+        let count = skillManagerStore.skillManagerInstalledByScope.values.reduce(0) { $0 + $1.installed.count }
         return String(
             format: UIStrings.text("skillManager.snapshot.count", "%d cached skills"),
             count
@@ -217,7 +219,7 @@ struct SkillManagerPanel: View {
     }
 
     private var isRefreshing: Bool {
-        store.isLoadingSkillManagerTools || store.isListingSkillManagerInstalled
+        skillManagerStore.isLoadingSkillManagerTools || skillManagerStore.isListingSkillManagerInstalled
     }
 
     private var workflowPicker: some View {
@@ -234,10 +236,10 @@ struct SkillManagerPanel: View {
 
     @ViewBuilder
     private var feedback: some View {
-        if let error = store.skillManagerErrorMessage {
+        if let error = skillManagerStore.skillManagerErrorMessage {
             WorkflowSheetInlineBanner(message: error, style: .error)
         }
-        if let message = store.skillManagerMessage {
+        if let message = skillManagerStore.skillManagerMessage {
             WorkflowSheetInlineBanner(message: message, style: .success)
         }
         if let message = externalManagerUnavailableMessage {
@@ -252,7 +254,7 @@ struct SkillManagerPanel: View {
             HStack(spacing: 8) {
                 TextField(
                     UIStrings.text("skillManager.query", "Search skills"),
-                    text: $store.skillManagerSearchQuery
+                    text: $skillManagerStore.skillManagerSearchQuery
                 )
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { Task { await store.searchSkillManager() } }
@@ -262,7 +264,7 @@ struct SkillManagerPanel: View {
                 .disabled(!canSearch)
             }
 
-            if let result = store.skillManagerSearchResult {
+            if let result = skillManagerStore.skillManagerSearchResult {
                 if result.results.isEmpty {
                     Text(UIStrings.text("skillManager.search.noResults", "No search results returned."))
                         .font(.caption)
@@ -305,7 +307,7 @@ struct SkillManagerPanel: View {
                     .font(.subheadline.bold())
                     Text(UIStrings.text(
                         "skillManager.localImport.help",
-                        "Import one validated ZIP into the local library, then choose its install scope and agents."
+                        "Drag or choose a single-skill ZIP. It is validated before you choose install scope and agents."
                     ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -319,9 +321,40 @@ struct SkillManagerPanel: View {
                         systemImage: "plus"
                     )
                 }
-                .disabled(store.isPreviewingSkillManagerLocalArchiveImport)
+                .disabled(skillManagerStore.isPreviewingSkillManagerLocalArchiveImport)
                 .accessibilityIdentifier("skill-manager.local-import.choose")
             }
+            .padding(10)
+            .background(
+                isArchiveDropTarget
+                    ? Color.accentColor.opacity(0.12)
+                    : Color.agentCopilotPanelBackground,
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(
+                        isArchiveDropTarget ? Color.accentColor : Color.secondary.opacity(0.14),
+                        style: StrokeStyle(
+                            lineWidth: isArchiveDropTarget ? 2 : 1,
+                            dash: isArchiveDropTarget ? [5, 4] : []
+                        )
+                    )
+            )
+            .onDrop(
+                of: [UTType.fileURL],
+                isTargeted: $isArchiveDropTarget,
+                perform: handleArchiveDrop
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(UIStrings.text(
+                "skillManager.localImport.dropZone",
+                "Local skill ZIP import"
+            ))
+            .accessibilityHint(UIStrings.text(
+                "skillManager.localImport.dropZone.hint",
+                "Choose a ZIP file or drag one here to validate it before import."
+            ))
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -362,7 +395,7 @@ struct SkillManagerPanel: View {
                 Label(UIStrings.text("skillManager.inventory", "Skill Inventory"), systemImage: "list.bullet.rectangle")
                     .font(.headline)
                 Spacer()
-                Picker(UIStrings.scope, selection: $store.skillManagerScope) {
+                Picker(UIStrings.scope, selection: $skillManagerStore.skillManagerScope) {
                     ForEach(SkillManagerScope.allCases) { scope in
                         Text(scope.title).tag(scope)
                     }
@@ -402,7 +435,7 @@ struct SkillManagerPanel: View {
             }
             .controlSize(.small)
 
-            if store.isListingSkillManagerInstalled && store.skillManagerInventoryItems.isEmpty {
+            if skillManagerStore.isListingSkillManagerInstalled && store.skillManagerInventoryItems.isEmpty {
                 ProgressView(UIStrings.loading)
             } else if store.skillManagerInstalled == nil {
                 Text(UIStrings.text(
@@ -647,7 +680,7 @@ struct SkillManagerPanel: View {
             } label: {
                 Label(UIStrings.text("skillManager.previewInstall", "Preview Install"), systemImage: "plus.circle")
             }
-            .disabled(selectedActionAgents.isEmpty || externalMutationDisabled || store.isPreviewingSkillManagerMutation)
+            .disabled(selectedActionAgents.isEmpty || externalMutationDisabled || skillManagerStore.isPreviewingSkillManagerMutation)
         case .remove:
             Button(role: .destructive) {
                 Task {
@@ -665,7 +698,7 @@ struct SkillManagerPanel: View {
             } label: {
                 Label(UIStrings.text("skillManager.previewRemove", "Preview Remove"), systemImage: "minus.circle")
             }
-            .disabled(selectedActionAgents.isEmpty || externalMutationDisabled || store.isPreviewingSkillManagerMutation)
+            .disabled(selectedActionAgents.isEmpty || externalMutationDisabled || skillManagerStore.isPreviewingSkillManagerMutation)
         case .update:
             if selection.isLocal {
                 Button {
@@ -673,7 +706,7 @@ struct SkillManagerPanel: View {
                 } label: {
                     Label(UIStrings.text("skillManager.chooseZip", "Choose ZIP & Preview"), systemImage: "doc.zipper")
                 }
-                .disabled(selection.localInstanceID == nil || store.isPreviewingSkillManagerLocalArchiveUpdate)
+                .disabled(selection.localInstanceID == nil || skillManagerStore.isPreviewingSkillManagerLocalArchiveUpdate)
             } else {
                 Button {
                     Task {
@@ -686,7 +719,7 @@ struct SkillManagerPanel: View {
                 } label: {
                     Label(UIStrings.text("skillManager.previewUpdate", "Preview Update"), systemImage: "arrow.triangle.2.circlepath")
                 }
-                .disabled(externalMutationDisabled || store.isPreviewingSkillManagerMutation)
+                .disabled(externalMutationDisabled || skillManagerStore.isPreviewingSkillManagerMutation)
             }
         case .deleteSource:
             Button(role: .destructive) {
@@ -696,13 +729,13 @@ struct SkillManagerPanel: View {
             } label: {
                 Label(UIStrings.text("skillManager.previewDelete", "Preview Delete"), systemImage: "trash")
             }
-            .disabled(store.isPreviewingSkillManagerLocalDelete)
+            .disabled(skillManagerStore.isPreviewingSkillManagerLocalDelete)
         }
     }
 
     @ViewBuilder
     private var previewSection: some View {
-        if let confirmation = store.skillManagerMutationConfirmation {
+        if let confirmation = skillManagerStore.skillManagerMutationConfirmation {
             previewCard(title: confirmation.result.preview.localizedSummary) {
                 commandPreview(confirmation.result.preview)
                 if let output = confirmation.result.output { commandOutput(output) }
@@ -710,10 +743,10 @@ struct SkillManagerPanel: View {
                     pendingConfirmation = .mutation(confirmation)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isApplyingSkillManagerMutation)
+                .disabled(skillManagerStore.isApplyingSkillManagerMutation)
             }
         }
-        if let confirmation = store.skillManagerLocalArchiveImportConfirmation {
+        if let confirmation = skillManagerStore.skillManagerLocalArchiveImportConfirmation {
             previewCard(title: confirmation.result.summary) {
                 MetadataLine(label: UIStrings.text("metadata.skill", "Skill"), value: confirmation.result.skillName)
                 MetadataLine(
@@ -736,7 +769,7 @@ struct SkillManagerPanel: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        if let confirmation = store.skillManagerLocalArchiveUpdateConfirmation {
+        if let confirmation = skillManagerStore.skillManagerLocalArchiveUpdateConfirmation {
             previewCard(title: confirmation.result.summary) {
                 MetadataLine(label: UIStrings.text("metadata.skill", "Skill"), value: confirmation.result.skillName)
                 MetadataLine(
@@ -753,7 +786,7 @@ struct SkillManagerPanel: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        if let confirmation = store.skillManagerLocalDeleteConfirmation {
+        if let confirmation = skillManagerStore.skillManagerLocalDeleteConfirmation {
             previewCard(title: confirmation.result.summary) {
                 MetadataLine(label: UIStrings.text("metadata.skill", "Skill"), value: confirmation.result.skillName)
                 MetadataLine(label: UIStrings.source, value: confirmation.result.path)
@@ -840,8 +873,8 @@ struct SkillManagerPanel: View {
     }
 
     private var canSearch: Bool {
-        !store.skillManagerSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !store.isSearchingSkillManager
+        !skillManagerStore.skillManagerSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !skillManagerStore.isSearchingSkillManager
             && !externalMutationDisabled
     }
 
@@ -873,6 +906,37 @@ struct SkillManagerPanel: View {
         } catch {
             // File picker cancellation needs no banner; service preview reports validation errors.
         }
+    }
+
+    private func handleArchiveDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard providers.count == 1,
+              let provider = providers.first,
+              provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        else { return false }
+
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            let url: URL?
+            if let value = item as? URL {
+                url = value
+            } else if let value = item as? NSURL {
+                url = value as URL
+            } else if let data = item as? Data {
+                url = URL(dataRepresentation: data, relativeTo: nil)
+            } else {
+                url = nil
+            }
+
+            guard let url,
+                  let archive = SkillManagerArchiveDropModel.acceptedArchive(in: [url])
+            else { return }
+
+            Task { @MainActor in
+                let didAccess = archive.startAccessingSecurityScopedResource()
+                defer { if didAccess { archive.stopAccessingSecurityScopedResource() } }
+                await store.previewSkillManagerLocalArchiveImport(archivePath: archive.path)
+            }
+        }
+        return true
     }
 
     private func applyTitle(for kind: SkillManagerMutationInputs.Kind) -> String {
@@ -913,23 +977,23 @@ struct SkillManagerPanel: View {
 
     private func isCurrentConfirmation(_ confirmation: SkillManagerWriteConfirmation) -> Bool {
         switch confirmation {
-        case .mutation(let value): return store.skillManagerMutationConfirmation == value
-        case .localDelete(let value): return store.skillManagerLocalDeleteConfirmation == value
-        case .localArchiveImport(let value): return store.skillManagerLocalArchiveImportConfirmation == value
-        case .localArchiveUpdate(let value): return store.skillManagerLocalArchiveUpdateConfirmation == value
+        case .mutation(let value): return skillManagerStore.skillManagerMutationConfirmation == value
+        case .localDelete(let value): return skillManagerStore.skillManagerLocalDeleteConfirmation == value
+        case .localArchiveImport(let value): return skillManagerStore.skillManagerLocalArchiveImportConfirmation == value
+        case .localArchiveUpdate(let value): return skillManagerStore.skillManagerLocalArchiveUpdateConfirmation == value
         }
     }
 
     private var primaryTool: SkillManagerToolRecord? {
-        store.skillManagerTools.first { $0.id == "npx-skills" } ?? store.skillManagerTools.first
+        skillManagerStore.skillManagerTools.first { $0.id == "npx-skills" } ?? skillManagerStore.skillManagerTools.first
     }
 
     private var externalMutationDisabled: Bool { externalManagerUnavailableMessage != nil }
 
     private var externalManagerUnavailableMessage: String? {
-        guard !store.isLoadingSkillManagerTools else { return nil }
+        guard !skillManagerStore.isLoadingSkillManagerTools else { return nil }
         guard let tool = primaryTool else {
-            return store.skillManagerTools.isEmpty && store.skillManagerInstalledByScope.isEmpty
+            return skillManagerStore.skillManagerTools.isEmpty && skillManagerStore.skillManagerInstalledByScope.isEmpty
                 ? nil
                 : UIStrings.text(
                     "skillManager.toolUnavailable.message",

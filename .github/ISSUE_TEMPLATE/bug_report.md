@@ -1,23 +1,33 @@
 ---
-name: Documentation bug
-about: Report a contradiction, stale assumption, or unclear design note
-title: "[docs] "
-labels: documentation
+name: Product bug
+about: Report incorrect app behavior, a regression, or a privacy-safe reproducible failure
+title: "[bug] "
+labels: bug
 assignees: ""
 ---
 
 ## Problem
 
-What is wrong or unclear?
+What happened, and what did you expect instead?
 
-## Location
+## Reproduction
 
-File and section or line number:
+List the smallest sequence that reproduces the problem.
 
-## Suggested Fix
+## Environment
 
-What should it say instead?
+- Agent Copilot release:
+- macOS version and Mac architecture:
+- Affected agent family and surface:
+- Screenshot Privacy Mode enabled or disabled:
 
-## References
+## Privacy-Safe Evidence
 
-Links, examples, or local samples:
+Attach only a full Agent Copilot app-window capture. Do not attach the desktop,
+raw configuration, credentials, transcripts, usernames, or unredacted local
+paths. Replace local roots with `$HOME`, `<project-root>`, or `<redacted>`.
+
+## Additional Context
+
+Include relevant public links or sanitized fixture details. Do not paste secrets
+or private agent data.

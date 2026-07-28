@@ -1,8 +1,11 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("SkillManagerRequestGenerationTests")
 @MainActor
 struct SkillManagerRequestGenerationTests {
+    @Test("SkillManagerRequestGenerationTests")
     func run() async throws {
         try canonicalInputsNormalizeIdentity()
         try await newerSearchWinsWhenOlderResponseFinishesLast()

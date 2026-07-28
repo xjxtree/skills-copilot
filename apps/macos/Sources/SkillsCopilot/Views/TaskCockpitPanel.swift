@@ -9,7 +9,10 @@ struct TaskPreflightPreviewSheet: View {
         WorkflowSheetShell(
             title: UIStrings.taskCockpitTitle,
             systemImage: "checklist",
-            subtitle: UIStrings.readOnlyPreview,
+            subtitle: UIStrings.text(
+                "taskCockpit.sheet.subtitle",
+                "Scope agents, preview the redacted request, then confirm sending."
+            ),
             content: {
                 WorkflowSheetSplitLayout(
                     secondaryWidth: CGFloat(UIOptimizationPresentation.taskPreflight.historyColumnWidth)
@@ -44,6 +47,8 @@ struct TaskPreflightPreviewSheet: View {
 
 private struct TaskPreflightEditorPane: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var providerStore: ProviderStore
+    @Environment(\.dismiss) private var dismiss
     @State private var draftTaskText = ""
     @State private var hasLoadedInitialDraft = false
     let historySelectionID: TaskCockpitHistoryRecord.ID?
@@ -83,6 +88,9 @@ private struct TaskPreflightEditorPane: View {
             },
             onCancel: {
                 store.cancelTaskCockpitBuild()
+            },
+            onOpenRecommendation: { recommendation in
+                openRecommendation(recommendation)
             }
         )
         .onAppear {
@@ -137,7 +145,7 @@ private struct TaskPreflightEditorPane: View {
     }
 
     private var providerGateMessage: String? {
-        let status = store.aiProviderStatus
+        let status = providerStore.aiProviderStatus
         if !status.serviceAvailable {
             return UIStrings.localizedServiceMessage(status.disabledReason ?? UIStrings.aiProviderUnavailable)
         }
@@ -149,6 +157,23 @@ private struct TaskPreflightEditorPane: View {
                 ?? UIStrings.text("taskCockpit.providerDisabled", "The configured AI provider is disabled.")
         }
         return nil
+    }
+
+    private func openRecommendation(_ recommendation: TaskCockpitRecommendation) {
+        if store.navigateToSkill(
+            instanceID: recommendation.instanceID,
+            name: recommendation.skillName,
+            agent: recommendation.agent
+        ) {
+            dismiss()
+            return
+        }
+
+        guard let skillName = recommendation.skillName else { return }
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            store.presentSkillManager(searchQuery: skillName)
+        }
     }
 }
 
@@ -317,6 +342,7 @@ struct TaskCockpitPanel: View {
     let onConfirmPrompt: () -> Void
     let onDismissPrompt: () -> Void
     let onCancel: () -> Void
+    let onOpenRecommendation: (TaskCockpitRecommendation) -> Void
 
     private var inputModel: TaskInputModel {
         TaskInputModel(rawText: taskText)
@@ -379,9 +405,11 @@ struct TaskCockpitPanel: View {
 
             if let result {
                 TaskCockpitResultView(
+                    taskText: currentTaskText,
                     result: result,
                     operationState: operationState,
-                    isBuilding: isBuilding
+                    isBuilding: isBuilding,
+                    onOpenRecommendation: onOpenRecommendation
                 )
                 if let failedProviderOutput {
                     TaskCockpitFailedProviderOutputButton(text: failedProviderOutput)
@@ -392,9 +420,6 @@ struct TaskCockpitPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            Label(UIStrings.taskCockpitReadOnlyFootnote, systemImage: "nosign")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -564,7 +589,7 @@ private struct TaskCockpitAgentSelector: View {
                 .disabled(isAllSelected)
             }
 
-            HStack(spacing: 8) {
+            LazyVGrid(columns: agentGridColumns, alignment: .leading, spacing: 8) {
                 ForEach(options) { option in
                     TaskCockpitAgentChip(
                         option: option,
@@ -590,6 +615,13 @@ private struct TaskCockpitAgentSelector: View {
 
     private var isAllSelected: Bool {
         !options.isEmpty && Set(options.map(\.id)).isSubset(of: selectedAgentIDs)
+    }
+
+    private var agentGridColumns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(minimum: 150), spacing: 8, alignment: .topLeading),
+            count: UIOptimizationPresentation.taskPreflight.agentGridColumnCount
+        )
     }
 }
 
@@ -1047,9 +1079,11 @@ private struct TaskCockpitFailedProviderOutputButton: View {
 }
 
 private struct TaskCockpitResultView: View {
+    let taskText: String
     let result: TaskCockpitResult
     let operationState: TaskCockpitOperationState
     let isBuilding: Bool
+    let onOpenRecommendation: (TaskCockpitRecommendation) -> Void
     @State private var diagnosticsExpanded = false
 
     private var model: TaskCockpitDecisionPresentationModel {
@@ -1058,7 +1092,12 @@ private struct TaskCockpitResultView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            TaskCockpitDecisionSummaryCard(model: model)
+            TaskCockpitDecisionSummaryCard(
+                model: model,
+                handoffText: TaskCockpitHandoffModel.text(taskText: taskText, result: result),
+                recommendation: TaskCockpitRecommendation.from(result),
+                onOpenRecommendation: onOpenRecommendation
+            )
 
             DisclosureGroup(isExpanded: $diagnosticsExpanded) {
                 TaskCockpitTechnicalDiagnosticsView(
@@ -1369,6 +1408,10 @@ private struct TaskCockpitScorePill: View {
 
 private struct TaskCockpitDecisionSummaryCard: View {
     let model: TaskCockpitDecisionPresentationModel
+    let handoffText: String
+    let recommendation: TaskCockpitRecommendation?
+    let onOpenRecommendation: (TaskCockpitRecommendation) -> Void
+    @State private var didCopyHandoff = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1452,6 +1495,42 @@ private struct TaskCockpitDecisionSummaryCard: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                Button {
+                    copyHandoff()
+                } label: {
+                    Label(
+                        didCopyHandoff
+                            ? UIStrings.text("action.copied", "Copied")
+                            : UIStrings.text("taskCockpit.action.copyHandoff", "Copy Handoff"),
+                        systemImage: didCopyHandoff ? "checkmark" : "doc.on.doc"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityHint(UIStrings.text(
+                    "taskCockpit.action.copyHandoff.hint",
+                    "Copy the task, recommended route, scores, and review notes for use in your agent."
+                ))
+
+                if let recommendation {
+                    Button {
+                        onOpenRecommendation(recommendation)
+                    } label: {
+                        Label(
+                            UIStrings.text("taskCockpit.action.useRecommendation", "Use Recommendation"),
+                            systemImage: "arrow.right.circle.fill"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityHint(UIStrings.text(
+                        "taskCockpit.action.useRecommendation.hint",
+                        "Open the recommended local skill, or prepare a Skill Manager search if it is not installed."
+                    ))
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1459,6 +1538,25 @@ private struct TaskCockpitDecisionSummaryCard: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(model.verdict.title)
         .accessibilityValue(model.verdict.message)
+    }
+
+    private func copyHandoff() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(handoffText, forType: .string)
+        didCopyHandoff = true
+        if let window = NSApp.mainWindow {
+            NSAccessibility.post(
+                element: window,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: UIStrings.text("action.copied", "Copied"),
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            didCopyHandoff = false
+        }
     }
 
     private var reasonSystemImage: String {

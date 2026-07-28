@@ -32,6 +32,75 @@ struct TaskCockpitSummaryTextRow: Identifiable, Hashable {
     }
 }
 
+struct TaskCockpitRecommendation: Equatable {
+    let instanceID: String?
+    let skillName: String?
+    let agent: String?
+
+    static func from(_ result: TaskCockpitResult) -> TaskCockpitRecommendation? {
+        let topRoute = result.routeCandidates.first
+        let topSkill = result.skillCandidates.first
+        let topAgent = result.agentCandidates.first
+        let candidate = topRoute ?? topSkill ?? topAgent
+        let skillRef = topRoute?.skill ?? topSkill?.skill
+        let skillName = result.summary.recommendedSkillName
+            ?? skillRef?.name
+            ?? (topRoute != nil || topSkill != nil ? candidate?.title : nil)
+        let agent = result.summary.recommendedAgent
+            ?? candidate?.agent
+            ?? skillRef?.agent
+        let instanceID = skillRef?.instanceID
+
+        guard instanceID != nil || skillName != nil || agent != nil else { return nil }
+        return TaskCockpitRecommendation(
+            instanceID: instanceID,
+            skillName: skillName,
+            agent: agent
+        )
+    }
+}
+
+enum TaskCockpitHandoffModel {
+    static func text(taskText: String, result: TaskCockpitResult) -> String {
+        let task = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recommendation = TaskCockpitRecommendation.from(result)
+        var lines = [
+            UIStrings.text("taskCockpit.handoff.title", "Agent Copilot Task Handoff"),
+            "",
+            "\(UIStrings.text("taskCockpit.handoff.task", "Task")): \(task)"
+        ]
+
+        if let agent = recommendation?.agent {
+            lines.append(
+                "\(UIStrings.text("taskCockpit.handoff.agent", "Recommended agent")): \(DisplayText.agent(agent))"
+            )
+        }
+        if let skillName = recommendation?.skillName {
+            lines.append(
+                "\(UIStrings.text("taskCockpit.handoff.skill", "Recommended skill")): \(skillName)"
+            )
+        }
+        if let readiness = result.summary.readinessScore {
+            lines.append(
+                "\(UIStrings.taskCockpitReadinessShort): \(readiness)"
+            )
+        }
+        if let routing = result.summary.routingScore {
+            lines.append(
+                "\(UIStrings.taskCockpitRoutingShort): \(routing)"
+            )
+        }
+
+        let reasons = TaskCockpitDecisionModel(result: result).keyReasons.prefix(3)
+        if !reasons.isEmpty {
+            lines.append("")
+            lines.append(UIStrings.text("taskCockpit.handoff.notes", "Review notes") + ":")
+            lines.append(contentsOf: reasons.map { "- \($0)" })
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
 struct TaskCockpitDecisionModel {
     let result: TaskCockpitResult
 

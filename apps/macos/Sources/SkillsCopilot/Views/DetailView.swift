@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DetailView: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var sessionStore: SessionStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let skill: SkillRecord?
     @State private var isSingleTogglePreviewPresented = false
@@ -34,9 +35,9 @@ struct DetailView: View {
                                 SkillDetailContentView(
                                     skill: skill,
                                     sessionUsage: sessionUsage(for: skill),
-                                    onToggle: { on in
+                                    onToggle: { targetSkill, on in
                                         Task {
-                                            await store.prepareSingleSkillTogglePreview(skill: skill, on: on)
+                                            await store.prepareSingleSkillTogglePreview(skill: targetSkill, on: on)
                                             isSingleTogglePreviewPresented = true
                                         }
                                     }
@@ -118,7 +119,7 @@ struct DetailView: View {
     }
 
     private func sessionUsage(for skill: SkillRecord) -> LocalSessionSkillUsageRow? {
-        store.localSessionPreviewResult.skillUsageRows.first { row in
+        sessionStore.localSessionPreviewResult.skillUsageRows.first { row in
             row.skillId == skill.id
                 || row.skillName == skill.name
                 || row.skillName.caseInsensitiveCompare(skill.name) == .orderedSame
@@ -165,17 +166,18 @@ private struct SkillDetailContentView: View {
     @EnvironmentObject private var store: SkillStore
     let skill: SkillRecord
     let sessionUsage: LocalSessionSkillUsageRow?
-    let onToggle: (Bool) -> Void
+    let onToggle: (SkillRecord, Bool) -> Void
 
     var body: some View {
         let selectedDetailSection = store.selectedDetailSection.visibleSkillDetailSection
+        let selectedFindingGroups = FindingDisplayModel.issueGroups(
+            findings: store.selectedDisplayFindings,
+            severityFilter: FindingDisplayModel.allFilterValue,
+            ruleFilter: FindingDisplayModel.allFilterValue
+        )
+        let catalogStatusIssueCount = SkillListModel.catalogStatusIssueKind(for: skill) == nil ? 0 : 1
 
-            let selectedFindingGroups = FindingDisplayModel.issueGroups(
-                findings: store.selectedDisplayFindings,
-                severityFilter: FindingDisplayModel.allFilterValue,
-                ruleFilter: FindingDisplayModel.allFilterValue
-            )
-            let catalogStatusIssueCount = SkillListModel.catalogStatusIssueKind(for: skill) == nil ? 0 : 1
+        VStack(alignment: .leading, spacing: 24) {
             HeaderView(
                 skill: skill,
                 adoptingAgentSummary: store.adoptingAgentSummary(for: skill),
@@ -188,65 +190,77 @@ private struct SkillDetailContentView: View {
                     store.selectedDetailSection = section
                 },
                 onToggle: { on in
-                    onToggle(on)
+                    onToggle(skill, on)
                 }
             )
 
-        DetailSectionSwitcher(selection: Binding(
-            get: { store.selectedDetailSection.visibleSkillDetailSection },
-            set: { store.selectedDetailSection = $0 }
-        ))
+            DetailSectionSwitcher(selection: Binding(
+                get: { store.selectedDetailSection.visibleSkillDetailSection },
+                set: { store.selectedDetailSection = $0 }
+            ))
 
-        switch selectedDetailSection {
-        case .overview:
-            VStack(alignment: .leading, spacing: 16) {
-                SkillSummaryCard(
+            switch selectedDetailSection {
+            case .overview:
+                VStack(alignment: .leading, spacing: 16) {
+                    SkillSummaryCard(
+                        skill: skill,
+                        detail: store.selectedSkillDetail,
+                        scriptPreview: store.scriptExecutionPreview(for: skill),
+                        isLoading: store.isLoadingDetail
+                    )
+
+                    if DisplayText.isToolGlobal(skill) {
+                        ToolGlobalPreviewCard(skill: skill)
+                    }
+                }
+            case .findings:
+                FindingsSection(
+                    skill: skill,
+                    findings: store.selectedDisplayFindings,
+                    catalogCompleteness: store.catalogCompleteness(forAgent: skill.agent)
+                )
+            case .conflicts:
+                ConflictsSection(
+                    conflicts: store.selectedConflicts,
+                    selectedSkillID: skill.id,
+                    currentAgentSkills: store.skills.filter { $0.agent == skill.agent },
+                    catalogCompleteness: store.catalogCompleteness(forAgent: skill.agent),
+                    onSelectSkill: { conflictSkill in
+                        store.selectedSidebarSelection = .skill(conflictSkill.id)
+                    },
+                    onDisableDuplicate: { conflictSkill in
+                        onToggle(conflictSkill, false)
+                    }
+                )
+            case .history:
+                HistorySection(
+                    events: store.selectedSkillEvents,
+                    isLoading: store.isLoadingSelectedSkillEvents,
+                    completeness: store.selectedSkillEventCompleteness,
+                    onLoadMore: {
+                        Task { await store.loadMoreSkillEvents(instanceID: skill.id, loadAll: false) }
+                    },
+                    onLoadAll: {
+                        Task { await store.loadMoreSkillEvents(instanceID: skill.id, loadAll: true) }
+                    },
+                    onCancel: {
+                        store.cancelSkillEventLoadAll(instanceID: skill.id)
+                    }
+                )
+            case .metadata:
+                SkillDetailCard(
                     skill: skill,
                     detail: store.selectedSkillDetail,
-                    scriptPreview: store.scriptExecutionPreview(for: skill),
+                    adapterCapability: store.adapterCapabilities.first { $0.agent == skill.agent },
                     isLoading: store.isLoadingDetail
                 )
-
-                if DisplayText.isToolGlobal(skill) {
-                    ToolGlobalPreviewCard(skill: skill)
-                }
             }
-        case .findings:
-            FindingsSection(
-                skill: skill,
-                findings: store.selectedDisplayFindings,
-                catalogCompleteness: store.catalogCompleteness(forAgent: skill.agent)
-            )
-        case .conflicts:
-            ConflictsSection(
-                conflicts: store.selectedConflicts,
-                selectedSkillID: skill.id,
-                currentAgentSkillIDs: Set(store.skills.filter { $0.agent == skill.agent }.map(\.id)),
-                catalogCompleteness: store.catalogCompleteness(forAgent: skill.agent)
-            )
-        case .history:
-            HistorySection(
-                events: store.selectedSkillEvents,
-                isLoading: store.isLoadingSelectedSkillEvents,
-                completeness: store.selectedSkillEventCompleteness,
-                onLoadMore: {
-                    Task { await store.loadMoreSkillEvents(instanceID: skill.id, loadAll: false) }
-                },
-                onLoadAll: {
-                    Task { await store.loadMoreSkillEvents(instanceID: skill.id, loadAll: true) }
-                },
-                onCancel: {
-                    store.cancelSkillEventLoadAll(instanceID: skill.id)
-                }
-            )
-        case .metadata:
-            SkillDetailCard(
-                skill: skill,
-                detail: store.selectedSkillDetail,
-                adapterCapability: store.adapterCapabilities.first { $0.agent == skill.agent },
-                isLoading: store.isLoadingDetail
-            )
         }
+        .frame(
+            maxWidth: CGFloat(MainWindowModel.maximumReadableDetailWidth),
+            alignment: .leading
+        )
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 

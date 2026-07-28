@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("ServiceClientRPCTests")
 struct ServiceClientRPCTests {
+    @Test("ServiceClientRPCTests")
     func run() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }

@@ -270,10 +270,10 @@ test("CI builds without launching and validates the bundled sidecar headlessly",
     /run: pnpm smoke:macos-app -- --fixture-data --headless-sidecar/,
   );
   assert.doesNotMatch(workflow, /--bundle-only/);
-  assert.match(workflow, /run: pnpm verify:macos-native-test-registry/);
+  assert.doesNotMatch(workflow, /verify:macos-native-test-registry/);
   assert.match(
     workflow,
-    /run: swift test --package-path apps\/macos --scratch-path "\$RUNNER_TEMP\/swift-tests"/,
+    /run: SWIFTPM_SCRATCH_PATH="\$RUNNER_TEMP\/swift-tests" pnpm test:macos-swift/,
   );
   assert.doesNotMatch(workflow, /run: swift build --package-path apps\/macos/);
   assert.ok(

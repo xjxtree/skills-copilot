@@ -14,6 +14,8 @@ workflows without jumping between hidden folders and terminal output.
 - **Latest release:** use the
   [GitHub Releases](https://github.com/xjxtree/agent-copilot/releases/latest)
   page for the current app download, release notes, and checksums.
+  Standalone tags without a published GitHub Release are not supported app
+  releases and may represent withdrawn or internal builds.
 - **Supported agent families:** Claude Code, Codex, opencode, Pi, Hermes, and
   OpenClaw.
 - **Primary use cases:** skill catalog review, local session lookup,
@@ -30,8 +32,9 @@ Agent Copilot is organized as a local-first desktop product:
   workflow panels.
 - A local processing layer handles scanning, catalog updates, session previews,
   configuration reads, and package-manager operations.
-- Local caches keep the app responsive while preserving explicit refresh
-  controls for heavier scans.
+- Local caches keep the app responsive. A privacy-bounded native watcher marks
+  them stale without reading on its own; Refresh reconciles current changes,
+  while Deep Scan explicitly re-enumerates supported roots.
 - The repository includes focused fixtures and validation scripts so app,
   service, and documentation changes can be checked together before release.
 
@@ -49,7 +52,8 @@ a generic source, and physical cache paths are hidden. Agent Copilot does not qu
 the Codex runtime for skill inventory. Existing Codex projects and configuration
 do not need to be renamed for Agent Copilot.
 
-- **Skills:** scan supported agent roots, filter by agent/scope/status, inspect
+- **Skills:** refresh or deep-scan supported agent roots, filter by
+  agent/scope/status, inspect
   metadata, review findings, and enable or disable supported local skills.
   Filesystem-discovered skills retain source and read-only ownership
   information; installed Codex plugin copies are visible but never writable.

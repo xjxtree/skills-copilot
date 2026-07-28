@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("ToolGlobalModelTests")
 struct ToolGlobalModelTests {
+    @Test("ToolGlobalModelTests")
     func run() throws {
         try toolGlobalScopeDisplaysAsReadOnlyPreview()
         try piNativeSkillsRequireGuardedToggleCapabilityButDoNotDisplayAsReadOnly()

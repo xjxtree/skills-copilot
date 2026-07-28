@@ -1,8 +1,11 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("LocalSessionCacheTests")
 @MainActor
 struct LocalSessionCacheTests {
+    @Test("LocalSessionCacheTests")
     func run() throws {
         try eightHundredSummariesRetainNoContentItems()
         try criteriaDoNotChangeSourceKey()

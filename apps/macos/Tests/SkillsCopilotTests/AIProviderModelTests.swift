@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("AIProviderModelTests")
 struct AIProviderModelTests {
+    @Test("AIProviderModelTests")
     func run() throws {
         try providerStatusDecodesProfilesAndBudget()
         try providerStatusDecodesFlatBudgetAndAliases()

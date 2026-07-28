@@ -1,8 +1,11 @@
+import Testing
 import Darwin
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("ServiceClientProcessTests")
 struct ServiceClientProcessTests {
+    @Test("ServiceClientProcessTests")
     func run() async throws {
         try await cancelledCallTerminatesSidecarProcess()
         try await cancelledCallForceKillsTermIgnoringSidecarProcess()

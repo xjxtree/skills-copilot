@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("SkillManagerModelTests")
 struct SkillManagerModelTests {
+    @Test("SkillManagerModelTests")
     func run() throws {
         try defaultTargetsMatchSupportedManagerOrder()
         try workflowsSeparatePackageOperations()
@@ -20,6 +23,7 @@ struct SkillManagerModelTests {
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
         try duplicateSearchAndInstalledIDsKeepEveryDisplayOccurrence()
+        try archiveDropAcceptsExactlyOneLocalZip()
     }
 
     private func visibleResultsRevealReturnedRowsInTwentyRowSteps() throws {
@@ -98,6 +102,33 @@ struct SkillManagerModelTests {
             SkillManagerWorkflow.allCases.map(\.id),
             ["search-install", "installed-updates"],
             "Skill Manager should expose search and a unified installed/local inventory."
+        )
+    }
+
+    private func archiveDropAcceptsExactlyOneLocalZip() throws {
+        let zip = URL(fileURLWithPath: "/tmp/example.ZIP")
+        let text = URL(fileURLWithPath: "/tmp/example.txt")
+        let remote = URL(string: "https://example.com/example.zip")!
+
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [zip]),
+            zip,
+            "A single local ZIP should be accepted for drag-and-drop import."
+        )
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [text]),
+            nil,
+            "Non-ZIP files should be rejected."
+        )
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [remote]),
+            nil,
+            "Remote URLs should not bypass local archive validation."
+        )
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [zip, zip]),
+            nil,
+            "Archive import should remain a one-package-at-a-time workflow."
         )
     }
 

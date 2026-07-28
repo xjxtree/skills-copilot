@@ -3,25 +3,32 @@ import SwiftUI
 
 struct AgentSessionDetailPanel: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var sessionStore: SessionStore
 
     var body: some View {
         AgentSessionContentPanel(
             session: store.selectedLocalSession,
-            detailState: store.selectedLocalSessionDetailState,
-            messageCompleteness: store.selectedLocalSessionMessageCompleteness,
-            gapNotes: store.selectedLocalSession == nil ? store.localSessionPreviewResult.gapNotes : [],
-            isRefreshing: store.isPreviewingLocalSessions,
-            showsLoadedRowsFilterNotice: store.localSessionCompleteness.hasMore,
+            detailState: sessionStore.selectedLocalSessionDetailState,
+            messageCompleteness: sessionStore.selectedLocalSessionMessageCompleteness,
+            gapNotes: store.selectedLocalSession == nil ? sessionStore.localSessionPreviewResult.gapNotes : [],
+            isRefreshing: sessionStore.isPreviewingLocalSessions,
+            showsLoadedRowsFilterNotice: sessionStore.localSessionCompleteness.hasMore,
             onRefresh: {
                 Task {
                     await store.previewLocalSessions()
                 }
             },
             onLoadDetail: {
-                guard let sessionID = store.selectedLocalSessionID else { return }
+                guard let sessionID = sessionStore.selectedLocalSessionID else { return }
                 Task { await store.loadLocalSessionDetailIfNeeded(sessionID: sessionID) }
             },
-            onCancelMessageLoad: store.cancelLocalSessionMessageLoad
+            onCancelMessageLoad: store.cancelLocalSessionMessageLoad,
+            onOpenSkill: { name, agent in
+                _ = store.navigateToSkill(name: name, agent: agent)
+            },
+            onInstallSkill: { name in
+                store.presentSkillManager(searchQuery: name)
+            }
         )
     }
 }
@@ -36,6 +43,8 @@ private struct AgentSessionContentPanel: View {
     let onRefresh: () -> Void
     let onLoadDetail: () -> Void
     let onCancelMessageLoad: () -> Void
+    let onOpenSkill: (String, String?) -> Void
+    let onInstallSkill: (String) -> Void
 
     @State private var selectedKinds = LocalSessionContentKind.defaultDetailKinds
 
@@ -102,7 +111,12 @@ private struct AgentSessionContentPanel: View {
                         } else {
                             LazyVStack(alignment: .leading, spacing: 8) {
                                 ForEach(visibleItems) { item in
-                                    LocalSessionContentItemRow(item: item)
+                                    LocalSessionContentItemRow(
+                                        item: item,
+                                        sessionAgent: session.agent,
+                                        onOpenSkill: onOpenSkill,
+                                        onInstallSkill: onInstallSkill
+                                    )
                                 }
                             }
                         }
@@ -285,17 +299,15 @@ private struct LocalSessionContentFilterBar: View {
 
 private struct LocalSessionContentItemRow: View {
     let item: LocalSessionContentItem
+    let sessionAgent: String?
+    let onOpenSkill: (String, String?) -> Void
+    let onInstallSkill: (String) -> Void
 
     @State private var isShowingFullText = false
-    @State private var isHoveringActions = false
     @State private var didCopy = false
 
     private var isLongMessage: Bool {
         item.charCount > 600 || item.text.split(whereSeparator: \.isNewline).count > 8
-    }
-
-    private var actionOpacity: Double {
-        isHoveringActions ? 1 : 0
     }
 
     var body: some View {
@@ -324,14 +336,40 @@ private struct LocalSessionContentItemRow: View {
                         .transition(.opacity)
                 }
                 HStack(spacing: 4) {
+                    if let skillName = item.referencedSkillName {
+                        Button {
+                            onOpenSkill(skillName, sessionAgent)
+                        } label: {
+                            Label(
+                                UIStrings.text("session.skillCall.open", "Open Skill"),
+                                systemImage: "arrow.right.circle"
+                            )
+                            .labelStyle(.iconOnly)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderless)
+                        .help(UIStrings.text("session.skillCall.open", "Open Skill"))
+                        .accessibilityLabel(UIStrings.text("session.skillCall.open", "Open Skill"))
+
+                        Button {
+                            onInstallSkill(skillName)
+                        } label: {
+                            Label(
+                                UIStrings.text("session.skillCall.installAnother", "Install in Another Agent…"),
+                                systemImage: "shippingbox.and.arrow.backward"
+                            )
+                            .labelStyle(.iconOnly)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderless)
+                        .help(UIStrings.text("session.skillCall.installAnother", "Install in Another Agent…"))
+                        .accessibilityLabel(UIStrings.text("session.skillCall.installAnother", "Install in Another Agent…"))
+                    }
                     if isLongMessage {
                         detailButton
                     }
                     copyButton
                 }
-                .opacity(actionOpacity)
-                .allowsHitTesting(isHoveringActions)
-                .animation(.easeInOut(duration: 0.12), value: isHoveringActions)
             }
             RenderedLongText(
                 text: item.text,
@@ -346,10 +384,26 @@ private struct LocalSessionContentItemRow: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
-        .onHover { isHovering in
-            isHoveringActions = isHovering
-        }
         .contextMenu {
+            if let skillName = item.referencedSkillName {
+                Button {
+                    onOpenSkill(skillName, sessionAgent)
+                } label: {
+                    Label(
+                        UIStrings.text("session.skillCall.open", "Open Skill"),
+                        systemImage: "arrow.right.circle"
+                    )
+                }
+                Button {
+                    onInstallSkill(skillName)
+                } label: {
+                    Label(
+                        UIStrings.text("session.skillCall.installAnother", "Install in Another Agent…"),
+                        systemImage: "shippingbox.and.arrow.backward"
+                    )
+                }
+                Divider()
+            }
             Button {
                 copyToPasteboard(item.text)
             } label: {
@@ -368,6 +422,9 @@ private struct LocalSessionContentItemRow: View {
                 renderMode: .plain
             )
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(item.title.isEmpty ? item.kind.title : item.title)
+        .accessibilityValue(item.text)
     }
 
     private var detailButton: some View {

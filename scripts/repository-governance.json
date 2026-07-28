@@ -43,7 +43,8 @@
       "verify:quality-budgets",
       "verify:list-completeness",
       "verify:doc-governance",
-      "verify:macos-native-test-registry",
+      "test:check-macos-cache",
+      "test:distribution-workflow",
       "verify:js-syntax",
       "verify:rust-docs",
       "verify:validation-blockers"

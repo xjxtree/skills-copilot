@@ -59,6 +59,10 @@ if git grep -n -I -E "$text_pattern" -- . ':(exclude)dist' ':(exclude)target'; t
   exit 1
 fi
 
+echo "privacy check: Swift UI path sinks"
+node --test scripts/tests/swift-ui-privacy.test.mjs
+node scripts/verify-swift-ui-privacy.mjs
+
 echo "privacy check: fixed local host-port fingerprints"
 if git grep -n -I -E "$local_host_port_pattern" -- . ':(exclude)dist' ':(exclude)target'; then
   echo "privacy check failed: tracked text contains fixed local host-port fingerprints" >&2

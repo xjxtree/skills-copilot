@@ -732,6 +732,7 @@ impl ServiceHost {
         let health = skill_health_summary(&catalog, &adapter_ctx)?;
         Ok(AppStateSnapshot {
             status: self.status(),
+            watch_plan: authorized_file_watch_plan(&adapter_ctx, &self.app_data_dir),
             skills,
             findings,
             conflicts,
@@ -766,9 +767,12 @@ impl ServiceHost {
             supported_methods: supported_methods(),
             refresh: RefreshStatus {
                 scan_progress: "summary-only",
-                watcher_state: "manual-refresh",
-                watcher_detail: "The current stdio sidecar reports completed refresh summaries; native automatic watcher events are not running in this process.",
-                recovery_actions: vec!["Retry the last refresh", "Run Scan to rebuild the agent catalog"],
+                watcher_state: "native-authorized-plan",
+                watcher_detail: "The sidecar supplies a bounded authorized local watch plan. Native clients may use FSEvents only as an invalidation signal; Refresh or Deep Scan remains explicit.",
+                recovery_actions: vec![
+                    "Retry the last refresh",
+                    "Run Deep Scan to rebuild the agent catalog",
+                ],
             },
             project_context: project_context_summary(&self.app_data_dir, self.env_project_context()),
             adapter_capabilities: list_adapter_capabilities(&adapter_ctx),

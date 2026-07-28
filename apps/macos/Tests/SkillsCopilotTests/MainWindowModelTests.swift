@@ -1,10 +1,14 @@
+import Testing
 @testable import SkillsCopilot
 
+@Suite("MainWindowModelTests")
 struct MainWindowModelTests {
+    @Test("MainWindowModelTests")
     func run() throws {
         try mainWindowConfigurationIsStable()
         try taskCockpitAccessibilityIdentifiersAreStable()
         try configuredMainWindowWinsReopenScoring()
+        try onboardingStorageKeyIsVersioned()
     }
 
     private func mainWindowConfigurationIsStable() throws {
@@ -12,8 +16,23 @@ struct MainWindowModelTests {
         try expectEqual(AppAccessibilityID.mainContent, "skills-copilot.main-content", "Main content accessibility identifier should stay stable.")
         try expectEqual(MainWindowModel.windowIdentifierRawValue, AppAccessibilityID.mainWindow, "Window identifier should match the AX identifier.")
         try expectEqual(MainWindowModel.autosaveName, "SkillsCopilot.MainWindow", "Main window autosave name should remain stable.")
-        try expectEqual(MainWindowModel.minimumWidth, 1349, "Main window minimum width should match the protected layout width.")
+        try expectEqual(MainWindowModel.minimumWidth, 1024, "Main window minimum width should fit supported compact laptop layouts.")
         try expectEqual(MainWindowModel.minimumHeight, 600, "Main window minimum height should match the launch smoke expectation.")
+        try expectEqual(
+            MainWindowModel.usesCompactLayout(width: 1024),
+            true,
+            "The minimum supported width should use the compact two-column layout."
+        )
+        try expectEqual(
+            MainWindowModel.usesCompactLayout(width: 1349),
+            false,
+            "Wide windows should retain the three-column layout."
+        )
+        try expectEqual(
+            MainWindowModel.maximumReadableDetailWidth <= 680,
+            true,
+            "Skill detail prose should stay within the readable line-width budget."
+        )
     }
 
     private func taskCockpitAccessibilityIdentifiersAreStable() throws {
@@ -46,5 +65,13 @@ struct MainWindowModelTests {
 
         try expectEqual(configured > titledOnly, true, "Configured main window should win over a title-only window.")
         try expectEqual(titledOnly > other, true, "Titled main window should win over unrelated app windows.")
+    }
+
+    private func onboardingStorageKeyIsVersioned() throws {
+        try expectEqual(
+            FirstRunOnboardingModel.completionStorageKey,
+            "agentCopilot.onboarding.completed.v1",
+            "Onboarding completion should use an explicit versioned app-local key."
+        )
     }
 }

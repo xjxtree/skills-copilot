@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("ScriptExecutionModelTests")
 struct ScriptExecutionModelTests {
+    @Test("ScriptExecutionModelTests")
     func run() throws {
         try previewDecodesServicePayload()
         try previewDecodesInlineScopePayload()
