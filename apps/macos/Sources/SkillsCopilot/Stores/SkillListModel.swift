@@ -308,6 +308,7 @@ enum SkillListModel {
         issueIndex providedIssueIndex: SkillIssueIndex? = nil
     ) -> [SkillRecord] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let asciiNeedle = foldedASCIINeedle(query)
         var cachedIssueIndex = providedIssueIndex
         func listIssueIndex() -> SkillIssueIndex {
             if let cachedIssueIndex {
@@ -317,7 +318,11 @@ enum SkillListModel {
             cachedIssueIndex = index
             return index
         }
-        let searched = skills.filter { matchesSearchQuery($0, query: query) }
+        let searched = query.isEmpty
+            ? skills
+            : skills.filter {
+                matchesNormalizedSearchQuery($0, query: query, asciiNeedle: asciiNeedle)
+            }
         let filtered = searched.filter { skill in
             guard agentFilter.includes(skill) else {
                 return false
@@ -389,15 +394,73 @@ enum SkillListModel {
     static func matchesSearchQuery(_ skill: SkillRecord, query rawQuery: String) -> Bool {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
-        return [
-            skill.name,
-            skill.definitionId,
-            skill.displayPath,
-            agentSearchText(for: skill.agent),
-            skill.scope,
-        ].contains { value in
-            value.localizedCaseInsensitiveContains(query)
+        return matchesNormalizedSearchQuery(
+            skill,
+            query: query,
+            asciiNeedle: foldedASCIINeedle(query)
+        )
+    }
+
+    private static func matchesNormalizedSearchQuery(
+        _ skill: SkillRecord,
+        query: String,
+        asciiNeedle: [UInt8]?
+    ) -> Bool {
+        containsSearchQuery(skill.name, query: query, asciiNeedle: asciiNeedle)
+            || containsSearchQuery(skill.definitionId, query: query, asciiNeedle: asciiNeedle)
+            || containsSearchQuery(skill.displayPath, query: query, asciiNeedle: asciiNeedle)
+            || containsSearchQuery(agentSearchText(for: skill.agent), query: query, asciiNeedle: asciiNeedle)
+            || containsSearchQuery(skill.scope, query: query, asciiNeedle: asciiNeedle)
+    }
+
+    private static func containsSearchQuery(
+        _ value: String,
+        query: String,
+        asciiNeedle: [UInt8]?
+    ) -> Bool {
+        if let asciiNeedle,
+           let result = asciiCaseInsensitiveContains(value, foldedNeedle: asciiNeedle) {
+            return result
         }
+        return value.localizedCaseInsensitiveContains(query)
+    }
+
+    private static func foldedASCIINeedle(_ value: String) -> [UInt8]? {
+        let bytes = Array(value.utf8)
+        guard bytes.allSatisfy({ $0 < 0x80 }) else { return nil }
+        return bytes.map(foldASCIIByte)
+    }
+
+    private static func asciiCaseInsensitiveContains(
+        _ value: String,
+        foldedNeedle: [UInt8]
+    ) -> Bool? {
+        let storageResult: Bool?? = value.utf8.withContiguousStorageIfAvailable { haystack in
+            guard haystack.allSatisfy({ $0 < 0x80 }) else { return nil }
+            guard foldedNeedle.count <= haystack.count else { return false }
+            guard !foldedNeedle.isEmpty else { return true }
+
+            for start in 0...(haystack.count - foldedNeedle.count) {
+                var matches = true
+                for offset in foldedNeedle.indices
+                where foldASCIIByte(haystack[start + offset]) != foldedNeedle[offset] {
+                    matches = false
+                    break
+                }
+                if matches {
+                    return true
+                }
+            }
+            return false
+        }
+        if let storageResult {
+            return storageResult
+        }
+        return nil
+    }
+
+    private static func foldASCIIByte(_ byte: UInt8) -> UInt8 {
+        byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
     }
 
     struct SkillIssueIndex {

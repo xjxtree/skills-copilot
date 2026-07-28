@@ -37,6 +37,25 @@ struct NativeListModelTest {
             ["beta"],
             "search matches path"
         )
+        let multilingualSkill = skill(
+            id: "multilingual",
+            scope: "agent-global",
+            path: "/tmp/技能/alpha/SKILL.md",
+            definitionId: "def.multilingual",
+            name: "技能 Alpha",
+            state: "loaded",
+            enabled: true
+        )
+        assertEqual(
+            SkillListModel.matchesSearchQuery(multilingualSkill, query: "技能"),
+            true,
+            "search preserves non-ASCII query matching"
+        )
+        assertEqual(
+            SkillListModel.matchesSearchQuery(multilingualSkill, query: "ALPHA"),
+            true,
+            "ASCII search falls back for non-ASCII values"
+        )
 
         assertEqual(
             filter(agentFilter: .all).map(\.id),

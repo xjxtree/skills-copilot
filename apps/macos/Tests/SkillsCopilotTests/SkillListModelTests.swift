@@ -101,6 +101,24 @@ struct SkillListModelTests {
             ["beta"],
             "Search should match display paths."
         )
+
+        let multilingualSkill = skill(
+            id: "multilingual",
+            scope: "agent-global",
+            path: "/tmp/技能/alpha/SKILL.md",
+            definitionId: "def.multilingual",
+            name: "技能 Alpha"
+        )
+        try expectEqual(
+            SkillListModel.matchesSearchQuery(multilingualSkill, query: "技能"),
+            true,
+            "Search should preserve localized matching for non-ASCII queries."
+        )
+        try expectEqual(
+            SkillListModel.matchesSearchQuery(multilingualSkill, query: "ALPHA"),
+            true,
+            "ASCII queries should fall back to localized matching for non-ASCII values."
+        )
     }
 
     private func stateFiltersUseEffectiveStatusFindingsAndConflicts() throws {
