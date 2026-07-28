@@ -465,15 +465,11 @@ sign_app_bundle() {
   fi
 }
 
-case "$MODE" in
-  --build-only|build-only)
-    ;;
-  *)
-    terminate_existing_app_instances
-    ;;
-esac
-
-env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
+if [[ ${#CARGO_ENV[@]} -gt 0 ]]; then
+  env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
+else
+  "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
+fi
 swift build "${SWIFT_BUILD_ARGS[@]}"
 
 SWIFT_BIN_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
@@ -533,6 +529,14 @@ cat >"$INFO_PLIST" <<PLIST
 PLIST
 
 sign_app_bundle
+
+case "$MODE" in
+  --build-only|build-only)
+    ;;
+  *)
+    terminate_existing_app_instances
+    ;;
+esac
 
 LAUNCH_ENV_VARS=(
   SKILLS_COPILOT_HOME

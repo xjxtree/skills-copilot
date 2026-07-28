@@ -518,7 +518,7 @@ pub fn preview_remove_with_manager(
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
-    let (preview, removal_plan) = build_remove_preview(catalog, ctx, params)?;
+    let (preview, removal_plan, _) = build_remove_preview(catalog, ctx, params)?;
     Ok(SkillManagerMutationRecord {
         preview,
         output: None,
@@ -534,19 +534,22 @@ pub fn apply_remove_with_manager(
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
-    let (preview, removal_plan) = build_remove_preview(catalog, ctx, params)?;
+    let (preview, removal_plan, detach_preview_token) = build_remove_preview(catalog, ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
     let output = if params.full_uninstall {
         run_previewed_command(ctx, &preview)?.output
     } else {
-        let toggle_preview =
-            preview_skill_toggles(catalog, ctx, &removal_plan.instance_ids, false)?;
+        let toggle_preview_token = detach_preview_token.ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "partial removal is missing its bound config-detach preview".to_string(),
+            )
+        })?;
         let applied = apply_skill_toggles(
             catalog,
             ctx,
             &removal_plan.instance_ids,
             false,
-            &toggle_preview.preview_token,
+            &toggle_preview_token,
         )?;
         if applied.applied_count != removal_plan.instance_ids.len() {
             return Err(CommandError::SkillManagerRemovalIncomplete(format!(
@@ -807,7 +810,14 @@ fn build_remove_preview(
     catalog: &Catalog,
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
-) -> Result<(SkillManagerCommandPreview, SkillManagerRemovalPlan), CommandError> {
+) -> Result<
+    (
+        SkillManagerCommandPreview,
+        SkillManagerRemovalPlan,
+        Option<String>,
+    ),
+    CommandError,
+> {
     let skill = params.skill.trim();
     if skill.is_empty() {
         return Err(CommandError::InvalidSkillManagerRequest(
@@ -874,6 +884,7 @@ fn build_remove_preview(
             }],
             verification: "Refresh the catalog and external-manager inventory; the skill must no longer be installed for any supported agent.".to_string(),
         },
+        None,
     ))
 }
 
@@ -882,7 +893,14 @@ fn build_agent_detach_preview(
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
     skill: &str,
-) -> Result<(SkillManagerCommandPreview, SkillManagerRemovalPlan), CommandError> {
+) -> Result<
+    (
+        SkillManagerCommandPreview,
+        SkillManagerRemovalPlan,
+        Option<String>,
+    ),
+    CommandError,
+> {
     let agents = required_manager_agents(&params.agents)?;
     let expected_scope =
         normalize_manager_scope(params.scope.as_deref())?.unwrap_or_else(|| "project".to_string());
@@ -967,7 +985,10 @@ fn build_agent_detach_preview(
         command.push("--instance-id".to_string());
         command.push(instance_id.clone());
     }
-    let token = preview_token(&command, &cwd, "remove", false, true);
+    let mut confirmation_binding = command.clone();
+    confirmation_binding.push("--config-detach-preview".to_string());
+    confirmation_binding.push(toggle.preview_token.clone());
+    let token = preview_token(&confirmation_binding, &cwd, "remove", false, true);
     let preview = SkillManagerCommandPreview {
         tool_id: "agent-copilot-native".to_string(),
         operation: "remove".to_string(),
@@ -1005,6 +1026,7 @@ fn build_agent_detach_preview(
             ),
         })
         .collect();
+    let toggle_preview_token = toggle.preview_token;
     Ok((
         preview,
         SkillManagerRemovalPlan {
@@ -1016,6 +1038,7 @@ fn build_agent_detach_preview(
             actions,
             verification: "Refresh the catalog; every selected instance must be disabled while unselected agents remain unchanged.".to_string(),
         },
+        Some(toggle_preview_token),
     ))
 }
 

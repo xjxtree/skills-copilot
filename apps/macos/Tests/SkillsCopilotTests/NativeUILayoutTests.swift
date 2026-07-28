@@ -6,6 +6,66 @@ import Testing
 @Suite("NativeUILayoutTests", .serialized)
 @MainActor
 struct NativeUILayoutTests {
+    @Test("no-window fallback uses the standard WindowGroup command")
+    func newWindowFallbackUsesTheStandardCommand() throws {
+        let mainMenu = NSMenu()
+        let unrelatedMenu = NSMenu()
+        unrelatedMenu.addItem(
+            withTitle: "Unrelated",
+            action: #selector(NSDocumentController.newDocument(_:)),
+            keyEquivalent: "n"
+        )
+        unrelatedMenu.items[0].keyEquivalentModifierMask = [.command, .shift]
+        let unrelatedRoot = NSMenuItem()
+        unrelatedRoot.submenu = unrelatedMenu
+        mainMenu.addItem(unrelatedRoot)
+
+        let fileMenu = NSMenu()
+        let newWindow = fileMenu.addItem(
+            withTitle: "New Window",
+            action: #selector(NSDocumentController.newDocument(_:)),
+            keyEquivalent: "n"
+        )
+        newWindow.keyEquivalentModifierMask = [.command]
+        let fileRoot = NSMenuItem()
+        fileRoot.submenu = fileMenu
+        mainMenu.addItem(fileRoot)
+
+        try expectEqual(
+            MainWindowCoordinator.newWindowMenuItem(in: mainMenu) === newWindow,
+            true,
+            "The no-window fallback should dispatch the standard Command-N WindowGroup action."
+        )
+    }
+
+    @Test("reopen ignores unrelated app windows")
+    func reopenIgnoresUnrelatedAppWindows() throws {
+        let unrelatedWindow = MainCapableTestWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        unrelatedWindow.title = "Settings"
+        let mainWindow = MainCapableTestWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 700),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        mainWindow.title = UIStrings.appWindowTitle
+
+        try expectNil(
+            MainWindowCoordinator.preferredMainWindow(in: [unrelatedWindow]),
+            "An unrelated settings window must not be restyled as the main window."
+        )
+        try expectEqual(
+            MainWindowCoordinator.preferredMainWindow(in: [unrelatedWindow, mainWindow]) === mainWindow,
+            true,
+            "Reopen should select the titled main window while ignoring unrelated windows."
+        )
+    }
+
     @Test("main content lays out and renders at the supported window width")
     func mainContentRendersAtSupportedWindowWidth() async throws {
         let defaults = UserDefaults.standard
@@ -122,4 +182,8 @@ struct NativeUILayoutTests {
             "SwiftUI content should render visible pixels at the tested window size."
         )
     }
+}
+
+private final class MainCapableTestWindow: NSWindow {
+    override var canBecomeMain: Bool { true }
 }

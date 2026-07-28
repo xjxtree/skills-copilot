@@ -1220,6 +1220,8 @@
 "skillManager.inventory.sort" = "排序";
 "skillManager.inventory.notLoaded" = "当前范围的清单尚未加载。请使用“加载数据”获取。";
 "skillManager.inventory.noMatches" = "没有已安装技能符合当前搜索和筛选条件。";
+"skillManager.inventory.reloadUnknown" = "已安装清单刷新未完成。";
+"skillManager.inventory.reloadAfterWriteFailed" = "操作已经执行，但无法重新加载已安装清单：%@";
 "filter.allSources" = "全部来源";
 "filter.allAgents" = "全部 Agent";
 "skillManager.source.managerShort" = "管理器";

@@ -91,8 +91,12 @@ entire UI.
   are ignored and are never logged or rendered. No event starts a scan.
   Explicit Refresh performs a full adapter reconciliation when invalidated and
   otherwise reloads cached catalog state; Deep Scan always re-enumerates the
-  documented roots. Startup prewarm and consistency-bound write flows remain
-  the other allowed sources of fresh filesystem work.
+  documented roots. A successful scan clears only invalidations that existed
+  when that scan began; a newer event remains pending for the next Refresh.
+  Committing a project-context transition stops and invalidates the old watcher
+  before validation or follow-up scanning, so a failed transition scan cannot
+  leave stale project roots active. Startup prewarm and consistency-bound write
+  flows remain the other allowed sources of fresh filesystem work.
 
 ### Raw Findings And User-Visible Issues
 

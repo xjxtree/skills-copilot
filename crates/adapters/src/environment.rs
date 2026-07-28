@@ -93,10 +93,17 @@ mod tests {
     #[test]
     fn absolute_path_values_reject_relative_inputs_and_normalize_parent_components() {
         assert_eq!(absolute_path_value(Path::new("relative/path")), None);
-        assert_eq!(
-            absolute_path_value(Path::new("/tmp/adapter-root/../skills")),
-            Some(PathBuf::from("/tmp/skills"))
+        #[cfg(not(windows))]
+        let (input, expected) = (
+            Path::new("/tmp/adapter-root/../skills"),
+            PathBuf::from("/tmp/skills"),
         );
+        #[cfg(windows)]
+        let (input, expected) = (
+            Path::new(r"C:\tmp\adapter-root\..\skills"),
+            PathBuf::from(r"C:\tmp\skills"),
+        );
+        assert_eq!(absolute_path_value(input), Some(expected));
     }
 
     #[test]

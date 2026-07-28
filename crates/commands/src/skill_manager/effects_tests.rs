@@ -352,13 +352,17 @@ fn complete_uninstall_targets_every_external_manager_agent() {
         preview_token: None,
     };
 
-    let (preview, plan) =
+    let (preview, plan, detach_preview_token) =
         build_remove_preview(&catalog, &ctx, &params).expect("complete uninstall preview");
 
     assert_eq!(preview.operation, "remove");
     assert_eq!(plan.mode, "complete-uninstall");
     assert!(plan.full_uninstall);
     assert!(!plan.source_preserved);
+    assert!(
+        detach_preview_token.is_none(),
+        "complete uninstall does not use a native config-detach preview"
+    );
     assert_eq!(
         preview
             .command
@@ -468,6 +472,83 @@ fn partial_remove_detaches_only_selected_agent_and_preserves_shared_source() {
     assert!(
         skill_dir.join("SKILL.md").is_file(),
         "partial detach must preserve the source for unselected agents"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn partial_remove_confirmation_is_bound_to_the_previewed_config_target() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-remove-binding-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let skill_dir = home.join(".agents/skills/shared-skill");
+    fs::create_dir_all(&skill_dir).expect("create shared skill");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+    )
+    .expect("write shared skill");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let original_ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&original_ctx, &catalog).expect("initial scan");
+    let opencode = catalog
+        .list_skill_records()
+        .expect("initial records")
+        .into_iter()
+        .find(|record| record.agent == "opencode" && record.name == "shared-skill")
+        .expect("opencode shared record");
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["opencode".to_string()],
+        instance_ids: vec![opencode.id.clone()],
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+    let preview = preview_remove_with_manager(&catalog, &original_ctx, &params)
+        .expect("partial remove preview");
+    let changed_ctx = AdapterContext {
+        user_home: root.join("different-home"),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+
+    let error = apply_remove_with_manager(
+        &catalog,
+        &changed_ctx,
+        &SkillManagerRemoveParams {
+            confirmed: true,
+            preview_token: Some(preview.preview.preview_token),
+            ..params
+        },
+    )
+    .expect_err("a changed config target must invalidate the confirmation");
+
+    assert!(
+        matches!(
+            &error,
+            CommandError::InvalidSkillManagerRequest(message)
+                if message.contains("fresh preview_token")
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        catalog
+            .get_skill_record(&opencode.id)
+            .expect("read opencode record")
+            .expect("opencode record remains")
+            .enabled,
+        "a stale confirmation must not detach the skill"
     );
     let _ = fs::remove_dir_all(root);
 }

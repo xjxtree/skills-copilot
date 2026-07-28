@@ -216,6 +216,8 @@ final class SkillStore: ObservableObject {
     var authorizedFileWatchPlan = AuthorizedFileWatchPlan.empty
     var activeAuthorizedFileWatchRoots: [String] = []
     var fileWatcherRequiresDeepScan = false
+    var authorizedFileSystemChangeGeneration: UInt64 = 0
+    var authorizedFileWatcherSessionGeneration: UInt64 = 0
     private var lastRefreshAction: RefreshAction = .reload
     private var llmPreparedSkillID: SkillRecord.ID?
     private var agentConfigSnapshotLoadGeneration = 0
@@ -997,6 +999,7 @@ final class SkillStore: ObservableObject {
 
     private func scanAll(allowDuringProjectUpdate: Bool) async {
         guard canStartScan(allowDuringProjectUpdate: allowDuringProjectUpdate) else { return }
+        let fileSystemChangeGenerationAtScanStart = authorizedFileSystemChangeGeneration
         isScanning = true
         errorMessage = nil
         lastMutationMessage = nil
@@ -1010,7 +1013,9 @@ final class SkillStore: ObservableObject {
                 invalidateDetailCaches(for: [selectedSkillID])
             }
             try await refreshCollections()
-            reconcileAuthorizedFileWatcherAfterDeepScan()
+            reconcileAuthorizedFileWatcherAfterDeepScan(
+                scanStartedAtGeneration: fileSystemChangeGenerationAtScanStart
+            )
             lastMutationMessage = UIStrings.scannedSkills(result.scannedCount)
             applyRefreshActivity(result.activity)
             catalogListCompleteness = catalogCompleteness(after: result)
@@ -1039,6 +1044,7 @@ final class SkillStore: ObservableObject {
                 currentCWD: currentCWD ?? rootPath,
                 name: resolvedName.isEmpty ? nil : resolvedName
             )
+            resetAuthorizedFileWatcherForProjectTransition()
             clearProjectScopedPresentationState()
             projectContextState = state
 
@@ -1071,6 +1077,7 @@ final class SkillStore: ObservableObject {
 
         do {
             let state = try await service.clearProjectContext()
+            resetAuthorizedFileWatcherForProjectTransition()
             clearProjectScopedPresentationState()
             projectContextState = state
             await scanAll(allowDuringProjectUpdate: true)
@@ -1586,7 +1593,7 @@ final class SkillStore: ObservableObject {
                     name: confirmation.name
                 )
                 retireSkillManagerLocalCreateConfirmation(confirmation)
-                try await refreshCollections()
+                try await refreshCollections(includeSupplementalData: false)
                 skillManagerMessage = UIStrings.text("skillManager.localCreate.applied", "Local skill template created and imported.")
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
             } catch {
@@ -1640,7 +1647,7 @@ final class SkillStore: ObservableObject {
             do {
                 _ = try await service.applySkillManagerLocalDelete(instanceID: confirmation.instanceID)
                 retireSkillManagerLocalDeleteConfirmation(confirmation)
-                try await refreshCollections()
+                try await refreshCollections(includeSupplementalData: false)
                 skillManagerMessage = UIStrings.text("skillManager.localDelete.applied", "Local skill deleted.")
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
             } catch {
@@ -1840,9 +1847,11 @@ final class SkillStore: ObservableObject {
                 }
                 retireSkillManagerMutationConfirmation(confirmation)
                 invalidateDetailCaches(for: result.updatedSkills.map(\.id))
-                try await refreshCollections()
+                try await refreshCollections(includeSupplementalData: false)
                 pruneDetailCaches(to: Set(skills.map(\.id)))
-                await loadSkillManagerInventory()
+                guard await ensureSkillManagerInventoryRefreshedAfterWrite() else {
+                    return
+                }
                 skillManagerMessage = UIStrings.text("skillManager.apply.applied", "Skill Manager operation applied.")
                 recordLocalRefresh(message: UIStrings.refreshAfterWrite)
                 await loadSelectedDetail()

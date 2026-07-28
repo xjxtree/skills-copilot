@@ -74,9 +74,138 @@ struct AuthorizedFileWatcherTests {
             "Watcher status must not reveal a raw local path"
         )
 
-        store.reconcileAuthorizedFileWatcherAfterDeepScan()
+        store.reconcileAuthorizedFileWatcherAfterDeepScan(
+            scanStartedAtGeneration: store.authorizedFileSystemChangeGeneration
+        )
         try expectFalse(store.hasPendingFileSystemChanges, "Deep Scan reconciliation should clear pending state")
-        try expectEqual(watcher.startCount, 2, "Deep Scan should restart the stream from the current event boundary")
+        try expectEqual(watcher.startCount, 1, "Deep Scan should preserve the active stream for the same roots")
+    }
+
+    @Test("Watcher callbacks queued during reconciliation are not discarded")
+    func queuedWatcherCallbacksRemainPendingAfterReconciliation() async throws {
+        let tree = try TemporaryWatchTree(label: "queued-scan-race")
+        defer { tree.cleanup() }
+        let root = try tree.createDirectory("home/.claude/skills")
+        let watcher = RecordingFileSystemWatcher()
+        let store = SkillStore(
+            service: ServiceClient(),
+            fileSystemWatcher: watcher
+        )
+        store.updateAuthorizedFileWatcher(
+            with: AuthorizedFileWatchPlan(
+                roots: [root.path],
+                totalCount: 1,
+                truncated: false
+            )
+        )
+        let scanGeneration = store.authorizedFileSystemChangeGeneration
+
+        watcher.emit(FileSystemChangeSummary(eventCount: 1, requiresDeepScan: true))
+        store.reconcileAuthorizedFileWatcherAfterDeepScan(
+            scanStartedAtGeneration: scanGeneration
+        )
+        await Task.yield()
+
+        try expectEqual(
+            watcher.startCount,
+            1,
+            "Keeping the stream alive must let an already-queued callback retain its session."
+        )
+        try expectEqual(
+            store.hasPendingFileSystemChanges,
+            true,
+            "An event delivered after scan reconciliation must remain pending for the next Refresh."
+        )
+    }
+
+    @Test("Watcher events that arrive during a deep scan remain pending")
+    func watcherEventsDuringDeepScanRemainPending() async throws {
+        let tree = try TemporaryWatchTree(label: "scan-race")
+        defer { tree.cleanup() }
+        let root = try tree.createDirectory("home/.claude/skills")
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "scan-slow")
+        let watcher = RecordingFileSystemWatcher()
+        let store = SkillStore(
+            service: fake.serviceClient(),
+            fileSystemWatcher: watcher
+        )
+        store.updateAuthorizedFileWatcher(
+            with: AuthorizedFileWatchPlan(
+                roots: [root.path],
+                totalCount: 1,
+                truncated: false
+            )
+        )
+
+        let scan = Task { await store.scanAll() }
+        try await waitForCondition("Deep Scan should reach the service before the watcher event.") {
+            fake.calls().contains("\"method\":\"catalog.scanAll\"")
+        }
+        watcher.emit(FileSystemChangeSummary(eventCount: 1, requiresDeepScan: true))
+        await Task.yield()
+        await scan.value
+
+        try expectEqual(
+            store.hasPendingFileSystemChanges,
+            true,
+            "An event newer than the scan start must survive reconciliation."
+        )
+        try expectEqual(
+            store.watcherStatusMessage,
+            UIStrings.refreshWatcherPendingDeepScan,
+            "The next Refresh should still require a complete scan."
+        )
+    }
+
+    @Test("Project transitions stop stale roots before validation or scan recovery")
+    func projectTransitionsStopStaleWatcherRoots() async throws {
+        let tree = try TemporaryWatchTree(label: "project-transition")
+        defer { tree.cleanup() }
+        let root = try tree.createDirectory("old-project/.claude/skills")
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "project-validation-error")
+        let watcher = RecordingFileSystemWatcher()
+        let store = SkillStore(
+            service: fake.serviceClient(),
+            fileSystemWatcher: watcher
+        )
+        store.updateAuthorizedFileWatcher(
+            with: AuthorizedFileWatchPlan(
+                roots: [root.path],
+                totalCount: 1,
+                truncated: false
+            )
+        )
+        let stopCountBeforeTransition = watcher.stopCount
+
+        await store.setProject(
+            rootPath: "/tmp/missing",
+            currentCWD: "/tmp/missing",
+            name: "Missing Project"
+        )
+
+        try expectEqual(
+            watcher.stopCount,
+            stopCountBeforeTransition + 1,
+            "A committed project transition must stop the old watcher immediately."
+        )
+        try expectEqual(store.activeAuthorizedFileWatchRoots, [], "Old project roots must not remain active after transition.")
+        try expectEqual(store.authorizedFileWatchPlan, .empty, "A failed follow-up scan must not retain the old watch plan.")
+        try expectEqual(store.hasPendingFileSystemChanges, false, "Old-project invalidations must not leak into the new context.")
+
+        watcher.emitFromStart(
+            0,
+            FileSystemChangeSummary(eventCount: 1, requiresDeepScan: true)
+        )
+        await Task.yield()
+        try expectEqual(
+            store.hasPendingFileSystemChanges,
+            false,
+            "A callback already queued by the stopped watcher must be rejected after the project transition."
+        )
     }
 
     @Test("FSEvents starts for a sanitized authorized directory")
@@ -143,12 +272,28 @@ struct AuthorizedFileWatcherTests {
             "Successful reconciliation should clear pending state"
         )
     }
+
+    private func waitForCondition(
+        _ message: String,
+        timeout: TimeInterval = 2,
+        condition: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                throw NativeModelTestFailure(description: message)
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
 }
 
 private final class RecordingFileSystemWatcher: FileSystemWatching {
     private var onChange: (@Sendable (FileSystemChangeSummary) -> Void)?
+    private var callbacks: [(@Sendable (FileSystemChangeSummary) -> Void)] = []
     private(set) var startedPaths: [String] = []
     private(set) var startCount = 0
+    private(set) var stopCount = 0
 
     func start(
         paths: [String],
@@ -157,15 +302,22 @@ private final class RecordingFileSystemWatcher: FileSystemWatching {
         startedPaths = paths
         startCount += 1
         self.onChange = onChange
+        callbacks.append(onChange)
         return true
     }
 
     func stop() {
+        stopCount += 1
         onChange = nil
     }
 
     func emit(_ summary: FileSystemChangeSummary) {
         onChange?(summary)
+    }
+
+    func emitFromStart(_ index: Int, _ summary: FileSystemChangeSummary) {
+        guard callbacks.indices.contains(index) else { return }
+        callbacks[index](summary)
     }
 }
 

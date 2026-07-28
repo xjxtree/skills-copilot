@@ -14,8 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainWindowCoordinator.configureApplicationAppearance()
         MainWindowCoordinator.activateApplication()
-        DispatchQueue.main.async {
-            MainWindowCoordinator.restoreMainWindow()
+        // SwiftUI may create or restore the WindowGroup after this delegate
+        // callback. Defer the fallback so a normal launch cannot create a
+        // duplicate window, then re-check the live window list before opening.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            MainWindowCoordinator.restoreMainWindow(createIfMissing: true)
         }
     }
 
@@ -25,10 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        DispatchQueue.main.async {
-            MainWindowCoordinator.restoreMainWindow(in: sender)
-        }
-        return true
+        MainWindowCoordinator.restoreMainWindow(in: sender, createIfMissing: true)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

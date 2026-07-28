@@ -849,7 +849,11 @@ private final class CancellableServiceScript {
         (try? String(contentsOf: callsURL, encoding: .utf8)) ?? ""
     }
 
-    func waitForPID(timeout: TimeInterval = 2) async throws -> pid_t {
+    func waitForPID(timeout: TimeInterval = 20) async throws -> pid_t {
+        // Swift Testing runs this process-heavy suite alongside the other
+        // native suites. Under full-suite CPU and I/O contention the detached
+        // process task can start well after a two-second fixture deadline,
+        // even though the runner's product timeout has not elapsed.
         let deadline = Date().addingTimeInterval(timeout)
         while true {
             if let pid = try? currentPID() {

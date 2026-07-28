@@ -1220,6 +1220,8 @@
 "skillManager.inventory.sort" = "Sort";
 "skillManager.inventory.notLoaded" = "Inventory has not been loaded for this scope. Use Load Data to fetch it.";
 "skillManager.inventory.noMatches" = "No installed skills match the current search and filters.";
+"skillManager.inventory.reloadUnknown" = "The installed inventory refresh did not complete.";
+"skillManager.inventory.reloadAfterWriteFailed" = "The operation was applied, but the installed inventory could not be reloaded: %@";
 "filter.allSources" = "All Sources";
 "filter.allAgents" = "All Agents";
 "skillManager.source.managerShort" = "Manager";

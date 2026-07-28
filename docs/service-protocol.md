@@ -66,7 +66,12 @@ directories of documented config paths, and the app-owned
 - Refresh is explicit: it reloads current catalog state when clean and calls
   `catalog.scanAll` when invalidated. Deep Scan always calls
   `catalog.scanAll`, covers roots that did not exist when the plan was built,
-  and restarts the stream from the current event boundary.
+  and clears only invalidations already covered when that scan began. The
+  active stream stays attached to unchanged authorized roots so an event
+  already queued for main-thread delivery cannot be discarded at the scan
+  boundary; newer events stay pending. A committed project-context change
+  invalidates the prior watcher session before validation or scanning, and
+  callbacks queued by that stopped session are ignored.
 - An empty, truncated, rejected, or unstartable plan degrades to explicit
   Refresh / Deep Scan with a path-free status message.
 
@@ -430,7 +435,11 @@ or expose write controls.
 - Native clients validate method-specific metadata, not only generic page
   invariants. Search accepts only terminal unknown/source-limited metadata;
   installed accepts only terminal exact enumerable metadata. Invalid refresh
-  metadata is rejected without replacing a current record for the same inputs.
+  metadata from an ordinary read is rejected without replacing a current record
+  for the same inputs. After a confirmed write, any scope that cannot be
+  enumerated is invalidated instead of retaining a stale installed row; the
+  client reports that the operation applied but inventory reload failed and
+  does not publish a success banner.
   Empty and network-blocked searches still display zero loaded rows, unknown
   total, the typed source limitation and recovery guidance, with no load action.
 - Skill removal has two explicit modes. A proper subset of the linked Agents is
@@ -440,7 +449,10 @@ or expose write controls.
   `npx skills remove`, because current manager versions report success while
   leaving direct `.agents/skills` consumers unchanged and remove package lock
   metadata even for a partial request. The shared source and manager ownership
-  therefore remain intact for unselected Agents.
+  therefore remain intact for unselected Agents. The removal confirmation token
+  is also bound to the underlying batch-toggle preview token, including its
+  exact authorized config targets; apply rejects a preview if those targets or
+  eligibility change before confirmation.
 - Selecting every linked Agent is a complete uninstall. The request sets
   `full_uninstall=true`; the service intentionally omits all `--agent`
   arguments so the external manager removes every target it recognizes,
