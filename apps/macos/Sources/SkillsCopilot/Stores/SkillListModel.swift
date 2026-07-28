@@ -308,7 +308,7 @@ enum SkillListModel {
         issueIndex providedIssueIndex: SkillIssueIndex? = nil
     ) -> [SkillRecord] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let asciiNeedle = foldedASCIINeedle(query)
+        let asciiNeedle = foldedASCIIBytes(query)
         var cachedIssueIndex = providedIssueIndex
         func listIssueIndex() -> SkillIssueIndex {
             if let cachedIssueIndex {
@@ -360,7 +360,7 @@ enum SkillListModel {
                 return listIssueIndex().riskyFindingInstanceIDs.contains(skill.id)
             }
         }
-        let sorted = filtered.sorted { lhs, rhs in
+        let sorted = sortOrder == .path ? sortByPath(filtered) : filtered.sorted { lhs, rhs in
             switch sortOrder {
             case .name:
                 return compare(lhs.name, rhs.name)
@@ -397,7 +397,7 @@ enum SkillListModel {
         return matchesNormalizedSearchQuery(
             skill,
             query: query,
-            asciiNeedle: foldedASCIINeedle(query)
+            asciiNeedle: foldedASCIIBytes(query)
         )
     }
 
@@ -425,7 +425,7 @@ enum SkillListModel {
         return value.localizedCaseInsensitiveContains(query)
     }
 
-    private static func foldedASCIINeedle(_ value: String) -> [UInt8]? {
+    private static func foldedASCIIBytes(_ value: String) -> [UInt8]? {
         let bytes = Array(value.utf8)
         guard bytes.allSatisfy({ $0 < 0x80 }) else { return nil }
         return bytes.map(foldASCIIByte)
@@ -461,6 +461,47 @@ enum SkillListModel {
 
     private static func foldASCIIByte(_ byte: UInt8) -> UInt8 {
         byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
+    }
+
+    private static func sortByPath(_ skills: [SkillRecord]) -> [SkillRecord] {
+        skills
+            .map { skill in
+                (skill: skill, asciiKey: foldedASCIIBytes(skill.displayPath))
+            }
+            .sorted { lhs, rhs in
+                if let lhsKey = lhs.asciiKey,
+                   let rhsKey = rhs.asciiKey,
+                   let result = asciiCaseInsensitiveSortDecision(lhsKey, rhsKey) {
+                    return result
+                }
+                return compare(lhs.skill.displayPath, rhs.skill.displayPath)
+            }
+            .map { $0.skill }
+    }
+
+    private static func asciiCaseInsensitiveSortDecision(
+        _ lhs: [UInt8],
+        _ rhs: [UInt8]
+    ) -> Bool? {
+        for offset in 0..<min(lhs.count, rhs.count) {
+            guard lhs[offset] != rhs[offset] else { continue }
+            guard let lhsClass = asciiSortClass(lhs[offset]),
+                  lhsClass == asciiSortClass(rhs[offset]) else {
+                return nil
+            }
+            return lhs[offset] < rhs[offset]
+        }
+        return lhs.count < rhs.count
+    }
+
+    private static func asciiSortClass(_ byte: UInt8) -> UInt8? {
+        if byte >= 0x61, byte <= 0x7A {
+            return 0
+        }
+        if byte >= 0x30, byte <= 0x39 {
+            return 1
+        }
+        return nil
     }
 
     struct SkillIssueIndex {

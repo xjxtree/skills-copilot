@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SkillsCopilot
 
@@ -18,6 +19,7 @@ struct SkillListModelTests {
         try problemItemsUseCurrentAgentRuntimeSemantics()
         try scopeFiltersSeparateProjectAndGlobalSkills()
         try sortOrdersAreStableForCoreListColumns()
+        try pathSortUsesLocalizedComparisonForNonASCIIValues()
         try sortDirectionCanReverseCoreListColumns()
         try skillProvenanceClassifiesAgentRootsDeterministically()
         try skillIdentitySummaryAndDedupeExplanationAreStable()
@@ -448,6 +450,42 @@ struct SkillListModelTests {
         try expectEqual(filtered(sortOrder: .scope).map(\.id), ["alpha", "delta", "gamma", "omega", "theta", "zeta", "beta"], "Scope sort")
         try expectEqual(filtered(sortOrder: .state).map(\.id), ["delta", "beta", "alpha", "gamma", "omega", "zeta", "theta"], "State sort")
         try expectEqual(filtered(sortOrder: .path).map(\.id), ["gamma", "alpha", "zeta", "omega", "beta", "delta", "theta"], "Path sort")
+    }
+
+    private func pathSortUsesLocalizedComparisonForNonASCIIValues() throws {
+        let skills = [
+            skill(
+                id: "multilingual",
+                scope: "agent-global",
+                path: "/tmp/技能/SKILL.md",
+                definitionId: "def.multilingual",
+                name: "Multilingual"
+            ),
+            skill(
+                id: "ascii",
+                scope: "agent-global",
+                path: "/tmp/alpha/SKILL.md",
+                definitionId: "def.ascii",
+                name: "ASCII"
+            ),
+        ]
+        let expected = skills.sorted {
+            $0.displayPath.localizedCaseInsensitiveCompare($1.displayPath) == .orderedAscending
+        }
+        let actual = SkillListModel.filteredAndSorted(
+            skills: skills,
+            findings: [],
+            conflicts: [],
+            searchText: "",
+            agentFilter: .all,
+            stateFilter: .all,
+            sortOrder: .path
+        )
+        try expectEqual(
+            actual.map(\.id),
+            expected.map(\.id),
+            "Path sort should preserve localized comparison when either value is non-ASCII."
+        )
     }
 
     private func sortDirectionCanReverseCoreListColumns() throws {
