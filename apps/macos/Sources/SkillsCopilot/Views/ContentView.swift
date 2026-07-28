@@ -222,14 +222,20 @@ private struct CompactWorkspaceView: View {
             ZStack(alignment: .trailing) {
                 SecondarySidebarView(columnVisibility: columnVisibility)
 
-                if store.selectedSidebarSelection != nil, showsDetail {
+                switch MainWindowModel.compactWorkspaceLayer(
+                    selection: store.selectedSidebarSelection,
+                    showsDetail: showsDetail
+                ) {
+                case .detailOverlay:
                     detailOverlay(width: detailWidth(availableWidth: proxy.size.width))
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                         .zIndex(2)
-                } else if store.selectedSidebarSelection != nil {
+                case .detailRevealControl:
                     showDetailButton
                         .padding(12)
                         .zIndex(1)
+                case .listOnly:
+                    EmptyView()
                 }
             }
         }
@@ -286,10 +292,7 @@ private struct CompactWorkspaceView: View {
     }
 
     private func detailWidth(availableWidth: CGFloat) -> CGFloat {
-        min(
-            CGFloat(MainWindowModel.maximumReadableDetailWidth),
-            max(420, availableWidth * 0.78)
-        )
+        MainWindowModel.compactDetailWidth(availableWidth: availableWidth)
     }
 }
 

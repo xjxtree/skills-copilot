@@ -1,3 +1,4 @@
+import CoreGraphics
 import Testing
 @testable import SkillsCopilot
 
@@ -6,6 +7,8 @@ struct MainWindowModelTests {
     @Test("MainWindowModelTests")
     func run() throws {
         try mainWindowConfigurationIsStable()
+        try compactWorkspaceStateIsModeIndependent()
+        try compactDetailPreservesAUsableSecondaryColumn()
         try taskCockpitAccessibilityIdentifiersAreStable()
         try configuredMainWindowWinsReopenScoring()
         try onboardingStorageKeyIsVersioned()
@@ -33,6 +36,66 @@ struct MainWindowModelTests {
             true,
             "Skill detail prose should stay within the readable line-width budget."
         )
+    }
+
+    private func compactWorkspaceStateIsModeIndependent() throws {
+        try expectEqual(
+            MainWindowModel.compactWorkspaceLayer(selection: nil, showsDetail: true),
+            .listOnly,
+            "A compact workspace without a selected row should show the full secondary list."
+        )
+
+        let selections: [SidebarSelection] = [
+            .skill("skill-alpha"),
+            .session("session-alpha"),
+            .configOverview,
+        ]
+        for selection in selections {
+            try expectEqual(
+                MainWindowModel.compactWorkspaceLayer(selection: selection, showsDetail: true),
+                .detailOverlay,
+                "Every selected compact workspace mode should use the same detail overlay."
+            )
+            try expectEqual(
+                MainWindowModel.compactWorkspaceLayer(selection: selection, showsDetail: false),
+                .detailRevealControl,
+                "Every dismissed compact workspace detail should expose the same reveal control."
+            )
+        }
+    }
+
+    private func compactDetailPreservesAUsableSecondaryColumn() throws {
+        let compactSidebarWidth = CGFloat(UIOptimizationPresentation.sidebarShell.compactWidth)
+        let testedWindowWidths = [
+            CGFloat(MainWindowModel.minimumWidth),
+            CGFloat(MainWindowModel.compactLayoutBreakpoint - 1),
+        ]
+
+        for windowWidth in testedWindowWidths {
+            let availableWorkspaceWidth = windowWidth - compactSidebarWidth
+            let detailWidth = MainWindowModel.compactDetailWidth(
+                availableWidth: availableWorkspaceWidth
+            )
+            let visibleSecondaryWidth = MainWindowModel.compactVisibleSecondaryWidth(
+                availableWidth: availableWorkspaceWidth
+            )
+
+            try expectEqual(
+                visibleSecondaryWidth >= MainWindowModel.minimumCompactSecondaryWidth,
+                true,
+                "Compact detail should leave the secondary list usable at supported window widths."
+            )
+            try expectEqual(
+                detailWidth >= MainWindowModel.minimumCompactDetailWidth,
+                true,
+                "Compact detail should retain its minimum readable width at supported window widths."
+            )
+            try expectEqual(
+                detailWidth <= CGFloat(MainWindowModel.maximumReadableDetailWidth),
+                true,
+                "Compact detail should remain within the maximum readable width."
+            )
+        }
     }
 
     private func taskCockpitAccessibilityIdentifiersAreStable() throws {

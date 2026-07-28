@@ -111,7 +111,7 @@ struct SkillListPresentation: Equatable {
     let minimumPrimaryColumnWidth = 220
     let idealPrimaryColumnWidth = 240
     let maximumPrimaryColumnWidth = 320
-    let minimumSecondaryColumnWidth = 320
+    let minimumSecondaryColumnWidth = MainWindowModel.minimumCompactSecondaryWidth
     let idealSecondaryColumnWidth = 360
     let maximumSecondaryColumnWidth = 440
     let minimumSearchWidth = 220
