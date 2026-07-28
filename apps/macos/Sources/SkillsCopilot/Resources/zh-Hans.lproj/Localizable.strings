@@ -186,7 +186,7 @@
 "skillManager.workflow.installedUpdates" = "已安装与更新";
 "skillManager.workflow.localLibrary" = "本地库";
 "skillManager.toolUnavailable.title" = "外部管理器不可用";
-"skillManager.toolUnavailable.message" = "外部管理器不可用，因此搜索、安装、更新和完整卸载已禁用；若能精确定位实例，仍可让所选智能体单独脱离。";
+"skillManager.toolUnavailable.message" = "外部管理器不可用，因此搜索、安装、更新和完整卸载已禁用；仍可精确删除所选智能体的符号链接或复制目录。";
 "skillManager.scope.project" = "项目";
 "skillManager.scope.global" = "全局";
 "skillManager.distribution" = "分发方式";
@@ -224,15 +224,15 @@
 "skillManager.select.title" = "请选择技能";
 "skillManager.select.help" = "选择技能后才会显示 Agent 和范围选项。";
 "skillManager.remove.completeRule" = "已选择全部链接的智能体。完整卸载会移除外部管理器识别的所有目标，并删除其规范源目录。";
-"skillManager.remove.partialRule" = "部分移除会为其他智能体保留共享文件，并写入可回滚的排除配置，使所选智能体停止加载此技能。";
+"skillManager.remove.partialRule" = "部分卸载只删除所选智能体可分离的符号链接或复制目录；共享源会保留，且不会改动智能体的启用/禁用配置。";
 "skillManager.remove.mode" = "移除模式";
 "skillManager.remove.mode.complete" = "完整卸载";
-"skillManager.remove.mode.partial" = "所选智能体脱离";
-"skillManager.remove.partialBlocked" = "以下智能体暂不支持单独脱离：%@。请刷新清单或使用完整卸载。";
+"skillManager.remove.mode.partial" = "卸载所选智能体";
+"skillManager.remove.partialBlocked" = "以下智能体没有可精确删除的物理安装目标：%@。请刷新清单或使用完整卸载。";
 "skillManager.remove.risk.complete" = "完整卸载会删除规范源，并移除外部管理器识别的全部目标，包括本应用之外的智能体。";
-"skillManager.remove.risk.partial" = "共享技能文件会保留；只为所选智能体写入经过校验的排除配置，并提供快照与回滚支持。";
+"skillManager.remove.risk.partial" = "只删除所选智能体的精确符号链接或复制目录；共享文件和智能体启用/禁用配置都保持不变。";
 "skillManager.remove.verification.complete" = "刷新后，该技能不得再出现在任何受支持智能体或外部管理器清单中。";
-"skillManager.remove.verification.partial" = "刷新后，所有所选实例都必须处于禁用状态，未选择的智能体保持不变。";
+"skillManager.remove.verification.partial" = "刷新后，所选物理目标必须已删除，共享源和未选择智能体的目标必须仍然存在。";
 "skillManager.update.affected" = "管理器将更新以下 Agent 共用的源包：%@";
 "skillManager.localUpdate.help" = "为该本地源选择新的 ZIP 包；技能名称必须一致，替换支持预览和回滚，并且不会执行其中的脚本。";
 "skillManager.localUpdate.target" = "本地源";
@@ -1272,5 +1272,5 @@
 "finding.action.copyRemediation" = "复制修复建议";
 "finding.action.copyRemediation.hint" = "复制此修复建议，以便在编辑器或 Agent 中使用。";
 "skillManager.confirm.completeUninstall" = "完整卸载还会处理本应用之外、但外部管理器能够识别的智能体，并删除规范源目录。";
-"skillManager.confirm.partialDetach" = "共享源将保留；只为所选智能体写入经过校验的排除配置，并保留快照以便回滚。";
+"skillManager.confirm.partialDetach" = "共享源会保留；只通过可回滚的文件系统操作删除所选智能体的精确符号链接或复制目录，启用/禁用状态不变。";
 "skillManager.confirm.targets.managerAll" = "外部管理器识别的全部目标";

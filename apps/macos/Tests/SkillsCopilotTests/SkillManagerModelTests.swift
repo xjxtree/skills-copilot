@@ -19,7 +19,7 @@ struct SkillManagerModelTests {
         try installedAppLibrarySourceRetainsCleanupIdentity()
         try nestedSharedLocalSourceSupportsZipUpdate()
         try sharedLocalSourceIncludesEveryScannedConsumer()
-        try inventoryExcludesDetachedAgentsButRetainsFullUninstallIdentity()
+        try inventoryKeepsDisabledAgentsInstalledAndRetainsPhysicalIdentity()
         try externalLocalSourceHasNoArchiveUpdateTarget()
         try duplicateInstalledRowsMergeAgentLinks()
         try removeParamsBindExactInstancesAndCompleteMode()
@@ -453,11 +453,11 @@ struct SkillManagerModelTests {
         try expectEqual(
             items[0].isCompleteRemovalSelection(["codex"]),
             false,
-            "Selecting a proper Agent subset must stay in non-destructive detach mode."
+            "Selecting a proper Agent subset must stay in physical partial-uninstall mode."
         )
     }
 
-    private func inventoryExcludesDetachedAgentsButRetainsFullUninstallIdentity() throws {
+    private func inventoryKeepsDisabledAgentsInstalledAndRetainsPhysicalIdentity() throws {
         let installedPath = "/home/test/.agents/skills/shared-skill"
         let items = SkillManagerInventoryBuilder.build(
             installed: [installedRecord(
@@ -475,7 +475,7 @@ struct SkillManagerModelTests {
                     path: "\(installedPath)/SKILL.md"
                 ),
                 catalogSkill(
-                    id: "opencode-detached",
+                    id: "opencode-disabled",
                     agent: "opencode",
                     name: "shared-skill",
                     path: "\(installedPath)/SKILL.md",
@@ -487,15 +487,16 @@ struct SkillManagerModelTests {
             scope: .global
         )
 
-        try expectEqual(items.count, 1, "A detached shared package should remain one manager inventory row.")
-        try expectEqual(items[0].agents, ["codex"], "Detached agents must not be offered as still-installed removal targets.")
-        try expectEqual(items[0].isCompleteRemovalSelection(["codex"]), true, "All visible linked agents must select complete uninstall.")
+        try expectEqual(items.count, 1, "A disabled shared package should remain one manager inventory row.")
+        try expectEqual(items[0].agents, ["opencode", "codex"], "Config-disabled Agents remain physically installed removal targets.")
+        try expectEqual(items[0].isCompleteRemovalSelection(["codex"]), false, "Selecting one physically installed Agent must remain a partial uninstall.")
+        try expectEqual(items[0].isCompleteRemovalSelection(["opencode", "codex"]), true, "Selecting every physical target must request complete uninstall.")
         try expectEqual(items[0].isCompleteRemovalSelection([]), false, "An empty selection must never become complete uninstall.")
-        try expectEqual(items[0].instanceIDs(for: ["codex"]), ["codex-active"], "Partial removal must send exact active catalog identities.")
+        try expectEqual(items[0].instanceIDs(for: ["codex"]), ["codex-active"], "Per-Agent target lookup retains exact catalog identities.")
         try expectEqual(
             items[0].allInstanceIDs,
-            ["codex-active", "opencode-detached"],
-            "Complete uninstall verification must retain active and already-detached identities."
+            ["codex-active", "opencode-disabled"],
+            "Removal preview must retain enabled and disabled physical installation identities."
         )
     }
 

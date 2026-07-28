@@ -499,8 +499,8 @@ enum SkillManagerInventoryBuilder {
                 source: catalogSource,
                 candidates: eligibleSkillsByName[nameKey] ?? []
             )
-            let targets = activeAgentTargets(from: matchingSkills)
-            let affectedAgents = activeAgentIDs(
+            let targets = installedAgentTargets(from: matchingSkills)
+            let affectedAgents = installedAgentIDs(
                 reportedAgents: record.agents,
                 matchingSkills: matchingSkills
             )
@@ -595,8 +595,8 @@ enum SkillManagerInventoryBuilder {
                 path: path,
                 nameKey: normalizedName(representative.name),
                 representative: representative,
-                agents: activeAgentTargets(from: skills).map(\.agent),
-                agentTargets: activeAgentTargets(from: skills),
+                agents: installedAgentTargets(from: skills).map(\.agent),
+                agentTargets: installedAgentTargets(from: skills),
                 allInstanceIDs: canonicalInstanceIDs(skills.map(\.id))
             )
         }
@@ -624,36 +624,28 @@ enum SkillManagerInventoryBuilder {
         return definitionIDs.count == 1 ? candidates : (source.map { [$0.representative] } ?? [])
     }
 
-    private static func activeAgentIDs(
+    private static func installedAgentIDs(
         reportedAgents: [String],
         matchingSkills: [SkillRecord]
     ) -> [String] {
-        var active = Set(canonicalAgentIDs(reportedAgents))
-        let grouped = Dictionary(grouping: matchingSkills, by: { agentID(for: $0.agent) })
-        for (agent, skills) in grouped {
-            guard let agent else { continue }
-            if skills.contains(where: isActivelyLoaded) {
-                active.insert(agent)
-            } else {
-                active.remove(agent)
+        var installed = Set(canonicalAgentIDs(reportedAgents))
+        for skill in matchingSkills {
+            if let agent = agentID(for: skill.agent) {
+                installed.insert(agent)
             }
         }
-        return SkillManagerAgent.defaultTargets.map(\.rawValue).filter(active.contains)
+        return SkillManagerAgent.defaultTargets.map(\.rawValue).filter(installed.contains)
     }
 
-    private static func activeAgentTargets(
+    private static func installedAgentTargets(
         from skills: [SkillRecord]
     ) -> [SkillManagerInventoryAgentTarget] {
-        let grouped = Dictionary(grouping: skills.filter(isActivelyLoaded), by: { agentID(for: $0.agent) })
+        let grouped = Dictionary(grouping: skills, by: { agentID(for: $0.agent) })
         return SkillManagerAgent.defaultTargets.compactMap { agent in
             let instanceIDs = canonicalInstanceIDs((grouped[agent.rawValue] ?? []).map(\.id))
             guard !instanceIDs.isEmpty else { return nil }
             return SkillManagerInventoryAgentTarget(agent: agent.rawValue, instanceIDs: instanceIDs)
         }
-    }
-
-    private static func isActivelyLoaded(_ skill: SkillRecord) -> Bool {
-        skill.enabled && skill.state.caseInsensitiveCompare("disabled") != .orderedSame
     }
 
     private static func canonicalInstanceIDs(_ values: [String]) -> [String] {
@@ -1028,7 +1020,7 @@ struct SkillManagerRemovalPlan: Codable, Hashable {
             )
             : UIStrings.text(
                 "skillManager.remove.risk.partial",
-                "Shared skill files stay in place; selected agents receive verified config exclusions with snapshots and rollback support."
+                "Only exact selected symlinks or copied skill directories are removed; shared files and Agent enablement configuration stay unchanged."
             )
     }
 
@@ -1040,7 +1032,7 @@ struct SkillManagerRemovalPlan: Codable, Hashable {
             )
             : UIStrings.text(
                 "skillManager.remove.verification.partial",
-                "After refresh, every selected instance must be disabled while unselected agents remain unchanged."
+                "After refresh, selected physical targets must be absent while the shared source and unselected Agent targets remain present."
             )
     }
 }

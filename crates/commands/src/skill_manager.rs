@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom},
+    io::{ErrorKind, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -11,14 +11,18 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use skills_copilot_adapters::{
+    claude_config_dir, codex_home_dir, hermes_home_dir, openclaw_state_dir,
+    opencode_user_skills_dir, pi_agent_dir,
+};
 use skills_copilot_catalog::{Catalog, SkillEventDraft, SkillRecord};
 use skills_copilot_core::{
     AdapterContext, AgentId, ListIncompleteReason, ListPageMetadata, ListSourceCompleteness, Scope,
 };
 
 use crate::{
-    apply_skill_toggles, import_local_skill_to_tool_global, preview_skill_toggles,
-    scan_all_catalog_report, tool_global_staging_skills_root, CommandError,
+    import_local_skill_to_tool_global, scan_all_catalog_report, tool_global_staging_skills_root,
+    CommandError,
 };
 
 mod archive;
@@ -36,6 +40,7 @@ const NPX_BINARY: &str = "npx";
 const MAX_CAPTURE_BYTES: usize = 32_000;
 const MAX_MACHINE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MANAGER_LOCK_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_REMOVAL_ENTRY_COUNT: usize = 10_000;
 
 pub const SUPPORTED_MANAGER_AGENTS: [&str; 6] = [
     "claude-code",
@@ -245,6 +250,51 @@ pub struct SkillManagerRemovalAction {
     pub strategy: String,
     pub target: String,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhysicalRemovalEntryKind {
+    Symlink,
+    Directory,
+}
+
+impl PhysicalRemovalEntryKind {
+    fn strategy(self) -> &'static str {
+        match self {
+            Self::Symlink => "remove-symlink",
+            Self::Directory => "remove-copy-directory",
+        }
+    }
+
+    fn binding_name(self) -> &'static str {
+        match self {
+            Self::Symlink => "symlink",
+            Self::Directory => "directory",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PhysicalRemovalTarget {
+    instance_ids: Vec<String>,
+    agents: Vec<String>,
+    entry_path: PathBuf,
+    kind: PhysicalRemovalEntryKind,
+    revision: String,
+}
+
+#[derive(Debug, Clone)]
+struct PhysicalRemovalPlan {
+    targets: Vec<PhysicalRemovalTarget>,
+    preserved_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+struct StagedRemovalTarget {
+    original_path: PathBuf,
+    backup_path: PathBuf,
+    backup_root: PathBuf,
+    kind: PhysicalRemovalEntryKind,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -534,62 +584,43 @@ pub fn apply_remove_with_manager(
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
 ) -> Result<SkillManagerMutationRecord, CommandError> {
-    let (preview, removal_plan, detach_preview_token) = build_remove_preview(catalog, ctx, params)?;
+    let (preview, removal_plan, physical_plan) = build_remove_preview(catalog, ctx, params)?;
     ensure_confirmed(&preview, params.confirmed, params.preview_token.as_deref())?;
-    let output = if params.full_uninstall {
-        run_previewed_command(ctx, &preview)?.output
-    } else {
-        let toggle_preview_token = detach_preview_token.ok_or_else(|| {
-            CommandError::InvalidSkillManagerRequest(
-                "partial removal is missing its bound config-detach preview".to_string(),
-            )
-        })?;
-        let applied = apply_skill_toggles(
-            catalog,
-            ctx,
-            &removal_plan.instance_ids,
-            false,
-            &toggle_preview_token,
-        )?;
-        if applied.applied_count != removal_plan.instance_ids.len() {
-            return Err(CommandError::SkillManagerRemovalIncomplete(format!(
-                "detached {} of {} selected skill instance(s)",
-                applied.applied_count,
-                removal_plan.instance_ids.len()
-            )));
-        }
-        SkillManagerCommandOutput {
-            status: "completed".to_string(),
-            exit_code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    };
-    let scan = scan_all_catalog_report(ctx, catalog)?;
-    let updated_skills = catalog.list_skill_records()?;
-    let installed_after = if params.full_uninstall {
-        Some(list_installed_skills_with_manager_targets(
+
+    let (output, scanned_count, updated_skills) = if params.full_uninstall {
+        let output = run_previewed_command(ctx, &preview)?.output;
+        let scan = scan_all_catalog_report(ctx, catalog)?;
+        let updated_skills = catalog.list_skill_records()?;
+        let installed_after = list_installed_skills_with_manager_targets(
             ctx,
             &SkillManagerListInstalledParams {
                 agents: Vec::new(),
                 scope: params.scope.clone(),
             },
             false,
-        )?)
+        )?;
+        verify_complete_remove_postcondition(
+            ctx,
+            params,
+            &removal_plan,
+            &updated_skills,
+            &installed_after,
+        )?;
+        (output, scan.scanned_count, updated_skills)
     } else {
-        None
+        let physical_plan = physical_plan.ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "partial removal is missing its bound physical-target preview".to_string(),
+            )
+        })?;
+        apply_physical_remove(catalog, ctx, &removal_plan, &physical_plan)?
     };
-    verify_remove_postcondition(
-        params,
-        &removal_plan,
-        &updated_skills,
-        installed_after.as_ref(),
-    )?;
+
     Ok(SkillManagerMutationRecord {
         preview,
         output: Some(output),
         applied: true,
-        scanned_count: scan.scanned_count,
+        scanned_count,
         updated_skills,
         removal_plan: Some(removal_plan),
     })
@@ -814,7 +845,7 @@ fn build_remove_preview(
     (
         SkillManagerCommandPreview,
         SkillManagerRemovalPlan,
-        Option<String>,
+        Option<PhysicalRemovalPlan>,
     ),
     CommandError,
 > {
@@ -825,7 +856,7 @@ fn build_remove_preview(
         ));
     }
     if !params.full_uninstall {
-        return build_agent_detach_preview(catalog, ctx, params, skill);
+        return build_physical_remove_preview(catalog, ctx, params, skill);
     }
 
     let mut args = vec![
@@ -888,7 +919,7 @@ fn build_remove_preview(
     ))
 }
 
-fn build_agent_detach_preview(
+fn build_physical_remove_preview(
     catalog: &Catalog,
     ctx: &AdapterContext,
     params: &SkillManagerRemoveParams,
@@ -897,7 +928,7 @@ fn build_agent_detach_preview(
     (
         SkillManagerCommandPreview,
         SkillManagerRemovalPlan,
-        Option<String>,
+        Option<PhysicalRemovalPlan>,
     ),
     CommandError,
 > {
@@ -915,79 +946,129 @@ fn build_agent_detach_preview(
     instance_ids.dedup();
     if instance_ids.is_empty() {
         return Err(CommandError::InvalidSkillManagerRequest(
-            "partial agent removal requires exact catalog instance_ids; refresh the inventory and try again"
-                .to_string(),
+            "partial agent removal requires every exact catalog identity from the selected package row; refresh the inventory and try again".to_string(),
         ));
     }
 
     let selected = agents.iter().cloned().collect::<BTreeSet<_>>();
+    let mut records = Vec::new();
     let mut covered_agents = BTreeSet::new();
     for instance_id in &instance_ids {
-        let meta = catalog
-            .get_skill_instance_meta(instance_id)?
+        let record = catalog
+            .get_skill_record(instance_id)?
             .ok_or_else(|| CommandError::InstanceNotFound(instance_id.clone()))?;
-        let manager_agent = manager_agent_for_catalog_agent(meta.agent);
-        if !selected.contains(manager_agent) {
-            return Err(CommandError::InvalidSkillManagerRequest(format!(
-                "instance {instance_id} belongs to unselected agent {manager_agent}"
-            )));
-        }
-        if !meta.name.trim().eq_ignore_ascii_case(skill) {
+        let manager_agent = manager_agent_alias(&record.agent)?;
+        if !record.name.trim().eq_ignore_ascii_case(skill) {
             return Err(CommandError::InvalidSkillManagerRequest(format!(
                 "instance {instance_id} does not match selected skill {skill}"
             )));
         }
-        if manager_scope_for_catalog_scope(meta.scope) != expected_scope {
+        if normalize_record_scope(&record.scope) != expected_scope {
             return Err(CommandError::InvalidSkillManagerRequest(format!(
                 "instance {instance_id} is outside the selected {expected_scope} scope"
             )));
         }
-        covered_agents.insert(manager_agent.to_string());
+        if selected.contains(&manager_agent) {
+            covered_agents.insert(manager_agent.clone());
+        }
+        records.push((record, manager_agent));
     }
+    require_complete_physical_identity_set(
+        catalog,
+        ctx,
+        skill,
+        &expected_scope,
+        &records,
+        &instance_ids,
+    )?;
     let uncovered = selected
         .difference(&covered_agents)
         .cloned()
         .collect::<Vec<_>>();
     if !uncovered.is_empty() {
         return Err(CommandError::InvalidSkillManagerRequest(format!(
-            "partial removal has no writable catalog instance for: {}; refresh the inventory or use complete uninstall",
+            "partial removal has no exact physical catalog target for: {}; refresh the inventory or use complete uninstall",
             uncovered.join(", ")
         )));
     }
 
-    let toggle = preview_skill_toggles(catalog, ctx, &instance_ids, false)?;
-    if !toggle.writes_allowed
-        || toggle.writable_count != instance_ids.len()
-        || !toggle.skipped_items.is_empty()
-    {
-        let details = toggle
-            .skipped_items
-            .iter()
-            .map(|item| item.reason.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
+    let (selected_records, preserved_records): (Vec<_>, Vec<_>) = records
+        .into_iter()
+        .partition(|(_, manager_agent)| selected.contains(manager_agent));
+    if preserved_records.is_empty() {
         return Err(CommandError::InvalidSkillManagerRequest(format!(
-            "partial removal cannot safely detach every selected instance{}{}",
-            if details.is_empty() { "" } else { ": " },
-            details
+            "all known instances of {skill} are selected; use complete uninstall so the canonical source and every manager-recognized target are handled together"
         )));
     }
 
     let cwd = manager_cwd(ctx, params.scope.as_deref())?;
     let mut command = vec![
         "agent-copilot".to_string(),
-        "detach-skill".to_string(),
+        "remove-skill-targets".to_string(),
         skill.to_string(),
     ];
     append_agent_args(&mut command, &agents);
     append_scope_args(&mut command, params.scope.as_deref())?;
-    for instance_id in &instance_ids {
-        command.push("--instance-id".to_string());
-        command.push(instance_id.clone());
+
+    let mut targets_by_path: BTreeMap<PathBuf, PhysicalRemovalTarget> = BTreeMap::new();
+    for (record, manager_agent) in &selected_records {
+        let entry_path = removal_entry_path(record)?;
+        validate_physical_removal_target(ctx, manager_agent, &expected_scope, &entry_path)?;
+        let (kind, revision) = physical_removal_entry_revision(&entry_path)?;
+        let target = targets_by_path
+            .entry(entry_path.clone())
+            .or_insert_with(|| PhysicalRemovalTarget {
+                instance_ids: Vec::new(),
+                agents: Vec::new(),
+                entry_path,
+                kind,
+                revision: revision.clone(),
+            });
+        if target.kind != kind || target.revision != revision {
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "selected physical target changed while the removal preview was built".to_string(),
+            ));
+        }
+        target.instance_ids.push(record.id.clone());
+        target.agents.push(manager_agent.clone());
     }
+    let mut physical_targets = targets_by_path.into_values().collect::<Vec<_>>();
+    for target in &mut physical_targets {
+        target.instance_ids.sort();
+        target.instance_ids.dedup();
+        target.agents.sort();
+        target.agents.dedup();
+    }
+    validate_selected_targets_are_effective(
+        ctx,
+        &expected_scope,
+        &selected_records,
+        &physical_targets,
+    )?;
+    let preserved_paths = validate_and_collect_preserved_paths(
+        ctx,
+        &expected_scope,
+        &preserved_records,
+        &physical_targets,
+    )?;
+    let selected_instance_ids = physical_targets
+        .iter()
+        .flat_map(|target| target.instance_ids.iter().cloned())
+        .collect::<Vec<_>>();
+
     let mut confirmation_binding = command.clone();
-    confirmation_binding.push("--config-detach-preview".to_string());
-    confirmation_binding.push(toggle.preview_token.clone());
+    for target in &physical_targets {
+        confirmation_binding.push("--physical-target".to_string());
+        confirmation_binding.push(target.entry_path.to_string_lossy().to_string());
+        confirmation_binding.push("--entry-kind".to_string());
+        confirmation_binding.push(target.kind.binding_name().to_string());
+        confirmation_binding.push("--entry-revision".to_string());
+        confirmation_binding.push(target.revision.clone());
+    }
+    for path in &preserved_paths {
+        confirmation_binding.push("--preserve".to_string());
+        confirmation_binding.push(path.to_string_lossy().to_string());
+    }
     let token = preview_token(&confirmation_binding, &cwd, "remove", false, true);
     let preview = SkillManagerCommandPreview {
         tool_id: "agent-copilot-native".to_string(),
@@ -1002,101 +1083,765 @@ fn build_agent_detach_preview(
         will_run: params.confirmed,
         preview_token: token,
         summary: format!(
-            "Detach {skill} from {} selected agent(s) while preserving the shared source for every other agent.",
+            "Remove {skill} physical install target(s) from {} selected agent(s) while preserving the shared source and every unselected agent target.",
             agents.len()
         ),
         risks: vec![
-            "Shared skill files stay in place; selected agents receive verified config exclusions with snapshots and rollback support.".to_string(),
+            "Only the exact selected symlink or copied skill directory is removed; Agent enable/disable configuration is not changed.".to_string(),
+            "If selected and unselected agents directly share one physical source directory, partial uninstall is refused because no separable target exists.".to_string(),
         ],
         source: None,
         skills: vec![skill.to_string()],
     };
-    let actions = toggle
-        .affected_items
+    let actions = selected_records
         .iter()
-        .map(|item| SkillManagerRemovalAction {
-            instance_id: item.instance_id.clone(),
-            agent: manager_agent_alias(&item.agent).unwrap_or_else(|_| item.agent.clone()),
-            scope: item.scope.clone(),
-            strategy: "config-detach".to_string(),
-            target: redact_command_output(ctx, &item.config_target),
-            summary: format!(
-                "Stop {} from loading {} without deleting the shared source.",
-                item.agent, item.name
-            ),
+        .map(|(record, agent)| {
+            let entry_path = removal_entry_path(record)?;
+            let target = physical_targets
+                .iter()
+                .find(|target| target.entry_path == entry_path)
+                .ok_or_else(|| {
+                    CommandError::InvalidSkillManagerRequest(
+                        "physical removal action lost its selected target".to_string(),
+                    )
+                })?;
+            Ok(SkillManagerRemovalAction {
+                instance_id: record.id.clone(),
+                agent: agent.clone(),
+                scope: expected_scope.clone(),
+                strategy: target.kind.strategy().to_string(),
+                target: redact_command_output(ctx, &target.entry_path.to_string_lossy()),
+                summary: format!(
+                    "Remove the selected {} target without changing Agent enablement or deleting the shared source.",
+                    target.kind.binding_name()
+                ),
+            })
         })
-        .collect();
-    let toggle_preview_token = toggle.preview_token;
+        .collect::<Result<Vec<_>, CommandError>>()?;
     Ok((
         preview,
         SkillManagerRemovalPlan {
-            mode: "selected-agent-detach".to_string(),
+            mode: "selected-agent-uninstall".to_string(),
             full_uninstall: false,
             selected_agents: agents,
-            instance_ids,
+            instance_ids: selected_instance_ids,
             source_preserved: true,
             actions,
-            verification: "Refresh the catalog; every selected instance must be disabled while unselected agents remain unchanged.".to_string(),
+            verification: "Refresh the catalog after a reversible filesystem removal; every selected link/copy must be absent while the shared source and unselected targets remain present.".to_string(),
         },
-        Some(toggle_preview_token),
+        Some(PhysicalRemovalPlan {
+            targets: physical_targets,
+            preserved_paths,
+        }),
     ))
 }
 
-fn manager_agent_for_catalog_agent(agent: AgentId) -> &'static str {
-    match agent {
-        AgentId::Hermes => "hermes-agent",
-        other => other.as_str(),
-    }
-}
-
-fn manager_scope_for_catalog_scope(scope: Scope) -> &'static str {
-    match scope {
-        Scope::AgentGlobal => "global",
-        Scope::AgentProject => "project",
-        Scope::ToolGlobal => "tool-global",
-        _ => "unsupported",
-    }
-}
-
-fn verify_remove_postcondition(
-    params: &SkillManagerRemoveParams,
-    plan: &SkillManagerRemovalPlan,
-    updated_skills: &[SkillRecord],
-    installed_after: Option<&SkillManagerInstalledListRecord>,
+fn require_complete_physical_identity_set(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    skill: &str,
+    scope: &str,
+    supplied_records: &[(SkillRecord, String)],
+    supplied_instance_ids: &[String],
 ) -> Result<(), CommandError> {
-    if params.full_uninstall {
-        if installed_after.is_some_and(|inventory| {
-            inventory
-                .installed
-                .iter()
-                .any(|record| record.name.trim().eq_ignore_ascii_case(params.skill.trim()))
-        }) {
-            return Err(CommandError::SkillManagerRemovalIncomplete(format!(
-                "{} is still present in the external-manager inventory after complete uninstall",
-                params.skill.trim()
-            )));
+    let definition_ids = supplied_records
+        .iter()
+        .map(|(record, _)| record.definition_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let supplied = supplied_instance_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut omitted_agents = BTreeSet::new();
+
+    for record in catalog.list_skill_records()? {
+        if record.state.eq_ignore_ascii_case("missing")
+            || record.read_only_reason.is_some()
+            || !record.name.trim().eq_ignore_ascii_case(skill)
+            || normalize_record_scope(&record.scope) != scope
+            || !definition_ids.contains(record.definition_id.as_str())
+            || supplied.contains(record.id.as_str())
+        {
+            continue;
         }
-        let remaining_paths = plan
-            .instance_ids
-            .iter()
-            .filter_map(|instance_id| {
-                updated_skills
-                    .iter()
-                    .find(|record| &record.id == instance_id)
-            })
-            .filter(|record| removal_path_entry_exists(&record.path))
-            .map(|record| record.display_path.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        if !remaining_paths.is_empty() {
-            return Err(CommandError::SkillManagerRemovalIncomplete(format!(
-                "verified catalog paths still exist after complete uninstall: {}",
-                remaining_paths.join(", ")
-            )));
+        let Ok(agent) = manager_agent_alias(&record.agent) else {
+            continue;
+        };
+        let Ok(entry_path) = removal_entry_path(&record) else {
+            continue;
+        };
+        let roots = physical_removal_roots(ctx, &agent, scope)?;
+        if entry_path
+            .parent()
+            .is_some_and(|parent| roots.iter().any(|root| root == parent))
+        {
+            omitted_agents.insert(agent);
         }
+    }
+
+    if omitted_agents.is_empty() {
         return Ok(());
     }
+    Err(CommandError::InvalidSkillManagerRequest(format!(
+        "partial removal is missing exact physical identities for: {}; refresh the installed package row and preview again",
+        omitted_agents.into_iter().collect::<Vec<_>>().join(", ")
+    )))
+}
 
-    let still_enabled = plan
+fn validate_selected_targets_are_effective(
+    ctx: &AdapterContext,
+    scope: &str,
+    records: &[(SkillRecord, String)],
+    selected_targets: &[PhysicalRemovalTarget],
+) -> Result<(), CommandError> {
+    for (record, agent) in records {
+        if let Some(path) =
+            independent_preserved_skill_path(ctx, agent, scope, record, selected_targets)?
+        {
+            return Err(CommandError::InvalidSkillManagerRequest(format!(
+                "{agent} also loads {} outside the selected physical target; removing only the selected link/copy would not uninstall the skill for that Agent",
+                redact_command_output(ctx, &path.to_string_lossy())
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_record_scope(scope: &str) -> String {
+    match scope {
+        value if value.eq_ignore_ascii_case(Scope::AgentGlobal.as_str()) => "global".to_string(),
+        value if value.eq_ignore_ascii_case(Scope::AgentProject.as_str()) => "project".to_string(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+fn removal_entry_path(record: &SkillRecord) -> Result<PathBuf, CommandError> {
+    if record
+        .display_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_none_or(|name| !name.eq_ignore_ascii_case("SKILL.md"))
+    {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "instance {} does not expose a physical SKILL.md target",
+            record.id
+        )));
+    }
+    record
+        .display_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(format!(
+                "instance {} has no physical skill directory",
+                record.id
+            ))
+        })
+}
+
+fn validate_and_collect_preserved_paths(
+    ctx: &AdapterContext,
+    scope: &str,
+    records: &[(SkillRecord, String)],
+    selected_targets: &[PhysicalRemovalTarget],
+) -> Result<Vec<PathBuf>, CommandError> {
+    let manager_source_root = if scope == "global" {
+        ctx.user_home.join(".agents/skills")
+    } else {
+        manager_cwd(ctx, Some("project"))?.join(".agents/skills")
+    };
+    if let Some(target) = selected_targets.iter().find(|target| {
+        target.kind == PhysicalRemovalEntryKind::Directory
+            && target.entry_path.starts_with(&manager_source_root)
+    }) {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "{} is the shared canonical source, not a separable per-agent install target; keep it for remaining agents or use complete uninstall",
+            redact_command_output(ctx, &target.entry_path.to_string_lossy())
+        )));
+    }
+
+    let mut paths = BTreeSet::new();
+    for (record, agent) in records {
+        let Some(path) =
+            independent_preserved_skill_path(ctx, agent, scope, record, selected_targets)?
+        else {
+            let selected = selected_targets
+                .iter()
+                .flat_map(|target| target.agents.iter())
+                .next()
+                .map(String::as_str)
+                .unwrap_or("selected agent");
+            return Err(shared_physical_target_error(
+                ctx,
+                selected,
+                agent,
+                &removal_entry_path(record)?,
+            ));
+        };
+        paths.insert(path);
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn independent_preserved_skill_path(
+    ctx: &AdapterContext,
+    agent: &str,
+    scope: &str,
+    record: &SkillRecord,
+    selected_targets: &[PhysicalRemovalTarget],
+) -> Result<Option<PathBuf>, CommandError> {
+    let roots = physical_removal_roots(ctx, agent, scope)?;
+    let is_selected = |path: &Path| {
+        selected_targets
+            .iter()
+            .any(|target| path == target.entry_path || path.starts_with(&target.entry_path))
+    };
+    let direct_candidate = |path: &Path| {
+        path.parent()
+            .and_then(Path::parent)
+            .is_some_and(|parent| roots.iter().any(|root| root == parent))
+            && !is_selected(path)
+            && path.is_file()
+            && survives_selected_directory_removal(path, selected_targets)
+    };
+    if direct_candidate(&record.display_path) {
+        return Ok(Some(record.display_path.clone()));
+    }
+    if direct_candidate(&record.path) {
+        return Ok(Some(record.path.clone()));
+    }
+
+    let mut directory_names = BTreeSet::new();
+    for path in [&record.display_path, &record.path] {
+        if let Some(name) = path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+        {
+            directory_names.insert(name.to_string());
+        }
+    }
+    for root in roots {
+        for directory_name in &directory_names {
+            let candidate = root.join(directory_name).join("SKILL.md");
+            if is_selected(&candidate)
+                || !candidate.is_file()
+                || !survives_selected_directory_removal(&candidate, selected_targets)
+            {
+                continue;
+            }
+            let Ok(metadata) = fs::metadata(&candidate) else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&candidate) else {
+                continue;
+            };
+            let parsed_name = crate::tool_global_skill_name_from_content(&content, directory_name);
+            if parsed_name.eq_ignore_ascii_case(&record.name) {
+                return Ok(Some(candidate));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn survives_selected_directory_removal(
+    candidate: &Path,
+    selected_targets: &[PhysicalRemovalTarget],
+) -> bool {
+    let canonical_candidate = fs::canonicalize(candidate).ok();
+    selected_targets.iter().all(|target| {
+        if target.kind != PhysicalRemovalEntryKind::Directory {
+            return true;
+        }
+        if candidate.starts_with(&target.entry_path) {
+            return false;
+        }
+        let Some(canonical_candidate) = canonical_candidate.as_ref() else {
+            return false;
+        };
+        fs::canonicalize(&target.entry_path)
+            .is_ok_and(|canonical_target| !canonical_candidate.starts_with(canonical_target))
+    })
+}
+
+fn validate_physical_removal_target(
+    ctx: &AdapterContext,
+    agent: &str,
+    scope: &str,
+    entry_path: &Path,
+) -> Result<(), CommandError> {
+    let parent = entry_path.parent().ok_or_else(|| {
+        CommandError::InvalidSkillManagerRequest(
+            "physical removal target has no parent install root".to_string(),
+        )
+    })?;
+    let allowed_roots = physical_removal_roots(ctx, agent, scope)?;
+    let Some(root) = allowed_roots.iter().find(|root| root.as_path() == parent) else {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "{} does not identify a separable {} {} install target; shared/configured source roots cannot be deleted by partial uninstall",
+            redact_command_output(ctx, &entry_path.to_string_lossy()),
+            agent,
+            scope
+        )));
+    };
+    let root_metadata = fs::symlink_metadata(root)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "physical install root {} must be a real directory",
+            redact_command_output(ctx, &root.to_string_lossy())
+        )));
+    }
+    let name = entry_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if name.is_empty() || matches!(name, "." | "..") {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "physical removal target has an unsafe directory name".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn physical_removal_roots(
+    ctx: &AdapterContext,
+    agent: &str,
+    scope: &str,
+) -> Result<Vec<PathBuf>, CommandError> {
+    let mut roots = Vec::new();
+    if scope == "global" {
+        match agent {
+            "claude-code" => roots.push(claude_config_dir(ctx).join("skills")),
+            "codex" => roots.extend([
+                ctx.user_home.join(".agents/skills"),
+                codex_home_dir(ctx).join("skills"),
+            ]),
+            "opencode" => roots.extend([
+                ctx.user_home.join(".agents/skills"),
+                opencode_user_skills_dir(ctx),
+            ]),
+            "pi" => roots.extend([
+                ctx.user_home.join(".agents/skills"),
+                pi_agent_dir(ctx).join("skills"),
+            ]),
+            "hermes-agent" => roots.push(hermes_home_dir(ctx).join("skills")),
+            "openclaw" => roots.extend([
+                ctx.user_home.join(".agents/skills"),
+                openclaw_state_dir(ctx).join("skills"),
+            ]),
+            other => {
+                return Err(CommandError::InvalidSkillManagerRequest(format!(
+                    "unsupported physical removal agent: {other}"
+                )))
+            }
+        }
+    } else if scope == "project" {
+        for directory in active_project_directories(ctx)? {
+            match agent {
+                "claude-code" => roots.push(directory.join(".claude/skills")),
+                "codex" => roots.push(directory.join(".agents/skills")),
+                "opencode" => roots.extend([
+                    directory.join(".agents/skills"),
+                    directory.join(".opencode/skills"),
+                ]),
+                "pi" => roots.extend([
+                    directory.join(".agents/skills"),
+                    directory.join(".pi/skills"),
+                ]),
+                "hermes-agent" => roots.push(directory.join(".hermes/skills")),
+                "openclaw" => {
+                    roots.extend([directory.join(".agents/skills"), directory.join("skills")])
+                }
+                other => {
+                    return Err(CommandError::InvalidSkillManagerRequest(format!(
+                        "unsupported physical removal agent: {other}"
+                    )))
+                }
+            }
+        }
+    } else {
+        return Err(CommandError::InvalidSkillManagerRequest(format!(
+            "unsupported physical removal scope: {scope}"
+        )));
+    }
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn active_project_directories(ctx: &AdapterContext) -> Result<Vec<PathBuf>, CommandError> {
+    let root = ctx.project_root.as_ref().ok_or_else(|| {
+        CommandError::InvalidSkillManagerRequest(
+            "project-scoped physical removal requires an active project root".to_string(),
+        )
+    })?;
+    let start = ctx
+        .project_cwd
+        .as_ref()
+        .filter(|cwd| cwd.starts_with(root))
+        .unwrap_or(root);
+    let mut directories = Vec::new();
+    let mut current = start.as_path();
+    loop {
+        directories.push(current.to_path_buf());
+        if current == root {
+            break;
+        }
+        current = current.parent().ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "project context escaped its selected root".to_string(),
+            )
+        })?;
+        if !current.starts_with(root) {
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "project context escaped its selected root".to_string(),
+            ));
+        }
+    }
+    Ok(directories)
+}
+
+fn shared_physical_target_error(
+    ctx: &AdapterContext,
+    selected_agent: &str,
+    preserved_agent: &str,
+    entry_path: &Path,
+) -> CommandError {
+    CommandError::InvalidSkillManagerRequest(format!(
+        "{selected_agent} and {preserved_agent} directly share {}; no per-agent symlink or copied directory exists to remove without affecting the other agent",
+        redact_command_output(ctx, &entry_path.to_string_lossy())
+    ))
+}
+
+fn physical_removal_entry_revision(
+    entry_path: &Path,
+) -> Result<(PhysicalRemovalEntryKind, String), CommandError> {
+    let metadata = fs::symlink_metadata(entry_path)?;
+    let mut hasher = Sha256::new();
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(entry_path)?;
+        if !entry_path.join("SKILL.md").is_file() {
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "selected symlink target no longer contains SKILL.md".to_string(),
+            ));
+        }
+        hasher.update(b"\nsymlink\n");
+        hasher.update(target.to_string_lossy().as_bytes());
+        hash_removal_metadata(&mut hasher, &metadata);
+        return Ok((
+            PhysicalRemovalEntryKind::Symlink,
+            format!("{:x}", hasher.finalize()),
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "selected physical target is neither a symlink nor a copied skill directory"
+                .to_string(),
+        ));
+    }
+    if !entry_path.join("SKILL.md").is_file() {
+        return Err(CommandError::InvalidSkillManagerRequest(
+            "selected copied directory no longer contains SKILL.md".to_string(),
+        ));
+    }
+    hasher.update(b"directory\n");
+    hash_removal_directory(entry_path, &mut hasher)?;
+    Ok((
+        PhysicalRemovalEntryKind::Directory,
+        format!("{:x}", hasher.finalize()),
+    ))
+}
+
+fn hash_removal_directory(root: &Path, hasher: &mut Sha256) -> Result<(), CommandError> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut entry_count = 0usize;
+    while let Some(directory) = stack.pop() {
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            entry_count += 1;
+            if entry_count > MAX_REMOVAL_ENTRY_COUNT {
+                return Err(CommandError::InvalidSkillManagerRequest(format!(
+                    "selected copied skill directory exceeds the {}-entry removal preview limit",
+                    MAX_REMOVAL_ENTRY_COUNT
+                )));
+            }
+            let path = entry.path();
+            let relative = path.strip_prefix(root).map_err(|_| {
+                CommandError::InvalidSkillManagerRequest(
+                    "selected copied skill entry escaped its target directory".to_string(),
+                )
+            })?;
+            let metadata = fs::symlink_metadata(&path)?;
+            hasher.update(b"\n");
+            hasher.update(relative.to_string_lossy().as_bytes());
+            if metadata.file_type().is_symlink() {
+                hasher.update(b"\nsymlink\n");
+                hasher.update(fs::read_link(&path)?.to_string_lossy().as_bytes());
+            } else if metadata.is_dir() {
+                hasher.update(b"\ndirectory");
+                stack.push(path);
+            } else if metadata.is_file() {
+                hasher.update(b"\nfile");
+            } else {
+                return Err(CommandError::InvalidSkillManagerRequest(
+                    "selected copied skill contains an unsupported special entry".to_string(),
+                ));
+            }
+            hash_removal_metadata(hasher, &metadata);
+        }
+    }
+    Ok(())
+}
+
+fn hash_removal_metadata(hasher: &mut Sha256, metadata: &fs::Metadata) {
+    hasher.update(b"\n");
+    hasher.update(metadata.len().to_le_bytes());
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    hasher.update(modified.to_le_bytes());
+}
+
+fn apply_physical_remove(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    plan: &SkillManagerRemovalPlan,
+    physical_plan: &PhysicalRemovalPlan,
+) -> Result<(SkillManagerCommandOutput, usize, Vec<SkillRecord>), CommandError> {
+    for target in &physical_plan.targets {
+        let (kind, revision) = physical_removal_entry_revision(&target.entry_path)?;
+        if kind != target.kind || revision != target.revision {
+            return Err(CommandError::InvalidSkillManagerRequest(format!(
+                "physical target {} changed after preview; request a fresh preview_token",
+                redact_command_output(ctx, &target.entry_path.to_string_lossy())
+            )));
+        }
+    }
+
+    let staged = stage_physical_removals(&physical_plan.targets)?;
+    let verified = (|| {
+        let scan = scan_all_catalog_report(ctx, catalog)?;
+        let updated_skills = catalog.list_skill_records()?;
+        verify_physical_remove_postcondition(ctx, plan, physical_plan, &updated_skills)?;
+        Ok((scan.scanned_count, updated_skills))
+    })();
+
+    let (scanned_count, updated_skills) = match verified {
+        Ok(value) => value,
+        Err(error) => {
+            if let Err(rollback_error) = rollback_staged_removals(&staged) {
+                let _ = scan_all_catalog_report(ctx, catalog);
+                return Err(rollback_error);
+            }
+            let _ = scan_all_catalog_report(ctx, catalog);
+            return Err(error);
+        }
+    };
+    commit_staged_removals(&staged)?;
+    Ok((
+        SkillManagerCommandOutput {
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+        scanned_count,
+        updated_skills,
+    ))
+}
+
+fn stage_physical_removals(
+    targets: &[PhysicalRemovalTarget],
+) -> Result<Vec<StagedRemovalTarget>, CommandError> {
+    let nonce = format!(
+        "{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        std::process::id()
+    );
+    let mut staged = Vec::new();
+    for (index, target) in targets.iter().enumerate() {
+        let install_root = target.entry_path.parent().ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "physical removal target has no parent".to_string(),
+            )
+        })?;
+        let backup_parent = install_root.parent().ok_or_else(|| {
+            CommandError::InvalidSkillManagerRequest(
+                "physical removal install root has no parent".to_string(),
+            )
+        })?;
+        let name = target
+            .entry_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("skill");
+        let backup_root = backup_parent.join(format!(".agent-copilot-remove-{nonce}-{index}"));
+        let backup_path = backup_root.join(name);
+        if fs::symlink_metadata(&backup_root).is_ok() {
+            rollback_staged_removals(&staged)?;
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "private temporary removal target already exists".to_string(),
+            ));
+        }
+        if let Err(error) = create_private_removal_backup_root(&backup_root) {
+            rollback_staged_removals(&staged)?;
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&target.entry_path, &backup_path) {
+            let _ = fs::remove_dir(&backup_root);
+            rollback_staged_removals(&staged)?;
+            return Err(error.into());
+        }
+        staged.push(StagedRemovalTarget {
+            original_path: target.entry_path.clone(),
+            backup_path,
+            backup_root,
+            kind: target.kind,
+        });
+        let staged_target = staged.last().expect("staged target was just appended");
+        let staged_revision = physical_removal_entry_revision(&staged_target.backup_path);
+        if !matches!(
+            staged_revision,
+            Ok((kind, ref revision)) if kind == target.kind && revision == &target.revision
+        ) {
+            rollback_staged_removals(&staged)?;
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "physical target changed while it was staged; request a fresh preview_token"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(staged)
+}
+
+fn create_private_removal_backup_root(path: &Path) -> Result<(), CommandError> {
+    fs::create_dir(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o700)) {
+            let _ = fs::remove_dir(path);
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+fn rollback_staged_removals(staged: &[StagedRemovalTarget]) -> Result<(), CommandError> {
+    let mut failure_count = 0usize;
+    for target in staged.iter().rev() {
+        let original_exists = path_entry_exists(&target.original_path);
+        let backup_exists = path_entry_exists(&target.backup_path);
+        match (original_exists, backup_exists) {
+            (Ok(false), Ok(true)) => {
+                if fs::rename(&target.backup_path, &target.original_path).is_err() {
+                    failure_count += 1;
+                }
+            }
+            (Ok(true), Ok(false)) => {}
+            (Ok(true), Ok(true)) | (Ok(false), Ok(false)) | (Err(_), _) | (_, Err(_)) => {
+                failure_count += 1;
+            }
+        }
+        match path_entry_exists(&target.backup_path) {
+            Ok(false) => {
+                if fs::remove_dir(&target.backup_root).is_err() {
+                    failure_count += 1;
+                }
+            }
+            Ok(true) => {}
+            Err(_) => failure_count += 1,
+        }
+    }
+    if failure_count == 0 {
+        Ok(())
+    } else {
+        Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "could not restore {failure_count} staged removal entry state(s); private recovery data was retained where restoration did not complete"
+        )))
+    }
+}
+
+fn commit_staged_removals(staged: &[StagedRemovalTarget]) -> Result<(), CommandError> {
+    let mut failure_count = 0usize;
+    for target in staged {
+        let removed = match target.kind {
+            PhysicalRemovalEntryKind::Symlink => {
+                if let Err(first_error) = fs::remove_file(&target.backup_path) {
+                    fs::remove_dir(&target.backup_path).map_err(|_| first_error)
+                } else {
+                    Ok(())
+                }
+            }
+            PhysicalRemovalEntryKind::Directory => fs::remove_dir_all(&target.backup_path),
+        };
+        if removed.is_err() {
+            failure_count += 1;
+            continue;
+        }
+        if fs::remove_dir(&target.backup_root).is_err() {
+            failure_count += 1;
+        }
+    }
+    if failure_count == 0 {
+        Ok(())
+    } else {
+        Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "physical targets were removed, but {failure_count} private staging cleanup step(s) did not complete"
+        )))
+    }
+}
+
+fn path_entry_exists(path: &Path) -> Result<bool, std::io::Error> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn verify_physical_remove_postcondition(
+    ctx: &AdapterContext,
+    plan: &SkillManagerRemovalPlan,
+    physical_plan: &PhysicalRemovalPlan,
+    updated_skills: &[SkillRecord],
+) -> Result<(), CommandError> {
+    let remaining_targets = physical_plan
+        .targets
+        .iter()
+        .filter(|target| removal_path_entry_exists(&target.entry_path))
+        .map(|target| redact_command_output(ctx, &target.entry_path.to_string_lossy()))
+        .collect::<Vec<_>>();
+    if !remaining_targets.is_empty() {
+        return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "selected physical targets still exist after removal: {}",
+            remaining_targets.join(", ")
+        )));
+    }
+    let missing_preserved = physical_plan
+        .preserved_paths
+        .iter()
+        .filter(|path| !removal_path_entry_exists(path))
+        .map(|path| redact_command_output(ctx, &path.to_string_lossy()))
+        .collect::<Vec<_>>();
+    if !missing_preserved.is_empty() {
+        return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "shared source or unselected agent targets disappeared during partial removal: {}",
+            missing_preserved.join(", ")
+        )));
+    }
+    let still_installed = plan
         .instance_ids
         .iter()
         .filter_map(|instance_id| {
@@ -1104,16 +1849,58 @@ fn verify_remove_postcondition(
                 .iter()
                 .find(|record| &record.id == instance_id)
         })
-        .filter(|record| record.state != "missing" && record.enabled)
+        .filter(|record| record.state != "missing")
         .map(|record| format!("{}:{}", record.agent, record.name))
         .collect::<Vec<_>>();
-    if !still_enabled.is_empty() {
+    if !still_installed.is_empty() {
         return Err(CommandError::SkillManagerRemovalIncomplete(format!(
-            "selected agent instances are still enabled after detach: {}",
-            still_enabled.join(", ")
+            "selected agent instances are still physically installed after removal: {}",
+            still_installed.join(", ")
         )));
     }
     Ok(())
+}
+
+fn verify_complete_remove_postcondition(
+    ctx: &AdapterContext,
+    params: &SkillManagerRemoveParams,
+    plan: &SkillManagerRemovalPlan,
+    updated_skills: &[SkillRecord],
+    installed_after: &SkillManagerInstalledListRecord,
+) -> Result<(), CommandError> {
+    if installed_after
+        .installed
+        .iter()
+        .any(|record| record.name.trim().eq_ignore_ascii_case(params.skill.trim()))
+    {
+        return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "{} is still present in the external-manager inventory after complete uninstall",
+            params.skill.trim()
+        )));
+    }
+    let remaining_paths = plan
+        .instance_ids
+        .iter()
+        .filter_map(|instance_id| {
+            updated_skills
+                .iter()
+                .find(|record| &record.id == instance_id)
+        })
+        .filter(|record| removal_record_entry_exists(record))
+        .map(|record| redact_command_output(ctx, &record.display_path.to_string_lossy()))
+        .collect::<Vec<_>>();
+    if !remaining_paths.is_empty() {
+        return Err(CommandError::SkillManagerRemovalIncomplete(format!(
+            "verified catalog paths still exist after complete uninstall: {}",
+            remaining_paths.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+fn removal_record_entry_exists(record: &SkillRecord) -> bool {
+    removal_entry_path(record).is_ok_and(|path| removal_path_entry_exists(&path))
+        || removal_path_entry_exists(&record.path)
 }
 
 fn removal_path_entry_exists(path: &Path) -> bool {

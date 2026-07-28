@@ -419,19 +419,20 @@ or expose write controls.
   library remain fully accessible.
 - The native inventory emits one row per installed package source. A matching
   catalog row enriches the CLI row and is consumed rather than appended again.
-  Its currently enabled supported-Agent consumers are reconciled with the CLI
-  Agent list. A catalog-proven disabled consumer is not presented as still
-  installed for that Agent, while active and disabled instance IDs remain
-  attached to the package row for exact partial-detach and complete-uninstall
-  verification.
+  Its physically present supported-Agent targets are reconciled with the CLI
+  Agent list independently of enable/disable configuration. A catalog-proven
+  disabled instance remains installed and selectable for removal; all exact
+  enabled and disabled instance IDs remain attached to the package row for
+  partial-uninstall and complete-uninstall verification.
   Catalog-only fallback rows are limited to skill sources beneath the selected
   project/global `.agents/skills` root (including nested package layouts);
   plugin caches, configured read-only roots, and other catalog discovery paths
   never become editable local-package rows.
   Installed local rows outside those guarded roots remain visible as external
   local sources, but do not expose ZIP replacement; they may use exact
-  selected-Agent detach when writable catalog identities exist, or explicit
-  complete uninstall through the external manager.
+  selected-Agent physical uninstall when a separable documented target and
+  exact catalog identities exist, or explicit complete uninstall through the
+  external manager.
 - Native clients validate method-specific metadata, not only generic page
   invariants. Search accepts only terminal unknown/source-limited metadata;
   installed accepts only terminal exact enumerable metadata. Invalid refresh
@@ -443,16 +444,31 @@ or expose write controls.
   Empty and network-blocked searches still display zero loaded rows, unknown
   total, the typed source limitation and recovery guidance, with no load action.
 - Skill removal has two explicit modes. A proper subset of the linked Agents is
-  a selected-Agent detach: the service requires exact catalog instance IDs and
-  uses the existing guarded batch-toggle implementation to add per-Agent
-  exclusions, snapshots, verification, and rollback support. It does not call
-  `npx skills remove`, because current manager versions report success while
-  leaving direct `.agents/skills` consumers unchanged and remove package lock
-  metadata even for a partial request. The shared source and manager ownership
-  therefore remain intact for unselected Agents. The removal confirmation token
-  is also bound to the underlying batch-toggle preview token, including its
-  exact authorized config targets; apply rejects a preview if those targets or
-  eligibility change before confirmation.
+  a selected-Agent physical uninstall. `instance_ids` contains every exact
+  identity attached to the selected package row so the service can partition
+  selected targets from paths that must be preserved. Each selected target must
+  resolve to a direct-child skill-directory symlink or copied directory under
+  that Agent's documented project/global install root. The service never calls
+  Agent enable/disable methods for this operation and does not call the
+  external manager's partial `npx skills remove --agent` path, because current
+  manager versions can leave direct
+  `.agents/skills` consumers unchanged and remove package lock metadata for a
+  partial request.
+- The physical-removal confirmation token binds selected Agents, exact target
+  paths, entry types, a bounded tree metadata revision, and every preserved
+  path. Apply first moves selected entries into private sibling staging
+  directories outside scanned skill roots, rescans, and requires every selected
+  instance to be physically missing while the shared source and unselected
+  targets remain. Failed scan or verification restores the staged entries and
+  rescans. Successful verification deletes only those staged symlinks or copied
+  directories; manager lock metadata and Agent enablement configuration remain
+  unchanged.
+- Some adapters directly consume the same `.agents/skills/<skill>` directory.
+  When a selected and unselected Agent have no distinct symlink or copied
+  directory, physical partial uninstall is impossible without deleting the
+  shared source. Preview returns `invalid_skill_manager_request` with that
+  blocker instead of reporting a false success or silently converting uninstall
+  into config disable.
 - Selecting every linked Agent is a complete uninstall. The request sets
   `full_uninstall=true`; the service intentionally omits all `--agent`
   arguments so the external manager removes every target it recognizes,
@@ -465,9 +481,8 @@ or expose write controls.
   unrestricted inventory cannot be parsed. CLI exit status alone is never
   treated as proof of removal.
 - Generic enable/disable controls remain in `config.toggleSkill`,
-  `batch.previewSkillToggles`, and `batch.applySkillToggles`. Skill Manager
-  reuses that verified implementation only for the explicit selected-Agent
-  detach plan described above.
+  `batch.previewSkillToggles`, and `batch.applySkillToggles`; Skill Manager
+  uninstall never calls those methods.
 - The native client prewarms project and global skill inventories during app
   startup. Opening the Skill Manager performs no read; its Load Data button is
   the only page-local refresh trigger. Local app-owned skills are merged into
@@ -489,7 +504,7 @@ or expose write controls.
   confirmation also identifies the guarded source cleanup. After the verified
   external-manager removal succeeds, the same mutation flow previews and
   deletes the app-owned source only if no supported-Agent references remain.
-  Selected-Agent detach never deletes that source.
+  Selected-Agent physical uninstall never deletes that source.
 
 ## Session Preview
 

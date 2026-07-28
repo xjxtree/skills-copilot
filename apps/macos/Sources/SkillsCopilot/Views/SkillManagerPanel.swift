@@ -593,7 +593,7 @@ struct SkillManagerPanel: View {
                     )
                     : UIStrings.text(
                         "skillManager.remove.partialRule",
-                        "Partial removal keeps the shared files for other agents and adds rollback-safe exclusions so only the selected agents stop loading this skill."
+                        "Partial uninstall removes only each selected Agent's separable symlink or copied skill directory. It keeps the shared source and does not change Agent enablement configuration."
                     ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -602,7 +602,7 @@ struct SkillManagerPanel: View {
                     Text(String(
                         format: UIStrings.text(
                             "skillManager.remove.partialBlocked",
-                            "Selected-Agent detach is unavailable for: %@. Refresh the inventory or use complete uninstall."
+                            "No exact physical install target is available for: %@. Refresh the inventory or use complete uninstall."
                         ),
                         missingTargets.map(DisplayText.agent).joined(separator: ", ")
                     ))
@@ -705,13 +705,10 @@ struct SkillManagerPanel: View {
                     let cleanupLocalInstanceID = selection.localOwnership == .appOwned && fullUninstall
                         ? selection.localInstanceID
                         : nil
-                    let instanceIDs = fullUninstall
-                        ? selection.allInstanceIDs
-                        : selection.instanceIDs(for: selectedActionAgents)
                     await store.previewSkillManagerRemove(
                         skillName: selection.name,
                         agents: selectedActionAgents,
-                        instanceIDs: instanceIDs,
+                        instanceIDs: selection.allInstanceIDs,
                         scope: selection.scope,
                         cleanupLocalInstanceID: cleanupLocalInstanceID,
                         fullUninstall: fullUninstall
@@ -774,7 +771,7 @@ struct SkillManagerPanel: View {
                         label: UIStrings.text("skillManager.remove.mode", "Removal mode"),
                         value: plan.fullUninstall
                             ? UIStrings.text("skillManager.remove.mode.complete", "Complete uninstall")
-                            : UIStrings.text("skillManager.remove.mode.partial", "Selected-agent detach")
+                            : UIStrings.text("skillManager.remove.mode.partial", "Selected-agent uninstall")
                     )
                     Text(plan.localizedVerification)
                         .font(.caption)
@@ -1047,7 +1044,7 @@ struct SkillManagerPanel: View {
                 ? nil
                 : UIStrings.text(
                     "skillManager.toolUnavailable.message",
-                    "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent detach remains available."
+                    "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent link/copy removal remains available."
                 )
         }
         let status = tool.status.lowercased()
@@ -1056,7 +1053,7 @@ struct SkillManagerPanel: View {
         }
         return UIStrings.text(
             "skillManager.toolUnavailable.message",
-            "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent detach remains available."
+            "The external manager is unavailable, so search, install, update, and complete uninstall are disabled. Exact selected-Agent link/copy removal remains available."
         )
     }
 }
@@ -1228,7 +1225,7 @@ private enum SkillManagerWriteConfirmation {
                     )
                     : UIStrings.text(
                         "skillManager.confirm.partialDetach",
-                        "The shared source is preserved. Only selected agents receive verified config exclusions, with snapshots available for rollback."
+                        "The shared source is preserved. Only exact selected symlinks or copied skill directories are removed through a reversible filesystem operation; Agent enablement is unchanged."
                     ))
                 sections.append(plan.localizedVerification)
             }

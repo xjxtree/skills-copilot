@@ -352,7 +352,7 @@ fn complete_uninstall_targets_every_external_manager_agent() {
         preview_token: None,
     };
 
-    let (preview, plan, detach_preview_token) =
+    let (preview, plan, physical_plan) =
         build_remove_preview(&catalog, &ctx, &params).expect("complete uninstall preview");
 
     assert_eq!(preview.operation, "remove");
@@ -360,8 +360,8 @@ fn complete_uninstall_targets_every_external_manager_agent() {
     assert!(plan.full_uninstall);
     assert!(!plan.source_preserved);
     assert!(
-        detach_preview_token.is_none(),
-        "complete uninstall does not use a native config-detach preview"
+        physical_plan.is_none(),
+        "complete uninstall does not use a native physical-target preview"
     );
     assert_eq!(
         preview
@@ -397,10 +397,266 @@ fn complete_uninstall_postcheck_treats_a_dangling_link_as_a_remaining_entry() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
-fn partial_remove_detaches_only_selected_agent_and_preserves_shared_source() {
+fn partial_remove_deletes_only_selected_agent_symlink_and_preserves_shared_source() {
+    use std::os::unix::fs::symlink;
+
     let root = std::env::temp_dir().join(format!(
         "skill-manager-partial-remove-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let skill_dir = home.join(".agents/skills/shared-skill");
+    let claude_link = home.join(".claude/skills/shared-skill");
+    fs::create_dir_all(&skill_dir).expect("create shared skill");
+    fs::create_dir_all(claude_link.parent().expect("Claude skills parent"))
+        .expect("create Claude skills root");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+    )
+    .expect("write shared skill");
+    symlink("../../.agents/skills/shared-skill", &claude_link)
+        .expect("link shared skill into Claude");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let claude = initial
+        .iter()
+        .find(|record| record.agent == "claude-code" && record.name == "shared-skill")
+        .expect("Claude linked record");
+    let codex = initial
+        .iter()
+        .find(|record| record.agent == "codex" && record.name == "shared-skill")
+        .expect("Codex shared-source record");
+    let all_instance_ids = initial
+        .iter()
+        .filter(|record| record.name == "shared-skill" && record.scope == "agent-global")
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["claude-code".to_string()],
+        instance_ids: all_instance_ids,
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+    let preview =
+        preview_remove_with_manager(&catalog, &ctx, &params).expect("partial remove preview");
+    let plan = preview.removal_plan.as_ref().expect("removal plan");
+
+    assert_eq!(preview.preview.tool_id, "agent-copilot-native");
+    assert_eq!(plan.mode, "selected-agent-uninstall");
+    assert!(plan.source_preserved);
+    assert_eq!(plan.actions[0].strategy, "remove-symlink");
+    assert!(skill_dir.join("SKILL.md").is_file(), "preview is read-only");
+    assert!(
+        fs::symlink_metadata(&claude_link).is_ok(),
+        "preview keeps the selected link"
+    );
+
+    let applied = apply_remove_with_manager(
+        &catalog,
+        &ctx,
+        &SkillManagerRemoveParams {
+            confirmed: true,
+            preview_token: Some(preview.preview.preview_token),
+            ..params
+        },
+    )
+    .expect("partial remove applies");
+    let updated = applied.updated_skills;
+    let updated_claude = updated
+        .iter()
+        .find(|record| record.id == claude.id)
+        .expect("updated Claude record");
+    let updated_codex = updated
+        .iter()
+        .find(|record| record.id == codex.id)
+        .expect("updated Codex record");
+
+    assert_eq!(updated_claude.state, "missing");
+    assert!(
+        fs::symlink_metadata(&claude_link).is_err(),
+        "the selected Agent symlink must be removed"
+    );
+    assert!(
+        skill_dir.join("SKILL.md").is_file(),
+        "partial uninstall must preserve the source for unselected agents"
+    );
+    assert!(
+        updated_codex.enabled && updated_codex.state != "missing",
+        "the unselected Codex instance remains installed"
+    );
+    assert!(
+        !home.join(".claude/settings.json").exists(),
+        "Skill Manager removal must not write Agent enable/disable config"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn partial_remove_deletes_a_selected_copy_and_preserves_other_agent_source() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-copy-remove-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let shared_source = home.join(".agents/skills/copied-skill");
+    let claude_copy = home.join(".claude/skills/copied-skill");
+    for directory in [&shared_source, &claude_copy] {
+        fs::create_dir_all(directory).expect("create skill directory");
+        fs::write(
+            directory.join("SKILL.md"),
+            "---\nname: copied-skill\ndescription: Copied test skill.\n---\n",
+        )
+        .expect("write copied skill");
+        fs::write(directory.join("helper.txt"), "helper").expect("write helper");
+    }
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let claude = initial
+        .iter()
+        .find(|record| record.agent == "claude-code" && record.name == "copied-skill")
+        .expect("Claude copied record");
+    let params = SkillManagerRemoveParams {
+        skill: "copied-skill".to_string(),
+        agents: vec!["claude-code".to_string()],
+        instance_ids: initial
+            .iter()
+            .filter(|record| record.name == "copied-skill" && record.scope == "agent-global")
+            .map(|record| record.id.clone())
+            .collect(),
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+    let preview =
+        preview_remove_with_manager(&catalog, &ctx, &params).expect("copy removal preview");
+    assert_eq!(
+        preview.removal_plan.as_ref().expect("plan").actions[0].strategy,
+        "remove-copy-directory"
+    );
+
+    apply_remove_with_manager(
+        &catalog,
+        &ctx,
+        &SkillManagerRemoveParams {
+            confirmed: true,
+            preview_token: Some(preview.preview.preview_token),
+            ..params
+        },
+    )
+    .expect("copy removal applies");
+
+    assert!(
+        !claude_copy.exists(),
+        "selected copied directory is removed"
+    );
+    assert!(
+        shared_source.join("SKILL.md").is_file(),
+        "unselected shared source remains"
+    );
+    assert_eq!(
+        catalog
+            .get_skill_record(&claude.id)
+            .expect("read Claude record")
+            .expect("Claude record retained for history")
+            .state,
+        "missing"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_remove_rejects_a_copy_that_is_an_unselected_agent_link_source() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-dependent-link-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let claude_copy = home.join(".claude/skills/copied-skill");
+    let hermes_link = home.join(".hermes/skills/copied-skill");
+    fs::create_dir_all(&claude_copy).expect("create Claude copy");
+    fs::create_dir_all(hermes_link.parent().expect("Hermes skills parent"))
+        .expect("create Hermes skills root");
+    fs::write(
+        claude_copy.join("SKILL.md"),
+        "---\nname: copied-skill\ndescription: Copied test skill.\n---\n",
+    )
+    .expect("write copied skill");
+    symlink(&claude_copy, &hermes_link).expect("link Hermes to Claude copy");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let params = SkillManagerRemoveParams {
+        skill: "copied-skill".to_string(),
+        agents: vec!["claude-code".to_string()],
+        instance_ids: initial
+            .iter()
+            .filter(|record| record.name == "copied-skill" && record.scope == "agent-global")
+            .map(|record| record.id.clone())
+            .collect(),
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+
+    let error = preview_remove_with_manager(&catalog, &ctx, &params)
+        .expect_err("a selected copy used by an unselected Agent must be preserved");
+    assert!(
+        matches!(
+            &error,
+            CommandError::InvalidSkillManagerRequest(message)
+                if message.contains("directly share")
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        claude_copy.join("SKILL.md").is_file(),
+        "rejected preview keeps the selected copy"
+    );
+    assert!(
+        hermes_link.join("SKILL.md").is_file(),
+        "rejected preview keeps the unselected Agent link"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn partial_remove_rejects_agents_that_directly_share_one_source_directory() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-shared-source-{}",
         std::process::id()
     ));
     let home = root.join("home");
@@ -421,18 +677,213 @@ fn partial_remove_detaches_only_selected_agent_and_preserves_shared_source() {
     };
     scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
     let initial = catalog.list_skill_records().expect("initial records");
-    let codex = initial
-        .iter()
-        .find(|record| record.agent == "codex" && record.name == "shared-skill")
-        .expect("Codex shared record");
-    let opencode = initial
-        .iter()
-        .find(|record| record.agent == "opencode" && record.name == "shared-skill")
-        .expect("opencode shared record");
     let params = SkillManagerRemoveParams {
         skill: "shared-skill".to_string(),
         agents: vec!["codex".to_string()],
-        instance_ids: vec![codex.id.clone()],
+        instance_ids: initial
+            .iter()
+            .filter(|record| record.name == "shared-skill" && record.scope == "agent-global")
+            .map(|record| record.id.clone())
+            .collect(),
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+
+    let error = preview_remove_with_manager(&catalog, &ctx, &params)
+        .expect_err("a shared direct source cannot be partially deleted");
+    assert!(
+        matches!(
+            &error,
+            CommandError::InvalidSkillManagerRequest(message)
+                if message.contains("directly share") || message.contains("shared canonical source")
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        skill_dir.join("SKILL.md").is_file(),
+        "blocked preview is read-only"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_remove_requires_every_matching_physical_identity() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-complete-identities-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let shared_source = home.join(".agents/skills/shared-skill");
+    let claude_link = home.join(".claude/skills/shared-skill");
+    fs::create_dir_all(&shared_source).expect("create shared skill");
+    fs::create_dir_all(claude_link.parent().expect("Claude skills parent"))
+        .expect("create Claude skills root");
+    fs::write(
+        shared_source.join("SKILL.md"),
+        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+    )
+    .expect("write shared skill");
+    symlink(&shared_source, &claude_link).expect("create Claude link");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["claude-code".to_string()],
+        instance_ids: initial
+            .iter()
+            .filter(|record| {
+                record.name == "shared-skill"
+                    && record.scope == "agent-global"
+                    && record.agent != "codex"
+            })
+            .map(|record| record.id.clone())
+            .collect(),
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+
+    let error = preview_remove_with_manager(&catalog, &ctx, &params)
+        .expect_err("an omitted matching physical identity must invalidate the preview");
+    assert!(
+        matches!(
+            &error,
+            CommandError::InvalidSkillManagerRequest(message)
+                if message.contains("missing exact physical identities")
+                    && message.contains("codex")
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        fs::symlink_metadata(&claude_link).is_ok(),
+        "rejected preview must preserve the selected link"
+    );
+    assert!(
+        shared_source.join("SKILL.md").is_file(),
+        "rejected preview must preserve the shared source"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_remove_rejects_a_link_when_the_selected_agent_also_loads_the_shared_source() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-redundant-link-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let shared_source = home.join(".agents/skills/shared-skill");
+    let opencode_link = home.join(".config/opencode/skills/shared-skill");
+    fs::create_dir_all(&shared_source).expect("create shared skill");
+    fs::create_dir_all(opencode_link.parent().expect("opencode skills parent"))
+        .expect("create opencode skills root");
+    fs::write(
+        shared_source.join("SKILL.md"),
+        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+    )
+    .expect("write shared skill");
+    symlink(&shared_source, &opencode_link).expect("create opencode link");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["opencode".to_string()],
+        instance_ids: initial
+            .iter()
+            .filter(|record| record.name == "shared-skill" && record.scope == "agent-global")
+            .map(|record| record.id.clone())
+            .collect(),
+        scope: Some("global".to_string()),
+        full_uninstall: false,
+        confirmed: false,
+        preview_token: None,
+    };
+
+    let error = preview_remove_with_manager(&catalog, &ctx, &params)
+        .expect_err("removing a redundant link would not uninstall opencode");
+    assert!(
+        matches!(
+            &error,
+            CommandError::InvalidSkillManagerRequest(message)
+                if message.contains("also loads") && message.contains("would not uninstall")
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        fs::symlink_metadata(&opencode_link).is_ok(),
+        "blocked preview keeps the link"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_remove_confirmation_is_bound_to_the_previewed_physical_target() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-partial-remove-binding-{}",
+        std::process::id()
+    ));
+    let home = root.join("home");
+    let skill_dir = home.join(".agents/skills/shared-skill");
+    let alternate_dir = home.join(".agents/skills/alternate-shared-skill");
+    let claude_link = home.join(".claude/skills/shared-skill");
+    fs::create_dir_all(&skill_dir).expect("create shared skill");
+    fs::create_dir_all(&alternate_dir).expect("create alternate shared skill");
+    fs::create_dir_all(claude_link.parent().expect("Claude link parent"))
+        .expect("create Claude skills root");
+    for directory in [&skill_dir, &alternate_dir] {
+        fs::write(
+            directory.join("SKILL.md"),
+            "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+        )
+        .expect("write shared skill");
+    }
+    symlink(&skill_dir, &claude_link).expect("create Claude link");
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    let ctx = AdapterContext {
+        user_home: home,
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    scan_all_catalog_report(&ctx, &catalog).expect("initial scan");
+    let initial = catalog.list_skill_records().expect("initial records");
+    let params = SkillManagerRemoveParams {
+        skill: "shared-skill".to_string(),
+        agents: vec!["claude-code".to_string()],
+        instance_ids: initial
+            .iter()
+            .filter(|record| record.name == "shared-skill" && record.scope == "agent-global")
+            .map(|record| record.id.clone())
+            .collect(),
         scope: Some("global".to_string()),
         full_uninstall: false,
         confirmed: false,
@@ -440,14 +891,10 @@ fn partial_remove_detaches_only_selected_agent_and_preserves_shared_source() {
     };
     let preview =
         preview_remove_with_manager(&catalog, &ctx, &params).expect("partial remove preview");
-    let plan = preview.removal_plan.as_ref().expect("removal plan");
+    fs::remove_file(&claude_link).expect("replace previewed link");
+    symlink(&alternate_dir, &claude_link).expect("retarget Claude link");
 
-    assert_eq!(preview.preview.tool_id, "agent-copilot-native");
-    assert_eq!(plan.mode, "selected-agent-detach");
-    assert!(plan.source_preserved);
-    assert!(skill_dir.join("SKILL.md").is_file(), "preview is read-only");
-
-    let applied = apply_remove_with_manager(
+    let error = apply_remove_with_manager(
         &catalog,
         &ctx,
         &SkillManagerRemoveParams {
@@ -456,83 +903,7 @@ fn partial_remove_detaches_only_selected_agent_and_preserves_shared_source() {
             ..params
         },
     )
-    .expect("partial remove applies");
-    let updated = applied.updated_skills;
-    let updated_codex = updated
-        .iter()
-        .find(|record| record.id == codex.id)
-        .expect("updated Codex record");
-    let updated_opencode = updated
-        .iter()
-        .find(|record| record.id == opencode.id)
-        .expect("updated opencode record");
-
-    assert!(!updated_codex.enabled);
-    assert!(updated_opencode.enabled);
-    assert!(
-        skill_dir.join("SKILL.md").is_file(),
-        "partial detach must preserve the source for unselected agents"
-    );
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn partial_remove_confirmation_is_bound_to_the_previewed_config_target() {
-    let root = std::env::temp_dir().join(format!(
-        "skill-manager-partial-remove-binding-{}",
-        std::process::id()
-    ));
-    let home = root.join("home");
-    let skill_dir = home.join(".agents/skills/shared-skill");
-    fs::create_dir_all(&skill_dir).expect("create shared skill");
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
-    )
-    .expect("write shared skill");
-    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
-    catalog.init().expect("catalog initializes");
-    let original_ctx = AdapterContext {
-        user_home: home,
-        project_root: None,
-        project_cwd: None,
-        extra_roots: Vec::new(),
-    };
-    scan_all_catalog_report(&original_ctx, &catalog).expect("initial scan");
-    let opencode = catalog
-        .list_skill_records()
-        .expect("initial records")
-        .into_iter()
-        .find(|record| record.agent == "opencode" && record.name == "shared-skill")
-        .expect("opencode shared record");
-    let params = SkillManagerRemoveParams {
-        skill: "shared-skill".to_string(),
-        agents: vec!["opencode".to_string()],
-        instance_ids: vec![opencode.id.clone()],
-        scope: Some("global".to_string()),
-        full_uninstall: false,
-        confirmed: false,
-        preview_token: None,
-    };
-    let preview = preview_remove_with_manager(&catalog, &original_ctx, &params)
-        .expect("partial remove preview");
-    let changed_ctx = AdapterContext {
-        user_home: root.join("different-home"),
-        project_root: None,
-        project_cwd: None,
-        extra_roots: Vec::new(),
-    };
-
-    let error = apply_remove_with_manager(
-        &catalog,
-        &changed_ctx,
-        &SkillManagerRemoveParams {
-            confirmed: true,
-            preview_token: Some(preview.preview.preview_token),
-            ..params
-        },
-    )
-    .expect_err("a changed config target must invalidate the confirmation");
+    .expect_err("a changed physical target must invalidate the confirmation");
 
     assert!(
         matches!(
@@ -543,12 +914,8 @@ fn partial_remove_confirmation_is_bound_to_the_previewed_config_target() {
         "unexpected error: {error:?}"
     );
     assert!(
-        catalog
-            .get_skill_record(&opencode.id)
-            .expect("read opencode record")
-            .expect("opencode record remains")
-            .enabled,
-        "a stale confirmation must not detach the skill"
+        fs::symlink_metadata(&claude_link).is_ok(),
+        "a stale confirmation must not delete the retargeted link"
     );
     let _ = fs::remove_dir_all(root);
 }

@@ -138,8 +138,9 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   Installed JSON is read once per project/global scope and merged with the
   app-owned local library. The CLI row is authoritative for an installed
   package; its redacted source path associates matching catalog instances,
-  consumes them, and unions their current supported-Agent consumers into the
-  affected target list. This ensures removal includes Agents that load a
+  consumes them, and unions their physically present supported-Agent targets
+  into the affected target list regardless of enable/disable configuration.
+  This ensures removal includes Agents that can load a
   shared `.agents/skills` source directly even when the CLI list omits them,
   while the same source is never rendered once as manager-owned and again as
   local. Catalog fallback is limited to guarded
@@ -154,18 +155,27 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   so the Node CLI cannot drop bytes at the 64 KiB pipe-buffer boundary; the
   capture is bounded and removed on every return path.
   An installed local source outside the selected guarded `.agents/skills` root
-  remains visible as external local and may use selected-Agent detach or
+  remains visible as external local and may use selected-Agent physical
+  uninstall when it has a separable target under a documented install root, or
   complete uninstall, but cannot be replaced from ZIP by the app.
   Do not add page flags or alter the manager command shape without a parsed
   token fixture that proves the external manager contract.
 - Install uses the manager symlink flow; the native UI does not offer copy
   distribution.
-- Skill removal distinguishes selected-Agent detach from complete uninstall.
-  A proper subset is detached with the adapter's verified config exclusion
-  path, exact catalog instance IDs, snapshots, read-back verification, and
-  rollback support. This preserves the shared source, unselected Agents, and
-  manager lock metadata; it does not invoke the external CLI's unsafe partial
-  remove behavior.
+- Skill removal distinguishes selected-Agent physical uninstall from complete
+  uninstall. A proper subset requires all exact package-row identities and
+  removes only a separable direct-child symlink or copied skill directory under
+  the selected Agent's documented install root. Confirmation binds the entry
+  type and bounded tree revision; apply stages entries outside scan roots,
+  rescans, verifies preserved paths, and rolls back failed verification. It
+  preserves the shared source, unselected Agent targets, Agent enablement
+  configuration, and manager lock metadata, and does not invoke the external
+  CLI's unsafe partial-remove behavior.
+- A shared `.agents/skills/<skill>` directory read directly by both a selected
+  and unselected Agent has no per-Agent filesystem entry. Partial uninstall
+  fails closed for that selection; users may separately change enablement in
+  Skill Details, or choose complete uninstall when the source should be
+  deleted.
 - Selecting every linked Agent requests complete uninstall. The external
   manager command omits `--agent`, which targets every Agent recognized by that
   manager rather than only the six adapters displayed by this app. The service
@@ -186,8 +196,9 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   update flow instead of creating an ambiguous second package row.
 - Generic Agent enable/disable remains in `config.toggleSkill`,
   `batch.previewSkillToggles`, and `batch.applySkillToggles`. Skill Manager
-  reuses the same guarded config transaction only for a selected-Agent detach,
-  because shared `.agents/skills` consumers have no separable package path.
+  never calls these methods for uninstall; shared `.agents/skills` consumers
+  without a separable package path are reported as physically non-removable
+  for a partial selection.
 - ChatGPT's Plugin Directory is also separate from Skill Manager. Only enabled,
   installed, manifest-declared plugin skills participate in current projections;
   arbitrary plugin cache content and Deleted cache noise remain excluded;
