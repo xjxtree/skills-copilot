@@ -234,11 +234,28 @@ mod tests {
         fs::create_dir_all(ctx.project_root.as_ref().expect("project root"))
             .expect("create project");
         let app_data = tree.directory("app-data");
+        let filesystem_root = tree
+            .root
+            .ancestors()
+            .last()
+            .expect("filesystem root")
+            .to_path_buf();
+        let shallow_root = tree
+            .root
+            .ancestors()
+            .find(|path| {
+                path.components()
+                    .filter(|component| matches!(component, std::path::Component::Normal(_)))
+                    .count()
+                    == 1
+            })
+            .expect("existing shallow root")
+            .to_path_buf();
 
         let plan = build_authorized_file_watch_plan(
             [
-                PathBuf::from("/"),
-                env::temp_dir(),
+                filesystem_root,
+                shallow_root,
                 ctx.user_home.clone(),
                 ctx.project_root.clone().expect("project root"),
                 app_data.clone(),
