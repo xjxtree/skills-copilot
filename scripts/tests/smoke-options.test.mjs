@@ -270,10 +270,10 @@ test("CI builds without launching and validates the bundled sidecar headlessly",
     /run: pnpm smoke:macos-app -- --fixture-data --headless-sidecar/,
   );
   assert.doesNotMatch(workflow, /--bundle-only/);
-  assert.match(workflow, /run: pnpm verify:macos-native-test-registry/);
+  assert.doesNotMatch(workflow, /verify:macos-native-test-registry/);
   assert.match(
     workflow,
-    /run: swift test --package-path apps\/macos --scratch-path "\$RUNNER_TEMP\/swift-tests"/,
+    /run: SWIFTPM_SCRATCH_PATH="\$RUNNER_TEMP\/swift-tests" pnpm test:macos-swift/,
   );
   assert.doesNotMatch(workflow, /run: swift build --package-path apps\/macos/);
   assert.ok(
@@ -293,7 +293,23 @@ test("CI builds without launching and validates the bundled sidecar headlessly",
   );
   assert.match(
     buildScript,
-    /case "\$MODE" in\n  --build-only\|build-only\)\n    ;;\n  \*\)\n    terminate_existing_app_instances/,
+    /if \[\[ \$\{#CARGO_ENV\[@\]\} -gt 0 \]\]; then\n  env "\$\{CARGO_ENV\[@\]\}" "\$CARGO_BIN" build/,
+  );
+  const cargoBuildIndex = buildScript.indexOf(
+    'if [[ ${#CARGO_ENV[@]} -gt 0 ]]; then',
+  );
+  const signingIndex = buildScript.indexOf("sign_app_bundle\n\ncase \"$MODE\"");
+  const terminationIndex = buildScript.indexOf(
+    'case "$MODE" in\n  --build-only|build-only)\n    ;;\n  *)\n    terminate_existing_app_instances',
+  );
+  assert.ok(cargoBuildIndex >= 0, "The Cargo build guard should exist.");
+  assert.ok(
+    signingIndex > cargoBuildIndex,
+    "Bundle signing should happen after the build.",
+  );
+  assert.ok(
+    terminationIndex > signingIndex,
+    "Running app instances should stop only after a successful signed bundle build.",
   );
   assert.match(localGate, /"\.\/script\/build_and_run\.sh",\s*\["--verify"\]/);
   assert.match(

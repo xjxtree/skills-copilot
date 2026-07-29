@@ -57,8 +57,10 @@ extension SkillStore {
                 if let importedSkill = result.importedSkill {
                     invalidateDetailCaches(for: [importedSkill.id])
                 }
-                try await refreshCollections()
-                await loadSkillManagerInventory()
+                try await refreshCollections(includeSupplementalData: false)
+                guard await ensureSkillManagerInventoryRefreshedAfterWrite() else {
+                    return
+                }
                 skillManagerMessage = UIStrings.text(
                     "skillManager.localArchive.imported",
                     "Local ZIP imported. Select the local skill in the inventory to install it for agents."
@@ -166,8 +168,10 @@ extension SkillStore {
                 if let updatedSkill = result.updatedSkill {
                     invalidateDetailCaches(for: [updatedSkill.id])
                 }
-                try await refreshCollections()
-                await loadSkillManagerInventory()
+                try await refreshCollections(includeSupplementalData: false)
+                guard await ensureSkillManagerInventoryRefreshedAfterWrite() else {
+                    return
+                }
                 skillManagerMessage = UIStrings.text(
                     "skillManager.localArchive.applied",
                     "Local skill package updated from the ZIP archive."

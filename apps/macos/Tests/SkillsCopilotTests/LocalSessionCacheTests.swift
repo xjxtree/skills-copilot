@@ -1,8 +1,11 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("LocalSessionCacheTests")
 @MainActor
 struct LocalSessionCacheTests {
+    @Test("LocalSessionCacheTests")
     func run() throws {
         try eightHundredSummariesRetainNoContentItems()
         try criteriaDoNotChangeSourceKey()
@@ -16,6 +19,7 @@ struct LocalSessionCacheTests {
         try cursorMetadataIsTransientAndCancellationRejectsLatePages()
         try globalSearchIndexesSummariesOnly()
         try globalSearchLimitsShortcutsButPreservesExactKindCounts()
+        try globalSearchExcludesDeletedSkillHistory()
         try globalSearchSkillMatchesCanonicalSkillPredicate()
     }
 
@@ -304,6 +308,45 @@ struct LocalSessionCacheTests {
             )
         }
         try expectEqual(result.totalMatchedCount, 60, "Global search should preserve the exact aggregate match count.")
+    }
+
+    private func globalSearchExcludesDeletedSkillHistory() throws {
+        let skills = [
+            SkillRecord(
+                id: "current",
+                agent: "codex",
+                scope: "agent-global",
+                path: "/skills/current/SKILL.md",
+                displayPath: "$HOME/.agents/skills/current/SKILL.md",
+                definitionId: "definition.current",
+                name: "Shared Search Skill",
+                state: "loaded",
+                enabled: true
+            ),
+            SkillRecord(
+                id: "deleted",
+                agent: "claude-code",
+                scope: "agent-global",
+                path: "/skills/deleted/SKILL.md",
+                displayPath: "$HOME/.claude/skills/deleted/SKILL.md",
+                definitionId: "definition.deleted",
+                name: "Shared Search Skill",
+                state: "missing",
+                enabled: true
+            ),
+        ]
+
+        let result = AppSearchIndex(
+            skills: skills,
+            sessionSummaries: [],
+            configSnapshots: []
+        ).search(query: "Shared Search", limitPerKind: 6)
+
+        try expectEqual(
+            result.items.map(\.targetID),
+            ["current"],
+            "Global search must not surface historical Deleted rows that the canonical Skills list cannot locate."
+        )
     }
 
     private func globalSearchSkillMatchesCanonicalSkillPredicate() throws {

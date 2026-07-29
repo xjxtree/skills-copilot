@@ -14,8 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainWindowCoordinator.configureApplicationAppearance()
         MainWindowCoordinator.activateApplication()
-        DispatchQueue.main.async {
-            MainWindowCoordinator.restoreMainWindow()
+        // SwiftUI may create or restore the WindowGroup after this delegate
+        // callback. Defer the fallback so a normal launch cannot create a
+        // duplicate window, then re-check the live window list before opening.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            MainWindowCoordinator.restoreMainWindow(createIfMissing: true)
         }
     }
 
@@ -25,10 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        DispatchQueue.main.async {
-            MainWindowCoordinator.restoreMainWindow(in: sender)
-        }
-        return true
+        MainWindowCoordinator.restoreMainWindow(in: sender, createIfMissing: true)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -49,7 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SkillsCopilotApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = SkillStore(service: ServiceClient())
+    @StateObject private var store = SkillStore(
+        service: ServiceClient(),
+        fileSystemWatcher: FSEventsFileSystemWatcher()
+    )
     @AppStorage(AppLanguage.storageKey) private var appLanguageRawValue = AppLanguage.defaultLanguage.rawValue
     @AppStorage(AppTheme.storageKey) private var appThemeRawValue = AppTheme.defaultTheme.rawValue
 
@@ -60,6 +63,9 @@ struct SkillsCopilotApp: App {
         WindowGroup(UIStrings.appWindowTitle) {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(store.sessionStore)
+                .environmentObject(store.providerStore)
+                .environmentObject(store.skillManagerStore)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
                 .preferredColorScheme(appTheme.colorScheme)
                 .id(appLanguage.rawValue)
@@ -75,16 +81,16 @@ struct SkillsCopilotApp: App {
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button(UIStrings.menuScanSkills) {
+                Button(UIStrings.menuRefresh) {
+                    Task { await store.refresh() }
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                .disabled(store.isRefreshBusy)
+
+                Button(UIStrings.menuDeepScan) {
                     Task { await store.scanAll() }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(store.isRefreshBusy)
-
-                Button(UIStrings.menuReloadSkills) {
-                    Task { await store.reload() }
-                }
-                .keyboardShortcut("r", modifiers: [.command])
                 .disabled(store.isRefreshBusy)
             }
 
@@ -129,6 +135,7 @@ struct SkillsCopilotApp: App {
         Settings {
             SettingsView()
                 .environmentObject(store)
+                .environmentObject(store.providerStore)
                 .environment(\.locale, Locale(identifier: appLanguage.localeIdentifier))
                 .preferredColorScheme(appTheme.colorScheme)
                 .id(appLanguage.rawValue)

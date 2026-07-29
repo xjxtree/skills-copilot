@@ -188,9 +188,9 @@ private struct CatalogStatusIssueCard: View {
         case .missing:
             return UIStrings.text("issues.catalogStatus.missing.remediation", "Restore SKILL.md at the recorded source path if the skill should still exist. If it was intentionally removed, keep this historical record as missing.")
         case .broken:
-            return UIStrings.text("issues.catalogStatus.broken.remediation", "Repair the SKILL.md frontmatter or source content, then run Scan again.")
+            return UIStrings.text("issues.catalogStatus.broken.remediation", "Repair the SKILL.md frontmatter or source content, then run Deep Scan again.")
         case .unknown:
-            return UIStrings.text("issues.catalogStatus.unknown.remediation", "Inspect the source and scan diagnostics, then run Scan again after correcting the underlying state.")
+            return UIStrings.text("issues.catalogStatus.unknown.remediation", "Inspect the source and scan diagnostics, then run Deep Scan again after correcting the underlying state.")
         case .enabled, .disabled, .shadowed:
             return UIStrings.text("issues.catalogStatus.remediation", "Inspect the skill source and scan again before relying on this record.")
         }
@@ -246,6 +246,7 @@ struct FindingsControlPanel: View {
 struct FindingIssueCard: View {
     let issue: FindingIssueGroup
     let severityTitle: String
+    @State private var didCopyRemediation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -290,9 +291,28 @@ struct FindingIssueCard: View {
             .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 5) {
-                Label(UIStrings.findingRemediation, systemImage: "wrench.and.screwdriver")
-                    .font(.caption.bold())
-                    .foregroundStyle(.blue)
+                HStack(spacing: 8) {
+                    Label(UIStrings.findingRemediation, systemImage: "wrench.and.screwdriver")
+                        .font(.caption.bold())
+                        .foregroundStyle(.blue)
+                    Spacer()
+                    Button {
+                        copyRemediation()
+                    } label: {
+                        Label(
+                            didCopyRemediation
+                                ? UIStrings.text("action.copied", "Copied")
+                                : UIStrings.text("finding.action.copyRemediation", "Copy Fix"),
+                            systemImage: didCopyRemediation ? "checkmark" : "doc.on.doc"
+                        )
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .accessibilityHint(UIStrings.text(
+                        "finding.action.copyRemediation.hint",
+                        "Copy this remediation for use in your editor or agent."
+                    ))
+                }
                 Text(issue.remediation)
                     .foregroundStyle(.primary)
             }
@@ -303,6 +323,25 @@ struct FindingIssueCard: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .nativePanelSurface()
+    }
+
+    private func copyRemediation() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(issue.remediation, forType: .string)
+        didCopyRemediation = true
+        if let window = NSApp.mainWindow {
+            NSAccessibility.post(
+                element: window,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: UIStrings.text("action.copied", "Copied"),
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            didCopyRemediation = false
+        }
     }
 }
 
@@ -415,9 +454,12 @@ struct PermissionSummaryCard: View {
 }
 
 struct SameAgentConflictIssuesView: View {
+    @EnvironmentObject private var store: SkillStore
     let conflicts: [ConflictGroupRecord]
     let selectedSkillID: String
-    let currentAgentSkillIDs: Set<String>
+    let currentAgentSkills: [SkillRecord]
+    let onSelectSkill: (SkillRecord) -> Void
+    let onDisableDuplicate: (SkillRecord) -> Void
     var showsEmptyState = false
 
     var body: some View {
@@ -438,7 +480,9 @@ struct SameAgentConflictIssuesView: View {
             .nativePanelSurface()
 
             ForEach(conflicts) { conflict in
-                let currentAgentInstanceIDs = conflict.instanceIds.filter { currentAgentSkillIDs.contains($0) }
+                let currentAgentInstanceIDs = conflict.instanceIds.filter {
+                    currentAgentSkillByID[$0] != nil
+                }
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(conflict.reason)
@@ -465,14 +509,17 @@ struct SameAgentConflictIssuesView: View {
                                 .foregroundStyle(.secondary)
 
                             ForEach(currentAgentInstanceIDs, id: \.self) { instanceID in
-                                Label(
-                                    instanceID == selectedSkillID ? "\(instanceID) · selected" : instanceID,
-                                    systemImage: instanceID == selectedSkillID ? "target" : "circle"
+                                ConflictInstanceActionRow(
+                                    instanceID: instanceID,
+                                    skill: currentAgentSkillByID[instanceID],
+                                    winnerID: conflict.winnerId,
+                                    selectedSkillID: selectedSkillID,
+                                    toggleDisabledReason: currentAgentSkillByID[instanceID].flatMap {
+                                        store.toggleDisabledReason(for: $0)
+                                    },
+                                    onSelectSkill: onSelectSkill,
+                                    onDisableDuplicate: onDisableDuplicate
                                 )
-                                .font(.caption)
-                                .lineLimit(2)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
                             }
                         }
                         .padding(10)
@@ -486,20 +533,132 @@ struct SameAgentConflictIssuesView: View {
             }
         }
     }
+
+    private var currentAgentSkillByID: [String: SkillRecord] {
+        Dictionary(uniqueKeysWithValues: currentAgentSkills.map { ($0.id, $0) })
+    }
+}
+
+private struct ConflictInstanceActionRow: View {
+    let instanceID: String
+    let skill: SkillRecord?
+    let winnerID: String?
+    let selectedSkillID: String
+    let toggleDisabledReason: String?
+    let onSelectSkill: (SkillRecord) -> Void
+    let onDisableDuplicate: (SkillRecord) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: statusImage)
+                .foregroundStyle(isWinner ? Color.green : Color.secondary)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(skill?.name ?? instanceID)
+                    .font(.caption.bold())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(statusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let skill {
+                Button {
+                    onSelectSkill(skill)
+                } label: {
+                    Label(
+                        UIStrings.text("conflicts.action.open", "Open"),
+                        systemImage: "arrow.right.circle"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityHint(UIStrings.text(
+                    "conflicts.action.open.hint",
+                    "Show this conflicting skill."
+                ))
+
+                if canDisableAsDuplicate {
+                    Button(role: .destructive) {
+                        onDisableDuplicate(skill)
+                    } label: {
+                        Label(
+                            UIStrings.text("conflicts.action.disableDuplicate", "Disable Duplicate…"),
+                            systemImage: "pause.circle"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(toggleDisabledReason != nil)
+                    .help(toggleDisabledReason ?? UIStrings.text(
+                        "conflicts.action.disableDuplicate.help",
+                        "Preview disabling this duplicate while keeping the selected winner active."
+                    ))
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 7))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(skill?.name ?? instanceID)
+        .accessibilityValue(statusText)
+    }
+
+    private var isWinner: Bool {
+        winnerID == instanceID
+    }
+
+    private var isSelected: Bool {
+        selectedSkillID == instanceID
+    }
+
+    private var canDisableAsDuplicate: Bool {
+        guard let winnerID, winnerID != instanceID, skill != nil else { return false }
+        return DisplayText.statusKind(skill?.state ?? "", enabled: skill?.enabled ?? false) == .enabled
+    }
+
+    private var statusImage: String {
+        if isWinner {
+            return "crown.fill"
+        }
+        if isSelected {
+            return "target"
+        }
+        return "circle"
+    }
+
+    private var statusText: String {
+        if isWinner {
+            return UIStrings.text("conflicts.instance.winner", "Active winner")
+        }
+        if isSelected {
+            return UIStrings.text("conflicts.instance.selected", "Selected duplicate")
+        }
+        return UIStrings.text("conflicts.instance.duplicate", "Conflicting duplicate")
+    }
 }
 
 struct ConflictsSection: View {
     let conflicts: [ConflictGroupRecord]
     let selectedSkillID: String
-    let currentAgentSkillIDs: Set<String>
+    let currentAgentSkills: [SkillRecord]
     let catalogCompleteness: ListCompletenessState
+    let onSelectSkill: (SkillRecord) -> Void
+    let onDisableDuplicate: (SkillRecord) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SameAgentConflictIssuesView(
                 conflicts: conflicts,
                 selectedSkillID: selectedSkillID,
-                currentAgentSkillIDs: currentAgentSkillIDs,
+                currentAgentSkills: currentAgentSkills,
+                onSelectSkill: onSelectSkill,
+                onDisableDuplicate: onDisableDuplicate,
                 showsEmptyState: catalogCompleteness.completeness == .complete
             )
 
@@ -545,6 +704,7 @@ struct AgentConfigHistorySection: View {
     @State private var preview: SnapshotRollbackPreviewRecord?
     @State private var previewError: String?
     @State private var snapshotToRollback: ConfigSnapshotRecord?
+    @AppStorage(DisplayText.screenshotPrivacyModeStorageKey) private var privacyModeEnabled = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -563,7 +723,14 @@ struct AgentConfigHistorySection: View {
                                     .font(.headline)
                                     .lineLimit(2)
                                 DetailMetricGrid {
-                                    SummaryChip(title: UIStrings.target, value: snapshot.target, systemImage: "scope")
+                                    SummaryChip(
+                                        title: UIStrings.target,
+                                        value: DisplayText.privacyPath(
+                                            snapshot.target,
+                                            privacyModeEnabled: privacyModeEnabled
+                                        ),
+                                        systemImage: "scope"
+                                    )
                                     SummaryChip(title: UIStrings.scope, value: DisplayText.scope(snapshot.scope), systemImage: "folder")
                                     SummaryChip(title: UIStrings.text("history.created", "Created"), value: DisplayText.timestamp(snapshot.createdAt), systemImage: "calendar")
                                     SummaryChip(title: UIStrings.text("history.characters", "Captured"), value: UIStrings.charactersCaptured(snapshot.content.count), systemImage: "textformat.size")
@@ -619,7 +786,12 @@ struct AgentConfigHistorySection: View {
                 snapshotToRollback = nil
             }
         } message: {
-            Text(snapshotToRollback?.target ?? "")
+            Text(
+                DisplayText.privacyPath(
+                    snapshotToRollback?.target ?? "",
+                    privacyModeEnabled: privacyModeEnabled
+                )
+            )
         }
     }
 
@@ -646,9 +818,11 @@ struct SnapshotPreviewSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(UIStrings.snapshotPreview)
                         .font(.title2.bold())
-                    Text(preview.snapshot.target)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                    PrivacyPathText(
+                        path: preview.snapshot.target,
+                        font: .callout,
+                        lineLimit: 2
+                    )
                 }
                 Spacer()
                 Button {

@@ -15,12 +15,24 @@ Common entrypoints:
 ./script/build_and_run.sh --verify
 pnpm dev:macos
 pnpm build:macos
+pnpm build:macos:release:arm64
+pnpm build:macos:release:x86_64
 pnpm verify:macos-launch
+pnpm verify:macos-distribution
 pnpm test:macos-native-models
 pnpm check:macos
 ```
 
 `pnpm smoke:macos-app` validates the existing bundle; it does not rebuild it.
+
+Interactive run and launch-verification modes finish the Rust build, Swift
+build, bundle assembly, and signing before stopping an existing app instance.
+A failed build therefore leaves the currently running app available.
+`--build-only` never stops or launches the app.
+If macOS state restoration does not recreate the main window, launch and Dock
+reopen handling dispatch the app's existing Command-N `WindowGroup` action.
+This keeps a single SwiftUI window source of truth while guaranteeing that a
+visible app process can recover from a saved no-window state.
 
 Release-candidate builds use optimized Rust and Swift products. The generated
 app build script owns copying packaged resources into `Contents/Resources`, and
@@ -36,8 +48,17 @@ SWIFTPM_SCRATCH_PATH=/tmp/agent-copilot-release-x86_64 \
   ./script/build_and_run.sh --build-only --configuration release --arch x86_64
 ```
 
-Use a non-user-specific scratch path for public artifacts, then scan the app
-executables and archive listing for local paths before publishing.
+Without an explicit signing identity these are local-only, ad-hoc candidates
+that can be checked with:
+
+```sh
+pnpm verify:macos-distribution -- --allow-ad-hoc
+```
+
+For distribution, pass a Developer ID Application identity through
+`AGENT_COPILOT_SIGNING_IDENTITY` or `--signing-identity`, then use the
+notarization command in `docs/runbooks/distribution-runbook.md`. The verifier
+scans release executables for maintainer-specific source and home paths.
 
 ## Scenarios
 
@@ -45,10 +66,13 @@ executables and archive listing for local paths before publishing.
 | --- | --- | --- | --- |
 | Local App Run | `./script/build_and_run.sh run` or `pnpm dev:macos` | Real local HOME and app data | Manual behavior and visual checks |
 | Bundle Build | `pnpm build:macos` | No app data access | Rebuild without launching or stopping an existing app |
+| Release Candidate | `pnpm build:macos:release:arm64` or `pnpm build:macos:release:x86_64` | No app data access; optional explicit signing identity | Build a stripped architecture-specific candidate |
+| Distribution Verify | `pnpm verify:macos-distribution` | Existing bundle only | Verify versions, architectures, privacy, Developer ID signing, hardened runtime, and optional notarization trust |
 | Launch Verify | `./script/build_and_run.sh --verify` or `pnpm verify:macos-launch` | Real local HOME and app data | Rebuild and confirm a visible window |
 | Headless Sidecar Smoke | `pnpm smoke:macos-app -- --fixture-data --headless-sidecar` | Temporary fixture HOME, app data, and project roots | Validate the bundled Rust sidecar without GUI or Accessibility |
 | Smoke App Run | `pnpm smoke:macos-app -- --fixture-data --capture-window` | Temporary fixture HOME, app data, and project roots | Automated validation without real config |
-| Native Model Tests | `pnpm test:macos-native-models` | Temporary SwiftPM test package | Explicit native model runner without SwiftPM test-bundle loading |
+| Native Model Tests | `pnpm test:macos-native-models` | Temporary HOME, app data, and SwiftPM package | Swift Testing model suites without AppKit or SwiftUI linkage |
+| Full Swift Tests | `pnpm test:macos-swift` | Temporary HOME and app data | Swift Testing against the complete macOS package |
 | macOS Check | `pnpm check:macos` | Combined local gate | fmt/test/clippy/native model tests/build/launch/fixture smoke |
 
 ## Gate Parity
@@ -61,10 +85,11 @@ these members in this exact order:
 3. `verify:quality-budgets`
 4. `verify:list-completeness`
 5. `verify:doc-governance`
-6. `verify:macos-native-test-registry`
-7. `verify:js-syntax`
-8. `verify:rust-docs`
-9. `verify:validation-blockers`
+6. `test:check-macos-cache`
+7. `test:distribution-workflow`
+8. `verify:js-syntax`
+9. `verify:rust-docs`
+10. `verify:validation-blockers`
 
 `verify:quality-budgets` checks the parser, exact 10k count contract, and
 checked-in elapsed/RSS/p95 ceilings. The live benchmark commands separately

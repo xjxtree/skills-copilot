@@ -25,6 +25,8 @@ struct SkillManagerMutationInputs: Hashable {
     let distribution: SkillManagerDistribution?
     let networkAllowed: Bool
     let cleanupLocalInstanceID: String?
+    let removalInstanceIDs: [String]
+    let fullUninstall: Bool
 
     init(
         kind: Kind,
@@ -34,7 +36,9 @@ struct SkillManagerMutationInputs: Hashable {
         scope: SkillManagerScope,
         distribution: SkillManagerDistribution?,
         networkAllowed: Bool,
-        cleanupLocalInstanceID: String? = nil
+        cleanupLocalInstanceID: String? = nil,
+        removalInstanceIDs: [String] = [],
+        fullUninstall: Bool = false
     ) {
         self.kind = kind
         self.source = source?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,6 +48,8 @@ struct SkillManagerMutationInputs: Hashable {
         self.distribution = distribution
         self.networkAllowed = networkAllowed
         self.cleanupLocalInstanceID = cleanupLocalInstanceID
+        self.removalInstanceIDs = Self.canonicalValues(removalInstanceIDs)
+        self.fullUninstall = fullUninstall
     }
 
     private static func canonicalValues(_ values: [String]) -> [String] {

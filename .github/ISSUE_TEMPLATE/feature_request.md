@@ -14,6 +14,10 @@ What user problem does this solve?
 
 Current / future / requires scoped safety review:
 
+## Acceptance Criteria
+
+What observable behavior would prove the request is complete?
+
 ## Constraints
 
 Security, privacy, compatibility, or platform constraints:

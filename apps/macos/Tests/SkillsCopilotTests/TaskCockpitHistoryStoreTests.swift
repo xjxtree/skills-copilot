@@ -1,10 +1,13 @@
+import Testing
 import Darwin
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("TaskCockpitHistoryStoreTests")
 struct TaskCockpitHistoryStoreTests {
     private static let sensitiveSentinel = "SENSITIVE_SENTINEL_42"
 
+    @Test("TaskCockpitHistoryStoreTests")
     func run() throws {
         try missingHistoryFileNeedsNoCleanup()
         try legacyArrayIsDeleted()

@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -14,15 +14,11 @@ let package = Package(
             path: "Sources/SkillsCopilot",
             resources: [.process("Resources")]
         ),
-        .target(
-            name: "SkillsCopilotTestHarness",
-            path: "Tests/SkillsCopilotTestHarness",
-            publicHeadersPath: "."
-        ),
         .testTarget(
             name: "SkillsCopilotTests",
-            dependencies: ["SkillsCopilot", "SkillsCopilotTestHarness"],
+            dependencies: ["SkillsCopilot"],
             path: "Tests/SkillsCopilotTests"
         )
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

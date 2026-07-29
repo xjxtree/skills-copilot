@@ -9,8 +9,10 @@ a public distribution checklist.
 - [ ] Confirm `git status --short` contains only intended changes.
 - [ ] Read `README.md`, `AGENTS.md`, `docs/security-model.md`, and
   `docs/runbooks/distribution-runbook.md`.
-- [ ] Confirm public distribution, signing, notarization, DMG, ZIP, updater,
-  and release automation remain deferred unless explicitly scoped.
+- [ ] Confirm Developer ID signing and notarization are explicitly intended for
+  this candidate; DMG, updater, and public release automation remain absent.
+- [ ] Confirm the signing identity exists in the maintainer Keychain and the
+  named `notarytool` profile was created outside the repository.
 - [ ] Confirm script execution remains default-denied unless separately scoped
   with preview, confirmation, audit, and LLM separation.
 - [ ] Record the exact commit hash.
@@ -21,6 +23,8 @@ a public distribution checklist.
 - [ ] Build or verify the app bundle through the normal macOS gate.
 - [ ] Confirm bundle version, GitHub Release draft, tag name, PR title, and
   tracking issue agree.
+- [ ] Confirm retained withdrawn tags have a clearly marked pre-release note,
+  no downloadable assets, and a link to the current supported release.
 - [ ] Do not tag or announce a version when source, bundle, and notes disagree.
 
 ## Required Gates
@@ -29,6 +33,22 @@ a public distribution checklist.
 pnpm check:macos
 pnpm check:privacy
 ```
+
+## Distribution Trust
+
+- [ ] Build each intended architecture with release configuration, a
+  non-user-specific SwiftPM scratch path, and an explicit Developer ID
+  Application identity.
+- [ ] Run `pnpm verify:macos-distribution` before notarization.
+- [ ] Run `pnpm notarize:macos -- --keychain-profile <profile>` and retain the
+  request id in the GitHub Release.
+- [ ] Confirm the accepted notarization log reports no issues and no executable
+  carries `com.apple.security.get-task-allow=true`.
+- [ ] Require `xcrun stapler validate` and `spctl --assess` to pass through the
+  post-notarization verifier.
+- [ ] If producing a ZIP, use an explicit new output path and record its
+  SHA-256. Never publish an ad-hoc or merely Developer ID-signed candidate as a
+  completed release.
 
 For documentation-only cleanup, at minimum run:
 
@@ -77,6 +97,8 @@ real-local interaction evidence.
   windows.
 - A candidate includes credentials, raw local config, logs, private catalog
   data, or unredacted local paths.
+- A distribution candidate is ad-hoc signed, lacks hardened runtime, has no
+  stapled ticket, or fails Gatekeeper assessment.
 - Docs or scripts claim public distribution automation or real script execution
   exists without explicit scoped implementation and validation.
 

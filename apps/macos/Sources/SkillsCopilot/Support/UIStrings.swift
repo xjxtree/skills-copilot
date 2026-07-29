@@ -75,7 +75,7 @@ enum UIStrings {
     static var batchToggleOpenHelp: String { text("batchToggle.open.help", "Choose visible skills, preview the safe enable/disable plan, then apply confirmed writable changes.") }
     static var batchToggleSheetTitle: String { text("batchToggle.sheet.title", "Batch Skill Operations") }
     static var batchToggleSheetSubtitle: String { text("batchToggle.sheet.subtitle", "Select skills from the current sidebar result, then preview before applying enable or disable changes.") }
-    static var batchToggleBoundary: String { text("batchToggle.boundary", "Preview-first enable/disable for visible skills only. Read-only adapters and unverified writable roots are skipped; no scripts, AI provider calls, credentials, skill-content writes, or public release actions are available.") }
+    static var batchToggleBoundary: String { text("batchToggle.boundary", "Review writable and skipped skills before applying the confirmed enable/disable plan.") }
     static var batchToggleTarget: String { text("batchToggle.target", "Batch target") }
     static var batchToggleSelectAll: String { text("batchToggle.selectAll", "Select All") }
     static var batchToggleClearSelection: String { text("batchToggle.clearSelection", "Clear") }
@@ -196,9 +196,19 @@ enum UIStrings {
     static var retryRefresh: String { text("action.retryRefresh", "Retry Refresh") }
     static var refreshLog: String { text("refresh.log", "Refresh Log") }
     static var refreshIdle: String { text("refresh.idle", "Ready to refresh") }
-    static var refreshReloading: String { text("refresh.reloading", "Reloading catalog collections...") }
-    static var refreshScanning: String { text("refresh.scanning", "Scanning skills across supported adapters and refreshing catalog...") }
-    static var refreshWatcherManual: String { text("refresh.watcherManual", "Automatic watcher events are not active in this native sidecar yet. Use Reload or Scan to refresh.") }
+    static var refreshReloading: String { text("refresh.reloading", "Refreshing current catalog data...") }
+    static var refreshScanning: String { text("refresh.scanning", "Deep scanning supported local roots and refreshing the catalog...") }
+    static var refreshWatcherManual: String { text("refresh.watcherManual", "Native file watching is unavailable. Use Refresh for current data or Deep Scan to re-enumerate roots.") }
+    static var refreshWatcherNoRoots: String { text("refresh.watcherNoRoots", "No existing authorized roots are available to watch. Use Deep Scan after adding or moving a root.") }
+    static var refreshWatcherUnavailable: String { text("refresh.watcherUnavailable", "Native file watching could not start. Use Refresh or Deep Scan manually.") }
+    static var refreshWatcherPending: String { text("refresh.watcherPending", "Local skill or config changes were detected. Refresh to reconcile them.") }
+    static var refreshWatcherPendingDeepScan: String { text("refresh.watcherPendingDeepScan", "Filesystem events were coalesced or dropped. Refresh will run a full reconciliation.") }
+    static func refreshWatcherActive(_ count: Int) -> String {
+        format("refresh.watcherActive", "Watching %d authorized local roots. Changes are applied only after Refresh.", count)
+    }
+    static func refreshWatcherLimited(_ active: Int, _ total: Int) -> String {
+        format("refresh.watcherLimited", "Watching %d of %d authorized local roots. Use Deep Scan when an unwatched root changes.", active, total)
+    }
     static var safetyFlags: String { text("safety.flags", "Safety flags") }
     static var noSafetyFlags: String { text("safety.flags.empty", "No safety flags returned.") }
     static var safetyReadOnlyClear: String { text("safety.readOnly.clear", "Read-only flags clear") }
@@ -251,7 +261,7 @@ enum UIStrings {
     static var agentConfigHistory: String { text("sidebar.agentConfigHistory", "Agent Config History") }
     static var agentConfigHistorySummary: String { text("sidebar.agentConfigHistory.summary", "Preview or roll back saved configuration snapshots for the selected agent.") }
     static var agentConfigTimeline: String { text("sidebar.agentConfigTimeline", "Agent Config Timeline") }
-    static var agentConfigTimelineBoundary: String { text("sidebar.agentConfigTimeline.boundary", "Config-level only: these rollback points capture agent configuration files, not SKILL.md content, and they do not mean every skill has its own snapshot.") }
+    static var agentConfigTimelineBoundary: String { text("sidebar.agentConfigTimeline.boundary", "Rollback restores this agent config snapshot; skill files are not included.") }
     static var agentConfigTimelineSelectAgent: String { text("sidebar.agentConfigTimeline.selectAgent", "Choose one agent to view its config timeline. All Agents never mixes rollback points.") }
     static var agentConfigTimelineDefaultAction: String { text("sidebar.agentConfigTimeline.defaultAction", "Config snapshot") }
     static var agentConfigTimelineStatus: String { text("sidebar.agentConfigTimeline.status", "Rollback point") }
@@ -312,7 +322,7 @@ enum UIStrings {
     static var findingTriageActionFollowUp: String { text("findings.triage.action.followUp", "Needs follow-up") }
     static var findingTriageActionReopen: String { text("findings.triage.action.reopen", "Clear label") }
     static var ruleTuningTitle: String { text("rules.tuning.title", "Rule Tuning / Suppression") }
-    static var ruleTuningBoundary: String { text("rules.tuning.boundary", "App-local review state only. These controls never edit skill files, write agent config, create snapshots, execute scripts, call an AI provider, or store credentials.") }
+    static var ruleTuningBoundary: String { text("rules.tuning.boundary", "Review state is saved only in Agent Copilot.") }
     static var ruleTuningEffectiveState: String { text("rules.tuning.effectiveState", "Effective rule state") }
     static var ruleTuningSeverityOverride: String { text("rules.tuning.severityOverride", "Severity override") }
     static var ruleTuningClearSeverity: String { text("rules.tuning.clearSeverity", "Clear override") }
@@ -514,6 +524,9 @@ enum UIStrings {
     static func agentConfigReadOnlyPreview(_ agent: String) -> String {
         format("settings.agentConfig.readOnlyPreview", "%@ current config is shown as a redacted, read-only preview.", agent)
     }
+    static func configPreviewLine(_ lineNumber: Int, _ content: String) -> String {
+        format("settings.configPreview.line", "Line %d: %@", lineNumber, content)
+    }
     static var claudeSettings: String { text("settings.claudeSettings", "Claude Settings") }
     static var existingFile: String { text("settings.existingFile", "Existing file") }
     static var willCreateFile: String { text("settings.willCreateFile", "Will create file") }
@@ -603,7 +616,7 @@ enum UIStrings {
     static var providerObservabilityChartModelTaskConfidence: String { text("providerObservability.chart.modelTaskConfidence", "Model-task fit") }
     static var providerObservabilityChartEmpty: String { text("providerObservability.chart.empty", "No chart data") }
     static var taskCockpitTitle: String { text("taskCockpit.title", "Task Preflight") }
-    static var taskCockpitBoundary: String { text("taskCockpit.boundary", "Read-only local preflight: decide whether the task is ready to hand off, which agent/skill fits, and what must be clarified first.") }
+    static var taskCockpitBoundary: String { text("taskCockpit.boundary", "Review the redacted provider prompt, then copy or open the recommended route.") }
     static var taskCockpitReadOnlyFootnote: String { text("taskCockpit.readOnlyFootnote", "Read-only preflight: provider prompt is previewed and confirmation-gated; no config write or script execution.") }
     static var taskCockpitAction: String { text("taskCockpit.action.build", "Build Preflight") }
     static var taskCockpitRetry: String { text("taskCockpit.action.retry", "Retry") }
@@ -888,11 +901,11 @@ enum UIStrings {
     static var toggleUnavailableToolGlobal: String { text("detail.toggleUnavailable.toolGlobal", "Tool-global skills are read-only previews. Install or copy to an agent requires a separate confirmed action.") }
     static var guardedToggle: String { text("detail.guardedToggle", "Guarded toggle") }
     static var piGuardedToggle: String { text("detail.pi.guardedToggle", "Guarded toggle") }
-    static var piGuardedToggleBoundary: String { text("detail.pi.guardedToggle.boundary", "Pi toggle is guarded by preview, trust checks, config snapshot, and rollback. Native installs use the separate confirmed install flow; package installs and compatibility-root file writes stay blocked.") }
-    static var hermesGuardedToggleBoundary: String { text("detail.hermes.guardedToggle.boundary", "Hermes toggle is guarded by preview, config snapshot, read-back, and rollback. It only edits skills.disabled; platform_disabled and external_dirs writes stay blocked.") }
-    static var openClawGuardedToggleBoundary: String { text("detail.openClaw.guardedToggle.boundary", "OpenClaw toggle is guarded by preview, config snapshot, read-back, and rollback. It only edits skills.entries.<key>.enabled; other config keys stay blocked.") }
+    static var piGuardedToggleBoundary: String { text("detail.pi.guardedToggle.boundary", "Preview and a Pi config snapshot are required before changing this skill.") }
+    static var hermesGuardedToggleBoundary: String { text("detail.hermes.guardedToggle.boundary", "Preview and a Hermes config snapshot are required before changing this skill.") }
+    static var openClawGuardedToggleBoundary: String { text("detail.openClaw.guardedToggle.boundary", "Preview and an OpenClaw config snapshot are required before changing this skill.") }
     static func guardedToggleBoundary(_ agent: String) -> String {
-        format("detail.guardedToggle.boundary", "%@ toggle is guarded by preview, config snapshot, read-back, and rollback.", agent)
+        format("detail.guardedToggle.boundary", "Preview and a %@ config snapshot are required before changing this skill.", agent)
     }
     static var operationUnavailableBusy: String { text("detail.operationUnavailable.busy", "Another catalog operation is already in progress.") }
     static var readOnly: String { text("detail.readOnly", "Read-only") }
@@ -904,8 +917,8 @@ enum UIStrings {
     static var openClawToggleBlocked: String { text("detail.openClaw.toggleBlocked", "OpenClaw toggle needs the guarded config capability; unsupported OpenClaw config keys remain blocked.") }
     static var currentMatchesSnapshot: String { text("snapshot.matches", "Current agent config already matches this snapshot.") }
     static var currentDiffersFromSnapshot: String { text("snapshot.differs", "Current agent config differs from this snapshot.") }
-    static var menuScanSkills: String { text("menu.scanSkills", "Scan Skills") }
-    static var menuReloadSkills: String { text("menu.reloadSkills", "Reload Skills") }
+    static var menuRefresh: String { text("menu.refresh", "Refresh") }
+    static var menuDeepScan: String { text("menu.deepScan", "Deep Scan") }
     static var menuSkills: String { text("menu.skills", "Skills") }
     static var menuShowTaskCockpit: String { text("menu.showTaskCockpit", "Show Task Preflight") }
     static var menuShowOverview: String { text("menu.showOverview", "Show Overview") }
@@ -1004,15 +1017,15 @@ enum UIStrings {
     }
 
     static func scannedSkills(_ count: Int) -> String {
-        format("message.scannedSkills", "Scanned %d skills across supported adapters.", count)
+        format("message.scannedSkills", "Deep scanned %d skills across supported adapters.", count)
     }
 
     static func refreshReloaded(_ skills: Int, _ findings: Int, _ conflicts: Int) -> String {
-        format("refresh.reloaded", "Reloaded %d skills, %d visible issues, and %d same-agent conflicts.", skills, findings, conflicts)
+        format("refresh.reloaded", "Refreshed %d skills, %d visible issues, and %d same-agent conflicts.", skills, findings, conflicts)
     }
 
     static func refreshScanComplete(_ scanned: Int, _ skills: Int, _ findings: Int, _ conflicts: Int) -> String {
-        format("refresh.scanComplete", "Scan complete: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts.", scanned, skills, findings, conflicts)
+        format("refresh.scanComplete", "Deep Scan complete: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts.", scanned, skills, findings, conflicts)
     }
 
     static func refreshScanPartial(
@@ -1025,7 +1038,7 @@ enum UIStrings {
     ) -> String {
         format(
             "refresh.scanPartial",
-            "Scan completed-partial: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@",
+            "Deep Scan completed-partial: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@",
             scanned,
             skills,
             findings,
@@ -1076,7 +1089,7 @@ enum UIStrings {
     }
 
     static var refreshPartialRecoveryDefault: String {
-        text("refresh.partialRecoveryDefault", "Review scan diagnostics, fix the affected root, then retry Scan.")
+        text("refresh.partialRecoveryDefault", "Review scan diagnostics, fix the affected root, then retry Deep Scan.")
     }
 
     static func refreshFailed(_ reason: String) -> String {

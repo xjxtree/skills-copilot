@@ -792,6 +792,13 @@ private struct JSONSyntaxHighlightedText: View {
                             .textSelection(.enabled)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(
+                        UIStrings.configPreviewLine(
+                            index + 1,
+                            line.isEmpty ? UIStrings.emptyPlaceholder : line
+                        )
+                    )
                 }
             }
             .padding(.vertical, 10)

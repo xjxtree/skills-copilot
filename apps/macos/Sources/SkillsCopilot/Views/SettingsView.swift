@@ -52,6 +52,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
 
 struct SettingsView: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var providerStore: ProviderStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppLanguage.storageKey) private var appLanguageRawValue = AppLanguage.defaultLanguage.rawValue
     @AppStorage(AppTheme.storageKey) private var appThemeRawValue = AppTheme.defaultTheme.rawValue
@@ -67,14 +68,14 @@ struct SettingsView: View {
     }
 
     private var providerActionsDisabled: Bool {
-        store.isLoadingAIProvider || store.isSavingAIProvider || store.isTestingAIProvider || !store.aiProviderStatus.serviceAvailable
+        providerStore.isLoadingAIProvider || providerStore.isSavingAIProvider || providerStore.isTestingAIProvider || !providerStore.aiProviderStatus.serviceAvailable
     }
 
     private var canTestProvider: Bool {
         providerValidationMessage == nil
             && !providerActionsDisabled
             && !hasEditedProviderDraft
-            && store.aiProviderStatus.activeProfile != nil
+            && providerStore.aiProviderStatus.activeProfile != nil
     }
 
     private var selectedLanguage: Binding<AppLanguage> {
@@ -122,18 +123,18 @@ struct SettingsView: View {
                 break
             }
         }
-        .onChange(of: store.aiProviderStatus) { _ in
-            if store.providerAutosaveDraft != nil || !hasEditedProviderDraft {
+        .onChange(of: providerStore.aiProviderStatus) { _ in
+            if providerStore.providerAutosaveDraft != nil || !hasEditedProviderDraft {
                 hydrateProviderDraftFromStore()
             }
         }
         .onChange(of: providerDraft) { _ in
             handleProviderDraftChange()
         }
-        .onChange(of: store.providerAutosaveDraft) { latestDraft in
+        .onChange(of: providerStore.providerAutosaveDraft) { latestDraft in
             let resolvedDraft = AutosaveDraftPresentation.resolve(
                 storeDraft: latestDraft,
-                persistedValue: AIProviderSettingsDraft(status: store.aiProviderStatus)
+                persistedValue: AIProviderSettingsDraft(status: providerStore.aiProviderStatus)
             )
             guard resolvedDraft != providerDraft else { return }
             providerDraft = resolvedDraft
@@ -287,14 +288,14 @@ struct SettingsView: View {
                     title: UIStrings.aiProviderSettings,
                     systemImage: "key",
                     boundary: UIStrings.aiProviderBoundary,
-                    badge: store.aiProviderStatus.configured ? UIStrings.aiProviderConfigured : UIStrings.aiProviderUnconfigured,
-                    badgeSystemImage: store.aiProviderStatus.configured ? "checkmark.circle" : "circle.dashed",
-                    badgeTint: store.aiProviderStatus.configured ? .green : .secondary
+                    badge: providerStore.aiProviderStatus.configured ? UIStrings.aiProviderConfigured : UIStrings.aiProviderUnconfigured,
+                    badgeSystemImage: providerStore.aiProviderStatus.configured ? "checkmark.circle" : "circle.dashed",
+                    badgeTint: providerStore.aiProviderStatus.configured ? .green : .secondary
                 )
 
-                if !store.aiProviderStatus.serviceAvailable {
+                if !providerStore.aiProviderStatus.serviceAvailable {
                     SettingsBanner(
-                        message: UIStrings.localizedServiceMessage(store.aiProviderStatus.disabledReason ?? UIStrings.aiProviderUnavailable),
+                        message: UIStrings.localizedServiceMessage(providerStore.aiProviderStatus.disabledReason ?? UIStrings.aiProviderUnavailable),
                         systemImage: "exclamationmark.triangle.fill",
                         color: .orange
                     )
@@ -316,18 +317,18 @@ struct SettingsView: View {
                     SettingsBanner(message: providerValidationMessage, systemImage: "exclamationmark.triangle.fill", color: .red)
                 }
 
-                if let message = store.aiProviderMessage {
+                if let message = providerStore.aiProviderMessage {
                     SettingsBanner(message: UIStrings.localizedServiceMessage(message), systemImage: "checkmark.circle.fill", color: .green)
                 }
 
-                if let error = store.aiProviderErrorMessage {
+                if let error = providerStore.aiProviderErrorMessage {
                     SettingsBanner(message: UIStrings.localizedServiceMessage(error), systemImage: "exclamationmark.triangle.fill", color: .red)
                 }
 
-                if store.isTestingAIProvider {
+                if providerStore.isTestingAIProvider {
                     SettingsBanner(message: UIStrings.aiProviderTesting, systemImage: "network", color: .secondary)
                 } else {
-                    switch store.providerAutosavePhase {
+                    switch providerStore.providerAutosavePhase {
                     case .saving:
                         SettingsBanner(message: UIStrings.aiProviderSaving, systemImage: "hourglass", color: .secondary)
                     case .debouncing, .pendingAfterSave:
@@ -345,7 +346,7 @@ struct SettingsView: View {
                     providerActions
                 }
 
-                if let result = store.aiProviderTestResult {
+                if let result = providerStore.aiProviderTestResult {
                     SettingsSectionCard(title: UIStrings.aiProviderTestResult, systemImage: "checkmark.seal") {
                         providerTestResult(result)
                     }
@@ -439,9 +440,9 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
-                SettingsMetadataRow(label: UIStrings.aiProviderStorage, value: store.aiProviderStatus.credentialStorage ?? UIStrings.notLoaded)
-                SettingsMetadataRow(label: UIStrings.llmEnabled, value: store.aiProviderStatus.enabled ? UIStrings.llmEnabled : UIStrings.llmDisabled)
-                if let disabledReason = store.aiProviderStatus.disabledReason, !disabledReason.isEmpty {
+                SettingsMetadataRow(label: UIStrings.aiProviderStorage, value: providerStore.aiProviderStatus.credentialStorage ?? UIStrings.notLoaded)
+                SettingsMetadataRow(label: UIStrings.llmEnabled, value: providerStore.aiProviderStatus.enabled ? UIStrings.llmEnabled : UIStrings.llmDisabled)
+                if let disabledReason = providerStore.aiProviderStatus.disabledReason, !disabledReason.isEmpty {
                     SettingsMetadataRow(label: UIStrings.aiProviderDisabledReason, value: UIStrings.localizedServiceMessage(disabledReason))
                 }
             }
@@ -459,7 +460,7 @@ struct SettingsView: View {
             } label: {
                 Label(UIStrings.reload, systemImage: "arrow.clockwise")
             }
-            .disabled(store.isLoadingAIProvider || store.isSavingAIProvider || store.isTestingAIProvider)
+            .disabled(providerStore.isLoadingAIProvider || providerStore.isSavingAIProvider || providerStore.isTestingAIProvider)
 
             Spacer()
 
@@ -550,8 +551,8 @@ struct SettingsView: View {
 
     private func hydrateProviderDraftFromStore() {
         providerDraft = AutosaveDraftPresentation.resolve(
-            storeDraft: store.providerAutosaveDraft,
-            persistedValue: AIProviderSettingsDraft(status: store.aiProviderStatus)
+            storeDraft: providerStore.providerAutosaveDraft,
+            persistedValue: AIProviderSettingsDraft(status: providerStore.aiProviderStatus)
         )
         hasEditedProviderDraft = false
         resetProviderEditedState()
@@ -559,17 +560,17 @@ struct SettingsView: View {
 
     private func resetProviderDraftFromStore() {
         store.cancelPendingProviderAutosave()
-        providerDraft = AIProviderSettingsDraft(status: store.aiProviderStatus)
+        providerDraft = AIProviderSettingsDraft(status: providerStore.aiProviderStatus)
         hasEditedProviderDraft = false
     }
 
     private func resetProviderEditedState() {
-        hasEditedProviderDraft = providerDraft != AIProviderSettingsDraft(status: store.aiProviderStatus)
+        hasEditedProviderDraft = providerDraft != AIProviderSettingsDraft(status: providerStore.aiProviderStatus)
     }
 
     private func handleProviderDraftChange() {
         resetProviderEditedState()
-        guard store.providerAutosaveDraft != providerDraft else { return }
+        guard providerStore.providerAutosaveDraft != providerDraft else { return }
         guard AutosaveDraftSubmissionPolicy.shouldSubmit(
             hasChangesFromPersistedValue: hasEditedProviderDraft,
             hasActiveSave: store.providerAutosaveHasActiveSave

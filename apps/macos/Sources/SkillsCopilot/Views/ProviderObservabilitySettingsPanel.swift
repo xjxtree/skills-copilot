@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProviderObservabilitySettingsPanel: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var providerStore: ProviderStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -15,10 +16,10 @@ struct ProviderObservabilitySettingsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ProviderObservabilityDateRangeControls(
-                        selectedRange: $store.providerObservabilityDateRange,
-                        customStartDate: $store.providerObservabilityCustomStartDate,
-                        customEndDate: $store.providerObservabilityCustomEndDate,
-                        isLoading: store.isLoadingProviderObservability
+                        selectedRange: $providerStore.providerObservabilityDateRange,
+                        customStartDate: $providerStore.providerObservabilityCustomStartDate,
+                        customEndDate: $providerStore.providerObservabilityCustomEndDate,
+                        isLoading: providerStore.isLoadingProviderObservability
                     ) {
                         Task { await store.loadProviderObservability() }
                     }
@@ -50,16 +51,17 @@ struct ProviderObservabilitySettingsPanel: View {
 
     @ViewBuilder
     private var content: some View {
-        if let result = store.providerObservabilityResult {
+        if let result = providerStore.providerObservabilityResult {
             ProviderObservabilityDashboardSettingsView(result: result)
         } else {
-            ProviderObservabilityLoadingCard(isLoading: store.isLoadingProviderObservability)
+            ProviderObservabilityLoadingCard(isLoading: providerStore.isLoadingProviderObservability)
         }
     }
 }
 
 private struct ProviderObservabilityDashboardSettingsView: View {
     @EnvironmentObject private var store: SkillStore
+    @EnvironmentObject private var providerStore: ProviderStore
     let result: ProviderObservabilityResult
 
     var body: some View {

@@ -7,6 +7,15 @@ use std::{
 
 static ENV_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+fn incomplete_skill_manager_removal_has_a_stable_service_error_code() {
+    let error = ServiceError::Command(CommandError::SkillManagerRemovalIncomplete(
+        "residual target".to_string(),
+    ));
+
+    assert_eq!(error.code(), "skill_manager_removal_incomplete");
+}
+
 pub(super) struct EnvVarGuard {
     key: OsString,
     previous: Option<OsString>,

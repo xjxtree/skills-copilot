@@ -4,6 +4,7 @@ set -euo pipefail
 MODE="run"
 TARGET_ARCH="${AGENT_COPILOT_ARCH:-}"
 BUILD_CONFIGURATION="${AGENT_COPILOT_BUILD_CONFIGURATION:-debug}"
+SIGNING_IDENTITY="${AGENT_COPILOT_SIGNING_IDENTITY:-}"
 APP_NAME="AgentCopilot"
 BUNDLE_ID="dev.agent-copilot.native"
 LEGACY_APP_NAME="SkillsCopilot"
@@ -41,13 +42,15 @@ fi
 
 usage() {
   cat >&2 <<USAGE
-usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only] [--arch arm64|x86_64] [--configuration debug|release]
+usage: $0 [run|--debug|--logs|--telemetry|--verify|--build-only] [--arch arm64|x86_64] [--configuration debug|release] [--signing-identity identity]
 
 Builds dist/$APP_NAME.app before running the selected mode.
 Use "pnpm build:macos" for a build that neither launches nor stops the app.
 Use "pnpm verify:macos-launch" only for interactive launch/window proof.
 Set AGENT_COPILOT_ARCH or pass --arch to cross-build architecture-specific bundles.
 Set AGENT_COPILOT_BUILD_CONFIGURATION or pass --configuration for debug or release builds.
+Set AGENT_COPILOT_SIGNING_IDENTITY or pass --signing-identity to opt into
+Developer ID signing for a release build. Development builds remain ad-hoc signed.
 USAGE
 }
 
@@ -77,6 +80,24 @@ while [[ $# -gt 0 ]]; do
       ;;
     --configuration=*)
       BUILD_CONFIGURATION="${1#--configuration=}"
+      shift
+      ;;
+    --signing-identity)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "--signing-identity requires a Developer ID Application identity" >&2
+        usage
+        exit 2
+      fi
+      SIGNING_IDENTITY="$2"
+      shift 2
+      ;;
+    --signing-identity=*)
+      SIGNING_IDENTITY="${1#--signing-identity=}"
+      if [[ -z "$SIGNING_IDENTITY" ]]; then
+        echo "--signing-identity requires a Developer ID Application identity" >&2
+        usage
+        exit 2
+      fi
       shift
       ;;
     run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify|--build-only|build-only)
@@ -126,6 +147,35 @@ case "$BUILD_CONFIGURATION" in
     exit 2
     ;;
 esac
+
+if [[ -n "$SIGNING_IDENTITY" && "$BUILD_CONFIGURATION" != "release" ]]; then
+  echo "Developer ID signing requires --configuration release" >&2
+  exit 2
+fi
+
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+  if ! command -v security >/dev/null 2>&1; then
+    echo "Developer ID signing requires the macOS security tool" >&2
+    exit 1
+  fi
+  MATCHING_SIGNING_IDENTITY="$(
+    security find-identity -p codesigning -v \
+      | awk -v requested="$SIGNING_IDENTITY" '
+          !matched && index($0, requested) && index($0, "Developer ID Application:") {
+            matched = $0
+          }
+          END {
+            if (matched) {
+              print matched
+            }
+          }
+        '
+  )"
+  if [[ -z "$MATCHING_SIGNING_IDENTITY" ]]; then
+    echo "Developer ID signing identity is unavailable or invalid in the current Keychain" >&2
+    exit 1
+  fi
+fi
 
 SWIFT_BUILD_ARGS=(--package-path "$MACOS_DIR")
 SWIFT_BUILD_ARGS+=(-Xswiftc -DAGENT_COPILOT_APP_BUNDLE)
@@ -383,27 +433,43 @@ print(matches[0])
   return 1
 }
 
-ad_hoc_sign_app_bundle() {
+sign_app_bundle() {
   if ! command -v codesign >/dev/null 2>&1; then
     echo "codesign is required to build $APP_NAME.app" >&2
     exit 1
   fi
 
-  codesign --force --sign - "$SERVICE_BINARY"
-  codesign --force --sign - "$APP_BINARY"
-  codesign --force --sign - "$APP_BUNDLE"
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    codesign --force --sign - "$SERVICE_BINARY"
+    codesign --force --sign - "$APP_BINARY"
+    codesign --force --sign - "$APP_BUNDLE"
+  else
+    codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$SERVICE_BINARY"
+    codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$APP_BINARY"
+    codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$APP_BUNDLE"
+  fi
+
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+  if [[ -n "$SIGNING_IDENTITY" ]]; then
+    local signing_details
+    signing_details="$(codesign -dvvv "$APP_BUNDLE" 2>&1)"
+    if ! grep -Fq "Authority=Developer ID Application:" <<<"$signing_details"; then
+      echo "distribution signing failed: bundle is not signed by a Developer ID Application identity" >&2
+      exit 1
+    fi
+    if ! grep -Eq 'flags=.*runtime' <<<"$signing_details"; then
+      echo "distribution signing failed: hardened runtime is not enabled" >&2
+      exit 1
+    fi
+  fi
 }
 
-case "$MODE" in
-  --build-only|build-only)
-    ;;
-  *)
-    terminate_existing_app_instances
-    ;;
-esac
-
-env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
+if [[ ${#CARGO_ENV[@]} -gt 0 ]]; then
+  env "${CARGO_ENV[@]}" "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
+else
+  "$CARGO_BIN" build "${CARGO_BUILD_ARGS[@]}"
+fi
 swift build "${SWIFT_BUILD_ARGS[@]}"
 
 SWIFT_BIN_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
@@ -462,7 +528,15 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-ad_hoc_sign_app_bundle
+sign_app_bundle
+
+case "$MODE" in
+  --build-only|build-only)
+    ;;
+  *)
+    terminate_existing_app_instances
+    ;;
+esac
 
 LAUNCH_ENV_VARS=(
   SKILLS_COPILOT_HOME

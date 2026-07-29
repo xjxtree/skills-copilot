@@ -1,6 +1,9 @@
+import Testing
 @testable import SkillsCopilot
 
+@Suite("FindingExplainabilityModelTests")
 struct FindingExplainabilityModelTests {
+    @Test("FindingExplainabilityModelTests")
     func run() throws {
         try classifiesKnownRuleNamespaces()
         try trimsWhitespaceAndLowercasesRuleIDs()

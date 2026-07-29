@@ -6,12 +6,22 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub(super) struct WireAppStateSnapshot {
     pub(super) status: WireServiceStatus,
+    pub(super) watch_plan: WireAuthorizedFileWatchPlan,
     pub(super) skills: Vec<WireSkillRecord>,
     pub(super) findings: Vec<WireRuleFindingRecord>,
     pub(super) conflicts: Vec<WireConflictGroupRecord>,
     pub(super) analysis: WireCrossAgentAnalysisRecord,
     pub(super) health: SkillHealthSummary,
     pub(super) snapshots: Vec<WireConfigSnapshotRecord>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WireAuthorizedFileWatchPlan {
+    pub(super) roots: Vec<String>,
+    pub(super) total_count: usize,
+    pub(super) truncated: bool,
 }
 
 #[allow(dead_code)]

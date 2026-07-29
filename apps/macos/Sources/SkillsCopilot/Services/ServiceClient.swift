@@ -17,6 +17,7 @@ struct AppVersion: Codable, Hashable {
 
 struct AppStateSnapshot: Codable, Hashable {
     let status: ServiceStatus
+    let watchPlan: AuthorizedFileWatchPlan
     let skills: [SkillRecord]
     let findings: [RuleFindingRecord]
     let conflicts: [ConflictGroupRecord]
@@ -25,6 +26,7 @@ struct AppStateSnapshot: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case status
+        case watchPlan = "watch_plan"
         case skills
         case findings
         case conflicts
@@ -35,11 +37,33 @@ struct AppStateSnapshot: Codable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         status = try container.decode(ServiceStatus.self, forKey: .status)
+        watchPlan = try container.decodeIfPresent(
+            AuthorizedFileWatchPlan.self,
+            forKey: .watchPlan
+        ) ?? .empty
         skills = try container.decode([SkillRecord].self, forKey: .skills)
         findings = try container.decode([RuleFindingRecord].self, forKey: .findings)
         conflicts = try container.decode([ConflictGroupRecord].self, forKey: .conflicts)
         health = try container.decodeIfPresent(SkillHealthSummary.self, forKey: .health) ?? .empty
         snapshots = try container.decodeIfPresent([ConfigSnapshotRecord].self, forKey: .snapshots) ?? []
+    }
+}
+
+struct AuthorizedFileWatchPlan: Codable, Hashable {
+    let roots: [String]
+    let totalCount: Int
+    let truncated: Bool
+
+    static let empty = AuthorizedFileWatchPlan(
+        roots: [],
+        totalCount: 0,
+        truncated: false
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case roots
+        case totalCount = "total_count"
+        case truncated
     }
 }
 

@@ -122,7 +122,7 @@ extension SkillStoreTests {
         await store.loadProviderObservability()
 
         var notifiedRowCounts: [Int] = []
-        let observation = store.objectWillChange.sink {
+        let observation = store.providerStore.objectWillChange.sink {
             notifiedRowCounts.append(store.providerActivityRows.count)
         }
         defer { observation.cancel() }

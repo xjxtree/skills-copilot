@@ -352,6 +352,11 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             let snapshot: WireAppStateSnapshot = decode_fixture_result(method, result, path);
             assert_supported_methods(method, &snapshot.status.supported_methods);
             assert_eq!(
+                snapshot.watch_plan.roots.len(),
+                snapshot.watch_plan.total_count
+            );
+            assert!(!snapshot.watch_plan.truncated);
+            assert_eq!(
                 snapshot.analysis.summary.total_groups,
                 snapshot.analysis.groups.len()
             );

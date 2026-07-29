@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("UIOptimizationModelTests")
 struct UIOptimizationModelTests {
+    @Test("UIOptimizationModelTests")
     func run() throws {
         try sidebarSelectionUsesNativeMutedTreatment()
         try listPagesUseUnifiedToolbarAndWhiteCardRows()
@@ -16,6 +19,7 @@ struct UIOptimizationModelTests {
         try modalWorkflowsUseSharedSheetChromeAndColumns()
         try settingsPreflightAndManagerSurfacesHaveStablePresentation()
         try skillManagerPreviewMetadataIsCompactAndActionSafe()
+        try repeatedSkillMetadataCollapsesWithoutHidingExceptions()
     }
 
     private func sidebarSelectionUsesNativeMutedTreatment() throws {
@@ -85,7 +89,17 @@ struct UIOptimizationModelTests {
         try expectEqual(
             UIOptimizationPresentation.sidebarShell.width,
             260,
-            "The primary sidebar should use a stable full-height width for repository and navigation context."
+            "The primary sidebar should retain the spacious navigation width."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.sidebarShell.compactWidth,
+            260,
+            "Compact layouts should not compress the primary navigation cards."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.sidebarShell.navigationCardHorizontalInset,
+            -8,
+            "Primary navigation cards should offset the source-list inset instead of leaving oversized outer margins."
         )
     }
 
@@ -120,8 +134,8 @@ struct UIOptimizationModelTests {
     private func skillListDensityMatchesOptimizationPlan() throws {
         try expectEqual(
             UIOptimizationPresentation.skillList.minimumSecondaryColumnWidth,
-            360,
-            "The middle skill list column should not collapse below the optimized minimum width."
+            320,
+            "The middle skill list column should fit the compact laptop layout."
         )
         try expectEqual(
             UIOptimizationPresentation.skillList.minimumSearchWidth,
@@ -142,6 +156,44 @@ struct UIOptimizationModelTests {
             UIOptimizationPresentation.skillList.usesSingleLineFilterToolbar,
             true,
             "Skill filters should be modeled as a single-line toolbar at regular widths."
+        )
+    }
+
+    private func repeatedSkillMetadataCollapsesWithoutHidingExceptions() throws {
+        let commonA = fixtureSkill(id: "common-a", sourceKind: "Claude Code native global")
+        let commonB = fixtureSkill(id: "common-b", sourceKind: "Claude Code native global")
+        let exception = fixtureSkill(id: "plugin", sourceKind: "Plugin cache")
+
+        let visible = SkillRowMetadataPresentation.skillIDsRequiringVisibleMetadata(
+            in: [commonA, commonB, exception]
+        )
+        try expectEqual(
+            visible,
+            Set(["plugin"]),
+            "Repeated row metadata should collapse while a provenance exception remains visible."
+        )
+        try expectEqual(
+            SkillRowMetadataPresentation.skillIDsRequiringVisibleMetadata(in: [commonA]),
+            Set(["common-a"]),
+            "A single result should retain its context."
+        )
+    }
+
+    private func fixtureSkill(
+        id: String,
+        sourceKind: String
+    ) -> SkillRecord {
+        SkillRecord(
+            id: id,
+            agent: "claude-code",
+            scope: "agent-global",
+            path: "/tmp/\(id)/SKILL.md",
+            displayPath: "/tmp/\(id)/SKILL.md",
+            definitionId: "definition-\(id)",
+            name: id,
+            state: "enabled",
+            enabled: true,
+            sourceKind: sourceKind
         )
     }
 
@@ -371,6 +423,11 @@ struct UIOptimizationModelTests {
             UIOptimizationPresentation.taskPreflight.fixedAgentChipWidth,
             0,
             "Task Preflight agent chips should use adaptive width instead of the old 96pt fixed width."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.taskPreflight.agentGridColumnCount,
+            3,
+            "Task Preflight should keep readable agent names in a three-column grid at its minimum width."
         )
         try expectEqual(
             UIOptimizationPresentation.taskPreflight.showsProviderUnavailableGate,

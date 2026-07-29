@@ -46,6 +46,35 @@ verification.
 - Service method changes must update fixtures and pass
   `pnpm verify:service-protocol-drift`.
 
+## Authorized File Watch Plan
+
+`app.stateSnapshot` includes `watch_plan` with `roots`, `total_count`, and
+`truncated`. The Rust command layer derives this bounded capability list from
+existing documented adapter roots, existing same-scope link targets, parent
+directories of documented config paths, and the app-owned
+`tool-global/skills` library.
+
+- The plan contains at most 256 absolute existing directories.
+- `/`, shallow volume-wide directories, the entire user home, the selected
+  project root, the app-data root, relative paths, and paths with `.` / `..` or
+  any symbolic-link component are rejected.
+- Raw plan paths are internal capability data. Native clients must not render,
+  log, persist, or attach them to diagnostics.
+- Native FSEvents callbacks discard event paths and return only a count plus a
+  typed “full reconciliation required” flag. Events invalidate cached state;
+  they do not call the service or trigger a scan automatically.
+- Refresh is explicit: it reloads current catalog state when clean and calls
+  `catalog.scanAll` when invalidated. Deep Scan always calls
+  `catalog.scanAll`, covers roots that did not exist when the plan was built,
+  and clears only invalidations already covered when that scan began. The
+  active stream stays attached to unchanged authorized roots so an event
+  already queued for main-thread delivery cannot be discarded at the scan
+  boundary; newer events stay pending. A committed project-context change
+  invalidates the prior watcher session before validation or scanning, and
+  callbacks queued by that stopped session are ignored.
+- An empty, truncated, rejected, or unstartable plan degrades to explicit
+  Refresh / Deep Scan with a path-free status message.
+
 ## Config Consistency
 
 Protocol version 2 makes direct config saves and snapshot rollback confirmations
@@ -124,7 +153,7 @@ conditional on the exact local state that the client reviewed.
 | `skillManager.previewInstall` | None | Never | Never | None |
 | `skillManager.applyInstall` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewRemove` | None | Never | Never | None |
-| `skillManager.applyRemove` | App-local data, External manager state may change when invoked | Always | Never | Required |
+| `skillManager.applyRemove` | Agent config, App-local data, External manager state may change when invoked | Conditional | Never | Required |
 | `skillManager.previewUpdate` | None | Never | Never | None |
 | `skillManager.applyUpdate` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewLocalCreate` | None | Never | Never | None |
@@ -390,25 +419,70 @@ or expose write controls.
   library remain fully accessible.
 - The native inventory emits one row per installed package source. A matching
   catalog row enriches the CLI row and is consumed rather than appended again.
+  Its physically present supported-Agent targets are reconciled with the CLI
+  Agent list independently of enable/disable configuration. A catalog-proven
+  disabled instance remains installed and selectable for removal; all exact
+  enabled and disabled instance IDs remain attached to the package row for
+  partial-uninstall and complete-uninstall verification.
   Catalog-only fallback rows are limited to skill sources beneath the selected
   project/global `.agents/skills` root (including nested package layouts);
   plugin caches, configured read-only roots, and other catalog discovery paths
   never become editable local-package rows.
   Installed local rows outside those guarded roots remain visible as external
-  local sources, but do not expose ZIP replacement; only their manager-backed
-  agent unlink/removal action remains available.
+  local sources, but do not expose ZIP replacement; they may use exact
+  selected-Agent physical uninstall when a separable documented target and
+  exact catalog identities exist, or explicit complete uninstall through the
+  external manager.
 - Native clients validate method-specific metadata, not only generic page
   invariants. Search accepts only terminal unknown/source-limited metadata;
   installed accepts only terminal exact enumerable metadata. Invalid refresh
-  metadata is rejected without replacing a current record for the same inputs.
+  metadata from an ordinary read is rejected without replacing a current record
+  for the same inputs. After a confirmed write, any scope that cannot be
+  enumerated is invalidated instead of retaining a stale installed row; the
+  client reports that the operation applied but inventory reload failed and
+  does not publish a success banner.
   Empty and network-blocked searches still display zero loaded rows, unknown
   total, the typed source limitation and recovery guidance, with no load action.
-- The Skill Manager UI does not expose agent-layer enable/disable controls.
-  Skill removal is manager-backed unlink/removal from the currently selected
-  agent targets, using the same explicit confirmation flow as install/update.
-- Enable/disable remains in `config.toggleSkill`,
-  `batch.previewSkillToggles`, and `batch.applySkillToggles` because it is
-  agent config state, not manager package state.
+- Skill removal has two explicit modes. A proper subset of the linked Agents is
+  a selected-Agent physical uninstall. `instance_ids` contains every exact
+  identity attached to the selected package row so the service can partition
+  selected targets from paths that must be preserved. Each selected target must
+  resolve to a direct-child skill-directory symlink or copied directory under
+  that Agent's documented project/global install root. The service never calls
+  Agent enable/disable methods for this operation and does not call the
+  external manager's partial `npx skills remove --agent` path, because current
+  manager versions can leave direct
+  `.agents/skills` consumers unchanged and remove package lock metadata for a
+  partial request.
+- The physical-removal confirmation token binds selected Agents, exact target
+  paths, entry types, a bounded tree metadata revision, and every preserved
+  path. Apply first moves selected entries into private sibling staging
+  directories outside scanned skill roots, rescans, and requires every selected
+  instance to be physically missing while the shared source and unselected
+  targets remain. Failed scan or verification restores the staged entries and
+  rescans. Successful verification deletes only those staged symlinks or copied
+  directories; manager lock metadata and Agent enablement configuration remain
+  unchanged.
+- Some adapters directly consume the same `.agents/skills/<skill>` directory.
+  When a selected and unselected Agent have no distinct symlink or copied
+  directory, physical partial uninstall is impossible without deleting the
+  shared source. Preview returns `invalid_skill_manager_request` with that
+  blocker instead of reporting a false success or silently converting uninstall
+  into config disable.
+- Selecting every linked Agent is a complete uninstall. The request sets
+  `full_uninstall=true`; the service intentionally omits all `--agent`
+  arguments so the external manager removes every target it recognizes,
+  including targets outside the app's six catalog adapters, and can delete the
+  canonical source. Apply then refreshes the catalog, re-lists external-manager
+  inventory without an Agent restriction, and fails with the stable
+  `skill_manager_removal_incomplete` error if the package or any exact catalog
+  path entry remains, including a dangling symbolic link. This verification
+  uses the same private 4 MiB bounded capture and fails closed if the
+  unrestricted inventory cannot be parsed. CLI exit status alone is never
+  treated as proof of removal.
+- Generic enable/disable controls remain in `config.toggleSkill`,
+  `batch.previewSkillToggles`, and `batch.applySkillToggles`; Skill Manager
+  uninstall never calls those methods.
 - The native client prewarms project and global skill inventories during app
   startup. Opening the Skill Manager performs no read; its Load Data button is
   the only page-local refresh trigger. Local app-owned skills are merged into
@@ -426,11 +500,11 @@ or expose write controls.
   `SKILL.md`, rejects path traversal, symlinks, special files, oversize entries,
   and files outside the skill root, and binds apply to the archive and current
   source digest through a preview token. Imported scripts are never executed.
-- When a removal selects every linked Agent target for an app-owned local
-  source, the native confirmation identifies it as a full uninstall. After the
-  confirmed manager unlink succeeds, the same guarded mutation flow previews
-  and deletes the app-owned source; the manager removes its matching lock
-  entry. Partial target removal keeps the shared source.
+- When complete uninstall targets an app-owned local source, the native
+  confirmation also identifies the guarded source cleanup. After the verified
+  external-manager removal succeeds, the same mutation flow previews and
+  deletes the app-owned source only if no supported-Agent references remain.
+  Selected-Agent physical uninstall never deletes that source.
 
 ## Session Preview
 
@@ -592,6 +666,9 @@ or expose write controls.
   app-loaded config snapshots, and local sessions. It accepts `query`, optional
   `agent`, optional `limit_per_kind`, local-session roots/discovery settings,
   and project context.
+- Skill results exclude historical `missing`/Deleted catalog rows; those rows
+  remain available only through the explicit Deleted filter and are never
+  returned as unlocatable global-search destinations.
 - Results are grouped by `kind` (`skill`, `session`, or `config_history`) and
   include `target_id` plus an embedded record when available. UI shells should
   use the embedded record to insert the result into the corresponding list page,

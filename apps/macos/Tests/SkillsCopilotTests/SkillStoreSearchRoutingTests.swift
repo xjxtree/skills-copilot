@@ -3,6 +3,58 @@ import Foundation
 
 @MainActor
 extension SkillStoreTests {
+    func sessionCriteriaChangesAndGlobalSearchUseNoRPC() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "sessions-mixed")
+
+        let store = SkillStore(service: fake.serviceClient())
+        store.sidebarContentMode = .sessions
+        await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        let initialCalls = countMethodCalls("session.previewLocalSessions", in: fake.calls())
+        for index in 0..<20 {
+            store.localSessionScopeFilter = index.isMultiple(of: 2) ? .all : .project
+            store.localSessionSortOrder = index.isMultiple(of: 3) ? .title : .recent
+            store.localSessionSortDirection = index.isMultiple(of: 2) ? .ascending : .descending
+            store.localSessionSearchText = index.isMultiple(of: 4) ? "Analyze" : ""
+        }
+        store.searchText = "no-such-skill"
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), initialCalls, "Twenty criteria and skill-filter changes should issue no session RPCs.")
+        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 3, "Skill criteria should not clear session summaries.")
+
+        store.updateAppSearch(query: "Analyze")
+        try await waitUntil("Global search should read the summary index.") {
+            store.appSearchResult.items.contains { $0.targetID == "session-alpha" }
+        }
+        let calls = fake.calls()
+        try expectEqual(countMethodCalls("session.previewLocalSessions", in: calls), initialCalls, "Global search should not request session data.")
+        try expectFalse(calls.contains("app.search"), "Global search should not call the service search method.")
+        try expectFalse(store.appSearchResult.items.contains { !($0.session?.contentItems.isEmpty ?? true) }, "Global search should expose summary-only session records.")
+    }
+
+    func collectionRefreshRebuildsActiveGlobalSearch() async throws {
+        let fake = try FakeServiceScript()
+        defer { fake.cleanup() }
+        fake.activate(scenario: "normal")
+
+        let store = SkillStore(service: fake.serviceClient())
+        await store.reload()
+        store.updateAppSearch(query: "Beta")
+        try await waitUntil("The initial global search should find Beta.") {
+            store.appSearchResult.items.contains { $0.targetID == "beta" }
+        }
+
+        fake.setScenario("empty")
+        await store.reload()
+
+        try expectEqual(
+            store.appSearchResult.items.count,
+            0,
+            "Refreshing collections after removal must rebuild an active global search instead of retaining an unlocatable stale result."
+        )
+        try expectEqual(store.appSearchResult.query, "Beta", "Refreshing the index should preserve the user's active query.")
+    }
+
     func appSearchViewAllRoutesCanonicallyWithoutRPC() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }

@@ -14,19 +14,36 @@ This file captures the current native UI and runtime-validation contract.
 - Primary navigation contains Sessions, Skills, and Config.
 - Session, skill, and config detail panes should render only the selected item
   or overview for the selected mode.
-- Agent Usage Report and Task Preflight are compact preview tools.
+- Skill Manager and Task Preflight are first-class workflow entries. Their
+  navigation cards present contained workflow sheets rather than replacing the
+  primary Sessions, Skills, or Config context.
+- At widths below the regular three-column breakpoint, keep primary navigation
+  at its standard readable width and keep a usable selected-list width visible
+  while presenting detail as a dismissible overlay.
+- Primary navigation cards keep compact outer horizontal insets while preserving
+  their internal icon and text spacing.
+- Long-form detail content uses a bounded readable width; zero-state metrics
+  collapse instead of reserving full metric cards.
 - Retired surfaces should not reappear without an explicitly scoped change.
 
 ## Responsive Loading Defaults
 
-- Startup prewarm and explicit refresh buttons are the default places for
+- Startup prewarm and explicit refresh controls are the default places for
   expensive file scans, config reads, history reads, and analysis/statistics
-  work.
+  work. The global primary action is Refresh (`Command-R`); Deep Scan
+  (`Shift-Command-R`) is its secondary full re-enumeration action.
+- Native file events may add a path-free pending indicator to Refresh, but they
+  must not start work automatically. Refresh performs full reconciliation when
+  the watcher has invalidated the cache and otherwise uses cached catalog data.
+  Deep Scan always re-enumerates supported roots, including roots that were
+  missing when the current watch plan was created.
 - Scope pickers, filters, search, sort controls, sidebar navigation, and list
   row selection should derive from already loaded app data and must not clear the
   current UI into a loading state for routine changes.
 - While a refresh is running, keep the last successful data visible and show
   progress only on the explicit refresh/loading control.
+- Watcher tooltips, accessibility values, notifications, and errors must report
+  only status and bounded counts; they must never expose an event path.
 - Exceptions are consistency-bound flows that must read current data before a
   mutation or irreversible preview, such as config edit, save, rollback, and
   guarded write operations.

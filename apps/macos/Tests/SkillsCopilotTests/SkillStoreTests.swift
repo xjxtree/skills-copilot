@@ -1,8 +1,10 @@
 import Darwin
 import Combine
 import Foundation
+import Testing
 @testable import SkillsCopilot
 
+@Suite("SkillStoreTests", .serialized)
 @MainActor
 struct SkillStoreTests {
     private let selectedGroup: Int?
@@ -13,7 +15,12 @@ struct SkillStoreTests {
         self.groupCount = max(groupCount, 1)
     }
 
-    func run() async throws {
+    @Test("SkillStore behavior group", arguments: 0..<64)
+    static func behaviorGroup(_ group: Int) async throws {
+        try await SkillStoreTests(selectedGroup: group, groupCount: 64).runSelectedCases()
+    }
+
+    private func runSelectedCases() async throws {
         try runCase("defaultNavigationStartsAtSessionsWithoutAgentProfile") {
             try defaultNavigationStartsAtSessionsWithoutAgentProfile()
         }
@@ -61,6 +68,9 @@ struct SkillStoreTests {
         }
         try await runCase("sessionCriteriaChangesAndGlobalSearchUseNoRPC") {
             try await sessionCriteriaChangesAndGlobalSearchUseNoRPC()
+        }
+        try await runCase("collectionRefreshRebuildsActiveGlobalSearch") {
+            try await collectionRefreshRebuildsActiveGlobalSearch()
         }
         try await runCase("failedSummaryAndDetailKeepSummaryStateIsolated") {
             try await failedSummaryAndDetailKeepSummaryStateIsolated()
@@ -604,35 +614,6 @@ struct SkillStoreTests {
         try await staleDetailGenerationCannotMutatePublishedState()
     }
 
-    private func sessionCriteriaChangesAndGlobalSearchUseNoRPC() async throws {
-        let fake = try FakeServiceScript()
-        defer { fake.cleanup() }
-        fake.activate(scenario: "sessions-mixed")
-
-        let store = SkillStore(service: fake.serviceClient())
-        store.sidebarContentMode = .sessions
-        await store.refreshSelectedAgentLocalSessionsIfNeeded()
-        let initialCalls = countMethodCalls("session.previewLocalSessions", in: fake.calls())
-        for index in 0..<20 {
-            store.localSessionScopeFilter = index.isMultiple(of: 2) ? .all : .project
-            store.localSessionSortOrder = index.isMultiple(of: 3) ? .title : .recent
-            store.localSessionSortDirection = index.isMultiple(of: 2) ? .ascending : .descending
-            store.localSessionSearchText = index.isMultiple(of: 4) ? "Analyze" : ""
-        }
-        store.searchText = "no-such-skill"
-        try expectEqual(countMethodCalls("session.previewLocalSessions", in: fake.calls()), initialCalls, "Twenty criteria and skill-filter changes should issue no session RPCs.")
-        try expectEqual(store.localSessionPreviewResult.sessionRows.count, 3, "Skill criteria should not clear session summaries.")
-
-        store.updateAppSearch(query: "Analyze")
-        try await waitUntil("Global search should read the summary index.") {
-            store.appSearchResult.items.contains { $0.targetID == "session-alpha" }
-        }
-        let calls = fake.calls()
-        try expectEqual(countMethodCalls("session.previewLocalSessions", in: calls), initialCalls, "Global search should not request session data.")
-        try expectFalse(calls.contains("app.search"), "Global search should not call the service search method.")
-        try expectFalse(store.appSearchResult.items.contains { !($0.session?.contentItems.isEmpty ?? true) }, "Global search should expose summary-only session records.")
-    }
-
     private func failedSummaryAndDetailKeepSummaryStateIsolated() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
@@ -1144,7 +1125,11 @@ struct SkillStoreTests {
         try expectContains(store.refreshStatusMessage, "1 visible issues", "Scan feedback should report the same filtered issue total as the navigable skill UI, not the raw Catalog finding count.")
         try expectContains(store.refreshStatusMessage, "<adapter-root>/dangling-link", "The primary partial status should include the first redacted issue path.")
         try expectContains(store.refreshStatusMessage, "Review partial scan diagnostics.", "The primary partial status should include a recovery action.")
-        try expectContains(store.lastMutationMessage ?? "", "Scanned 3 skills", "The mutation toast should stay generic so unrelated agent filters do not inherit a degraded-agent warning.")
+        try expectEqual(
+            store.lastMutationMessage,
+            UIStrings.scannedSkills(3),
+            "The mutation toast should stay generic so unrelated agent filters do not inherit a degraded-agent warning."
+        )
         try expectEqual(store.partialScanWarningMessage, store.refreshStatusMessage, "Persistent partial feedback must not be coupled to later generic reload status text.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.count, 3, "Scan should retain complete, partial, and skipped adapter diagnostics when the service provides them.")
         try expectEqual(store.lastScanActivity?.agentSummaries?.first { $0.agent == "opencode" }?.rootsSkipped, ["<adapter-root>/missing-opencode"], "Scan diagnostics should decode skipped roots.")
@@ -2082,7 +2067,7 @@ struct SkillStoreTests {
         }
 
         var cancellationTriggered = false
-        let phaseObserver = store.$providerAutosavePhase.sink { phase in
+        let phaseObserver = store.providerStore.$providerAutosavePhase.sink { phase in
             guard case .saving = phase, !cancellationTriggered else { return }
             cancellationTriggered = true
             store.cancelPendingProviderAutosave()
@@ -3985,7 +3970,7 @@ struct SkillStoreTests {
         haystack.components(separatedBy: needle).count - 1
     }
 
-    private func countMethodCalls(_ method: String, in calls: String) -> Int {
+    func countMethodCalls(_ method: String, in calls: String) -> Int {
         countOccurrences("\"method\":\"\(method)\"", in: calls)
     }
 
@@ -4938,56 +4923,6 @@ final class CatalogRefreshServiceRunner: ServiceProcessRunning {
 }
 
 private actor CatalogRefreshCallRecorder {
-    private var recordedCalls: [String] = []
-
-    func record(_ rawInput: String) {
-        recordedCalls.append(rawInput)
-    }
-
-    func calls() -> String {
-        recordedCalls.joined(separator: "\n")
-    }
-}
-
-private final class TaskCockpitFallbackServiceRunner: ServiceProcessRunning {
-    private let recorder = TaskCockpitFallbackCallRecorder()
-
-    func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
-        let rawInput = String(data: input, encoding: .utf8) ?? ""
-        await recorder.record(rawInput)
-
-        let object = try JSONSerialization.jsonObject(with: input) as? [String: Any]
-        let method = object?["method"] as? String ?? ""
-        switch method {
-        case "app.stateSnapshot":
-            return Data(Self.stateSnapshotResponse.utf8)
-        case "llm.previewPrompt":
-            return Data(Self.unknownPreviewPromptResponse.utf8)
-        default:
-            return Data(Self.unexpectedMethodResponse(method).utf8)
-        }
-    }
-
-    func calls() async -> String {
-        await recorder.calls()
-    }
-
-    private static let stateSnapshotResponse = """
-    {"id":"test","ok":true,"result":{"status":{"protocol_version":1,"version":"test","app_data_dir":"/tmp/skills-copilot","catalog_path":"/tmp/skills-copilot/catalog.sqlite","user_home":"/tmp/home","supported_methods":["app.stateSnapshot","llm.previewPrompt"]},"skills":[{"id":"alpha","agent":"claude-code","scope":"agent-global","path":"/tmp/global/alpha/SKILL.md","display_path":"/tmp/global/alpha/SKILL.md","definition_id":"def.alpha","name":"Alpha","state":"loaded","enabled":true},{"id":"beta","agent":"claude-code","scope":"agent-project","path":"/tmp/project/beta/SKILL.md","display_path":"/tmp/project/beta/SKILL.md","definition_id":"def.beta","name":"Beta","state":"loaded","enabled":true}],"findings":[],"conflicts":[]}}
-    """
-
-    private static let unknownPreviewPromptResponse = """
-    {"id":"test","ok":false,"result":null,"error":{"code":"unknown_method","message":"unknown method: llm.previewPrompt"}}
-    """
-
-    private static func unexpectedMethodResponse(_ method: String) -> String {
-        """
-        {"id":"test","ok":false,"result":null,"error":{"code":"unexpected_method","message":"unexpected method: \(method)"}}
-        """
-    }
-}
-
-private actor TaskCockpitFallbackCallRecorder {
     private var recordedCalls: [String] = []
 
     func record(_ rawInput: String) {

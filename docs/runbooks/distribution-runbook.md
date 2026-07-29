@@ -1,32 +1,42 @@
 # Distribution Runbook
 
-This runbook records the public-distribution path for the macOS app. It is not
-evidence that public distribution automation exists.
+This runbook records the maintainer-operated distribution path for the macOS
+app. It is not evidence that public distribution automation exists.
 
 For local release-readiness, use `docs/runbooks/release-checklist.md`.
 
 ## Distribution Boundary
 
-Public distribution requires an explicit scoped implementation for:
+The repository provides explicit local commands for Developer ID signing,
+notarization, stapling, optional post-staple ZIP creation, and candidate
+verification. It does not select an identity, provision credentials, run those
+commands automatically, or publish their output.
 
-- Developer ID signing;
-- notarization and stapling;
-- DMG or ZIP packaging;
-- checksum publishing;
+Public distribution still requires a maintainer-owned decision and credentials
+for:
+
+- the Developer ID identity and notarization Keychain profile;
+- artifact architecture and naming;
+- checksum publication;
+- DMG packaging;
 - updater feeds;
 - public download or release artifact automation.
 
 Do not describe local app bundles as public release artifacts.
 
-Manually scoped ZIP releases are an exception: generated app bundles are ad-hoc
-signed for local bundle-integrity validation only. Ad-hoc signing is not
-Developer ID signing and does not replace notarization.
+Ad-hoc signing remains the development default and is valid only for local
+bundle-integrity validation. `--allow-ad-hoc` qualification is never release
+evidence and does not replace Developer ID signing or notarization.
 
 ## Version Strategy
 
 - Keep source version, bundle version, release notes, and tag names aligned.
 - Use SemVer for user-facing release versions.
 - Treat GitHub tags and GitHub Releases as the release-history source of truth.
+- Treat a standalone tag without a published GitHub Release as non-distributable.
+  If a withdrawn tag must remain for traceability, publish a clearly named
+  pre-release note with no assets that points users to the current supported
+  release.
 - Default the next release to the next patch version after the latest published
   SemVer release unless a maintainer specifies another version.
 - Use pre-release identifiers only when all downstream tooling accepts them.
@@ -34,61 +44,61 @@ Developer ID signing and does not replace notarization.
 
 ## Signing
 
-The current build script applies ad-hoc signing to the Rust service sidecar, the
-native app executable, and the app bundle. This prevents invalid bundle
-signatures in ZIP releases, but it is not identity-bearing distribution signing.
+Normal builds apply ad-hoc signatures to the Rust service sidecar, native app
+executable, and app bundle. A release build opts into identity-bearing signing
+only when the maintainer supplies
+`AGENT_COPILOT_SIGNING_IDENTITY` or `--signing-identity`. The build refuses that
+option for debug configuration, signs nested code before the outer bundle,
+requests a secure timestamp, enables hardened runtime, and verifies the result
+is a Developer ID Application signature. No entitlements are added unless a
+real capability later requires them.
 
-Before Developer ID signing is enabled:
-
-- Confirm Apple Developer Team ID and certificate holder.
-- Confirm signing identity name.
-- Decide whether signing runs only on a maintainer machine or also in CI with
-  protected secrets.
-- Decide whether the Rust service sidecar is signed before the app bundle.
-- Add entitlements only for real required capabilities.
-
-Expected verification once signing exists:
+Example:
 
 ```sh
-codesign --verify --deep --strict --verbose=2 dist/AgentCopilot.app
-codesign -dv --verbose=4 dist/AgentCopilot.app
-spctl --assess --type execute --verbose=4 dist/AgentCopilot.app
+AGENT_COPILOT_SIGNING_IDENTITY="Developer ID Application: <holder> (<team>)" \
+  pnpm build:macos:release:arm64
+pnpm verify:macos-distribution
 ```
+
+Signing remains maintainer-local. CI has no signing identity or notarization
+credential path.
 
 ## Notarization
 
-Before notarization is enabled:
-
-- Confirm notarization account and credential storage.
-- Store notarization credentials outside the repository.
-- Decide whether submission targets the app, ZIP, DMG, or multiple artifacts.
-- Record notarization request ids in release notes or an internal release log.
-- Staple tickets to user-facing artifacts where supported.
-
-Expected verification once notarization exists:
+Create a `notarytool` credential profile in the macOS Keychain outside this
+repository. The notarization command accepts only the profile name; it never
+accepts or stores an Apple ID, password, API key, issuer id, or private key.
+It performs signed-candidate verification (including rejection of
+`get-task-allow=true`), creates a temporary submission ZIP, waits for Apple
+acceptance, requires the returned notarization log to contain no issues,
+staples the app, validates the ticket and Gatekeeper result, and optionally
+writes a new post-staple ZIP and checksum. It refuses to overwrite an existing
+ZIP and does not publish anything.
 
 ```sh
-xcrun stapler validate dist/AgentCopilot.app
-spctl --assess --type execute --verbose=4 dist/AgentCopilot.app
+pnpm notarize:macos -- \
+  --keychain-profile <profile> \
+  --output-zip dist/AgentCopilot-<version>-<arch>.zip
 ```
+
+Record the printed notarization request id, artifact checksum, architecture,
+and release commit in the GitHub Release. An accepted request without a stapled
+and Gatekeeper-approved artifact is incomplete.
 
 ## Packaging
 
-Before packaging is enabled:
+The supported local output is an optional architecture-specific ZIP created
+only after successful stapling. DMG creation remains out of scope. Build with a
+non-user-specific SwiftPM scratch path as documented in
+`docs/runbooks/macos-app-runbook.md`; the verifier checks bundle/source version
+agreement, icon presence, executable architecture parity, signature integrity,
+hardened runtime, local-path absence, stapling, and Gatekeeper according to the
+requested stage.
 
-- Choose DMG, ZIP, or both.
-- Define artifact naming.
-- Define checksum generation and publication rules.
-- Confirm screenshots, reports, fixture data, logs, credentials, and local
-  config files are excluded.
-- Confirm update-feed behavior is either implemented and validated or absent.
-
-For a manually scoped architecture-specific ZIP release, build the candidate
-with the release configuration and a non-user-specific SwiftPM scratch path as
-documented in `docs/runbooks/macos-app-runbook.md`. Confirm the generated app
-contains its agent icon resources under `Contents/Resources`, then verify bundle
-versions, binary architecture, ad-hoc signature integrity, archive contents,
-and checksums before publishing.
+Before publishing, independently confirm screenshots, reports, fixture data,
+logs, credentials, private catalog data, and local config files are absent from
+the archive. Update-feed behavior remains absent.
 
 ## Privacy Requirements
 

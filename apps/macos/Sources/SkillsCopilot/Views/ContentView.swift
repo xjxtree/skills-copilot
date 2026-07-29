@@ -8,6 +8,10 @@ struct ContentView: View {
     @State private var isGlobalSearchFocused = false
     @State private var showsGlobalSearchResults = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var showsCompactDetail = true
+    @State private var showsFirstRunOnboarding = false
+    @AppStorage(FirstRunOnboardingModel.completionStorageKey)
+    private var hasCompletedOnboarding = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -39,6 +43,14 @@ struct ContentView: View {
         }
         .task {
             await store.loadAppStartupDataIfNeeded()
+            if !hasCompletedOnboarding {
+                showsFirstRunOnboarding = true
+            }
+        }
+        .onChange(of: hasCompletedOnboarding) { completed in
+            if !completed, store.hasCompletedStartupLoad {
+                showsFirstRunOnboarding = true
+            }
         }
         .onChange(of: trimmedGlobalSearchText) { query in
             store.updateAppSearch(query: query)
@@ -58,6 +70,10 @@ struct ContentView: View {
         }
         .accessibilityIdentifier(AppAccessibilityID.mainContent)
         .accessibilityLabel(UIStrings.appWindowTitle)
+        .sheet(isPresented: $showsFirstRunOnboarding) {
+            FirstRunOnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
+                .environmentObject(store)
+        }
     }
 
     private var appShell: some View {
@@ -81,6 +97,29 @@ struct ContentView: View {
     }
 
     private var navigationShell: some View {
+        GeometryReader { proxy in
+            if MainWindowModel.usesCompactLayout(width: proxy.size.width) {
+                compactNavigationShell
+            } else {
+                regularNavigationShell
+            }
+        }
+        .task(id: store.selectedAgentLocalSessionRefreshKey) {
+            guard store.hasCompletedStartupLoad else { return }
+            await store.refreshSelectedAgentLocalSessionsIfNeeded()
+        }
+        .onChange(of: store.selectedSkillID) { _ in
+            guard store.hasCompletedStartupLoad else { return }
+            Task { await store.loadSelectedDetail() }
+        }
+        .onChange(of: store.selectedSidebarSelection) { selection in
+            if selection != nil {
+                showsCompactDetail = true
+            }
+        }
+    }
+
+    private var regularNavigationShell: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView()
                 .navigationSplitViewColumnWidth(
@@ -98,13 +137,21 @@ struct ContentView: View {
         } detail: {
             DetailView(skill: store.selectedSkill)
         }
-        .task(id: store.selectedAgentLocalSessionRefreshKey) {
-            guard store.hasCompletedStartupLoad else { return }
-            await store.refreshSelectedAgentLocalSessionsIfNeeded()
-        }
-        .onChange(of: store.selectedSkillID) { _ in
-            guard store.hasCompletedStartupLoad else { return }
-            Task { await store.loadSelectedDetail() }
+    }
+
+    private var compactNavigationShell: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView()
+                .navigationSplitViewColumnWidth(
+                    min: CGFloat(UIOptimizationPresentation.sidebarShell.compactWidth),
+                    ideal: CGFloat(UIOptimizationPresentation.sidebarShell.compactWidth),
+                    max: CGFloat(UIOptimizationPresentation.sidebarShell.width)
+                )
+        } detail: {
+            CompactWorkspaceView(
+                columnVisibility: columnVisibility,
+                showsDetail: $showsCompactDetail
+            )
         }
     }
 
@@ -162,6 +209,90 @@ struct ContentView: View {
             showsGlobalSearchResults = false
             isGlobalSearchFocused = false
         }
+    }
+}
+
+private struct CompactWorkspaceView: View {
+    @EnvironmentObject private var store: SkillStore
+    let columnVisibility: NavigationSplitViewVisibility
+    @Binding var showsDetail: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .trailing) {
+                SecondarySidebarView(columnVisibility: columnVisibility)
+
+                switch MainWindowModel.compactWorkspaceLayer(
+                    selection: store.selectedSidebarSelection,
+                    showsDetail: showsDetail
+                ) {
+                case .detailOverlay:
+                    detailOverlay(width: detailWidth(availableWidth: proxy.size.width))
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        .zIndex(2)
+                case .detailRevealControl:
+                    showDetailButton
+                        .padding(12)
+                        .zIndex(1)
+                case .listOnly:
+                    EmptyView()
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: showsDetail)
+    }
+
+    private func detailOverlay(width: CGFloat) -> some View {
+        ZStack(alignment: .topTrailing) {
+            DetailView(skill: store.selectedSkill)
+                .padding(.top, 28)
+
+            Button {
+                showsDetail = false
+            } label: {
+                Label(
+                    UIStrings.text("detail.compact.close", "Close Details"),
+                    systemImage: "xmark"
+                )
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+            .help(UIStrings.text("detail.compact.close", "Close Details"))
+            .accessibilityLabel(UIStrings.text("detail.compact.close", "Close Details"))
+        }
+        .frame(width: width)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.18))
+                .frame(width: 1)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 18, x: -6, y: 0)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(UIStrings.text("detail.compact.overlay", "Selected item details"))
+    }
+
+    private var showDetailButton: some View {
+        Button {
+            showsDetail = true
+        } label: {
+            Label(
+                UIStrings.text("detail.compact.show", "Show Details"),
+                systemImage: "sidebar.trailing"
+            )
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(UIStrings.text("detail.compact.show", "Show Details"))
+        .accessibilityLabel(UIStrings.text("detail.compact.show", "Show Details"))
+    }
+
+    private func detailWidth(availableWidth: CGFloat) -> CGFloat {
+        MainWindowModel.compactDetailWidth(availableWidth: availableWidth)
     }
 }
 
@@ -300,7 +431,7 @@ private enum WindowChromeToolbarMetrics {
     static let searchResultsTopPadding: CGFloat = 10
 
     static var trailingWidth: CGFloat {
-        searchWidth + iconButtonWidth * 2 + trailingSpacing * 2
+        searchWidth + iconButtonWidth * 3 + trailingSpacing * 3
     }
 
     static var totalWidth: CGFloat {
@@ -312,7 +443,7 @@ private enum WindowChromeToolbarMetrics {
     }
 
     static var searchResultsTrailingPadding: CGFloat {
-        titlebarTrailingPadding + iconButtonWidth * 2 + trailingSpacing * 2
+        titlebarTrailingPadding + iconButtonWidth * 3 + trailingSpacing * 3
     }
 }
 
@@ -807,11 +938,58 @@ private struct WindowChromeTrailingControls: View {
                 onSubmit: onSubmit
             )
 
+            WindowChromeRefreshControl()
             WindowChromeHelpButton()
             WindowChromeSettingsControl()
         }
         .fixedSize()
         .frame(height: 32, alignment: .center)
+    }
+}
+
+private struct WindowChromeRefreshControl: View {
+    @EnvironmentObject private var store: SkillStore
+
+    var body: some View {
+        Menu {
+            Button(UIStrings.menuDeepScan) {
+                Task { await store.scanAll() }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Group {
+                    if store.isRefreshBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                }
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+
+                if store.hasPendingFileSystemChanges {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(Color.agentCopilotWindowBackground, lineWidth: 1))
+                        .offset(x: -2, y: 2)
+                        .accessibilityHidden(true)
+                }
+            }
+        } primaryAction: {
+            Task { await store.refresh() }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .windowChromeGlassCircle()
+        .disabled(store.isRefreshBusy)
+        .help("\(UIStrings.menuRefresh) — \(store.watcherStatusMessage)")
+        .accessibilityLabel(UIStrings.menuRefresh)
+        .accessibilityValue(store.watcherStatusMessage)
+        .accessibilityHint(UIStrings.menuDeepScan)
     }
 }
 

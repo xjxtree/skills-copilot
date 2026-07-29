@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { allocateCheckMacOSCaches } from "./check-macos-cache.mjs";
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const cacheKey = createHash("sha1").update(repoRoot).digest("hex").slice(0, 10);
-const cargoTargetDir =
-  process.env.CARGO_TARGET_DIR ?? join(tmpdir(), `agent-copilot-check-target-${cacheKey}`);
-const swiftScratchRoot =
-  process.env.SWIFTPM_SCRATCH_PATH ?? join(tmpdir(), `agent-copilot-swift-check-${cacheKey}`);
+const cacheSession = allocateCheckMacOSCaches({ repoRoot });
+const { cargoTargetDir, swiftScratchRoot } = cacheSession;
+for (const message of cacheSession.messages) console.log(`check:macos cache: ${message}`);
 const baseEnv = {
   ...process.env,
   CARGO_TARGET_DIR: cargoTargetDir,
+  SWIFTPM_SCRATCH_PATH: swiftScratchRoot,
 };
 
 const steps = [
@@ -52,18 +51,26 @@ const steps = [
   ["pnpm", ["smoke:macos-app", "--", "--fixture-data", "--capture-window"], baseEnv],
 ];
 
-for (const [command, args, env] of steps) {
-  console.log(`$ ${command} ${args.join(" ")}`);
-  const result = spawnSync(command, args, {
-    cwd: repoRoot,
-    env,
-    stdio: "inherit",
-  });
-  if (result.error) {
-    console.error(`check:macos failed to start ${command}: ${result.error.message}`);
-    process.exit(1);
+let exitCode = 0;
+try {
+  for (const [command, args, env] of steps) {
+    console.log(`$ ${command} ${args.join(" ")}`);
+    const result = spawnSync(command, args, {
+      cwd: repoRoot,
+      env,
+      stdio: "inherit",
+    });
+    if (result.error) {
+      console.error(`check:macos failed to start ${command}: ${result.error.message}`);
+      exitCode = 1;
+      break;
+    }
+    if (result.status !== 0) {
+      exitCode = result.status ?? 1;
+      break;
+    }
   }
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
-  }
+} finally {
+  cacheSession.release();
 }
+process.exitCode = exitCode;

@@ -88,11 +88,11 @@
     ],
     "refresh": {
       "scan_progress": "summary-only",
-      "watcher_state": "manual-refresh",
-      "watcher_detail": "The current stdio sidecar reports completed refresh summaries; native automatic watcher events are not running in this process.",
+      "watcher_state": "native-authorized-plan",
+      "watcher_detail": "The sidecar supplies a bounded authorized local watch plan. Native clients may use FSEvents only as an invalidation signal; Refresh or Deep Scan remains explicit.",
       "recovery_actions": [
         "Retry the last refresh",
-        "Run Scan to rebuild the agent catalog"
+        "Run Deep Scan to rebuild the agent catalog"
       ]
     },
     "project_context": {

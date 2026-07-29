@@ -62,3 +62,68 @@ pub(crate) fn validate_kebab_skill_name(name: &str, adapter_label: &str) -> Resu
 pub(crate) fn stable_path_id(agent: &str, path: &Path) -> String {
     format!("{agent}:{}", path.display())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frontmatter_split_accepts_lf_and_crlf_closing_delimiters() {
+        assert_eq!(
+            split_yaml_frontmatter("name: sample\n---\nBody."),
+            Ok(("name: sample", "Body.".to_string()))
+        );
+        assert_eq!(
+            split_yaml_frontmatter("name: sample\r\n---\r\nBody."),
+            Ok(("name: sample\r", "Body.".to_string()))
+        );
+    }
+
+    #[test]
+    fn frontmatter_split_accepts_an_empty_body_without_fabricating_content() {
+        assert_eq!(
+            split_yaml_frontmatter("name: sample\n---"),
+            Ok(("name: sample", String::new()))
+        );
+        assert!(split_yaml_frontmatter("name: sample\n----").is_err());
+    }
+
+    #[test]
+    fn required_frontmatter_strings_trim_values_and_reject_blank_or_non_string_fields() {
+        let value: serde_norway::Value =
+            serde_norway::from_str("name: \"  review  \"\nblank: \"  \"\ncount: 3\n")
+                .expect("fixture parses");
+
+        assert_eq!(
+            required_frontmatter_string(&value, "name", "fixture"),
+            Ok("review".to_string())
+        );
+        assert!(required_frontmatter_string(&value, "blank", "fixture").is_err());
+        assert!(required_frontmatter_string(&value, "count", "fixture").is_err());
+        assert!(required_frontmatter_string(&value, "missing", "fixture").is_err());
+    }
+
+    #[test]
+    fn kebab_skill_name_validation_covers_length_and_separator_boundaries() {
+        for valid in ["a", "review", "review-2", &"a".repeat(64)] {
+            assert!(
+                validate_kebab_skill_name(valid, "fixture").is_ok(),
+                "expected valid name: {valid}"
+            );
+        }
+        for invalid in [
+            "",
+            "-review",
+            "review-",
+            "review--tool",
+            "Review",
+            "review_tool",
+            &"a".repeat(65),
+        ] {
+            assert!(
+                validate_kebab_skill_name(invalid, "fixture").is_err(),
+                "expected invalid name: {invalid}"
+            );
+        }
+    }
+}

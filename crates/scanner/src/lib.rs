@@ -2547,6 +2547,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_budget_exhaustion_marks_only_unfinished_roots_partial() {
+        let (temp_root, first_root, ctx, mut adapter) = budget_test_fixture("shared-budget");
+        let second_root = temp_root.join("second");
+        write_budget_skill(
+            &first_root,
+            "a-first",
+            "---\nname: a-first\ndescription: first root fixture\n---\nbody\n",
+        );
+        write_budget_skill(
+            &second_root,
+            "b-second",
+            "---\nname: b-second\ndescription: second root fixture\n---\nbody\n",
+        );
+        adapter.roots.push(AdapterRoot {
+            scope: Scope::AgentGlobal,
+            path: second_root.clone(),
+            source: RootSource::Extra,
+        });
+        let mut limits = test_scan_limits();
+        limits.max_entries = 16;
+        limits.max_directories = 8;
+        limits.max_skill_files = 1;
+
+        let report =
+            scan_agent_with_limits(&adapter, &ctx, limits).expect("bounded scan returns a report");
+        let canonical_first = first_root.canonicalize().expect("canonical first root");
+        let canonical_second = second_root.canonicalize().expect("canonical second root");
+
+        assert_eq!(report.stats.skill_files_seen, 1);
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].name, "a-first");
+        assert_eq!(report.scanned_roots, vec![canonical_first.clone()]);
+        assert_eq!(report.partial_roots, vec![canonical_second.clone()]);
+        assert_eq!(
+            report.scoped_scanned_roots,
+            vec![ScopedScanRoot {
+                scope: Scope::AgentGlobal,
+                path: canonical_first,
+            }]
+        );
+        assert_eq!(
+            report.scoped_partial_roots,
+            vec![ScopedScanRoot {
+                scope: Scope::AgentGlobal,
+                path: canonical_second,
+            }]
+        );
+        assert!(report.stats.budget_exhausted);
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .filter(|issue| issue.kind == ScanIssueKind::BudgetExceeded)
+                .count(),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
     fn failed_skill_metadata_still_counts_candidate_and_returns_broken_instance() {
         let (temp_root, scan_root, ctx, adapter) = budget_test_fixture("metadata-failure");
         let skill_path = write_budget_skill(
@@ -2924,6 +2985,120 @@ mod tests {
             report.instances[0].display_path,
             claude_skills_dir.join("shared").join("SKILL.md"),
             "display_path should show the original symlink location"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn allows_multi_hop_symlink_only_when_final_target_is_in_same_scope_allowlist() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-multi-hop-same-scope-{}",
+            std::process::id()
+        ));
+        let scan_root = temp_root.join("scan");
+        let allowed_root = temp_root.join("allowed");
+        let skill_dir = allowed_root.join("shared");
+        let bridge = temp_root.join("bridge");
+        std::fs::create_dir_all(&scan_root).expect("create scan root");
+        std::fs::create_dir_all(&skill_dir).expect("create allowed skill");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: shared\ndescription: same-scope multi-hop fixture\n---\nBody.",
+        )
+        .expect("write allowed skill");
+        std::os::unix::fs::symlink(&skill_dir, &bridge).expect("create bridge symlink");
+        std::os::unix::fs::symlink(&bridge, scan_root.join("shared"))
+            .expect("create scan-root symlink");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: scan_root.clone(),
+                source: RootSource::Extra,
+            }],
+            link_target_roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: allowed_root,
+                source: RootSource::Extra,
+            }],
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: None,
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].name, "shared");
+        assert_eq!(
+            report.instances[0].display_path,
+            scan_root.join("shared/SKILL.md")
+        );
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::RootOutsideAllowlist));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_multi_hop_symlink_when_final_target_is_only_allowlisted_in_other_scope() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "skills-copilot-multi-hop-cross-scope-{}",
+            std::process::id()
+        ));
+        let scan_root = temp_root.join("scan");
+        let project_only_root = temp_root.join("project-only");
+        let skill_dir = project_only_root.join("escaped");
+        let bridge = temp_root.join("bridge");
+        std::fs::create_dir_all(&scan_root).expect("create scan root");
+        std::fs::create_dir_all(&skill_dir).expect("create cross-scope skill");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: escaped\ndescription: cross-scope multi-hop fixture\n---\nBody.",
+        )
+        .expect("write cross-scope skill");
+        std::os::unix::fs::symlink(&skill_dir, &bridge).expect("create bridge symlink");
+        let declared_link = scan_root.join("escaped");
+        std::os::unix::fs::symlink(&bridge, &declared_link).expect("create scan-root symlink");
+        let adapter = TestAdapter {
+            roots: vec![AdapterRoot {
+                scope: Scope::AgentGlobal,
+                path: scan_root.clone(),
+                source: RootSource::Extra,
+            }],
+            link_target_roots: vec![AdapterRoot {
+                scope: Scope::AgentProject,
+                path: project_only_root,
+                source: RootSource::Extra,
+            }],
+        };
+        let ctx = AdapterContext {
+            user_home: temp_root.join("home"),
+            project_root: Some(temp_root.join("project")),
+            project_cwd: None,
+            extra_roots: Vec::new(),
+        };
+
+        let report = scan_agent(&adapter, &ctx).expect("scan succeeds");
+        let canonical_scan_root = scan_root.canonicalize().expect("canonical scan root");
+
+        assert!(report.instances.is_empty());
+        assert!(report.partial_roots.is_empty());
+        assert_eq!(report.scanned_roots, vec![canonical_scan_root.clone()]);
+        assert!(
+            report.issues.iter().any(|issue| {
+                issue.path == canonical_scan_root.join("escaped")
+                    && issue.kind == ScanIssueKind::RootOutsideAllowlist
+            }),
+            "cross-scope link must be diagnosed: {:?}",
+            report.issues
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);

@@ -36,6 +36,7 @@ impl ServiceHost {
                 .list_visible_skill_records(&catalog)?
                 .into_iter()
                 .filter(|skill| requested_agent.is_none_or(|agent| skill.agent == agent))
+                .filter(|skill| skill.state != "missing")
                 .filter(|skill| {
                     app_search_matches(
                         &normalized_query,
@@ -145,7 +146,7 @@ impl ServiceHost {
             cursor: None,
             source_revision: None,
             sort: Some("recent".to_string()),
-            direction: Some("descending".to_string()),
+            direction: Some("desc".to_string()),
             max_files: Some(1_000),
             max_excerpt_chars: Some(1_000),
         })?;

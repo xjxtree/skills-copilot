@@ -1,6 +1,10 @@
+import Foundation
+import Testing
 @testable import SkillsCopilot
 
+@Suite("SkillListModelTests")
 struct SkillListModelTests {
+    @Test("SkillListModelTests")
     func run() throws {
         try detailWorkbenchSectionsExposeDiagnostics()
         try findingIssueGroupsPreserveRemediationAndImpactCounts()
@@ -15,6 +19,7 @@ struct SkillListModelTests {
         try problemItemsUseCurrentAgentRuntimeSemantics()
         try scopeFiltersSeparateProjectAndGlobalSkills()
         try sortOrdersAreStableForCoreListColumns()
+        try pathSortUsesLocalizedComparisonForNonASCIIValues()
         try sortDirectionCanReverseCoreListColumns()
         try skillProvenanceClassifiesAgentRootsDeterministically()
         try skillIdentitySummaryAndDedupeExplanationAreStable()
@@ -97,6 +102,24 @@ struct SkillListModelTests {
             filtered(searchText: "project/beta").map(\.id),
             ["beta"],
             "Search should match display paths."
+        )
+
+        let multilingualSkill = skill(
+            id: "multilingual",
+            scope: "agent-global",
+            path: "/tmp/技能/alpha/SKILL.md",
+            definitionId: "def.multilingual",
+            name: "技能 Alpha"
+        )
+        try expectEqual(
+            SkillListModel.matchesSearchQuery(multilingualSkill, query: "技能"),
+            true,
+            "Search should preserve localized matching for non-ASCII queries."
+        )
+        try expectEqual(
+            SkillListModel.matchesSearchQuery(multilingualSkill, query: "ALPHA"),
+            true,
+            "ASCII queries should fall back to localized matching for non-ASCII values."
         )
     }
 
@@ -429,6 +452,42 @@ struct SkillListModelTests {
         try expectEqual(filtered(sortOrder: .path).map(\.id), ["gamma", "alpha", "zeta", "omega", "beta", "delta", "theta"], "Path sort")
     }
 
+    private func pathSortUsesLocalizedComparisonForNonASCIIValues() throws {
+        let skills = [
+            skill(
+                id: "multilingual",
+                scope: "agent-global",
+                path: "/tmp/技能/SKILL.md",
+                definitionId: "def.multilingual",
+                name: "Multilingual"
+            ),
+            skill(
+                id: "ascii",
+                scope: "agent-global",
+                path: "/tmp/alpha/SKILL.md",
+                definitionId: "def.ascii",
+                name: "ASCII"
+            ),
+        ]
+        let expected = skills.sorted {
+            $0.displayPath.localizedCaseInsensitiveCompare($1.displayPath) == .orderedAscending
+        }
+        let actual = SkillListModel.filteredAndSorted(
+            skills: skills,
+            findings: [],
+            conflicts: [],
+            searchText: "",
+            agentFilter: .all,
+            stateFilter: .all,
+            sortOrder: .path
+        )
+        try expectEqual(
+            actual.map(\.id),
+            expected.map(\.id),
+            "Path sort should preserve localized comparison when either value is non-ASCII."
+        )
+    }
+
     private func sortDirectionCanReverseCoreListColumns() throws {
         try expectEqual(
             filtered(sortOrder: .name, sortDirection: .descending).map(\.id),
@@ -574,6 +633,22 @@ struct SkillListModelTests {
 
         let revealed = DisplayText.privacyPath(rawPath, privacyModeEnabled: true, revealFull: true)
         try expectEqual(revealed, rawPath, "Explicit reveal should show the original path without mutating the model value.")
+
+        let privacyDisabled = DisplayText.privacyPath(rawPath, privacyModeEnabled: false)
+        try expectFalse(
+            !privacyDisabled.contains("/" + "Users" + "/alice"),
+            "Disabling screenshot privacy should preserve the existing full-path display behavior."
+        )
+
+        let compactRedacted = DisplayText.privacyPath(rawPath, privacyModeEnabled: true, limit: 32)
+        try expectFalse(
+            compactRedacted.contains("/" + "Users" + "/alice"),
+            "Compact sidebar paths must stay redacted before shortening."
+        )
+        try expectFalse(
+            compactRedacted.count > 32,
+            "Compact sidebar paths should honor the requested display limit."
+        )
     }
 
     private func privacyPathDisplayRedactsEmbeddedEvidencePaths() throws {

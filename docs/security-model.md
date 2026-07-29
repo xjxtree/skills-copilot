@@ -28,6 +28,10 @@ This file describes security and privacy boundaries.
   reports must not persist secrets.
 - Session preview data is redacted and bounded before it crosses the service
   boundary.
+- Native file watching is limited to the Rust-provided bounded authorization
+  plan. Broad roots and symbolic-link components fail closed. FSEvents paths
+  are ignored and never logged, rendered, or persisted; events only invalidate
+  local cache state until the user explicitly chooses Refresh or Deep Scan.
 
 ## Credentials
 
@@ -46,10 +50,18 @@ This file describes security and privacy boundaries.
   cleanup guidance.
 - Adapter writes stay limited to the documented guarded toggles and install
   roots in `AGENTS.md` and `docs/adapters/agent-adapters.md`.
-- Skill Manager writes must use the manager tool when the tool supports the
-  operation. The service may run `npx skills` with argv-only commands,
-  telemetry-off env, redacted logs, and read-back catalog refresh; enable/
-  disable still uses the existing guarded agent-config toggle APIs.
+- Skill Manager writes must use the manager tool when the tool safely supports
+  the operation. Complete uninstall runs `npx skills remove` with no
+  `--agent` restriction, argv-only commands, telemetry-off env, redacted logs,
+  and catalog plus manager-inventory read-back. Selected-Agent uninstall does
+  not call the manager's unsafe partial-remove path or write Agent
+  enable/disable configuration. It requires every exact catalog identity from
+  the package row, accepts only a separable direct-child symlink or copied
+  directory under that Agent's documented install root, binds confirmation to
+  the target type and bounded tree revision, stages removal outside scanned
+  roots, verifies selected entries disappeared while preserved paths remain,
+  and rolls back failed verification. The shared source and manager lock remain
+  unchanged.
   Large installed-inventory stdout is captured only in a private `0600`
   temporary regular file, size-checked before reading, and removed by scoped
   cleanup on success and failure; it is never cataloged or retained.
@@ -66,10 +78,19 @@ This file describes security and privacy boundaries.
   caches, configured read-only roots, and native roots outside the guarded
   selected `.agents/skills` roots are excluded from editable inventory.
   Installed local sources outside those roots remain visible but are
-  unlink-only; they never receive a ZIP replacement action.
+  limited to exact selected-Agent physical uninstall when a documented
+  per-Agent target exists, or complete external-manager uninstall; they never
+  receive a ZIP replacement action. A direct source shared by selected and
+  unselected Agents is never deleted by partial uninstall.
+- Developer ID signing, notarization, stapling, and optional post-staple ZIP
+  creation are explicit maintainer-only release actions. They require an
+  identity selected at release-build invocation and a named `notarytool`
+  Keychain profile; raw notarization credentials are not accepted. The scripts
+  never run from normal builds, never publish an artifact, and refuse to
+  overwrite an existing output ZIP.
 - Hidden apply/write paths, hidden task state, raw prompt/response/trace
-  persistence, public distribution automation, signing, notarization, DMG, and
-  other ZIP creation/distribution work require explicit new scope.
+  persistence, public distribution automation, DMG creation, updater feeds,
+  and other ZIP creation/distribution work require explicit new scope.
 
 ## Screen Capture
 

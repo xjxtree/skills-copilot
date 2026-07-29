@@ -3,7 +3,7 @@ use std::{
     env, fs, io,
     io::Write,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 
 use fs4::FileExt;
@@ -17,17 +17,16 @@ use skills_copilot_adapters::{
 };
 use skills_copilot_ai_core::{evaluate_mvp_rules, Finding, RuleContext, RuleReport, Severity};
 use skills_copilot_catalog::{
-    Catalog, CatalogError, ConfigSnapshotDraft, ConfigSnapshotRecord, ConflictGroupDraft,
-    ConflictGroupRecord, FindingTriageRecord, RuleFindingDraft, RuleFindingRecord,
-    RuleTuningRecord, SkillDefinitionDraft, SkillDetailRecord, SkillEventDraft, SkillEventRecord,
-    SkillInstanceMeta, SkillRecord,
+    Catalog, ConfigSnapshotDraft, ConfigSnapshotRecord, ConflictGroupDraft, ConflictGroupRecord,
+    FindingTriageRecord, RuleFindingDraft, RuleFindingRecord, RuleTuningRecord,
+    SkillDefinitionDraft, SkillDetailRecord, SkillEventDraft, SkillEventRecord, SkillInstanceMeta,
+    SkillRecord,
 };
 use skills_copilot_core::{
     AdapterContext, AgentAdapter, AgentConfigDocument, AgentId, ConfigFormat, NetworkAccess,
     PermissionRequest, RootSource, Scope, SkillInstance, SkillState,
 };
-use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport, ScannerError};
-use thiserror::Error;
+use skills_copilot_scanner::{scan_agent, ScanIssueKind, ScanReport};
 
 #[cfg(test)]
 use skills_copilot_core::SkillScript;
@@ -35,10 +34,13 @@ use skills_copilot_core::SkillScript;
 mod analysis;
 mod config_consistency;
 mod config_support;
+mod error;
 mod history;
 mod local_skill_import;
 mod script_execution;
 mod skill_manager;
+mod snapshot_redaction;
+mod watch_plan;
 
 use analysis::{
     dedupe_rule_finding_records, dedupe_rule_findings, validate_finding_triage_status,
@@ -55,76 +57,25 @@ use config_support::{
     batch_snapshot_rollback_notes, minimal_skill_instance, normalize_initial_config_text,
     patch_enabled_for_agent, scope_from_snapshot, validate_config_read_target,
 };
+use snapshot_redaction::{
+    current_time_ms, generate_snapshot_id, is_redacted_snapshot_content, redact_snapshot_content,
+};
+#[cfg(test)]
+use snapshot_redaction::{REDACTED_SNAPSHOT_PREFIX, REDACTED_VALUE};
 
 pub use analysis::*;
 pub use config_support::read_agent_config;
+pub use error::CommandError;
 pub use history::*;
 pub(crate) use local_skill_import::{
     register_tool_global_staged_skill, tool_global_skill_name_from_content,
 };
 pub use script_execution::*;
 pub use skill_manager::*;
+pub use watch_plan::*;
 
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-#[derive(Debug, Error)]
-pub enum CommandError {
-    #[error("scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-    #[error("catalog error: {0}")]
-    Catalog(#[from] CatalogError),
-    #[error("io error: {0}")]
-    Io(#[from] io::Error),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("adapter error: {0}")]
-    Adapter(String),
-    #[error("skill instance not found: {0}")]
-    InstanceNotFound(String),
-    #[error("finding not found for triage key: {0}")]
-    FindingNotFound(String),
-    #[error("config snapshot not found: {0}")]
-    SnapshotNotFound(String),
-    #[error("scope not supported for toggle: {0:?}")]
-    UnsupportedScope(Scope),
-    #[error("config write verification failed; rolled back")]
-    VerificationFailed,
-    #[error("config changed since it was read (expected {expected}, actual {actual})")]
-    ConfigConflict { expected: String, actual: String },
-    #[error("snapshot rollback preview is stale; preview again before confirming")]
-    StalePreviewToken,
-    #[error("invalid json config: {0}")]
-    InvalidJson(String),
-    #[error("unsafe config path: {0}")]
-    UnsafeConfigPath(String),
-    #[error("invalid skill bundle: {0}")]
-    InvalidSkillBundle(String),
-    #[error("invalid skill source: {0}")]
-    InvalidSkillSource(String),
-    #[error("invalid import source: {0}")]
-    InvalidImportSource(String),
-    #[error("unsupported import source: {0}")]
-    UnsupportedImportSource(String),
-    #[error("install is not supported: {0}")]
-    InstallUnsupported(String),
-    #[error("invalid script execution request: {0}")]
-    InvalidScriptExecutionRequest(String),
-    #[error("invalid finding triage status: {0}")]
-    InvalidFindingTriageStatus(String),
-    #[error("invalid rule severity override: {0}")]
-    InvalidRuleSeverityOverride(String),
-    #[error("invalid rule tuning request: {0}")]
-    InvalidRuleTuningRequest(String),
-    #[error("invalid batch action: {0}")]
-    InvalidBatchAction(String),
-    #[error("skill manager unavailable: {0}")]
-    SkillManagerUnavailable(String),
-    #[error("invalid skill manager request: {0}")]
-    InvalidSkillManagerRequest(String),
-    #[error("skill manager command failed: {0}")]
-    SkillManagerCommandFailed(String),
 }
 
 pub fn scan_claude_to_catalog(
@@ -4854,146 +4805,6 @@ fn codex_config_projection(ctx: &AdapterContext) -> Result<CodexConfigProjection
             .collect(),
         plugin_states: parse_codex_plugin_states(&content),
     })
-}
-
-const REDACTED_SNAPSHOT_PREFIX: &str = "# skills-copilot: snapshot content redacted\n";
-const REDACTED_VALUE: &str = "[REDACTED]";
-
-fn redact_snapshot_content(content: &str) -> String {
-    if content.is_empty() || is_redacted_snapshot_content(content) {
-        return content.to_string();
-    }
-
-    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(content) {
-        if redact_json_value(&mut value) {
-            let rendered =
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| content.to_string());
-            return format!("{REDACTED_SNAPSHOT_PREFIX}{rendered}\n");
-        }
-        return content.to_string();
-    }
-
-    if let Ok(mut value) = json5::from_str::<serde_json::Value>(content) {
-        if redact_json_value(&mut value) {
-            let rendered =
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| content.to_string());
-            return format!("{REDACTED_SNAPSHOT_PREFIX}{rendered}\n");
-        }
-        return content.to_string();
-    }
-
-    let redacted = content
-        .lines()
-        .map(redact_simple_secret_line)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let redacted = if content.ends_with('\n') {
-        format!("{redacted}\n")
-    } else {
-        redacted
-    };
-    if redacted == content {
-        content.to_string()
-    } else {
-        format!("{REDACTED_SNAPSHOT_PREFIX}{redacted}")
-    }
-}
-
-fn is_redacted_snapshot_content(content: &str) -> bool {
-    content.starts_with(REDACTED_SNAPSHOT_PREFIX)
-}
-
-fn redact_json_value(value: &mut serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut changed = false;
-            for (key, value) in map {
-                if is_sensitive_key(key) {
-                    if !matches!(
-                        value,
-                        serde_json::Value::String(redacted) if redacted == REDACTED_VALUE
-                    ) {
-                        *value = serde_json::Value::String(REDACTED_VALUE.to_string());
-                        changed = true;
-                    }
-                } else {
-                    changed |= redact_json_value(value);
-                }
-            }
-            changed
-        }
-        serde_json::Value::Array(values) => {
-            let mut changed = false;
-            for value in values {
-                changed |= redact_json_value(value);
-            }
-            changed
-        }
-        _ => false,
-    }
-}
-
-fn redact_simple_secret_line(line: &str) -> String {
-    let Some((key_part, value_part, separator)) = split_assignment_line(line) else {
-        return line.to_string();
-    };
-    let key = key_part.trim().trim_matches('"').trim_matches('\'');
-    if !is_sensitive_key(key) {
-        return line.to_string();
-    }
-    let trailing_comma = value_part.trim_end().ends_with(',');
-    let comment = value_part.find('#').map(|idx| &value_part[idx..]);
-    let suffix = match (trailing_comma, comment) {
-        (true, Some(comment)) => format!(", {comment}"),
-        (true, None) => ",".to_string(),
-        (false, Some(comment)) => format!(" {comment}"),
-        (false, None) => String::new(),
-    };
-    format!("{key_part}{separator} \"{REDACTED_VALUE}\"{suffix}")
-}
-
-fn split_assignment_line(line: &str) -> Option<(&str, &str, &'static str)> {
-    if let Some((key, value)) = line.split_once('=') {
-        return Some((key, value, "="));
-    }
-    line.split_once(':').map(|(key, value)| (key, value, ":"))
-}
-
-fn is_sensitive_key(key: &str) -> bool {
-    let normalized: String = key
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
-    matches!(
-        normalized.as_str(),
-        "apikey"
-            | "token"
-            | "accesstoken"
-            | "refreshtoken"
-            | "secret"
-            | "clientsecret"
-            | "password"
-            | "passwd"
-    ) || normalized.ends_with("token")
-        || normalized.ends_with("apikey")
-        || normalized.ends_with("secret")
-        || normalized.ends_with("password")
-}
-
-fn generate_snapshot_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("snap-{nanos:x}")
-}
-
-fn current_time_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

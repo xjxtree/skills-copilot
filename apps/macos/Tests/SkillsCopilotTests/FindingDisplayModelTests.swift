@@ -1,6 +1,9 @@
+import Testing
 @testable import SkillsCopilot
 
+@Suite("FindingDisplayModelTests")
 struct FindingDisplayModelTests {
+    @Test("FindingDisplayModelTests")
     func run() throws {
         try groupsSortBySeverityThenRule()
         try filtersBySeverityAndRule()

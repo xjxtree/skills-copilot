@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("SkillManagerModelTests")
 struct SkillManagerModelTests {
+    @Test("SkillManagerModelTests")
     func run() throws {
         try defaultTargetsMatchSupportedManagerOrder()
         try workflowsSeparatePackageOperations()
@@ -15,11 +18,15 @@ struct SkillManagerModelTests {
         try installedLocalSourceWinsOverSameNameAppLibraryEntry()
         try installedAppLibrarySourceRetainsCleanupIdentity()
         try nestedSharedLocalSourceSupportsZipUpdate()
+        try sharedLocalSourceIncludesEveryScannedConsumer()
+        try inventoryKeepsDisabledAgentsInstalledAndRetainsPhysicalIdentity()
         try externalLocalSourceHasNoArchiveUpdateTarget()
         try duplicateInstalledRowsMergeAgentLinks()
+        try removeParamsBindExactInstancesAndCompleteMode()
         try previewSummaryLocalizesKnownOperations()
         try mutationPreviewDecodesCommandAndAgentTargets()
         try duplicateSearchAndInstalledIDsKeepEveryDisplayOccurrence()
+        try archiveDropAcceptsExactlyOneLocalZip()
     }
 
     private func visibleResultsRevealReturnedRowsInTwentyRowSteps() throws {
@@ -98,6 +105,33 @@ struct SkillManagerModelTests {
             SkillManagerWorkflow.allCases.map(\.id),
             ["search-install", "installed-updates"],
             "Skill Manager should expose search and a unified installed/local inventory."
+        )
+    }
+
+    private func archiveDropAcceptsExactlyOneLocalZip() throws {
+        let zip = URL(fileURLWithPath: "/tmp/example.ZIP")
+        let text = URL(fileURLWithPath: "/tmp/example.txt")
+        let remote = URL(string: "https://example.com/example.zip")!
+
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [zip]),
+            zip,
+            "A single local ZIP should be accepted for drag-and-drop import."
+        )
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [text]),
+            nil,
+            "Non-ZIP files should be rejected."
+        )
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [remote]),
+            nil,
+            "Remote URLs should not bypass local archive validation."
+        )
+        try expectEqual(
+            SkillManagerArchiveDropModel.acceptedArchive(in: [zip, zip]),
+            nil,
+            "Archive import should remain a one-package-at-a-time workflow."
         )
     }
 
@@ -382,6 +416,90 @@ struct SkillManagerModelTests {
         try expectEqual(items[0].localPath, installedPath, "Nested local updates must use the containing skill directory.")
     }
 
+    private func sharedLocalSourceIncludesEveryScannedConsumer() throws {
+        let installedPath = "/home/test/.agents/skills/using-superpowers"
+        let catalogAgents = ["codex", "opencode", "pi", "openclaw"]
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "using-superpowers",
+                source: installedPath,
+                sourceKind: "local",
+                agents: ["Codex", "OpenCode"],
+                path: installedPath
+            )],
+            catalogSkills: catalogAgents.enumerated().map { index, agent in
+                catalogSkill(
+                    id: "shared-\(index)",
+                    agent: agent,
+                    name: "using-superpowers",
+                    path: "\(installedPath)/SKILL.md"
+                )
+            },
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "One shared source should remain one inventory row.")
+        try expectEqual(
+            items[0].agents,
+            ["pi", "opencode", "codex", "openclaw"],
+            "Removal targets must include every supported Agent that scans the shared source, not only the CLI subset."
+        )
+        try expectEqual(
+            items[0].isCompleteRemovalSelection(["pi", "opencode", "codex", "openclaw"]),
+            true,
+            "All must map to complete uninstall regardless of target order."
+        )
+        try expectEqual(
+            items[0].isCompleteRemovalSelection(["codex"]),
+            false,
+            "Selecting a proper Agent subset must stay in physical partial-uninstall mode."
+        )
+    }
+
+    private func inventoryKeepsDisabledAgentsInstalledAndRetainsPhysicalIdentity() throws {
+        let installedPath = "/home/test/.agents/skills/shared-skill"
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "shared-skill",
+                source: "owner/repository",
+                sourceKind: "manager",
+                agents: ["Codex", "OpenCode"],
+                path: installedPath
+            )],
+            catalogSkills: [
+                catalogSkill(
+                    id: "codex-active",
+                    agent: "codex",
+                    name: "shared-skill",
+                    path: "\(installedPath)/SKILL.md"
+                ),
+                catalogSkill(
+                    id: "opencode-disabled",
+                    agent: "opencode",
+                    name: "shared-skill",
+                    path: "\(installedPath)/SKILL.md",
+                    state: "disabled",
+                    enabled: false
+                )
+            ],
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "A disabled shared package should remain one manager inventory row.")
+        try expectEqual(items[0].agents, ["opencode", "codex"], "Config-disabled Agents remain physically installed removal targets.")
+        try expectEqual(items[0].isCompleteRemovalSelection(["codex"]), false, "Selecting one physically installed Agent must remain a partial uninstall.")
+        try expectEqual(items[0].isCompleteRemovalSelection(["opencode", "codex"]), true, "Selecting every physical target must request complete uninstall.")
+        try expectEqual(items[0].isCompleteRemovalSelection([]), false, "An empty selection must never become complete uninstall.")
+        try expectEqual(items[0].instanceIDs(for: ["codex"]), ["codex-active"], "Per-Agent target lookup retains exact catalog identities.")
+        try expectEqual(
+            items[0].allInstanceIDs,
+            ["codex-active", "opencode-disabled"],
+            "Removal preview must retain enabled and disabled physical installation identities."
+        )
+    }
+
     private func externalLocalSourceHasNoArchiveUpdateTarget() throws {
         let items = SkillManagerInventoryBuilder.build(
             installed: [installedRecord(
@@ -434,6 +552,26 @@ struct SkillManagerModelTests {
         try expectEqual(items[0].agents, ["claude-code", "codex"], "Collapsed rows should preserve the union of supported agent links.")
     }
 
+    private func removeParamsBindExactInstancesAndCompleteMode() throws {
+        let data = try JSONEncoder().encode(SkillManagerRemoveParams(
+            skill: "shared-skill",
+            agents: ["codex", "opencode"],
+            instanceIDs: ["codex-instance", "opencode-instance"],
+            scope: "global",
+            fullUninstall: true,
+            confirmed: false,
+            previewToken: nil
+        ))
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        try expectEqual(object?["full_uninstall"] as? Bool, true, "All selection must reach the service as explicit complete-uninstall intent.")
+        try expectEqual(
+            object?["instance_ids"] as? [String],
+            ["codex-instance", "opencode-instance"],
+            "Removal preview must bind exact catalog identities for postcondition verification."
+        )
+    }
+
     private func installedRecord(
         name: String,
         source: String,
@@ -457,7 +595,9 @@ struct SkillManagerModelTests {
         agent: String = "codex",
         scope: String = "agent-global",
         name: String,
-        path: String
+        path: String,
+        state: String = "loaded",
+        enabled: Bool = true
     ) -> SkillRecord {
         SkillRecord(
             id: id,
@@ -467,8 +607,8 @@ struct SkillManagerModelTests {
             displayPath: path,
             definitionId: name,
             name: name,
-            state: "loaded",
-            enabled: true
+            state: state,
+            enabled: enabled
         )
     }
 

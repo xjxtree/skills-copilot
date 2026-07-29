@@ -85,6 +85,23 @@ struct LocalSessionContentItem: Decodable, Hashable, Identifiable {
     let timestamp: Int64?
     let evidenceRefs: [String]
 
+    var referencedSkillName: String? {
+        guard kind == .skillCall else { return nil }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let separator = trimmedTitle.firstIndex(of: ":") {
+            let prefix = trimmedTitle[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = trimmedTitle[trimmedTitle.index(after: separator)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if prefix.caseInsensitiveCompare("skill") == .orderedSame, !value.isEmpty {
+                return value
+            }
+        }
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = trimmedText.components(separatedBy: " (").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value : nil
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case kind

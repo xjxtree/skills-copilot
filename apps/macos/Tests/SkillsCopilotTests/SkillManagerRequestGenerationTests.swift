@@ -1,8 +1,11 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("SkillManagerRequestGenerationTests")
 @MainActor
 struct SkillManagerRequestGenerationTests {
+    @Test("SkillManagerRequestGenerationTests")
     func run() async throws {
         try canonicalInputsNormalizeIdentity()
         try await newerSearchWinsWhenOlderResponseFinishesLast()
@@ -10,6 +13,7 @@ struct SkillManagerRequestGenerationTests {
         try await staleSearchErrorDoesNotReplaceNewSuccess()
         try await installedInventoryLoadsBothScopesWithoutAgentFiltering()
         try await installedInventoryUsesSurfaceBusyStateWithoutBlockingTheApp()
+        try await postMutationInventoryFailureInvalidatesStaleScopeAndSuppressesSuccess()
         try await installedAndLocalLibraryExposeEveryVisibleID()
         try await invalidMethodMetadataPreservesCurrentRecords()
         try await inputChangeInvalidatesMutationPreview()
@@ -223,6 +227,46 @@ struct SkillManagerRequestGenerationTests {
 
         await runner.resumeSuccess("installed:project:")
         await loading.value
+    }
+
+    private func postMutationInventoryFailureInvalidatesStaleScopeAndSuppressesSuccess() async throws {
+        let runner = SkillManagerGenerationServiceRunner()
+        let store = makeStore(runner)
+        await store.listSkillManagerInstalled()
+        try expectFalse(
+            store.skillManagerInstalledByScope[.global] == nil,
+            "The fixture should begin with a cached global installed inventory."
+        )
+
+        store.skillManagerSelectedAgentIDs = ["codex"]
+        store.skillManagerSource = "owner/write-refresh"
+        store.skillManagerInstallSkillName = "alpha"
+        await store.previewSkillManagerInstall()
+        guard let confirmation = store.skillManagerMutationConfirmation else {
+            throw NativeModelTestFailure(description: "Mutation confirmation should exist before the post-write refresh test.")
+        }
+        await runner.failInstalled(scope: "global")
+
+        await store.applySkillManagerInstall(confirmation: confirmation)
+
+        try expectEqual(
+            await runner.recordedCalls(method: "skillManager.applyInstall").count,
+            1,
+            "The confirmed write should still run exactly once."
+        )
+        try expectNil(
+            store.skillManagerInstalledByScope[.global],
+            "A failed post-write reload must invalidate the stale scope instead of retaining an installed row."
+        )
+        try expectNil(
+            store.skillManagerMessage,
+            "A failed post-write inventory reload must not be overwritten by a success banner."
+        )
+        try expectContains(
+            store.skillManagerErrorMessage,
+            "could not be reloaded",
+            "The UI should explain that the write applied but its installed inventory is not current."
+        )
     }
 
     private func inputChangeInvalidatesMutationPreview() async throws {
@@ -1007,6 +1051,11 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
     private var cancellationAwareLabels: Set<String> = []
     private var cancellationCounts: [String: Int] = [:]
     private var pending: [String: PendingRequest] = [:]
+    private var failingInstalledScopes: Set<String> = []
+
+    func failInstalled(scope: String) {
+        failingInstalledScopes.insert(scope)
+    }
 
     func suspend(_ label: String) {
         suspendedLabels.insert(label)
@@ -1051,6 +1100,11 @@ private actor SkillManagerGenerationServiceRunner: ServiceProcessRunning {
     func run(executableURL: URL, input: Data, timeoutNanoseconds: UInt64?) async throws -> Data {
         let call = try Self.decodeCall(input)
         calls.append(call)
+        if call.method == "skillManager.listInstalled",
+           let scope = call.scope,
+           failingInstalledScopes.contains(scope) {
+            return Self.serviceErrorResponse
+        }
         let label = Self.label(for: call)
         if suspendedLabels.contains(label) {
             if suspendNextLabels.remove(label) != nil {

@@ -1,8 +1,11 @@
+import Testing
 @testable import SkillsCopilot
 
+@Suite("ListCompletenessModelTests")
 struct ListCompletenessModelTests {
     struct Row: Identifiable, Equatable { let id: String; let value: String }
 
+    @Test("ListCompletenessModelTests")
     func run() throws {
         try appendsPagesWithoutDuplicateIDs()
         try rejectsChangedSourceRevision()

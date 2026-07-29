@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("ScanResultCompatibilityTests")
 struct ScanResultCompatibilityTests {
+    @Test("ScanResultCompatibilityTests")
     func run() throws {
         try legacyScanResultWithoutAdditiveDiagnosticsDecodesAsCompleted()
     }

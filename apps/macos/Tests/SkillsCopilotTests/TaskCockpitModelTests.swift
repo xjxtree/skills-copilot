@@ -1,7 +1,10 @@
+import Testing
 import Foundation
 @testable import SkillsCopilot
 
+@Suite("TaskCockpitModelTests")
 struct TaskCockpitModelTests {
+    @Test("TaskCockpitModelTests")
     func run() throws {
         try decodesRealisticTaskCockpitPayload()
         try decodesAliasesAndStringForms()
@@ -14,6 +17,7 @@ struct TaskCockpitModelTests {
         try summaryCollectionsExposeEveryStableUniqueRow()
         try duplicateExternalSummaryIDsKeepEveryDisplayOccurrence()
         try signalClassificationHasSingleProductionContract()
+        try buildsActionableRecommendationAndHandoff()
     }
 
     private struct ServiceEnvelope<ResultPayload: Decodable>: Decodable {
@@ -191,6 +195,61 @@ struct TaskCockpitModelTests {
         try expectEqual(result.evidenceReferences.first?.title, "task-cockpit:evidence", "String evidence should decode.")
         try expectEqual(result.promptRequest?.requestKind, "task_cockpit", "Prompt request camel-case alias should decode.")
         try expectEqual(result.safetyFlags.notes, ["provider not sent"], "Safety string array should decode.")
+    }
+
+    private func buildsActionableRecommendationAndHandoff() throws {
+        let result = TaskCockpitResult(
+            summary: TaskCockpitSummary(
+                summaryText: "Use the release skill.",
+                recommendedAgent: "codex",
+                recommendedSkillName: "release-audit",
+                readinessScore: 84,
+                routingScore: 91
+            ),
+            routeCandidates: [
+                TaskCockpitCandidateRow(
+                    id: "route-release",
+                    title: "release-audit",
+                    agent: "codex",
+                    skill: TaskSkillRef(
+                        instanceID: "skill-release",
+                        name: "release-audit",
+                        agent: "codex"
+                    ),
+                    reasons: ["Matches release validation."]
+                )
+            ]
+        )
+
+        try expectEqual(
+            TaskCockpitRecommendation.from(result),
+            TaskCockpitRecommendation(
+                instanceID: "skill-release",
+                skillName: "release-audit",
+                agent: "codex"
+            ),
+            "Task Preflight should expose a stable recommendation target for the next action."
+        )
+
+        let handoff = TaskCockpitHandoffModel.text(
+            taskText: "Validate the release.",
+            result: result
+        )
+        try expectEqual(
+            handoff.contains("Validate the release."),
+            true,
+            "The handoff should preserve the user task."
+        )
+        try expectEqual(
+            handoff.contains("release-audit"),
+            true,
+            "The handoff should include the recommended skill."
+        )
+        try expectEqual(
+            handoff.contains("91"),
+            true,
+            "The handoff should include the routing score."
+        )
     }
 
     private func legacyDuplicateRowsReceiveStableUniqueDisplayIDs() throws {

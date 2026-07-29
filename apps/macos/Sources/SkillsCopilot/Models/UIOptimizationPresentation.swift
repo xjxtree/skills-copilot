@@ -88,6 +88,8 @@ struct ListPagePresentation: Equatable {
 
 struct SidebarShellPresentation: Equatable {
     let width = 260
+    let compactWidth = 260
+    let navigationCardHorizontalInset = -8
     let footerTopSpacing = 10
 }
 
@@ -108,11 +110,11 @@ struct SidebarSecondaryListPresentation: Equatable {
 
 struct SkillListPresentation: Equatable {
     let minimumPrimaryColumnWidth = 220
-    let idealPrimaryColumnWidth = 260
+    let idealPrimaryColumnWidth = 240
     let maximumPrimaryColumnWidth = 320
-    let minimumSecondaryColumnWidth = 360
-    let idealSecondaryColumnWidth = 400
-    let maximumSecondaryColumnWidth = 520
+    let minimumSecondaryColumnWidth = MainWindowModel.minimumCompactSecondaryWidth
+    let idealSecondaryColumnWidth = 360
+    let maximumSecondaryColumnWidth = 440
     let minimumSearchWidth = 220
     let compactRowMinHeight = 36
     let compactRowMaxHeight = 40
@@ -148,6 +150,60 @@ struct SkillListPresentation: Equatable {
             return hasActiveProjectContext ? UIStrings.noSkillsInCatalog : UIStrings.noProjectSkillsMessage
         }
         return UIStrings.noAgentSkillsMessage(agentFilter.title)
+    }
+}
+
+enum SkillRowMetadataPresentation {
+    static func metadataText(for skill: SkillRecord) -> String {
+        let packageContext = skill.pluginPackageSummary
+            ?? skill.packageVersion.map { "v\($0)" }
+            ?? skill.sourceKind
+        if DisplayText.isToolGlobal(skill) {
+            return [
+                DisplayText.scope(for: skill),
+                UIStrings.readOnlyPreview,
+                packageContext ?? skill.provenance.label
+            ].joined(separator: " · ")
+        }
+        if skill.agent == "hermes", DisplayText.isReadOnlyPreview(skill) {
+            return "\(DisplayText.scope(for: skill)) · \(skill.provenance.label)"
+        }
+        if DisplayText.isReadOnlyPreview(skill) {
+            return [
+                DisplayText.scope(for: skill),
+                UIStrings.readOnly,
+                packageContext ?? skill.provenance.label
+            ].joined(separator: " · ")
+        }
+        var parts = [
+            DisplayText.scope(for: skill),
+            DisplayText.state(skill.state, enabled: skill.enabled)
+        ]
+        parts.append(packageContext ?? skill.provenance.label)
+        return parts.joined(separator: " · ")
+    }
+
+    static func skillIDsRequiringVisibleMetadata(in skills: [SkillRecord]) -> Set<SkillRecord.ID> {
+        guard skills.count > 1 else { return Set(skills.map(\.id)) }
+
+        let signatures = skills.map { metadataText(for: $0) }
+        let counts = Dictionary(grouping: signatures, by: { $0 }).mapValues(\.count)
+        let ranked = counts.sorted {
+            if $0.value != $1.value {
+                return $0.value > $1.value
+            }
+            return $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending
+        }
+        guard let dominant = ranked.first, dominant.value > 1 else {
+            return Set(skills.map(\.id))
+        }
+        if ranked.count > 1, ranked[1].value == dominant.value {
+            return Set(skills.map(\.id))
+        }
+
+        return Set(skills.compactMap { skill in
+            metadataText(for: skill) == dominant.key ? nil : skill.id
+        })
     }
 }
 
@@ -215,6 +271,7 @@ struct TaskPreflightPresentation: Equatable {
     let sheetMinimumHeight = 620
     let historyColumnWidth = 270
     let fixedAgentChipWidth = 0
+    let agentGridColumnCount = 3
     let showsProviderUnavailableGate = true
 }
 

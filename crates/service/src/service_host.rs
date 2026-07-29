@@ -288,9 +288,14 @@ impl ServiceHost {
             }
             "skillManager.previewRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
+                let catalog = self.open_catalog_for_read()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                serde_json::to_value(preview_remove_with_manager(&adapter_ctx, &params)?)
-                    .map_err(Into::into)
+                serde_json::to_value(preview_remove_with_manager(
+                    &catalog,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
             }
             "skillManager.applyRemove" => {
                 let params: SkillManagerRemoveParams = serde_json::from_value(request.params)?;
@@ -732,6 +737,7 @@ impl ServiceHost {
         let health = skill_health_summary(&catalog, &adapter_ctx)?;
         Ok(AppStateSnapshot {
             status: self.status(),
+            watch_plan: authorized_file_watch_plan(&adapter_ctx, &self.app_data_dir),
             skills,
             findings,
             conflicts,
@@ -766,9 +772,12 @@ impl ServiceHost {
             supported_methods: supported_methods(),
             refresh: RefreshStatus {
                 scan_progress: "summary-only",
-                watcher_state: "manual-refresh",
-                watcher_detail: "The current stdio sidecar reports completed refresh summaries; native automatic watcher events are not running in this process.",
-                recovery_actions: vec!["Retry the last refresh", "Run Scan to rebuild the agent catalog"],
+                watcher_state: "native-authorized-plan",
+                watcher_detail: "The sidecar supplies a bounded authorized local watch plan. Native clients may use FSEvents only as an invalidation signal; Refresh or Deep Scan remains explicit.",
+                recovery_actions: vec![
+                    "Retry the last refresh",
+                    "Run Deep Scan to rebuild the agent catalog",
+                ],
             },
             project_context: project_context_summary(&self.app_data_dir, self.env_project_context()),
             adapter_capabilities: list_adapter_capabilities(&adapter_ctx),

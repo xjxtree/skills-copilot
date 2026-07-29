@@ -60,49 +60,43 @@ cached list, detail, analysis, conflict, and health records in memory. This
 keeps external ChatGPT enable/disable changes current without a directory scan
 or catalog write; filesystem inventory changes still require an explicit scan.
 
+The native shell keeps `SkillStore` as the typed service-workflow coordinator,
+while independently observable `SessionStore`, `ProviderStore`, and
+`SkillManagerStore` own their surface state. Views subscribe only to the domain
+state they render. Compatibility forwarding properties on `SkillStore` support
+existing workflow code without making unrelated domain changes invalidate the
+entire UI.
+
 ### Scanner Bounds And Catalog Completeness
 
-- A scan follows only explicit canonical adapter roots and explicitly declared
-  same-scope link-target roots. It does not treat the whole home or project
-  directory as an implicit symlink allowlist.
-- Built-in user, project, compatibility, admin, system, and implicit package
-  convention root candidates are optional until their directory exists. A
-  candidate that was never created is omitted without degrading the scan;
-  explicit configured, manifest-declared plugin, and extra roots still report
-  unavailability.
-- Scanner links may resolve only beneath those explicit roots with the same
-  scope; link discovery never expands authorization to a neighboring scope.
-- An unavailable symlink target is reported as a per-entry
-  `dangling_symlink` diagnostic and skipped without making the surrounding
-  authorized root partial. Resolvable targets outside the same-scope allowlist
-  remain rejected as `root_outside_allowlist`.
-- Production scans are bounded to depth 64, 50,000 directories, 200,000
+- Scans are restricted to documented adapter roots and explicitly configured
+  local roots. Symlinks may resolve only inside an authorized root of the same
+  scope; discovery never expands that authorization.
+- Production traversal is bounded to depth 64, 50,000 directories, 200,000
   entries, 25,000 skill files, 2 MiB per `SKILL.md`, and 256 MiB of aggregate
-  skill content. Skill content is read through the bounded scanner reader
-  before adapter parsing.
-- Oversized or unreadable skill files become broken catalog candidates when
-  their canonical path is known, allowing enumeration to continue. Filesystem
-  traversal failures or exhausted traversal budgets mark the root partial.
-- Commands upsert every observed instance, but catalog missing-sweep receives
-  only `(scope, canonical root)` pairs that were completely enumerated. A
-  complete global root cannot sweep a partial project root that resolves to the
-  same path. Partial and skipped roots never mark unseen rows missing. A first
-  transition to missing and its compact `missing` event are committed
-  atomically; repeated complete scans do not duplicate the event.
-- Local-session UI state follows the same bounded-read posture: startup/manual
-  refresh stores source-scoped summaries in memory, local criteria project that
-  snapshot, and one selected stable ID may load a bounded process sample plus
-  progressively paged user messages and final Agent replies. Each page has
-  item, scan-byte, and returned-text bounds; accepted pages publish between
-  sidecar calls and SwiftUI renders them lazily. Session summary/detail content
-  is not persisted.
-- Aggregate skill-byte accounting is based on bytes actually read. The bounded
-  reader never retains more than the remaining aggregate allowance, including
-  its limit-detection byte; stale file metadata cannot enlarge the read or
-  allocation budget.
-- Scanner reports snapshot declared/canonical root aliases during traversal.
-  Service diagnostics lexically normalize and redact those immutable aliases
-  longest-path-first without resolving the filesystem again after a scan.
+  skill content. Unreadable, oversized, unavailable, or rejected candidates
+  produce bounded diagnostics without broadening the scan.
+- Observed instances may always be upserted. Only roots proven completely
+  enumerated may drive the catalog missing-sweep; partial or skipped roots must
+  never turn unseen rows into missing records.
+- Local-session summaries and selected details use bounded, source-scoped,
+  progressively paged reads. They remain in memory and are not persisted by
+  the native shell.
+- UI filters, sorting, scope changes, and navigation project startup or
+  manual-refresh caches. Rust includes a bounded `watch_plan` in the state
+  snapshot from existing adapter roots, same-scope link targets, config-parent
+  directories, and the app-owned local library. It rejects broad roots and any
+  path with a symbolic-link component.
+- The native shell uses FSEvents only to invalidate those caches. Event paths
+  are ignored and are never logged or rendered. No event starts a scan.
+  Explicit Refresh performs a full adapter reconciliation when invalidated and
+  otherwise reloads cached catalog state; Deep Scan always re-enumerates the
+  documented roots. A successful scan clears only invalidations that existed
+  when that scan began; a newer event remains pending for the next Refresh.
+  Committing a project-context transition stops and invalidates the old watcher
+  before validation or follow-up scanning, so a failed transition scan cannot
+  leave stale project roots active. Startup prewarm and consistency-bound write
+  flows remain the other allowed sources of fresh filesystem work.
 
 ### Raw Findings And User-Visible Issues
 
@@ -152,6 +146,21 @@ layouts. Plugin caches and other read-only discovery roots remain outside
 package operations. Skill Manager loading, search, inventory, and preview use
 surface-local busy state and do not block unrelated app actions; only a
 confirmed Skill Manager write participates in the app-wide mutation gate.
+For a shared `.agents/skills` source, the inventory combines the manager row
+with every physically installed supported Agent target found by the catalog,
+regardless of that instance's enable/disable configuration, and retains every
+exact instance identity for verification. Removing a proper subset is a
+guarded physical uninstall: only a selected Agent's separable skill-directory
+symlink or copied directory may be removed. Apply moves exact preview-bound
+entries outside scanned roots, rescans and verifies the selected entries are
+gone while the shared source and unselected targets remain, then commits the
+removal; verification failure restores the entries. If selected and unselected
+Agents directly read the same `.agents/skills` directory, no separable
+filesystem target exists and partial uninstall fails closed instead of writing
+an enable/disable override. Removing all linked Agents is an explicit complete
+uninstall: the external manager receives no `--agent` restriction, then catalog
+and manager inventory are both read back before the write is reported as
+successful.
 
 ## Extension Points
 
