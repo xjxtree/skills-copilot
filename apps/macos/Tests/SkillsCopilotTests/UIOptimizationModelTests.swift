@@ -62,6 +62,26 @@ struct UIOptimizationModelTests {
             "The toolbar settings button should use the system Settings scene entry point."
         )
         try expectEqual(
+            UIOptimizationPresentation.unifiedToolbar.refreshControlWidth,
+            86,
+            "Refresh should keep only compact horizontal breathing room around its icon, status, and label."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.unifiedToolbar.refreshHorizontalPadding,
+            6,
+            "Refresh should use compact internal horizontal padding."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.unifiedToolbar.refreshStatusSlotWidth,
+            12,
+            "Refresh should reserve a stable slot for the pending-change indicator."
+        )
+        try expectEqual(
+            UIOptimizationPresentation.unifiedToolbar.reservesRefreshStatusSlot,
+            true,
+            "The refresh label should not shift when the pending-change indicator appears."
+        )
+        try expectEqual(
             UIOptimizationPresentation.listPage.filterStyle,
             .capsule,
             "Skill and session filters should render as capsule controls under the content title."
@@ -134,8 +154,8 @@ struct UIOptimizationModelTests {
     private func skillListDensityMatchesOptimizationPlan() throws {
         try expectEqual(
             UIOptimizationPresentation.skillList.minimumSecondaryColumnWidth,
-            320,
-            "The middle skill list column should fit the compact laptop layout."
+            360,
+            "The compact layout should preserve enough of the middle list to retain selection context beside detail."
         )
         try expectEqual(
             UIOptimizationPresentation.skillList.minimumSearchWidth,

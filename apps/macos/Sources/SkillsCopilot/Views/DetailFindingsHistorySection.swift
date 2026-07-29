@@ -188,9 +188,9 @@ private struct CatalogStatusIssueCard: View {
         case .missing:
             return UIStrings.text("issues.catalogStatus.missing.remediation", "Restore SKILL.md at the recorded source path if the skill should still exist. If it was intentionally removed, keep this historical record as missing.")
         case .broken:
-            return UIStrings.text("issues.catalogStatus.broken.remediation", "Repair the SKILL.md frontmatter or source content, then run Deep Scan again.")
+            return UIStrings.text("issues.catalogStatus.broken.remediation", "Repair the SKILL.md frontmatter or source content, then run Refresh again.")
         case .unknown:
-            return UIStrings.text("issues.catalogStatus.unknown.remediation", "Inspect the source and scan diagnostics, then run Deep Scan again after correcting the underlying state.")
+            return UIStrings.text("issues.catalogStatus.unknown.remediation", "Inspect the source and scan diagnostics, then run Refresh again after correcting the underlying state.")
         case .enabled, .disabled, .shadowed:
             return UIStrings.text("issues.catalogStatus.remediation", "Inspect the skill source and scan again before relying on this record.")
         }

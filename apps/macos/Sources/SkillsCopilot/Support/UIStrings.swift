@@ -100,6 +100,7 @@ enum UIStrings {
     static var toolbarNoProjectSelected: String { text("toolbar.project.noneSelected", "No project selected") }
     static var projectChoosePrompt: String { text("project.choosePrompt", "Choose a project or OpenClaw workspace directory to scan project-scoped Claude, Codex, opencode, and workspace-scoped OpenClaw skills.") }
     static var projectSelectedSource: String { text("project.source.selected", "Selected project") }
+    static var currentProject: String { text("project.current", "Current") }
     static var projectGlobalRootsOnly: String { text("project.source.globalOnly", "No project: global roots only") }
     static func projectSwitching(_ name: String) -> String {
         format("project.switching", "Switching to %@ and refreshing project data…", name)
@@ -197,17 +198,17 @@ enum UIStrings {
     static var refreshLog: String { text("refresh.log", "Refresh Log") }
     static var refreshIdle: String { text("refresh.idle", "Ready to refresh") }
     static var refreshReloading: String { text("refresh.reloading", "Refreshing current catalog data...") }
-    static var refreshScanning: String { text("refresh.scanning", "Deep scanning supported local roots and refreshing the catalog...") }
-    static var refreshWatcherManual: String { text("refresh.watcherManual", "Native file watching is unavailable. Use Refresh for current data or Deep Scan to re-enumerate roots.") }
-    static var refreshWatcherNoRoots: String { text("refresh.watcherNoRoots", "No existing authorized roots are available to watch. Use Deep Scan after adding or moving a root.") }
-    static var refreshWatcherUnavailable: String { text("refresh.watcherUnavailable", "Native file watching could not start. Use Refresh or Deep Scan manually.") }
+    static var refreshScanning: String { text("refresh.scanning", "Refreshing all supported local roots and rebuilding the catalog...") }
+    static var refreshWatcherManual: String { text("refresh.watcherManual", "Native file watching is unavailable. Refresh re-enumerates all supported roots.") }
+    static var refreshWatcherNoRoots: String { text("refresh.watcherNoRoots", "No existing authorized roots are available to watch. Refresh after adding or moving a root.") }
+    static var refreshWatcherUnavailable: String { text("refresh.watcherUnavailable", "Native file watching could not start. Use Refresh to reconcile all supported roots.") }
     static var refreshWatcherPending: String { text("refresh.watcherPending", "Local skill or config changes were detected. Refresh to reconcile them.") }
     static var refreshWatcherPendingDeepScan: String { text("refresh.watcherPendingDeepScan", "Filesystem events were coalesced or dropped. Refresh will run a full reconciliation.") }
     static func refreshWatcherActive(_ count: Int) -> String {
         format("refresh.watcherActive", "Watching %d authorized local roots. Changes are applied only after Refresh.", count)
     }
     static func refreshWatcherLimited(_ active: Int, _ total: Int) -> String {
-        format("refresh.watcherLimited", "Watching %d of %d authorized local roots. Use Deep Scan when an unwatched root changes.", active, total)
+        format("refresh.watcherLimited", "Watching %d of %d authorized local roots. Refresh re-enumerates watched and unwatched roots.", active, total)
     }
     static var safetyFlags: String { text("safety.flags", "Safety flags") }
     static var noSafetyFlags: String { text("safety.flags.empty", "No safety flags returned.") }
@@ -918,7 +919,6 @@ enum UIStrings {
     static var currentMatchesSnapshot: String { text("snapshot.matches", "Current agent config already matches this snapshot.") }
     static var currentDiffersFromSnapshot: String { text("snapshot.differs", "Current agent config differs from this snapshot.") }
     static var menuRefresh: String { text("menu.refresh", "Refresh") }
-    static var menuDeepScan: String { text("menu.deepScan", "Deep Scan") }
     static var menuSkills: String { text("menu.skills", "Skills") }
     static var menuShowTaskCockpit: String { text("menu.showTaskCockpit", "Show Task Preflight") }
     static var menuShowOverview: String { text("menu.showOverview", "Show Overview") }
@@ -1017,7 +1017,7 @@ enum UIStrings {
     }
 
     static func scannedSkills(_ count: Int) -> String {
-        format("message.scannedSkills", "Deep scanned %d skills across supported adapters.", count)
+        format("message.scannedSkills", "Refreshed %d skills across supported adapters.", count)
     }
 
     static func refreshReloaded(_ skills: Int, _ findings: Int, _ conflicts: Int) -> String {
@@ -1025,7 +1025,7 @@ enum UIStrings {
     }
 
     static func refreshScanComplete(_ scanned: Int, _ skills: Int, _ findings: Int, _ conflicts: Int) -> String {
-        format("refresh.scanComplete", "Deep Scan complete: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts.", scanned, skills, findings, conflicts)
+        format("refresh.scanComplete", "Refresh complete: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts.", scanned, skills, findings, conflicts)
     }
 
     static func refreshScanPartial(
@@ -1038,7 +1038,7 @@ enum UIStrings {
     ) -> String {
         format(
             "refresh.scanPartial",
-            "Deep Scan completed-partial: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@",
+            "Refresh completed-partial: %d scanned, %d in catalog, %d visible issues, %d same-agent conflicts. First issue: %@. Recovery: %@",
             scanned,
             skills,
             findings,
@@ -1089,7 +1089,7 @@ enum UIStrings {
     }
 
     static var refreshPartialRecoveryDefault: String {
-        text("refresh.partialRecoveryDefault", "Review scan diagnostics, fix the affected root, then retry Deep Scan.")
+        text("refresh.partialRecoveryDefault", "Review scan diagnostics, fix the affected root, then retry Refresh.")
     }
 
     static func refreshFailed(_ reason: String) -> String {

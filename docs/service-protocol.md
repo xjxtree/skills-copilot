@@ -48,11 +48,13 @@ verification.
 
 ## Authorized File Watch Plan
 
-`app.stateSnapshot` includes `watch_plan` with `roots`, `total_count`, and
-`truncated`. The Rust command layer derives this bounded capability list from
-existing documented adapter roots, existing same-scope link targets, parent
-directories of documented config paths, and the app-owned
-`tool-global/skills` library.
+`app.stateSnapshot` includes `watch_plan` with `roots`, `recursive_roots`,
+`exact_files`, `total_count`, and `truncated`. The Rust command layer derives
+this bounded capability list from existing documented adapter roots, existing
+same-scope link targets, documented config paths, and the app-owned
+`tool-global/skills` library. `roots` are FSEvents subscription directories;
+`recursive_roots` and `exact_files` are the only changes that invalidate the
+cache.
 
 - The plan contains at most 256 absolute existing directories.
 - `/`, shallow volume-wide directories, the entire user home, the selected
@@ -60,20 +62,22 @@ directories of documented config paths, and the app-owned
   any symbolic-link component are rejected.
 - Raw plan paths are internal capability data. Native clients must not render,
   log, persist, or attach them to diagnostics.
-- Native FSEvents callbacks discard event paths and return only a count plus a
-  typed “full reconciliation required” flag. Events invalidate cached state;
-  they do not call the service or trigger a scan automatically.
-- Refresh is explicit: it reloads current catalog state when clean and calls
-  `catalog.scanAll` when invalidated. Deep Scan always calls
-  `catalog.scanAll`, covers roots that did not exist when the plan was built,
-  and clears only invalidations already covered when that scan began. The
+- Native FSEvents callbacks use event paths only for in-memory matching against
+  `recursive_roots` and `exact_files`, then discard them and return only a
+  relevant-event count plus a typed “full reconciliation required” flag.
+  Session, log, database, WAL, and other runtime noise outside those targets
+  does not invalidate the cache. Relevant events do not call the service or
+  trigger a scan automatically.
+- Refresh is explicit and always calls `catalog.scanAll`. It covers roots that
+  did not exist when the plan was built and clears only invalidations already
+  covered when that scan began. The
   active stream stays attached to unchanged authorized roots so an event
   already queued for main-thread delivery cannot be discarded at the scan
   boundary; newer events stay pending. A committed project-context change
   invalidates the prior watcher session before validation or scanning, and
   callbacks queued by that stopped session are ignored.
 - An empty, truncated, rejected, or unstartable plan degrades to explicit
-  Refresh / Deep Scan with a path-free status message.
+  Refresh with a path-free status message.
 
 ## Config Consistency
 
@@ -514,13 +518,15 @@ or expose write controls.
   parsed session message/content event. Each `content_items[]` item includes
   `timestamp` when its source event has a timestamp.
 - Codex summary rows come from the guarded `state_*.sqlite` thread index used by
-  current `thread/list`, represent active interactive user-owned top-level
-  tasks, and apply exact cwd matching for project scope. Archived, structured
-  subagent/review/compact, memory, host-created internal, and non-interactive
-  `exec` carriers are excluded. Selected detail and message pages still read
-  the guarded rollout on demand; the index is never treated as transcript
-  content. Legacy homes without a compatible index retain the bounded rollout
-  and `session_index.jsonl`/`history.jsonl` fallback.
+  current `thread/list`; when the current Codex app catalog is available, its
+  active `display_title` takes precedence so list titles match Codex. Rows
+  represent active interactive user-owned top-level tasks and apply exact cwd
+  matching for project scope. Archived, structured subagent/review/compact,
+  memory, host-created internal, and non-interactive `exec` carriers are
+  excluded. Selected detail and message pages still read the guarded rollout on
+  demand; neither index is treated as transcript content. Legacy homes without
+  a compatible index retain the bounded rollout and
+  `session_index.jsonl`/`history.jsonl` fallback.
 - Agent-specific inventory filtering excludes internal conversation stores at
   discovery and metadata boundaries: Claude Code sidechains, `subagents`, tool
   results, and runtime lock state; OpenCode child sessions with a `parent_id`;

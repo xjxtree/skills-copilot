@@ -29,10 +29,12 @@ Interactive run and launch-verification modes finish the Rust build, Swift
 build, bundle assembly, and signing before stopping an existing app instance.
 A failed build therefore leaves the currently running app available.
 `--build-only` never stops or launches the app.
-If macOS state restoration does not recreate the main window, launch and Dock
-reopen handling dispatch the app's existing Command-N `WindowGroup` action.
-This keeps a single SwiftUI window source of truth while guaranteeing that a
-visible app process can recover from a saved no-window state.
+The main navigation surface uses a single-instance SwiftUI `Window` scene.
+SwiftUI owns launch, state restoration, and Dock reopen behavior; the app does
+not expose Command-N or dispatch a synthetic new-window command. Closing the
+last window keeps the app process and Dock item running; activating the Dock
+item reopens the singleton main window. Use the Dock menu **Quit** or
+Command-Q when the process should exit.
 
 Release-candidate builds use optimized Rust and Swift products. The generated
 app build script owns copying packaged resources into `Contents/Resources`, and

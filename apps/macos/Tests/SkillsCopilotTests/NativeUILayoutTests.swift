@@ -6,64 +6,24 @@ import Testing
 @Suite("NativeUILayoutTests", .serialized)
 @MainActor
 struct NativeUILayoutTests {
-    @Test("no-window fallback uses the standard WindowGroup command")
-    func newWindowFallbackUsesTheStandardCommand() throws {
-        let mainMenu = NSMenu()
-        let unrelatedMenu = NSMenu()
-        unrelatedMenu.addItem(
-            withTitle: "Unrelated",
-            action: #selector(NSDocumentController.newDocument(_:)),
-            keyEquivalent: "n"
+    @Test("window chrome accessory owns a stable trailing anchor")
+    func windowChromeAccessoryOwnsStableTrailingAnchor() {
+        let layout = WindowChromeTitlebarAccessoryLayout(
+            contentWidth: 494,
+            contentHeight: 34,
+            trailingPadding: 12
         )
-        unrelatedMenu.items[0].keyEquivalentModifierMask = [.command, .shift]
-        let unrelatedRoot = NSMenuItem()
-        unrelatedRoot.submenu = unrelatedMenu
-        mainMenu.addItem(unrelatedRoot)
 
-        let fileMenu = NSMenu()
-        let newWindow = fileMenu.addItem(
-            withTitle: "New Window",
-            action: #selector(NSDocumentController.newDocument(_:)),
-            keyEquivalent: "n"
-        )
-        newWindow.keyEquivalentModifierMask = [.command]
-        let fileRoot = NSMenuItem()
-        fileRoot.submenu = fileMenu
-        mainMenu.addItem(fileRoot)
-
-        try expectEqual(
-            MainWindowCoordinator.newWindowMenuItem(in: mainMenu) === newWindow,
-            true,
-            "The no-window fallback should dispatch the standard Command-N WindowGroup action."
-        )
+        #expect(WindowChromeTitlebarAccessoryLayout.windowLayoutAttribute == .right)
+        #expect(layout.accessoryWidth == 506)
+        #expect(layout.accessoryHeight == 38)
     }
 
-    @Test("reopen ignores unrelated app windows")
-    func reopenIgnoresUnrelatedAppWindows() throws {
-        let unrelatedWindow = MainCapableTestWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        unrelatedWindow.title = "Settings"
-        let mainWindow = MainCapableTestWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 700),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        mainWindow.title = UIStrings.appWindowTitle
+    @Test("closing the last window keeps the app running")
+    func closingLastWindowKeepsApplicationRunning() {
+        let delegate = AppDelegate()
 
-        try expectNil(
-            MainWindowCoordinator.preferredMainWindow(in: [unrelatedWindow]),
-            "An unrelated settings window must not be restyled as the main window."
-        )
-        try expectEqual(
-            MainWindowCoordinator.preferredMainWindow(in: [unrelatedWindow, mainWindow]) === mainWindow,
-            true,
-            "Reopen should select the titled main window while ignoring unrelated windows."
-        )
+        #expect(delegate.applicationShouldTerminateAfterLastWindowClosed(.shared) == false)
     }
 
     @Test("main content lays out and renders at the supported window width")
@@ -182,8 +142,5 @@ struct NativeUILayoutTests {
             "SwiftUI content should render visible pixels at the tested window size."
         )
     }
-}
 
-private final class MainCapableTestWindow: NSWindow {
-    override var canBecomeMain: Bool { true }
 }

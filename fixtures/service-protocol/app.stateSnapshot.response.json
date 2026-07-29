@@ -369,6 +369,12 @@
         "/tmp/skills-copilot-home/.claude",
         "/tmp/skills-copilot-home/.claude/skills"
       ],
+      "recursive_roots": [
+        "/tmp/skills-copilot-home/.claude/skills"
+      ],
+      "exact_files": [
+        "/tmp/skills-copilot-home/.claude/settings.json"
+      ],
       "total_count": 2,
       "truncated": false
     },

@@ -18,25 +18,34 @@ This file captures the current native UI and runtime-validation contract.
   navigation cards present contained workflow sheets rather than replacing the
   primary Sessions, Skills, or Config context.
 - At widths below the regular three-column breakpoint, keep primary navigation
-  at its standard readable width and keep a usable selected-list width visible
-  while presenting detail as a dismissible overlay.
+  at its standard readable width. Present detail as a dismissible trailing
+  overlay with a 560-point preferred minimum for tabs and long-form content;
+  the overlay may cover the selected list's trailing region while retaining a
+  narrow visible strip of list context. After detail is dismissed, its reveal
+  control appears only while the active workspace is hovered and must not
+  remain as persistent chrome when the pointer leaves the app.
 - Primary navigation cards keep compact outer horizontal insets while preserving
   their internal icon and text spacing.
+- The global Refresh control keeps compact horizontal padding and a stable
+  pending-change indicator slot so its label does not shift when the indicator
+  appears.
+- The window toolbar control group uses a transparent window-level titlebar
+  accessory anchored to the trailing edge, independently of split-view startup,
+  sidebar toggles, and compact detail-overlay presentation or dismissal.
 - Long-form detail content uses a bounded readable width; zero-state metrics
   collapse instead of reserving full metric cards.
 - Retired surfaces should not reappear without an explicitly scoped change.
 
 ## Responsive Loading Defaults
 
-- Startup prewarm and explicit refresh controls are the default places for
+- Startup prewarm and the explicit Refresh control are the default places for
   expensive file scans, config reads, history reads, and analysis/statistics
-  work. The global primary action is Refresh (`Command-R`); Deep Scan
-  (`Shift-Command-R`) is its secondary full re-enumeration action.
+  work. Refresh (`Command-R`) is the single global refresh action and always
+  performs a full re-enumeration.
 - Native file events may add a path-free pending indicator to Refresh, but they
-  must not start work automatically. Refresh performs full reconciliation when
-  the watcher has invalidated the cache and otherwise uses cached catalog data.
-  Deep Scan always re-enumerates supported roots, including roots that were
-  missing when the current watch plan was created.
+  must not start work automatically. Refresh always re-enumerates supported
+  roots, including roots that were missing when the current watch plan was
+  created.
 - Scope pickers, filters, search, sort controls, sidebar navigation, and list
   row selection should derive from already loaded app data and must not clear the
   current UI into a loading state for routine changes.

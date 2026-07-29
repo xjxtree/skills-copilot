@@ -51,19 +51,51 @@ struct AppStateSnapshot: Codable, Hashable {
 
 struct AuthorizedFileWatchPlan: Codable, Hashable {
     let roots: [String]
+    let recursiveRoots: [String]
+    let exactFiles: [String]
     let totalCount: Int
     let truncated: Bool
 
     static let empty = AuthorizedFileWatchPlan(
         roots: [],
+        recursiveRoots: [],
+        exactFiles: [],
         totalCount: 0,
         truncated: false
     )
 
     enum CodingKeys: String, CodingKey {
         case roots
+        case recursiveRoots = "recursive_roots"
+        case exactFiles = "exact_files"
         case totalCount = "total_count"
         case truncated
+    }
+
+    init(
+        roots: [String],
+        recursiveRoots: [String]? = nil,
+        exactFiles: [String] = [],
+        totalCount: Int,
+        truncated: Bool
+    ) {
+        self.roots = roots
+        self.recursiveRoots = recursiveRoots ?? roots
+        self.exactFiles = exactFiles
+        self.totalCount = totalCount
+        self.truncated = truncated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        roots = try container.decodeIfPresent([String].self, forKey: .roots) ?? []
+        recursiveRoots = try container.decodeIfPresent(
+            [String].self,
+            forKey: .recursiveRoots
+        ) ?? roots
+        exactFiles = try container.decodeIfPresent([String].self, forKey: .exactFiles) ?? []
+        totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount) ?? roots.count
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
     }
 }
 

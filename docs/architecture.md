@@ -84,14 +84,16 @@ entire UI.
   the native shell.
 - UI filters, sorting, scope changes, and navigation project startup or
   manual-refresh caches. Rust includes a bounded `watch_plan` in the state
-  snapshot from existing adapter roots, same-scope link targets, config-parent
-  directories, and the app-owned local library. It rejects broad roots and any
-  path with a symbolic-link component.
+  snapshot from existing adapter roots, same-scope link targets, exact config
+  files plus their subscription parents, and the app-owned local library. It
+  rejects broad roots and any path with a symbolic-link component.
 - The native shell uses FSEvents only to invalidate those caches. Event paths
-  are ignored and are never logged or rendered. No event starts a scan.
-  Explicit Refresh performs a full adapter reconciliation when invalidated and
-  otherwise reloads cached catalog state; Deep Scan always re-enumerates the
-  documented roots. A successful scan clears only invalidations that existed
+  are matched in memory against the plan's recursive roots and exact files,
+  immediately discarded, and never logged or rendered. Unrelated Agent
+  session, log, database, and WAL writes are ignored. No event starts a scan.
+  Explicit Refresh is the single manual refresh action and always performs a
+  full adapter reconciliation across the documented roots. A successful scan
+  clears only invalidations that existed
   when that scan began; a newer event remains pending for the next Refresh.
   Committing a project-context transition stops and invalidates the old watcher
   before validation or follow-up scanning, so a failed transition scan cannot

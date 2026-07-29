@@ -7,6 +7,7 @@ extension SkillStore {
         forceRestart: Bool = false,
         clearPendingChanges: Bool = false
     ) {
+        let previousPlan = authorizedFileWatchPlan
         authorizedFileWatchPlan = plan
         guard let fileSystemWatcher else {
             activeAuthorizedFileWatchRoots = []
@@ -16,6 +17,7 @@ extension SkillStore {
 
         let sanitizedRoots = AuthorizedWatchRootSanitizer.sanitizedPaths(from: plan.roots)
         let rootsChanged = sanitizedRoots != activeAuthorizedFileWatchRoots
+        let targetsChanged = plan != previousPlan
         if clearPendingChanges {
             hasPendingFileSystemChanges = false
             fileWatcherRequiresDeepScan = false
@@ -28,11 +30,18 @@ extension SkillStore {
             return
         }
 
-        if forceRestart || rootsChanged {
+        if forceRestart || rootsChanged || targetsChanged {
             invalidateAuthorizedFileWatcherSession()
             activeAuthorizedFileWatchRoots = []
             let watcherSessionGeneration = authorizedFileWatcherSessionGeneration
-            let started = fileSystemWatcher.start(paths: sanitizedRoots) { [weak self] summary in
+            let eventFilter = AuthorizedFileWatchEventFilter(
+                plan: plan,
+                sanitizedRoots: sanitizedRoots
+            )
+            let started = fileSystemWatcher.start(
+                paths: sanitizedRoots,
+                eventFilter: eventFilter
+            ) { [weak self] summary in
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.authorizedFileWatcherSessionGeneration == watcherSessionGeneration else {

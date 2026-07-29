@@ -8,7 +8,7 @@ This file summarizes persisted and transient data.
 | --- | --- | --- |
 | Agent and scope ids | `crates/core` | Stable wire strings; no I/O base layer |
 | Skill catalog rows | Rust service | Derived from local roots and fixtures |
-| Session preview rows | Rust service | Redacted bounded summaries/process samples plus transient paged user/final-Agent messages |
+| Session preview rows | Rust service | Redacted bounded summaries/process samples plus transient paged user/final-Agent messages; Codex titles prefer the current read-only app catalog display title |
 | Skill usage rows | Rust service | Derived from explicit invocation markers |
 | Config snapshots | Rust service | Guarded reads/writes for supported adapters |
 | Model-task matches | App-local JSON | Redacted metadata for Agent Copilot AI features only |

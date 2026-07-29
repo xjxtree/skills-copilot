@@ -7,10 +7,11 @@ struct MainWindowModelTests {
     @Test("MainWindowModelTests")
     func run() throws {
         try mainWindowConfigurationIsStable()
+        try windowChromeTracksTheResponsiveLayout()
         try compactWorkspaceStateIsModeIndependent()
-        try compactDetailPreservesAUsableSecondaryColumn()
+        try compactRevealControlFollowsWorkspaceHover()
+        try compactDetailKeepsReadableOverlayAndSelectionContext()
         try taskCockpitAccessibilityIdentifiersAreStable()
-        try configuredMainWindowWinsReopenScoring()
         try onboardingStorageKeyIsVersioned()
     }
 
@@ -18,6 +19,7 @@ struct MainWindowModelTests {
         try expectEqual(AppAccessibilityID.mainWindow, "skills-copilot.main-window", "Main window accessibility identifier should stay stable for Computer Use.")
         try expectEqual(AppAccessibilityID.mainContent, "skills-copilot.main-content", "Main content accessibility identifier should stay stable.")
         try expectEqual(MainWindowModel.windowIdentifierRawValue, AppAccessibilityID.mainWindow, "Window identifier should match the AX identifier.")
+        try expectEqual(MainWindowModel.mainSceneIdentifier, "main", "The single main Window scene should keep a stable identifier.")
         try expectEqual(MainWindowModel.autosaveName, "SkillsCopilot.MainWindow", "Main window autosave name should remain stable.")
         try expectEqual(MainWindowModel.minimumWidth, 1024, "Main window minimum width should fit supported compact laptop layouts.")
         try expectEqual(MainWindowModel.minimumHeight, 600, "Main window minimum height should match the launch smoke expectation.")
@@ -32,9 +34,37 @@ struct MainWindowModelTests {
             "Wide windows should retain the three-column layout."
         )
         try expectEqual(
-            MainWindowModel.maximumReadableDetailWidth <= 680,
+            MainWindowModel.maximumReadableDetailWidth,
+            800,
+            "Wide detail surfaces should use the available workspace without making prose unbounded."
+        )
+        try expectEqual(
+            MainWindowModel.maximumReadableDetailWidth <= 840,
             true,
             "Skill detail prose should stay within the readable line-width budget."
+        )
+        try expectEqual(
+            MainWindowModel.minimumCompactDetailWidth,
+            560,
+            "Compact detail needs enough width for horizontal tabs and long-form content."
+        )
+        try expectEqual(
+            MainWindowModel.minimumCompactVisibleListContextWidth,
+            180,
+            "A dismissible compact detail overlay should retain a narrow strip of list context."
+        )
+    }
+
+    private func windowChromeTracksTheResponsiveLayout() throws {
+        try expectEqual(
+            MainWindowModel.windowChromeLayoutMode(width: CGFloat(MainWindowModel.minimumWidth)),
+            .compact,
+            "The minimum supported width should use compact titlebar controls."
+        )
+        try expectEqual(
+            MainWindowModel.windowChromeLayoutMode(width: CGFloat(MainWindowModel.compactLayoutBreakpoint)),
+            .regular,
+            "The regular three-column breakpoint should restore the full titlebar controls."
         )
     }
 
@@ -64,7 +94,7 @@ struct MainWindowModelTests {
         }
     }
 
-    private func compactDetailPreservesAUsableSecondaryColumn() throws {
+    private func compactDetailKeepsReadableOverlayAndSelectionContext() throws {
         let compactSidebarWidth = CGFloat(UIOptimizationPresentation.sidebarShell.compactWidth)
         let testedWindowWidths = [
             CGFloat(MainWindowModel.minimumWidth),
@@ -79,23 +109,84 @@ struct MainWindowModelTests {
             let visibleSecondaryWidth = MainWindowModel.compactVisibleSecondaryWidth(
                 availableWidth: availableWorkspaceWidth
             )
+            let secondaryContentWidth = MainWindowModel.compactSecondaryContentWidth(
+                availableWidth: availableWorkspaceWidth
+            )
 
             try expectEqual(
-                visibleSecondaryWidth >= MainWindowModel.minimumCompactSecondaryWidth,
+                secondaryContentWidth,
+                availableWorkspaceWidth,
+                "Compact detail should overlay the secondary list instead of compressing its content width."
+            )
+            try expectEqual(
+                visibleSecondaryWidth >= MainWindowModel.minimumCompactVisibleListContextWidth,
                 true,
-                "Compact detail should leave the secondary list usable at supported window widths."
+                "Compact detail should retain enough uncovered list context to make dismissal understandable."
             )
             try expectEqual(
                 detailWidth >= MainWindowModel.minimumCompactDetailWidth,
                 true,
-                "Compact detail should retain its minimum readable width at supported window widths."
+                "Compact detail should retain a readable minimum width for tabs and prose."
             )
             try expectEqual(
                 detailWidth <= CGFloat(MainWindowModel.maximumReadableDetailWidth),
                 true,
                 "Compact detail should remain within the maximum readable width."
             )
+            try expectEqual(
+                detailWidth <= availableWorkspaceWidth,
+                true,
+                "Compact detail should never exceed the workspace bounds."
+            )
         }
+    }
+
+    private func compactRevealControlFollowsWorkspaceHover() throws {
+        try expectEqual(
+            MainWindowModel.showsCompactDetailRevealControl(
+                layer: .detailRevealControl,
+                isWorkspaceHovered: false,
+                isApplicationActive: true
+            ),
+            false,
+            "The compact detail reveal control should not remain visible after the pointer leaves the workspace."
+        )
+        try expectEqual(
+            MainWindowModel.showsCompactDetailRevealControl(
+                layer: .detailRevealControl,
+                isWorkspaceHovered: true,
+                isApplicationActive: true
+            ),
+            true,
+            "Hovering the compact workspace should reveal the detail control after detail was dismissed."
+        )
+        try expectEqual(
+            MainWindowModel.showsCompactDetailRevealControl(
+                layer: .detailOverlay,
+                isWorkspaceHovered: true,
+                isApplicationActive: true
+            ),
+            false,
+            "The reveal control should stay hidden while detail is already visible."
+        )
+        try expectEqual(
+            MainWindowModel.showsCompactDetailRevealControl(
+                layer: .listOnly,
+                isWorkspaceHovered: true,
+                isApplicationActive: true
+            ),
+            false,
+            "The reveal control should stay hidden when no selected detail exists."
+        )
+        try expectEqual(
+            MainWindowModel.showsCompactDetailRevealControl(
+                layer: .detailRevealControl,
+                isWorkspaceHovered: true,
+                isApplicationActive: false
+            ),
+            false,
+            "The reveal control should hide immediately when Agent Copilot is not active."
+        )
     }
 
     private func taskCockpitAccessibilityIdentifiersAreStable() throws {
@@ -107,27 +198,6 @@ struct MainWindowModelTests {
         try expectEqual(AppAccessibilityID.taskCockpitRetryButton, "skills-copilot.task-cockpit.retry", "Task Cockpit retry AX identifier should stay stable.")
         try expectEqual(AppAccessibilityID.taskCockpitStageProgress, "skills-copilot.task-cockpit.stage-progress", "Task Cockpit staged progress AX identifier should stay stable.")
         try expectEqual(AppAccessibilityID.taskCockpitResult, "skills-copilot.task-cockpit.result", "Task Cockpit result AX identifier should stay stable.")
-    }
-
-    private func configuredMainWindowWinsReopenScoring() throws {
-        let configured = MainWindowModel.mainWindowScore(
-            identifierRawValue: MainWindowModel.windowIdentifierRawValue,
-            title: UIStrings.appWindowTitle,
-            canBecomeMain: true
-        )
-        let titledOnly = MainWindowModel.mainWindowScore(
-            identifierRawValue: nil,
-            title: UIStrings.appWindowTitle,
-            canBecomeMain: true
-        )
-        let other = MainWindowModel.mainWindowScore(
-            identifierRawValue: "other-window",
-            title: "Other",
-            canBecomeMain: true
-        )
-
-        try expectEqual(configured > titledOnly, true, "Configured main window should win over a title-only window.")
-        try expectEqual(titledOnly > other, true, "Titled main window should win over unrelated app windows.")
     }
 
     private func onboardingStorageKeyIsVersioned() throws {

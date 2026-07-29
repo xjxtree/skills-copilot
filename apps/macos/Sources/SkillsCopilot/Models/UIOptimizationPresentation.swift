@@ -71,6 +71,10 @@ struct UnifiedToolbarPresentation: Equatable {
     let searchPlacement = UnifiedToolbarSearchPlacement.globalTrailing
     let collapsesAtScrollEdge = true
     let settingsActionUsesSystemSettingsLink = true
+    let refreshControlWidth = 86
+    let refreshHorizontalPadding = 6
+    let refreshStatusSlotWidth = 12
+    let reservesRefreshStatusSlot = true
     let minimumGlobalSearchWidth = 180
     let idealGlobalSearchWidth = 220
 }

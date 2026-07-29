@@ -986,11 +986,7 @@ final class SkillStore: ObservableObject {
     }
 
     func refresh() async {
-        if hasPendingFileSystemChanges {
-            await scanAll()
-        } else {
-            await reload()
-        }
+        await scanAll()
     }
 
     func scanAll() async {

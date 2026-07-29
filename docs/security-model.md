@@ -30,8 +30,10 @@ This file describes security and privacy boundaries.
   boundary.
 - Native file watching is limited to the Rust-provided bounded authorization
   plan. Broad roots and symbolic-link components fail closed. FSEvents paths
-  are ignored and never logged, rendered, or persisted; events only invalidate
-  local cache state until the user explicitly chooses Refresh or Deep Scan.
+  are used transiently only to match authorized recursive roots and exact
+  config files, then discarded; they are never logged, rendered, or persisted.
+  Matching events only invalidate local cache state until the user explicitly
+  chooses Refresh.
 
 ## Credentials
 

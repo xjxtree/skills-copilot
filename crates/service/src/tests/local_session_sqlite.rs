@@ -147,6 +147,22 @@ fn codex_summary_uses_effective_thread_index_and_exact_project_scope() {
             .expect("insert Codex thread");
     }
     drop(connection);
+    let catalog_dir = codex_home.join("sqlite");
+    fs::create_dir_all(&catalog_dir).expect("create Codex app catalog directory");
+    let catalog =
+        Connection::open(catalog_dir.join("codex-dev.db")).expect("open Codex app catalog");
+    catalog
+        .execute_batch(
+            "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT NOT NULL, source_updated_at REAL NOT NULL, observation_sequence INTEGER NOT NULL, missing_candidate INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (host_id, thread_id));",
+        )
+        .expect("create Codex app catalog schema");
+    catalog
+        .execute(
+            "INSERT INTO local_thread_catalog (host_id, thread_id, display_title, source_updated_at, observation_sequence, missing_candidate) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params!["local", "project", "Current Codex title", 5.0_f64, 1_i64],
+        )
+        .expect("insert current Codex display title");
+    drop(catalog);
 
     let all = host
         .preview_local_sessions(LocalSessionPreviewParams {
@@ -160,7 +176,7 @@ fn codex_summary_uses_effective_thread_index_and_exact_project_scope() {
             .iter()
             .map(|row| row.title.as_str())
             .collect::<Vec<_>>(),
-        vec!["Project thread", "Nested cwd thread"]
+        vec!["Current Codex title", "Nested cwd thread"]
     );
     assert_eq!(all.source_completeness, ListSourceCompleteness::Enumerable);
     assert!(!all.candidate_set_truncated);
@@ -176,7 +192,7 @@ fn codex_summary_uses_effective_thread_index_and_exact_project_scope() {
         })
         .expect("preview project Codex sessions");
     assert_eq!(project.session_rows.len(), 1);
-    assert_eq!(project.session_rows[0].title, "Project thread");
+    assert_eq!(project.session_rows[0].title, "Current Codex title");
 
     let _ = fs::remove_dir_all(root);
 }

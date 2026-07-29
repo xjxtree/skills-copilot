@@ -14,12 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainWindowCoordinator.configureApplicationAppearance()
         MainWindowCoordinator.activateApplication()
-        // SwiftUI may create or restore the WindowGroup after this delegate
-        // callback. Defer the fallback so a normal launch cannot create a
-        // duplicate window, then re-check the live window list before opening.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            MainWindowCoordinator.restoreMainWindow(createIfMissing: true)
-        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -27,8 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainWindowCoordinator.configureWindows(NSApp.windows)
     }
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        MainWindowCoordinator.restoreMainWindow(in: sender, createIfMissing: true)
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -60,7 +54,10 @@ struct SkillsCopilotApp: App {
         let appLanguage = UIStrings.use(AppLanguage.fromStorage(appLanguageRawValue))
         let appTheme = AppTheme.fromStorage(appThemeRawValue)
 
-        WindowGroup(UIStrings.appWindowTitle) {
+        Window(
+            UIStrings.appWindowTitle,
+            id: MainWindowModel.mainSceneIdentifier
+        ) {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(store.sessionStore)
@@ -80,17 +77,15 @@ struct SkillsCopilotApp: App {
                 }
         }
         .commands {
+            CommandGroup(replacing: .newItem) {
+                EmptyView()
+            }
+
             CommandGroup(after: .newItem) {
                 Button(UIStrings.menuRefresh) {
                     Task { await store.refresh() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
-                .disabled(store.isRefreshBusy)
-
-                Button(UIStrings.menuDeepScan) {
-                    Task { await store.scanAll() }
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(store.isRefreshBusy)
             }
 

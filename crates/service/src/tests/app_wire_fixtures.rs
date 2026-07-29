@@ -20,6 +20,8 @@ pub(super) struct WireAppStateSnapshot {
 #[serde(deny_unknown_fields)]
 pub(super) struct WireAuthorizedFileWatchPlan {
     pub(super) roots: Vec<String>,
+    pub(super) recursive_roots: Vec<String>,
+    pub(super) exact_files: Vec<String>,
     pub(super) total_count: usize,
     pub(super) truncated: bool,
 }

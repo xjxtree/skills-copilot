@@ -41,10 +41,10 @@ struct FirstRunOnboardingView: View {
                 )
                 onboardingStep(
                     number: 2,
-                    title: UIStrings.text("onboarding.refresh.title", "Refresh normally; deep-scan when needed"),
+                    title: UIStrings.text("onboarding.refresh.title", "Refresh all local sources"),
                     message: UIStrings.text(
                         "onboarding.refresh.message",
-                        "Refresh updates the current workspace. Deep Scan re-enumerates supported local roots after files are added, removed, or moved."
+                        "Refresh re-enumerates supported local roots and updates the current workspace after files are added, removed, or moved."
                     ),
                     systemImage: "arrow.clockwise"
                 )

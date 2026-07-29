@@ -356,6 +356,8 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
                 snapshot.watch_plan.total_count
             );
             assert!(!snapshot.watch_plan.truncated);
+            assert!(!snapshot.watch_plan.recursive_roots.is_empty());
+            assert!(!snapshot.watch_plan.exact_files.is_empty());
             assert_eq!(
                 snapshot.analysis.summary.total_groups,
                 snapshot.analysis.groups.len()

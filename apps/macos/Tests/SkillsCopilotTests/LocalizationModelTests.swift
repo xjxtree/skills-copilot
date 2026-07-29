@@ -43,7 +43,7 @@ struct LocalizationModelTests {
             "ChatGPT Codex or the Codex CLI may need to restart to read config.toml changes.",
             "English Codex restart guidance should name both current runtimes."
         )
-        try expectEqual(UIStrings.scannedSkills(2), "Deep scanned 2 skills across supported adapters.", "English formatted deep-scan summary should preserve arguments")
+        try expectEqual(UIStrings.scannedSkills(2), "Refreshed 2 skills across supported adapters.", "English formatted refresh summary should preserve arguments")
 
         UIStrings.use(.simplifiedChinese)
         let diagnostics = UIStrings.localizationResourceDiagnostics(for: .simplifiedChinese)
@@ -66,7 +66,7 @@ struct LocalizationModelTests {
             "第 3 行：\"paths\": [\"<temp>\"]",
             "Chinese config preview accessibility should expose the redacted line and its number."
         )
-        try expectEqual(UIStrings.scannedSkills(2), "已深度扫描受支持 adapter 中的 2 个技能。", "Chinese formatted deep-scan summary should preserve arguments")
+        try expectEqual(UIStrings.scannedSkills(2), "已刷新受支持 adapter 中的 2 个技能。", "Chinese formatted refresh summary should preserve arguments")
         try expectEqual(
             UIStrings.localizedServiceMessage("Single request token limit is lower than the redacted prompt estimate."),
             "单次请求 token 限制低于脱敏提示词估算值。",

@@ -20,49 +20,6 @@ enum MainWindowCoordinator {
         app.activate(ignoringOtherApps: true)
     }
 
-    @discardableResult
-    static func restoreMainWindow(
-        in app: NSApplication = .shared,
-        createIfMissing: Bool = false
-    ) -> Bool {
-        activateApplication(app)
-
-        guard let window = preferredMainWindow(in: app.windows) else {
-            return createIfMissing && requestNewMainWindow(in: app)
-        }
-
-        configureWindow(window)
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
-        }
-        window.makeKeyAndOrderFront(nil)
-        return true
-    }
-
-    @discardableResult
-    static func requestNewMainWindow(in app: NSApplication = .shared) -> Bool {
-        guard let item = newWindowMenuItem(in: app.mainMenu),
-              let action = item.action else {
-            return false
-        }
-
-        return app.sendAction(action, to: item.target, from: item)
-    }
-
-    static func newWindowMenuItem(in mainMenu: NSMenu?) -> NSMenuItem? {
-        let commandModifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
-
-        return mainMenu?.items
-            .compactMap(\.submenu)
-            .flatMap(\.items)
-            .first { item in
-                item.isEnabled
-                    && item.action != nil
-                    && item.keyEquivalent.caseInsensitiveCompare("n") == .orderedSame
-                    && item.keyEquivalentModifierMask.intersection(commandModifiers) == .command
-            }
-    }
-
     static func configureWindows(_ windows: [NSWindow], theme: AppTheme = .current) {
         windows.filter(isMainWindowCandidate).forEach { configureWindow($0, theme: theme) }
     }
@@ -81,24 +38,7 @@ enum MainWindowCoordinator {
         window.isMovableByWindowBackground = false
     }
 
-    static func mainWindowScore(identifier: NSUserInterfaceItemIdentifier?, title: String, canBecomeMain: Bool) -> Int {
-        MainWindowModel.mainWindowScore(
-            identifierRawValue: identifier?.rawValue,
-            title: title,
-            canBecomeMain: canBecomeMain
-        )
-    }
-
     private static func isMainWindowCandidate(_ window: NSWindow) -> Bool {
         window.identifier == windowIdentifier || window.title == UIStrings.appWindowTitle
-    }
-
-    static func preferredMainWindow(in windows: [NSWindow]) -> NSWindow? {
-        windows
-            .filter { $0.canBecomeMain && isMainWindowCandidate($0) }
-            .max {
-                mainWindowScore(identifier: $0.identifier, title: $0.title, canBecomeMain: $0.canBecomeMain)
-                    < mainWindowScore(identifier: $1.identifier, title: $1.title, canBecomeMain: $1.canBecomeMain)
-            }
     }
 }

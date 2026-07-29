@@ -10,10 +10,58 @@ protocol FileSystemWatching: AnyObject {
     @discardableResult
     func start(
         paths: [String],
+        eventFilter: AuthorizedFileWatchEventFilter,
         onChange: @escaping @Sendable (FileSystemChangeSummary) -> Void
     ) -> Bool
 
     func stop()
+}
+
+struct AuthorizedFileWatchEventFilter: Equatable, Sendable {
+    private let watchedRoots: [String]
+    private let recursiveRoots: [String]
+    private let exactFiles: Set<String>
+
+    init(plan: AuthorizedFileWatchPlan, sanitizedRoots: [String]) {
+        let watchedRoots = sanitizedRoots.compactMap(Self.normalizedPath)
+        self.watchedRoots = watchedRoots
+        recursiveRoots = plan.recursiveRoots
+            .compactMap(Self.normalizedPath)
+            .filter { target in
+                watchedRoots.contains { Self.contains(target, within: $0) }
+            }
+        exactFiles = Set(
+            plan.exactFiles
+                .compactMap(Self.normalizedPath)
+                .filter { target in
+                    watchedRoots.contains { Self.contains(target, within: $0) }
+                }
+        )
+    }
+
+    func matches(_ rawPath: String, requiresDeepScan: Bool = false) -> Bool {
+        guard let path = Self.normalizedPath(rawPath) else { return false }
+        if exactFiles.contains(path)
+            || recursiveRoots.contains(where: { Self.contains(path, within: $0) }) {
+            return true
+        }
+        guard requiresDeepScan else { return false }
+        return recursiveRoots.contains(where: { Self.contains($0, within: path) })
+            || exactFiles.contains(where: { Self.contains($0, within: path) })
+    }
+
+    private static func normalizedPath(_ rawPath: String) -> String? {
+        let components = rawPath.split(separator: "/", omittingEmptySubsequences: true)
+        guard rawPath.hasPrefix("/"),
+              !components.contains(where: { $0 == "." || $0 == ".." }) else {
+            return nil
+        }
+        return "/" + components.joined(separator: "/")
+    }
+
+    private static func contains(_ path: String, within root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
+    }
 }
 
 enum AuthorizedWatchRootSanitizer {
@@ -76,9 +124,14 @@ enum AuthorizedWatchRootSanitizer {
 }
 
 private final class FSEventsCallbackBox: @unchecked Sendable {
+    let eventFilter: AuthorizedFileWatchEventFilter
     let onChange: @Sendable (FileSystemChangeSummary) -> Void
 
-    init(onChange: @escaping @Sendable (FileSystemChangeSummary) -> Void) {
+    init(
+        eventFilter: AuthorizedFileWatchEventFilter,
+        onChange: @escaping @Sendable (FileSystemChangeSummary) -> Void
+    ) {
+        self.eventFilter = eventFilter
         self.onChange = onChange
     }
 }
@@ -87,7 +140,7 @@ private let authorizedFileWatchCallback: FSEventStreamCallback = {
     _,
     clientCallBackInfo,
     eventCount,
-    _,
+    eventPaths,
     eventFlags,
     _
 in
@@ -102,12 +155,25 @@ in
             | kFSEventStreamEventFlagEventIdsWrapped
             | kFSEventStreamEventFlagRootChanged
     )
-    let requiresDeepScan = (0..<eventCount).contains { index in
-        eventFlags[index] & deepScanFlags != 0
+    let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>?.self)
+    var relevantEventCount = 0
+    var requiresDeepScan = false
+    for index in 0..<eventCount {
+        guard let pathPointer = paths[index] else { continue }
+        let eventRequiresDeepScan = eventFlags[index] & deepScanFlags != 0
+        guard callbackBox.eventFilter.matches(
+            String(cString: pathPointer),
+            requiresDeepScan: eventRequiresDeepScan
+        ) else {
+            continue
+        }
+        relevantEventCount += 1
+        requiresDeepScan = requiresDeepScan || eventRequiresDeepScan
     }
+    guard relevantEventCount > 0 else { return }
     callbackBox.onChange(
         FileSystemChangeSummary(
-            eventCount: eventCount,
+            eventCount: relevantEventCount,
             requiresDeepScan: requiresDeepScan
         )
     )
@@ -124,13 +190,17 @@ final class FSEventsFileSystemWatcher: FileSystemWatching, @unchecked Sendable {
     @discardableResult
     func start(
         paths: [String],
+        eventFilter: AuthorizedFileWatchEventFilter,
         onChange: @escaping @Sendable (FileSystemChangeSummary) -> Void
     ) -> Bool {
         stop()
         let paths = AuthorizedWatchRootSanitizer.sanitizedPaths(from: paths)
         guard !paths.isEmpty else { return false }
 
-        let callbackBox = FSEventsCallbackBox(onChange: onChange)
+        let callbackBox = FSEventsCallbackBox(
+            eventFilter: eventFilter,
+            onChange: onChange
+        )
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(callbackBox).toOpaque(),

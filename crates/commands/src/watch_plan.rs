@@ -18,6 +18,10 @@ pub const MAX_AUTHORIZED_FILE_WATCH_ROOTS: usize = 256;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthorizedFileWatchPlan {
     pub roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub recursive_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub exact_files: Vec<PathBuf>,
     pub total_count: usize,
     pub truncated: bool,
 }
@@ -26,13 +30,20 @@ pub fn authorized_file_watch_plan(
     ctx: &AdapterContext,
     app_data_dir: &Path,
 ) -> AuthorizedFileWatchPlan {
-    let mut candidates = Vec::new();
+    let mut recursive_candidates = Vec::new();
+    let mut exact_file_candidates = Vec::new();
     for adapter in supported_scan_adapters() {
-        collect_adapter_candidates(adapter.as_ref(), ctx, &mut candidates);
+        collect_adapter_candidates(
+            adapter.as_ref(),
+            ctx,
+            &mut recursive_candidates,
+            &mut exact_file_candidates,
+        );
     }
-    candidates.push(tool_global_staging_skills_root(app_data_dir));
+    recursive_candidates.push(tool_global_staging_skills_root(app_data_dir));
     build_authorized_file_watch_plan(
-        candidates,
+        recursive_candidates,
+        exact_file_candidates,
         ctx,
         app_data_dir,
         MAX_AUTHORIZED_FILE_WATCH_ROOTS,
@@ -42,39 +53,72 @@ pub fn authorized_file_watch_plan(
 fn collect_adapter_candidates(
     adapter: &dyn AgentAdapter,
     ctx: &AdapterContext,
-    candidates: &mut Vec<PathBuf>,
+    recursive_candidates: &mut Vec<PathBuf>,
+    exact_file_candidates: &mut Vec<PathBuf>,
 ) {
-    candidates.extend(adapter.roots(ctx).into_iter().map(|root| root.path));
-    candidates.extend(
+    recursive_candidates.extend(adapter.roots(ctx).into_iter().map(|root| root.path));
+    recursive_candidates.extend(
         adapter
             .link_target_roots(ctx)
             .into_iter()
             .map(|root| root.path),
     );
-    candidates.extend(
-        adapter
-            .config_paths(ctx)
-            .into_iter()
-            .filter_map(|path| path.parent().map(Path::to_path_buf)),
-    );
+    exact_file_candidates.extend(adapter.config_paths(ctx));
 }
 
 fn build_authorized_file_watch_plan(
-    candidates: impl IntoIterator<Item = PathBuf>,
+    recursive_candidates: impl IntoIterator<Item = PathBuf>,
+    exact_file_candidates: impl IntoIterator<Item = PathBuf>,
     ctx: &AdapterContext,
     app_data_dir: &Path,
     limit: usize,
 ) -> AuthorizedFileWatchPlan {
-    let accepted = candidates
+    let recursive_roots = recursive_candidates
         .into_iter()
         .filter_map(|path| accepted_watch_root(&path, ctx, app_data_dir))
         .collect::<BTreeSet<_>>();
-    let total_count = accepted.len();
-    let roots = accepted.into_iter().take(limit).collect::<Vec<_>>();
+    let exact_files = exact_file_candidates
+        .into_iter()
+        .filter_map(|path| accepted_exact_watch_file(&path, ctx, app_data_dir))
+        .collect::<BTreeSet<_>>();
+    let watch_roots = recursive_roots
+        .iter()
+        .cloned()
+        .chain(
+            exact_files
+                .iter()
+                .filter_map(|path| path.parent().map(Path::to_path_buf)),
+        )
+        .collect::<BTreeSet<_>>();
+    let total_count = watch_roots.len();
+    let roots = watch_roots.into_iter().take(limit).collect::<Vec<_>>();
+    let target_is_watched = |target: &Path| roots.iter().any(|root| target.starts_with(root));
     AuthorizedFileWatchPlan {
         truncated: total_count > roots.len(),
         total_count,
+        recursive_roots: recursive_roots
+            .into_iter()
+            .filter(|path| target_is_watched(path))
+            .collect(),
+        exact_files: exact_files
+            .into_iter()
+            .filter(|path| target_is_watched(path))
+            .collect(),
         roots,
+    }
+}
+
+fn accepted_exact_watch_file(
+    path: &Path,
+    ctx: &AdapterContext,
+    app_data_dir: &Path,
+) -> Option<PathBuf> {
+    let path = normalize_absolute_path(path)?;
+    let parent = path.parent()?;
+    accepted_watch_root(parent, ctx, app_data_dir)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => None,
+        Ok(_) | Err(_) => Some(path),
     }
 }
 
@@ -216,6 +260,7 @@ mod tests {
                 missing,
                 PathBuf::from("relative"),
             ],
+            [],
             &ctx,
             &tree.root.join("app-data"),
             MAX_AUTHORIZED_FILE_WATCH_ROOTS,
@@ -224,6 +269,33 @@ mod tests {
         assert_eq!(plan.roots, vec![accepted]);
         assert_eq!(plan.total_count, 1);
         assert!(!plan.truncated);
+    }
+
+    #[test]
+    fn watch_plan_separates_recursive_roots_from_exact_config_files() {
+        let tree = TempTree::new("precise-targets");
+        let skills = tree.directory("home/.claude/skills");
+        let config = tree.root.join("home/.claude/settings.json");
+        fs::write(&config, "{}").expect("write config");
+        let ctx = tree.context();
+
+        let plan = build_authorized_file_watch_plan(
+            [skills.clone()],
+            [config.clone()],
+            &ctx,
+            &tree.root.join("app-data"),
+            MAX_AUTHORIZED_FILE_WATCH_ROOTS,
+        );
+
+        assert_eq!(
+            plan.roots,
+            vec![
+                config.parent().expect("config parent").to_path_buf(),
+                skills.clone(),
+            ]
+        );
+        assert_eq!(plan.recursive_roots, vec![skills]);
+        assert_eq!(plan.exact_files, vec![config]);
     }
 
     #[test]
@@ -260,6 +332,7 @@ mod tests {
                 ctx.project_root.clone().expect("project root"),
                 app_data.clone(),
             ],
+            [],
             &ctx,
             &app_data,
             MAX_AUTHORIZED_FILE_WATCH_ROOTS,
@@ -283,6 +356,7 @@ mod tests {
 
         let plan = build_authorized_file_watch_plan(
             [link],
+            [],
             &ctx,
             &tree.root.join("app-data"),
             MAX_AUTHORIZED_FILE_WATCH_ROOTS,
@@ -302,6 +376,7 @@ mod tests {
 
         let plan = build_authorized_file_watch_plan(
             candidates,
+            [],
             &ctx,
             &tree.root.join("app-data"),
             MAX_AUTHORIZED_FILE_WATCH_ROOTS,

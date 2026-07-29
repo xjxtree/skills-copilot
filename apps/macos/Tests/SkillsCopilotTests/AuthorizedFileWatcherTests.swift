@@ -77,8 +77,8 @@ struct AuthorizedFileWatcherTests {
         store.reconcileAuthorizedFileWatcherAfterDeepScan(
             scanStartedAtGeneration: store.authorizedFileSystemChangeGeneration
         )
-        try expectFalse(store.hasPendingFileSystemChanges, "Deep Scan reconciliation should clear pending state")
-        try expectEqual(watcher.startCount, 1, "Deep Scan should preserve the active stream for the same roots")
+        try expectFalse(store.hasPendingFileSystemChanges, "Full refresh reconciliation should clear pending state")
+        try expectEqual(watcher.startCount, 1, "Full refresh should preserve the active stream for the same roots")
     }
 
     @Test("Watcher callbacks queued during reconciliation are not discarded")
@@ -140,7 +140,7 @@ struct AuthorizedFileWatcherTests {
         )
 
         let scan = Task { await store.scanAll() }
-        try await waitForCondition("Deep Scan should reach the service before the watcher event.") {
+        try await waitForCondition("Full refresh should reach the service before the watcher event.") {
             fake.calls().contains("\"method\":\"catalog.scanAll\"")
         }
         watcher.emit(FileSystemChangeSummary(eventCount: 1, requiresDeepScan: true))
@@ -216,13 +216,66 @@ struct AuthorizedFileWatcherTests {
         let watcher = FSEventsFileSystemWatcher()
         defer { watcher.stop() }
 
-        let started = watcher.start(paths: [root.path]) { _ in }
+        let started = watcher.start(
+            paths: [root.path],
+            eventFilter: AuthorizedFileWatchEventFilter(
+                plan: AuthorizedFileWatchPlan(
+                    roots: [root.path],
+                    totalCount: 1,
+                    truncated: false
+                ),
+                sanitizedRoots: [root.path]
+            )
+        ) { _ in }
 
         try expectFalse(!started, "FSEvents should start for an existing non-symlink directory")
     }
 
-    @Test("Primary Refresh deep-scans only after a watcher invalidation")
-    func primaryRefreshRoutesByPendingState() async throws {
+    @Test("Watcher ignores runtime noise while retaining skill and config changes")
+    func watcherFiltersRuntimeNoise() throws {
+        let tree = try TemporaryWatchTree(label: "precise-events")
+        defer { tree.cleanup() }
+        let codexHome = try tree.createDirectory("home/.codex")
+        let skills = try tree.createDirectory("home/.codex/skills")
+        let config = codexHome.appendingPathComponent("config.toml")
+        let filter = AuthorizedFileWatchEventFilter(
+            plan: AuthorizedFileWatchPlan(
+                roots: [codexHome.path, skills.path],
+                recursiveRoots: [skills.path],
+                exactFiles: [config.path],
+                totalCount: 2,
+                truncated: false
+            ),
+            sanitizedRoots: [codexHome.path, skills.path]
+        )
+
+        try expectFalse(
+            filter.matches(codexHome.appendingPathComponent("state_5.sqlite-wal").path),
+            "Codex state database writes must not mark skill/config data stale"
+        )
+        try expectFalse(
+            filter.matches(codexHome.appendingPathComponent("logs/session.log").path),
+            "Codex logs must not mark skill/config data stale"
+        )
+        try expectEqual(
+            filter.matches(config.path),
+            true,
+            "The exact Codex config file must invalidate cached data"
+        )
+        try expectEqual(
+            filter.matches(skills.appendingPathComponent("demo/SKILL.md").path),
+            true,
+            "Files inside an authorized recursive skill root must invalidate cached data"
+        )
+        try expectEqual(
+            filter.matches(codexHome.path, requiresDeepScan: true),
+            true,
+            "Dropped events at a watched ancestor must conservatively invalidate cached data"
+        )
+    }
+
+    @Test("Primary Refresh always performs a complete adapter reconciliation")
+    func primaryRefreshAlwaysDeepScans() async throws {
         let tree = try TemporaryWatchTree(label: "routing")
         defer { tree.cleanup() }
         let root = try tree.createDirectory("home/.claude/skills")
@@ -242,8 +295,8 @@ struct AuthorizedFileWatcherTests {
         )
         await cleanStore.refresh()
         try expectFalse(
-            (await cleanRunner.calls()).contains("\"method\":\"catalog.scanAll\""),
-            "Refresh without invalidation should reuse the cached catalog"
+            !(await cleanRunner.calls()).contains("\"method\":\"catalog.scanAll\""),
+            "Refresh without invalidation should still perform a complete adapter reconciliation"
         )
 
         let changedRunner = CatalogRefreshServiceRunner(scanFixtures: [.complete])
@@ -265,7 +318,7 @@ struct AuthorizedFileWatcherTests {
 
         try expectFalse(
             !(await changedRunner.calls()).contains("\"method\":\"catalog.scanAll\""),
-            "Refresh after invalidation should perform a complete adapter reconciliation"
+            "Refresh after invalidation should perform the same complete adapter reconciliation"
         )
         try expectFalse(
             changedStore.hasPendingFileSystemChanges,
@@ -297,6 +350,7 @@ private final class RecordingFileSystemWatcher: FileSystemWatching {
 
     func start(
         paths: [String],
+        eventFilter: AuthorizedFileWatchEventFilter,
         onChange: @escaping @Sendable (FileSystemChangeSummary) -> Void
     ) -> Bool {
         startedPaths = paths

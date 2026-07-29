@@ -20,19 +20,30 @@ enum CompactWorkspaceLayer: Equatable {
     case detailRevealControl
 }
 
+enum WindowChromeLayoutMode: Equatable {
+    case regular
+    case compact
+}
+
 enum MainWindowModel {
+    static let mainSceneIdentifier = "main"
     static let windowIdentifierRawValue = AppAccessibilityID.mainWindow
     static let autosaveName = "SkillsCopilot.MainWindow"
     static let minimumWidth = 1024
     static let minimumHeight = 600
     static let compactLayoutBreakpoint = 1180
-    static let maximumReadableDetailWidth = 680
-    static let minimumCompactSecondaryWidth: CGFloat = 320
-    static let minimumCompactDetailWidth: CGFloat = 420
-    static let compactDetailPreferredFraction: CGFloat = 0.78
+    static let maximumReadableDetailWidth = 800
+    static let minimumCompactSecondaryWidth: CGFloat = 360
+    static let minimumCompactVisibleListContextWidth: CGFloat = 180
+    static let minimumCompactDetailWidth: CGFloat = 560
+    static let compactDetailPreferredFraction: CGFloat = 0.72
 
     static func usesCompactLayout(width: CGFloat) -> Bool {
         width < CGFloat(compactLayoutBreakpoint)
+    }
+
+    static func windowChromeLayoutMode(width: CGFloat) -> WindowChromeLayoutMode {
+        usesCompactLayout(width: width) ? .compact : .regular
     }
 
     static func compactWorkspaceLayer(
@@ -43,17 +54,35 @@ enum MainWindowModel {
         return showsDetail ? .detailOverlay : .detailRevealControl
     }
 
+    static func showsCompactDetailRevealControl(
+        layer: CompactWorkspaceLayer,
+        isWorkspaceHovered: Bool,
+        isApplicationActive: Bool
+    ) -> Bool {
+        layer == .detailRevealControl
+            && isWorkspaceHovered
+            && isApplicationActive
+    }
+
     static func compactDetailWidth(availableWidth: CGFloat) -> CGFloat {
         let normalizedWidth = max(0, availableWidth)
+        let boundedMinimumWidth = min(minimumCompactDetailWidth, normalizedWidth)
         let preferredWidth = min(
             CGFloat(maximumReadableDetailWidth),
-            max(minimumCompactDetailWidth, normalizedWidth * compactDetailPreferredFraction)
+            max(boundedMinimumWidth, normalizedWidth * compactDetailPreferredFraction)
         )
-        let maximumWidthPreservingSecondary = max(
+        let maximumWidthPreservingListContext = max(
             0,
-            normalizedWidth - minimumCompactSecondaryWidth
+            normalizedWidth - minimumCompactVisibleListContextWidth
         )
-        return min(preferredWidth, maximumWidthPreservingSecondary)
+        guard maximumWidthPreservingListContext >= boundedMinimumWidth else {
+            return min(preferredWidth, normalizedWidth)
+        }
+        return min(preferredWidth, maximumWidthPreservingListContext)
+    }
+
+    static func compactSecondaryContentWidth(availableWidth: CGFloat) -> CGFloat {
+        max(0, availableWidth)
     }
 
     static func compactVisibleSecondaryWidth(availableWidth: CGFloat) -> CGFloat {
@@ -61,17 +90,4 @@ enum MainWindowModel {
         return max(0, normalizedWidth - compactDetailWidth(availableWidth: normalizedWidth))
     }
 
-    static func mainWindowScore(identifierRawValue: String?, title: String, canBecomeMain: Bool) -> Int {
-        var score = 0
-        if identifierRawValue == windowIdentifierRawValue {
-            score += 100
-        }
-        if title == UIStrings.appWindowTitle {
-            score += 50
-        }
-        if canBecomeMain {
-            score += 10
-        }
-        return score
-    }
 }

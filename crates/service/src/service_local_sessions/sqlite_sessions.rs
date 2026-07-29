@@ -396,6 +396,12 @@ fn preview_codex_state_sessions(
 
     let connection = open_read_only_database(&db_path)?;
     let mut sessions = load_codex_indexed_sessions(&connection)?;
+    let display_titles = load_codex_app_display_titles(ctx);
+    for session in &mut sessions {
+        if let Some(title) = display_titles.get(&session.native_id) {
+            session.title = title.clone();
+        }
+    }
     if scope == LocalSessionScope::Project {
         let project_roots = local_session_project_filter_roots(
             ctx,
@@ -631,15 +637,55 @@ fn load_codex_indexed_sessions(
         .map_err(sqlite_schema_error)
 }
 
+fn load_codex_app_display_titles(ctx: &AdapterContext) -> HashMap<String, String> {
+    let db_path = codex_home_dir(ctx).join("sqlite/codex-dev.db");
+    if !db_path.is_file() {
+        return HashMap::new();
+    }
+    let Ok(connection) = open_read_only_database(&db_path) else {
+        return HashMap::new();
+    };
+    let required_columns = [
+        "thread_id",
+        "display_title",
+        "source_updated_at",
+        "observation_sequence",
+        "missing_candidate",
+    ];
+    if required_columns.iter().any(|column| {
+        sqlite_table_has_column(&connection, "local_thread_catalog", column).ok() != Some(true)
+    }) {
+        return HashMap::new();
+    }
+    let Ok(mut statement) = connection.prepare(
+        "SELECT thread_id, display_title FROM local_thread_catalog WHERE missing_candidate = 0 ORDER BY source_updated_at ASC, observation_sequence ASC LIMIT ?1",
+    ) else {
+        return HashMap::new();
+    };
+    let Ok(rows) = statement.query_map([MAX_SQLITE_SESSIONS as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+    let mut titles = HashMap::new();
+    for row in rows.flatten() {
+        if let Some(title) = local_session_text_title_candidate(&row.1) {
+            titles.insert(row.0, title);
+        }
+    }
+    titles
+}
+
 fn codex_index_source_revision(sessions: &[CodexIndexedSession], db_path: &Path) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"agent-copilot.codex-thread-index.v1\0");
+    hasher.update(b"agent-copilot.codex-thread-index.v2\0");
     hasher.update(trace_content_hash(&db_path.to_string_lossy()).as_bytes());
     for session in sessions {
         hasher.update([0]);
         hasher.update(session.service_id.as_bytes());
         hasher.update(session.modified_at.to_le_bytes());
         hasher.update(session.rollout_path.to_string_lossy().as_bytes());
+        hasher.update(session.title.as_bytes());
     }
     format!("sha256:{}", hex_prefix(&hasher.finalize(), 64))
 }

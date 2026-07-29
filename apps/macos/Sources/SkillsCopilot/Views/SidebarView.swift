@@ -599,13 +599,16 @@ private struct SecondarySidebarProjectPickerMenu: View {
                                 )
                             }
                         } label: {
-                            Text(recentProjectTitle(context))
+                            Label(
+                                recentProjectTitle(context),
+                                systemImage: context.isActive ? "checkmark" : "folder"
+                            )
                         }
                     }
                 }
 
                 Menu {
-                    ForEach(store.recentProjectContexts) { context in
+                    ForEach(store.recentProjectContexts.filter { !$0.isActive }) { context in
                         Button(role: .destructive) {
                             Task { await store.removeRecentProject(id: context.id) }
                         } label: {
@@ -1725,7 +1728,10 @@ private struct SkillSidebarPanel: View {
     }
 
     private var searchField: some View {
-        TextField(UIStrings.searchPrompt, text: $searchDraftText)
+        TextField(
+            UIStrings.text("sidebar.skills.search", "Search current skills"),
+            text: $searchDraftText
+        )
             .textFieldStyle(.roundedBorder)
             .controlSize(.small)
             .frame(maxWidth: .infinity)

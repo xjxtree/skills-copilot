@@ -10,36 +10,47 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsCompactDetail = true
     @State private var showsFirstRunOnboarding = false
+    @State private var windowChromeLayoutMode = WindowChromeLayoutMode.compact
     @AppStorage(FirstRunOnboardingModel.completionStorageKey)
     private var hasCompletedOnboarding = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            appShell
-                .opacity(store.startupLoadingState == nil ? 1 : 0)
-                .allowsHitTesting(store.startupLoadingState == nil)
-                .accessibilityHidden(store.startupLoadingState != nil)
+        GeometryReader { proxy in
+            let layoutMode = MainWindowModel.windowChromeLayoutMode(width: proxy.size.width)
 
-            if let state = store.startupLoadingState {
-                AppStartupLoadingView(state: state)
+            ZStack(alignment: .topTrailing) {
+                appShell
+                    .opacity(store.startupLoadingState == nil ? 1 : 0)
+                    .allowsHitTesting(store.startupLoadingState == nil)
+                    .accessibilityHidden(store.startupLoadingState != nil)
+
+                if let state = store.startupLoadingState {
+                    AppStartupLoadingView(state: state)
+                        .transition(.opacity)
+                }
+
+                if store.startupLoadingState == nil, store.isProjectUpdating {
+                    ProjectTransitionLoadingView(
+                        projectName: store.projectTransitionName ?? UIStrings.projectSelectedSource
+                    )
                     .transition(.opacity)
-            }
+                    .zIndex(9)
+                }
 
-            if store.startupLoadingState == nil, store.isProjectUpdating {
-                ProjectTransitionLoadingView(
-                    projectName: store.projectTransitionName ?? UIStrings.projectSelectedSource
-                )
-                .transition(.opacity)
-                .zIndex(9)
-            }
+                if shouldShowGlobalSearchResultsOverlay {
+                    globalSearchResultsOverlay(layoutMode: layoutMode)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .zIndex(8)
+                }
 
-            if shouldShowGlobalSearchResultsOverlay {
-                globalSearchResultsOverlay
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                    .zIndex(8)
+                pinnedWindowChromeControls
             }
-
-            pinnedWindowChromeControls
+            .onAppear {
+                windowChromeLayoutMode = layoutMode
+            }
+            .onChange(of: proxy.size.width) { width in
+                windowChromeLayoutMode = MainWindowModel.windowChromeLayoutMode(width: width)
+            }
         }
         .task {
             await store.loadAppStartupDataIfNeeded()
@@ -76,13 +87,18 @@ struct ContentView: View {
         }
     }
 
-    private var appShell: some View {
-        navigationShell
-    }
-
     private var pinnedWindowChromeControls: some View {
-        WindowChromeTitlebarAccessory {
+        WindowChromeTitlebarAccessory(
+            layout: WindowChromeTitlebarAccessoryLayout(
+                contentWidth: WindowChromeToolbarMetrics.totalWidth(
+                    for: windowChromeLayoutMode
+                ),
+                contentHeight: WindowChromeToolbarMetrics.controlHeight,
+                trailingPadding: WindowChromeToolbarMetrics.toolbarTrailingPadding
+            )
+        ) {
             WindowChromeToolbarControls(
+                layoutMode: windowChromeLayoutMode,
                 text: $globalSearchText,
                 isSearchFocused: $isGlobalSearchFocused,
                 showsSearchResults: $showsGlobalSearchResults,
@@ -91,9 +107,12 @@ struct ContentView: View {
             .environmentObject(store)
         }
         .frame(width: 0, height: 0)
-        .allowsHitTesting(false)
         .accessibilityHidden(true)
         .zIndex(10)
+    }
+
+    private var appShell: some View {
+        navigationShell
     }
 
     private var navigationShell: some View {
@@ -163,7 +182,7 @@ struct ContentView: View {
         store.startupLoadingState == nil && showsGlobalSearchResults && !trimmedGlobalSearchText.isEmpty
     }
 
-    private var globalSearchResultsOverlay: some View {
+    private func globalSearchResultsOverlay(layoutMode: WindowChromeLayoutMode) -> some View {
         GlobalSearchResultsOverlay(
             query: trimmedGlobalSearchText,
             results: globalSearchResults,
@@ -177,7 +196,10 @@ struct ContentView: View {
             selectGlobalSearchResult(result)
         }
         .padding(.top, WindowChromeToolbarMetrics.searchResultsTopPadding)
-        .padding(.trailing, WindowChromeToolbarMetrics.searchResultsTrailingPadding)
+        .padding(
+            .trailing,
+            WindowChromeToolbarMetrics.searchResultsTrailingPadding(for: layoutMode)
+        )
         .accessibilitySortPriority(2)
     }
 
@@ -214,54 +236,104 @@ struct ContentView: View {
 
 private struct CompactWorkspaceView: View {
     @EnvironmentObject private var store: SkillStore
+    @State private var isWorkspaceHovered = false
+    @State private var isApplicationActive = NSApplication.shared.isActive
     let columnVisibility: NavigationSplitViewVisibility
     @Binding var showsDetail: Bool
 
     var body: some View {
         GeometryReader { proxy in
+            let layer = MainWindowModel.compactWorkspaceLayer(
+                selection: store.selectedSidebarSelection,
+                showsDetail: showsDetail
+            )
+            let availableWidth = proxy.size.width
+            let detailWidth = detailWidth(availableWidth: availableWidth)
+            let secondaryWidth = MainWindowModel.compactSecondaryContentWidth(
+                availableWidth: availableWidth
+            )
+
             ZStack(alignment: .trailing) {
                 SecondarySidebarView(columnVisibility: columnVisibility)
+                    .frame(width: secondaryWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onHover { isHovering in
+                        isWorkspaceHovered = isHovering
+                    }
+                    .clipped()
 
-                switch MainWindowModel.compactWorkspaceLayer(
-                    selection: store.selectedSidebarSelection,
-                    showsDetail: showsDetail
-                ) {
+                switch layer {
                 case .detailOverlay:
-                    detailOverlay(width: detailWidth(availableWidth: proxy.size.width))
+                    detailOverlay(width: detailWidth)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                         .zIndex(2)
                 case .detailRevealControl:
-                    showDetailButton
-                        .padding(12)
-                        .zIndex(1)
+                    if MainWindowModel.showsCompactDetailRevealControl(
+                        layer: layer,
+                        isWorkspaceHovered: isWorkspaceHovered,
+                        isApplicationActive: isApplicationActive
+                    ) {
+                        showDetailButton
+                            .padding(12)
+                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                            .zIndex(1)
+                    }
                 case .listOnly:
                     EmptyView()
                 }
             }
         }
         .animation(.easeInOut(duration: 0.18), value: showsDetail)
+        .animation(.easeOut(duration: 0.12), value: isWorkspaceHovered)
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didResignActiveNotification
+            )
+        ) { _ in
+            isApplicationActive = false
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            isApplicationActive = true
+        }
     }
 
     private func detailOverlay(width: CGFloat) -> some View {
-        ZStack(alignment: .topTrailing) {
-            DetailView(skill: store.selectedSkill)
-                .padding(.top, 28)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Label(UIStrings.detailSection, systemImage: "sidebar.trailing")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-            Button {
-                showsDetail = false
-            } label: {
-                Label(
-                    UIStrings.text("detail.compact.close", "Close Details"),
-                    systemImage: "xmark"
-                )
-                .labelStyle(.iconOnly)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+                Spacer(minLength: 8)
+
+                Button {
+                    showsDetail = false
+                } label: {
+                    Label(
+                        UIStrings.text("detail.compact.close", "Close Details"),
+                        systemImage: "xmark"
+                    )
+                    .labelStyle(.iconOnly)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(UIStrings.text("detail.compact.close", "Close Details"))
+                .accessibilityLabel(UIStrings.text("detail.compact.close", "Close Details"))
             }
-            .buttonStyle(.plain)
-            .padding(10)
-            .help(UIStrings.text("detail.compact.close", "Close Details"))
-            .accessibilityLabel(UIStrings.text("detail.compact.close", "Close Details"))
+            .padding(.leading, 14)
+            .padding(.trailing, 8)
+            .frame(height: 42)
+            .background(.bar)
+
+            Divider()
+
+            DetailView(skill: store.selectedSkill)
         }
         .frame(width: width)
         .frame(maxHeight: .infinity)
@@ -296,158 +368,74 @@ private struct CompactWorkspaceView: View {
     }
 }
 
-private struct WindowChromeTitlebarAccessory<Content: View>: NSViewRepresentable {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        DispatchQueue.main.async {
-            context.coordinator.installIfNeeded(in: view.window, content: content)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.update(content: content)
-        DispatchQueue.main.async {
-            context.coordinator.installIfNeeded(in: nsView.window, content: content)
-        }
-    }
-
-    final class Coordinator {
-        private weak var window: NSWindow?
-        private var accessory: NSTitlebarAccessoryViewController?
-        private var hostingView: FirstMouseNSHostingView<Content>?
-
-        deinit {
-            removeAccessory()
-        }
-
-        func installIfNeeded(in window: NSWindow?, content: Content) {
-            guard let window else { return }
-            guard self.window !== window else {
-                update(content: content)
-                return
-            }
-
-            removeAccessory()
-
-            let hostingView = FirstMouseNSHostingView(rootView: content)
-            hostingView.translatesAutoresizingMaskIntoConstraints = false
-            hostingView.setContentHuggingPriority(.required, for: .horizontal)
-            hostingView.setContentHuggingPriority(.required, for: .vertical)
-            hostingView.setContentCompressionResistancePriority(.required, for: .horizontal)
-            hostingView.setContentCompressionResistancePriority(.required, for: .vertical)
-
-            let container = FirstMouseTitlebarAccessoryContainer(
-                frame: NSRect(
-                    x: 0,
-                    y: 0,
-                    width: WindowChromeToolbarMetrics.accessoryWidth,
-                    height: WindowChromeToolbarMetrics.accessoryHeight
-                )
-            )
-            container.addSubview(hostingView)
-
-            NSLayoutConstraint.activate([
-                container.widthAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.accessoryWidth),
-                container.heightAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.accessoryHeight),
-                hostingView.widthAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.totalWidth),
-                hostingView.heightAnchor.constraint(equalToConstant: WindowChromeToolbarMetrics.controlHeight),
-                hostingView.trailingAnchor.constraint(
-                    equalTo: container.trailingAnchor,
-                    constant: -WindowChromeToolbarMetrics.titlebarTrailingPadding
-                ),
-                hostingView.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-            ])
-
-            let accessory = NSTitlebarAccessoryViewController()
-            accessory.view = container
-            accessory.layoutAttribute = .right
-            window.addTitlebarAccessoryViewController(accessory)
-
-            self.window = window
-            self.accessory = accessory
-            self.hostingView = hostingView
-        }
-
-        func update(content: Content) {
-            hostingView?.rootView = content
-        }
-
-        private func removeAccessory() {
-            if let accessory,
-               let window,
-               let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
-                window.removeTitlebarAccessoryViewController(at: index)
-            }
-            accessory = nil
-            hostingView = nil
-            window = nil
-        }
-    }
-}
-
-private final class FirstMouseTitlebarAccessoryContainer: NSView {
-    override var intrinsicContentSize: NSSize {
-        NSSize(
-            width: WindowChromeToolbarMetrics.accessoryWidth,
-            height: WindowChromeToolbarMetrics.accessoryHeight
-        )
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-}
-
-private final class FirstMouseNSHostingView<Content: View>: NSHostingView<Content> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-}
-
 private enum WindowChromeToolbarMetrics {
-    static let controlHeight: CGFloat = 32
-    static let accessoryHeight: CGFloat = 52
+    static let controlHeight: CGFloat = 34
     static let agentWidth: CGFloat = 146
     static let projectWidth: CGFloat = 210
-    static let toolbarSpacing: CGFloat = 8
+    static let compactAgentWidth: CGFloat = 132
+    static let compactProjectWidth: CGFloat = 34
     static let trailingSpacing: CGFloat = 6
-    static let iconButtonWidth: CGFloat = 30
-    static let titlebarTrailingPadding: CGFloat = 28
-    static let searchWidth = CGFloat(UIOptimizationPresentation.unifiedToolbar.idealGlobalSearchWidth)
+    static let iconButtonWidth: CGFloat = 34
+    static let refreshWidth = CGFloat(UIOptimizationPresentation.unifiedToolbar.refreshControlWidth)
+    static let refreshHorizontalPadding = CGFloat(
+        UIOptimizationPresentation.unifiedToolbar.refreshHorizontalPadding
+    )
+    static let refreshStatusSlotWidth = CGFloat(
+        UIOptimizationPresentation.unifiedToolbar.refreshStatusSlotWidth
+    )
+    static let toolbarTrailingPadding: CGFloat = 12
+    static let regularSearchWidth = CGFloat(UIOptimizationPresentation.unifiedToolbar.idealGlobalSearchWidth)
+    static let compactSearchWidth = CGFloat(UIOptimizationPresentation.unifiedToolbar.minimumGlobalSearchWidth)
     static let searchResultsWidth: CGFloat = 460
     static let searchResultsMinHeight: CGFloat = 180
     static let searchResultsMaxHeight: CGFloat = 340
     static let searchResultsTopPadding: CGFloat = 10
 
-    static var trailingWidth: CGFloat {
-        searchWidth + iconButtonWidth * 3 + trailingSpacing * 3
+    static func agentWidth(for layoutMode: WindowChromeLayoutMode) -> CGFloat {
+        layoutMode == .compact ? compactAgentWidth : agentWidth
     }
 
-    static var totalWidth: CGFloat {
-        agentWidth + projectWidth + trailingWidth + toolbarSpacing * 2
+    static func projectWidth(for layoutMode: WindowChromeLayoutMode) -> CGFloat {
+        layoutMode == .compact ? compactProjectWidth : projectWidth
     }
 
-    static var accessoryWidth: CGFloat {
-        totalWidth + titlebarTrailingPadding
+    static func searchWidth(for layoutMode: WindowChromeLayoutMode) -> CGFloat {
+        switch layoutMode {
+        case .regular:
+            regularSearchWidth
+        case .compact:
+            compactSearchWidth
+        }
     }
 
-    static var searchResultsTrailingPadding: CGFloat {
-        titlebarTrailingPadding + iconButtonWidth * 3 + trailingSpacing * 3
+    static func totalWidth(for layoutMode: WindowChromeLayoutMode) -> CGFloat {
+        agentWidth(for: layoutMode)
+            + projectWidth(for: layoutMode)
+            + searchWidth(for: layoutMode)
+            + refreshWidth
+            + iconButtonWidth
+            + 8 * 2
+            + trailingSpacing * 2
+    }
+
+    static func searchResultsTrailingPadding(for layoutMode: WindowChromeLayoutMode) -> CGFloat {
+        switch layoutMode {
+        case .regular:
+            return toolbarTrailingPadding
+                + refreshWidth
+                + iconButtonWidth
+                + trailingSpacing * 2
+        case .compact:
+            return toolbarTrailingPadding
+                + refreshWidth
+                + iconButtonWidth
+                + trailingSpacing * 2
+        }
     }
 }
 
 private struct WindowChromeToolbarControls: View {
+    let layoutMode: WindowChromeLayoutMode
     @Binding var text: String
     @Binding var isSearchFocused: Bool
     @Binding var showsSearchResults: Bool
@@ -458,10 +446,11 @@ private struct WindowChromeToolbarControls: View {
             TitlebarAgentSelectorControl()
                 .frame(width: agentWidth, height: controlHeight, alignment: .leading)
 
-            TitlebarProjectPickerControl(isCompact: false)
+            TitlebarProjectPickerControl(isCompact: layoutMode == .compact)
                 .frame(width: projectWidth, height: controlHeight, alignment: .leading)
 
             WindowChromeTrailingControls(
+                layoutMode: layoutMode,
                 text: $text,
                 isSearchFocused: $isSearchFocused,
                 showsSearchResults: $showsSearchResults,
@@ -473,8 +462,12 @@ private struct WindowChromeToolbarControls: View {
     }
 
     private var controlHeight: CGFloat { WindowChromeToolbarMetrics.controlHeight }
-    private var agentWidth: CGFloat { WindowChromeToolbarMetrics.agentWidth }
-    private var projectWidth: CGFloat { WindowChromeToolbarMetrics.projectWidth }
+    private var agentWidth: CGFloat {
+        WindowChromeToolbarMetrics.agentWidth(for: layoutMode)
+    }
+    private var projectWidth: CGFloat {
+        WindowChromeToolbarMetrics.projectWidth(for: layoutMode)
+    }
 }
 
 private struct TitlebarAgentSelectorControl: View {
@@ -518,7 +511,7 @@ private struct TitlebarAgentSelectorControl: View {
     private func shortTitle(for filter: SkillAgentFilter) -> String {
         switch filter {
         case .claudeCode:
-            return UIStrings.text("agent.short.claudeCode", "Claude")
+            return UIStrings.claudeCode
         case .codex:
             return UIStrings.codex
         case .opencode:
@@ -647,33 +640,50 @@ private struct TitlebarProjectPickerControl: View {
                                     )
                                 }
                             } label: {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(context.name)
-                                        .lineLimit(1)
-                                    Text(recentProjectPath(context))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(context.name)
+                                            .lineLimit(1)
+                                        Text(recentProjectPath(context))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    if context.isActive {
+                                        Label(UIStrings.currentProject, systemImage: "checkmark")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(Color.accentColor)
+                                            .fixedSize()
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)
                             .padding(.vertical, 6)
+                            .accessibilityValue(context.isActive ? UIStrings.currentProject : "")
 
-                            Button(role: .destructive) {
-                                Task { await store.removeRecentProject(id: context.id) }
-                            } label: {
-                                Image(systemName: "trash")
-                                    .frame(width: 24, height: 24)
-                                    .contentShape(Rectangle())
+                            if !context.isActive {
+                                Button(role: .destructive) {
+                                    Task { await store.removeRecentProject(id: context.id) }
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .frame(width: 24, height: 24)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help(UIStrings.removeRecentProject(context.name, path: recentProjectPath(context)))
+                                .accessibilityLabel(UIStrings.removeRecentProject(context.name, path: recentProjectPath(context)))
                             }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                            .help(UIStrings.removeRecentProject(context.name, path: recentProjectPath(context)))
-                            .accessibilityLabel(UIStrings.removeRecentProject(context.name, path: recentProjectPath(context)))
                         }
                         .padding(.horizontal, 8)
+                        .background(
+                            context.isActive ? Color.accentColor.opacity(0.08) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8)
+                        )
                     }
                 }
 
@@ -917,12 +927,11 @@ private struct GlobalSearchSuggestionRow: View {
 }
 
 private struct WindowChromeTrailingControls: View {
+    let layoutMode: WindowChromeLayoutMode
     @Binding var text: String
     @Binding var isSearchFocused: Bool
     @Binding var showsSearchResults: Bool
     let onSubmit: () -> Void
-
-    private let searchWidth = WindowChromeToolbarMetrics.searchWidth
 
     var body: some View {
         controls
@@ -934,16 +943,15 @@ private struct WindowChromeTrailingControls: View {
                 text: $text,
                 isSearchFocused: $isSearchFocused,
                 showsResults: $showsSearchResults,
-                width: searchWidth,
+                width: WindowChromeToolbarMetrics.searchWidth(for: layoutMode),
                 onSubmit: onSubmit
             )
 
             WindowChromeRefreshControl()
-            WindowChromeHelpButton()
             WindowChromeSettingsControl()
         }
         .fixedSize()
-        .frame(height: 32, alignment: .center)
+        .frame(height: WindowChromeToolbarMetrics.controlHeight, alignment: .center)
     }
 }
 
@@ -951,45 +959,49 @@ private struct WindowChromeRefreshControl: View {
     @EnvironmentObject private var store: SkillStore
 
     var body: some View {
-        Menu {
-            Button(UIStrings.menuDeepScan) {
-                Task { await store.scanAll() }
-            }
-            .keyboardShortcut("r", modifiers: [.command, .shift])
+        Button {
+            Task { await store.refresh() }
         } label: {
-            ZStack(alignment: .topTrailing) {
-                Group {
-                    if store.isRefreshBusy {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
+            HStack(spacing: 4) {
+                if store.isRefreshBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 16, height: 16)
                 }
-                .frame(width: 30, height: 30)
-                .contentShape(Circle())
 
-                if store.hasPendingFileSystemChanges {
-                    Circle()
-                        .fill(Color.orange)
-                        .frame(width: 7, height: 7)
-                        .overlay(Circle().stroke(Color.agentCopilotWindowBackground, lineWidth: 1))
-                        .offset(x: -2, y: 2)
+                ZStack {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .opacity(store.hasPendingFileSystemChanges ? 1 : 0)
                         .accessibilityHidden(true)
                 }
+                .frame(
+                    width: WindowChromeToolbarMetrics.refreshStatusSlotWidth,
+                    height: 16
+                )
+
+                Text(UIStrings.menuRefresh)
+                    .font(.caption.weight(.semibold))
             }
-        } primaryAction: {
-            Task { await store.refresh() }
+            .padding(.horizontal, WindowChromeToolbarMetrics.refreshHorizontalPadding)
+            .frame(
+                width: WindowChromeToolbarMetrics.refreshWidth,
+                height: WindowChromeToolbarMetrics.controlHeight
+            )
+            .contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize()
-        .windowChromeGlassCircle()
+        .windowChromeGlassCapsule()
         .disabled(store.isRefreshBusy)
         .help("\(UIStrings.menuRefresh) — \(store.watcherStatusMessage)")
         .accessibilityLabel(UIStrings.menuRefresh)
         .accessibilityValue(store.watcherStatusMessage)
-        .accessibilityHint(UIStrings.menuDeepScan)
     }
 }
 
@@ -1007,6 +1019,10 @@ private struct GlobalWindowSearchControl: View {
     var body: some View {
         searchField
         .accessibilityLabel(UIStrings.text("toolbar.globalSearch", "Search all"))
+        .help(UIStrings.text(
+            "toolbar.globalSearch.help",
+            "Search skills, sessions, and configuration across the current workspace."
+        ))
     }
 
     @ViewBuilder
@@ -1040,7 +1056,7 @@ private struct GlobalWindowSearchControl: View {
         }
         .padding(.leading, 14)
         .padding(.trailing, 12)
-        .frame(width: width, height: 30, alignment: .center)
+        .frame(width: width, height: WindowChromeToolbarMetrics.controlHeight, alignment: .center)
         .windowChromeGlassCapsule()
         .contentShape(Capsule())
     }
@@ -1147,67 +1163,6 @@ private final class FirstMouseNSTextField: NSTextField {
         window?.makeFirstResponder(self)
         selectText(nil)
         super.mouseDown(with: event)
-    }
-}
-
-private struct WindowChromeHelpButton: View {
-    @State private var isShowingHelp = false
-
-    var body: some View {
-        Button {
-            isShowingHelp.toggle()
-        } label: {
-            Image(systemName: "questionmark.circle")
-                .font(.system(size: 16, weight: .semibold))
-                .frame(width: 30, height: 30)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .windowChromeGlassCircle()
-        .help(UIStrings.text("toolbar.help", "Help"))
-        .accessibilityLabel(UIStrings.text("toolbar.help", "Help"))
-        .popover(isPresented: $isShowingHelp, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(UIStrings.text("help.title", "Skills Copilot Help"), systemImage: "questionmark.circle.fill")
-                    .font(.headline)
-                Text(UIStrings.text(
-                    "help.summary",
-                    "Choose an agent and project in the sidebar, scan to refresh local data, then review skills, sessions, configuration, and diagnostics. Writes always require an explicit preview or confirmation."
-                ))
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-                Divider()
-                Text(UIStrings.text(
-                    "help.privacy",
-                    "Privacy Mode redacts local paths and sensitive configuration values until you reveal them."
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    if #available(macOS 14.0, *) {
-                        SettingsLink {
-                            Label(UIStrings.text("settings.serviceDiagnostics", "Service Diagnostics"), systemImage: "wrench.and.screwdriver")
-                        }
-                    } else {
-                        Button(action: openSettingsFallback) {
-                            Label(UIStrings.text("settings.serviceDiagnostics", "Service Diagnostics"), systemImage: "wrench.and.screwdriver")
-                        }
-                    }
-                    Link(destination: URL(string: "https://github.com/xjxtree/agent-copilot/tree/main/docs")!) {
-                        Label(UIStrings.text("help.documentation", "Documentation"), systemImage: "book")
-                    }
-                }
-                .controlSize(.small)
-            }
-            .padding(16)
-            .frame(width: 360)
-        }
-    }
-
-    private func openSettingsFallback() {
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
     }
 }
 
@@ -1415,7 +1370,10 @@ private struct WindowChromeSettingsControl: View {
     private var settingsLabel: some View {
         Image(systemName: "gearshape")
             .font(.system(size: 16, weight: .semibold))
-            .frame(width: 30, height: 30)
+            .frame(
+                width: WindowChromeToolbarMetrics.iconButtonWidth,
+                height: WindowChromeToolbarMetrics.controlHeight
+            )
             .contentShape(Circle())
     }
 
